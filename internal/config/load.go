@@ -74,6 +74,7 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 			store.loadedPaths = append(store.loadedPaths, store.workspacePath)
 		}
 	}
+	registerConfigSecrets(cfg)
 
 	// Validate hooks after all config merging is complete so workspace
 	// hooks also get their matcher regexes compiled.
@@ -160,6 +161,7 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		}
 	}
 	store.SetupAgents()
+	registerConfigSecrets(store.Config())
 
 	// Capture initial staleness snapshot. Track every discovered config path,
 	// not just the ones that loaded, so a config file created after startup

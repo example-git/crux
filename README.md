@@ -129,11 +129,34 @@ Within a project directory, precedence from lowest to highest is:
 
 Crux uses `CRUX_*` environment variables and isolated Crux configuration, data, cache, database, log, and socket paths. It does not automatically read or modify legacy Crush state. An optional manual migration helper is available at [`scripts/migrate-crush-to-crux.sh`](scripts/migrate-crush-to-crux.sh).
 
+### Provider and account backups
+
+`crux export [archive]` creates a password-encrypted archive containing global provider configuration, installed provider bundles, plugin trust and provenance, stored accounts, and saved authenticated connections. Export prompts for the password twice and creates a private file without overwriting an existing archive.
+
+`crux import <archive>` prompts for the archive password, authenticates and validates the complete archive before writing any data, then restores those provider and account files. Restart Crux after import so the restored configuration is loaded.
+
+## Authenticated server connections
+
+Remote Crux servers use TLS 1.3 mutual authentication with independently generated Ed25519 client and server identities. Only public pairing codes are exchanged; private keys stay on the machine that created them.
+
+1. On the server, run `crux connections server-init` and give its public pairing code to the client user.
+2. On the client, run `crux connections add NAME tcp://HOST:PORT SERVER_CODE`. Give the printed public client pairing code to the server user.
+3. On the server, run `crux connections authorize NAME CLIENT_CODE`.
+4. Start the server with `crux server --host tcp://0.0.0.0:PORT --workspace-root /srv/projects` and connect with `crux --connection NAME`.
+
+A parameterless saved connection opens the remote workspace menu. It lists active workspaces and provides a bounded server-side directory browser for opening a new workspace. Gracefully exiting a workspace returns to this menu. Explicit `--cwd`, `--data-dir`, `--session`, `--continue`, `--yolo`, or `--channels` values bypass the menu and open the requested workspace directly.
+
+The browser starts at the server user's home directory. Repeatable `--workspace-root PATH` options add explicitly permitted roots. Requested paths are resolved before access, must remain within one of those roots, and directory-entry symlinks are not followed. Manually paired clients are trusted workspace-management principals, but their filesystem access remains confined to these roots.
+
+Saved connections and private identities are stored in the private Crux global data directory. Plain unauthenticated TCP is restricted to loopback use. When a saved connection creates a remote workspace, the client forwards its resolved provider configuration and active account credentials through the authenticated TLS connection. The client environment is not forwarded. The server keeps forwarded state only in workspace memory, excludes it from traffic-log bodies and API responses, and does not write it to server configuration or account files.
+
+On Linux, `crux server daemon install --host tcp://0.0.0.0:PORT --workspace-root /srv/projects` installs and starts a user service after server identity and client authorization are configured. The command supports systemd, OpenRC user services, and runit, with `--manager` available when automatic detection is insufficient. Workspace roots are repeatable and are preserved in the generated service command. Daemon installation is rejected on macOS and Windows.
+
 ## Network diagnostics
 
 Crux does not perform automatic Charm release or provider-catalog checks. Model providers, configured remote MCP servers, explicit web tools, remote provider discovery, HTTPS plugin installation, and explicitly enabled semantic indexing can use the network.
 
-HTTP and WebSocket diagnostics are retained locally in `~/.ai-cli/traffic/crux.db`. Redaction is best-effort, and records can contain prompts, responses, URLs, headers, or other sensitive data. Treat the database as private.
+HTTP and WebSocket diagnostics are retained locally in `~/.ai-cli/traffic/crux.db`. Crux keeps a process-wide in-memory set of resolved API keys, OAuth tokens, client secrets, and manifest fields marked secret. Exact occurrences of those values are removed from logs, traffic diagnostics, errors, and API responses. This supplements structured field-name redaction rather than replacing it; unknown secrets and ordinary sensitive content can still appear. Treat the database as private.
 
 ## Project documents
 

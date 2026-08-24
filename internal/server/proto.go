@@ -8,7 +8,9 @@ import (
 
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/backend"
+	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/redact"
 	"github.com/example-git/crux/internal/session"
 	"github.com/google/uuid"
 )
@@ -93,7 +95,11 @@ func (c *controllerV1) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 //	@Produce		json
 //	@Success		200	{array}		proto.Workspace
 //	@Router			/workspaces [get]
-func (c *controllerV1) handleGetWorkspaces(w http.ResponseWriter, _ *http.Request) {
+func (c *controllerV1) handleGetWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if !c.server.authenticatedManagementRequest(r) {
+		jsonError(w, http.StatusForbidden, "workspace management requires authenticated TLS")
+		return
+	}
 	jsonEncode(w, c.backend.ListWorkspaces())
 }
 
@@ -108,6 +114,10 @@ func (c *controllerV1) handleGetWorkspaces(w http.ResponseWriter, _ *http.Reques
 //	@Failure		500	{object}	proto.Error
 //	@Router			/workspaces/{id} [get]
 func (c *controllerV1) handleGetWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !c.server.authenticatedManagementRequest(r) {
+		jsonError(w, http.StatusForbidden, "workspace management requires authenticated TLS")
+		return
+	}
 	id := r.PathValue("id")
 	ws, err := c.backend.GetWorkspaceProto(id)
 	if err != nil {
@@ -129,11 +139,35 @@ func (c *controllerV1) handleGetWorkspace(w http.ResponseWriter, r *http.Request
 //	@Failure		500		{object}	proto.Error
 //	@Router			/workspaces [post]
 func (c *controllerV1) handlePostWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if !c.server.authenticatedManagementRequest(r) {
+		jsonError(w, http.StatusForbidden, "workspace management requires authenticated TLS")
+		return
+	}
 	var args proto.Workspace
 	if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
 		c.server.logError(r, "Failed to decode request", "error", err)
 		jsonError(w, http.StatusBadRequest, "failed to decode request")
 		return
+	}
+	if c.server.remoteManagement() {
+		path, dataDir, err := c.server.validateRemoteWorkspace(args.Path, args.DataDir)
+		if err != nil {
+			jsonError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		args.Path = path
+		args.DataDir = dataDir
+		args.AllowedWorkspaceRoots = append([]string(nil), c.server.workspaceRoots...)
+	}
+	if len(args.ForwardedProviders) > 0 || len(args.ForwardedAccounts) > 0 {
+		if r.Header.Get(cruxlog.EphemeralStateHeader) == "" {
+			jsonError(w, http.StatusBadRequest, "forwarded provider state must be marked ephemeral")
+			return
+		}
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			jsonError(w, http.StatusForbidden, "forwarded provider state requires an authenticated TLS connection")
+			return
+		}
 	}
 
 	_, result, complete, err := c.backend.CreateWorkspaceForResponse(args)
@@ -222,6 +256,16 @@ func (c *controllerV1) handleDeleteClient(w http.ResponseWriter, r *http.Request
 //	@Success		200
 //	@Failure		404	{object}	proto.Error
 //	@Router			/workspaces/{id} [delete]
+func (c *controllerV1) handleDeleteIdleWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !c.server.authenticatedManagementRequest(r) {
+		jsonError(w, http.StatusForbidden, "workspace management requires authenticated TLS")
+		return
+	}
+	if err := c.backend.CloseIdleWorkspace(r.PathValue("id")); err != nil {
+		c.handleError(w, r, err)
+	}
+}
+
 func (c *controllerV1) handleDeleteWorkspaces(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	clientID, ok := c.requireClientID(w, r)
@@ -333,6 +377,11 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 			data, err := json.Marshal(wrapped)
 			if err != nil {
 				c.server.logError(r, "Failed to marshal event", "error", err)
+				continue
+			}
+			data, err = redact.JSON(data)
+			if err != nil {
+				c.server.logError(r, "Failed to redact event", "error", err)
 				continue
 			}
 
@@ -910,7 +959,7 @@ func (c *controllerV1) handlePostWorkspaceAgentDefinition(w http.ResponseWriter,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(proto.CreateAgentDefinitionResponse{Path: path})
+	jsonEncode(w, proto.CreateAgentDefinitionResponse{Path: path})
 }
 
 // handleGetWorkspaceAgentSession returns a specific agent session.
@@ -1066,7 +1115,7 @@ func (c *controllerV1) handlePostWorkspaceAgentSessionSuggest(w http.ResponseWri
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]string{"suggestion": suggestion})
+	jsonEncode(w, map[string]string{"suggestion": suggestion})
 }
 
 // handlePostWorkspaceAgentJobsDetach sends foreground-waited commands
@@ -1088,7 +1137,7 @@ func (c *controllerV1) handlePostWorkspaceAgentJobsDetach(w http.ResponseWriter,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(map[string]int{"detached": n})
+	jsonEncode(w, map[string]int{"detached": n})
 }
 
 // handlePostWorkspaceAgentSessionShell runs a shell command in the workspace.
@@ -1337,6 +1386,7 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 		// workspace recovery.
 		status = http.StatusConflict
 	case errors.Is(err, backend.ErrWorkspaceClosing),
+		errors.Is(err, backend.ErrWorkspaceInUse),
 		errors.Is(err, backend.ErrServerNotIdle),
 		errors.Is(err, backend.ErrClientRetired):
 		status = http.StatusConflict
@@ -1351,11 +1401,20 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 
 func jsonEncode(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	data, err = redact.JSON(data)
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+	_, _ = w.Write(data)
 }
 
 func jsonError(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(proto.Error{Message: message})
+	jsonEncode(w, proto.Error{Message: message})
 }

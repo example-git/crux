@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/example-git/crux/internal/redact"
 )
 
 // NewHTTPClient creates an HTTP client with debug logging enabled when debug mode is on.
@@ -92,9 +94,9 @@ func bodyToString(body io.ReadCloser) string {
 	var b bytes.Buffer
 	if json.Indent(&b, bytes.TrimSpace(src), "", "  ") != nil {
 		// not json probably
-		return string(src)
+		return redact.String(string(src))
 	}
-	return b.String()
+	return redact.String(b.String())
 }
 
 // formatHeaders formats HTTP headers for logging, filtering out sensitive information.
@@ -104,7 +106,11 @@ func formatHeaders(headers http.Header) map[string][]string {
 		if sensitiveName(key) {
 			filtered[key] = []string{"[REDACTED]"}
 		} else {
-			filtered[key] = values
+			filteredValues := make([]string, len(values))
+			for i, value := range values {
+				filteredValues[i] = redact.String(value)
+			}
+			filtered[key] = filteredValues
 		}
 	}
 	return filtered

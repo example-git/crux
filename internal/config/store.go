@@ -17,8 +17,10 @@ import (
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/oauth/copilot"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/redact"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"golang.org/x/sync/singleflight"
@@ -88,17 +90,20 @@ type RuntimeOverrides struct {
 // as immutable: a mutator clones, mutates the clone, and swaps it in under
 // writeMu rather than mutating the live Config in place.
 type ConfigStore struct {
-	config             *Config
-	workingDir         string
-	resolver           VariableResolver
-	globalDataPath     string   // ~/.ai-cli/data/crux/crux.json
-	workspacePath      string   // .crux/crux.json
-	loadedPaths        []string // config files that were successfully loaded
-	knownProviders     []catwalk.Provider
-	providerRegistry   *providerregistry.Registry
-	overrides          RuntimeOverrides
-	trackedConfigPaths []string                // unique, normalized config file paths
-	snapshots          map[string]fileSnapshot // path -> snapshot at last capture
+	config                   *Config
+	ephemeralAccounts        map[string]accounts.Entry
+	ephemeralProviderConfigs map[string]ProviderConfig
+	ephemeralProviders       map[string]struct{}
+	workingDir               string
+	resolver                 VariableResolver
+	globalDataPath           string   // ~/.ai-cli/data/crux/crux.json
+	workspacePath            string   // .crux/crux.json
+	loadedPaths              []string // config files that were successfully loaded
+	knownProviders           []catwalk.Provider
+	providerRegistry         *providerregistry.Registry
+	overrides                RuntimeOverrides
+	trackedConfigPaths       []string                // unique, normalized config file paths
+	snapshots                map[string]fileSnapshot // path -> snapshot at last capture
 
 	// configMu guards the config pointer field against concurrent
 	// readers (Config) and the writeMu-serialised swap (setConfig). It
@@ -147,9 +152,103 @@ func (s *ConfigStore) Config() *Config {
 // Used by the reload path; in-place field mutators leave the pointer
 // untouched and run under mu instead.
 func (s *ConfigStore) setConfig(cfg *Config) {
+	registerConfigSecrets(cfg)
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
 	s.config = cfg
+}
+
+func (s *ConfigStore) ApplyEphemeralProviderState(providers map[string]ProviderConfig, forwardedAccounts map[string]accounts.Entry) error {
+	if len(providers) == 0 && len(forwardedAccounts) == 0 {
+		return nil
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	current := s.Config()
+	overlay, err := json.Marshal(struct {
+		Providers map[string]ProviderConfig `json:"providers,omitempty"`
+	}{Providers: providers})
+	if err != nil {
+		return fmt.Errorf("encode ephemeral provider state: %w", err)
+	}
+	merged, err := loadFromBytes([][]byte{mustMarshalConfig(current), overlay})
+	if err != nil {
+		return fmt.Errorf("apply ephemeral provider state: %w", err)
+	}
+	merged.setDefaults(s.workingDir, current.Options.DataDirectory)
+
+	registerConfigSecrets(merged)
+	clonedAccounts := make(map[string]accounts.Entry, len(forwardedAccounts))
+	for namespace, entry := range forwardedAccounts {
+		registerAccountSecrets(entry)
+		entry.Raw = slices.Clone(entry.Raw)
+		clonedAccounts[namespace] = entry
+	}
+	ephemeralProviders := make(map[string]struct{}, len(providers))
+	for id := range providers {
+		ephemeralProviders[id] = struct{}{}
+	}
+
+	s.configMu.Lock()
+	s.config = merged
+	s.ephemeralAccounts = clonedAccounts
+	s.ephemeralProviderConfigs = maps.Clone(providers)
+	s.ephemeralProviders = ephemeralProviders
+	s.configMu.Unlock()
+	return nil
+}
+
+func (s *ConfigStore) EphemeralAccount(namespace string) (*accounts.Entry, bool) {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	entry, ok := s.ephemeralAccounts[namespace]
+	if !ok {
+		return nil, false
+	}
+	entry.Raw = slices.Clone(entry.Raw)
+	return &entry, true
+}
+
+func (s *ConfigStore) isEphemeralProvider(providerID string) bool {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	_, ok := s.ephemeralProviders[providerID]
+	return ok
+}
+
+func (s *ConfigStore) ephemeralProviderSnapshot() map[string]ProviderConfig {
+	s.configMu.RLock()
+	defer s.configMu.RUnlock()
+	return maps.Clone(s.ephemeralProviderConfigs)
+}
+
+func (s *ConfigStore) applyEphemeralToken(providerConfig ProviderConfig, token *oauth.Token, providerID, namespace string) {
+	redact.Register(token.AccessToken, token.RefreshToken)
+	providerConfig.OAuthToken = token
+	providerConfig.APIKey = token.AccessToken
+	if providerID == string(catwalk.InferenceProviderCopilot) {
+		providerConfig.SetupGitHubCopilot()
+	}
+
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	s.config.Providers.Set(providerID, providerConfig)
+	if s.ephemeralProviderConfigs == nil {
+		s.ephemeralProviderConfigs = make(map[string]ProviderConfig)
+	}
+	s.ephemeralProviderConfigs[providerID] = providerConfig
+	if namespace == "" {
+		return
+	}
+	entry, ok := s.ephemeralAccounts[namespace]
+	if !ok {
+		return
+	}
+	entry = accounts.FromToken(entry.ID, entry.DisplayName, token, &entry)
+	registerAccountSecrets(entry)
+	s.ephemeralAccounts[namespace] = entry
 }
 
 // WorkingDir returns the current working directory.
@@ -512,6 +611,12 @@ func (s *ConfigStore) SetTransparentBackground(scope Scope, enabled bool) error 
 
 // SetProviderAPIKey sets the API key for a provider and persists it.
 func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey any) error {
+	switch value := apiKey.(type) {
+	case string:
+		redact.Register(value)
+	case *oauth.Token:
+		redact.Register(value.AccessToken, value.RefreshToken)
+	}
 	var providerConfig ProviderConfig
 	var exists bool
 	var setKeyOrToken func()
@@ -619,6 +724,18 @@ func (s *ConfigStore) refreshOAuthTokenLocked(ctx context.Context, scope Scope, 
 		return fmt.Errorf("provider %s does not have an OAuth token", providerID)
 	}
 	entryToken := providerConfig.OAuthToken
+	if s.isEphemeralProvider(providerID) {
+		refreshedToken, err := s.exchange(ctx, providerID, entryToken.RefreshToken)
+		if err != nil {
+			return fmt.Errorf("failed to refresh ephemeral OAuth token for provider %s: %w", providerID, err)
+		}
+		accountNamespace := ""
+		if registration, ok := s.ProviderRegistration(providerID); ok {
+			accountNamespace = registration.AccountNamespace
+		}
+		s.applyEphemeralToken(providerConfig, refreshedToken, providerID, accountNamespace)
+		return nil
+	}
 
 	// Acquire the per-provider cross-process refresh lock. This is a
 	// dedicated lock file, not the config-write lock, and it does not take
@@ -845,6 +962,7 @@ func (s *ConfigStore) refreshLockPath(providerID string) string {
 
 // applyToken updates the in-memory provider config with the given token.
 func (s *ConfigStore) applyToken(providerConfig ProviderConfig, token *oauth.Token, providerID string) error {
+	redact.Register(token.AccessToken, token.RefreshToken)
 	providerConfig.OAuthToken = token
 	providerConfig.APIKey = token.AccessToken
 	if providerID == string(catwalk.InferenceProviderCopilot) {
@@ -1146,6 +1264,22 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 			cfg.setDefaults(s.workingDir, dataDir)
 			loadedPaths = append(loadedPaths, workspacePath)
 		}
+	}
+
+	if ephemeralProviders := s.ephemeralProviderSnapshot(); len(ephemeralProviders) > 0 {
+		overlay, marshalErr := json.Marshal(struct {
+			Providers map[string]ProviderConfig `json:"providers"`
+		}{Providers: ephemeralProviders})
+		if marshalErr != nil {
+			return fmt.Errorf("encode ephemeral provider state during reload: %w", marshalErr)
+		}
+		merged, mergeErr := loadFromBytes([][]byte{mustMarshalConfig(cfg), overlay})
+		if mergeErr != nil {
+			return fmt.Errorf("apply ephemeral provider state during reload: %w", mergeErr)
+		}
+		dataDir := cfg.Options.DataDirectory
+		cfg = merged
+		cfg.setDefaults(s.workingDir, dataDir)
 	}
 
 	// Validate hooks after all config merging is complete so matcher

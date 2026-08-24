@@ -185,7 +185,14 @@ func (m *UI) filesInfo(cwd string, width, maxItems int, isSection bool) string {
 
 	title := t.Files.SectionTitle.Render("Modified Files")
 	if isSection {
-		title = common.Section(t, "Modified Files", width)
+		indicator := "▾"
+		if m.sidebarFilesCollapsed {
+			indicator = "▸"
+		}
+		title = common.Section(t, fmt.Sprintf("%s Modified Files", indicator), width, fmt.Sprintf("%d", fileChangeCount(m.sessionFiles)))
+		if m.sidebarFilesCollapsed {
+			return lipgloss.NewStyle().Width(width).Render(title)
+		}
 	}
 	list := t.Files.EmptyMessage.Render("None")
 	var filesWithChanges []SessionFile

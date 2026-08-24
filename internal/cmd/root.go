@@ -33,9 +33,11 @@ import (
 	"github.com/example-git/crux/internal/app"
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/connection"
 	"github.com/example-git/crux/internal/db"
 	"github.com/example-git/crux/internal/lock"
 	cruxlog "github.com/example-git/crux/internal/log"
+	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/projects"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/server"
@@ -44,19 +46,24 @@ import (
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/logo"
 	ui "github.com/example-git/crux/internal/ui/model"
+	"github.com/example-git/crux/internal/ui/servermenu"
 	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/example-git/crux/internal/version"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
-var clientHost string
+var (
+	clientHost     string
+	connectionName string
+)
 
 func init() {
 	rootCmd.PersistentFlags().StringP("cwd", "c", "", "Current working directory")
 	rootCmd.PersistentFlags().StringP("data-dir", "D", "", "Custom Crux data directory")
 	rootCmd.PersistentFlags().BoolP("debug", "d", false, "Debug")
 	rootCmd.PersistentFlags().StringVarP(&clientHost, "host", "H", server.DefaultHost(), "Connect to a specific Crux server host (for advanced users)")
+	rootCmd.PersistentFlags().StringVar(&connectionName, "connection", "", "Use a saved authenticated server connection")
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
 	rootCmd.Flags().BoolP("yolo", "y", false, "Automatically accept all permissions (dangerous mode)")
 	rootCmd.PersistentFlags().StringSlice("channels", nil, "MCP servers to enable as channels (repeatable), e.g. --channels server:webhook")
@@ -76,6 +83,8 @@ func init() {
 		schemaCmd,
 		loginCmd,
 		accountsCmd,
+		exportCmd,
+		importCmd,
 		statsCmd,
 		sessionCmd,
 	)
@@ -111,15 +120,16 @@ crux --session {session-id}
 crux --continue
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if shouldOpenServerMenu(cmd, args) {
+			return runServerMenu(cmd)
+		}
 		sessionID, _ := cmd.Flags().GetString("session")
 		continueLast, _ := cmd.Flags().GetBool("continue")
-
 		ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
-
 		if sessionID != "" {
 			sess, err := resolveWorkspaceSessionID(cmd.Context(), ws, sessionID)
 			if err != nil {
@@ -127,27 +137,42 @@ crux --continue
 			}
 			sessionID = sess.ID
 		}
-
-		com := common.DefaultCommon(ws)
-		model := ui.New(com, sessionID, continueLast)
-
-		inputFilter := ui.NewFilter()
-		var env uv.Environ = os.Environ()
-		program := tea.NewProgram(
-			model,
-			tea.WithEnvironment(env),
-			tea.WithContext(cmd.Context()),
-			tea.WithFilter(inputFilter.Filter),
-		)
-		go ws.Subscribe(program)
-
-		if _, err := program.Run(); err != nil {
-			slog.Error("TUI run error", "error", err)
-			return errors.New("Crux crashed. Copy the stack trace above and report it at https://github.com/example-git/crux/issues/new?template=bug.yml")
-		}
-		printSessionResume(model)
-		return nil
+		return runWorkspaceTUI(cmd.Context(), ws, sessionID, continueLast, true)
 	},
+}
+
+func runWorkspaceTUI(ctx context.Context, ws workspace.Workspace, sessionID string, continueLast, printExit bool) error {
+	com := common.DefaultCommon(ws)
+	model := ui.New(com, sessionID, continueLast)
+	inputFilter := ui.NewFilter()
+	var environment uv.Environ = os.Environ()
+	program := tea.NewProgram(
+		model,
+		tea.WithEnvironment(environment),
+		tea.WithContext(ctx),
+		tea.WithFilter(inputFilter.Filter),
+	)
+	go ws.Subscribe(program)
+	if _, err := program.Run(); err != nil {
+		slog.Error("TUI run error", "error", err)
+		return errors.New("Crux crashed. Copy the stack trace above and report it at https://github.com/example-git/crux/issues/new?template=bug.yml")
+	}
+	if printExit {
+		printSessionResume(model)
+	}
+	return nil
+}
+
+func shouldOpenServerMenu(cmd *cobra.Command, args []string) bool {
+	if connectionName == "" || len(args) != 0 {
+		return false
+	}
+	for _, name := range []string{"cwd", "data-dir", "session", "continue", "yolo", "channels"} {
+		if flag := cmd.Flags().Lookup(name); flag != nil && flag.Changed {
+			return false
+		}
+	}
+	return true
 }
 
 var heartbit = lipgloss.NewStyle().Foreground(charmtone.Dolly).SetString(`
@@ -348,6 +373,9 @@ func supportsProgressBar() bool {
 // useClientServer returns true when the client/server architecture is
 // enabled via the CRUX_CLIENT_SERVER environment variable.
 func useClientServer() bool {
+	if connectionName != "" {
+		return true
+	}
 	v, _ := strconv.ParseBool(os.Getenv("CRUX_CLIENT_SERVER"))
 	return v
 }
@@ -494,12 +522,149 @@ func setupClientServerWorkspace(cmd *cobra.Command) (workspace.Workspace, func()
 	return clientWs, clientWs.Shutdown, nil
 }
 
+func runServerMenu(cmd *cobra.Command) error {
+	cwd, err := ResolveCwd(cmd)
+	if err != nil {
+		return err
+	}
+	saved, exists, err := connection.Get(cmd.Context(), connectionName)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("saved connection not found: %s", connectionName)
+	}
+	hostURL, err := server.ParseHostURL(saved.Address)
+	if err != nil {
+		return fmt.Errorf("invalid saved connection address: %w", err)
+	}
+	if err := ensureServer(cmd, hostURL); err != nil {
+		return err
+	}
+	menuClient, err := client.NewAuthenticatedClient(cwd, saved)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = menuClient.RetireClient(context.Background()) }()
+
+	var menuError error
+	for {
+		model := servermenu.New(cmd.Context(), menuClient)
+		model.SetError(menuError)
+		menuError = nil
+		var environment uv.Environ = os.Environ()
+		program := tea.NewProgram(model, tea.WithEnvironment(environment), tea.WithContext(cmd.Context()))
+		if _, err := program.Run(); err != nil {
+			return fmt.Errorf("run server workspace menu: %w", err)
+		}
+		selection := model.Selection()
+		if selection.WorkspaceID == "" && selection.Path == "" {
+			return nil
+		}
+		if err := runSelectedRemoteWorkspace(cmd, saved, cwd, selection); err != nil {
+			menuError = err
+		}
+	}
+}
+
+func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection, localCwd string, selection servermenu.Selection) error {
+	remotePath := selection.Path
+	if remotePath == "" {
+		remotePath = localCwd
+	}
+	workspaceClient, err := client.NewAuthenticatedClient(remotePath, saved)
+	if err != nil {
+		return err
+	}
+	retire := true
+	defer func() {
+		if retire {
+			_ = workspaceClient.RetireClient(context.Background())
+		}
+	}()
+
+	var remoteWorkspace *proto.Workspace
+	if selection.WorkspaceID != "" {
+		remoteWorkspace, err = workspaceClient.OpenWorkspace(cmd.Context(), selection.WorkspaceID)
+	} else {
+		debug, _ := cmd.Flags().GetBool("debug")
+		providers, forwardedAccounts, stateErr := forwardedProviderState(cmd.Context(), localCwd, "", debug)
+		if stateErr != nil {
+			return stateErr
+		}
+		remoteWorkspace, err = workspaceClient.CreateWorkspace(cmd.Context(), proto.Workspace{
+			Path:               selection.Path,
+			Debug:              debug,
+			Version:            version.Version,
+			ForwardedProviders: providers,
+			ForwardedAccounts:  forwardedAccounts,
+		})
+	}
+	if err != nil {
+		return err
+	}
+	clientWorkspace := workspace.NewClientWorkspace(workspaceClient, *remoteWorkspace)
+	retire = false
+	if remoteWorkspace.Config != nil && remoteWorkspace.Config.IsConfigured() {
+		if err := clientWorkspace.InitCoderAgent(cmd.Context()); err != nil {
+			slog.Error("Failed to initialize coder agent", "error", err)
+		}
+	}
+	defer clientWorkspace.Shutdown()
+	return runWorkspaceTUI(cmd.Context(), clientWorkspace, "", false, false)
+}
+
+func forwardedProviderState(ctx context.Context, cwd, dataDir string, debug bool) (map[string]config.ProviderConfig, map[string]accounts.Entry, error) {
+	cfg, err := config.Load(cwd, dataDir, debug)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load provider state for remote server: %w", err)
+	}
+	providers := make(map[string]config.ProviderConfig)
+	for id, provider := range cfg.Config().Providers.Seq2() {
+		providers[id] = provider
+	}
+	forwardedAccounts := make(map[string]accounts.Entry)
+	namespaces, err := accounts.Providers(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load accounts for remote server: %w", err)
+	}
+	for _, namespace := range namespaces {
+		entry, err := accounts.Active(ctx, namespace)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load active %s account for remote server: %w", namespace, err)
+		}
+		if entry != nil {
+			forwardedAccounts[namespace] = *entry
+		}
+	}
+	return providers, forwardedAccounts, nil
+}
+
 // connectToServer ensures the server is running, creates a client and
 // workspace, and returns a cleanup function that deletes the workspace.
 func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func(), error) {
-	hostURL, err := server.ParseHostURL(clientHost)
+	host := clientHost
+	var savedConnection *connection.Connection
+	if connectionName != "" {
+		if cmd.Flags().Changed("host") {
+			return nil, nil, nil, errors.New("--connection and --host cannot be used together")
+		}
+		saved, exists, err := connection.Get(cmd.Context(), connectionName)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if !exists {
+			return nil, nil, nil, fmt.Errorf("saved connection not found: %s", connectionName)
+		}
+		host = saved.Address
+		savedConnection = &saved
+	}
+	hostURL, err := server.ParseHostURL(host)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("invalid host URL: %v", err)
+	}
+	if hostURL.Scheme == "tcp" && !server.IsLoopbackHost(hostURL) && savedConnection == nil {
+		return nil, nil, nil, errors.New("remote TCP servers require a saved authenticated connection")
 	}
 
 	if err := ensureServer(cmd, hostURL); err != nil {
@@ -511,29 +676,45 @@ func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func
 	channels, _ := cmd.Flags().GetStringSlice("channels")
 	dataDir, _ := cmd.Flags().GetString("data-dir")
 
-	cwd, err := ResolveCwd(cmd)
+	localCwd, workspaceCwd, err := resolveConnectionCwds(cmd, savedConnection != nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	c, err := client.NewClient(cwd, hostURL.Scheme, hostURL.Host)
+	var c *client.Client
+	if savedConnection != nil {
+		c, err = client.NewAuthenticatedClient(localCwd, *savedConnection)
+	} else {
+		c, err = client.NewClient(localCwd, hostURL.Scheme, hostURL.Host)
+	}
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
 	wsReq := proto.Workspace{
-		Path:     cwd,
+		Path:     workspaceCwd,
 		DataDir:  dataDir,
 		Debug:    debug,
 		YOLO:     yolo,
 		Channels: channels,
 		Version:  version.Version,
-		Env:      os.Environ(),
+	}
+	if savedConnection != nil {
+		wsReq.ForwardedProviders, wsReq.ForwardedAccounts, err = forwardedProviderState(cmd.Context(), localCwd, "", debug)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	} else {
+		wsReq.Env = os.Environ()
 	}
 
-	ws, err := createWorkspaceOnLiveServer(cmd.Context(), c, wsReq, func() error {
+	replaceServer := func() error {
+		if savedConnection != nil {
+			return errors.New("remote server is shutting down")
+		}
 		return replaceExitingServer(cmd, hostURL)
-	})
+	}
+	ws, err := createWorkspaceOnLiveServer(cmd.Context(), c, wsReq, replaceServer)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1058,6 +1239,22 @@ func resolveWorkspaceSessionID(ctx context.Context, ws workspace.Workspace, id s
 	default:
 		return session.Session{}, fmt.Errorf("session ID %q is ambiguous (%d matches)", id, len(matches))
 	}
+}
+
+func resolveConnectionCwds(cmd *cobra.Command, remote bool) (string, string, error) {
+	if !remote {
+		cwd, err := ResolveCwd(cmd)
+		return cwd, cwd, err
+	}
+	localCwd, err := os.Getwd()
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get current working directory: %v", err)
+	}
+	workspaceCwd, _ := cmd.Flags().GetString("cwd")
+	if workspaceCwd == "" {
+		workspaceCwd = localCwd
+	}
+	return localCwd, workspaceCwd, nil
 }
 
 func ResolveCwd(cmd *cobra.Command) (string, error) {

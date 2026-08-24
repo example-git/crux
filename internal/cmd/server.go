@@ -17,10 +17,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var serverHost string
+var (
+	serverHost           string
+	serverWorkspaceRoots []string
+)
 
 func init() {
 	serverCmd.Flags().StringVarP(&serverHost, "host", "H", server.DefaultHost(), "Server host (TCP or Unix socket)")
+	serverCmd.Flags().StringArrayVar(&serverWorkspaceRoots, "workspace-root", nil, "Additional server workspace root (repeatable)")
 	rootCmd.AddCommand(serverCmd)
 }
 
@@ -56,6 +60,14 @@ var serverCmd = &cobra.Command{
 		}
 
 		srv := server.NewServer(cfg, hostURL.Scheme, hostURL.Host)
+		if err := srv.SetWorkspaceRoots(serverWorkspaceRoots); err != nil {
+			return fmt.Errorf("configure workspace roots: %w", err)
+		}
+		if hostURL.Scheme == "tcp" && !server.IsLoopbackHost(hostURL) {
+			if err := srv.EnableNetworkAuth(cmd.Context()); err != nil {
+				return fmt.Errorf("configure network authentication: %w", err)
+			}
+		}
 		srv.SetLogger(slog.Default())
 		slog.Info("Starting Crux server...", "addr", serverHost)
 

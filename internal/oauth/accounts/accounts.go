@@ -27,6 +27,7 @@ import (
 
 	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/redact"
 )
 
 // Provider store keys. These are the cross-tool provider namespaces used in
@@ -275,6 +276,10 @@ func readStore() (*store, error) {
 	return &s, nil
 }
 
+func registerSecrets(entry Entry) {
+	redact.Register(entry.AccessToken, entry.RefreshToken)
+}
+
 func writeStore(s *store) error {
 	path, err := dbPath()
 	if err != nil {
@@ -296,6 +301,7 @@ func writeStore(s *store) error {
 
 // Save upserts an account and makes it the active account for the provider.
 func Save(ctx context.Context, provider string, entry Entry) error {
+	registerSecrets(entry)
 	return withLock(ctx, func() error {
 		s, err := readStore()
 		if err != nil {
@@ -310,6 +316,7 @@ func Save(ctx context.Context, provider string, entry Entry) error {
 // SaveWithoutActivating upserts an account without changing which account is
 // active. Used for background refreshes of inactive accounts.
 func SaveWithoutActivating(ctx context.Context, provider string, entry Entry) error {
+	registerSecrets(entry)
 	return withLock(ctx, func() error {
 		s, err := readStore()
 		if err != nil {
@@ -331,6 +338,9 @@ func List(ctx context.Context, provider string) ([]Entry, error) {
 		out = append(out, s.Accounts[provider]...)
 		return nil
 	})
+	for _, entry := range out {
+		registerSecrets(entry)
+	}
 	return out, err
 }
 
@@ -371,6 +381,9 @@ func Active(ctx context.Context, provider string) (*Entry, error) {
 		out = findActive(s, provider)
 		return nil
 	})
+	if out != nil {
+		registerSecrets(*out)
+	}
 	return out, err
 }
 
