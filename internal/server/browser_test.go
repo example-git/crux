@@ -26,9 +26,9 @@ func TestBrowserConfinesPathsAndSkipsSymlinks(t *testing.T) {
 	require.NoError(t, os.Symlink(outside, filepath.Join(root, "escape")))
 
 	server := NewServer(nil, "tcp", "0.0.0.0:9090")
-	require.NoError(t, server.SetWorkspaceRoots([]string{root}))
 	canonicalRoot, err := filepath.EvalSymlinks(root)
 	require.NoError(t, err)
+	server.workspaceRoots = []string{canonicalRoot}
 	listing, err := server.browse(root)
 	require.NoError(t, err)
 	require.Equal(t, canonicalRoot, listing.Path)
@@ -105,7 +105,9 @@ func TestRemoteWorkspacePathsAreRejectedBeforeBackendAccess(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
 	server := NewServer(nil, "tcp", "0.0.0.0:9090")
-	require.NoError(t, server.SetWorkspaceRoots([]string{root}))
+	canonicalRoot, err := filepath.EvalSymlinks(root)
+	require.NoError(t, err)
+	server.workspaceRoots = []string{canonicalRoot}
 	controller := &controllerV1{backend: server.backend, server: server}
 	body := []byte(fmt.Sprintf(`{"path":%q,"data_dir":%q,"client_id":"00000000-0000-4000-8000-000000000001"}`, outside, filepath.Join(outside, ".crux")))
 	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/workspaces", bytes.NewReader(body))
