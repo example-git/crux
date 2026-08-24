@@ -7,11 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
 )
@@ -205,6 +205,13 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 	if slices.Contains(s.allowedTools, commandKey) || slices.Contains(s.allowedTools, opts.ToolName) {
 		return true, nil
 	}
+	if opts.Path != "" {
+		resolvedPath, err := fsext.CanonicalPath(opts.Path)
+		if err != nil {
+			return false, fmt.Errorf("failed to resolve permission path: %w", err)
+		}
+		opts.Path = resolvedPath
+	}
 	if s.isTrustedFileRequest(opts) {
 		return true, nil
 	}
@@ -328,42 +335,7 @@ func (s *permissionService) isTrustedFileRequest(opts CreatePermissionRequest) b
 }
 
 func pathWithin(root, candidate string) bool {
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return false
-	}
-	resolvedCandidate, err := resolvePath(candidate)
-	if err != nil {
-		return false
-	}
-	relative, err := filepath.Rel(resolvedRoot, resolvedCandidate)
-	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
-}
-
-func resolvePath(path string) (string, error) {
-	path, err := filepath.Abs(path)
-	if err != nil {
-		return "", err
-	}
-	var suffix []string
-	for {
-		resolved, resolveErr := filepath.EvalSymlinks(path)
-		if resolveErr == nil {
-			for i := len(suffix) - 1; i >= 0; i-- {
-				resolved = filepath.Join(resolved, suffix[i])
-			}
-			return resolved, nil
-		}
-		if !os.IsNotExist(resolveErr) {
-			return "", resolveErr
-		}
-		parent := filepath.Dir(path)
-		if parent == path {
-			return "", resolveErr
-		}
-		suffix = append(suffix, filepath.Base(path))
-		path = parent
-	}
+	return fsext.HasPrefix(candidate, root)
 }
 
 func NewPermissionService(workingDir string, skip bool, allowedTools []string, trustedPaths ...string) Service {

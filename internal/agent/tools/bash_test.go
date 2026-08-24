@@ -9,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	fantasy "github.com/example-git/crux/foundation"
-	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/shell"
@@ -215,9 +214,8 @@ func newBashToolForTest(workingDir string) fantasy.AgentTool {
 
 func newBashToolAndManagerForTest(workingDir string) (fantasy.AgentTool, *shell.BackgroundShellManager) {
 	permissions := &mockBashPermissionService{Broker: pubsub.NewBroker[permission.PermissionRequest]()}
-	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
 	manager := shell.NewBackgroundShellManager(workingDir)
-	return NewBashTool(manager, permissions, workingDir, attribution, "test-model"), manager
+	return NewBashTool(manager, permissions, workingDir), manager
 }
 
 func newBashToolWithRecordingPerms(workingDir string, allow bool) (fantasy.AgentTool, *recordingPermissionService) {
@@ -225,8 +223,7 @@ func newBashToolWithRecordingPerms(workingDir string, allow bool) (fantasy.Agent
 		Broker: pubsub.NewBroker[permission.PermissionRequest](),
 		allow:  allow,
 	}
-	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	return NewBashTool(shell.NewBackgroundShellManager(workingDir), perms, workingDir, attribution, "test-model"), perms
+	return NewBashTool(shell.NewBackgroundShellManager(workingDir), perms, workingDir), perms
 }
 
 func TestBashTool_ChainedCommandsRequirePermission(t *testing.T) {

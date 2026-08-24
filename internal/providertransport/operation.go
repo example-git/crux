@@ -164,7 +164,7 @@ func (o *Operation) ApplyHeaders(configured map[string]string, contextValues map
 	if o == nil {
 		return configured, nil
 	}
-	headers := make(http.Header, len(configured)+len(o.Headers))
+	headers := make(http.Header, len(configured))
 	for name, value := range configured {
 		headers.Set(name, value)
 	}

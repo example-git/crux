@@ -86,11 +86,6 @@ func NewWriteTool(
 				return fantasy.ToolResponse{}, fmt.Errorf("error checking file: %w", err)
 			}
 
-			dir := filepath.Dir(filePath)
-			if err = os.MkdirAll(dir, 0o755); err != nil {
-				return fantasy.ToolResponse{}, fmt.Errorf("error creating directory: %w", err)
-			}
-
 			oldContent := ""
 			if fileInfo != nil && !fileInfo.IsDir() {
 				oldBytes, readErr := os.ReadFile(filePath)
@@ -134,6 +129,9 @@ func NewWriteTool(
 				return resp, nil
 			}
 
+			if err = os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+				return fantasy.ToolResponse{}, fmt.Errorf("error creating directory: %w", err)
+			}
 			err = os.WriteFile(filePath, []byte(params.Content), 0o644)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error writing file: %w", err)

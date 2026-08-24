@@ -61,10 +61,17 @@ func TestScriptToolExecutesFixedPythonScript(t *testing.T) {
 
 	require.False(t, response.IsError)
 	require.Equal(t, 1, permissions.requestCount)
-	require.Contains(t, response.Content, `"args": ["--input", "sample.txt", "--preset", "fixed"]`)
-	resolvedWorkingDir, err := filepath.EvalSymlinks(workingDir)
+	var output struct {
+		Args []string `json:"args"`
+		CWD  string   `json:"cwd"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(response.Content), &output))
+	require.Equal(t, []string{"--input", "sample.txt", "--preset", "fixed"}, output.Args)
+	expectedDirectory, err := os.Stat(workingDir)
 	require.NoError(t, err)
-	require.Contains(t, response.Content, `"cwd": "`+resolvedWorkingDir+`"`)
+	actualDirectory, err := os.Stat(output.CWD)
+	require.NoError(t, err)
+	require.True(t, os.SameFile(expectedDirectory, actualDirectory))
 }
 
 func TestScriptToolDoesNotExecuteWhenPermissionDenied(t *testing.T) {

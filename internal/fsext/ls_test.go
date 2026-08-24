@@ -48,6 +48,20 @@ func TestListDirectory(t *testing.T) {
 	})
 }
 
+func TestListDirectoryDoesNotFollowSymlinks(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o600))
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Skip(err)
+	}
+
+	files, truncated, err := ListDirectory(root, nil, -1, -1)
+	require.NoError(t, err)
+	require.False(t, truncated)
+	require.Equal(t, []string{"escape"}, relPaths(t, files, root))
+}
+
 func relPaths(tb testing.TB, in []string, base string) []string {
 	tb.Helper()
 	out := make([]string, 0, len(in))

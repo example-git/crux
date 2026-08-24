@@ -59,5 +59,5 @@ func TestPresetSchemaIsStrictAndCurrent(t *testing.T) {
 	require.False(t, compiled.ValidateJSON(invalid).IsValid())
 
 	checkedIn := readRepoFile(t, "provider-preset-plugin.schema.json")
-	require.Equal(t, string(schemaData), string(checkedIn), "run `task schema` to update provider-preset-plugin.schema.json")
+	require.Equal(t, normalizeSchemaLineEndings(schemaData), normalizeSchemaLineEndings(checkedIn), "run `task schema` to update provider-preset-plugin.schema.json")
 }

@@ -4472,7 +4472,11 @@ func (m *UI) applyThemeForProvider(providerID string) {
 		return
 	}
 	m.themeKey = key
-	m.applyTheme(styles.ThemeForProvider(providerID))
+	theme := styles.ThemeForProvider(providerID)
+	if brand != nil {
+		styles.ApplyBrandAccents(&theme, brand.GradA, brand.GradB, brand.Accent)
+	}
+	m.applyTheme(theme)
 }
 
 // applyTheme replaces the active styles with the given theme, drops the

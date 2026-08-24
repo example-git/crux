@@ -16,6 +16,7 @@ import (
 	"github.com/example-git/crux/internal/imageattachment"
 	"github.com/example-git/crux/internal/lsp"
 	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/question"
 	"github.com/example-git/crux/internal/session"
@@ -131,6 +132,8 @@ func (w *countingWorkspace) WorkingDir() string { return "" }
 func (w *countingWorkspace) LSPStart(context.Context, string) {}
 
 func (w *countingWorkspace) Config() *config.Config { return nil }
+
+func (w *countingWorkspace) ProviderSurfaces() []providerregistry.Surface { return nil }
 
 func (w *countingWorkspace) SetSessionMode(_ context.Context, sessionID string, mode session.Mode) (session.Session, error) {
 	w.modeCalls++

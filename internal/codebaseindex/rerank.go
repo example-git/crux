@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 	"unicode"
+
+	"github.com/example-git/crux/internal/fsext"
 )
 
 type SearchRole string
@@ -402,7 +404,7 @@ func projectExcerpt(projectRoot, relativePath string, startLine, endLine int) (s
 		return "", false
 	}
 	path := filepath.Clean(filepath.Join(root, filepath.FromSlash(relativePath)))
-	if path != root && !strings.HasPrefix(path, root+string(filepath.Separator)) {
+	if path != root && (!strings.HasPrefix(path, root+string(filepath.Separator)) || !fsext.HasPrefix(path, root)) {
 		return "", false
 	}
 	content, err := os.ReadFile(path)
@@ -426,7 +428,7 @@ func enrichSearchResult(projectRoot string, result SearchResult) (SearchResult, 
 	}
 	path := filepath.Join(root, filepath.FromSlash(result.Chunk.Path))
 	cleanPath := filepath.Clean(path)
-	if cleanPath != root && !strings.HasPrefix(cleanPath, root+string(filepath.Separator)) {
+	if cleanPath != root && (!strings.HasPrefix(cleanPath, root+string(filepath.Separator)) || !fsext.HasPrefix(cleanPath, root)) {
 		return result, "", result.Chunk.Content
 	}
 	content, err := os.ReadFile(cleanPath)

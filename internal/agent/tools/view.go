@@ -19,6 +19,7 @@ import (
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/filepathext"
 	"github.com/example-git/crux/internal/filetracker"
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/imageattachment"
 	"github.com/example-git/crux/internal/lsp"
 	"github.com/example-git/crux/internal/permission"
@@ -125,8 +126,7 @@ func NewViewTool(
 				return fantasy.ToolResponse{}, fmt.Errorf("error resolving file path: %w", err)
 			}
 
-			relPath, err := filepath.Rel(absWorkingDir, absFilePath)
-			isOutsideWorkDir := err != nil || strings.HasPrefix(relPath, "..")
+			isOutsideWorkDir := !fsext.HasPrefix(absFilePath, absWorkingDir)
 			isSkillFile := isInSkillsPath(absFilePath, skillsPaths)
 
 			sessionID := GetSessionFromContext(ctx)

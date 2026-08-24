@@ -115,6 +115,16 @@ func SetupTraffic() error {
 	return networkSetupErr
 }
 
+func trafficDatabaseFileURL(path string) string {
+	normalized := filepath.ToSlash(path)
+	if len(normalized) >= 3 && normalized[1] == ':' && (normalized[2] == '/' || normalized[2] == '\\') {
+		normalized = "/" + strings.ReplaceAll(normalized, "\\", "/")
+	} else if strings.HasPrefix(normalized, `\\`) {
+		normalized = strings.ReplaceAll(normalized, "\\", "/")
+	}
+	return (&url.URL{Scheme: "file", Path: normalized}).String()
+}
+
 func openTrafficDatabase(path string, readOnly bool) (*sql.DB, error) {
 	if !readOnly {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -125,7 +135,7 @@ func openTrafficDatabase(path string, readOnly bool) (*sql.DB, error) {
 	if readOnly {
 		mode = "ro"
 	}
-	fileURL := (&url.URL{Scheme: "file", Path: path}).String()
+	fileURL := trafficDatabaseFileURL(path)
 	dsn := fileURL + "?mode=" + mode + "&_pragma=busy_timeout(5000)"
 	if !readOnly {
 		dsn += "&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(ON)&_pragma=journal_size_limit(10485760)&_pragma=wal_autocheckpoint(1000)"

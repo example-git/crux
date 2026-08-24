@@ -228,15 +228,48 @@ func PathOrPrefix(path, prefix string) string {
 	return path
 }
 
-// HasPrefix checks if the given path starts with the specified prefix.
-// Uses filepath.Rel to determine if path is within prefix.
+// HasPrefix checks whether path resolves within prefix.
 func HasPrefix(path, prefix string) bool {
-	rel, err := filepath.Rel(prefix, path)
+	absolutePrefix, err := filepath.Abs(prefix)
 	if err != nil {
 		return false
 	}
-	// If path is within prefix, Rel will not return a path starting with ".."
-	return !strings.HasPrefix(rel, "..")
+	resolvedPrefix, err := filepath.EvalSymlinks(absolutePrefix)
+	if err != nil {
+		return false
+	}
+	resolvedPath, err := CanonicalPath(path)
+	if err != nil {
+		return false
+	}
+	relative, err := filepath.Rel(resolvedPrefix, resolvedPath)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func CanonicalPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	var suffix []string
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(absolute)
+		if resolveErr == nil {
+			for index := len(suffix) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, suffix[index])
+			}
+			return resolved, nil
+		}
+		if !os.IsNotExist(resolveErr) {
+			return "", resolveErr
+		}
+		parent := filepath.Dir(absolute)
+		if parent == absolute {
+			return "", resolveErr
+		}
+		suffix = append(suffix, filepath.Base(absolute))
+		absolute = parent
+	}
 }
 
 // ToUnixLineEndings converts Windows line endings (CRLF) to Unix line endings (LF).

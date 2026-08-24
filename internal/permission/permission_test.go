@@ -119,6 +119,37 @@ func TestPermissionServiceTrustedPathsAreContainedAndToolScoped(t *testing.T) {
 	}))
 }
 
+func TestPermissionServiceRequestsResolvedSymlinkTarget(t *testing.T) {
+	workingDir := t.TempDir()
+	outside := t.TempDir()
+	target := filepath.Join(outside, "secret.txt")
+	require.NoError(t, os.WriteFile(target, []byte("secret"), 0o600))
+	link := filepath.Join(workingDir, "secret.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	service := NewPermissionService(workingDir, false, nil)
+	events := service.Subscribe(t.Context())
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.Request(t.Context(), CreatePermissionRequest{
+			SessionID: "session",
+			ToolName:  "view",
+			Action:    "read",
+			Path:      link,
+		})
+		result <- err
+	}()
+
+	event := <-events
+	resolvedOutside, err := filepath.EvalSymlinks(outside)
+	require.NoError(t, err)
+	require.Equal(t, resolvedOutside, event.Payload.Path)
+	service.Deny(event.Payload)
+	require.NoError(t, <-result)
+}
+
 func TestSkipRace(t *testing.T) {
 	svc := NewPermissionService("/tmp", false, nil)
 	var wg sync.WaitGroup

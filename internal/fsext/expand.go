@@ -21,9 +21,7 @@ func Expand(s string) (string, error) {
 		return "", err
 	}
 	cfg := &expand.Config{
-		Env:      expand.FuncEnviron(os.Getenv),
-		ReadDir2: os.ReadDir,
-		GlobStar: true,
+		Env: expand.FuncEnviron(os.Getenv),
 	}
 	return expand.Literal(cfg, word)
 }

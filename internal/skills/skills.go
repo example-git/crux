@@ -219,6 +219,10 @@ func Discover(paths []string) []*Skill {
 // returns a per-file state slice describing parse/validation outcomes. Useful
 // for diagnostics and UI reporting.
 func DiscoverWithStates(paths []string) ([]*Skill, []*SkillState) {
+	return discoverWithStates(paths, true)
+}
+
+func discoverWithStates(paths []string, followSymlinks bool) ([]*Skill, []*SkillState) {
 	var skills []*Skill
 	var states []*SkillState
 	var mu sync.Mutex
@@ -235,12 +239,8 @@ func DiscoverWithStates(paths []string) ([]*Skill, []*SkillState) {
 	}
 
 	for _, base := range paths {
-		// We use fastwalk with Follow: true instead of filepath.WalkDir because
-		// WalkDir doesn't follow symlinked directories at any depth—only entry
-		// points. This ensures skills in symlinked subdirectories are discovered.
-		// fastwalk is concurrent, so we protect shared state (seen, skills) with mu.
 		conf := fastwalk.Config{
-			Follow:  true,
+			Follow:  followSymlinks,
 			ToSlash: fastwalk.DefaultToSlash(),
 		}
 		err := fastwalk.Walk(&conf, base, func(path string, d os.DirEntry, err error) error {

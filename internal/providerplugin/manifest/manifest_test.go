@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -118,7 +119,7 @@ func TestCheckedInSchemaIsCurrent(t *testing.T) {
 	generated, err := SchemaJSON()
 	require.NoError(t, err)
 	checkedIn := readRepoFile(t, "provider-plugin.schema.json")
-	require.Equal(t, string(generated), string(checkedIn), "run `task schema` to update provider-plugin.schema.json")
+	require.Equal(t, normalizeSchemaLineEndings(generated), normalizeSchemaLineEndings(checkedIn), "run `task schema` to update provider-plugin.schema.json")
 }
 
 func TestDecodeStrictRejectsUnknownAndTrailingData(t *testing.T) {
@@ -303,6 +304,10 @@ func TestSafeBundlePathBoundaries(t *testing.T) {
 	} {
 		require.False(t, safeBundlePath(value), value)
 	}
+}
+
+func normalizeSchemaLineEndings(data []byte) string {
+	return string(bytes.ReplaceAll(data, []byte("\r\n"), []byte("\n")))
 }
 
 func readRepoFile(t *testing.T, parts ...string) []byte {

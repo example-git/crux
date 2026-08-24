@@ -9,6 +9,8 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/example-git/crux/internal/clipboard"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/ui/brand"
 	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/example-git/crux/internal/ui/util"
 	"github.com/example-git/crux/internal/workspace"
@@ -32,7 +34,15 @@ func (c *Common) Config() *config.Config {
 // workspace has a large model selected, the theme is chosen based on its
 // provider; otherwise the default theme is used.
 func DefaultCommon(ws workspace.Workspace) *Common {
-	s := styles.ThemeForProvider(largeModelProviderID(ws))
+	providerID := largeModelProviderID(ws)
+	s := styles.ThemeForProvider(providerID)
+	if ws != nil {
+		if surface, ok := providerregistry.LookupSurface(ws.ProviderSurfaces(), providerID); ok {
+			if providerBrand := brand.FromSurface(surface); providerBrand != nil {
+				styles.ApplyBrandAccents(&s, providerBrand.GradA, providerBrand.GradB, providerBrand.Accent)
+			}
+		}
+	}
 	return &Common{
 		Workspace: ws,
 		Styles:    &s,

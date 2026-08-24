@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -838,7 +839,8 @@ func (s *ConfigStore) withRefreshLock(providerID string, fn func() error) error 
 func (s *ConfigStore) refreshLockPath(providerID string) string {
 	dir := filepath.Join(filepath.Dir(s.globalDataPath), "locks")
 	_ = os.MkdirAll(dir, 0o755)
-	return filepath.Join(dir, fmt.Sprintf("%s.refresh.lock", providerID))
+	digest := sha256.Sum256([]byte(providerID))
+	return filepath.Join(dir, fmt.Sprintf("%x.refresh.lock", digest))
 }
 
 // applyToken updates the in-memory provider config with the given token.

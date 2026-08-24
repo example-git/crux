@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -94,8 +95,8 @@ func TestAgentDefinitionDiscoveryDefersDuplicateNameError(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, definitions, 1)
 	require.ErrorContains(t, definitions[0].ValidationErr, "duplicate user agent definition")
-	require.ErrorContains(t, definitions[0].ValidationErr, filepath.Join(dir, "a.md"))
-	require.ErrorContains(t, definitions[0].ValidationErr, filepath.Join(dir, "b.md"))
+	require.ErrorContains(t, definitions[0].ValidationErr, fmt.Sprintf("%q", filepath.Join(dir, "a.md")))
+	require.ErrorContains(t, definitions[0].ValidationErr, fmt.Sprintf("%q", filepath.Join(dir, "b.md")))
 }
 
 func TestAgentDefinitionDiscoveryDefersMalformedDefinitionError(t *testing.T) {
@@ -231,7 +232,9 @@ func TestCreateAgentDefinition(t *testing.T) {
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 	content, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Contains(t, string(content), "name: reviewer")
@@ -365,7 +368,7 @@ func TestAgentDefinitionParserRejectsInvalidDefinitions(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "definition.md")
 			require.NoError(t, os.WriteFile(path, []byte(test.content), 0o600))
 			_, err := parseAgentDefinition(path, agentDefinitionSourceUser, cfg)
-			require.ErrorContains(t, err, path)
+			require.ErrorContains(t, err, fmt.Sprintf("%q", path))
 			require.ErrorContains(t, err, test.errorText)
 		})
 	}

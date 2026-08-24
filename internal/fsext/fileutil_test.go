@@ -10,6 +10,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestHasPrefixResolvesSymlinks(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "escape")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skip(err)
+	}
+
+	require.False(t, HasPrefix(filepath.Join(link, "secret.txt"), root))
+	require.True(t, HasPrefix(filepath.Join(root, "missing", "file.txt"), root))
+}
+
 func TestGlobWithDoubleStar(t *testing.T) {
 	t.Run("finds files matching pattern", func(t *testing.T) {
 		testDir := t.TempDir()

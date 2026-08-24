@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/semanticembedding"
 	"github.com/klauspost/compress/zstd"
@@ -685,6 +686,9 @@ func nativeIndexExtension(path string) bool {
 
 func readNativeProjectFile(projectRoot string, file nativeProjectFile) (string, error) {
 	path := filepath.Join(projectRoot, filepath.FromSlash(file.Path))
+	if !fsext.HasPrefix(path, projectRoot) {
+		return "", nil
+	}
 	value, err := os.Open(path)
 	if err != nil {
 		return "", err

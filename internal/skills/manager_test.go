@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -175,6 +176,38 @@ func TestDiscoverFromConfig(t *testing.T) {
 		}
 	}
 	require.True(t, foundCustom, "states slice should include the custom skill")
+}
+
+func TestDiscoverFromConfig_ProjectSkillSymlinkDoesNotEscapeWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires special privileges on Windows")
+	}
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	projectSkills := filepath.Join(workingDir, ".agents", "skills")
+	require.NoError(t, os.MkdirAll(projectSkills, 0o755))
+
+	externalSkill := filepath.Join(t.TempDir(), "external-skill")
+	require.NoError(t, os.MkdirAll(externalSkill, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(externalSkill, SkillFileName),
+		[]byte("---\nname: external-skill\ndescription: Must stay outside.\n---\nDo not load.\n"),
+		0o644,
+	))
+	require.NoError(t, os.Symlink(externalSkill, filepath.Join(projectSkills, "external-skill")))
+
+	allSkills, _, states := DiscoverFromConfig(DiscoveryConfig{
+		SkillsPaths: []string{projectSkills},
+		WorkingDir:  workingDir,
+	})
+
+	for _, skill := range allSkills {
+		require.NotEqual(t, "external-skill", skill.Name)
+	}
+	for _, state := range states {
+		require.NotEqual(t, "external-skill", state.Name)
+	}
 }
 
 func TestDiscoverFromConfig_DisabledFiltered(t *testing.T) {

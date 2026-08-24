@@ -28,8 +28,10 @@ func TestRandomExitMessageUsesSarcasticMessageSet(t *testing.T) {
 	t.Parallel()
 
 	require.NotEmpty(t, exitMessages)
+	styledMessages := make([]string, 0, len(exitMessages))
 	for _, message := range exitMessages {
 		require.NotEmpty(t, message)
+		styledMessages = append(styledMessages, styleExitMessage(message))
 	}
-	require.Contains(t, exitMessages, randomExitMessage())
+	require.Contains(t, styledMessages, randomExitMessage())
 }
