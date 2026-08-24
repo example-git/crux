@@ -11,9 +11,65 @@ import (
 
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestApplyEphemeralProviderStateDoesNotWriteCredentials(t *testing.T) {
+	root := t.TempDir()
+	providers := csync.NewMap[string, ProviderConfig]()
+	cfg := &Config{Providers: providers}
+	cfg.setDefaults(root, filepath.Join(root, "state"))
+	store := NewTestStore(cfg)
+	store.workingDir = root
+
+	forwardedProvider := ProviderConfig{ID: "remote", APIKey: "provider-secret"}
+	forwardedAccount := accounts.Entry{ID: "account", AccessToken: "account-secret", Raw: []byte(`{"account_id":"forwarded"}`)}
+	require.NoError(t, store.ApplyEphemeralProviderState(
+		map[string]ProviderConfig{"remote": forwardedProvider},
+		map[string]accounts.Entry{"codex": forwardedAccount},
+	))
+
+	actualProvider, ok := store.Config().Providers.Get("remote")
+	require.True(t, ok)
+	require.Equal(t, "provider-secret", actualProvider.APIKey)
+	actualAccount, ok := store.EphemeralAccount("codex")
+	require.True(t, ok)
+	require.Equal(t, "account-secret", actualAccount.AccessToken)
+	actualAccount.Raw[0] = 'x'
+	unchangedAccount, ok := store.EphemeralAccount("codex")
+	require.True(t, ok)
+	require.JSONEq(t, `{"account_id":"forwarded"}`, string(unchangedAccount.Raw))
+
+	_, err := os.Stat(filepath.Join(root, "state", "crux.json"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestEphemeralOAuthRefreshSurvivesConfigurationReload(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CRUX_GLOBAL_CONFIG", root)
+	t.Setenv("CRUX_GLOBAL_DATA", root)
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+	configPath := filepath.Join(root, "crux.json")
+	require.NoError(t, os.WriteFile(configPath, []byte(`{"providers":{"remote":{"type":"openai-compat","base_url":"https://example.invalid/v1","api_key":"disk","models":[{"id":"model","name":"Model"}]}}}`), 0o600))
+	store, err := Load(root, root, false)
+	require.NoError(t, err)
+	store.globalDataPath = configPath
+
+	oldToken := &oauth.Token{AccessToken: "old-access", RefreshToken: "old-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	forwarded := ProviderConfig{ID: "remote", Type: "openai-compat", BaseURL: "https://example.invalid/v1", APIKey: oldToken.AccessToken, OAuthToken: oldToken}
+	require.NoError(t, store.ApplyEphemeralProviderState(map[string]ProviderConfig{"remote": forwarded}, nil))
+	newToken := &oauth.Token{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(2 * time.Hour).Unix()}
+	store.applyEphemeralToken(forwarded, newToken, "remote", "")
+
+	require.NoError(t, store.ReloadFromDisk(context.Background()))
+	actual, ok := store.Config().Providers.Get("remote")
+	require.True(t, ok)
+	require.Equal(t, "new-access", actual.APIKey)
+	require.Equal(t, "new-refresh", actual.OAuthToken.RefreshToken)
+}
 
 func TestConfigStore_ConfigPath_GlobalAlwaysWorks(t *testing.T) {
 	t.Parallel()

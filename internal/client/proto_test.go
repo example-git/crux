@@ -10,11 +10,61 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/config"
+	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBrowseAndCloseIdleWorkspace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/browser":
+			require.Equal(t, "/srv/project", request.URL.Query().Get("path"))
+			jsonEncodeTest(t, writer, proto.BrowserListing{Path: "/srv/project"})
+		case request.Method == http.MethodDelete && request.URL.Path == "/v1/workspaces/workspace/idle":
+			writer.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	client := captureClient(t, server)
+	listing, err := client.Browse(t.Context(), "/srv/project")
+	require.NoError(t, err)
+	require.Equal(t, "/srv/project", listing.Path)
+	require.NoError(t, client.CloseIdleWorkspace(t.Context(), "workspace"))
+}
+
+func jsonEncodeTest(t *testing.T, writer http.ResponseWriter, value any) {
+	t.Helper()
+	writer.Header().Set("Content-Type", "application/json")
+	require.NoError(t, json.NewEncoder(writer).Encode(value))
+}
+
+func TestCreateWorkspaceMarksForwardedProviderStateAsEphemeral(t *testing.T) {
+	var received proto.Workspace
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		require.Equal(t, "1", request.Header.Get(cruxlog.EphemeralStateHeader))
+		require.NoError(t, json.NewDecoder(request.Body).Decode(&received))
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"id":"workspace"}`))
+	}))
+	defer server.Close()
+	client := captureClient(t, server)
+
+	created, err := client.CreateWorkspace(t.Context(), proto.Workspace{
+		ForwardedProviders: map[string]config.ProviderConfig{"remote": {ID: "remote", APIKey: "secret"}},
+		ForwardedAccounts:  map[string]accounts.Entry{"codex": {ID: "account", AccessToken: "token"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "workspace", created.ID)
+	require.Equal(t, "secret", received.ForwardedProviders["remote"].APIKey)
+	require.Equal(t, "token", received.ForwardedAccounts["codex"].AccessToken)
+}
 
 func TestSendEventAfterContextCancelIsIdempotent(t *testing.T) {
 	t.Parallel()

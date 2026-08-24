@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -408,6 +410,45 @@ func TestConcurrentAttachDetach(t *testing.T) {
 	require.Contains(t, ws.clients, cid)
 }
 
+func TestCreateWorkspaceAppliesForwardedStateWithoutReturningOrPersistingIt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	cwd := t.TempDir()
+	dataDir := t.TempDir()
+	b := New(context.Background(), nil, func() {})
+	b.SetCreateGrace(2 * time.Second)
+	t.Cleanup(func() { drainBackend(t, b) })
+	request := protoWS(cwd, dataDir, uuid.New().String())
+	request.ForwardedProviders = map[string]config.ProviderConfig{
+		"remote": {ID: "remote", Type: "openai-compat", APIKey: "provider-secret"},
+	}
+	request.ForwardedAccounts = map[string]accounts.Entry{
+		"codex": {ID: "account", AccessToken: "account-secret"},
+	}
+
+	workspace, response, err := b.CreateWorkspace(request)
+	require.NoError(t, err)
+	provider, ok := workspace.Cfg.Config().Providers.Get("remote")
+	require.True(t, ok)
+	require.Equal(t, "provider-secret", provider.APIKey)
+	account, ok := workspace.Cfg.EphemeralAccount("codex")
+	require.True(t, ok)
+	require.Equal(t, "account-secret", account.AccessToken)
+	require.Empty(t, response.ForwardedProviders)
+	require.Empty(t, response.ForwardedAccounts)
+
+	configBytes, readErr := os.ReadFile(filepath.Join(dataDir, "crux.json"))
+	if readErr == nil {
+		require.NotContains(t, string(configBytes), "provider-secret")
+		require.NotContains(t, string(configBytes), "account-secret")
+	} else {
+		require.ErrorIs(t, readErr, os.ErrNotExist)
+	}
+}
+
 // TestPathDedupe_FullCreate exercises CreateWorkspace end-to-end
 // (config init, real app.App). Two CreateWorkspace calls at the same
 // path return the same workspace ID and share the clients map.
@@ -646,6 +687,7 @@ func TestCreateWorkspaceForResponseStartsGraceAfterCompletion(t *testing.T) {
 	ws, _, complete, err := b.CreateWorkspaceForResponse(protoWS(t.TempDir(), t.TempDir(), clientID))
 	require.NoError(t, err)
 	require.NotNil(t, complete)
+	require.ErrorIs(t, b.CloseIdleWorkspace(ws.ID), ErrWorkspaceInUse)
 
 	time.Sleep(60 * time.Millisecond)
 	_, err = b.GetWorkspace(ws.ID)

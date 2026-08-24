@@ -8,6 +8,7 @@ import (
 	"charm.land/catwalk/pkg/catwalk"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/lsp"
+	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
 )
 
@@ -18,15 +19,16 @@ type ProviderSurface = providerregistry.Surface
 // Workspace represents a running app.App workspace with its associated
 // resources and state.
 type Workspace struct {
-	ID       string         `json:"id"`
-	Path     string         `json:"path"`
-	YOLO     bool           `json:"yolo,omitempty"`
-	Debug    bool           `json:"debug,omitempty"`
-	DataDir  string         `json:"data_dir,omitempty"`
-	Version  string         `json:"version,omitempty"`
-	ClientID string         `json:"client_id,omitempty"`
-	Config   *config.Config `json:"config,omitempty"`
-	Env      []string       `json:"env,omitempty"`
+	ID               string         `json:"id"`
+	Path             string         `json:"path"`
+	YOLO             bool           `json:"yolo,omitempty"`
+	Debug            bool           `json:"debug,omitempty"`
+	DataDir          string         `json:"data_dir,omitempty"`
+	Version          string         `json:"version,omitempty"`
+	ClientID         string         `json:"client_id,omitempty"`
+	ConnectedClients int            `json:"connected_clients,omitempty"`
+	Config           *config.Config `json:"config,omitempty"`
+	Env              []string       `json:"env,omitempty"`
 	// Channels lists the MCP servers opted in as channels for this workspace
 	// (from the --channels flag).
 	Channels []string `json:"channels,omitempty"`
@@ -36,7 +38,24 @@ type Workspace struct {
 	Skills []SkillState `json:"skills,omitempty"`
 	// ProviderSurfaces is the execution host's redacted registry-generated
 	// provider presentation metadata.
-	ProviderSurfaces []ProviderSurface `json:"provider_surfaces,omitempty"`
+	ProviderSurfaces      []ProviderSurface                `json:"provider_surfaces,omitempty"`
+	ForwardedProviders    map[string]config.ProviderConfig `json:"forwarded_providers,omitempty"`
+	ForwardedAccounts     map[string]accounts.Entry        `json:"forwarded_accounts,omitempty"`
+	AllowedWorkspaceRoots []string                         `json:"-"`
+}
+
+type BrowserListing struct {
+	Roots     []string       `json:"roots"`
+	Path      string         `json:"path"`
+	Parent    string         `json:"parent,omitempty"`
+	Entries   []BrowserEntry `json:"entries"`
+	Truncated bool           `json:"truncated,omitempty"`
+}
+
+type BrowserEntry struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	Directory bool   `json:"directory"`
 }
 
 // Error represents an error response.

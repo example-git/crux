@@ -19,6 +19,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/projects"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerplugin"
@@ -39,6 +40,7 @@ var (
 	ErrInvalidClientID         = errors.New("invalid client_id")
 	ErrClientNotAttached       = errors.New("client not attached")
 	ErrWorkspaceClosing        = errors.New("workspace closing")
+	ErrWorkspaceInUse          = errors.New("workspace has connected clients")
 	ErrServerShuttingDown      = errors.New("server is shutting down")
 	ErrServerNotIdle           = errors.New("server is hosting live workspaces")
 	ErrClientRetired           = errors.New("client has been retired")
@@ -117,7 +119,8 @@ type Backend struct {
 	// to run unlocked; CreateWorkspace refuses once it is set. That
 	// makes the shutdown-vs-create decision atomic: a create can never
 	// be handed a workspace on a process that is already leaving.
-	closing bool
+	closing    bool
+	persistent bool
 	// retired holds the IDs of clients that announced their exit via
 	// RetireClient. Creates from a retired client are refused, which is what
 	// lets a client release a workspace whose ID it never learned.
@@ -351,6 +354,15 @@ func (b *Backend) SetIdleShutdownDelay(d time.Duration) {
 	b.lingerDelay = d
 }
 
+func (b *Backend) SetPersistent(persistent bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.persistent = persistent
+	if persistent {
+		b.cancelShutdownLocked()
+	}
+}
+
 // GetWorkspace retrieves a workspace by ID.
 func (b *Backend) GetWorkspace(id string) (*Workspace, error) {
 	ws, ok := b.workspaces.Get(id)
@@ -450,6 +462,19 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 	if err != nil {
 		return nil, proto.Workspace{}, fmt.Errorf("failed to resolve workspace path: %w", err)
 	}
+	if len(args.AllowedWorkspaceRoots) > 0 {
+		if !withinWorkspaceRoots(key, args.AllowedWorkspaceRoots) {
+			return nil, proto.Workspace{}, fmt.Errorf("workspace path escaped configured roots: %s", args.Path)
+		}
+		args.Path = key
+		if args.DataDir != "" {
+			resolvedDataDir, resolveErr := fsext.CanonicalPath(args.DataDir)
+			if resolveErr != nil || !withinWorkspaceRoots(resolvedDataDir, args.AllowedWorkspaceRoots) {
+				return nil, proto.Workspace{}, fmt.Errorf("data directory escaped configured roots: %s", args.DataDir)
+			}
+			args.DataDir = resolvedDataDir
+		}
+	}
 
 	b.mu.Lock()
 	if err := b.admitLocked(clientID); err != nil {
@@ -511,6 +536,9 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 		return nil, proto.Workspace{}, fmt.Errorf("failed to initialize config: %w", err)
 	}
 
+	if err := cfg.ApplyEphemeralProviderState(args.ForwardedProviders, args.ForwardedAccounts); err != nil {
+		return nil, proto.Workspace{}, fmt.Errorf("failed to apply forwarded provider state: %w", err)
+	}
 	cfg.Overrides().SkipPermissionRequests = args.YOLO
 	cfg.Overrides().EnabledChannels = args.Channels
 
@@ -964,7 +992,7 @@ func (b *Backend) teardown(ws *Workspace) {
 // Returning true also latches [Backend.closing], since the caller has to
 // release b.mu before it can run shutdownFn.
 func (b *Backend) scheduleShutdownIfIdleLocked() (shutdownNow bool) {
-	if b.shutdownFn == nil {
+	if b.persistent || b.shutdownFn == nil {
 		return false
 	}
 	if b.workspaces.Len() != 0 || b.pending != 0 {
@@ -999,7 +1027,7 @@ func (b *Backend) cancelShutdownLocked() {
 func (b *Backend) maybeShutdown() {
 	b.mu.Lock()
 	b.shutdownTimer = nil
-	idle := b.workspaces.Len() == 0 && b.pending == 0
+	idle := !b.persistent && b.workspaces.Len() == 0 && b.pending == 0
 	if idle {
 		b.closing = true
 	}
@@ -1017,6 +1045,33 @@ func (b *Backend) maybeShutdown() {
 // workspace open until their own deferred DetachClient runs.
 func (b *Backend) DeleteWorkspace(id, clientID string) error {
 	return b.releaseHold(id, clientID)
+}
+
+func (b *Backend) CloseIdleWorkspace(id string) error {
+	b.mu.Lock()
+	ws, ok := b.workspaces.Get(id)
+	if !ok {
+		b.mu.Unlock()
+		return ErrWorkspaceNotFound
+	}
+	ws.clientsMu.Lock()
+	if len(ws.clients) > 0 {
+		ws.clientsMu.Unlock()
+		b.mu.Unlock()
+		return ErrWorkspaceInUse
+	}
+	ws.clientsMu.Unlock()
+	if existing, indexed := b.pathIndex[ws.resolvedPath]; indexed && existing == ws.ID {
+		delete(b.pathIndex, ws.resolvedPath)
+	}
+	b.workspaces.Del(ws.ID)
+	shutdownNow := b.scheduleShutdownIfIdleLocked()
+	b.mu.Unlock()
+	ws.invokeShutdown()
+	if shutdownNow && b.shutdownFn != nil {
+		b.shutdownFn()
+	}
+	return nil
 }
 
 // SetCurrentSession records which session the given client is
@@ -1070,6 +1125,18 @@ func (b *Backend) AttachedClients(workspaceID, sessionID string) (int, error) {
 // least one live SSE stream. Hold-only clients (streams == 0) do not
 // contribute. Acquires the workspace's [clientsMu] briefly; the
 // returned count is a point-in-time snapshot.
+func (w *Workspace) ConnectedClients() int {
+	w.clientsMu.Lock()
+	defer w.clientsMu.Unlock()
+	connected := 0
+	for _, client := range w.clients {
+		if client.streams > 0 {
+			connected++
+		}
+	}
+	return connected
+}
+
 func (w *Workspace) AttachedClientsForSession(sessionID string) int {
 	w.clientsMu.Lock()
 	defer w.clientsMu.Unlock()
@@ -1152,6 +1219,15 @@ func (b *Backend) ShutdownIfIdle() bool {
 // for use as a dedup key. It applies filepath.Abs, then attempts
 // filepath.EvalSymlinks; because EvalSymlinks errors on non-existent
 // paths, it falls back to the cleaned absolute path in that case.
+func withinWorkspaceRoots(path string, roots []string) bool {
+	for _, root := range roots {
+		if fsext.HasPrefix(path, root) {
+			return true
+		}
+	}
+	return false
+}
+
 func resolveWorkspaceKey(path string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -1180,6 +1256,7 @@ func workspaceToProto(ws *Workspace) proto.Workspace {
 	out := proto.Workspace{
 		ID:               ws.ID,
 		Path:             ws.Path,
+		ConnectedClients: ws.ConnectedClients(),
 		YOLO:             ws.Cfg.Overrides().SkipPermissionRequests,
 		Channels:         ws.Cfg.Overrides().EnabledChannels,
 		DataDir:          cfg.Options.DataDirectory,
