@@ -50,7 +50,7 @@ func openWorkspaceDirectory(root, path string) (*os.File, error) {
 			directory.Close()
 			return nil, openErr
 		}
-		next := os.NewFile(uintptr(nextFD), filepath.Join(directory.Name(), component))
+		next := os.NewFile(uintptr(nextFD), "workspace-directory")
 		if closeErr := directory.Close(); closeErr != nil {
 			next.Close()
 			return nil, closeErr
