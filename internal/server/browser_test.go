@@ -49,6 +49,20 @@ func TestBrowserConfinesPathsAndSkipsSymlinks(t *testing.T) {
 	require.ErrorContains(t, err, "not a directory")
 }
 
+func TestBrowserUsesMostSpecificWorkspaceRoot(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	require.NoError(t, os.Mkdir(root, 0o700))
+	server := NewServer(nil, "tcp", "0.0.0.0:9090")
+	require.NoError(t, server.SetWorkspaceRoots([]string{parent, root}))
+
+	listing, err := server.browse(root)
+	require.NoError(t, err)
+	require.Empty(t, listing.Parent)
+}
+
 func TestOpenedWorkspaceDirectoryIsRejectedAfterPathSwap(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires additional privileges on Windows")

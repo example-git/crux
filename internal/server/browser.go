@@ -28,9 +28,8 @@ func (s *Server) allowedWorkspacePath(path string, requireDirectory bool) (strin
 	}
 	var root string
 	for _, candidate := range s.workspaceRoots {
-		if fsext.HasPrefix(canonical, candidate) {
+		if fsext.HasPrefix(canonical, candidate) && len(candidate) > len(root) {
 			root = candidate
-			break
 		}
 	}
 	if root == "" {
