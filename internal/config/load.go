@@ -593,24 +593,6 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 		c.Options.DisableDefaultProviders, _ = strconv.ParseBool(str)
 	}
 
-	if c.Options.Attribution == nil {
-		c.Options.Attribution = &Attribution{
-			TrailerStyle:  TrailerStyleAssistedBy,
-			GeneratedWith: true,
-		}
-	} else if c.Options.Attribution.TrailerStyle == "" {
-		// Migrate deprecated co_authored_by or apply default
-		if c.Options.Attribution.CoAuthoredBy != nil {
-			if *c.Options.Attribution.CoAuthoredBy {
-				c.Options.Attribution.TrailerStyle = TrailerStyleCoAuthoredBy
-			} else {
-				c.Options.Attribution.TrailerStyle = TrailerStyleNone
-			}
-		} else {
-			c.Options.Attribution.TrailerStyle = TrailerStyleAssistedBy
-		}
-	}
-
 	// /init and the startup initialization flow target the per-project
 	// ai-cli instructions file: it is the primary context injection source
 	// in this fork, while AGENTS.md is only a fallback read.

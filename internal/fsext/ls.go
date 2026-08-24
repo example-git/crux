@@ -275,7 +275,7 @@ func ListDirectory(initialPath string, ignorePatterns []string, depth, limit int
 	slog.Debug("Listing directory", "path", initialPath, "depth", depth, "limit", limit, "ignorePatterns", ignorePatterns)
 
 	conf := fastwalk.Config{
-		Follow:   true,
+		Follow:   false,
 		ToSlash:  fastwalk.DefaultToSlash(),
 		Sort:     fastwalk.SortDirsFirst,
 		MaxDepth: depth,

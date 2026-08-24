@@ -70,38 +70,6 @@ func handleOption(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		val = args[2]
 	}
 
-	if key == "attribution-trailer-style" {
-		if val == "" {
-			return usage(stderr, "option: attribution-trailer-style requires a value")
-		}
-		switch val {
-		case "none", "co-authored-by", "assisted-by":
-		default:
-			return usage(stderr, fmt.Sprintf("option: attribution-trailer-style expects none, co-authored-by, or assisted-by, got %q", val))
-		}
-		attribution := childMap(o, "attribution")
-		if _, ok := attribution["generated_with"]; !ok {
-			attribution["generated_with"] = true
-		}
-		attribution["trailer_style"] = val
-		slog.Info("Option set in shell config", "key", key, "value", val)
-		return nil
-	}
-
-	if key == "attribution-generated-with" {
-		bv := true
-		if val != "" {
-			parsed, err := parseBool(val)
-			if err != nil {
-				return usage(stderr, fmt.Sprintf("option: attribution-generated-with expects true/false, got %q", val))
-			}
-			bv = parsed
-		}
-		childMap(o, "attribution")["generated_with"] = bv
-		slog.Info("Option set in shell config", "key", key, "value", bv)
-		return nil
-	}
-
 	spec, ok := optionSpecs[key]
 	if !ok {
 		return usage(stderr, fmt.Sprintf("option: unknown key %q", key))
@@ -166,9 +134,8 @@ type optionSpec struct {
 // drives parsing so there is no separate bool/list enumeration to drift out
 // of sync.
 //
-// Not exhaustive by design: options with nested structure (option ui ...) or
-// conditional logic (option attribution-...) are handled as special cases in
-// handleOption above and do not appear here.
+// Not exhaustive by design: options with nested structure (option ui ...) are
+// handled as special cases in handleOption above and do not appear here.
 var optionSpecs = map[string]optionSpec{
 	// Boolean fields (stored as-is).
 	"debug":                  {jsonKey: "debug", kind: optBool},

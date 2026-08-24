@@ -119,8 +119,6 @@ option progress false
 option notifications disabled
 option skill-path ./skills
 option disable-skill <name>
-option attribution-trailer-style assisted-by
-option attribution-generated-with true
 option ui compact true
 ```
 

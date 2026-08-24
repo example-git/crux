@@ -1,31 +1,5 @@
 {
   "$defs": {
-    "Attribution": {
-      "additionalProperties": false,
-      "properties": {
-        "co_authored_by": {
-          "deprecated": true,
-          "description": "Deprecated: use trailer_style instead",
-          "type": "boolean"
-        },
-        "generated_with": {
-          "default": true,
-          "description": "Add Generated with Crux line to commit messages and issues and PRs",
-          "type": "boolean"
-        },
-        "trailer_style": {
-          "default": "assisted-by",
-          "description": "Style of attribution trailer to add to commits",
-          "enum": [
-            "none",
-            "co-authored-by",
-            "assisted-by"
-          ],
-          "type": "string"
-        }
-      },
-      "type": "object"
-    },
     "Completions": {
       "additionalProperties": false,
       "properties": {
@@ -449,10 +423,6 @@
             "max"
           ],
           "type": "string"
-        },
-        "attribution": {
-          "$ref": "#/$defs/Attribution",
-          "description": "Attribution settings for generated content"
         },
         "auto_lsp": {
           "default": true,

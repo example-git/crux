@@ -203,8 +203,6 @@ option reset <list-key>    # clear a list option back to empty
   `response-verbosity` (`low|medium|high`), and `analysis-effort`
   (`none|low|medium|high|xhigh|max`). The final two are sent only for GPT-5.6
   models using the built-in ChatGPT Codex provider.
-- **Attribution keys**: `attribution-trailer-style` (`none`, `co-authored-by`,
-  `assisted-by`) and `attribution-generated-with` (boolean).
 - **UI settings**: `option ui compact BOOL`, `option ui diff unified|split`,
   `option ui transparent BOOL`, `option ui scrollbar default|always|never`,
   `option ui completions-max-depth N`, `option ui completions-max-items N`.
@@ -216,8 +214,6 @@ option reset <list-key>    # clear a list option back to empty
 option progress false
 option skill-path ./skills
 option disable-skill crux-config
-option attribution-trailer-style assisted-by
-option attribution-generated-with true
 option response-verbosity high
 option analysis-effort max
 option ui compact true
@@ -380,8 +376,6 @@ The `$schema` property enables IDE autocomplete but is optional.
 | `permissions allow view ls`          | `permissions.allowed_tools = ["view","ls"]`            |
 | `permissions deny bash`              | `options.disabled_tools = ["bash"]`                    |
 | `option skill-path ./skills`         | `options.skills_paths = ["./skills"]`                  |
-| `option attribution-trailer-style none` | `options.attribution.trailer_style = "none"`        |
-| `option attribution-generated-with false` | `options.attribution.generated_with = false`       |
 
 ### Shell expansion in crux.json
 

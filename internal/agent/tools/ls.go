@@ -94,8 +94,7 @@ func NewLsTool(permissions permission.Service, workingDir string, lsConfig confi
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("error resolving search path: %v", err)), nil
 			}
 
-			relPath, err := filepath.Rel(absWorkingDir, absSearchPath)
-			if err != nil || strings.HasPrefix(relPath, "..") {
+			if !fsext.HasPrefix(absSearchPath, absWorkingDir) {
 				// Directory is outside working directory, request permission
 				sessionID := GetSessionFromContext(ctx)
 				if sessionID == "" {

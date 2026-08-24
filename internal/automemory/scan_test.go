@@ -3,6 +3,7 @@ package automemory
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func TestRelevantIncludesUserScopeTopics(t *testing.T) {
 
 	result, err := Relevant(t.Context(), t.TempDir(), "focused validation", time.Now())
 	require.NoError(t, err)
-	require.Contains(t, result, filepath.Join(userDirectory, "validation.md"))
+	require.Contains(t, result, "path="+strconv.Quote(filepath.Join(userDirectory, "validation.md")))
 	require.Contains(t, result, "Use focused tests.")
 }
 

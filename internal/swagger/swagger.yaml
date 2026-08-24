@@ -47,15 +47,6 @@ definitions:
       top_p:
         type: number
     type: object
-  config.Attribution:
-    properties:
-      co_authored_by:
-        type: boolean
-      generated_with:
-        type: boolean
-      trailer_style:
-        $ref: '#/definitions/config.TrailerStyle'
-    type: object
   config.Completions:
     properties:
       max_depth:
@@ -316,16 +307,6 @@ definitions:
       ls:
         $ref: '#/definitions/config.ToolLs'
     type: object
-  config.TrailerStyle:
-    enum:
-    - none
-    - co-authored-by
-    - assisted-by
-    type: string
-    x-enum-varnames:
-    - TrailerStyleNone
-    - TrailerStyleCoAuthoredBy
-    - TrailerStyleAssistedBy
   csync.Map-string-config_ProviderConfig:
     type: object
   github_com_example-git_crux_internal_config.Config:
@@ -374,8 +355,6 @@ definitions:
     properties:
       analysis_effort:
         type: string
-      attribution:
-        $ref: '#/definitions/config.Attribution'
       auto_lsp:
         type: boolean
       context_paths:

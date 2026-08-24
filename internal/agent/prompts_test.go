@@ -85,7 +85,7 @@ func TestCustomAgentPromptKeepsInstructionsLiteralAndIsolated(t *testing.T) {
 	result, err := custom.Build(t.Context(), "provider", "model", store)
 	require.NoError(t, err)
 	require.Contains(t, result, instructions)
-	require.Contains(t, result, "Working directory: "+workingDir)
+	require.Contains(t, result, "Working directory: "+filepath.ToSlash(workingDir))
 	require.NotContains(t, result, "coder-only project context")
 	require.NotContains(t, result, "<plan_lifecycle")
 	require.NotContains(t, result, "<persistent_memory>")

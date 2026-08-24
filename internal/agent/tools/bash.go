@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	fantasy "github.com/example-git/crux/foundation"
-	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/shell"
@@ -68,8 +67,6 @@ var bashDescriptionTpl = template.Must(
 type bashDescriptionData struct {
 	BannedCommands  string
 	MaxOutputLength int
-	Attribution     config.Attribution
-	ModelID         string
 	RgAvailable     bool
 	GhAvailable     bool
 }
@@ -147,14 +144,12 @@ var bannedCommands = []string{
 	"ufw",
 }
 
-func bashDescription(attribution *config.Attribution, modelID string) string {
+func bashDescription() string {
 	bannedCommandsStr := strings.Join(bannedCommands, ", ")
 	var out bytes.Buffer
 	if err := bashDescriptionTpl.Execute(&out, bashDescriptionData{
 		BannedCommands:  bannedCommandsStr,
 		MaxOutputLength: MaxOutputLength,
-		Attribution:     *attribution,
-		ModelID:         modelID,
 		RgAvailable:     getRg() != "",
 		GhAvailable:     ghAvailable,
 	}); err != nil {
@@ -196,10 +191,10 @@ func blockFuncs() []shell.BlockFunc {
 	}
 }
 
-func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions permission.Service, workingDir string, attribution *config.Attribution, modelID string) fantasy.AgentTool {
+func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions permission.Service, workingDir string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		BashToolName,
-		string(bashDescription(attribution, modelID)),
+		string(bashDescription()),
 		func(ctx context.Context, params BashParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.Command == "" {
 				return fantasy.NewTextErrorResponse("missing command"), nil

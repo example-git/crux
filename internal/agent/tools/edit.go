@@ -116,9 +116,6 @@ func createNewFile(edit editContext, filePath, content string, call fantasy.Tool
 	}
 
 	dir := filepath.Dir(filePath)
-	if err = os.MkdirAll(dir, 0o755); err != nil {
-		return fantasy.ToolResponse{}, fmt.Errorf("failed to create parent directories: %w", err)
-	}
 
 	sessionID := GetSessionFromContext(edit.ctx)
 	if sessionID == "" {
@@ -160,6 +157,10 @@ func createNewFile(edit editContext, filePath, content string, call fantasy.Tool
 		return resp, nil
 	}
 
+	err = os.MkdirAll(dir, 0o755)
+	if err != nil {
+		return fantasy.ToolResponse{}, fmt.Errorf("failed to create parent directories: %w", err)
+	}
 	err = os.WriteFile(filePath, []byte(content), 0o644)
 	if err != nil {
 		return fantasy.ToolResponse{}, fmt.Errorf("failed to write file: %w", err)

@@ -15,6 +15,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestTrafficDatabaseFileURL(t *testing.T) {
+	testCases := map[string]struct {
+		path string
+		want string
+	}{
+		"unix": {
+			path: "/tmp/traffic log.db",
+			want: "file:///tmp/traffic%20log.db",
+		},
+		"windows drive": {
+			path: `C:\Users\runner\traffic.db`,
+			want: "file:///C:/Users/runner/traffic.db",
+		},
+		"windows UNC": {
+			path: `\\server\share\traffic.db`,
+			want: "file:////server/share/traffic.db",
+		},
+	}
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			require.Equal(t, testCase.want, trafficDatabaseFileURL(testCase.path))
+		})
+	}
+}
+
 func testTrafficTrace(t *testing.T) (*networkTrace, *sql.DB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "traffic.db")

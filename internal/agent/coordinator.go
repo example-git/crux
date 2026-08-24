@@ -482,7 +482,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	if err := c.refreshTokenIfExpired(ctx, providerCfg); err != nil {
 		// NOTE(@andreynering): We don't return here because the event handling to ask the user to reauthenticate
 		// depends on the flow below. If refresh fails, proceed with the token we have.
-		slog.Error("Failed to refresh OAuth2 token. Proceeding with existing token.", "error", err)
+		slog.Error("Failed to refresh OAuth2 token. Proceeding with existing token.", "provider", providerCfg.ID)
 	}
 
 	// Coalesce per-attempt RunComplete payloads so only the final
@@ -933,18 +933,6 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 		allTools = append(allTools, agenticFetchTool)
 	}
 
-	modelID := ""
-	modelCfg, ok := c.cfg.Config().Models[agent.Model]
-	if agent.PrimaryModelOverride != nil {
-		modelCfg = *agent.PrimaryModelOverride
-		ok = true
-	}
-	if ok {
-		if model := c.cfg.Config().GetModel(modelCfg.Provider, modelCfg.Model); model != nil {
-			modelID = model.ID
-		}
-	}
-
 	logFile := filepath.Join(c.cfg.Config().Options.DataDirectory, "logs", "crux.log")
 	memoryService := automemory.NewService(c.cfg.WorkingDir())
 	projectService := projects.NewService()
@@ -957,7 +945,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 
 	allTools = append(
 		allTools,
-		tools.NewBashTool(c.backgroundShells, c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.Attribution, modelID),
+		tools.NewBashTool(c.backgroundShells, c.permissions, c.cfg.WorkingDir()),
 		tools.NewCruxInfoTool(c.cfg, c.lspManager, c.allSkills, c.activeSkills, c.skillTracker),
 		tools.NewCruxLogsTool(logFile),
 		tools.NewTrafficLogsTool(),
@@ -1505,7 +1493,7 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
 	}
 
 	if err := c.refreshTokenIfExpired(ctx, providerCfg); err != nil {
-		slog.Error("Failed to refresh OAuth2 token before summarize. Proceeding with existing token.", "error", err)
+		slog.Error("Failed to refresh OAuth2 token before summarize. Proceeding with existing token.", "provider", providerCfg.ID)
 	}
 
 	// Auth failures during summarize flow through fantasy's OnAuthRefresh,
@@ -1606,7 +1594,7 @@ func (c *coordinator) waitForInteractiveReauth(ctx context.Context, providerID s
 	}
 	// Rebuild models so ModelProvider picks up the fresh credentials.
 	if updateErr := c.UpdateModels(waitCtx); updateErr != nil {
-		slog.Error("Failed to update models after re-authentication", "error", updateErr)
+		slog.Error("Failed to update models after re-authentication", "provider", providerID)
 		return updateErr
 	}
 	slog.Info("Models updated, returning nil to retry", "provider", providerID)
@@ -1634,7 +1622,7 @@ func (c *coordinator) makeAuthRefreshCallback(providerCfg config.ProviderConfig)
 
 func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config.ProviderConfig) error {
 	if err := c.cfg.RefreshOAuthToken(ctx, config.ScopeGlobal, providerCfg.ID); err != nil {
-		slog.Error("Failed to refresh OAuth token after 401 error", "provider", providerCfg.ID, "error", err)
+		slog.Error("Failed to refresh OAuth token after 401 error", "provider", providerCfg.ID)
 		return err
 	}
 	if err := c.UpdateModels(ctx); err != nil {
@@ -1646,7 +1634,7 @@ func (c *coordinator) refreshOAuth2Token(ctx context.Context, providerCfg config
 func (c *coordinator) refreshApiKeyTemplate(ctx context.Context, providerCfg config.ProviderConfig) error {
 	newAPIKey, err := c.cfg.Resolve(providerCfg.APIKeyTemplate)
 	if err != nil {
-		slog.Error("Failed to re-resolve API key after 401 error", "provider", providerCfg.ID, "error", err)
+		slog.Error("Failed to re-resolve API key after 401 error", "provider", providerCfg.ID)
 		return err
 	}
 
@@ -1806,6 +1794,7 @@ func discoverSkills(cfg *config.ConfigStore) (allSkills, activeSkills []*skills.
 	allSkills, activeSkills, states := skills.DiscoverFromConfig(skills.DiscoveryConfig{
 		SkillsPaths:    paths,
 		DisabledSkills: disabled,
+		WorkingDir:     cfg.WorkingDir(),
 		Resolver:       resolver,
 	})
 	logDiscoveryStats(states, paths, allSkills, activeSkills, disabled)

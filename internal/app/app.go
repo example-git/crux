@@ -371,7 +371,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		// session, provided it is still available.
 		if largeModel == "" && smallModel == "" {
 			if err := app.restoreModelFromSession(ctx, sess.ID); err != nil {
-				slog.Warn("Failed to restore model from session", "error", err)
+				slog.Warn("Failed to restore model from session", "session_id", sess.ID)
 			}
 		}
 	} else {
@@ -798,7 +798,7 @@ func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 		BackgroundAgents: app.BackgroundAgents,
 	})
 	if err != nil {
-		slog.Error("Failed to create coder agent", "err", err)
+		slog.Error("Failed to create coder agent")
 		return err
 	}
 	app.startTaskNotificationDelivery()

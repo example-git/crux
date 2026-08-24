@@ -2,6 +2,7 @@ package skills
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -176,10 +177,11 @@ func DiscoverFromConfig(cfg DiscoveryConfig) (allSkills, activeSkills []*Skill, 
 
 	var userStates []*SkillState
 	userPaths := cfg.ResolvePaths()
-	if len(userPaths) > 0 {
-		var userSkills []*Skill
-		userSkills, userStates = DiscoverWithStates(userPaths)
+	for _, path := range userPaths {
+		followSymlinks := cfg.WorkingDir == "" || !lexicallyWithin(path, cfg.WorkingDir)
+		userSkills, states := discoverWithStates([]string{path}, followSymlinks)
 		discovered = append(discovered, userSkills...)
+		userStates = append(userStates, states...)
 	}
 
 	allSkills = Deduplicate(discovered)
@@ -209,6 +211,19 @@ type DiscoveryConfig struct {
 // SkillsPaths. This is the canonical path-resolution logic used by
 // DiscoverFromConfig; callers that need the resolved list (e.g. for
 // Catalog labels) can call this directly.
+func lexicallyWithin(path, root string) bool {
+	absolutePath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	relative, err := filepath.Rel(absoluteRoot, absolutePath)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
 func (c DiscoveryConfig) ResolvePaths() []string {
 	if len(c.SkillsPaths) == 0 {
 		return nil
