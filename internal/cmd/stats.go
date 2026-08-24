@@ -17,10 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/event"
-	"github.com/charmbracelet/crush/internal/projects"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/projects"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
@@ -34,11 +33,14 @@ var statsCSS string
 //go:embed stats/index.js
 var statsJS string
 
+//go:embed stats/chart.umd.min.js
+var statsChartJS string
+
 //go:embed stats/header.svg
 var headerSVG string
 
-//go:embed stats/heartbit.svg
-var heartbitSVG string
+//go:embed stats/crux-mark.svg
+var cruxMarkSVG string
 
 //go:embed stats/footer.svg
 var footerSVG string
@@ -51,7 +53,7 @@ var statsCmd = &cobra.Command{
 }
 
 func init() {
-	statsCmd.Flags().String("crawl-dir", "", "Crawl a directory recursively for all crush projects and aggregate stats")
+	statsCmd.Flags().String("crawl-dir", "", "Crawl a directory recursively for all Crux projects and aggregate stats")
 	statsCmd.Flags().Bool("all", false, "Aggregate stats from all known projects (from projects.json)")
 }
 
@@ -163,12 +165,6 @@ func runStats(cmd *cobra.Command, _ []string) error {
 		if dataDir == "" {
 			dataDir = cfg.Config().Options.DataDirectory
 		}
-		if shouldEnableMetrics(cfg.Config()) {
-			event.Init()
-		}
-
-		event.StatsViewed()
-
 		conn, err := db.Connect(ctx, dataDir)
 		if err != nil {
 			return fmt.Errorf("failed to connect to database: %w", err)
@@ -222,7 +218,7 @@ func runStats(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	if outputDataDir == "" {
-		outputDataDir = ".crush"
+		outputDataDir = ".crux"
 	}
 
 	htmlPath := filepath.Join(outputDataDir, "stats/index.html")
@@ -240,7 +236,7 @@ func runStats(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// crawlForStats crawls a directory recursively looking for .crush/crush.db files.
+// crawlForStats crawls a directory recursively looking for .crux/crux.db files.
 func crawlForStats(ctx context.Context, rootDir string) ([]ProjectStats, error) {
 	var dbPaths []struct {
 		dbPath     string
@@ -257,10 +253,10 @@ func crawlForStats(ctx context.Context, rootDir string) ([]ProjectStats, error) 
 			return filepath.SkipDir
 		}
 
-		// Look for .crush/crush.db pattern
-		if !d.IsDir() && d.Name() == "crush.db" {
+		// Look for .crux/crux.db pattern
+		if !d.IsDir() && d.Name() == "crux.db" {
 			dir := filepath.Dir(path)
-			if filepath.Base(dir) == ".crush" {
+			if filepath.Base(dir) == ".crux" {
 				projectDir := filepath.Dir(dir)
 				dbPaths = append(dbPaths, struct {
 					dbPath     string
@@ -323,7 +319,7 @@ func gatherStatsFromProjects(ctx context.Context) ([]ProjectStats, error) {
 	}
 
 	for _, p := range projectList.Projects {
-		dbPath := filepath.Join(p.DataDir, "crush.db")
+		dbPath := filepath.Join(p.DataDir, "crux.db")
 		if _, err := os.Stat(dbPath); err == nil {
 			dbPaths = append(dbPaths, struct {
 				dbPath     string
@@ -720,8 +716,9 @@ func generateHTML(stats *Stats, projectStats []ProjectStats, projName, username,
 		ProjectStatsJSON template.JS
 		CSS              template.CSS
 		JS               template.JS
+		ChartJS          template.JS
 		Header           template.HTML
-		Heartbit         template.HTML
+		CruxMark         template.HTML
 		Footer           template.HTML
 		Favicon          template.URL
 		GeneratedAt      string
@@ -732,10 +729,11 @@ func generateHTML(stats *Stats, projectStats []ProjectStats, projName, username,
 		ProjectStatsJSON: template.JS(projectStatsJSON),
 		CSS:              template.CSS(statsCSS),
 		JS:               template.JS(statsJS),
+		ChartJS:          template.JS(statsChartJS),
 		Header:           template.HTML(headerSVG),
-		Heartbit:         template.HTML(heartbitSVG),
+		CruxMark:         template.HTML(cruxMarkSVG),
 		Footer:           template.HTML(footerSVG),
-		Favicon:          template.URL("data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(heartbitSVG))),
+		Favicon:          template.URL("data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(cruxMarkSVG))),
 		GeneratedAt:      stats.GeneratedAt.Format("2006-01-02"),
 		ProjectName:      projName,
 		Username:         username,

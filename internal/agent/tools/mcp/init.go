@@ -1,5 +1,5 @@
 // Package mcp provides functionality for managing Model Context Protocol (MCP)
-// clients within the Crush application.
+// clients within the Crux application.
 package mcp
 
 import (
@@ -16,14 +16,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/home"
-	"github.com/charmbracelet/crush/internal/oauth"
-	mcpoauth "github.com/charmbracelet/crush/internal/oauth/mcp"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/version"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/home"
+	"github.com/example-git/crux/internal/oauth"
+	mcpoauth "github.com/example-git/crux/internal/oauth/mcp"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/version"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
@@ -843,7 +843,7 @@ func updateState(name string, state State, err error, client *ClientSession, cou
 		// close it so the child process and its stdio pipes are released — the
 		// bare map delete this used to do leaked both. Clearing the tool
 		// registry keeps the agent from advertising tools it can no longer
-		// call: without it, crush_info / the `/mcp` menu and the tool list
+		// call: without it, crux_info / the `/mcp` menu and the tool list
 		// handed to the LLM diverge, so a server still reads "connected, N
 		// tools" while every call fails with "tool not found".
 		if old, ok := sessions.Take(name); ok {
@@ -903,9 +903,9 @@ func createSession(ctx context.Context, cfg *config.ConfigStore, name string, m 
 
 	client := mcp.NewClient(
 		&mcp.Implementation{
-			Name:    "crush",
+			Name:    "crux",
 			Version: version.Version,
-			Title:   "Crush",
+			Title:   "Crux",
 		},
 		&mcp.ClientOptions{
 			ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
@@ -926,7 +926,8 @@ func createSession(ctx context.Context, cfg *config.ConfigStore, name string, m 
 					Name: name,
 				})
 			},
-			LoggingMessageHandler: func(ctx context.Context, req *mcp.LoggingMessageRequest) {
+			// Retain protocol logging during the SDK's documented deprecation window.
+			LoggingMessageHandler: func(ctx context.Context, req *mcp.LoggingMessageRequest) { //nolint:staticcheck
 				level := parseLevel(string(req.Params.Level))
 				slog.Log(ctx, level, "MCP log", "name", name, "logger", req.Params.Logger, "data", req.Params.Data)
 			},

@@ -13,9 +13,10 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/charmbracelet/crush/internal/backend"
-	"github.com/charmbracelet/crush/internal/config"
-	_ "github.com/charmbracelet/crush/internal/swagger"
+	"github.com/example-git/crux/internal/backend"
+	"github.com/example-git/crux/internal/config"
+	cruxlog "github.com/example-git/crux/internal/log"
+	_ "github.com/example-git/crux/internal/swagger"
 	httpswagger "github.com/swaggo/http-swagger/v2"
 )
 
@@ -24,7 +25,7 @@ import (
 // use 104 so the resulting path is portable across both platforms.
 const maxUnixSocketPathLen = 104
 
-// socketDir returns the directory used for the Crush Unix socket.
+// socketDir returns the directory used for the Crux Unix socket.
 // It prefers $XDG_RUNTIME_DIR when set (systemd's per-user runtime
 // directory on Linux), and otherwise falls back to [os.TempDir],
 // which resolves to the per-user private $TMPDIR on macOS and to
@@ -66,16 +67,16 @@ func ParseHostURL(host string) (*url.URL, error) {
 //
 // On Windows the address is a named pipe under \\.\pipe\. On Unix
 // platforms the socket lives in the per-user runtime directory
-// returned by [socketDir] and is named crush-<uid>.sock, falling
-// back to crush.sock when the current uid cannot be determined. If
+// returned by [socketDir] and is named crux-<uid>.sock, falling
+// back to crux.sock when the current uid cannot be determined. If
 // the composed path would exceed [maxUnixSocketPathLen] bytes (the
-// macOS sun_path limit), we fall back to /tmp/crush-<uid>.sock so
+// macOS sun_path limit), we fall back to /tmp/crux-<uid>.sock so
 // the socket remains bindable.
 func DefaultHost() string {
-	sock := "crush.sock"
+	sock := "crux.sock"
 	usr, err := user.Current()
 	if err == nil && usr.Uid != "" {
-		sock = fmt.Sprintf("crush-%s.sock", usr.Uid)
+		sock = fmt.Sprintf("crux-%s.sock", usr.Uid)
 	}
 	if runtime.GOOS == "windows" {
 		return fmt.Sprintf("npipe:////./pipe/%s", sock)
@@ -87,7 +88,7 @@ func DefaultHost() string {
 	return "unix://" + path
 }
 
-// Server represents a Crush server bound to a specific address.
+// Server represents a Crux server bound to a specific address.
 type Server struct {
 	// Addr can be a TCP address, a Unix socket path, or a Windows named pipe.
 	Addr    string
@@ -157,6 +158,7 @@ func (s *Server) installHandler() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", c.handleGetHealth)
 	mux.HandleFunc("GET /v1/version", c.handleGetVersion)
+	mux.HandleFunc("GET /v1/plugins", c.handleGetPlugins)
 	mux.HandleFunc("GET /v1/config", c.handleGetConfig)
 	mux.HandleFunc("POST /v1/control", c.handlePostControl)
 	mux.HandleFunc("DELETE /v1/clients/{client_id}", c.handleDeleteClient)
@@ -166,14 +168,18 @@ func (s *Server) installHandler() {
 	mux.HandleFunc("POST /v1/workspaces/{id}/current-session", c.handlePostWorkspaceCurrentSession)
 	mux.HandleFunc("GET /v1/workspaces/{id}", c.handleGetWorkspace)
 	mux.HandleFunc("GET /v1/workspaces/{id}/config", c.handleGetWorkspaceConfig)
+	mux.HandleFunc("GET /v1/workspaces/{id}/codebase-index", c.handleGetWorkspaceCodebaseIndex)
+	mux.HandleFunc("POST /v1/workspaces/{id}/codebase-index", c.handlePostWorkspaceCodebaseIndex)
 	mux.HandleFunc("GET /v1/workspaces/{id}/events", c.handleGetWorkspaceEvents)
 	mux.HandleFunc("GET /v1/workspaces/{id}/providers", c.handleGetWorkspaceProviders)
 	mux.HandleFunc("GET /v1/workspaces/{id}/sessions", c.handleGetWorkspaceSessions)
 	mux.HandleFunc("POST /v1/workspaces/{id}/sessions", c.handlePostWorkspaceSessions)
 	mux.HandleFunc("GET /v1/workspaces/{id}/sessions/{sid}", c.handleGetWorkspaceSession)
 	mux.HandleFunc("PUT /v1/workspaces/{id}/sessions/{sid}", c.handlePutWorkspaceSession)
+	mux.HandleFunc("PUT /v1/workspaces/{id}/sessions/{sid}/mode", c.handlePutWorkspaceSessionMode)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/sessions/{sid}", c.handleDeleteWorkspaceSession)
 	mux.HandleFunc("GET /v1/workspaces/{id}/sessions/{sid}/history", c.handleGetWorkspaceSessionHistory)
+	mux.HandleFunc("POST /v1/workspaces/{id}/sessions/{sid}/rewind", c.handlePostWorkspaceSessionRewind)
 	mux.HandleFunc("GET /v1/workspaces/{id}/sessions/{sid}/messages", c.handleGetWorkspaceSessionMessages)
 	mux.HandleFunc("GET /v1/workspaces/{id}/sessions/{sid}/messages/user", c.handleGetWorkspaceSessionUserMessages)
 	mux.HandleFunc("GET /v1/workspaces/{id}/messages/user", c.handleGetWorkspaceAllUserMessages)
@@ -193,14 +199,23 @@ func (s *Server) installHandler() {
 	mux.HandleFunc("POST /v1/workspaces/{id}/agent", c.handlePostWorkspaceAgent)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agent/init", c.handlePostWorkspaceAgentInit)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agent/update", c.handlePostWorkspaceAgentUpdate)
+	mux.HandleFunc("POST /v1/workspaces/{id}/agent/definitions", c.handlePostWorkspaceAgentDefinition)
 	mux.HandleFunc("GET /v1/workspaces/{id}/agent/sessions/{sid}", c.handleGetWorkspaceAgentSession)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel", c.handlePostWorkspaceAgentSessionCancel)
 	mux.HandleFunc("GET /v1/workspaces/{id}/agent/sessions/{sid}/prompts/queued", c.handleGetWorkspaceAgentSessionPromptQueued)
 	mux.HandleFunc("GET /v1/workspaces/{id}/agent/sessions/{sid}/prompts/list", c.handleGetWorkspaceAgentSessionPromptList)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agent/sessions/{sid}/prompts/clear", c.handlePostWorkspaceAgentSessionPromptClear)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agent/sessions/{sid}/summarize", c.handlePostWorkspaceAgentSessionSummarize)
+	mux.HandleFunc("POST /v1/workspaces/{id}/agent/sessions/{sid}/suggest", c.handlePostWorkspaceAgentSessionSuggest)
+	mux.HandleFunc("POST /v1/workspaces/{id}/agent/jobs/detach", c.handlePostWorkspaceAgentJobsDetach)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agent/sessions/{sid}/shell", c.handlePostWorkspaceAgentSessionShell)
 	mux.HandleFunc("GET /v1/workspaces/{id}/agent/default-small-model", c.handleGetWorkspaceAgentDefaultSmallModel)
+	mux.HandleFunc("GET /v1/workspaces/{id}/tasks", c.handleGetWorkspaceTasks)
+	mux.HandleFunc("POST /v1/workspaces/{id}/tasks/{tid}/output", c.handlePostWorkspaceTaskOutput)
+	mux.HandleFunc("POST /v1/workspaces/{id}/tasks/{tid}/stop", c.handlePostWorkspaceTaskStop)
+	mux.HandleFunc("POST /v1/workspaces/{id}/tasks/{tid}/continue", c.handlePostWorkspaceTaskContinue)
+	mux.HandleFunc("GET /v1/workspaces/{id}/task-notifications", c.handleGetWorkspaceTaskNotifications)
+	mux.HandleFunc("POST /v1/workspaces/{id}/task-notifications/{nid}/read", c.handlePostWorkspaceTaskNotificationRead)
 	mux.HandleFunc("POST /v1/workspaces/{id}/config/set", c.handlePostWorkspaceConfigSet)
 	mux.HandleFunc("POST /v1/workspaces/{id}/config/remove", c.handlePostWorkspaceConfigRemove)
 	mux.HandleFunc("POST /v1/workspaces/{id}/config/model", c.handlePostWorkspaceConfigModel)
@@ -211,6 +226,8 @@ func (s *Server) installHandler() {
 	mux.HandleFunc("GET /v1/workspaces/{id}/project/needs-init", c.handleGetWorkspaceProjectNeedsInit)
 	mux.HandleFunc("POST /v1/workspaces/{id}/project/init", c.handlePostWorkspaceProjectInit)
 	mux.HandleFunc("GET /v1/workspaces/{id}/project/init-prompt", c.handleGetWorkspaceProjectInitPrompt)
+	mux.HandleFunc("GET /v1/workspaces/{id}/projects", c.handleGetWorkspaceProjects)
+	mux.HandleFunc("POST /v1/workspaces/{id}/projects/selection", c.handlePostWorkspaceProjectSelection)
 	mux.HandleFunc("GET /v1/workspaces/{id}/skills", c.handleGetWorkspaceSkills)
 	mux.HandleFunc("POST /v1/workspaces/{id}/skills/read", c.handlePostWorkspaceSkillRead)
 	mux.HandleFunc("POST /v1/workspaces/{id}/mcp/refresh-tools", c.handlePostWorkspaceMCPRefreshTools)
@@ -228,7 +245,7 @@ func (s *Server) installHandler() {
 	mux.Handle("/v1/docs/", httpswagger.WrapHandler)
 	s.h = &http.Server{
 		Protocols: &p,
-		Handler:   s.recoverHandler(s.loggingHandler(mux)),
+		Handler:   cruxlog.TraceHTTPHandler(s.recoverHandler(s.loggingHandler(mux))),
 	}
 }
 

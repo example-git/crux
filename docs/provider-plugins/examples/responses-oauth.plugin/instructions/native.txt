@@ -1,0 +1,1 @@
+Use the provider's synthetic Responses-compatible tool protocol. This file is documentation-only and contains no target-provider instructions.

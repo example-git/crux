@@ -8,9 +8,9 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/crush/internal/question"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 // SingleChoice is an inline single-choice question component.

@@ -5,9 +5,11 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/session"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/message"
+	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
+	"github.com/example-git/crux/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -215,6 +217,70 @@ func TestUpdateSessionUsageSkipsEstimatedCost(t *testing.T) {
 	require.True(t, currentSession.EstimatedUsage)
 }
 
+func TestUpdateSessionUsagePreservesAuthoritativeCodexOccupancy(t *testing.T) {
+	t.Parallel()
+
+	agent := &sessionAgent{}
+	model := Model{ModelCfg: config.SelectedModel{Provider: codexresponses.Name}}
+	currentSession := &session.Session{
+		ID:               "session-id",
+		PromptTokens:     100_000,
+		CompletionTokens: 5_000,
+		Cost:             1.25,
+	}
+
+	agent.updateSessionUsage(model, currentSession, fantasy.Usage{
+		InputTokens:  40_000,
+		OutputTokens: 2_000,
+		TotalTokens:  42_000,
+	}, nil, true)
+
+	require.Equal(t, int64(100_000), currentSession.PromptTokens)
+	require.Equal(t, int64(5_000), currentSession.CompletionTokens)
+	require.Equal(t, 1.25, currentSession.Cost)
+	require.False(t, currentSession.EstimatedUsage)
+}
+
+func TestUpdateSessionUsageAllowsCodexEstimateWithoutAuthoritativeOccupancy(t *testing.T) {
+	t.Parallel()
+
+	agent := &sessionAgent{}
+	model := Model{ModelCfg: config.SelectedModel{Provider: codexresponses.Name}}
+	currentSession := &session.Session{ID: "session-id"}
+
+	agent.updateSessionUsage(model, currentSession, fantasy.Usage{InputTokens: 40_000, OutputTokens: 2_000}, nil, true)
+	require.Equal(t, int64(40_000), currentSession.PromptTokens)
+	require.Equal(t, int64(2_000), currentSession.CompletionTokens)
+	require.True(t, currentSession.EstimatedUsage)
+
+	agent.updateSessionUsage(model, currentSession, fantasy.Usage{InputTokens: 45_000, OutputTokens: 3_000}, nil, true)
+	require.Equal(t, int64(45_000), currentSession.PromptTokens)
+	require.Equal(t, int64(3_000), currentSession.CompletionTokens)
+	require.True(t, currentSession.EstimatedUsage)
+
+	agent.updateSessionUsage(model, currentSession, fantasy.Usage{InputTokens: 50_000, OutputTokens: 4_000}, nil, false)
+	require.Equal(t, int64(50_000), currentSession.PromptTokens)
+	require.Equal(t, int64(4_000), currentSession.CompletionTokens)
+	require.False(t, currentSession.EstimatedUsage)
+}
+
+func TestUpdateSessionUsageKeepsNonCodexEstimatedBehavior(t *testing.T) {
+	t.Parallel()
+
+	agent := &sessionAgent{}
+	model := Model{ModelCfg: config.SelectedModel{Provider: "other"}}
+	currentSession := &session.Session{
+		ID:               "session-id",
+		PromptTokens:     100_000,
+		CompletionTokens: 5_000,
+	}
+
+	agent.updateSessionUsage(model, currentSession, fantasy.Usage{InputTokens: 40_000, OutputTokens: 2_000}, nil, true)
+	require.Equal(t, int64(40_000), currentSession.PromptTokens)
+	require.Equal(t, int64(2_000), currentSession.CompletionTokens)
+	require.True(t, currentSession.EstimatedUsage)
+}
+
 func TestUpdateSessionUsageKeepsCountersForZeroUsage(t *testing.T) {
 	t.Parallel()
 
@@ -320,6 +386,70 @@ func TestSummaryCompletionTokens(t *testing.T) {
 	require.Equal(t, int64(42), summaryCompletionTokens(fantasy.Usage{OutputTokens: 42}, summaryMessage))
 	require.Equal(t, approxTokenCount("summary text")+approxTokenCount("reasoning text"), summaryCompletionTokens(fantasy.Usage{}, summaryMessage))
 	require.Zero(t, summaryCompletionTokens(fantasy.Usage{}, message.Message{}))
+}
+
+func TestUpdateSessionUsageCountsCachedInputOnce(t *testing.T) {
+	t.Parallel()
+
+	agent := &sessionAgent{}
+	currentSession := &session.Session{ID: "session-id"}
+	model := Model{CatwalkCfg: catwalk.Model{
+		CostPer1MIn:        10,
+		CostPer1MOutCached: 2,
+	}}
+	usage := fantasy.Usage{
+		InputTokens:     20_000,
+		CacheReadTokens: 80_000,
+		TotalTokens:     100_000,
+	}
+
+	agent.updateSessionUsage(model, currentSession, usage, nil, false)
+
+	require.Equal(t, int64(100_000), currentSession.PromptTokens)
+	require.InDelta(t, 0.36, currentSession.Cost, 0.000001)
+}
+
+func TestUpdateSessionUsageUsesAuthoritativeCodexTotalForMalformedCacheUsage(t *testing.T) {
+	t.Parallel()
+
+	agent := &sessionAgent{}
+	currentSession := &session.Session{ID: "session-id"}
+	model := Model{
+		ModelCfg: config.SelectedModel{Provider: codexresponses.Name},
+		CatwalkCfg: catwalk.Model{
+			CostPer1MIn:        10,
+			CostPer1MOut:       20,
+			CostPer1MOutCached: 2,
+		},
+	}
+	usage := fantasy.Usage{
+		CacheReadTokens: 120,
+		OutputTokens:    10,
+		TotalTokens:     110,
+	}
+
+	agent.updateSessionUsage(model, currentSession, usage, nil, false)
+
+	require.Equal(t, int64(100), currentSession.PromptTokens)
+	require.Equal(t, int64(10), currentSession.CompletionTokens)
+	require.InDelta(t, 0.0004, currentSession.Cost, 0.0000001)
+}
+
+func TestShouldAutoCompactUsesNormalizedOccupancy(t *testing.T) {
+	t.Parallel()
+
+	triggered, threshold := shouldAutoCompact(140_000, 100_000, 10_000, 0, false)
+	require.Equal(t, int64(28_000), threshold)
+	require.False(t, triggered)
+
+	triggered, _ = shouldAutoCompact(140_000, 180_000, 10_000, 0, false)
+	require.True(t, triggered)
+
+	triggered, _ = shouldAutoCompact(140_000, 100_000, 10_000, 2_000, false)
+	require.True(t, triggered)
+
+	triggered, _ = shouldAutoCompact(140_000, 180_000, 10_000, 0, true)
+	require.False(t, triggered)
 }
 
 func TestUpdateSessionUsageAddsProviderCost(t *testing.T) {

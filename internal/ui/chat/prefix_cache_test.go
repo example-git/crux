@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/ui/attachments"
-	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/ui/attachments"
+	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/stretchr/testify/require"
 )
 

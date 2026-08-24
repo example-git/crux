@@ -5,13 +5,15 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/shell"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/shell"
+	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/stretchr/testify/require"
 )
 
@@ -61,26 +63,118 @@ func TestBashTool_DefaultAutoBackgroundThreshold(t *testing.T) {
 	require.Contains(t, meta.Output, "done")
 }
 
-func TestBashTool_CustomAutoBackgroundThreshold(t *testing.T) {
+func TestBashTool_TimeoutKillsCommand(t *testing.T) {
 	workingDir := t.TempDir()
 	tool := newBashToolForTest(workingDir)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
 
 	resp := runBashTool(t, tool, ctx, BashParams{
-		Description:         "custom threshold",
-		Command:             "sleep 1.5 && echo done",
-		AutoBackgroundAfter: 1,
+		Description: "timeout kill",
+		Command:     "sleep 1.5 && echo done",
+		Timeout:     1,
 	})
 
-	require.False(t, resp.IsError)
-	var meta BashResponseMetadata
-	require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
-	require.True(t, meta.Background)
-	require.NotEmpty(t, meta.ShellID)
-	require.Contains(t, resp.Content, "moved to background")
+	require.True(t, resp.IsError)
+	require.Contains(t, resp.Content, "timed out")
+}
 
-	bgManager := shell.GetBackgroundShellManager()
-	require.NoError(t, bgManager.Kill(meta.ShellID))
+func TestBashTool_ExplicitBackgroundLifecycle(t *testing.T) {
+	workingDir := t.TempDir()
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "child-session")
+	ctx = managedtask.WithOwnership(ctx, managedtask.Ownership{ParentSessionID: "parent-session", OwnerAgentTaskID: "a12345678", OriginToolCallID: "agent-call"})
+
+	t.Run("quick completion stays synchronous", func(t *testing.T) {
+		tool, manager := newBashToolAndManagerForTest(workingDir)
+		notifications := manager.SubscribeNotifications(t.Context())
+		response := runBashTool(t, tool, ctx, BashParams{
+			Description:     "quick background",
+			Command:         "echo done",
+			RunInBackground: true,
+		})
+		var metadata BashResponseMetadata
+		require.NoError(t, json.Unmarshal([]byte(response.Metadata), &metadata))
+		require.True(t, metadata.Background)
+		require.Empty(t, metadata.ShellID)
+		select {
+		case event := <-notifications:
+			t.Fatalf("quick synchronous completion emitted notification: %#v", event.Payload)
+		default:
+		}
+	})
+
+	t.Run("running command returns task and notifies", func(t *testing.T) {
+		tool, manager := newBashToolAndManagerForTest(workingDir)
+		notifications := manager.SubscribeNotifications(t.Context())
+		response := runBashTool(t, tool, ctx, BashParams{
+			Description:     "long background",
+			Command:         "sleep 2.2; exit 7",
+			RunInBackground: true,
+		})
+		var metadata BashResponseMetadata
+		require.NoError(t, json.Unmarshal([]byte(response.Metadata), &metadata))
+		require.True(t, metadata.Background)
+		require.NotEmpty(t, metadata.ShellID)
+		backgroundShell, ok := manager.Get(metadata.ShellID)
+		require.True(t, ok)
+		require.Equal(t, "parent-session", backgroundShell.Ownership.ParentSessionID)
+		require.Equal(t, "a12345678", backgroundShell.Ownership.OwnerAgentTaskID)
+		require.Equal(t, "test-call", backgroundShell.Ownership.OriginToolCallID)
+		select {
+		case event := <-notifications:
+			require.Equal(t, metadata.ShellID, event.Payload.TaskID)
+			require.Equal(t, "failed", string(event.Payload.Status))
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for explicit background completion")
+		}
+	})
+}
+
+func TestBashTool_CtrlBDetachesAndNotifies(t *testing.T) {
+	workingDir := t.TempDir()
+	tool, manager := newBashToolAndManagerForTest(workingDir)
+	notifications := manager.SubscribeNotifications(t.Context())
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	ctx := context.WithValue(parentCtx, SessionIDContextKey, "child-session")
+	ctx = managedtask.WithOwnership(ctx, managedtask.Ownership{ParentSessionID: "parent-session", OwnerAgentTaskID: "a12345678", OriginToolCallID: "agent-call"})
+	input, err := json.Marshal(BashParams{Description: "detach", Command: "sleep 10"})
+	require.NoError(t, err)
+	type toolResult struct {
+		response fantasy.ToolResponse
+		err      error
+	}
+	resultChannel := make(chan toolResult, 1)
+	go func() {
+		response, runErr := tool.Run(ctx, fantasy.ToolCall{ID: "detach-call", Name: BashToolName, Input: string(input)})
+		resultChannel <- toolResult{response: response, err: runErr}
+	}()
+
+	require.Eventually(t, func() bool {
+		return manager.DetachForeground() == 1
+	}, 2*time.Second, 20*time.Millisecond)
+	result := <-resultChannel
+	require.NoError(t, result.err)
+	response := result.response
+	var metadata BashResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(response.Metadata), &metadata))
+	require.True(t, metadata.Background)
+	require.NotEmpty(t, metadata.ShellID)
+	backgroundShell, ok := manager.Get(metadata.ShellID)
+	require.True(t, ok)
+	require.Equal(t, "parent-session", backgroundShell.Ownership.ParentSessionID)
+	require.Equal(t, "a12345678", backgroundShell.Ownership.OwnerAgentTaskID)
+	require.Equal(t, "detach-call", backgroundShell.Ownership.OriginToolCallID)
+	cancelParent()
+	time.Sleep(25 * time.Millisecond)
+	require.False(t, backgroundShell.State().Status.Terminal())
+	_, err = manager.Stop(t.Context(), metadata.ShellID)
+	require.NoError(t, err)
+	select {
+	case event := <-notifications:
+		require.Equal(t, metadata.ShellID, event.Payload.TaskID)
+		require.Equal(t, "killed", string(event.Payload.Status))
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for detached shell notification")
+	}
 }
 
 type recordingPermissionService struct {
@@ -115,9 +209,15 @@ func (m *recordingPermissionService) SubscribeNotifications(ctx context.Context)
 }
 
 func newBashToolForTest(workingDir string) fantasy.AgentTool {
+	tool, _ := newBashToolAndManagerForTest(workingDir)
+	return tool
+}
+
+func newBashToolAndManagerForTest(workingDir string) (fantasy.AgentTool, *shell.BackgroundShellManager) {
 	permissions := &mockBashPermissionService{Broker: pubsub.NewBroker[permission.PermissionRequest]()}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	return NewBashTool(permissions, workingDir, attribution, "test-model")
+	manager := shell.NewBackgroundShellManager(workingDir)
+	return NewBashTool(manager, permissions, workingDir, attribution, "test-model"), manager
 }
 
 func newBashToolWithRecordingPerms(workingDir string, allow bool) (fantasy.AgentTool, *recordingPermissionService) {
@@ -126,7 +226,7 @@ func newBashToolWithRecordingPerms(workingDir string, allow bool) (fantasy.Agent
 		allow:  allow,
 	}
 	attribution := &config.Attribution{TrailerStyle: config.TrailerStyleNone}
-	return NewBashTool(perms, workingDir, attribution, "test-model"), perms
+	return NewBashTool(shell.NewBackgroundShellManager(workingDir), perms, workingDir, attribution, "test-model"), perms
 }
 
 func TestBashTool_ChainedCommandsRequirePermission(t *testing.T) {

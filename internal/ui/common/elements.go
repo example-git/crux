@@ -8,10 +8,10 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/agent/hyper"
-	"github.com/charmbracelet/crush/internal/home"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/home"
+	"github.com/example-git/crux/internal/ui/brand"
+	"github.com/example-git/crux/internal/ui/styles"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -41,14 +41,22 @@ type ModelContextInfo struct {
 
 // ModelInfo renders model information including name, provider, reasoning
 // settings, and optional context usage/cost.
-func ModelInfo(t *styles.Styles, modelName, providerName, reasoningInfo string, context *ModelContextInfo, width int, hyperCredits *int) string {
+func ModelInfo(t *styles.Styles, modelName, providerID, providerName, reasoningInfo string, context *ModelContextInfo, width int) string {
 	modelIcon := t.ModelInfo.Icon.Render(styles.ModelIcon)
 	modelName = t.ModelInfo.Name.Render(modelName)
+	providerStyle := t.ModelInfo.Provider
+	providerFallbackStyle := t.ModelInfo.ProviderFallback
+	reasoningStyle := t.ModelInfo.Reasoning
+	if providerBrand := brand.ForProvider(providerID); providerBrand != nil {
+		providerStyle = providerStyle.Foreground(providerBrand.Accent)
+		providerFallbackStyle = providerFallbackStyle.Foreground(providerBrand.Accent)
+		reasoningStyle = reasoningStyle.Foreground(providerBrand.Accent)
+	}
 
 	// Build first line with model name and optionally provider on the same line
 	var firstLine string
 	if providerName != "" {
-		providerInfo := t.ModelInfo.Provider.Render(fmt.Sprintf("via %s", providerName))
+		providerInfo := providerStyle.Render(fmt.Sprintf("via %s", providerName))
 		modelWithProvider := fmt.Sprintf("%s %s %s", modelIcon, modelName, providerInfo)
 
 		// Check if it fits on one line
@@ -67,23 +75,16 @@ func ModelInfo(t *styles.Styles, modelName, providerName, reasoningInfo string, 
 	// If provider didn't fit on first line, add it as second line
 	if providerName != "" && !strings.Contains(firstLine, "via") {
 		providerInfo := fmt.Sprintf("via %s", providerName)
-		parts = append(parts, t.ModelInfo.ProviderFallback.Render(providerInfo))
+		parts = append(parts, providerFallbackStyle.Render(providerInfo))
 	}
 
 	if reasoningInfo != "" {
-		parts = append(parts, t.ModelInfo.Reasoning.Render(reasoningInfo))
+		parts = append(parts, reasoningStyle.Render(reasoningInfo))
 	}
 
 	if context != nil {
 		formattedInfo := formatTokensAndCost(t, context.ContextUsed, context.ModelContext, context.Cost, context.EstimatedUsage)
 		parts = append(parts, lipgloss.NewStyle().PaddingLeft(2).Render(formattedInfo))
-	}
-
-	if providerName == hyper.DisplayName && hyperCredits != nil {
-		hcInfo := t.ModelInfo.HypercreditIcon.Render(styles.HypercreditIcon)
-		hcInfo += " "
-		hcInfo += t.ModelInfo.HypercreditText.Render(fmt.Sprintf("%s Hypercredits", FormatCredits(*hyperCredits)))
-		parts = append(parts, "", hcInfo)
 	}
 
 	return lipgloss.NewStyle().Width(width).Render(

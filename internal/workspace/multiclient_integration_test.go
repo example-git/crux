@@ -2,18 +2,24 @@ package workspace_test
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/crush/internal/client"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/server"
-	"github.com/charmbracelet/crush/internal/workspace"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/client"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/server"
+	"github.com/example-git/crux/internal/shell"
+	managedtask "github.com/example-git/crux/internal/task"
+	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
 
@@ -29,6 +35,90 @@ func xdgIsolate(t *testing.T) {
 
 // runtimeServer wires the production server handler around an
 // httptest.NewServer for integration testing.
+type shellTaskCoordinator struct {
+	manager *shell.BackgroundShellManager
+}
+
+func (shellTaskCoordinator) Run(context.Context, string, string, ...message.Attachment) (*fantasy.AgentResult, error) {
+	return nil, fmt.Errorf("agent unavailable")
+}
+
+func (shellTaskCoordinator) RunAccepted(context.Context, *agent.AcceptedRun, string, string, ...message.Attachment) (*fantasy.AgentResult, error) {
+	return nil, fmt.Errorf("agent unavailable")
+}
+
+func (shellTaskCoordinator) BeginAccepted(string) *agent.AcceptedRun               { return nil }
+func (shellTaskCoordinator) Cancel(string)                                         {}
+func (shellTaskCoordinator) CancelAll()                                            {}
+func (shellTaskCoordinator) IsSessionBusy(string) bool                             { return false }
+func (shellTaskCoordinator) IsBusy() bool                                          { return false }
+func (shellTaskCoordinator) QueuedPrompts(string) int                              { return 0 }
+func (shellTaskCoordinator) QueuedPromptsList(string) []agent.QueuedPrompt         { return nil }
+func (shellTaskCoordinator) ClearQueue(string)                                     {}
+func (shellTaskCoordinator) Summarize(context.Context, string) error               { return nil }
+func (shellTaskCoordinator) Model() agent.Model                                    { return agent.Model{} }
+func (shellTaskCoordinator) UpdateModels(context.Context) error                    { return nil }
+func (shellTaskCoordinator) GenerateTitle(context.Context, string, string)         {}
+func (shellTaskCoordinator) SuggestPrompt(context.Context, string) (string, error) { return "", nil }
+
+func (c shellTaskCoordinator) ListTasks() []managedtask.View {
+	ids := c.manager.List()
+	tasks := make([]managedtask.View, 0, len(ids))
+	for _, id := range ids {
+		if backgroundShell, ok := c.manager.Get(id); ok {
+			tasks = append(tasks, shellTaskView(backgroundShell))
+		}
+	}
+	return tasks
+}
+
+func (c shellTaskCoordinator) TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error) {
+	backgroundShell, ok := c.manager.Get(id)
+	if !ok {
+		return managedtask.OutputResult{}, fmt.Errorf("background shell not found: %s", id)
+	}
+	output, status, err := backgroundShell.ReadOutput(ctx, managedtask.ReadOptions{Stream: managedtask.OutputStreamMerged}, wait, timeout)
+	return managedtask.OutputResult{
+		Task:            shellTaskView(backgroundShell),
+		Output:          string(output.Output),
+		RetrievalStatus: status,
+		Status:          status,
+		NextOffset:      output.NextOffset,
+		OutputTruncated: output.OutputTruncated,
+	}, err
+}
+
+func (c shellTaskCoordinator) StopTask(ctx context.Context, id string) (managedtask.View, error) {
+	if _, err := c.manager.Stop(ctx, id); err != nil {
+		return managedtask.View{}, err
+	}
+	backgroundShell, ok := c.manager.Get(id)
+	if !ok {
+		return managedtask.View{}, fmt.Errorf("background shell not found: %s", id)
+	}
+	return shellTaskView(backgroundShell), nil
+}
+
+func (shellTaskCoordinator) ContinueTask(context.Context, string, string, string, string) (managedtask.View, error) {
+	return managedtask.View{}, fmt.Errorf("task is not a background agent")
+}
+
+func (shellTaskCoordinator) DeliverTaskNotification(_ context.Context, _ managedtask.Notification, onPersisted, _ func()) error {
+	onPersisted()
+	return nil
+}
+
+func shellTaskView(backgroundShell *shell.BackgroundShell) managedtask.View {
+	return managedtask.View{
+		ID:          backgroundShell.ID,
+		Type:        managedtask.TypeShell,
+		Description: backgroundShell.Description,
+		Ownership:   backgroundShell.Ownership,
+		State:       backgroundShell.State(),
+		OutputRef:   backgroundShell.OutputRef(),
+	}
+}
+
 type runtimeServer struct {
 	srv     *server.Server
 	httpSrv *httptest.Server
@@ -54,7 +144,7 @@ func (r *runtimeServer) newClient(t *testing.T, path string) *client.Client {
 	// claim it holds and tears the workspace down at once, closing the
 	// pooled DB connection. Without this a test that leaves clients
 	// attached (the SSE cache tests never shut theirs down) keeps the
-	// workspace, and its open crush.db, alive past t.TempDir cleanup,
+	// workspace, and its open crux.db, alive past t.TempDir cleanup,
 	// which Windows cannot remove while the file is locked.
 	t.Cleanup(func() { _ = c.RetireClient(context.Background()) })
 	return c
@@ -181,6 +271,74 @@ loop:
 		}
 	}
 	require.True(t, gotConfigChanged, "expected ConfigChanged event over SSE")
+}
+
+func TestServer_SharedWorkspaceManagedTaskLifecycle(t *testing.T) {
+	xdgIsolate(t)
+	runtime := newRuntimeServer(t)
+
+	workingDir := t.TempDir()
+	dataDir := t.TempDir()
+	clientA := runtime.newClient(t, workingDir)
+	clientB := runtime.newClient(t, workingDir)
+	ctx := t.Context()
+
+	workspaceA, err := clientA.CreateWorkspace(ctx, proto.Workspace{Path: workingDir, DataDir: dataDir})
+	require.NoError(t, err)
+	workspaceB, err := clientB.CreateWorkspace(ctx, proto.Workspace{Path: workingDir, DataDir: dataDir})
+	require.NoError(t, err)
+	require.Equal(t, workspaceA.ID, workspaceB.ID)
+
+	live, err := runtime.srv.Backend().GetWorkspace(workspaceA.ID)
+	require.NoError(t, err)
+	live.AgentCoordinator = shellTaskCoordinator{manager: live.BackgroundShells}
+	backgroundShell, err := live.BackgroundShells.StartOwned(context.Background(), workingDir, nil, "printf shared-output; sleep 30", "shared shell", managedtask.Ownership{
+		ParentSessionID:  "parent-session",
+		OriginToolCallID: "tool-call",
+	})
+	require.NoError(t, err)
+	backgroundShell.MarkBackgrounded()
+	t.Cleanup(func() {
+		_, _ = live.StopTask(context.Background(), backgroundShell.ID)
+	})
+
+	for _, currentClient := range []*client.Client{clientA, clientB} {
+		require.Eventually(t, func() bool {
+			tasks, listErr := currentClient.ListTasks(ctx, workspaceA.ID)
+			return listErr == nil && len(tasks) == 1 && tasks[0].ID == backgroundShell.ID && tasks[0].State.Status == managedtask.StatusRunning
+		}, 3*time.Second, 25*time.Millisecond)
+	}
+
+	require.Eventually(t, func() bool {
+		output, outputErr := clientB.TaskOutput(ctx, workspaceA.ID, backgroundShell.ID, false, 0)
+		return outputErr == nil && output.Output == "shared-output"
+	}, 3*time.Second, 25*time.Millisecond)
+
+	stopped, err := clientB.StopTask(ctx, workspaceA.ID, backgroundShell.ID)
+	require.NoError(t, err)
+	require.Equal(t, managedtask.StatusKilled, stopped.State.Status)
+
+	tasks, err := clientA.ListTasks(ctx, workspaceA.ID)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	require.Equal(t, managedtask.StatusKilled, tasks[0].State.Status)
+
+	var notification managedtask.Notification
+	require.Eventually(t, func() bool {
+		notifications, listErr := clientA.ListTaskNotifications(ctx, workspaceA.ID, "parent-session", true)
+		if listErr != nil || len(notifications) != 1 {
+			return false
+		}
+		notification = notifications[0]
+		return notification.TaskID == backgroundShell.ID
+	}, 3*time.Second, 25*time.Millisecond)
+
+	read, err := clientB.MarkTaskNotificationRead(ctx, workspaceA.ID, notification.ID)
+	require.NoError(t, err)
+	require.False(t, read.ReadAt.IsZero())
+	unread, err := clientA.ListTaskNotifications(ctx, workspaceA.ID, "parent-session", true)
+	require.NoError(t, err)
+	require.Empty(t, unread)
 }
 
 // -- Concurrent session lifecycle --

@@ -9,13 +9,13 @@ import (
 	"os"
 	"strings"
 
-	"charm.land/fantasy"
+	fantasy "github.com/example-git/crux/foundation"
 
-	"github.com/charmbracelet/crush/internal/filetracker"
-	"github.com/charmbracelet/crush/internal/history"
-	"github.com/charmbracelet/crush/internal/lsp"
-	lsputil "github.com/charmbracelet/crush/internal/lsp/util"
-	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/example-git/crux/internal/filetracker"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/lsp"
+	lsputil "github.com/example-git/crux/internal/lsp/util"
+	"github.com/example-git/crux/internal/permission"
 )
 
 type RenameParams struct {

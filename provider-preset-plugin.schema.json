@@ -1,0 +1,317 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/example-git/crux/main/provider-preset-plugin.schema.json",
+  "$ref": "#/$defs/PresetManifest",
+  "$defs": {
+    "Compatibility": {
+      "properties": {
+        "host_api": {
+          "$ref": "#/$defs/VersionBounds"
+        },
+        "host_version": {
+          "$ref": "#/$defs/SemverBounds"
+        },
+        "required_features": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "optional_features": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host_api"
+      ]
+    },
+    "ModelPreset": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "cost_per_1m_in": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_per_1m_out": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_per_1m_in_cached": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_per_1m_out_cached": {
+          "type": "number",
+          "minimum": 0
+        },
+        "context_window": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_max_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "can_reason": {
+          "type": "boolean"
+        },
+        "reasoning_levels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "default_reasoning_effort": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "supports_attachments": {
+          "type": "boolean"
+        },
+        "options": {
+          "$ref": "#/$defs/ModelPresetOptions"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "context_window",
+        "default_max_tokens"
+      ]
+    },
+    "ModelPresetOptions": {
+      "properties": {
+        "temperature": {
+          "type": "number"
+        },
+        "top_p": {
+          "type": "number"
+        },
+        "top_k": {
+          "type": "integer"
+        },
+        "frequency_penalty": {
+          "type": "number"
+        },
+        "presence_penalty": {
+          "type": "number"
+        },
+        "provider_options": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "PresetManifest": {
+      "properties": {
+        "$schema": {
+          "type": "string",
+          "format": "uri-reference",
+          "description": "Optional editor schema hint"
+        },
+        "plugin_type": {
+          "type": "string",
+          "enum": [
+            "provider-preset"
+          ]
+        },
+        "manifest_version": {
+          "type": "integer",
+          "maximum": 1,
+          "minimum": 1
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1
+        },
+        "publisher": {
+          "$ref": "#/$defs/Publisher"
+        },
+        "compatibility": {
+          "$ref": "#/$defs/Compatibility"
+        },
+        "preset": {
+          "$ref": "#/$defs/ProviderPreset"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "plugin_type",
+        "manifest_version",
+        "id",
+        "version",
+        "name",
+        "description",
+        "publisher",
+        "compatibility",
+        "preset"
+      ]
+    },
+    "ProviderPreset": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "openai-compat"
+          ]
+        },
+        "api_key": {
+          "type": "string",
+          "pattern": "^$|^\\$[A-Z][A-Z0-9_]*$"
+        },
+        "api_endpoint": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "default_large_model_id": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "default_small_model_id": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/ModelPreset"
+          },
+          "type": "array",
+          "maxItems": 512,
+          "minItems": 1
+        },
+        "default_headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "id",
+        "type",
+        "default_large_model_id",
+        "default_small_model_id",
+        "models"
+      ]
+    },
+    "Publisher": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri"
+        },
+        "support_url": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "SemverBounds": {
+      "properties": {
+        "min": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        },
+        "max": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "VersionBounds": {
+      "properties": {
+        "min": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "min",
+        "max"
+      ]
+    }
+  },
+  "title": "Crux Provider Preset Plugin Manifest",
+  "description": "Version 1 data-only provider preset contract for direct *.plugin bundles"
+}

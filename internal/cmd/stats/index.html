@@ -3,16 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Crush Usage Statistics</title>
+    <title>Crux Usage Statistics</title>
     <link rel="icon" type="image/svg+xml" href='{{.Favicon}}' />
-    <link rel="preconnect" href="https://cdn.jsdelivr.net" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
-    />
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+      {{.ChartJS}}
+    </script>
     <style>
       {{.CSS}}
     </style>
@@ -20,10 +15,10 @@
   <body>
     <div class="container">
       <div class="header-wrapper">
-        <a href="https://charm.land/crush" class="header-link">
+        <a href="https://github.com/example-git/crux" class="header-link">
           <div class="header-content">
             <div class="header-svg">{{.Header}}</div>
-            <div class="heartbit-svg">{{.Heartbit}}</div>
+            <div class="crux-mark-svg">{{.CruxMark}}</div>
           </div>
         </a>
       </div>

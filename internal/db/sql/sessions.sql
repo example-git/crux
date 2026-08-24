@@ -8,6 +8,8 @@ INSERT INTO sessions (
     completion_tokens,
     cost,
     summary_message_id,
+    mode,
+    plan,
     updated_at,
     created_at
 ) VALUES (
@@ -19,6 +21,8 @@ INSERT INTO sessions (
     ?,
     ?,
     null,
+    'default',
+    '',
     strftime('%s', 'now'),
     strftime('%s', 'now')
 ) RETURNING *;
@@ -52,15 +56,31 @@ SET
 WHERE id = ?
 RETURNING *;
 
--- name: UpdateSessionTitleAndUsage :exec
+-- name: SetSessionPlanState :exec
+UPDATE sessions
+SET
+    mode = ?,
+    plan = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?;
+
+-- name: UpdateSessionTitleAndCost :exec
 UPDATE sessions
 SET
     title = ?,
-    prompt_tokens = prompt_tokens + ?,
-    completion_tokens = completion_tokens + ?,
     cost = cost + ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?;
+
+-- name: UpdateSessionCompaction :one
+UPDATE sessions
+SET
+    summary_message_id = ?,
+    prompt_tokens = ?,
+    completion_tokens = ?,
+    cost = ?
+WHERE id = ?
+RETURNING *;
 
 
 -- name: RenameSession :exec

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/message"
+	"github.com/example-git/crux/internal/message"
 )
 
 // CreateMessageParams represents parameters for creating a message.
@@ -82,12 +82,19 @@ type ContentPart interface {
 	isPart()
 }
 
+// ProviderMetadataContent carries message- and continuation-scoped metadata.
+type ProviderMetadataContent struct {
+	ProviderMetadata message.ProviderMetadata `json:"provider_metadata"`
+}
+
+func (ProviderMetadataContent) isPart() {}
+
 // ReasoningContent represents the reasoning/thinking part of a message.
 type ReasoningContent struct {
-	Thinking   string `json:"thinking"`
-	Signature  string `json:"signature"`
-	StartedAt  int64  `json:"started_at,omitempty"`
-	FinishedAt int64  `json:"finished_at,omitempty"`
+	Thinking         string                   `json:"thinking"`
+	ProviderMetadata message.ProviderMetadata `json:"provider_metadata,omitempty"`
+	StartedAt        int64                    `json:"started_at,omitempty"`
+	FinishedAt       int64                    `json:"finished_at,omitempty"`
 }
 
 // String returns the thinking content as a string.
@@ -99,7 +106,8 @@ func (ReasoningContent) isPart() {}
 
 // TextContent represents a text part of a message.
 type TextContent struct {
-	Text string `json:"text"`
+	Text             string                   `json:"text"`
+	ProviderMetadata message.ProviderMetadata `json:"provider_metadata,omitempty"`
 }
 
 // String returns the text content as a string.
@@ -142,24 +150,28 @@ func (BinaryContent) isPart() {}
 
 // ToolCall represents a tool call in a message.
 type ToolCall struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Input    string `json:"input"`
-	Type     string `json:"type,omitempty"`
-	Finished bool   `json:"finished,omitempty"`
+	ID               string                   `json:"id"`
+	Name             string                   `json:"name"`
+	Input            string                   `json:"input"`
+	Type             string                   `json:"type,omitempty"`
+	ProviderExecuted bool                     `json:"provider_executed,omitempty"`
+	Finished         bool                     `json:"finished,omitempty"`
+	ProviderMetadata message.ProviderMetadata `json:"provider_metadata,omitempty"`
 }
 
 func (ToolCall) isPart() {}
 
 // ToolResult represents the result of a tool call.
 type ToolResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
-	Data       string `json:"data,omitempty"`
-	MIMEType   string `json:"mime_type,omitempty"`
-	Metadata   string `json:"metadata"`
-	IsError    bool   `json:"is_error"`
+	ToolCallID       string                   `json:"tool_call_id"`
+	Name             string                   `json:"name"`
+	Content          string                   `json:"content"`
+	Data             string                   `json:"data,omitempty"`
+	MIMEType         string                   `json:"mime_type,omitempty"`
+	Metadata         string                   `json:"metadata"`
+	IsError          bool                     `json:"is_error"`
+	ProviderExecuted bool                     `json:"provider_executed,omitempty"`
+	ProviderMetadata message.ProviderMetadata `json:"provider_metadata,omitempty"`
 }
 
 func (ToolResult) isPart() {}
@@ -327,7 +339,8 @@ func (m *Message) AppendContent(delta string) {
 	found := false
 	for i, part := range m.Parts {
 		if c, ok := part.(TextContent); ok {
-			m.Parts[i] = TextContent{Text: c.Text + delta}
+			c.Text += delta
+			m.Parts[i] = c
 			found = true
 		}
 	}
@@ -341,12 +354,8 @@ func (m *Message) AppendReasoningContent(delta string) {
 	found := false
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:   c.Thinking + delta,
-				Signature:  c.Signature,
-				StartedAt:  c.StartedAt,
-				FinishedAt: c.FinishedAt,
-			}
+			c.Thinking += delta
+			m.Parts[i] = c
 			found = true
 		}
 	}
@@ -358,33 +367,13 @@ func (m *Message) AppendReasoningContent(delta string) {
 	}
 }
 
-// AppendReasoningSignature appends a signature to the reasoning content part.
-func (m *Message) AppendReasoningSignature(signature string) {
-	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:   c.Thinking,
-				Signature:  c.Signature + signature,
-				StartedAt:  c.StartedAt,
-				FinishedAt: c.FinishedAt,
-			}
-			return
-		}
-	}
-	m.Parts = append(m.Parts, ReasoningContent{Signature: signature})
-}
-
 // FinishThinking marks the reasoning content as finished.
 func (m *Message) FinishThinking() {
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
 			if c.FinishedAt == 0 {
-				m.Parts[i] = ReasoningContent{
-					Thinking:   c.Thinking,
-					Signature:  c.Signature,
-					StartedAt:  c.StartedAt,
-					FinishedAt: time.Now().Unix(),
-				}
+				c.FinishedAt = time.Now().Unix()
+				m.Parts[i] = c
 			}
 			return
 		}
@@ -411,13 +400,8 @@ func (m *Message) FinishToolCall(toolCallID string) {
 	for i, part := range m.Parts {
 		if c, ok := part.(ToolCall); ok {
 			if c.ID == toolCallID {
-				m.Parts[i] = ToolCall{
-					ID:       c.ID,
-					Name:     c.Name,
-					Input:    c.Input,
-					Type:     c.Type,
-					Finished: true,
-				}
+				c.Finished = true
+				m.Parts[i] = c
 				return
 			}
 		}
@@ -429,13 +413,8 @@ func (m *Message) AppendToolCallInput(toolCallID string, inputDelta string) {
 	for i, part := range m.Parts {
 		if c, ok := part.(ToolCall); ok {
 			if c.ID == toolCallID {
-				m.Parts[i] = ToolCall{
-					ID:       c.ID,
-					Name:     c.Name,
-					Input:    c.Input + inputDelta,
-					Type:     c.Type,
-					Finished: c.Finished,
-				}
+				c.Input += inputDelta
+				m.Parts[i] = c
 				return
 			}
 		}
@@ -506,14 +485,15 @@ func (m *Message) AddBinary(mimeType string, data []byte) {
 type partType string
 
 const (
-	reasoningType    partType = "reasoning"
-	textType         partType = "text"
-	imageURLType     partType = "image_url"
-	binaryType       partType = "binary"
-	toolCallType     partType = "tool_call"
-	toolResultType   partType = "tool_result"
-	finishType       partType = "finish"
-	shellCommandType partType = "shell_command"
+	reasoningType        partType = "reasoning"
+	textType             partType = "text"
+	imageURLType         partType = "image_url"
+	binaryType           partType = "binary"
+	toolCallType         partType = "tool_call"
+	toolResultType       partType = "tool_result"
+	finishType           partType = "finish"
+	shellCommandType     partType = "shell_command"
+	providerMetadataType partType = "provider_metadata"
 )
 
 type partWrapper struct {
@@ -545,6 +525,8 @@ func MarshalParts(parts []ContentPart) ([]byte, error) {
 			typ = finishType
 		case ShellCommand:
 			typ = shellCommandType
+		case ProviderMetadataContent:
+			typ = providerMetadataType
 		default:
 			return nil, fmt.Errorf("unknown part type: %T", part)
 		}
@@ -622,6 +604,12 @@ func UnmarshalParts(data []byte) ([]ContentPart, error) {
 			parts = append(parts, part)
 		case shellCommandType:
 			part := ShellCommand{}
+			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+		case providerMetadataType:
+			part := ProviderMetadataContent{}
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
 			}

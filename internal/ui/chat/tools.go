@@ -10,18 +10,18 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/tree"
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/agent/tools"
-	"github.com/charmbracelet/crush/internal/diff"
-	"github.com/charmbracelet/crush/internal/fsext"
-	"github.com/charmbracelet/crush/internal/hooks"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/stringext"
-	"github.com/charmbracelet/crush/internal/ui/anim"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/list"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/agent/tools"
+	"github.com/example-git/crux/internal/diff"
+	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/hooks"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/stringext"
+	"github.com/example-git/crux/internal/ui/anim"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/list"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 // responseContextHeight limits the number of lines displayed in tool output.
@@ -244,8 +244,12 @@ func NewToolMessageItem(
 		item = NewFetchToolMessageItem(sty, toolCall, result, canceled)
 	case tools.SourcegraphToolName:
 		item = NewSourcegraphToolMessageItem(sty, toolCall, result, canceled)
+	case tools.CodebaseSearchToolName:
+		item = newCodebaseSearchToolMessageItem(sty, toolCall, result, canceled)
 	case tools.DiagnosticsToolName:
 		item = NewDiagnosticsToolMessageItem(sty, toolCall, result, canceled)
+	case tools.TrafficLogsToolName:
+		item = NewTrafficLogsToolMessageItem(sty, toolCall, result, canceled)
 	case agent.AgentToolName:
 		item = NewAgentToolMessageItem(sty, toolCall, result, canceled)
 	case tools.AgenticFetchToolName:
@@ -272,6 +276,19 @@ func NewToolMessageItem(
 		item = NewSymbolsToolMessageItem(sty, toolCall, result, canceled)
 	case tools.LSPRestartToolName:
 		item = NewLSPRestartToolMessageItem(sty, toolCall, result, canceled)
+	case tools.MemoryListToolName,
+		tools.MemoryUpsertToolName,
+		tools.MemoryRemoveToolName,
+		tools.ProjectCreateToolName,
+		tools.ProjectStatusToolName,
+		tools.ProjectUpdateToolName,
+		tools.ProjectNotesToolName,
+		tools.ProjectCompleteToolName,
+		tools.TaskListToolName,
+		tools.TaskOutputToolName,
+		tools.TaskStopToolName,
+		tools.TaskContinueToolName:
+		item = newActionToolMessageItem(sty, toolCall, result, canceled)
 	default:
 		if IsDockerMCPTool(toolCall.Name) {
 			item = NewDockerMCPToolMessageItem(sty, toolCall, result, canceled)

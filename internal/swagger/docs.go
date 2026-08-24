@@ -10,12 +10,12 @@ const docTemplate = `{
         "description": "{{escape .Description}}",
         "title": "{{.Title}}",
         "contact": {
-            "name": "Charm",
-            "url": "https://charm.sh"
+            "name": "Crux",
+            "url": "https://github.com/example-git/crux"
         },
         "license": {
-            "name": "MIT",
-            "url": "https://github.com/charmbracelet/crush/blob/main/LICENSE"
+            "name": "FSL-1.1-MIT",
+            "url": "https://github.com/example-git/crux/blob/main/LICENSE.md"
         },
         "version": "{{.Version}}"
     },
@@ -447,6 +447,40 @@ const docTemplate = `{
                 }
             }
         },
+        "/workspaces/{id}/agent/jobs/detach": {
+            "post": {
+                "tags": [
+                    "agent"
+                ],
+                "summary": "Detach foreground jobs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/workspaces/{id}/agent/sessions/{sid}": {
             "get": {
                 "produces": [
@@ -607,7 +641,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "type": "string"
+                                "$ref": "#/definitions/proto.QueuedPrompt"
                             }
                         }
                     },
@@ -722,6 +756,47 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/proto.Error"
                         }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/agent/sessions/{sid}/suggest": {
+            "post": {
+                "tags": [
+                    "agent"
+                ],
+                "summary": "Suggest next prompt",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "sid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
                     },
                     "404": {
                         "description": "Not Found",
@@ -1579,6 +1654,105 @@ const docTemplate = `{
                 }
             }
         },
+        "/workspaces/{id}/mcp/auth": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp"
+                ],
+                "summary": "Authenticate an MCP server",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "MCP name request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.MCPNameRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.MCPAuthResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/mcp/auth-url": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp"
+                ],
+                "summary": "Get MCP OAuth authorization URL",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "MCP server name",
+                        "name": "name",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.MCPAuthResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/workspaces/{id}/mcp/docker/disable": {
             "post": {
                 "tags": [
@@ -1688,6 +1862,49 @@ const docTemplate = `{
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/mcp/pending-auth": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "mcp"
+                ],
+                "summary": "Get MCP servers pending OAuth",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/proto.MCPPendingAuthServer"
+                            }
                         }
                     },
                     "404": {
@@ -2029,7 +2246,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/github_com_charmbracelet_crush_internal_proto.Message"
+                                "$ref": "#/definitions/proto.Message"
                             }
                         }
                     },
@@ -2329,7 +2546,10 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object"
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/proto.ProviderSurface"
+                            }
                         }
                     },
                     "404": {
@@ -2824,7 +3044,7 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/github_com_charmbracelet_crush_internal_proto.Message"
+                                "$ref": "#/definitions/proto.Message"
                             }
                         }
                     },
@@ -2874,8 +3094,120 @@ const docTemplate = `{
                         "schema": {
                             "type": "array",
                             "items": {
-                                "$ref": "#/definitions/github_com_charmbracelet_crush_internal_proto.Message"
+                                "$ref": "#/definitions/proto.Message"
                             }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/sessions/{sid}/mode": {
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "Update session mode",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "sid",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Session mode",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.Session"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Session"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/sessions/{sid}/rewind": {
+            "post": {
+                "tags": [
+                    "sessions"
+                ],
+                "summary": "Rewind session",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "sid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
                         }
                     },
                     "404": {
@@ -3210,7 +3542,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "oauth_callback_port": {
-                    "description": "OAuthCallbackPort pins the localhost port used for the OAuth\nredirect listener. Set this when the OAuth provider requires an\nexact-match callback URL (e.g. GitHub OAuth Apps). When omitted,\nCrush picks the first free port from its default range.",
+                    "description": "OAuthCallbackPort pins the localhost port used for the OAuth\nredirect listener. Set this when the OAuth provider requires an\nexact-match callback URL (e.g. GitHub OAuth Apps). When omitted,\nCrux picks the first free port from its default range.",
                     "type": "integer"
                 },
                 "oauth_client_id": {
@@ -3304,7 +3636,7 @@ const docTemplate = `{
                     "type": "number"
                 },
                 "think": {
-                    "description": "Used by anthropic models that can reason to indicate if the model should think.",
+                    "description": "Enables provider-specific reasoning when the selected model supports it.",
                     "type": "boolean"
                 },
                 "top_k": {
@@ -3346,6 +3678,35 @@ const docTemplate = `{
                 }
             }
         },
+        "config.ToolCodebaseSearch": {
+            "type": "object",
+            "properties": {
+                "ann_directory": {
+                    "type": "string"
+                },
+                "database_path": {
+                    "type": "string"
+                },
+                "enabled": {
+                    "type": "boolean"
+                },
+                "exclude_paths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "include_paths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "store_directory": {
+                    "type": "string"
+                }
+            }
+        },
         "config.ToolGlob": {
             "type": "object",
             "properties": {
@@ -3376,6 +3737,9 @@ const docTemplate = `{
         "config.Tools": {
             "type": "object",
             "properties": {
+                "codebase_search": {
+                    "$ref": "#/definitions/config.ToolCodebaseSearch"
+                },
                 "glob": {
                     "$ref": "#/definitions/config.ToolGlob"
                 },
@@ -3403,7 +3767,7 @@ const docTemplate = `{
         "csync.Map-string-config_ProviderConfig": {
             "type": "object"
         },
-        "github_com_charmbracelet_crush_internal_config.Config": {
+        "github_com_example-git_crux_internal_config.Config": {
             "type": "object",
             "properties": {
                 "$schema": {
@@ -3439,7 +3803,7 @@ const docTemplate = `{
                     }
                 },
                 "options": {
-                    "$ref": "#/definitions/github_com_charmbracelet_crush_internal_config.Options"
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Options"
                 },
                 "permissions": {
                     "$ref": "#/definitions/config.Permissions"
@@ -3467,9 +3831,12 @@ const docTemplate = `{
                 }
             }
         },
-        "github_com_charmbracelet_crush_internal_config.Options": {
+        "github_com_example-git_crux_internal_config.Options": {
             "type": "object",
             "properties": {
+                "analysis_effort": {
+                    "type": "string"
+                },
                 "attribution": {
                     "$ref": "#/definitions/config.Attribution"
                 },
@@ -3483,7 +3850,7 @@ const docTemplate = `{
                     }
                 },
                 "data_directory": {
-                    "description": "DataDirectory is where Crush keeps per-project state such as\nthe SQLite database and workspace overrides. Relative paths are\nresolved against the working directory; absolute paths are used\nverbatim. After defaulting the stored value is always absolute.",
+                    "description": "DataDirectory is where Crux keeps per-project state such as\nthe SQLite database and workspace overrides. Relative paths are\nresolved against the working directory; absolute paths are used\nverbatim. After defaulting the stored value is always absolute.",
                     "type": "string"
                 },
                 "debug": {
@@ -3498,11 +3865,15 @@ const docTemplate = `{
                 "disable_default_providers": {
                     "type": "boolean"
                 },
-                "disable_metrics": {
-                    "type": "boolean"
-                },
                 "disable_provider_auto_update": {
                     "type": "boolean"
+                },
+                "disabled_instruction_sections": {
+                    "description": "DisabledInstructionSections lists native instruction section IDs to\nskip when building the system prompt. Section IDs match the file\nnames in internal/agent/templates/sections/ without the .md extension.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "disabled_skills": {
                     "type": "array",
@@ -3525,11 +3896,18 @@ const docTemplate = `{
                 "initialize_as": {
                     "type": "string"
                 },
+                "instruction_mode": {
+                    "description": "InstructionMode controls which instruction sources are active:\n  \"all\"     — native sections + project context (default)\n  \"project\" — project context files only (skip native instruction sections)\n  \"native\"  — native instruction sections only (skip project context files)",
+                    "type": "string"
+                },
                 "notifications": {
                     "type": "string"
                 },
                 "progress": {
                     "type": "boolean"
+                },
+                "response_verbosity": {
+                    "type": "string"
                 },
                 "skills_paths": {
                     "type": "array",
@@ -3537,12 +3915,15 @@ const docTemplate = `{
                         "type": "string"
                     }
                 },
+                "system_prompt_override": {
+                    "type": "boolean"
+                },
                 "tui": {
                     "$ref": "#/definitions/config.TUIOptions"
                 }
             }
         },
-        "github_com_charmbracelet_crush_internal_config.Scope": {
+        "github_com_example-git_crux_internal_config.Scope": {
             "type": "integer",
             "enum": [
                 0,
@@ -3552,36 +3933,6 @@ const docTemplate = `{
                 "ScopeGlobal",
                 "ScopeWorkspace"
             ]
-        },
-        "github_com_charmbracelet_crush_internal_proto.Message": {
-            "type": "object",
-            "properties": {
-                "created_at": {
-                    "type": "integer"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "model": {
-                    "type": "string"
-                },
-                "parts": {
-                    "type": "array",
-                    "items": {}
-                },
-                "provider": {
-                    "type": "string"
-                },
-                "role": {
-                    "$ref": "#/definitions/proto.MessageRole"
-                },
-                "session_id": {
-                    "type": "string"
-                },
-                "updated_at": {
-                    "type": "integer"
-                }
-            }
         },
         "lsp.ServerState": {
             "type": "integer",
@@ -3601,6 +3952,90 @@ const docTemplate = `{
                 "StateStopped",
                 "StateDisabled"
             ]
+        },
+        "manifest.FieldDisplay": {
+            "type": "object",
+            "properties": {
+                "advanced": {
+                    "type": "boolean"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "order": {
+                    "type": "integer"
+                },
+                "secret": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "manifest.ImageHistoryBudget": {
+            "type": "object",
+            "properties": {
+                "omit_old_images": {
+                    "type": "boolean"
+                },
+                "per_image_targets": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "request_bytes": {
+                    "type": "integer"
+                },
+                "retain_newest_image": {
+                    "type": "boolean"
+                },
+                "retry_request_bytes": {
+                    "type": "integer"
+                }
+            }
+        },
+        "manifest.ImagePolicy": {
+            "type": "object",
+            "properties": {
+                "accepted_media_types": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "flatten_alpha": {
+                    "type": "string"
+                },
+                "history_budget": {
+                    "$ref": "#/definitions/manifest.ImageHistoryBudget"
+                },
+                "max_output_bytes": {
+                    "type": "integer"
+                },
+                "max_patches": {
+                    "type": "integer"
+                },
+                "max_side_pixels": {
+                    "type": "integer"
+                },
+                "max_source_bytes": {
+                    "type": "integer"
+                },
+                "output_media_type": {
+                    "type": "string"
+                },
+                "quality_steps": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "resize_percent": {
+                    "type": "integer"
+                }
+            }
         },
         "oauth.OAuthClient": {
             "type": "object",
@@ -3687,6 +4122,9 @@ const docTemplate = `{
                 },
                 "session_id": {
                     "type": "string"
+                },
+                "submission_id": {
+                    "type": "string"
                 }
             }
         },
@@ -3714,7 +4152,13 @@ const docTemplate = `{
                 "message_count": {
                     "type": "integer"
                 },
+                "mode": {
+                    "type": "string"
+                },
                 "parent_session_id": {
+                    "type": "string"
+                },
+                "plan": {
                     "type": "string"
                 },
                 "prompt_tokens": {
@@ -3764,7 +4208,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "scope": {
-                    "$ref": "#/definitions/github_com_charmbracelet_crush_internal_config.Scope"
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
                 }
             }
         },
@@ -3778,7 +4222,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/config.SelectedModelType"
                 },
                 "scope": {
-                    "$ref": "#/definitions/github_com_charmbracelet_crush_internal_config.Scope"
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
                 }
             }
         },
@@ -3798,7 +4242,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "scope": {
-                    "$ref": "#/definitions/github_com_charmbracelet_crush_internal_config.Scope"
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
                 }
             }
         },
@@ -3809,7 +4253,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "scope": {
-                    "$ref": "#/definitions/github_com_charmbracelet_crush_internal_config.Scope"
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
                 }
             }
         },
@@ -3820,7 +4264,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "scope": {
-                    "$ref": "#/definitions/github_com_charmbracelet_crush_internal_config.Scope"
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
                 }
             }
         },
@@ -3831,7 +4275,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "scope": {
-                    "$ref": "#/definitions/github_com_charmbracelet_crush_internal_config.Scope"
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
                 },
                 "value": {}
             }
@@ -3924,6 +4368,15 @@ const docTemplate = `{
                 }
             }
         },
+        "proto.MCPAuthResponse": {
+            "type": "object",
+            "properties": {
+                "auth_url": {
+                    "description": "AuthURL is the OAuth authorization URL the user must visit, when\nthe flow is still in progress.",
+                    "type": "string"
+                }
+            }
+        },
         "proto.MCPClientInfo": {
             "type": "object",
             "properties": {
@@ -3977,6 +4430,17 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "name": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.MCPPendingAuthServer": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "url": {
                     "type": "string"
                 }
             }
@@ -4051,6 +4515,39 @@ const docTemplate = `{
                 "MCPStateError",
                 "MCPStateNeedsAuth"
             ]
+        },
+        "proto.Message": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_summary_message": {
+                    "type": "boolean"
+                },
+                "model": {
+                    "type": "string"
+                },
+                "parts": {
+                    "type": "array",
+                    "items": {}
+                },
+                "provider": {
+                    "type": "string"
+                },
+                "role": {
+                    "$ref": "#/definitions/proto.MessageRole"
+                },
+                "session_id": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "integer"
+                }
+            }
         },
         "proto.MessageRole": {
             "type": "string",
@@ -4150,6 +4647,81 @@ const docTemplate = `{
                 }
             }
         },
+        "proto.ProviderSurface": {
+            "type": "object",
+            "properties": {
+                "authentication": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerregistry.Authentication"
+                    }
+                },
+                "availability": {
+                    "type": "string"
+                },
+                "available": {
+                    "type": "boolean"
+                },
+                "brand": {
+                    "$ref": "#/definitions/providerregistry.Brand"
+                },
+                "configuration_fields": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/manifest.FieldDisplay"
+                    }
+                },
+                "configuration_schema": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "default_large_model": {
+                    "type": "string"
+                },
+                "default_small_model": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "diagnostic": {
+                    "type": "string"
+                },
+                "flat_rate": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "images": {
+                    "$ref": "#/definitions/manifest.ImagePolicy"
+                },
+                "instructions": {
+                    "$ref": "#/definitions/providerregistry.InstructionSurface"
+                },
+                "models": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/catwalk.Model"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "order": {
+                    "type": "integer"
+                },
+                "runtime_controls": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerregistry.RuntimeControlSurface"
+                    }
+                },
+                "usage_available": {
+                    "type": "boolean"
+                }
+            }
+        },
         "proto.QuestionAnswer": {
             "type": "object",
             "properties": {
@@ -4195,6 +4767,17 @@ const docTemplate = `{
                 },
                 "yes": {
                     "type": "boolean"
+                }
+            }
+        },
+        "proto.QueuedPrompt": {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string"
+                },
+                "submission_id": {
+                    "type": "string"
                 }
             }
         },
@@ -4252,7 +4835,13 @@ const docTemplate = `{
                 "message_count": {
                     "type": "integer"
                 },
+                "mode": {
+                    "type": "string"
+                },
                 "parent_session_id": {
+                    "type": "string"
+                },
+                "plan": {
                     "type": "string"
                 },
                 "prompt_tokens": {
@@ -4416,7 +5005,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "config": {
-                    "$ref": "#/definitions/github_com_charmbracelet_crush_internal_config.Config"
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Config"
                 },
                 "data_dir": {
                     "type": "string"
@@ -4436,6 +5025,13 @@ const docTemplate = `{
                 "path": {
                     "type": "string"
                 },
+                "provider_surfaces": {
+                    "description": "ProviderSurfaces is the execution host's redacted registry-generated\nprovider presentation metadata.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/proto.ProviderSurface"
+                    }
+                },
                 "skills": {
                     "description": "Skills carries the snapshot of skill discovery state at workspace\ncreation time. Subsequent updates flow through the SSE event\nstream.",
                     "type": "array",
@@ -4448,6 +5044,106 @@ const docTemplate = `{
                 },
                 "yolo": {
                     "type": "boolean"
+                }
+            }
+        },
+        "providerregistry.Authentication": {
+            "type": "object",
+            "properties": {
+                "adapter": {
+                    "$ref": "#/definitions/providerregistry.LoginAdapter"
+                },
+                "available": {
+                    "type": "boolean"
+                },
+                "diagnostic": {
+                    "type": "string"
+                },
+                "flow_id": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                }
+            }
+        },
+        "providerregistry.Brand": {
+            "type": "object",
+            "properties": {
+                "color": {
+                    "type": "string"
+                },
+                "gradient_a": {
+                    "type": "string"
+                },
+                "gradient_b": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "short_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "providerregistry.InstructionSurface": {
+            "type": "object",
+            "properties": {
+                "default": {
+                    "type": "string"
+                },
+                "profiles": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
+        "providerregistry.LoginAdapter": {
+            "type": "string",
+            "enum": [
+                "browser",
+                "hosted-paste",
+                "device-code"
+            ],
+            "x-enum-varnames": [
+                "LoginBrowser",
+                "LoginHostedPaste",
+                "LoginDeviceCode"
+            ]
+        },
+        "providerregistry.RuntimeControlSurface": {
+            "type": "object",
+            "properties": {
+                "available": {
+                    "type": "boolean"
+                },
+                "default": {},
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "label": {
+                    "type": "string"
+                },
+                "request_path": {
+                    "type": "string"
+                },
+                "scope": {
+                    "type": "string"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "values": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -4484,8 +5180,8 @@ var SwaggerInfo = &swag.Spec{
 	Host:             "",
 	BasePath:         "/v1",
 	Schemes:          []string{},
-	Title:            "Crush API",
-	Description:      "Crush is a terminal-based AI coding assistant. This API is served over a Unix socket (or Windows named pipe) and provides programmatic access to workspaces, sessions, agents, LSP, MCP, and more.",
+	Title:            "Crux API",
+	Description:      "Crux is a terminal-based AI coding assistant. This API is served over a Unix socket (or Windows named pipe) and provides programmatic access to workspaces, sessions, agents, LSP, MCP, and more.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",

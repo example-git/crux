@@ -41,6 +41,11 @@ linters:
         text: "SA1019.*interp.ExecHandler"
         linters:
           - staticcheck
+      # Crux displays many returned errors directly and intentionally follows
+      # the same capitalization convention as its log messages.
+      - text: "ST1005: error strings should not be capitalized"
+        linters:
+          - staticcheck
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0

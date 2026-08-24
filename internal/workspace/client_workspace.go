@@ -11,26 +11,28 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/crush/internal/agent/notify"
-	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/client"
-	"github.com/charmbracelet/crush/internal/commands"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/herdr"
-	"github.com/charmbracelet/crush/internal/history"
-	"github.com/charmbracelet/crush/internal/log"
-	"github.com/charmbracelet/crush/internal/lsp"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/question"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/skills"
-	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/agent/notify"
+	"github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/client"
+	"github.com/example-git/crux/internal/commands"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/herdr"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/log"
+	"github.com/example-git/crux/internal/lsp"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/skills"
+	managedtask "github.com/example-git/crux/internal/task"
+	"github.com/example-git/crux/internal/version"
 	"github.com/pkg/browser"
 )
 
@@ -161,6 +163,14 @@ func (w *ClientWorkspace) ListSessions(ctx context.Context) ([]session.Session, 
 
 func (w *ClientWorkspace) SaveSession(ctx context.Context, sess session.Session) (session.Session, error) {
 	saved, err := w.client.SaveSession(ctx, w.workspaceID(), sessionToProto(sess))
+	if err != nil {
+		return session.Session{}, err
+	}
+	return protoToSession(*saved), nil
+}
+
+func (w *ClientWorkspace) SetSessionMode(ctx context.Context, sessionID string, mode session.Mode) (session.Session, error) {
+	saved, err := w.client.SetSessionMode(ctx, w.workspaceID(), sessionID, string(mode))
 	if err != nil {
 		return session.Session{}, err
 	}
@@ -298,10 +308,17 @@ func (w *ClientWorkspace) AgentQueuedPrompts(sessionID string) int {
 	return count
 }
 
-func (w *ClientWorkspace) AgentQueuedPromptsList(sessionID string) []string {
-	prompts, err := w.client.GetAgentSessionQueuedPromptsList(context.Background(), w.workspaceID(), sessionID)
+func (w *ClientWorkspace) AgentQueuedPromptsList(sessionID string) []agent.QueuedPrompt {
+	queued, err := w.client.GetAgentSessionQueuedPromptsList(context.Background(), w.workspaceID(), sessionID)
 	if err != nil {
 		return nil
+	}
+	prompts := make([]agent.QueuedPrompt, len(queued))
+	for i, prompt := range queued {
+		prompts[i] = agent.QueuedPrompt{
+			SubmissionID: prompt.SubmissionID,
+			Prompt:       prompt.Prompt,
+		}
 	}
 	return prompts
 }
@@ -310,12 +327,29 @@ func (w *ClientWorkspace) AgentClearQueue(sessionID string) {
 	_ = w.client.ClearAgentSessionQueuedPrompts(context.Background(), w.workspaceID(), sessionID)
 }
 
+func (w *ClientWorkspace) AgentDetachForegroundJobs() int {
+	n, _ := w.client.AgentDetachForegroundJobs(context.Background(), w.workspaceID())
+	return n
+}
+
 func (w *ClientWorkspace) AgentSummarize(ctx context.Context, sessionID string) error {
 	return w.client.AgentSummarizeSession(ctx, w.workspaceID(), sessionID)
 }
 
+func (w *ClientWorkspace) SessionRewind(ctx context.Context, sessionID, messageID string, summarize bool) error {
+	return w.client.SessionRewind(ctx, w.workspaceID(), sessionID, messageID, summarize)
+}
+
+func (w *ClientWorkspace) AgentSuggestPrompt(ctx context.Context, sessionID string) (string, error) {
+	return w.client.AgentSuggestPrompt(ctx, w.workspaceID(), sessionID)
+}
+
 func (w *ClientWorkspace) UpdateAgentModel(ctx context.Context) error {
 	return w.client.UpdateAgent(ctx, w.workspaceID())
+}
+
+func (w *ClientWorkspace) CreateAgentDefinition(ctx context.Context, request proto.CreateAgentDefinitionRequest) (string, error) {
+	return w.client.CreateAgentDefinition(ctx, w.workspaceID(), request)
 }
 
 func (w *ClientWorkspace) InitCoderAgent(ctx context.Context) error {
@@ -332,6 +366,32 @@ func (w *ClientWorkspace) GetDefaultSmallModel(providerID string) config.Selecte
 		return config.SelectedModel{}
 	}
 	return *model
+}
+
+// -- Tasks --
+
+func (w *ClientWorkspace) ListTasks(ctx context.Context) ([]managedtask.View, error) {
+	return w.client.ListTasks(ctx, w.workspaceID())
+}
+
+func (w *ClientWorkspace) TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error) {
+	return w.client.TaskOutput(ctx, w.workspaceID(), id, wait, timeout)
+}
+
+func (w *ClientWorkspace) StopTask(ctx context.Context, id string) (managedtask.View, error) {
+	return w.client.StopTask(ctx, w.workspaceID(), id)
+}
+
+func (w *ClientWorkspace) ContinueTask(ctx context.Context, id, parentSessionID, prompt string) (managedtask.View, error) {
+	return w.client.ContinueTask(ctx, w.workspaceID(), id, parentSessionID, prompt)
+}
+
+func (w *ClientWorkspace) ListTaskNotifications(ctx context.Context, parentSessionID string, unreadOnly bool) ([]managedtask.Notification, error) {
+	return w.client.ListTaskNotifications(ctx, w.workspaceID(), parentSessionID, unreadOnly)
+}
+
+func (w *ClientWorkspace) MarkTaskNotificationRead(ctx context.Context, notificationID string) (managedtask.Notification, error) {
+	return w.client.MarkTaskNotificationRead(ctx, w.workspaceID(), notificationID)
 }
 
 // -- Permissions --
@@ -518,6 +578,14 @@ func (w *ClientWorkspace) Config() *config.Config {
 	return w.cached().Config
 }
 
+func (w *ClientWorkspace) ProviderSurfaces() []providerregistry.Surface {
+	surfaces := w.cached().ProviderSurfaces
+	for i := range surfaces {
+		surfaces[i] = surfaces[i].Clone()
+	}
+	return surfaces
+}
+
 func (w *ClientWorkspace) WorkingDir() string {
 	return w.cached().Path
 }
@@ -587,6 +655,18 @@ func (w *ClientWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Sc
 	return err
 }
 
+func (w *ClientWorkspace) CodebaseIndexStatus(ctx context.Context) (proto.CodebaseIndexStatus, error) {
+	return w.client.CodebaseIndexStatus(ctx, w.workspaceID())
+}
+
+func (w *ClientWorkspace) UpdateCodebaseIndex(ctx context.Context, update proto.CodebaseIndexUpdate) (proto.CodebaseIndexStatus, error) {
+	status, err := w.client.UpdateCodebaseIndex(ctx, w.workspaceID(), update)
+	if err == nil {
+		w.refreshWorkspace()
+	}
+	return status, err
+}
+
 // -- Project lifecycle --
 
 func (w *ClientWorkspace) ProjectNeedsInitialization() (bool, error) {
@@ -599,6 +679,14 @@ func (w *ClientWorkspace) MarkProjectInitialized() error {
 
 func (w *ClientWorkspace) InitializePrompt() (string, error) {
 	return w.client.GetInitializePrompt(context.Background(), w.workspaceID())
+}
+
+func (w *ClientWorkspace) ListProjects(ctx context.Context) ([]proto.ProjectInfo, error) {
+	return w.client.ListProjects(ctx, w.workspaceID())
+}
+
+func (w *ClientWorkspace) SelectProject(ctx context.Context, slug string) error {
+	return w.client.SelectProject(ctx, w.workspaceID(), slug)
 }
 
 func (w *ClientWorkspace) ListSkills(ctx context.Context) ([]skills.CatalogEntry, error) {
@@ -1159,8 +1247,6 @@ func (w *ClientWorkspace) translateEvent(ev any) tea.Msg {
 			SessionTitle: e.Payload.SessionTitle,
 			RunID:        e.Payload.RunID,
 			Type:         notify.Type(e.Payload.Type),
-			AWSSOCommand: e.Payload.AWSSOCommand,
-			AWSSOURL:     e.Payload.AWSSOURL,
 		}
 		if e.Payload.Error != nil {
 			n.Message = e.Payload.Error.Error()
@@ -1169,6 +1255,8 @@ func (w *ClientWorkspace) translateEvent(ev any) tea.Msg {
 			Type:    e.Type,
 			Payload: n,
 		}
+	case pubsub.Event[proto.TaskNotification]:
+		return pubsub.Event[managedtask.Notification](e)
 	case pubsub.Event[proto.RunComplete]:
 		// Translate the wire-level proto.RunComplete back into the
 		// agent's domain notify.RunComplete. Without this case the
@@ -1195,12 +1283,6 @@ func (w *ClientWorkspace) translateEvent(ev any) tea.Msg {
 		return pubsub.Event[skills.Event]{
 			Type:    e.Type,
 			Payload: skills.Event{States: states},
-		}
-	case pubsub.Event[proto.UpdateAvailable]:
-		return app.UpdateAvailableMsg{
-			CurrentVersion: e.Payload.CurrentVersion,
-			LatestVersion:  e.Payload.LatestVersion,
-			IsDevelopment:  e.Payload.IsDevelopment,
 		}
 	default:
 		slog.Warn("Unknown event type in translateEvent", "type", fmt.Sprintf("%T", ev))
@@ -1241,6 +1323,8 @@ func protoToSession(s proto.Session) session.Session {
 		CompletionTokens: s.CompletionTokens,
 		Cost:             s.Cost,
 		Todos:            protoToTodos(s.Todos),
+		Mode:             session.Mode(s.Mode),
+		Plan:             s.Plan,
 		CreatedAt:        s.CreatedAt,
 		UpdatedAt:        s.UpdatedAt,
 	}
@@ -1288,30 +1372,37 @@ func protoToMessage(m proto.Message) message.Message {
 	for _, p := range m.Parts {
 		switch v := p.(type) {
 		case proto.TextContent:
-			msg.Parts = append(msg.Parts, message.TextContent{Text: v.Text})
+			msg.Parts = append(msg.Parts, message.TextContent{
+				Text:             v.Text,
+				ProviderMetadata: v.ProviderMetadata.Clone(),
+			})
 		case proto.ReasoningContent:
 			msg.Parts = append(msg.Parts, message.ReasoningContent{
-				Thinking:   v.Thinking,
-				Signature:  v.Signature,
-				StartedAt:  v.StartedAt,
-				FinishedAt: v.FinishedAt,
+				Thinking:         v.Thinking,
+				ProviderMetadata: v.ProviderMetadata.Clone(),
+				StartedAt:        v.StartedAt,
+				FinishedAt:       v.FinishedAt,
 			})
 		case proto.ToolCall:
 			msg.Parts = append(msg.Parts, message.ToolCall{
-				ID:       v.ID,
-				Name:     v.Name,
-				Input:    v.Input,
-				Finished: v.Finished,
+				ID:               v.ID,
+				Name:             v.Name,
+				Input:            v.Input,
+				ProviderExecuted: v.ProviderExecuted,
+				Finished:         v.Finished,
+				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
 		case proto.ToolResult:
 			msg.Parts = append(msg.Parts, message.ToolResult{
-				ToolCallID: v.ToolCallID,
-				Name:       v.Name,
-				Content:    v.Content,
-				Data:       v.Data,
-				MIMEType:   v.MIMEType,
-				Metadata:   v.Metadata,
-				IsError:    v.IsError,
+				ToolCallID:       v.ToolCallID,
+				Name:             v.Name,
+				Content:          v.Content,
+				Data:             v.Data,
+				MIMEType:         v.MIMEType,
+				Metadata:         v.Metadata,
+				IsError:          v.IsError,
+				ProviderExecuted: v.ProviderExecuted,
+				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
 		case proto.Finish:
 			msg.Parts = append(msg.Parts, message.Finish{
@@ -1329,6 +1420,10 @@ func protoToMessage(m proto.Message) message.Message {
 				Command:  v.Command,
 				Output:   v.Output,
 				ExitCode: v.ExitCode,
+			})
+		case proto.ProviderMetadataContent:
+			msg.Parts = append(msg.Parts, message.ProviderMetadataContent{
+				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
 		}
 	}
@@ -1363,6 +1458,8 @@ func sessionToProto(s session.Session) proto.Session {
 		CompletionTokens: s.CompletionTokens,
 		Cost:             s.Cost,
 		Todos:            todosToProto(s.Todos),
+		Mode:             string(s.Mode),
+		Plan:             s.Plan,
 		CreatedAt:        s.CreatedAt,
 		UpdatedAt:        s.UpdatedAt,
 	}

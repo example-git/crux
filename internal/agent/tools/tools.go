@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"charm.land/fantasy"
+	fantasy "github.com/example-git/crux/foundation"
 )
 
 type (

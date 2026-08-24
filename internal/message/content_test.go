@@ -2,11 +2,13 @@ package message
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
-	"charm.land/fantasy"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/oauth/codex/responses"
 	"github.com/stretchr/testify/require"
 )
 
@@ -114,6 +116,40 @@ func TestToAIMessage_ASCIIButInvalidBase64(t *testing.T) {
 	textContent, ok := part.Output.(fantasy.ToolResultOutputContentText)
 	require.True(t, ok, "ASCII but invalid base64 should be downgraded to text")
 	require.Equal(t, mediaLoadFailedPlaceholder, textContent.Text)
+}
+
+func TestToAIMessage_CodexReasoningMetadata(t *testing.T) {
+	t.Parallel()
+
+	metadata := &responses.ReasoningMetadata{
+		ItemID:           "rs_1",
+		EncryptedContent: "opaque",
+		Summary:          json.RawMessage(`[{"kind":"summary"}]`),
+	}
+	envelope, err := NewProviderMetadataValue(responses.Name, 1, ProviderMetadataScopeReasoning, metadata)
+	require.NoError(t, err)
+	msg := &Message{
+		Role: Assistant,
+		Parts: []ContentPart{
+			ReasoningContent{
+				Thinking:         "opaque thought",
+				ProviderMetadata: ProviderMetadata{envelope},
+			},
+		},
+	}
+
+	messages := msg.ToAIMessage()
+	require.Len(t, messages, 1)
+	require.Len(t, messages[0].Content, 1)
+
+	part, ok := messages[0].Content[0].(fantasy.ReasoningPart)
+	require.True(t, ok)
+
+	meta, ok := part.ProviderOptions[responses.Name].(*responses.ReasoningMetadata)
+	require.True(t, ok)
+	require.Equal(t, "rs_1", meta.ItemID)
+	require.Equal(t, "opaque", meta.EncryptedContent)
+	require.Equal(t, json.RawMessage(`[{"kind":"summary"}]`), meta.Summary)
 }
 
 func BenchmarkPromptWithTextAttachments(b *testing.B) {

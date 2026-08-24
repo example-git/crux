@@ -23,6 +23,7 @@ go.work.sum
 .vscode/
 *.swp
 *.swo
+*~
 
 # OS specific files
 .DS_Store
@@ -33,6 +34,17 @@ go.work.sum
 ehthumbs.db
 Thumbs.db
 *.log
+.agents/session-summary.md
+ROADMAP.md
+docs/*
+!docs/provider-plugins/
+docs/provider-plugins/*
+!docs/provider-plugins/README.md
+!docs/provider-plugins/examples/
+docs/provider-plugins/examples/*
+!docs/provider-plugins/examples/deepseek-preset.plugin/
+!docs/provider-plugins/examples/minimal.plugin/
+!docs/provider-plugins/examples/responses-oauth.plugin/
 
 # Binary output directory
 /bin/
@@ -46,11 +58,18 @@ Thumbs.db
 .direnv/
 
 **/.crush/**
-
+**/.crush-old/**
+**/.ai-cli/**
+**/.crux/**
 /crush
+/crux
+/crux.json
 /tmp/
+
 
 manpages/
 completions/crush.*sh
+completions/crux.*sh
 .prettierignore
 .task
+.gitmessage

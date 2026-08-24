@@ -9,8 +9,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
+	"github.com/example-git/crux/internal/lsp"
 )
 
 // resolvedSymbol holds the result of resolving a symbol name to an LSP position.

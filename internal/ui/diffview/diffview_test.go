@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	"github.com/alecthomas/chroma/v2/styles"
-	"github.com/charmbracelet/crush/internal/ui/diffview"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/golden"
+	"github.com/example-git/crux/internal/ui/diffview"
 )
 
 //go:embed testdata/TestDefault.before
@@ -171,6 +171,7 @@ func TestDiffViewTabs(t *testing.T) {
 			t.Parallel()
 
 			dv := diffview.New().
+				TabWidth(8).
 				Before("main.go", TestTabsBefore).
 				After("main.go", TestTabsAfter).
 				Style(diffview.DefaultLightStyle()).

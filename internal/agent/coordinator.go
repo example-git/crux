@@ -11,45 +11,50 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/agent/hyper"
-	"github.com/charmbracelet/crush/internal/agent/notify"
-	"github.com/charmbracelet/crush/internal/agent/prompt"
-	"github.com/charmbracelet/crush/internal/agent/tools"
-	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/discover"
-	"github.com/charmbracelet/crush/internal/event"
-	"github.com/charmbracelet/crush/internal/filetracker"
-	"github.com/charmbracelet/crush/internal/history"
-	"github.com/charmbracelet/crush/internal/hooks"
-	"github.com/charmbracelet/crush/internal/log"
-	"github.com/charmbracelet/crush/internal/lsp"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/oauth/copilot"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/question"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/skills"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/foundation/providers/anthropic"
+	"github.com/example-git/crux/internal/agent/notify"
+	"github.com/example-git/crux/internal/agent/prompt"
+	"github.com/example-git/crux/internal/agent/tools"
+	"github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/automemory"
+	"github.com/example-git/crux/internal/codebaseindex"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/copilotinference"
+	"github.com/example-git/crux/internal/discover"
+	"github.com/example-git/crux/internal/filetracker"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/hooks"
+	"github.com/example-git/crux/internal/imageattachment"
+	"github.com/example-git/crux/internal/log"
+	"github.com/example-git/crux/internal/lsp"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/oauth/codex"
+	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
+	"github.com/example-git/crux/internal/oauth/gemini"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/projects"
+	"github.com/example-git/crux/internal/providerregistry"
+	anthropictransport "github.com/example-git/crux/internal/providertransport/anthropic"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/shell"
+	"github.com/example-git/crux/internal/skills"
+	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 
-	"charm.land/fantasy/providers/anthropic"
-	"charm.land/fantasy/providers/azure"
-	"charm.land/fantasy/providers/bedrock"
-	"charm.land/fantasy/providers/google"
-	"charm.land/fantasy/providers/openai"
-	"charm.land/fantasy/providers/openaicompat"
-	"charm.land/fantasy/providers/openrouter"
-	"charm.land/fantasy/providers/vercel"
+	"github.com/example-git/crux/foundation/providers/openai"
+	"github.com/example-git/crux/foundation/providers/openaicompat"
 	openaisdk "github.com/openai/openai-go/v3/option"
 	"github.com/qjebbs/go-jsons"
 )
@@ -80,11 +85,6 @@ var copilotResponsesModels = map[string]bool{
 	"gpt-5.6-sol":   true,
 }
 
-// OpenCode models that user Anthropic Messages API instead of Chat Completions.
-var opencodeMessagesModels = map[string]bool{
-	"qwen3.7-max": true,
-}
-
 type Coordinator interface {
 	// INFO: (kujtim) this is not used yet we will use this when we have multiple agents
 	// SetMainAgent(string)
@@ -103,29 +103,35 @@ type Coordinator interface {
 	IsSessionBusy(sessionID string) bool
 	IsBusy() bool
 	QueuedPrompts(sessionID string) int
-	QueuedPromptsList(sessionID string) []string
+	QueuedPromptsList(sessionID string) []QueuedPrompt
 	ClearQueue(sessionID string)
 	Summarize(context.Context, string) error
 	Model() Model
 	UpdateModels(ctx context.Context) error
 	GenerateTitle(ctx context.Context, sessionID, prompt string)
+	SuggestPrompt(ctx context.Context, sessionID string) (string, error)
 }
 
 type coordinator struct {
-	cfg         *config.ConfigStore
-	sessions    session.Service
-	messages    message.Service
-	permissions permission.Service
-	questions   question.Service
-	history     history.Service
-	filetracker filetracker.Service
-	lspManager  *lsp.Manager
-	notify      pubsub.Publisher[notify.Notification]
-	runComplete pubsub.Publisher[notify.RunComplete]
-	interactive bool
+	cfg                      *config.ConfigStore
+	sessions                 session.Service
+	messages                 message.Service
+	permissions              permission.Service
+	questions                question.Service
+	history                  history.Service
+	filetracker              filetracker.Service
+	lspManager               *lsp.Manager
+	notify                   pubsub.Publisher[notify.Notification]
+	runComplete              pubsub.Publisher[notify.RunComplete]
+	interactive              bool
+	automaticCodebaseContext func(context.Context, string) (string, error)
+	loadAgentDefinitions     func(string, *config.Config) ([]agentDefinition, error)
+	backgroundShells         *shell.BackgroundShellManager
+	backgroundAgents         *BackgroundAgentManager
 
-	currentAgent SessionAgent
-	agents       map[string]SessionAgent
+	currentAgent         SessionAgent
+	systemPromptTemplate *prompt.Prompt
+	agents               map[string]SessionAgent
 
 	// Skills discovery results (session-start snapshot).
 	allSkills    []*skills.Skill // Pre-filter: all discovered after dedup.
@@ -133,27 +139,45 @@ type coordinator struct {
 	skillTracker *skills.Tracker
 
 	readyWg errgroup.Group
+
+	reasoningMu       sync.RWMutex
+	reasoningDisabled map[string]bool
+	codexSessions     *codexresponses.SessionStore
+	memoryWorker      *automemory.Worker
+
+	codebaseIndexReconcileMu sync.Mutex
+	codebaseIndexReconciling bool
+	reconcileCodebaseIndexFn func(context.Context) (codebaseindex.StoreStatus, error)
 }
 
 // CoordinatorOptions holds the dependencies for NewCoordinator. Using a
 // struct keeps the constructor self-documenting and avoids a long
 // positional parameter list.
 type CoordinatorOptions struct {
-	Config      *config.ConfigStore
-	Sessions    session.Service
-	Messages    message.Service
-	Permissions permission.Service
-	Questions   question.Service
-	History     history.Service
-	FileTracker filetracker.Service
-	LSPManager  *lsp.Manager
-	Notify      pubsub.Publisher[notify.Notification]
-	RunComplete pubsub.Publisher[notify.RunComplete]
-	Skills      *skills.Manager
-	Interactive bool
+	Config           *config.ConfigStore
+	Sessions         session.Service
+	Messages         message.Service
+	Permissions      permission.Service
+	Questions        question.Service
+	History          history.Service
+	FileTracker      filetracker.Service
+	LSPManager       *lsp.Manager
+	Notify           pubsub.Publisher[notify.Notification]
+	RunComplete      pubsub.Publisher[notify.RunComplete]
+	Skills           *skills.Manager
+	Interactive      bool
+	BackgroundShells *shell.BackgroundShellManager
+	BackgroundAgents *BackgroundAgentManager
 }
 
 func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, error) {
+	if opts.BackgroundShells == nil {
+		opts.BackgroundShells = shell.NewBackgroundShellManager(opts.Config.WorkingDir())
+	}
+	if opts.BackgroundAgents == nil {
+		opts.BackgroundAgents = NewBackgroundAgentManager(opts.Config.WorkingDir(), opts.BackgroundShells)
+	}
+
 	// Skills are pre-discovered by the caller (see app.New /
 	// backend.CreateWorkspace) and passed in via the manager. If no
 	// manager was provided (legacy callers), fall back to an in-line
@@ -168,22 +192,28 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	skillTracker := skills.NewTracker(activeSkills)
 
 	c := &coordinator{
-		cfg:          opts.Config,
-		sessions:     opts.Sessions,
-		messages:     opts.Messages,
-		permissions:  opts.Permissions,
-		questions:    opts.Questions,
-		history:      opts.History,
-		filetracker:  opts.FileTracker,
-		lspManager:   opts.LSPManager,
-		notify:       opts.Notify,
-		runComplete:  opts.RunComplete,
-		agents:       make(map[string]SessionAgent),
-		allSkills:    allSkills,
-		activeSkills: activeSkills,
-		skillTracker: skillTracker,
-		interactive:  opts.Interactive,
+		cfg:                  opts.Config,
+		sessions:             opts.Sessions,
+		messages:             opts.Messages,
+		permissions:          opts.Permissions,
+		questions:            opts.Questions,
+		history:              opts.History,
+		filetracker:          opts.FileTracker,
+		lspManager:           opts.LSPManager,
+		notify:               opts.Notify,
+		runComplete:          opts.RunComplete,
+		agents:               make(map[string]SessionAgent),
+		allSkills:            allSkills,
+		activeSkills:         activeSkills,
+		skillTracker:         skillTracker,
+		interactive:          opts.Interactive,
+		reasoningDisabled:    make(map[string]bool),
+		codexSessions:        codexresponses.NewSessionStore(),
+		loadAgentDefinitions: discoverAgentDefinitions,
+		backgroundShells:     opts.BackgroundShells,
+		backgroundAgents:     opts.BackgroundAgents,
 	}
+	c.automaticCodebaseContext = c.retrieveAutomaticCodebaseContext
 
 	agentCfg, ok := opts.Config.Config().Agents[config.AgentCoder]
 	if !ok {
@@ -201,8 +231,174 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, err
 	}
 	c.currentAgent = agent
+	c.systemPromptTemplate = prompt
 	c.agents[config.AgentCoder] = agent
+	memory, err := automemory.Load(ctx, c.cfg.WorkingDir())
+	if err != nil {
+		return nil, err
+	}
+	c.memoryWorker, err = automemory.NewWorker(automemory.WorkerOptions{
+		Memory: memory,
+		Generate: func(workerCtx context.Context, purpose, memoryPrompt string, maxOutputTokens int64) (string, error) {
+			return c.currentAgent.GenerateMemory(workerCtx, purpose, memoryPrompt, maxOutputTokens)
+		},
+		LoadTranscript: c.loadMemoryTranscript,
+		LoadSessions:   c.loadMemorySessions,
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.scheduleCodebaseIndexReconcile(ctx)
 	return c, nil
+}
+
+func (c *coordinator) loadMemoryTranscript(ctx context.Context, sessionID string) ([]automemory.Turn, error) {
+	if err := c.messages.FlushAll(ctx); err != nil {
+		return nil, err
+	}
+	currentSession, err := c.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var messages []message.Message
+	if currentSession.SummaryMessageID != "" {
+		messages, err = c.messages.ListFrom(ctx, sessionID, currentSession.SummaryMessageID)
+	} else {
+		messages, err = c.messages.List(ctx, sessionID)
+	}
+	if err != nil {
+		return nil, err
+	}
+	turns := make([]automemory.Turn, 0, len(messages))
+	for _, item := range messages {
+		var role string
+		switch item.Role {
+		case message.User:
+			role = "user"
+		case message.Assistant:
+			role = "assistant"
+		default:
+			continue
+		}
+		if text := strings.TrimSpace(item.Content().Text); text != "" {
+			turns = append(turns, automemory.Turn{Role: role, Text: text})
+		}
+	}
+	return turns, nil
+}
+
+func (c *coordinator) loadMemorySessions(ctx context.Context) ([]automemory.SessionInfo, error) {
+	sessions, err := c.sessions.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]automemory.SessionInfo, 0, len(sessions))
+	for _, item := range sessions {
+		if item.ParentSessionID != "" {
+			continue
+		}
+		result = append(result, automemory.SessionInfo{
+			ID:        item.ID,
+			UpdatedAt: time.Unix(item.UpdatedAt, 0),
+		})
+	}
+	return result, nil
+}
+
+func (c *coordinator) scheduleCodebaseIndexReconcile(ctx context.Context) {
+	c.codebaseIndexReconcileMu.Lock()
+	if c.codebaseIndexReconciling {
+		c.codebaseIndexReconcileMu.Unlock()
+		return
+	}
+	c.codebaseIndexReconciling = true
+	reconcile := c.reconcileCodebaseIndexFn
+	if reconcile == nil {
+		reconcile = c.reconcileCodebaseIndex
+	}
+	c.codebaseIndexReconcileMu.Unlock()
+
+	go func() {
+		defer func() {
+			c.codebaseIndexReconcileMu.Lock()
+			c.codebaseIndexReconciling = false
+			c.codebaseIndexReconcileMu.Unlock()
+		}()
+		if _, err := reconcile(context.WithoutCancel(ctx)); err != nil {
+			slog.Warn("Could not reconcile background codebase indexing", "error", err)
+		}
+	}()
+}
+
+type codebaseIndexController interface {
+	codebaseIndexStatus(context.Context) (codebaseindex.StoreStatus, error)
+	reconcileCodebaseIndex(context.Context) (codebaseindex.StoreStatus, error)
+}
+
+func CodebaseIndexStatus(ctx context.Context, coordinator Coordinator) (codebaseindex.StoreStatus, error) {
+	controller, ok := coordinator.(codebaseIndexController)
+	if !ok {
+		return codebaseindex.StoreStatus{}, fmt.Errorf("codebase index controller is unavailable")
+	}
+	return controller.codebaseIndexStatus(ctx)
+}
+
+func ReconcileCodebaseIndex(ctx context.Context, coordinator Coordinator) (codebaseindex.StoreStatus, error) {
+	controller, ok := coordinator.(codebaseIndexController)
+	if !ok {
+		return codebaseindex.StoreStatus{}, fmt.Errorf("codebase index controller is unavailable")
+	}
+	return controller.reconcileCodebaseIndex(ctx)
+}
+
+func AutoMemoryActivity(coordinator Coordinator) string {
+	controller, ok := coordinator.(interface{ autoMemoryActivity() string })
+	if !ok {
+		return ""
+	}
+	return controller.autoMemoryActivity()
+}
+
+func (c *coordinator) autoMemoryActivity() string {
+	return c.memoryWorker.Activity()
+}
+
+func (c *coordinator) codebaseIndexOptions(ctx context.Context) (codebaseindex.ProjectIndexOptions, error) {
+	projectRoot, err := codebaseindex.CanonicalProjectRoot(ctx, c.cfg.WorkingDir())
+	if err != nil {
+		return codebaseindex.ProjectIndexOptions{}, err
+	}
+	toolConfig := c.cfg.Config().Tools.CodebaseSearch
+	return codebaseindex.ProjectIndexOptions{
+		ProjectRoot:            projectRoot,
+		ConfiguredDatabasePath: toolConfig.DatabasePath,
+		StoreDirectory:         toolConfig.GetStoreDirectory(),
+		Enabled:                toolConfig.IsEnabled(),
+		Filters: codebaseindex.ProjectFilters{
+			IncludePaths: toolConfig.IncludePaths,
+			ExcludePaths: toolConfig.ExcludePaths,
+		},
+	}, nil
+}
+
+func (c *coordinator) codebaseIndexStatus(ctx context.Context) (codebaseindex.StoreStatus, error) {
+	options, err := c.codebaseIndexOptions(ctx)
+	if err != nil {
+		return codebaseindex.StoreStatus{}, err
+	}
+	return codebaseindex.InspectProjectIndexStatus(options), nil
+}
+
+func (c *coordinator) reconcileCodebaseIndex(ctx context.Context) (codebaseindex.StoreStatus, error) {
+	options, err := c.codebaseIndexOptions(ctx)
+	if err != nil {
+		return codebaseindex.StoreStatus{}, err
+	}
+	status := codebaseindex.ReconcileProjectIndexing(ctx, options)
+	if status.State == codebaseindex.StoreStateFailed {
+		slog.Warn("Could not start background codebase indexing", "error", status.Err)
+	}
+	return status, nil
 }
 
 // Run implements Coordinator.
@@ -223,6 +419,12 @@ func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sess
 func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
+	}
+	c.memoryWorker.Interrupt()
+
+	codebaseContext := c.startAutomaticCodebaseContext(ctx, prompt)
+	if codebaseContext != nil {
+		defer codebaseContext.cancel()
 	}
 
 	// MCP servers connect asynchronously (see mcp.Initialize).
@@ -251,6 +453,18 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	}
 
 	model := c.currentAgent.Model()
+	normalizedAttachments, err := imageattachment.NormalizeAll(model.ModelCfg.Provider, attachments)
+	if err != nil {
+		return nil, err
+	}
+	attachments = normalizedAttachments
+	if c.systemPromptTemplate != nil {
+		systemPrompt, err := c.systemPromptTemplate.Build(ctx, model.ModelCfg.Provider, model.Model.Model(), c.cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to refresh system prompt: %w", err)
+		}
+		c.currentAgent.SetSystemPrompt(systemPrompt)
+	}
 	maxTokens := model.CatwalkCfg.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
 		maxTokens = model.ModelCfg.MaxTokens
@@ -262,6 +476,8 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	}
 
 	mergedOptions, temp, topP, topK, freqPenalty, presPenalty := mergeCallOptions(model, providerCfg)
+	mergedOptions = c.oauthReasoningOptions(providerCfg.ID, model.ModelCfg.Model, mergedOptions)
+	mergedOptions = applyRegisteredRuntimeOptions(providerCfg.ID, model.ModelCfg.Model, c.cfg.Config().Options, mergedOptions)
 
 	if err := c.refreshTokenIfExpired(ctx, providerCfg); err != nil {
 		// NOTE(@andreynering): We don't return here because the event handling to ask the user to reauthenticate
@@ -272,7 +488,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	// Coalesce per-attempt RunComplete payloads so only the final
 	// outcome reaches subscribers. Without this, the first attempt's
 	// failed RunComplete (unauthorized) would race ahead of the
-	// retry's success, and `crush run` would exit on the stale error
+	// retry's success, and `crux run` would exit on the stale error
 	// before ever seeing the retry result. Each attempt's
 	// SessionAgentCall.OnComplete hook overwrites latest; we publish
 	// exactly once after retries resolve, via PublishMustDeliver, so
@@ -293,11 +509,27 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	// the coalesce closure publishes the final outcome under that
 	// same correlator.
 	runID := RunIDFromContext(ctx)
+	submissionID := SubmissionIDFromContext(ctx)
+	if submissionID == "" {
+		submissionID = uuid.NewString()
+	}
+	turnInstructions := codebaseContext.wait()
+	memoryContext, memoryErr := automemory.Relevant(ctx, c.cfg.WorkingDir(), prompt, time.Now())
+	if memoryErr != nil {
+		slog.Debug("Could not load relevant auto-memory", "error", memoryErr)
+	} else if memoryContext != "" {
+		if turnInstructions != "" {
+			turnInstructions += "\n\n"
+		}
+		turnInstructions += memoryContext
+	}
 	run := func() (*fantasy.AgentResult, error) {
 		return c.currentAgent.Run(ctx, SessionAgentCall{
 			SessionID:        sessionID,
+			SubmissionID:     submissionID,
 			RunID:            runID,
 			Prompt:           prompt,
+			TurnInstructions: turnInstructions,
 			Attachments:      attachments,
 			MaxOutputTokens:  maxTokens,
 			ProviderOptions:  mergedOptions,
@@ -307,23 +539,21 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 			FrequencyPenalty: freqPenalty,
 			PresencePenalty:  presPenalty,
 			OnComplete:       onComplete,
-			Accepted:         accept,
-			OnAuthRefresh:    c.makeAuthRefreshCallback(providerCfg),
+			OnProviderWarning: func(w fantasy.CallWarning) {
+				c.disableOAuthReasoning(providerCfg.ID, model.ModelCfg.Model, w.Message)
+			},
+			Accepted:      accept,
+			OnAuthRefresh: c.makeAuthRefreshCallback(providerCfg),
 		})
 	}
 	beforeLoaded := c.skillTracker.LoadedNames()
 	result, originalErr := run()
+	if originalErr != nil {
+		c.disableOAuthReasoning(providerCfg.ID, model.ModelCfg.Model, originalErr.Error())
+	}
 	logTurnSkillUsage(sessionID, prompt, c.activeSkills, c.skillTracker, beforeLoaded)
-
-	// Notify only if still unauthorized after retry — a successful
-	// retry means the user doesn't need to re-authenticate. AWS SSO is
-	// handled transparently inside OnAuthRefresh, so it needs no post-run
-	// notification here.
-	if originalErr != nil && isUnauthorized(originalErr) && c.notify != nil && model.ModelCfg.Provider == hyper.Name {
-		c.notify.Publish(pubsub.CreatedEvent, notify.Notification{
-			Type:       notify.TypeReAuthenticate,
-			ProviderID: model.ModelCfg.Provider,
-		})
+	if originalErr == nil {
+		c.memoryWorker.Enqueue(sessionID)
 	}
 
 	if hasLatest && c.runComplete != nil {
@@ -357,6 +587,88 @@ func effectiveReasoningEffort(model Model) string {
 	return ""
 }
 
+func registeredReasoning(providerID string) (*providerregistry.ReasoningCapability, bool) {
+	registration, ok := config.ProviderBehaviorCapabilities(providerID)
+	if !ok || registration.ProviderID != providerID || registration.Reasoning == nil {
+		return nil, false
+	}
+	return registration.Reasoning, true
+}
+
+func isUnsupportedReasoningMessage(message string) bool {
+	message = strings.ToLower(message)
+	if !strings.Contains(message, "reasoning") && !strings.Contains(message, "thinking") {
+		return false
+	}
+	for _, marker := range []string{
+		"unsupported",
+		"not supported",
+		"does not support",
+		"invalid",
+		"unknown",
+		"unrecognized",
+		"not allowed",
+		"mutually exclusive",
+		"error",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func oauthReasoningKey(providerID, modelID string) string {
+	return providerID + "\x00" + modelID
+}
+
+func (c *coordinator) disableOAuthReasoning(providerID, modelID, message string) {
+	reasoning, ok := registeredReasoning(providerID)
+	if !ok || !reasoning.FallbackOnUnsupported || !isUnsupportedReasoningMessage(message) {
+		return
+	}
+
+	key := oauthReasoningKey(providerID, modelID)
+	c.reasoningMu.Lock()
+	if c.reasoningDisabled == nil {
+		c.reasoningDisabled = make(map[string]bool)
+	}
+	alreadyDisabled := c.reasoningDisabled[key]
+	c.reasoningDisabled[key] = true
+	c.reasoningMu.Unlock()
+	if !alreadyDisabled {
+		slog.Warn("Disabling reasoning for OAuth model after unsupported response", "provider", providerID, "model", modelID, "message", message)
+	}
+}
+
+func (c *coordinator) oauthReasoningOptions(providerID, modelID string, options fantasy.ProviderOptions) fantasy.ProviderOptions {
+	reasoning, ok := registeredReasoning(providerID)
+	if !ok || reasoning.Disable == nil {
+		return options
+	}
+	c.reasoningMu.RLock()
+	disabled := c.reasoningDisabled[oauthReasoningKey(providerID, modelID)]
+	c.reasoningMu.RUnlock()
+	if !disabled {
+		return options
+	}
+
+	return reasoning.Disable(options)
+}
+
+func applyRegisteredRuntimeOptions(providerID, modelID string, cfg *config.Options, options fantasy.ProviderOptions) fantasy.ProviderOptions {
+	registration, ok := config.ProviderBehaviorCapabilities(providerID)
+	if !ok || registration.ProviderID != providerID || registration.Runtime == nil ||
+		registration.Runtime.Available == nil || !registration.Runtime.Available(modelID) ||
+		registration.Runtime.Apply == nil || cfg == nil {
+		return options
+	}
+	return registration.Runtime.Apply(providerregistry.RuntimeValues{
+		ResponseVerbosity: cfg.ResponseVerbosity,
+		AnalysisEffort:    cfg.AnalysisEffort,
+	}, options)
+}
+
 func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.ProviderOptions {
 	options := fantasy.ProviderOptions{}
 
@@ -365,249 +677,142 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig) fantasy.
 	catwalkOpts := []byte("{}")
 
 	if model.ModelCfg.ProviderOptions != nil {
-		data, err := json.Marshal(model.ModelCfg.ProviderOptions)
-		if err == nil {
+		if data, err := json.Marshal(model.ModelCfg.ProviderOptions); err == nil {
 			cfgOpts = data
 		}
 	}
-
 	if providerCfg.ProviderOptions != nil {
-		data, err := json.Marshal(providerCfg.ProviderOptions)
-		if err == nil {
+		if data, err := json.Marshal(providerCfg.ProviderOptions); err == nil {
 			providerCfgOpts = data
 		}
 	}
-
 	if model.CatwalkCfg.Options.ProviderOptions != nil {
-		data, err := json.Marshal(model.CatwalkCfg.Options.ProviderOptions)
-		if err == nil {
+		if data, err := json.Marshal(model.CatwalkCfg.Options.ProviderOptions); err == nil {
 			catwalkOpts = data
 		}
 	}
 
-	readers := []io.Reader{
+	got, err := jsons.Merge([]io.Reader{
 		bytes.NewReader(catwalkOpts),
 		bytes.NewReader(providerCfgOpts),
 		bytes.NewReader(cfgOpts),
-	}
-
-	got, err := jsons.Merge(readers)
+	})
 	if err != nil {
 		slog.Error("Could not merge call config", "err", err)
 		return options
 	}
 
 	mergedOptions := make(map[string]any)
-
-	err = json.Unmarshal([]byte(got), &mergedOptions)
-	if err != nil {
+	if err := json.Unmarshal([]byte(got), &mergedOptions); err != nil {
 		slog.Error("Could not create config for call", "err", err)
 		return options
 	}
 
 	reasoningEffort := effectiveReasoningEffort(model)
-	shouldSetEffort := model.CatwalkCfg.CanReason &&
-		reasoningEffort != "" &&
-		slices.Contains(model.CatwalkCfg.ReasoningLevels, reasoningEffort)
+	if reasoning, ok := registeredReasoning(providerCfg.ID); ok && reasoning.Options != nil {
+		return reasoning.Options(model.CatwalkCfg.ID, reasoningEffort, model.CatwalkCfg.CanReason, mergedOptions)
+	}
 
-	switch providerCfg.Type {
-	case openai.Name, azure.Name:
-		_, hasReasoningEffort := mergedOptions["reasoning_effort"]
-		if !hasReasoningEffort && shouldSetEffort {
-			mergedOptions["reasoning_effort"] = reasoningEffort
+	if registration, ok := config.ProviderCapabilities().Lookup(providerCfg.ID); ok && registration.Construction == providerregistry.ConstructionAnthropicMessages {
+		shouldSetEffort := model.CatwalkCfg.CanReason && reasoningEffort != "" && slices.Contains(model.CatwalkCfg.ReasoningLevels, reasoningEffort)
+		_, hasEffort := mergedOptions["effort"]
+		_, hasThinking := mergedOptions["thinking"]
+		switch {
+		case !hasEffort && shouldSetEffort:
+			mergedOptions["effort"] = reasoningEffort
+		case !hasThinking && model.ModelCfg.Think:
+			mergedOptions["thinking"] = map[string]any{"budget_tokens": 2000}
 		}
-		if openai.IsResponsesModel(model.CatwalkCfg.ID) {
-			if openai.IsResponsesReasoningModel(model.CatwalkCfg.ID) {
-				mergedOptions["reasoning_summary"] = "auto"
-				mergedOptions["include"] = []openai.IncludeType{openai.IncludeReasoningEncryptedContent}
-			}
-			parsed, err := openai.ParseResponsesOptions(mergedOptions)
-			if err == nil {
-				options[openai.Name] = parsed
-			}
-		} else {
-			parsed, err := openai.ParseOptions(mergedOptions)
-			if err == nil {
-				options[openai.Name] = parsed
-			}
-		}
-
-	case anthropic.Name, bedrock.Name:
-		var (
+		if _, hasDisplay := mergedOptions["thinking_display"]; !hasDisplay {
 			_, hasEffort = mergedOptions["effort"]
-			_, hasThink  = mergedOptions["thinking"]
-			extraBody    = make(map[string]any)
-		)
-
-		switch providerCfg.ID {
-		case string(catwalk.InferenceProviderAlibabaSingapore), string(catwalk.InferenceProviderAlibabaUS):
-			switch {
-			case !hasEffort && shouldSetEffort:
-				extraBody["reasoning_effort"] = reasoningEffort
-			case !hasThink && model.CatwalkCfg.CanReason:
-				if model.ModelCfg.Think {
-					extraBody["thinking"] = map[string]any{"type": "enabled"}
-				} else {
-					extraBody["thinking"] = map[string]any{"type": "disabled"}
-				}
-			}
-			mergedOptions["extra_body"] = extraBody
-
-		default:
-			switch {
-			case !hasEffort && shouldSetEffort:
-				mergedOptions["effort"] = reasoningEffort
-			case !hasThink && model.ModelCfg.Think:
-				mergedOptions["thinking"] = map[string]any{"budget_tokens": 2000}
+			_, hasThinking = mergedOptions["thinking"]
+			if hasEffort || hasThinking {
+				mergedOptions["thinking_display"] = string(anthropic.ThinkingDisplaySummarized)
 			}
 		}
-
-		parsed, err := anthropic.ParseOptions(mergedOptions)
-		if err == nil {
+		if parsed, parseErr := anthropic.ParseOptions(mergedOptions); parseErr == nil {
 			options[anthropic.Name] = parsed
 		}
+		return options
+	}
 
-	case openrouter.Name:
-		_, hasReasoning := mergedOptions["reasoning"]
-		if !hasReasoning && shouldSetEffort {
-			mergedOptions["reasoning"] = map[string]any{
-				"enabled": true,
-				"effort":  reasoningEffort,
-			}
-		}
-		parsed, err := openrouter.ParseOptions(mergedOptions)
-		if err == nil {
-			options[openrouter.Name] = parsed
-		}
-
-	case vercel.Name:
-		_, hasReasoning := mergedOptions["reasoning"]
-		if !hasReasoning && shouldSetEffort {
-			mergedOptions["reasoning"] = map[string]any{
-				"enabled": true,
-				"effort":  reasoningEffort,
-			}
-		}
-		parsed, err := vercel.ParseOptions(mergedOptions)
-		if err == nil {
-			options[vercel.Name] = parsed
-		}
-
-	case google.Name:
-		_, hasReasoning := mergedOptions["thinking_config"]
-		if !hasReasoning {
-			if strings.HasPrefix(model.CatwalkCfg.ID, "gemini-2") {
-				mergedOptions["thinking_config"] = map[string]any{
-					"thinking_budget":  2000,
-					"include_thoughts": true,
-				}
-			} else {
-				mergedOptions["thinking_config"] = map[string]any{
-					"thinking_level":   reasoningEffort,
-					"include_thoughts": true,
-				}
-			}
-		}
-		parsed, err := google.ParseOptions(mergedOptions)
-		if err == nil {
-			options[google.Name] = parsed
-		}
-
-	case openaicompat.Name, hyper.Name:
-		extraBody := make(map[string]any)
-
-		_, hasReasoningEffort := mergedOptions["reasoning_effort"]
-		if !hasReasoningEffort && shouldSetEffort {
-			switch providerCfg.ID {
-			case string(catwalk.InferenceProviderIoNet):
-				extraBody["reasoning"] = map[string]string{"effort": reasoningEffort}
-			case string(catwalk.InferenceProviderOpenCodeGo), string(catwalk.InferenceProviderOpenCodeZen):
-				// MiniMax models use the "thinking" parameter instead of
-				// "reasoning_effort". Other models on these providers still
-				// use the standard field.
-				if !strings.HasPrefix(strings.ToLower(model.CatwalkCfg.ID), "minimax") {
-					mergedOptions["reasoning_effort"] = reasoningEffort
-				}
-			default:
+	if registration, ok := config.ProviderCapabilities().Lookup(providerCfg.ID); ok && registration.Construction == providerregistry.ConstructionOpenAIResponses {
+		if openai.IsResponsesReasoningModel(model.CatwalkCfg.ID) {
+			if _, exists := mergedOptions["reasoning_effort"]; !exists && reasoningEffort != "" {
 				mergedOptions["reasoning_effort"] = reasoningEffort
 			}
+			mergedOptions["reasoning_summary"] = "auto"
+			mergedOptions["include"] = []openai.IncludeType{openai.IncludeReasoningEncryptedContent}
 		}
+		if parsed, parseErr := openai.ParseResponsesOptions(mergedOptions); parseErr == nil {
+			options[openai.Name] = parsed
+		}
+		return options
+	}
 
-		// "reasoning effort" is a standard OpenAI field, but "thinking" is not.
-		// Setting it in the right way for each provider.
-		// TODO: Abstract this in Fantasy somehow?
-		// TODO: Allow custom providers to specify how to set this?
+	if providerCfg.Type != openaicompat.Name && !discover.IsKnownCustomProvider(string(providerCfg.Type)) {
+		return options
+	}
+
+	extraBody := make(map[string]any)
+	shouldSetEffort := model.CatwalkCfg.CanReason && reasoningEffort != "" && slices.Contains(model.CatwalkCfg.ReasoningLevels, reasoningEffort)
+	if _, exists := mergedOptions["reasoning_effort"]; !exists && shouldSetEffort {
 		switch providerCfg.ID {
-		case hyper.Name:
-			extraBody["thinking"] = model.ModelCfg.Think
 		case string(catwalk.InferenceProviderIoNet):
-			if _, ok := extraBody["reasoning"]; !ok && model.CatwalkCfg.CanReason {
-				if model.ModelCfg.Think {
-					extraBody["reasoning"] = map[string]string{"effort": "medium"}
-				} else {
-					extraBody["reasoning"] = map[string]string{"effort": "none"}
-				}
+			extraBody["reasoning"] = map[string]string{"effort": reasoningEffort}
+		case string(catwalk.InferenceProviderOpenCodeGo), string(catwalk.InferenceProviderOpenCodeZen):
+			if !strings.HasPrefix(strings.ToLower(model.CatwalkCfg.ID), "minimax") {
+				mergedOptions["reasoning_effort"] = reasoningEffort
 			}
+		default:
+			mergedOptions["reasoning_effort"] = reasoningEffort
+		}
+	}
 
-		case string(catwalk.InferenceProviderZAI), string(catwalk.InferenceProviderDeepSeek):
-			if model.ModelCfg.Think || reasoningEffort != "" {
+	switch providerCfg.ID {
+	case string(catwalk.InferenceProviderIoNet):
+		if _, exists := extraBody["reasoning"]; !exists && model.CatwalkCfg.CanReason {
+			if model.ModelCfg.Think {
+				extraBody["reasoning"] = map[string]string{"effort": "medium"}
+			} else {
+				extraBody["reasoning"] = map[string]string{"effort": "none"}
+			}
+		}
+	case string(catwalk.InferenceProviderZAI), string(catwalk.InferenceProviderDeepSeek):
+		if model.ModelCfg.Think || reasoningEffort != "" {
+			extraBody["thinking"] = map[string]any{"type": "enabled"}
+		} else {
+			extraBody["thinking"] = map[string]any{"type": "disabled"}
+		}
+	case string(catwalk.InferenceProviderFireworks):
+		if reasoningEffort == "" {
+			if model.ModelCfg.Think {
 				extraBody["thinking"] = map[string]any{"type": "enabled"}
 			} else {
 				extraBody["thinking"] = map[string]any{"type": "disabled"}
 			}
-
-		case string(catwalk.InferenceProviderFireworks):
-			// NOTE: Fireworks break if we set both `reasoning_effort` and `thinking`.
-			if reasoningEffort == "" {
-				if model.ModelCfg.Think {
-					extraBody["thinking"] = map[string]any{"type": "enabled"}
-				} else {
-					extraBody["thinking"] = map[string]any{"type": "disabled"}
-				}
-			}
-
-		case string(catwalk.InferenceProviderBaseten):
-			extraBody["chat_template_args"] = map[string]any{
-				"enable_thinking": model.ModelCfg.Think || reasoningEffort != "" && reasoningEffort != "none",
-			}
-
-		case string(catwalk.InferenceProviderOpenCodeGo), string(catwalk.InferenceProviderOpenCodeZen):
-			// MiniMax M3 uses the "thinking" parameter to control reasoning.
-			// "reasoning_split" must be true so thinking content is returned
-			// in the "reasoning_content" field instead of inline in "content".
-			if strings.HasPrefix(strings.ToLower(model.CatwalkCfg.ID), "minimax") {
-				if model.CatwalkCfg.CanReason && (model.ModelCfg.Think || reasoningEffort != "") {
-					extraBody["thinking"] = map[string]any{"type": "adaptive"}
-					extraBody["reasoning_split"] = true
-				} else {
-					extraBody["thinking"] = map[string]any{"type": "disabled"}
-				}
-			}
-
-		case string(catwalk.InferenceProviderAlibabaSingapore), string(catwalk.InferenceProviderAlibabaUS):
-			if model.CatwalkCfg.CanReason {
-				extraBody["enable_thinking"] = model.ModelCfg.Think || reasoningEffort != ""
+		}
+	case string(catwalk.InferenceProviderBaseten):
+		extraBody["chat_template_args"] = map[string]any{"enable_thinking": model.ModelCfg.Think || reasoningEffort != "" && reasoningEffort != "none"}
+	case string(catwalk.InferenceProviderOpenCodeGo), string(catwalk.InferenceProviderOpenCodeZen):
+		if strings.HasPrefix(strings.ToLower(model.CatwalkCfg.ID), "minimax") {
+			if model.CatwalkCfg.CanReason && (model.ModelCfg.Think || reasoningEffort != "") {
+				extraBody["thinking"] = map[string]any{"type": "adaptive"}
+				extraBody["reasoning_split"] = true
+			} else {
+				extraBody["thinking"] = map[string]any{"type": "disabled"}
 			}
 		}
-
-		mergedOptions["extra_body"] = extraBody
-
-		parsed, err := openaicompat.ParseOptions(mergedOptions)
-		if err == nil {
-			options[openaicompat.Name] = parsed
-		}
-
-	default:
-		// Known custom providers (litellm, ollama, omlx) are
-		// openai-compat under the hood.
-		if discover.IsKnownCustomProvider(string(providerCfg.Type)) {
-			parsed, err := openaicompat.ParseOptions(mergedOptions)
-			if err == nil {
-				options[openaicompat.Name] = parsed
-			}
+	case string(catwalk.InferenceProviderAlibabaSingapore), string(catwalk.InferenceProviderAlibabaUS):
+		if model.CatwalkCfg.CanReason {
+			extraBody["enable_thinking"] = model.ModelCfg.Think || reasoningEffort != ""
 		}
 	}
 
+	mergedOptions["extra_body"] = extraBody
+	if parsed, parseErr := openaicompat.ParseOptions(mergedOptions); parseErr == nil {
+		options[openaicompat.Name] = parsed
+	}
 	return options
 }
 
@@ -621,8 +826,35 @@ func mergeCallOptions(model Model, cfg config.ProviderConfig) (fantasy.ProviderO
 	return modelOptions, temp, topP, topK, freqPenalty, presPenalty
 }
 
-func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, agent config.Agent, isSubAgent bool) (SessionAgent, error) {
-	large, small, err := c.buildAgentModels(ctx, isSubAgent)
+func (c *coordinator) systemPromptBuilder(promptTemplate *prompt.Prompt) SystemPromptBuilder {
+	return func(ctx context.Context, current session.Session, model Model) (string, error) {
+		lifecycle, err := promptLifecycle(current)
+		if err != nil {
+			return "", err
+		}
+		return promptTemplate.BuildLifecycle(ctx, model.ModelCfg.Provider, model.Model.Model(), c.cfg, lifecycle)
+	}
+}
+
+func promptLifecycle(current session.Session) (prompt.Lifecycle, error) {
+	lifecycle := prompt.Lifecycle{Plan: current.Plan}
+	switch current.Mode {
+	case "", session.ModeDefault:
+		lifecycle.Stage = prompt.LifecycleDefault
+	case session.ModePlan:
+		lifecycle.Stage = prompt.LifecycleDraft
+	case session.ModePlanRevision:
+		lifecycle.Stage = prompt.LifecycleRevision
+	case session.ModePlanExecution:
+		lifecycle.Stage = prompt.LifecycleExecution
+	default:
+		return prompt.Lifecycle{}, fmt.Errorf("invalid session mode %q", current.Mode)
+	}
+	return lifecycle, nil
+}
+
+func (c *coordinator) buildAgent(ctx context.Context, promptTemplate *prompt.Prompt, agent config.Agent, isSubAgent bool) (SessionAgent, error) {
+	large, small, err := c.buildAgentModels(ctx, agent, isSubAgent)
 	if err != nil {
 		return nil, err
 	}
@@ -633,12 +865,14 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		SmallModel:           small,
 		SystemPromptPrefix:   largeProviderCfg.SystemPromptPrefix,
 		SystemPrompt:         "",
+		SystemPromptBuilder:  c.systemPromptBuilder(promptTemplate),
 		IsSubAgent:           isSubAgent,
 		DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
 		IsYolo:               c.permissions.SkipRequests(),
 		Sessions:             c.sessions,
 		Messages:             c.messages,
 		Tools:                nil,
+		PlanModeTools:        nil,
 		Notify:               c.notify,
 		RunComplete:          c.runComplete,
 	})
@@ -656,7 +890,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	initCtx := context.WithoutCancel(ctx)
 
 	c.readyWg.Go(func() error {
-		systemPrompt, err := prompt.Build(initCtx, large.Model.Provider(), large.Model.Model(), c.cfg)
+		systemPrompt, err := promptTemplate.Build(initCtx, large.ModelCfg.Provider, large.Model.Model(), c.cfg)
 		if err != nil {
 			return err
 		}
@@ -665,23 +899,28 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	})
 
 	c.readyWg.Go(func() error {
-		tools, err := c.buildTools(initCtx, agent, isSubAgent)
+		palettes, err := c.buildTools(initCtx, agent, isSubAgent)
 		if err != nil {
 			return err
 		}
-		result.SetTools(tools)
+		result.SetTools(palettes.normal, palettes.planMode)
 		return nil
 	})
 
 	return result, nil
 }
 
-func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubAgent bool) ([]fantasy.AgentTool, error) {
+type toolPalettes struct {
+	normal   []fantasy.AgentTool
+	planMode []fantasy.AgentTool
+}
+
+func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubAgent bool) (toolPalettes, error) {
 	var allTools []fantasy.AgentTool
 	if slices.Contains(agent.AllowedTools, AgentToolName) {
 		agentTool, err := c.agentTool(ctx)
 		if err != nil {
-			return nil, err
+			return toolPalettes{}, err
 		}
 		allTools = append(allTools, agentTool)
 	}
@@ -689,20 +928,26 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 	if slices.Contains(agent.AllowedTools, tools.AgenticFetchToolName) {
 		agenticFetchTool, err := c.agenticFetchTool(ctx, nil)
 		if err != nil {
-			return nil, err
+			return toolPalettes{}, err
 		}
 		allTools = append(allTools, agenticFetchTool)
 	}
 
-	// Get the model name for the agent
 	modelID := ""
-	if modelCfg, ok := c.cfg.Config().Models[agent.Model]; ok {
+	modelCfg, ok := c.cfg.Config().Models[agent.Model]
+	if agent.PrimaryModelOverride != nil {
+		modelCfg = *agent.PrimaryModelOverride
+		ok = true
+	}
+	if ok {
 		if model := c.cfg.Config().GetModel(modelCfg.Provider, modelCfg.Model); model != nil {
 			modelID = model.ID
 		}
 	}
 
-	logFile := filepath.Join(c.cfg.Config().Options.DataDirectory, "logs", "crush.log")
+	logFile := filepath.Join(c.cfg.Config().Options.DataDirectory, "logs", "crux.log")
+	memoryService := automemory.NewService(c.cfg.WorkingDir())
+	projectService := projects.NewService()
 
 	// Build hook runner if PreToolUse hooks are configured.
 	var hookRunner *hooks.Runner
@@ -712,11 +957,18 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 
 	allTools = append(
 		allTools,
-		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.Attribution, modelID),
-		tools.NewCrushInfoTool(c.cfg, c.lspManager, c.allSkills, c.activeSkills, c.skillTracker),
-		tools.NewCrushLogsTool(logFile),
-		tools.NewJobOutputTool(),
-		tools.NewJobKillTool(),
+		tools.NewBashTool(c.backgroundShells, c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.Attribution, modelID),
+		tools.NewCruxInfoTool(c.cfg, c.lspManager, c.allSkills, c.activeSkills, c.skillTracker),
+		tools.NewCruxLogsTool(logFile),
+		tools.NewTrafficLogsTool(),
+		tools.NewGitInspectTool(c.cfg.WorkingDir()),
+		tools.NewJobListTool(c, c.backgroundShells),
+		tools.NewJobOutputTool(c, c.backgroundShells),
+		tools.NewJobKillTool(c, c.backgroundShells),
+		tools.NewTaskListTool(c),
+		tools.NewTaskOutputTool(c),
+		tools.NewTaskStopTool(c),
+		tools.NewTaskContinueTool(c),
 		tools.NewDownloadTool(c.permissions, c.cfg.WorkingDir(), nil),
 		tools.NewEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 		tools.NewMultiEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
@@ -724,15 +976,36 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 		tools.NewGlobTool(c.cfg.WorkingDir(), c.cfg.Config().Tools.Glob),
 		tools.NewGrepTool(c.cfg.WorkingDir(), c.cfg.Config().Tools.Grep),
 		tools.NewLsTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Tools.Ls),
+		tools.NewMemoryListTool(memoryService),
+		tools.NewMemoryUpsertTool(memoryService),
+		tools.NewMemoryRemoveTool(memoryService),
+		tools.NewProjectCreateTool(projectService, c.cfg.WorkingDir()),
+		tools.NewProjectStatusTool(projectService, c.cfg.WorkingDir()),
+		tools.NewProjectUpdateTool(projectService, c.cfg.WorkingDir()),
+		tools.NewProjectNotesTool(projectService, c.cfg.WorkingDir()),
+		tools.NewProjectCompleteTool(projectService, c.cfg.WorkingDir()),
+		tools.NewSkillListTool(c.activeSkills, c.cfg.Config().Options.SkillsPaths, c.cfg.WorkingDir(), c.skillTracker),
+		tools.NewSkillLoadTool(c.activeSkills, c.cfg.Config().Options.SkillsPaths, c.cfg.WorkingDir(), c.skillTracker),
 		tools.NewSourcegraphTool(nil),
 		tools.NewTodosTool(c.sessions),
 		tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, c.skillTracker, c.cfg.WorkingDir(), c.cfg.Config().Options.SkillsPaths...),
 		tools.NewWriteTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 	)
+	if c.cfg.Config().Tools.CodebaseSearch.IsEnabled() {
+		allTools = append(allTools, tools.NewCodebaseSearchTool(c.cfg.WorkingDir(), c.cfg.Config().Tools.CodebaseSearch, nil))
+	}
+	if agent.Script != nil {
+		allTools = append(allTools, tools.NewScriptTool(c.permissions, c.cfg.WorkingDir(), *agent.Script))
+	}
 
-	// Question tool is interactive-only and not available to sub-agents.
 	if !isSubAgent && c.interactive {
-		allTools = append(allTools, tools.NewQuestionTool(c.questions))
+		allTools = append(
+			allTools,
+			tools.NewEnterPlanTool(c.sessions),
+			tools.NewExitPlanTool(c.sessions, c.questions),
+			tools.NewCompletePlanTool(c.sessions, c.questions),
+			tools.NewQuestionTool(c.questions),
+		)
 	}
 
 	// Add LSP tools if user has configured LSPs or auto_lsp is enabled (nil or true).
@@ -756,6 +1029,22 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 			tools.NewListMCPResourcesTool(c.cfg, c.permissions),
 			tools.NewReadMCPResourceTool(c.cfg, c.permissions),
 		)
+	}
+
+	if agent.DefinitionPath != "" {
+		available := make([]string, 0, len(allTools))
+		for _, tool := range allTools {
+			available = append(available, tool.Info().Name)
+		}
+		var disabled []string
+		if c.cfg.Config().Options != nil {
+			disabled = c.cfg.Config().Options.DisabledTools
+		}
+		resolvedTools, err := resolveCustomAgentTools(agent, available, disabled)
+		if err != nil {
+			return toolPalettes{}, err
+		}
+		agent.AllowedTools = resolvedTools
 	}
 
 	var filteredTools []fantasy.AgentTool
@@ -788,37 +1077,49 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 			slog.Debug("MCP not allowed", "tool", tool.Name(), "agent", agent.Name)
 		}
 	}
+	planModeTools := make([]fantasy.AgentTool, 0, len(filteredTools))
+	for _, tool := range filteredTools {
+		if config.IsToolAllowedInPlanMode(tool.Info().Name) {
+			planModeTools = append(planModeTools, tool)
+		}
+	}
+
 	slices.SortFunc(filteredTools, func(a, b fantasy.AgentTool) int {
 		return strings.Compare(a.Info().Name, b.Info().Name)
 	})
+	slices.SortFunc(planModeTools, func(a, b fantasy.AgentTool) int {
+		return strings.Compare(a.Info().Name, b.Info().Name)
+	})
 
-	// Wrap tools with hook interception for the top-level agent only.
-	// Sub-agents (the `agent` task tool, `agentic_fetch`, etc.) run
-	// without hook interception to avoid firing the user's hook N times
-	// per delegated turn. The top-level invocation of the sub-agent tool
-	// itself is still wrapped from the coder's side.
+	// Top-level tools always run hooks. Sub-agent wrappers activate only
+	// during detached execution so foreground delegation remains unchanged.
 	filteredTools = wrapToolsWithHooks(filteredTools, hookRunner, isSubAgent)
+	planModeTools = wrapToolsWithHooks(planModeTools, hookRunner, isSubAgent)
 
-	return filteredTools, nil
+	return toolPalettes{normal: filteredTools, planMode: planModeTools}, nil
 }
 
-// TODO: when we support multiple agents we need to change this so that we pass in the agent specific model config
-func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Model, Model, error) {
-	largeModelCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeLarge]
-	if !ok {
-		return Model{}, Model{}, errLargeModelNotSelected
+func (c *coordinator) buildAgentModels(ctx context.Context, agent config.Agent, isSubAgent bool) (Model, Model, error) {
+	var primaryModelCfg config.SelectedModel
+	if agent.PrimaryModelOverride != nil {
+		primaryModelCfg = *agent.PrimaryModelOverride
+	} else {
+		var ok bool
+		primaryModelCfg, ok = c.cfg.Config().Models[agent.Model]
+		if !ok {
+			return Model{}, Model{}, errLargeModelNotSelected
+		}
 	}
 	smallModelCfg, ok := c.cfg.Config().Models[config.SelectedModelTypeSmall]
 	if !ok {
 		return Model{}, Model{}, errSmallModelNotSelected
 	}
 
-	largeProviderCfg, ok := c.cfg.Config().Providers.Get(largeModelCfg.Provider)
+	primaryProviderCfg, ok := c.cfg.Config().Providers.Get(primaryModelCfg.Provider)
 	if !ok {
 		return Model{}, Model{}, errLargeModelProviderNotConfigured
 	}
-
-	largeProvider, err := c.buildProvider(largeProviderCfg, largeModelCfg, isSubAgent)
+	primaryProvider, err := c.buildProvider(primaryProviderCfg, primaryModelCfg, isSubAgent)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
@@ -827,95 +1128,106 @@ func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Mo
 	if !ok {
 		return Model{}, Model{}, errSmallModelProviderNotConfigured
 	}
-
 	smallProvider, err := c.buildProvider(smallProviderCfg, smallModelCfg, true)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
 
-	var largeCatwalkModel *catwalk.Model
+	var primaryCatwalkModel *catwalk.Model
 	var smallCatwalkModel *catwalk.Model
-
-	for _, m := range largeProviderCfg.Models {
-		if m.ID == largeModelCfg.Model {
-			largeCatwalkModel = &m
+	for _, model := range primaryProviderCfg.Models {
+		if model.ID == primaryModelCfg.Model {
+			primaryCatwalkModel = &model
+			break
 		}
 	}
-	for _, m := range smallProviderCfg.Models {
-		if m.ID == smallModelCfg.Model {
-			smallCatwalkModel = &m
+	for _, model := range smallProviderCfg.Models {
+		if model.ID == smallModelCfg.Model {
+			smallCatwalkModel = &model
+			break
 		}
 	}
-
-	if largeCatwalkModel == nil {
+	if primaryCatwalkModel == nil {
 		return Model{}, Model{}, errLargeModelNotFound
 	}
-
 	if smallCatwalkModel == nil {
 		return Model{}, Model{}, errSmallModelNotFound
 	}
 
-	largeModelID := largeModelCfg.Model
-	smallModelID := smallModelCfg.Model
-
-	if largeModelCfg.Provider == openrouter.Name && isExactoSupported(largeModelID) {
-		largeModelID += ":exacto"
-	}
-
-	if smallModelCfg.Provider == openrouter.Name && isExactoSupported(smallModelID) {
-		smallModelID += ":exacto"
-	}
-
-	largeModel, err := largeProvider.LanguageModel(ctx, largeModelID)
+	primaryLanguageModel, err := primaryProvider.LanguageModel(ctx, primaryModelCfg.Model)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
-	smallModel, err := smallProvider.LanguageModel(ctx, smallModelID)
+	smallLanguageModel, err := smallProvider.LanguageModel(ctx, smallModelCfg.Model)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
+	if registration, ok := config.ProviderCapabilities().Lookup(primaryProviderCfg.ID); ok && registration.ProviderID == primaryProviderCfg.ID {
+		primaryLanguageModel = mapLanguageModelErrors(primaryLanguageModel, registration)
+	}
+	if registration, ok := config.ProviderCapabilities().Lookup(smallProviderCfg.ID); ok && registration.ProviderID == smallProviderCfg.ID {
+		smallLanguageModel = mapLanguageModelErrors(smallLanguageModel, registration)
+	}
 
-	return Model{
-			Model:      largeModel,
-			CatwalkCfg: *largeCatwalkModel,
-			ModelCfg:   largeModelCfg,
-			FlatRate:   largeProviderCfg.FlatRate,
-		}, Model{
-			Model:      smallModel,
-			CatwalkCfg: *smallCatwalkModel,
-			ModelCfg:   smallModelCfg,
-			FlatRate:   smallProviderCfg.FlatRate,
-		}, nil
+	primary := Model{
+		Model:              primaryLanguageModel,
+		CatwalkCfg:         *primaryCatwalkModel,
+		ModelCfg:           primaryModelCfg,
+		FlatRate:           primaryProviderCfg.FlatRate,
+		SystemPromptPrefix: primaryProviderCfg.SystemPromptPrefix,
+		OnAuthRefresh:      c.makeAuthRefreshCallback(primaryProviderCfg),
+	}
+	primary.ProviderOptions = c.oauthReasoningOptions(
+		primaryProviderCfg.ID,
+		primaryModelCfg.Model,
+		getProviderOptions(primary, primaryProviderCfg),
+	)
+	small := Model{
+		Model:              smallLanguageModel,
+		CatwalkCfg:         *smallCatwalkModel,
+		ModelCfg:           smallModelCfg,
+		FlatRate:           smallProviderCfg.FlatRate,
+		SystemPromptPrefix: smallProviderCfg.SystemPromptPrefix,
+		OnAuthRefresh:      c.makeAuthRefreshCallback(smallProviderCfg),
+	}
+	small.ProviderOptions = c.oauthReasoningOptions(
+		smallProviderCfg.ID,
+		smallModelCfg.Model,
+		getProviderOptions(small, smallProviderCfg),
+	)
+	return primary, small, nil
 }
 
-func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
-	var opts []anthropic.Option
-
-	switch {
-	case strings.HasPrefix(apiKey, "Bearer "):
-		// NOTE: Prevent the SDK from picking up the API key from env.
-		os.Setenv("ANTHROPIC_API_KEY", "")
-		headers["Authorization"] = apiKey
-	case providerID == string(catwalk.InferenceProviderMiniMax) || providerID == string(catwalk.InferenceProviderMiniMaxChina):
-		// NOTE: Prevent the SDK from picking up the API key from env.
-		os.Setenv("ANTHROPIC_API_KEY", "")
-		headers["Authorization"] = "Bearer " + apiKey
-	case apiKey != "":
-		// X-Api-Key header
-		opts = append(opts, anthropic.WithAPIKey(apiKey))
-	}
-
+func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string) (fantasy.Provider, error) {
+	opts := []anthropic.Option{anthropic.WithAPIKey(apiKey)}
 	if len(headers) > 0 {
 		opts = append(opts, anthropic.WithHeaders(headers))
 	}
-
 	if baseURL != "" {
 		opts = append(opts, anthropic.WithBaseURL(baseURL))
 	}
-
 	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, anthropic.WithHTTPClient(httpClient))
+		opts = append(opts, anthropic.WithHTTPClient(log.NewHTTPClient()))
+	}
+	return anthropic.New(opts...)
+}
+
+func (c *coordinator) buildManifestAnthropicProvider(registration providerregistry.Registration, baseURL, apiKey string, headers map[string]string) (fantasy.Provider, error) {
+	baseURL, err := anthropictransport.EffectiveBaseURL(registration.Operation, baseURL)
+	if err != nil {
+		return nil, err
+	}
+	httpClient, err := anthropictransport.NewClient(registration.Operation, c.cfg.Config().Options.Debug)
+	if err != nil {
+		return nil, err
+	}
+	headers["Authorization"] = "Bearer " + apiKey
+	opts := []anthropic.Option{anthropic.WithHTTPClient(httpClient)}
+	if len(headers) > 0 {
+		opts = append(opts, anthropic.WithHeaders(headers))
+	}
+	if baseURL != "" {
+		opts = append(opts, anthropic.WithBaseURL(baseURL))
 	}
 	return anthropic.New(opts...)
 }
@@ -938,34 +1250,6 @@ func (c *coordinator) buildOpenaiProvider(baseURL, apiKey string, headers map[st
 	return openai.New(opts...)
 }
 
-func (c *coordinator) buildOpenrouterProvider(_, apiKey string, headers map[string]string) (fantasy.Provider, error) {
-	opts := []openrouter.Option{
-		openrouter.WithAPIKey(apiKey),
-	}
-	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, openrouter.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, openrouter.WithHeaders(headers))
-	}
-	return openrouter.New(opts...)
-}
-
-func (c *coordinator) buildVercelProvider(_, apiKey string, headers map[string]string) (fantasy.Provider, error) {
-	opts := []vercel.Option{
-		vercel.WithAPIKey(apiKey),
-	}
-	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, vercel.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, vercel.WithHeaders(headers))
-	}
-	return vercel.New(opts...)
-}
-
 func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers map[string]string, extraBody map[string]any, providerID string, isSubAgent bool) (fantasy.Provider, error) {
 	opts := []openaicompat.Option{
 		openaicompat.WithBaseURL(baseURL),
@@ -983,7 +1267,7 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 				return copilotResponsesModels[modelID]
 			}),
 		)
-		httpClient = copilot.NewClient(isSubAgent, c.cfg.Config().Options.Debug)
+		httpClient = copilotinference.NewClient(isSubAgent, c.cfg.Config().Options.Debug)
 	}
 	if httpClient == nil && c.cfg.Config().Options.Debug {
 		httpClient = log.NewHTTPClient()
@@ -1003,173 +1287,126 @@ func (c *coordinator) buildOpenaiCompatProvider(baseURL, apiKey string, headers 
 	return openaicompat.New(opts...)
 }
 
-func (c *coordinator) buildAzureProvider(baseURL, apiKey string, headers map[string]string, options map[string]string) (fantasy.Provider, error) {
-	opts := []azure.Option{
-		azure.WithBaseURL(baseURL),
-		azure.WithAPIKey(apiKey),
-		azure.WithUseResponsesAPI(),
+// buildCodexProvider creates the Codex provider: a native Responses-over-
+// WebSocket adapter for the ChatGPT Codex endpoint, authenticating with an
+// OAuth Bearer token and presenting the Codex CLI identity.
+func (c *coordinator) buildCodexProvider(registration providerregistry.Registration, baseURL, apiKey string, headers map[string]string) (fantasy.Provider, error) {
+	accountID := func() string {
+		if registration.AccountNamespace == "" {
+			return ""
+		}
+		entry, err := accounts.Active(context.Background(), registration.AccountNamespace)
+		if err != nil || entry == nil || entry.AccessToken != apiKey {
+			return ""
+		}
+		var raw struct {
+			AccountID string `json:"account_id"`
+		}
+		if err := json.Unmarshal(entry.Raw, &raw); err != nil {
+			return ""
+		}
+		return raw.AccountID
 	}
-	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, azure.WithHTTPClient(httpClient))
-	}
-	if options == nil {
-		options = make(map[string]string)
-	}
-	if apiVersion, ok := options["apiVersion"]; ok {
-		opts = append(opts, azure.WithAPIVersion(apiVersion))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, azure.WithHeaders(headers))
-	}
-
-	return azure.New(opts...)
+	return codex.NewProvider(baseURL, func() string { return apiKey }, accountID, headers, c.codexSessions)
 }
 
-func (c *coordinator) buildBedrockProvider(apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
-	var opts []bedrock.Option
-	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, bedrock.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, bedrock.WithHeaders(headers))
-	}
-
-	switch {
-	case apiKey != "":
-		opts = append(opts, bedrock.WithAPIKey(apiKey))
-	case os.Getenv("AWS_BEARER_TOKEN_BEDROCK") != "":
-		opts = append(opts, bedrock.WithAPIKey(os.Getenv("AWS_BEARER_TOKEN_BEDROCK")))
-	default:
-		// Skip, let the SDK do authentication.
-	}
-
-	switch providerID {
-	case string(catwalk.InferenceProviderBedrockEurope):
-		opts = append(opts, bedrock.WithRegion("eu-west-1"))
-	default:
-		opts = append(opts, bedrock.WithRegion("us-east-1"))
-	}
-
-	return bedrock.New(opts...)
+// buildGeminiAntigravityProvider creates the Antigravity provider: a native
+// Antigravity-dialect provider pointed at the Cloud Code v1internal endpoint,
+// authenticating with an OAuth Bearer token.
+func (c *coordinator) buildGeminiAntigravityProvider(baseURL, apiKey string, headers map[string]string) (fantasy.Provider, error) {
+	return gemini.NewProvider(baseURL, func() string { return apiKey }, headers)
 }
 
-func (c *coordinator) buildGoogleProvider(baseURL, apiKey string, headers map[string]string) (fantasy.Provider, error) {
-	opts := []google.Option{
-		google.WithBaseURL(baseURL),
-		google.WithGeminiAPIKey(apiKey),
-	}
-	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, google.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, google.WithHeaders(headers))
-	}
-	return google.New(opts...)
-}
-
-func (c *coordinator) buildGoogleVertexProvider(headers map[string]string, options map[string]string) (fantasy.Provider, error) {
-	opts := []google.Option{}
-	if c.cfg.Config().Options.Debug {
-		httpClient := log.NewHTTPClient()
-		opts = append(opts, google.WithHTTPClient(httpClient))
-	}
-	if len(headers) > 0 {
-		opts = append(opts, google.WithHeaders(headers))
-	}
-
-	project := options["project"]
-	location := options["location"]
-
-	opts = append(opts, google.WithVertex(project, location))
-
-	return google.New(opts...)
-}
-
-func (c *coordinator) isAnthropicThinking(model config.SelectedModel) bool {
-	if model.Think {
-		return true
-	}
-	opts, err := anthropic.ParseOptions(model.ProviderOptions)
-	return err == nil && opts.Thinking != nil
-}
-
-func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, model config.SelectedModel, isSubAgent bool) (fantasy.Provider, error) {
+func (c *coordinator) buildProvider(providerCfg config.ProviderConfig, _ config.SelectedModel, isSubAgent bool) (fantasy.Provider, error) {
 	headers := maps.Clone(providerCfg.ExtraHeaders)
 	if headers == nil {
 		headers = make(map[string]string)
 	}
 
-	// handle special headers for anthropic
-	if providerCfg.Type == anthropic.Name && c.isAnthropicThinking(model) {
-		if v, ok := headers["anthropic-beta"]; ok {
-			headers["anthropic-beta"] = v + ",interleaved-thinking-2025-05-14"
-		} else {
-			headers["anthropic-beta"] = "interleaved-thinking-2025-05-14"
+	registration, registered := c.cfg.ProviderRegistration(providerCfg.ID)
+	if !registered && providerCfg.Plugin != nil {
+		return nil, fmt.Errorf("provider %s is unavailable because plugin %s is not active; install, trust, enable, or select a compatible rollout profile for that plugin", providerCfg.ID, providerCfg.Plugin.ID)
+	}
+	if !registered && providerCfg.OAuthToken != nil && providerCfg.Type != catwalk.TypeOpenAICompat {
+		return nil, fmt.Errorf("OAuth provider %s is unavailable because its registered integration is not active; install, trust, enable, or select the required provider plugin", providerCfg.ID)
+	}
+
+	apiKey, err := c.cfg.Resolve(providerCfg.APIKey)
+	if err != nil {
+		return nil, fmt.Errorf("resolve provider %s credential: %w", providerCfg.ID, err)
+	}
+	baseURL, err := c.cfg.Resolve(providerCfg.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("resolve provider %s endpoint: %w", providerCfg.ID, err)
+	}
+	if registered && registration.CompatibilityAdapter != "" && registration.Operation != nil {
+		baseURL, err = registration.Operation.ResolveEndpoint(baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
+		}
+		headers, err = registration.Operation.ApplyHeaders(headers, nil)
+		if err != nil {
+			return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
 		}
 	}
 
-	apiKey, _ := c.cfg.Resolve(providerCfg.APIKey)
-	baseURL, _ := c.cfg.Resolve(providerCfg.BaseURL)
-
-	switch providerCfg.ID {
-	case string(catwalk.InferenceProviderOpenCodeGo), string(catwalk.InferenceProviderOpenCodeZen):
-		if opencodeMessagesModels[model.Model] {
-			baseURL = strings.TrimSuffix(baseURL, "/v1")
-			return c.buildAnthropicProvider(baseURL, apiKey, headers, providerCfg.ID)
+	if registered {
+		switch registration.Construction {
+		case providerregistry.ConstructionGeminiAntigravity:
+			if registration.Operation != nil {
+				if err := registration.Operation.ValidateSelection("gemini-generate-content", "sse"); err != nil {
+					return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
+				}
+			}
+			return c.buildGeminiAntigravityProvider(baseURL, apiKey, headers)
+		case providerregistry.ConstructionCodex:
+			if registration.Operation != nil {
+				if err := registration.Operation.ValidateSelection("openai-responses", "websocket-json"); err != nil {
+					return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
+				}
+			}
+			return c.buildCodexProvider(registration, baseURL, apiKey, headers)
+		case providerregistry.ConstructionCopilot:
+			return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody, providerCfg.ID, isSubAgent)
+		case providerregistry.ConstructionAnthropicMessages:
+			if registration.Operation == nil {
+				return nil, fmt.Errorf("provider %s has no operation contract", providerCfg.ID)
+			}
+			if err := registration.Operation.ValidateSelection(string(providerregistry.ConstructionAnthropicMessages), "sse"); err != nil {
+				return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
+			}
+			if registration.Operation.Anthropic != nil {
+				return c.buildManifestAnthropicProvider(registration, baseURL, apiKey, headers)
+			}
+			return c.buildAnthropicProvider(baseURL, apiKey, headers)
+		case providerregistry.ConstructionOpenAIResponses:
+			if registration.Operation == nil {
+				return nil, fmt.Errorf("provider %s has no operation contract", providerCfg.ID)
+			}
+			if err := registration.Operation.ValidateSelection(string(providerregistry.ConstructionOpenAIResponses), "sse"); err != nil {
+				return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
+			}
+			return c.buildOpenaiProvider(baseURL, apiKey, headers)
+		case providerregistry.ConstructionGenericJSON:
+			return nil, fmt.Errorf("provider %s requires a registered generic JSON transport", providerCfg.ID)
+		default:
+			return nil, fmt.Errorf("provider %s uses unsupported construction %q", providerCfg.ID, registration.Construction)
 		}
 	}
 
-	switch providerCfg.Type {
-	case openai.Name:
-		return c.buildOpenaiProvider(baseURL, apiKey, headers)
-	case anthropic.Name:
-		return c.buildAnthropicProvider(baseURL, apiKey, headers, providerCfg.ID)
-	case openrouter.Name:
-		return c.buildOpenrouterProvider(baseURL, apiKey, headers)
-	case vercel.Name:
-		return c.buildVercelProvider(baseURL, apiKey, headers)
-	case azure.Name:
-		return c.buildAzureProvider(baseURL, apiKey, headers, providerCfg.ExtraParams)
-	case bedrock.Name:
-		return c.buildBedrockProvider(apiKey, headers, providerCfg.ID)
-	case google.Name:
-		return c.buildGoogleProvider(baseURL, apiKey, headers)
-	case "google-vertex":
-		return c.buildGoogleVertexProvider(headers, providerCfg.ExtraParams)
-	case openaicompat.Name, hyper.Name:
-		switch providerCfg.ID {
-		case hyper.Name:
-			baseURL = hyper.BaseURL() + "/v1"
-			headers["x-crush-id"] = event.GetID()
-		case string(catwalk.InferenceProviderZAI):
+	if providerCfg.Type == openaicompat.Name {
+		if providerCfg.ID == string(catwalk.InferenceProviderZAI) {
 			if providerCfg.ExtraBody == nil {
 				providerCfg.ExtraBody = map[string]any{}
 			}
 			providerCfg.ExtraBody["tool_stream"] = true
 		}
 		return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody, providerCfg.ID, isSubAgent)
-	default:
-		// Known custom providers (litellm, ollama, omlx) are
-		// openai-compat under the hood.
-		if discover.IsKnownCustomProvider(string(providerCfg.Type)) {
-			return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody, providerCfg.ID, isSubAgent)
-		}
-		return nil, fmt.Errorf("provider type not supported: %q", providerCfg.Type)
 	}
-}
-
-func isExactoSupported(modelID string) bool {
-	supportedModels := []string{
-		"moonshotai/kimi-k2-0905",
-		"deepseek/deepseek-v3.1-terminus",
-		"z-ai/glm-4.6",
-		"openai/gpt-oss-120b",
-		"qwen/qwen3-coder",
+	if discover.IsKnownCustomProvider(string(providerCfg.Type)) {
+		return c.buildOpenaiCompatProvider(baseURL, apiKey, headers, providerCfg.ExtraBody, providerCfg.ID, isSubAgent)
 	}
-	return slices.Contains(supportedModels, modelID)
+	return nil, fmt.Errorf("provider type not supported: %q", providerCfg.Type)
 }
 
 // BeginAccepted reserves an accept slot for sessionID on the active
@@ -1189,6 +1426,22 @@ func (c *coordinator) CancelAll() {
 	c.currentAgent.CancelAll()
 }
 
+func (c *coordinator) CloseContext(ctx context.Context) {
+	if c.backgroundAgents != nil {
+		c.backgroundAgents.StopAll(ctx)
+	}
+	c.memoryWorker.Close()
+	if c.codexSessions != nil {
+		c.codexSessions.Close()
+	}
+}
+
+func (c *coordinator) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultBackgroundAgentStopTimeout)
+	defer cancel()
+	c.CloseContext(ctx)
+}
+
 func (c *coordinator) ClearQueue(sessionID string) {
 	c.currentAgent.ClearQueue(sessionID)
 }
@@ -1206,23 +1459,34 @@ func (c *coordinator) Model() Model {
 }
 
 func (c *coordinator) UpdateModels(ctx context.Context) error {
-	// build the models again so we make sure we get the latest config
-	large, small, err := c.buildAgentModels(ctx, false)
-	if err != nil {
-		return err
-	}
-	c.currentAgent.SetModels(large, small)
-
 	agentCfg, ok := c.cfg.Config().Agents[config.AgentCoder]
 	if !ok {
 		return errCoderAgentNotConfigured
 	}
 
-	tools, err := c.buildTools(ctx, agentCfg, false)
+	large, small, err := c.buildAgentModels(ctx, agentCfg, false)
 	if err != nil {
 		return err
 	}
-	c.currentAgent.SetTools(tools)
+
+	coder, err := coderPrompt(prompt.WithWorkingDir(c.cfg.WorkingDir()))
+	if err != nil {
+		return err
+	}
+	systemPrompt, err := coder.Build(ctx, large.ModelCfg.Provider, large.Model.Model(), c.cfg)
+	if err != nil {
+		return err
+	}
+
+	palettes, err := c.buildTools(ctx, agentCfg, false)
+	if err != nil {
+		return err
+	}
+
+	c.currentAgent.SetModels(large, small)
+	c.currentAgent.SetSystemPrompt(systemPrompt)
+	c.currentAgent.SetTools(palettes.normal, palettes.planMode)
+	c.systemPromptTemplate = coder
 	return nil
 }
 
@@ -1230,7 +1494,7 @@ func (c *coordinator) QueuedPrompts(sessionID string) int {
 	return c.currentAgent.QueuedPrompts(sessionID)
 }
 
-func (c *coordinator) QueuedPromptsList(sessionID string) []string {
+func (c *coordinator) QueuedPromptsList(sessionID string) []QueuedPrompt {
 	return c.currentAgent.QueuedPromptsList(sessionID)
 }
 
@@ -1246,7 +1510,13 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
 
 	// Auth failures during summarize flow through fantasy's OnAuthRefresh,
 	// the same path used by regular turns.
-	return c.currentAgent.Summarize(ctx, sessionID, getProviderOptions(c.currentAgent.Model(), providerCfg), c.makeAuthRefreshCallback(providerCfg))
+	model := c.currentAgent.Model()
+	providerOptions := c.oauthReasoningOptions(providerCfg.ID, model.ModelCfg.Model, getProviderOptions(model, providerCfg))
+	err := c.currentAgent.Summarize(ctx, sessionID, providerOptions, c.makeAuthRefreshCallback(providerCfg))
+	if err != nil {
+		c.disableOAuthReasoning(providerCfg.ID, model.ModelCfg.Model, err.Error())
+	}
+	return err
 }
 
 // GenerateTitle generates a session title using the current agent.
@@ -1255,6 +1525,15 @@ func (c *coordinator) GenerateTitle(ctx context.Context, sessionID, prompt strin
 		return
 	}
 	c.currentAgent.GenerateTitle(ctx, sessionID, prompt)
+}
+
+// SuggestPrompt predicts the user's likely next message using the
+// small model.
+func (c *coordinator) SuggestPrompt(ctx context.Context, sessionID string) (string, error) {
+	if c.currentAgent == nil {
+		return "", errors.New("agent not initialized")
+	}
+	return c.currentAgent.SuggestPrompt(ctx, sessionID)
 }
 
 // refreshTokenIfExpired proactively refreshes the OAuth token if it has expired.
@@ -1268,9 +1547,8 @@ func (c *coordinator) refreshTokenIfExpired(ctx context.Context, providerCfg con
 
 // retryAfterUnauthorized attempts to refresh credentials after an auth error
 // and returns nil if the request should be retried. For OAuth providers whose
-// refresh token is revoked, and for Bedrock providers whose AWS SSO session
-// has expired, it triggers interactive re-authentication and blocks until the
-// user completes it (or the context is cancelled).
+// refresh token is revoked, it triggers interactive re-authentication and
+// blocks until the user completes it (or the context is cancelled).
 func (c *coordinator) retryAfterUnauthorized(ctx context.Context, providerCfg config.ProviderConfig) error {
 	switch {
 	case providerCfg.OAuthToken != nil:
@@ -1290,8 +1568,6 @@ func (c *coordinator) retryAfterUnauthorized(ctx context.Context, providerCfg co
 			return err
 		}
 		return nil
-	case providerCfg.AWSAuthRefresh != "":
-		return c.refreshAWSCredentials(ctx, providerCfg)
 	case strings.Contains(providerCfg.APIKeyTemplate, "$"):
 		slog.Debug("Received 401. Refreshing API Key template and retrying", "provider", providerCfg.ID)
 		return c.refreshApiKeyTemplate(ctx, providerCfg)
@@ -1348,8 +1624,7 @@ func isUnauthorized(err error) bool {
 // nil if no refresh mechanism is configured for the provider.
 func (c *coordinator) makeAuthRefreshCallback(providerCfg config.ProviderConfig) func(context.Context, *fantasy.ProviderError) error {
 	if providerCfg.OAuthToken == nil &&
-		!strings.Contains(providerCfg.APIKeyTemplate, "$") &&
-		providerCfg.AWSAuthRefresh == "" {
+		!strings.Contains(providerCfg.APIKeyTemplate, "$") {
 		return nil
 	}
 	return func(ctx context.Context, _ *fantasy.ProviderError) error {
@@ -1392,6 +1667,7 @@ type subAgentParams struct {
 	ToolCallID     string
 	Prompt         string
 	SessionTitle   string
+	ChildSessionID string
 	// SessionSetup is an optional callback invoked after session creation
 	// but before agent execution, for custom session configuration.
 	SessionSetup func(sessionID string)
@@ -1401,11 +1677,19 @@ type subAgentParams struct {
 // It creates a sub-session, runs the agent with the given prompt, and propagates
 // the cost to the parent session.
 func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (fantasy.ToolResponse, error) {
-	// Create sub-session
-	agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
-	session, err := c.sessions.CreateTaskSession(ctx, agentToolSessionID, params.SessionID, params.SessionTitle)
-	if err != nil {
-		return fantasy.ToolResponse{}, fmt.Errorf("create session: %w", err)
+	var session session.Session
+	var err error
+	if params.ChildSessionID == "" {
+		agentToolSessionID := c.sessions.CreateAgentToolSessionID(params.AgentMessageID, params.ToolCallID)
+		session, err = c.sessions.CreateTaskSession(ctx, agentToolSessionID, params.SessionID, params.SessionTitle)
+		if err != nil {
+			return fantasy.ToolResponse{}, fmt.Errorf("create session: %w", err)
+		}
+	} else {
+		session, err = c.sessions.Get(ctx, params.ChildSessionID)
+		if err != nil {
+			return fantasy.ToolResponse{}, fmt.Errorf("get child session: %w", err)
+		}
 	}
 
 	// Call session setup function if provided
@@ -1424,6 +1708,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 	if !ok {
 		return fantasy.ToolResponse{}, errModelProviderNotConfigured
 	}
+	providerOptions := c.oauthReasoningOptions(providerCfg.ID, model.ModelCfg.Model, getProviderOptions(model, providerCfg))
 
 	// Run the agent
 	run := func() (*fantasy.AgentResult, error) {
@@ -1431,24 +1716,23 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 			SessionID:        session.ID,
 			Prompt:           params.Prompt,
 			MaxOutputTokens:  maxTokens,
-			ProviderOptions:  getProviderOptions(model, providerCfg),
+			ProviderOptions:  providerOptions,
 			Temperature:      model.ModelCfg.Temperature,
 			TopP:             model.ModelCfg.TopP,
 			TopK:             model.ModelCfg.TopK,
 			FrequencyPenalty: model.ModelCfg.FrequencyPenalty,
 			PresencePenalty:  model.ModelCfg.PresencePenalty,
 			NonInteractive:   true,
-			OnAuthRefresh:    c.makeAuthRefreshCallback(providerCfg),
+			OnProviderWarning: func(w fantasy.CallWarning) {
+				c.disableOAuthReasoning(providerCfg.ID, model.ModelCfg.Model, w.Message)
+			},
+			OnAuthRefresh: c.makeAuthRefreshCallback(providerCfg),
 		})
 	}
+	initialChildCost := session.Cost
 	result, err := run()
-	// Notify only if still unauthorized after retry. AWS SSO is handled
-	// transparently inside OnAuthRefresh, so it needs no post-run notice.
-	if err != nil && isUnauthorized(err) && c.notify != nil && model.ModelCfg.Provider == hyper.Name {
-		c.notify.Publish(pubsub.CreatedEvent, notify.Notification{
-			Type:       notify.TypeReAuthenticate,
-			ProviderID: model.ModelCfg.Provider,
-		})
+	if err != nil {
+		c.disableOAuthReasoning(providerCfg.ID, model.ModelCfg.Model, err.Error())
 	}
 	if err != nil {
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to generate response: %s", err)), nil
@@ -1456,7 +1740,7 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 
 	// Update parent session cost on a best-effort basis. A failure here must
 	// not discard the sub-agent output that was already produced.
-	if err := c.updateParentSessionCost(ctx, session.ID, params.SessionID); err != nil {
+	if err := c.updateParentSessionCost(ctx, session.ID, params.SessionID, initialChildCost); err != nil {
 		slog.Warn(
 			"Failed to update parent session cost",
 			"child_session", session.ID,
@@ -1480,7 +1764,7 @@ func subAgentOutput(result *fantasy.AgentResult) string {
 }
 
 // updateParentSessionCost accumulates the cost from a child session to its parent session.
-func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionID, parentSessionID string) error {
+func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionID, parentSessionID string, initialChildCost float64) error {
 	childSession, err := c.sessions.Get(ctx, childSessionID)
 	if err != nil {
 		return fmt.Errorf("get child session: %w", err)
@@ -1491,7 +1775,7 @@ func (c *coordinator) updateParentSessionCost(ctx context.Context, childSessionI
 		return fmt.Errorf("get parent session: %w", err)
 	}
 
-	parentSession.Cost += childSession.Cost
+	parentSession.Cost += max(childSession.Cost-initialChildCost, 0)
 
 	if _, err := c.sessions.Save(ctx, parentSession); err != nil {
 		return fmt.Errorf("save parent session: %w", err)

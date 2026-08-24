@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/agent/prompt"
-	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/config"
+	"github.com/example-git/crux/internal/agent/prompt"
+	"github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/config"
 	"github.com/stretchr/testify/require"
 )
 
 // TestBuildAgentReadinessSurvivesCallerCancellation is a regression test for
-// the CRUSH_CLIENT_SERVER=1 "new session hangs" bug.
+// the CRUX_CLIENT_SERVER=1 "new session hangs" bug.
 //
 // buildAgent starts readiness goroutines that build the system prompt and the
 // initial tool list. Several server entry points build an agent from a
@@ -33,25 +33,25 @@ import (
 // longer poisons readyWg. Here we build an agent with a cancelable context,
 // cancel it, and require that readyWg still completes cleanly.
 func TestBuildAgentReadinessSurvivesCallerCancellation(t *testing.T) {
+	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "true")
 	env := testEnv(t)
 
-	// Minimal hermetic config: one openai-typed provider with selected large
+	// Minimal hermetic config: one OpenAI-compatible provider with selected large
 	// and small models so buildAgentModels and the system-prompt build both
 	// succeed. No MCP servers are configured, so initialization would complete
 	// instantly if we let it — we arm the gate anyway to prove the readiness
 	// goroutines no longer block on it.
-	crushJSON := `{
+	cruxJSON := `{
   "options": {"disable_default_providers": true, "disable_provider_auto_update": true},
-  "providers": {"mock": {"id": "mock", "name": "Mock", "type": "openai",
+  "providers": {"mock": {"id": "mock", "name": "Mock", "type": "openai-compat",
     "base_url": "http://127.0.0.1:9/v1", "api_key": "test-key",
     "models": [{"id": "mock-model", "name": "Mock", "context_window": 8192, "default_max_tokens": 128}]}},
   "models": {"large": {"provider": "mock", "model": "mock-model"},
              "small": {"provider": "mock", "model": "mock-model"}}
 }`
-	require.NoError(t, os.WriteFile(filepath.Join(env.workingDir, "crush.json"), []byte(crushJSON), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(env.workingDir, "crux.json"), []byte(cruxJSON), 0o644))
 
-	cfg, err := config.Init(env.workingDir, "", false)
-	require.NoError(t, err)
+	cfg := initTestConfig(t, env.workingDir)
 	cfg.SetupAgents()
 
 	coord := &coordinator{

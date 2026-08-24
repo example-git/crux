@@ -5,10 +5,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/pubsub"
 )
 
 // SubscribeEvents returns a per-caller event channel for a workspace.
@@ -56,19 +57,18 @@ func (b *Backend) GetWorkspaceConfig(workspaceID string) (*config.Config, error)
 		return nil, err
 	}
 
-	return ws.Cfg.Config(), nil
+	return ws.Cfg.Config().RedactedForTransport(), nil
 }
 
 // GetWorkspaceProviders returns the configured providers for a
 // workspace.
-func (b *Backend) GetWorkspaceProviders(workspaceID string) (any, error) {
+func (b *Backend) GetWorkspaceProviders(workspaceID string) ([]providerregistry.Surface, error) {
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {
 		return nil, err
 	}
 
-	providers, _ := config.Providers(ws.Cfg.Config())
-	return providers, nil
+	return config.ProviderSurfaces(ws.Cfg.Config()), nil
 }
 
 // LSPStart starts an LSP server for the given path.

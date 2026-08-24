@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/backend"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/backend"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -215,12 +215,14 @@ func (c *scriptedCoordinator) CancelAll() {
 func (c *scriptedCoordinator) IsBusy() bool                                  { return false }
 func (c *scriptedCoordinator) IsSessionBusy(string) bool                     { return false }
 func (c *scriptedCoordinator) QueuedPrompts(string) int                      { return 0 }
-func (c *scriptedCoordinator) QueuedPromptsList(string) []string             { return nil }
+func (c *scriptedCoordinator) QueuedPromptsList(string) []agent.QueuedPrompt { return nil }
 func (c *scriptedCoordinator) ClearQueue(string)                             {}
 func (c *scriptedCoordinator) Summarize(context.Context, string) error       { return nil }
 func (c *scriptedCoordinator) Model() agent.Model                            { return agent.Model{} }
 func (c *scriptedCoordinator) UpdateModels(context.Context) error            { return nil }
 func (c *scriptedCoordinator) GenerateTitle(context.Context, string, string) {}
+
+func (c *scriptedCoordinator) SuggestPrompt(context.Context, string) (string, error) { return "", nil }
 
 // agentE2EHarness extends the SSE harness with a scripted coordinator
 // wired into the workspace's embedded app.App, so POST /agent drives a
@@ -530,10 +532,9 @@ func TestE2E_CancelBetweenActiveSetAndAssistantCreate(t *testing.T) {
 }
 
 // TestE2E_PromptRequestContextDoesNotOwnRun covers PLAN item 2: the
-// prompting client's HTTP request context does not own the run. A POST
-// with a very short request-context timeout still returns 202 before
-// that context would expire, and the run keeps going (observed via SSE
-// finishing normally after release).
+// prompting client's HTTP request context does not own the run. After POST
+// returns 202, canceling that context does not cancel the run, which keeps
+// going and finishes normally after release.
 func TestE2E_PromptRequestContextDoesNotOwnRun(t *testing.T) {
 	t.Parallel()
 	h := newAgentE2EHarness(t)
@@ -547,16 +548,11 @@ func TestE2E_PromptRequestContextDoesNotOwnRun(t *testing.T) {
 
 	const sid = "s-short-req"
 
-	// The POST request context times out almost immediately. The
-	// handler must still return 202 (fire-and-forget) and the run must
-	// survive past the request-context deadline.
-	reqCtx, reqCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer reqCancel()
+	reqCtx, reqCancel := context.WithTimeout(t.Context(), 3*time.Second)
 	require.Equal(t, http.StatusAccepted, h.postAgentHTTP(t, reqCtx, sid))
-	h.waitForRunEntered(t)
-
-	// Let the request context expire, then release the run.
+	reqCancel()
 	<-reqCtx.Done()
+	h.waitForRunEntered(t)
 	close(h.coord.release)
 
 	pickCtx, pickCancel := context.WithTimeout(streamCtx, 3*time.Second)

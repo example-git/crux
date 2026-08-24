@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/oauth"
 )
 
 // ConfigSetRequest represents a request to set a config field.
@@ -32,6 +32,33 @@ type ConfigModelRequest struct {
 type ConfigCompactRequest struct {
 	Scope   config.Scope `json:"scope"`
 	Enabled bool         `json:"enabled"`
+}
+
+type AgentDefinitionScriptVariable struct {
+	Flag     string   `json:"flag,omitempty"`
+	Required bool     `json:"required,omitempty"`
+	Default  *string  `json:"default,omitempty"`
+	Value    *string  `json:"value,omitempty"`
+	Values   []string `json:"values,omitempty"`
+}
+
+type AgentDefinitionScript struct {
+	Path      string                                   `json:"path"`
+	Timeout   string                                   `json:"timeout,omitempty"`
+	Variables map[string]AgentDefinitionScriptVariable `json:"variables,omitempty"`
+}
+
+type CreateAgentDefinitionRequest struct {
+	Scope       string                 `json:"scope"`
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	Model       string                 `json:"model"`
+	Tools       []string               `json:"tools"`
+	Script      *AgentDefinitionScript `json:"script,omitempty"`
+}
+
+type CreateAgentDefinitionResponse struct {
+	Path string `json:"path"`
 }
 
 // APIKeyKind discriminates the kind of credential carried in a

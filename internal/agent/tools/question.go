@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/question"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/question"
 )
 
 const QuestionToolName = "question"

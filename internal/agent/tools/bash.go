@@ -14,27 +14,28 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/fsext"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/shell"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/shell"
+	"github.com/example-git/crux/internal/task"
 )
 
 type BashParams struct {
-	Description         string `json:"description" description:"A brief description of what the command does, try to keep it under 30 characters or so"`
-	Command             string `json:"command" description:"The command to execute"`
-	WorkingDir          string `json:"working_dir,omitempty" description:"The working directory to execute the command in (defaults to current directory)"`
-	RunInBackground     bool   `json:"run_in_background,omitempty" description:"Set to true (boolean) to run this command in the background. Use job_output to read the output later."`
-	AutoBackgroundAfter int    `json:"auto_background_after,omitempty" description:"Seconds to wait before automatically moving the command to a background job (default: 60)"`
+	Description     string `json:"description" description:"A brief description of what the command does, try to keep it under 30 characters or so"`
+	Command         string `json:"command" description:"The command to execute"`
+	WorkingDir      string `json:"working_dir,omitempty" description:"The working directory to execute the command in (defaults to current directory)"`
+	RunInBackground bool   `json:"run_in_background,omitempty" description:"Set to true (boolean) to run this command in the background. Use task_output to read the output later."`
+	Timeout         int    `json:"timeout,omitempty" description:"Seconds to wait for the command to finish before it is killed and the call fails (default: 120, max: 600)"`
 }
 
 type BashPermissionsParams struct {
-	Description         string `json:"description"`
-	Command             string `json:"command"`
-	WorkingDir          string `json:"working_dir"`
-	RunInBackground     bool   `json:"run_in_background"`
-	AutoBackgroundAfter int    `json:"auto_background_after"`
+	Description     string `json:"description"`
+	Command         string `json:"command"`
+	WorkingDir      string `json:"working_dir"`
+	RunInBackground bool   `json:"run_in_background"`
+	Timeout         int    `json:"timeout"`
 }
 
 type BashResponseMetadata struct {
@@ -50,9 +51,10 @@ type BashResponseMetadata struct {
 const (
 	BashToolName = "bash"
 
-	DefaultAutoBackgroundAfter = 60 // Commands taking longer automatically become background jobs
-	MaxOutputLength            = 30000
-	BashNoOutput               = "no output"
+	DefaultBashTimeout = 120 // Seconds before a foreground command is killed
+	MaxBashTimeout     = 600
+	MaxOutputLength    = 30000
+	BashNoOutput       = "no output"
 )
 
 //go:embed bash.md.tpl
@@ -194,7 +196,7 @@ func blockFuncs() []shell.BlockFunc {
 	}
 }
 
-func NewBashTool(permissions permission.Service, workingDir string, attribution *config.Attribution, modelID string) fantasy.AgentTool {
+func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions permission.Service, workingDir string, attribution *config.Attribution, modelID string) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		BashToolName,
 		string(bashDescription(attribution, modelID)),
@@ -224,6 +226,11 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			if sessionID == "" {
 				return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for executing shell command")
 			}
+			shellOwnership := task.OwnershipFromContext(ctx)
+			if shellOwnership.ParentSessionID == "" {
+				shellOwnership.ParentSessionID = sessionID
+			}
+			shellOwnership.OriginToolCallID = call.ID
 			if !isSafeReadOnly {
 				p, err := permissions.Request(
 					ctx,
@@ -248,10 +255,10 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			// If explicitly requested as background, start immediately with detached context
 			if params.RunInBackground {
 				startTime := time.Now()
-				bgManager := shell.GetBackgroundShellManager()
+				bgManager := backgroundShells
 				bgManager.Cleanup()
 				// Use background context so it continues after tool returns
-				bgShell, err := bgManager.Start(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description)
+				bgShell, err := bgManager.StartOwned(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description, shellOwnership)
 				if err != nil {
 					return fantasy.ToolResponse{}, fmt.Errorf("error starting background shell: %w", err)
 				}
@@ -288,6 +295,7 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 				}
 
 				// Still running after fast-failure check - return as background job
+				bgShell.MarkBackgrounded()
 				metadata := BashResponseMetadata{
 					StartTime:        startTime.UnixMilli(),
 					EndTime:          time.Now().UnixMilli(),
@@ -296,31 +304,37 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 					Background:       true,
 					ShellID:          bgShell.ID,
 				}
-				response := fmt.Sprintf("Background shell started with ID: %s\n\nUse job_output tool to view output or job_kill to terminate.", bgShell.ID)
+				response := fmt.Sprintf("Background shell started with ID: %s\n\nUse task_output to view output or task_stop to terminate.", bgShell.ID)
 				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
 			}
 
-			// Start synchronous execution with auto-background support
+			// Start synchronous execution with timeout and user-detach support
 			startTime := time.Now()
 
-			// Start with detached context so it can survive if moved to background
-			bgManager := shell.GetBackgroundShellManager()
+			// Start with detached context so it can survive if the user
+			// sends it to the background.
+			bgManager := backgroundShells
 			bgManager.Cleanup()
-			bgShell, err := bgManager.Start(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description)
+			bgShell, err := bgManager.StartOwned(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description, shellOwnership)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error starting shell: %w", err)
 			}
 
-			// Wait for either completion, auto-background threshold, or context cancellation
+			// Mark the shell as foreground so the user can press ctrl+b
+			// to send it to the background while we wait.
+			bgShell.SetForeground(true)
+			defer bgShell.SetForeground(false)
+
+			// Wait for completion, timeout, user detach, or cancellation.
 			ticker := time.NewTicker(100 * time.Millisecond)
 			defer ticker.Stop()
 
-			autoBackgroundAfter := cmp.Or(params.AutoBackgroundAfter, DefaultAutoBackgroundAfter)
-			autoBackgroundThreshold := time.Duration(autoBackgroundAfter) * time.Second
-			timeout := time.After(autoBackgroundThreshold)
+			timeoutSecs := cmp.Or(params.Timeout, DefaultBashTimeout)
+			timeoutSecs = min(timeoutSecs, MaxBashTimeout)
+			timeout := time.After(time.Duration(timeoutSecs) * time.Second)
 
 			var stdout, stderr string
-			var done bool
+			var done, timedOut, detached bool
 			var execErr error
 
 		waitLoop:
@@ -333,55 +347,80 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 					}
 				case <-timeout:
 					stdout, stderr, done, execErr = bgShell.GetOutput()
+					if !done {
+						timedOut = true
+					}
+					break waitLoop
+				case <-bgShell.Detached():
+					stdout, stderr, done, execErr = bgShell.GetOutput()
+					if !done {
+						detached = true
+					}
 					break waitLoop
 				case <-ctx.Done():
-					// Incoming context was cancelled before we moved to background
+					// Incoming context was cancelled while waiting.
 					// Kill the shell and return error
 					bgManager.Kill(bgShell.ID)
 					return fantasy.ToolResponse{}, ctx.Err()
 				}
 			}
 
-			if done {
-				// Command completed within threshold - return synchronously
-				// Remove from background manager since we're returning directly
-				// Don't call Kill() as it cancels the context and corrupts the exit code
+			if timedOut {
+				// The command exceeded its timeout: kill it and fail the
+				// call. The model must handle this explicitly instead of
+				// silently continuing with a hidden background job.
+				bgManager.Kill(bgShell.ID)
 				bgManager.Remove(bgShell.ID)
-
-				interrupted := shell.IsInterrupt(execErr)
-				exitCode := shell.ExitCode(execErr)
-				if exitCode == 0 && !interrupted && execErr != nil {
-					return fantasy.ToolResponse{}, fmt.Errorf("[Job %s] error executing command: %w", bgShell.ID, execErr)
+				partial := formatOutput(stdout, stderr, nil)
+				msg := fmt.Sprintf("Command timed out after %d seconds and was killed.\n\nIf the command legitimately needs more time, retry with a larger timeout value. If it is a long-running process (server, watcher), retry with run_in_background=true.", timeoutSecs)
+				if partial != "" {
+					msg += "\n\nPartial output before the kill:\n\n" + partial
 				}
+				return fantasy.NewTextErrorResponse(msg), nil
+			}
 
-				stdout = formatOutput(stdout, stderr, execErr)
-
+			if detached {
+				// The user pressed ctrl+b: leave the command running as a
+				// background job and tell the model.
+				bgShell.MarkBackgrounded()
 				metadata := BashResponseMetadata{
 					StartTime:        startTime.UnixMilli(),
 					EndTime:          time.Now().UnixMilli(),
-					Output:           stdout,
 					Description:      params.Description,
-					Background:       params.RunInBackground,
 					WorkingDirectory: bgShell.WorkingDir,
+					Background:       true,
+					ShellID:          bgShell.ID,
 				}
-				if stdout == "" {
-					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(BashNoOutput), metadata), nil
-				}
-				stdout += fmt.Sprintf("\n\n<cwd>%s</cwd>", normalizeWorkingDir(bgShell.WorkingDir))
-				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(stdout), metadata), nil
+				response := fmt.Sprintf("The user sent this command to the background.\n\nBackground shell ID: %s\n\nUse task_output to view output or task_stop to terminate.", bgShell.ID)
+				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
 			}
 
-			// Still running - keep as background job
+			// Command completed within the timeout - return synchronously.
+			// Remove from background manager since we're returning directly
+			// Don't call Kill() as it cancels the context and corrupts the exit code
+			bgManager.Remove(bgShell.ID)
+
+			interrupted := shell.IsInterrupt(execErr)
+			exitCode := shell.ExitCode(execErr)
+			if exitCode == 0 && !interrupted && execErr != nil {
+				return fantasy.ToolResponse{}, fmt.Errorf("[Job %s] error executing command: %w", bgShell.ID, execErr)
+			}
+
+			stdout = formatOutput(stdout, stderr, execErr)
+
 			metadata := BashResponseMetadata{
 				StartTime:        startTime.UnixMilli(),
 				EndTime:          time.Now().UnixMilli(),
+				Output:           stdout,
 				Description:      params.Description,
+				Background:       params.RunInBackground,
 				WorkingDirectory: bgShell.WorkingDir,
-				Background:       true,
-				ShellID:          bgShell.ID,
 			}
-			response := fmt.Sprintf("Command is taking longer than expected and has been moved to background.\n\nBackground shell ID: %s\n\nUse job_output tool to view output or job_kill to terminate.", bgShell.ID)
-			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
+			if stdout == "" {
+				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(BashNoOutput), metadata), nil
+			}
+			stdout += fmt.Sprintf("\n\n<cwd>%s</cwd>", normalizeWorkingDir(bgShell.WorkingDir))
+			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(stdout), metadata), nil
 		},
 	)
 }

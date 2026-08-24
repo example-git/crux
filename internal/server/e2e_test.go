@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/backend"
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/backend"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -342,14 +342,10 @@ func drainUntil[T any](ctx context.Context, evc <-chan any, match func(T) bool) 
 // config.Init does not read the host machine's real config.
 func TestE2E_TwoClientsReceiveSameMessage(t *testing.T) {
 	h := newRealCreateHarness(t)
-	// Shorten the lifecycle windows so the workspace's client holds
-	// release quickly during test cleanup once both SSE streams have
-	// been detached: the create grace covers the window before the
-	// streams attach, the detach grace the window after they drop.
-	// The pooled DB connection is only released once the last hold
-	// expires, and Windows cannot remove the temp data directory
-	// while that connection is still open.
-	h.backend.SetCreateGrace(200 * time.Millisecond)
+	// Shorten detach cleanup so the pooled DB connection is released quickly
+	// after both SSE streams drop. Keep the production create grace through the
+	// sequential POSTs: reducing it to 200ms before the second request makes
+	// scheduler pressure, rather than path deduplication, decide the outcome.
 	h.backend.SetDetachGrace(200 * time.Millisecond)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -375,6 +371,9 @@ func TestE2E_TwoClientsReceiveSameMessage(t *testing.T) {
 
 	require.Equal(t, wsRespA.ID, wsRespB.ID,
 		"POST /v1/workspaces with the same Path must return the same workspace id")
+	// Future response holds may use the short test window; the two existing
+	// response holds are about to be converted into stream claims.
+	h.backend.SetCreateGrace(200 * time.Millisecond)
 
 	// Look up the resulting workspace on the backend so the test
 	// can publish events through its real [app.App] event broker.

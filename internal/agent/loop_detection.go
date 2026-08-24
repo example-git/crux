@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"io"
 
-	"charm.land/fantasy"
+	fantasy "github.com/example-git/crux/foundation"
 )
 
 const (

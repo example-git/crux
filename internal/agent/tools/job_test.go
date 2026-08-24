@@ -2,11 +2,14 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"runtime"
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/shell"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/shell"
+	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/stretchr/testify/require"
 )
 
@@ -17,7 +20,7 @@ func TestBackgroundShell_Integration(t *testing.T) {
 	ctx := context.Background()
 
 	// Start a background shell
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := shell.NewBackgroundShellManager(workingDir)
 	bgShell, err := bgManager.Start(ctx, workingDir, nil, "echo 'hello background' && echo 'done'", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, bgShell.ID)
@@ -44,7 +47,7 @@ func TestBackgroundShell_Kill(t *testing.T) {
 	ctx := context.Background()
 
 	// Start a long-running background shell
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := shell.NewBackgroundShellManager(workingDir)
 	bgShell, err := bgManager.Start(ctx, workingDir, nil, "sleep 100", "")
 	require.NoError(t, err)
 
@@ -67,7 +70,7 @@ func TestBackgroundShell_MultipleOutputCalls(t *testing.T) {
 	ctx := context.Background()
 
 	// Start a background shell
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := shell.NewBackgroundShellManager(workingDir)
 	bgShell, err := bgManager.Start(ctx, workingDir, nil, "echo 'step 1' && echo 'step 2' && echo 'step 3'", "")
 	require.NoError(t, err)
 	defer bgManager.Kill(bgShell.ID)
@@ -107,7 +110,7 @@ func TestBackgroundShell_EmptyOutput(t *testing.T) {
 	ctx := context.Background()
 
 	// Start a background shell with no output
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := shell.NewBackgroundShellManager(workingDir)
 	bgShell, err := bgManager.Start(ctx, workingDir, nil, "sleep 0.1", "")
 	require.NoError(t, err)
 	defer bgManager.Kill(bgShell.ID)
@@ -129,7 +132,7 @@ func TestBackgroundShell_ExitCode(t *testing.T) {
 	ctx := context.Background()
 
 	// Start a background shell that exits with non-zero code
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := shell.NewBackgroundShellManager(workingDir)
 	bgShell, err := bgManager.Start(ctx, workingDir, nil, "echo 'failing' && exit 42", "")
 	require.NoError(t, err)
 	defer bgManager.Kill(bgShell.ID)
@@ -157,7 +160,7 @@ func TestBackgroundShell_WithBlockFuncs(t *testing.T) {
 	}
 
 	// Start a background shell with a blocked command
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := shell.NewBackgroundShellManager(workingDir)
 	bgShell, err := bgManager.Start(ctx, workingDir, blockFuncs, "curl example.com", "")
 	require.NoError(t, err)
 	defer bgManager.Kill(bgShell.ID)
@@ -186,7 +189,7 @@ func TestBackgroundShell_StdoutAndStderr(t *testing.T) {
 	ctx := context.Background()
 
 	// Start a background shell with both stdout and stderr
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := shell.NewBackgroundShellManager(workingDir)
 	bgShell, err := bgManager.Start(ctx, workingDir, nil, "echo 'stdout message' && echo 'stderr message' >&2", "")
 	require.NoError(t, err)
 	defer bgManager.Kill(bgShell.ID)
@@ -208,7 +211,7 @@ func TestBackgroundShell_ConcurrentAccess(t *testing.T) {
 	ctx := context.Background()
 
 	// Start a background shell
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := shell.NewBackgroundShellManager(workingDir)
 	bgShell, err := bgManager.Start(ctx, workingDir, nil, "for i in 1 2 3 4 5; do echo \"line $i\"; sleep 0.05; done", "")
 	require.NoError(t, err)
 	defer bgManager.Kill(bgShell.ID)
@@ -257,7 +260,7 @@ func TestBackgroundShell_List(t *testing.T) {
 	workingDir := t.TempDir()
 	ctx := context.Background()
 
-	bgManager := shell.GetBackgroundShellManager()
+	bgManager := shell.NewBackgroundShellManager(workingDir)
 
 	// Start multiple background shells
 	shells := make([]*shell.BackgroundShell, 3)
@@ -290,7 +293,7 @@ func TestBackgroundShell_AutoBackground(t *testing.T) {
 	// Test that a quick command completes synchronously
 	t.Run("quick command completes synchronously", func(t *testing.T) {
 		t.Parallel()
-		bgManager := shell.GetBackgroundShellManager()
+		bgManager := shell.NewBackgroundShellManager(workingDir)
 		bgShell, err := bgManager.Start(ctx, workingDir, nil, "echo 'quick'", "")
 		require.NoError(t, err)
 
@@ -311,7 +314,7 @@ func TestBackgroundShell_AutoBackground(t *testing.T) {
 	// Test that a long command stays in background
 	t.Run("long command stays in background", func(t *testing.T) {
 		t.Parallel()
-		bgManager := shell.GetBackgroundShellManager()
+		bgManager := shell.NewBackgroundShellManager(workingDir)
 		bgShell, err := bgManager.Start(ctx, workingDir, nil, "sleep 20 && echo '20 seconds completed'", "")
 		require.NoError(t, err)
 		defer bgManager.Kill(bgShell.ID)
@@ -331,4 +334,70 @@ func TestBackgroundShell_AutoBackground(t *testing.T) {
 		require.True(t, ok, "Should be able to retrieve background shell")
 		require.Equal(t, bgShell.ID, retrieved.ID)
 	})
+}
+
+func TestJobOutputDelegatesToTaskOutputWithDiskStorage(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	manager := shell.NewBackgroundShellManager(workingDir)
+	backgroundShell, err := manager.Start(t.Context(), workingDir, nil, "printf stdout; printf stderr >&2; exit 7", "disk-output")
+	require.NoError(t, err)
+	backgroundShell.Wait()
+	exitCode := 7
+	service := &taskServiceStub{output: managedtask.OutputResult{
+		Task: managedtask.View{
+			ID:          backgroundShell.ID,
+			Type:        managedtask.TypeShell,
+			Description: backgroundShell.Description,
+			State:       managedtask.State{Status: managedtask.StatusFailed, ExitCode: &exitCode},
+		},
+		Output:          "stdout\nstderr",
+		RetrievalStatus: managedtask.RetrievalReady,
+	}}
+	tool := NewJobOutputTool(service, manager)
+	input, err := json.Marshal(JobOutputParams{ShellID: backgroundShell.ID, Wait: true})
+	require.NoError(t, err)
+	response, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "job-output", Name: JobOutputToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, response.IsError)
+	require.Equal(t, "Status: failed\n\nstdout\nstderr\nExit code 7", response.Content)
+	require.Equal(t, backgroundShell.ID, service.outputID)
+	require.True(t, service.outputWait)
+	require.Equal(t, managedtask.DefaultOutputWait, service.outputTimeout)
+	var metadata JobOutputResponseMetadata
+	require.NoError(t, json.Unmarshal([]byte(response.Metadata), &metadata))
+	require.Equal(t, backgroundShell.ID, metadata.ShellID)
+	require.Equal(t, "disk-output", metadata.Description)
+	require.Equal(t, workingDir, metadata.WorkingDirectory)
+	require.True(t, metadata.Done)
+	require.NoError(t, manager.Kill(backgroundShell.ID))
+}
+
+func TestJobOutputDelegatesNonBlockingRead(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	manager := shell.NewBackgroundShellManager(workingDir)
+	backgroundShell, err := manager.Start(t.Context(), workingDir, nil, "sleep 10", "running")
+	require.NoError(t, err)
+	service := &taskServiceStub{output: managedtask.OutputResult{
+		Task: managedtask.View{
+			ID:          backgroundShell.ID,
+			Type:        managedtask.TypeShell,
+			Description: backgroundShell.Description,
+			State:       managedtask.State{Status: managedtask.StatusRunning},
+		},
+		RetrievalStatus: managedtask.RetrievalNotReady,
+	}}
+	tool := NewJobOutputTool(service, manager)
+	input, err := json.Marshal(JobOutputParams{ShellID: backgroundShell.ID})
+	require.NoError(t, err)
+	response, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "job-output", Name: JobOutputToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, response.IsError)
+	require.Equal(t, "Status: running\n\nno output", response.Content)
+	require.Equal(t, backgroundShell.ID, service.outputID)
+	require.False(t, service.outputWait)
+	require.NoError(t, manager.Kill(backgroundShell.ID))
 }

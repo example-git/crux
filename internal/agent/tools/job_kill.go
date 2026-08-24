@@ -5,8 +5,8 @@ import (
 	_ "embed"
 	"fmt"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/shell"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/shell"
 )
 
 const (
@@ -26,34 +26,30 @@ type JobKillResponseMetadata struct {
 	Description string `json:"description"`
 }
 
-func NewJobKillTool() fantasy.AgentTool {
+func NewJobKillTool(service TaskService, backgroundShells *shell.BackgroundShellManager) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		JobKillToolName,
 		jobKillDescription,
-		func(ctx context.Context, params JobKillParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, params JobKillParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.ShellID == "" {
 				return fantasy.NewTextErrorResponse("missing shell_id"), nil
 			}
 
-			bgManager := shell.GetBackgroundShellManager()
-
-			bgShell, ok := bgManager.Get(params.ShellID)
-			if !ok {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("background shell not found: %s", params.ShellID)), nil
+			metadata := JobKillResponseMetadata{ShellID: params.ShellID}
+			if backgroundShell, ok := backgroundShells.Get(params.ShellID); ok {
+				metadata.Command = backgroundShell.Command
+				metadata.Description = backgroundShell.Description
 			}
 
-			metadata := JobKillResponseMetadata{
-				ShellID:     params.ShellID,
-				Command:     bgShell.Command,
-				Description: bgShell.Description,
-			}
-
-			err := bgManager.Kill(params.ShellID)
+			task, err := service.StopTask(ctx, params.ShellID)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
+			if metadata.Description == "" {
+				metadata.Description = task.Description
+			}
 
-			result := fmt.Sprintf("Background shell %s terminated successfully", params.ShellID)
+			result := fmt.Sprintf("Background shell %s is %s", task.ID, task.State.Status)
 			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata), nil
 		},
 	)

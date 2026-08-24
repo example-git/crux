@@ -160,7 +160,7 @@ definitions:
           OAuthCallbackPort pins the localhost port used for the OAuth
           redirect listener. Set this when the OAuth provider requires an
           exact-match callback URL (e.g. GitHub OAuth Apps). When omitted,
-          Crush picks the first free port from its default range.
+          Crux picks the first free port from its default range.
         type: integer
       oauth_client_id:
         description: |-
@@ -240,8 +240,8 @@ definitions:
       temperature:
         type: number
       think:
-        description: Used by anthropic models that can reason to indicate if the model
-          should think.
+        description: Enables provider-specific reasoning when the selected model supports
+          it.
         type: boolean
       top_k:
         type: integer
@@ -269,6 +269,25 @@ definitions:
       transparent:
         type: boolean
     type: object
+  config.ToolCodebaseSearch:
+    properties:
+      ann_directory:
+        type: string
+      database_path:
+        type: string
+      enabled:
+        type: boolean
+      exclude_paths:
+        items:
+          type: string
+        type: array
+      include_paths:
+        items:
+          type: string
+        type: array
+      store_directory:
+        type: string
+    type: object
   config.ToolGlob:
     properties:
       timeout:
@@ -288,6 +307,8 @@ definitions:
     type: object
   config.Tools:
     properties:
+      codebase_search:
+        $ref: '#/definitions/config.ToolCodebaseSearch'
       glob:
         $ref: '#/definitions/config.ToolGlob'
       grep:
@@ -307,7 +328,7 @@ definitions:
     - TrailerStyleAssistedBy
   csync.Map-string-config_ProviderConfig:
     type: object
-  github_com_charmbracelet_crush_internal_config.Config:
+  github_com_example-git_crux_internal_config.Config:
     properties:
       $schema:
         type: string
@@ -332,7 +353,7 @@ definitions:
         description: We currently only support large/small as values here.
         type: object
       options:
-        $ref: '#/definitions/github_com_charmbracelet_crush_internal_config.Options'
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Options'
       permissions:
         $ref: '#/definitions/config.Permissions'
       providers:
@@ -349,8 +370,10 @@ definitions:
       tools:
         $ref: '#/definitions/config.Tools'
     type: object
-  github_com_charmbracelet_crush_internal_config.Options:
+  github_com_example-git_crux_internal_config.Options:
     properties:
+      analysis_effort:
+        type: string
       attribution:
         $ref: '#/definitions/config.Attribution'
       auto_lsp:
@@ -361,7 +384,7 @@ definitions:
         type: array
       data_directory:
         description: |-
-          DataDirectory is where Crush keeps per-project state such as
+          DataDirectory is where Crux keeps per-project state such as
           the SQLite database and workspace overrides. Relative paths are
           resolved against the working directory; absolute paths are used
           verbatim. After defaulting the stored value is always absolute.
@@ -374,10 +397,16 @@ definitions:
         type: boolean
       disable_default_providers:
         type: boolean
-      disable_metrics:
-        type: boolean
       disable_provider_auto_update:
         type: boolean
+      disabled_instruction_sections:
+        description: |-
+          DisabledInstructionSections lists native instruction section IDs to
+          skip when building the system prompt. Section IDs match the file
+          names in internal/agent/templates/sections/ without the .md extension.
+        items:
+          type: string
+        type: array
       disabled_skills:
         items:
           type: string
@@ -392,18 +421,29 @@ definitions:
         type: array
       initialize_as:
         type: string
+      instruction_mode:
+        description: |-
+          InstructionMode controls which instruction sources are active:
+            "all"     — native sections + project context (default)
+            "project" — project context files only (skip native instruction sections)
+            "native"  — native instruction sections only (skip project context files)
+        type: string
       notifications:
         type: string
       progress:
         type: boolean
+      response_verbosity:
+        type: string
       skills_paths:
         items:
           type: string
         type: array
+      system_prompt_override:
+        type: boolean
       tui:
         $ref: '#/definitions/config.TUIOptions'
     type: object
-  github_com_charmbracelet_crush_internal_config.Scope:
+  github_com_example-git_crux_internal_config.Scope:
     enum:
     - 0
     - 1
@@ -411,26 +451,6 @@ definitions:
     x-enum-varnames:
     - ScopeGlobal
     - ScopeWorkspace
-  github_com_charmbracelet_crush_internal_proto.Message:
-    properties:
-      created_at:
-        type: integer
-      id:
-        type: string
-      model:
-        type: string
-      parts:
-        items: {}
-        type: array
-      provider:
-        type: string
-      role:
-        $ref: '#/definitions/proto.MessageRole'
-      session_id:
-        type: string
-      updated_at:
-        type: integer
-    type: object
   lsp.ServerState:
     enum:
     - 0
@@ -447,6 +467,61 @@ definitions:
     - StateError
     - StateStopped
     - StateDisabled
+  manifest.FieldDisplay:
+    properties:
+      advanced:
+        type: boolean
+      description:
+        type: string
+      label:
+        type: string
+      order:
+        type: integer
+      secret:
+        type: boolean
+    type: object
+  manifest.ImageHistoryBudget:
+    properties:
+      omit_old_images:
+        type: boolean
+      per_image_targets:
+        items:
+          type: integer
+        type: array
+      request_bytes:
+        type: integer
+      retain_newest_image:
+        type: boolean
+      retry_request_bytes:
+        type: integer
+    type: object
+  manifest.ImagePolicy:
+    properties:
+      accepted_media_types:
+        items:
+          type: string
+        type: array
+      flatten_alpha:
+        type: string
+      history_budget:
+        $ref: '#/definitions/manifest.ImageHistoryBudget'
+      max_output_bytes:
+        type: integer
+      max_patches:
+        type: integer
+      max_side_pixels:
+        type: integer
+      max_source_bytes:
+        type: integer
+      output_media_type:
+        type: string
+      quality_steps:
+        items:
+          type: integer
+        type: array
+      resize_percent:
+        type: integer
+    type: object
   oauth.OAuthClient:
     properties:
       auth_style:
@@ -504,6 +579,8 @@ definitions:
         type: string
       session_id:
         type: string
+      submission_id:
+        type: string
     type: object
   proto.AgentSession:
     properties:
@@ -521,7 +598,11 @@ definitions:
         type: boolean
       message_count:
         type: integer
+      mode:
+        type: string
       parent_session_id:
+        type: string
+      plan:
         type: string
       prompt_tokens:
         type: integer
@@ -554,7 +635,7 @@ definitions:
       enabled:
         type: boolean
       scope:
-        $ref: '#/definitions/github_com_charmbracelet_crush_internal_config.Scope'
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
     type: object
   proto.ConfigModelRequest:
     properties:
@@ -563,7 +644,7 @@ definitions:
       model_type:
         $ref: '#/definitions/config.SelectedModelType'
       scope:
-        $ref: '#/definitions/github_com_charmbracelet_crush_internal_config.Scope'
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
     type: object
   proto.ConfigProviderKeyRequest:
     properties:
@@ -576,28 +657,28 @@ definitions:
       provider_id:
         type: string
       scope:
-        $ref: '#/definitions/github_com_charmbracelet_crush_internal_config.Scope'
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
     type: object
   proto.ConfigRefreshOAuthRequest:
     properties:
       provider_id:
         type: string
       scope:
-        $ref: '#/definitions/github_com_charmbracelet_crush_internal_config.Scope'
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
     type: object
   proto.ConfigRemoveRequest:
     properties:
       key:
         type: string
       scope:
-        $ref: '#/definitions/github_com_charmbracelet_crush_internal_config.Scope'
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
     type: object
   proto.ConfigSetRequest:
     properties:
       key:
         type: string
       scope:
-        $ref: '#/definitions/github_com_charmbracelet_crush_internal_config.Scope'
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
       value: {}
     type: object
   proto.CurrentSession:
@@ -657,6 +738,14 @@ definitions:
       path:
         type: string
     type: object
+  proto.MCPAuthResponse:
+    properties:
+      auth_url:
+        description: |-
+          AuthURL is the OAuth authorization URL the user must visit, when
+          the flow is still in progress.
+        type: string
+    type: object
   proto.MCPClientInfo:
     properties:
       connected_at:
@@ -692,6 +781,13 @@ definitions:
   proto.MCPNameRequest:
     properties:
       name:
+        type: string
+    type: object
+  proto.MCPPendingAuthServer:
+    properties:
+      name:
+        type: string
+      url:
         type: string
     type: object
   proto.MCPPrompt:
@@ -743,6 +839,28 @@ definitions:
     - MCPStateConnected
     - MCPStateError
     - MCPStateNeedsAuth
+  proto.Message:
+    properties:
+      created_at:
+        type: integer
+      id:
+        type: string
+      is_summary_message:
+        type: boolean
+      model:
+        type: string
+      parts:
+        items: {}
+        type: array
+      provider:
+        type: string
+      role:
+        $ref: '#/definitions/proto.MessageRole'
+      session_id:
+        type: string
+      updated_at:
+        type: integer
+    type: object
   proto.MessageRole:
     enum:
     - assistant
@@ -810,6 +928,56 @@ definitions:
       needs_init:
         type: boolean
     type: object
+  proto.ProviderSurface:
+    properties:
+      authentication:
+        items:
+          $ref: '#/definitions/providerregistry.Authentication'
+        type: array
+      availability:
+        type: string
+      available:
+        type: boolean
+      brand:
+        $ref: '#/definitions/providerregistry.Brand'
+      configuration_fields:
+        additionalProperties:
+          $ref: '#/definitions/manifest.FieldDisplay'
+        type: object
+      configuration_schema:
+        additionalProperties: {}
+        type: object
+      default_large_model:
+        type: string
+      default_small_model:
+        type: string
+      description:
+        type: string
+      diagnostic:
+        type: string
+      flat_rate:
+        type: boolean
+      id:
+        type: string
+      images:
+        $ref: '#/definitions/manifest.ImagePolicy'
+      instructions:
+        $ref: '#/definitions/providerregistry.InstructionSurface'
+      models:
+        items:
+          $ref: '#/definitions/catwalk.Model'
+        type: array
+      name:
+        type: string
+      order:
+        type: integer
+      runtime_controls:
+        items:
+          $ref: '#/definitions/providerregistry.RuntimeControlSurface'
+        type: array
+      usage_available:
+        type: boolean
+    type: object
   proto.QuestionAnswer:
     properties:
       batch_request_id:
@@ -840,6 +1008,13 @@ definitions:
         type: array
       "yes":
         type: boolean
+    type: object
+  proto.QueuedPrompt:
+    properties:
+      prompt:
+        type: string
+      submission_id:
+        type: string
     type: object
   proto.ReadSkillRequest:
     properties:
@@ -876,7 +1051,11 @@ definitions:
         type: boolean
       message_count:
         type: integer
+      mode:
+        type: string
       parent_session_id:
+        type: string
+      plan:
         type: string
       prompt_tokens:
         type: integer
@@ -986,7 +1165,7 @@ definitions:
       client_id:
         type: string
       config:
-        $ref: '#/definitions/github_com_charmbracelet_crush_internal_config.Config'
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Config'
       data_dir:
         type: string
       debug:
@@ -999,6 +1178,13 @@ definitions:
         type: string
       path:
         type: string
+      provider_surfaces:
+        description: |-
+          ProviderSurfaces is the execution host's redacted registry-generated
+          provider presentation metadata.
+        items:
+          $ref: '#/definitions/proto.ProviderSurface'
+        type: array
       skills:
         description: |-
           Skills carries the snapshot of skill discovery state at workspace
@@ -1011,6 +1197,73 @@ definitions:
         type: string
       yolo:
         type: boolean
+    type: object
+  providerregistry.Authentication:
+    properties:
+      adapter:
+        $ref: '#/definitions/providerregistry.LoginAdapter'
+      available:
+        type: boolean
+      diagnostic:
+        type: string
+      flow_id:
+        type: string
+      kind:
+        type: string
+    type: object
+  providerregistry.Brand:
+    properties:
+      color:
+        type: string
+      gradient_a:
+        type: string
+      gradient_b:
+        type: string
+      label:
+        type: string
+      short_name:
+        type: string
+    type: object
+  providerregistry.InstructionSurface:
+    properties:
+      default:
+        type: string
+      profiles:
+        additionalProperties:
+          type: string
+        type: object
+    type: object
+  providerregistry.LoginAdapter:
+    enum:
+    - browser
+    - hosted-paste
+    - device-code
+    type: string
+    x-enum-varnames:
+    - LoginBrowser
+    - LoginHostedPaste
+    - LoginDeviceCode
+  providerregistry.RuntimeControlSurface:
+    properties:
+      available:
+        type: boolean
+      default: {}
+      description:
+        type: string
+      id:
+        type: string
+      label:
+        type: string
+      request_path:
+        type: string
+      scope:
+        type: string
+      type:
+        type: string
+      values:
+        items:
+          type: string
+        type: array
     type: object
   time.Duration:
     enum:
@@ -1035,15 +1288,15 @@ definitions:
     - Hour
 info:
   contact:
-    name: Charm
-    url: https://charm.sh
-  description: Crush is a terminal-based AI coding assistant. This API is served over
+    name: Crux
+    url: https://github.com/example-git/crux
+  description: Crux is a terminal-based AI coding assistant. This API is served over
     a Unix socket (or Windows named pipe) and provides programmatic access to workspaces,
     sessions, agents, LSP, MCP, and more.
   license:
-    name: MIT
-    url: https://github.com/charmbracelet/crush/blob/main/LICENSE
-  title: Crush API
+    name: FSL-1.1-MIT
+    url: https://github.com/example-git/crux/blob/main/LICENSE.md
+  title: Crux API
   version: "1.0"
 paths:
   /clients/{client_id}:
@@ -1321,6 +1574,28 @@ paths:
       summary: Initialize agent
       tags:
       - agent
+  /workspaces/{id}/agent/jobs/detach:
+    post:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Detach foreground jobs
+      tags:
+      - agent
   /workspaces/{id}/agent/sessions/{sid}:
     get:
       parameters:
@@ -1426,7 +1701,7 @@ paths:
           description: OK
           schema:
             items:
-              type: string
+              $ref: '#/definitions/proto.QueuedPrompt'
             type: array
         "404":
           description: Not Found
@@ -1511,6 +1786,33 @@ paths:
           schema:
             $ref: '#/definitions/proto.Error'
       summary: Run shell command
+      tags:
+      - agent
+  /workspaces/{id}/agent/sessions/{sid}/suggest:
+    post:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Session ID
+        in: path
+        name: sid
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Suggest next prompt
       tags:
       - agent
   /workspaces/{id}/agent/sessions/{sid}/summarize:
@@ -2063,6 +2365,71 @@ paths:
       summary: Stop all LSP servers
       tags:
       - lsp
+  /workspaces/{id}/mcp/auth:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: MCP name request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.MCPNameRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.MCPAuthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Authenticate an MCP server
+      tags:
+      - mcp
+  /workspaces/{id}/mcp/auth-url:
+    get:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: MCP server name
+        in: query
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.MCPAuthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Get MCP OAuth authorization URL
+      tags:
+      - mcp
   /workspaces/{id}/mcp/docker/disable:
     post:
       parameters:
@@ -2143,6 +2510,34 @@ paths:
           schema:
             $ref: '#/definitions/proto.Error'
       summary: Get MCP prompt
+      tags:
+      - mcp
+  /workspaces/{id}/mcp/pending-auth:
+    get:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/proto.MCPPendingAuthServer'
+            type: array
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Get MCP servers pending OAuth
       tags:
       - mcp
   /workspaces/{id}/mcp/prompts:
@@ -2356,7 +2751,7 @@ paths:
           description: OK
           schema:
             items:
-              $ref: '#/definitions/github_com_charmbracelet_crush_internal_proto.Message'
+              $ref: '#/definitions/proto.Message'
             type: array
         "404":
           description: Not Found
@@ -2552,7 +2947,9 @@ paths:
         "200":
           description: OK
           schema:
-            type: object
+            items:
+              $ref: '#/definitions/proto.ProviderSurface'
+            type: array
         "404":
           description: Not Found
           schema:
@@ -2878,7 +3275,7 @@ paths:
           description: OK
           schema:
             items:
-              $ref: '#/definitions/github_com_charmbracelet_crush_internal_proto.Message'
+              $ref: '#/definitions/proto.Message'
             type: array
         "404":
           description: Not Found
@@ -2911,7 +3308,7 @@ paths:
           description: OK
           schema:
             items:
-              $ref: '#/definitions/github_com_charmbracelet_crush_internal_proto.Message'
+              $ref: '#/definitions/proto.Message'
             type: array
         "404":
           description: Not Found
@@ -2922,6 +3319,80 @@ paths:
           schema:
             $ref: '#/definitions/proto.Error'
       summary: Get user messages for session
+      tags:
+      - sessions
+  /workspaces/{id}/sessions/{sid}/mode:
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Session ID
+        in: path
+        name: sid
+        required: true
+        type: string
+      - description: Session mode
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.Session'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.Session'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Update session mode
+      tags:
+      - sessions
+  /workspaces/{id}/sessions/{sid}/rewind:
+    post:
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Session ID
+        in: path
+        name: sid
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Rewind session
       tags:
       - sessions
   /workspaces/{id}/skills:

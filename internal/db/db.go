@@ -111,6 +111,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listMessagesBySessionStmt, err = db.PrepareContext(ctx, listMessagesBySession); err != nil {
 		return nil, fmt.Errorf("error preparing query ListMessagesBySession: %w", err)
 	}
+	if q.listMessagesBySessionFromStmt, err = db.PrepareContext(ctx, listMessagesBySessionFrom); err != nil {
+		return nil, fmt.Errorf("error preparing query ListMessagesBySessionFrom: %w", err)
+	}
 	if q.listNewFilesStmt, err = db.PrepareContext(ctx, listNewFiles); err != nil {
 		return nil, fmt.Errorf("error preparing query ListNewFiles: %w", err)
 	}
@@ -129,14 +132,20 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.renameSessionStmt, err = db.PrepareContext(ctx, renameSession); err != nil {
 		return nil, fmt.Errorf("error preparing query RenameSession: %w", err)
 	}
+	if q.setSessionPlanStateStmt, err = db.PrepareContext(ctx, setSessionPlanState); err != nil {
+		return nil, fmt.Errorf("error preparing query SetSessionPlanState: %w", err)
+	}
 	if q.updateMessageStmt, err = db.PrepareContext(ctx, updateMessage); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateMessage: %w", err)
 	}
 	if q.updateSessionStmt, err = db.PrepareContext(ctx, updateSession); err != nil {
 		return nil, fmt.Errorf("error preparing query UpdateSession: %w", err)
 	}
-	if q.updateSessionTitleAndUsageStmt, err = db.PrepareContext(ctx, updateSessionTitleAndUsage); err != nil {
-		return nil, fmt.Errorf("error preparing query UpdateSessionTitleAndUsage: %w", err)
+	if q.updateSessionCompactionStmt, err = db.PrepareContext(ctx, updateSessionCompaction); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateSessionCompaction: %w", err)
+	}
+	if q.updateSessionTitleAndCostStmt, err = db.PrepareContext(ctx, updateSessionTitleAndCost); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateSessionTitleAndCost: %w", err)
 	}
 	return &q, nil
 }
@@ -288,6 +297,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listMessagesBySessionStmt: %w", cerr)
 		}
 	}
+	if q.listMessagesBySessionFromStmt != nil {
+		if cerr := q.listMessagesBySessionFromStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listMessagesBySessionFromStmt: %w", cerr)
+		}
+	}
 	if q.listNewFilesStmt != nil {
 		if cerr := q.listNewFilesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listNewFilesStmt: %w", cerr)
@@ -318,6 +332,11 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing renameSessionStmt: %w", cerr)
 		}
 	}
+	if q.setSessionPlanStateStmt != nil {
+		if cerr := q.setSessionPlanStateStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setSessionPlanStateStmt: %w", cerr)
+		}
+	}
 	if q.updateMessageStmt != nil {
 		if cerr := q.updateMessageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing updateMessageStmt: %w", cerr)
@@ -328,9 +347,14 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing updateSessionStmt: %w", cerr)
 		}
 	}
-	if q.updateSessionTitleAndUsageStmt != nil {
-		if cerr := q.updateSessionTitleAndUsageStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing updateSessionTitleAndUsageStmt: %w", cerr)
+	if q.updateSessionCompactionStmt != nil {
+		if cerr := q.updateSessionCompactionStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateSessionCompactionStmt: %w", cerr)
+		}
+	}
+	if q.updateSessionTitleAndCostStmt != nil {
+		if cerr := q.updateSessionTitleAndCostStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateSessionTitleAndCostStmt: %w", cerr)
 		}
 	}
 	return err
@@ -401,15 +425,18 @@ type Queries struct {
 	listFilesBySessionStmt               *sql.Stmt
 	listLatestSessionFilesStmt           *sql.Stmt
 	listMessagesBySessionStmt            *sql.Stmt
+	listMessagesBySessionFromStmt        *sql.Stmt
 	listNewFilesStmt                     *sql.Stmt
 	listSessionReadFilesStmt             *sql.Stmt
 	listSessionsStmt                     *sql.Stmt
 	listUserMessagesBySessionStmt        *sql.Stmt
 	recordFileReadStmt                   *sql.Stmt
 	renameSessionStmt                    *sql.Stmt
+	setSessionPlanStateStmt              *sql.Stmt
 	updateMessageStmt                    *sql.Stmt
 	updateSessionStmt                    *sql.Stmt
-	updateSessionTitleAndUsageStmt       *sql.Stmt
+	updateSessionCompactionStmt          *sql.Stmt
+	updateSessionTitleAndCostStmt        *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
@@ -445,14 +472,17 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listFilesBySessionStmt:               q.listFilesBySessionStmt,
 		listLatestSessionFilesStmt:           q.listLatestSessionFilesStmt,
 		listMessagesBySessionStmt:            q.listMessagesBySessionStmt,
+		listMessagesBySessionFromStmt:        q.listMessagesBySessionFromStmt,
 		listNewFilesStmt:                     q.listNewFilesStmt,
 		listSessionReadFilesStmt:             q.listSessionReadFilesStmt,
 		listSessionsStmt:                     q.listSessionsStmt,
 		listUserMessagesBySessionStmt:        q.listUserMessagesBySessionStmt,
 		recordFileReadStmt:                   q.recordFileReadStmt,
 		renameSessionStmt:                    q.renameSessionStmt,
+		setSessionPlanStateStmt:              q.setSessionPlanStateStmt,
 		updateMessageStmt:                    q.updateMessageStmt,
 		updateSessionStmt:                    q.updateSessionStmt,
-		updateSessionTitleAndUsageStmt:       q.updateSessionTitleAndUsageStmt,
+		updateSessionCompactionStmt:          q.updateSessionCompactionStmt,
+		updateSessionTitleAndCostStmt:        q.updateSessionTitleAndCostStmt,
 	}
 }

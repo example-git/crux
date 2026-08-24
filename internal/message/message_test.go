@@ -1,17 +1,159 @@
 package message
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/session"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAllProviderMetadataScopesSurviveDatabaseRestart(t *testing.T) {
+	dir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dir)
+	require.NoError(t, err)
+
+	q := db.New(conn)
+	sessions := session.NewService(q, conn)
+	sess, err := sessions.Create(t.Context(), "all metadata scopes")
+	require.NoError(t, err)
+
+	payload := []byte(`{ "precise" : -0.00e-0 }`)
+	envelope := func(scope ProviderMetadataScope) ProviderMetadataEnvelope {
+		value, envelopeErr := NewProviderMetadataEnvelope("missing.plugin", 23, scope, payload)
+		require.NoError(t, envelopeErr)
+		return value
+	}
+	parts := []ContentPart{
+		TextContent{Text: "before", ProviderMetadata: ProviderMetadata{envelope(ProviderMetadataScopeText), envelope(ProviderMetadataScopeCompaction)}},
+		ReasoningContent{Thinking: "reasoning", ProviderMetadata: ProviderMetadata{envelope(ProviderMetadataScopeReasoning)}},
+		ToolCall{ID: "call", Name: "tool", Input: "{}", Finished: true, ProviderExecuted: true, ProviderMetadata: ProviderMetadata{envelope(ProviderMetadataScopeToolCall)}},
+		ToolResult{ToolCallID: "call", Name: "tool", Content: "result", ProviderExecuted: true, ProviderMetadata: ProviderMetadata{envelope(ProviderMetadataScopeToolResult)}},
+		ProviderMetadataContent{ProviderMetadata: ProviderMetadata{envelope(ProviderMetadataScopeMessage), envelope(ProviderMetadataScopeContinuation)}},
+	}
+
+	svc := NewService(q)
+	created, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{Role: Assistant, Parts: parts, Model: "future-model", Provider: "missing.plugin"})
+	require.NoError(t, err)
+	created.AppendContent(" after")
+	require.NoError(t, svc.Update(t.Context(), created))
+	require.NoError(t, db.Release(dir))
+
+	conn, err = db.Connect(t.Context(), dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dir) })
+	loaded, err := NewService(db.New(conn)).Get(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "missing.plugin", loaded.Provider)
+	require.Equal(t, "future-model", loaded.Model)
+
+	var metadata ProviderMetadata
+	for _, part := range loaded.Parts {
+		switch value := part.(type) {
+		case TextContent:
+			require.Equal(t, "before after", value.Text)
+			metadata = append(metadata, value.ProviderMetadata...)
+		case ReasoningContent:
+			metadata = append(metadata, value.ProviderMetadata...)
+		case ToolCall:
+			require.True(t, value.ProviderExecuted)
+			metadata = append(metadata, value.ProviderMetadata...)
+		case ToolResult:
+			require.True(t, value.ProviderExecuted)
+			metadata = append(metadata, value.ProviderMetadata...)
+		case ProviderMetadataContent:
+			metadata = append(metadata, value.ProviderMetadata...)
+		}
+	}
+	require.Len(t, metadata, 7)
+	for i, scope := range []ProviderMetadataScope{ProviderMetadataScopeText, ProviderMetadataScopeCompaction, ProviderMetadataScopeReasoning, ProviderMetadataScopeToolCall, ProviderMetadataScopeToolResult, ProviderMetadataScopeMessage, ProviderMetadataScopeContinuation} {
+		require.Equal(t, scope, metadata[i].Scope)
+		require.True(t, bytes.Equal(payload, metadata[i].Payload), "scope %s changed payload: %q", scope, metadata[i].Payload)
+	}
+}
+
+func TestLegacyProviderMetadataMigratesFromDatabaseAndSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dir)
+	require.NoError(t, err)
+	q := db.New(conn)
+	sessions := session.NewService(q, conn)
+	sess, err := sessions.Create(t.Context(), "legacy metadata")
+	require.NoError(t, err)
+
+	legacyPayload := `{ "type" : "future.private", "data" : { "number" : 1.00e+2 } }`
+	parts := `[
+		{"type":"text","data":{"text":"legacy","provider_options":{"missing.plugin":` + legacyPayload + `}}},
+		{"type":"reasoning","data":{"thinking":"legacy","thought_signature":"signature","tool_id":"call","codex_reasoning_metadata":{"type":"codex.reasoning_metadata","data":{"encrypted_content":"opaque"}}}},
+		{"type":"tool_call","data":{"id":"call","name":"tool","input":"{}","finished":true,"codex_item_id":"item"}}
+	]`
+	_, err = q.CreateMessage(t.Context(), db.CreateMessageParams{
+		ID: "legacy-message", SessionID: sess.ID, Role: string(Assistant), Parts: parts,
+		Model: sql.NullString{String: "legacy-model", Valid: true}, Provider: sql.NullString{String: "missing.plugin", Valid: true},
+	})
+	require.NoError(t, err)
+
+	svc := NewService(q)
+	loaded, err := svc.Get(t.Context(), "legacy-message")
+	require.NoError(t, err)
+	require.Equal(t, []byte(legacyPayload), loaded.Parts[0].(TextContent).ProviderMetadata[0].Payload)
+	require.Len(t, loaded.Parts[1].(ReasoningContent).ProviderMetadata, 3)
+	require.Len(t, loaded.Parts[2].(ToolCall).ProviderMetadata, 1)
+	loaded.AppendContent(" migrated")
+	require.NoError(t, svc.Update(t.Context(), loaded))
+	require.NoError(t, db.Release(dir))
+
+	conn, err = db.Connect(t.Context(), dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dir) })
+	reloaded, err := NewService(db.New(conn)).Get(t.Context(), "legacy-message")
+	require.NoError(t, err)
+	require.Equal(t, "legacy migrated", reloaded.Parts[0].(TextContent).Text)
+	require.Equal(t, []byte(legacyPayload), reloaded.Parts[0].(TextContent).ProviderMetadata[0].Payload)
+	require.Len(t, reloaded.Parts[1].(ReasoningContent).ProviderMetadata, 3)
+	require.Len(t, reloaded.Parts[2].(ToolCall).ProviderMetadata, 1)
+}
+
+func TestUnknownProviderMetadataSurvivesDatabaseUpdate(t *testing.T) {
+	conn, err := db.Connect(t.Context(), t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	q := db.New(conn)
+	sessions := session.NewService(q, conn)
+	sess, err := sessions.Create(t.Context(), "metadata round trip")
+	require.NoError(t, err)
+
+	payload := []byte("{ \"precise\": 1.00e+7, \"ordered\": [\"b\", \"a\"] }")
+	envelope, err := NewProviderMetadataEnvelope("missing.plugin", 9, ProviderMetadataScopeText, payload)
+	require.NoError(t, err)
+
+	svc := NewService(q)
+	created, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{
+		Role: User,
+		Parts: []ContentPart{TextContent{
+			Text:             "original",
+			ProviderMetadata: ProviderMetadata{envelope},
+		}},
+	})
+	require.NoError(t, err)
+
+	created.AppendContent(" updated")
+	require.NoError(t, svc.Update(t.Context(), created))
+
+	loaded, err := svc.Get(t.Context(), created.ID)
+	require.NoError(t, err)
+	metadata := loaded.Content().ProviderMetadata
+	require.Len(t, metadata, 1)
+	require.True(t, bytes.Equal(payload, metadata[0].Payload), "opaque payload changed: %q", metadata[0].Payload)
+}
 
 // slowUpdateQuerier wraps a [db.Querier] and forces UpdateMessage to
 // hang on a release channel. Used to simulate an in-flight SQL write.
@@ -35,6 +177,108 @@ func (s *slowUpdateQuerier) UpdateMessage(ctx context.Context, arg db.UpdateMess
 // newTestService spins up a fresh in-memory message.Service backed by a
 // temporary on-disk SQLite database. Returns the service plus a session
 // ID to attach messages to.
+func TestCommitCompactionAtomicallyInstallsCheckpoint(t *testing.T) {
+	conn, err := db.Connect(t.Context(), t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	q := db.New(conn)
+	sessions := session.NewService(q, conn)
+	sess, err := sessions.Create(t.Context(), "original title")
+	require.NoError(t, err)
+	sess.Todos = []session.Todo{{Content: "keep", Status: session.TodoStatusPending, ActiveForm: "Keeping"}}
+	_, err = sessions.Save(t.Context(), sess)
+	require.NoError(t, err)
+
+	svc := NewService(q, WithCompactionStore(conn, sessions))
+	messageEvents := svc.Subscribe(t.Context())
+	sessionEvents := sessions.Subscribe(t.Context())
+	committed, err := svc.CommitCompaction(t.Context(), CommitCompactionParams{
+		SessionID:        sess.ID,
+		Parts:            []ContentPart{TextContent{Text: "checkpoint"}, Finish{Reason: FinishReasonEndTurn, Time: time.Now().Unix()}},
+		Model:            "gpt-test",
+		Provider:         "codex",
+		PromptTokens:     321,
+		CompletionTokens: 0,
+		Cost:             1.25,
+		EstimatedUsage:   true,
+	})
+	require.NoError(t, err)
+	require.True(t, committed.IsSummaryMessage)
+	require.Equal(t, "checkpoint", committed.Content().Text)
+
+	storedSession, err := sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, committed.ID, storedSession.SummaryMessageID)
+	require.Equal(t, int64(321), storedSession.PromptTokens)
+	require.Zero(t, storedSession.CompletionTokens)
+	require.Equal(t, 1.25, storedSession.Cost)
+	require.True(t, storedSession.EstimatedUsage)
+	require.Equal(t, "original title", storedSession.Title)
+	require.Equal(t, sess.Todos, storedSession.Todos)
+
+	dbMessage, err := q.GetMessage(t.Context(), committed.ID)
+	require.NoError(t, err)
+	require.True(t, dbMessage.FinishedAt.Valid)
+	require.Equal(t, pubsub.CreatedEvent, (<-messageEvents).Type)
+	require.Equal(t, pubsub.UpdatedEvent, (<-sessionEvents).Type)
+}
+
+func TestCommitCompactionRollsBackWhenCheckpointUpdateFails(t *testing.T) {
+	conn, err := db.Connect(t.Context(), t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	q := db.New(conn)
+	sessions := session.NewService(q, conn)
+	sess, err := sessions.Create(t.Context(), "test")
+	require.NoError(t, err)
+	svc := NewService(q, WithCompactionStore(conn, sessions))
+	messageEvents := svc.Subscribe(t.Context())
+	sessionEvents := sessions.Subscribe(t.Context())
+
+	_, err = conn.ExecContext(t.Context(), `
+		CREATE TRIGGER reject_compaction
+		BEFORE UPDATE OF summary_message_id ON sessions
+		WHEN new.summary_message_id IS NOT NULL
+		BEGIN
+			SELECT RAISE(ABORT, 'rejected compaction');
+		END;
+	`)
+	require.NoError(t, err)
+
+	_, err = svc.CommitCompaction(t.Context(), CommitCompactionParams{
+		SessionID:      sess.ID,
+		Parts:          []ContentPart{TextContent{Text: "must roll back"}, Finish{Reason: FinishReasonEndTurn, Time: time.Now().Unix()}},
+		Model:          "gpt-test",
+		Provider:       "codex",
+		PromptTokens:   99,
+		Cost:           2,
+		EstimatedUsage: true,
+	})
+	require.ErrorContains(t, err, "installing compacted checkpoint")
+
+	messages, err := svc.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Empty(t, messages)
+	storedSession, err := sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Empty(t, storedSession.SummaryMessageID)
+	require.Zero(t, storedSession.PromptTokens)
+	require.Zero(t, storedSession.Cost)
+
+	select {
+	case event := <-messageEvents:
+		t.Fatalf("unexpected message event: %#v", event)
+	default:
+	}
+	select {
+	case event := <-sessionEvents:
+		t.Fatalf("unexpected session event: %#v", event)
+	default:
+	}
+}
+
 func newTestService(t *testing.T, opts ...ServiceOption) (Service, string) {
 	t.Helper()
 	conn, err := db.Connect(t.Context(), t.TempDir())
@@ -89,6 +333,30 @@ func (c *eventCollector) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.events = nil
+}
+
+func TestListFromUsesStableCheckpointOrder(t *testing.T) {
+	t.Parallel()
+
+	svc, sessionID := newTestService(t)
+	first, err := svc.Create(t.Context(), sessionID, CreateMessageParams{Role: User, Parts: []ContentPart{TextContent{Text: "first"}}})
+	require.NoError(t, err)
+	checkpoint, err := svc.Create(t.Context(), sessionID, CreateMessageParams{Role: Assistant, Parts: []ContentPart{TextContent{Text: "summary"}}})
+	require.NoError(t, err)
+	last, err := svc.Create(t.Context(), sessionID, CreateMessageParams{Role: User, Parts: []ContentPart{TextContent{Text: "last"}}})
+	require.NoError(t, err)
+
+	all, err := svc.List(t.Context(), sessionID)
+	require.NoError(t, err)
+	require.Equal(t, []string{first.ID, checkpoint.ID, last.ID}, []string{all[0].ID, all[1].ID, all[2].ID})
+
+	fromCheckpoint, err := svc.ListFrom(t.Context(), sessionID, checkpoint.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{checkpoint.ID, last.ID}, []string{fromCheckpoint[0].ID, fromCheckpoint[1].ID})
+
+	stale, err := svc.ListFrom(t.Context(), sessionID, "missing")
+	require.NoError(t, err)
+	require.Empty(t, stale)
 }
 
 func TestUpdate_DebouncesTextDeltas(t *testing.T) {

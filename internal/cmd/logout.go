@@ -1,16 +1,17 @@
 package cmd
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"os"
 	"os/signal"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/client"
-	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/client"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/spf13/cobra"
 )
 
@@ -23,27 +24,17 @@ var (
 var logoutCmd = &cobra.Command{
 	Aliases: []string{"signout"},
 	Use:     "logout [platform]",
-	Short:   "Logout Crush from a platform",
-	Long: `Logout Crush from a specified platform, removing stored credentials.
-The platform should be provided as an argument.
-If no argument is given, a list of logged-in platforms will be shown.
-Available platforms are: hyper, copilot.`,
+	Short:   "Logout Crux from a platform",
+	Long: `Logout Crux from a registered OAuth platform, removing its provider
+credential and stored accounts. With no argument, choose a logged-in platform.`,
 	Example: `
-# Sign out from Charm Hyper
-crush logout hyper
-
 # Sign out from GitHub Copilot
-crush logout copilot
+crux logout copilot
   `,
-	ValidArgs: []cobra.Completion{
-		"hyper",
-		"copilot",
-		"github",
-		"github-copilot",
-	},
-	Args: cobra.MaximumNArgs(1),
+	ValidArgs: oauthProviderCompletions(),
+	Args:      cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c, ws, cleanup, err := connectToServer(cmd)
+		client, ws, cleanup, err := connectToServer(cmd)
 		if err != nil {
 			return err
 		}
@@ -55,22 +46,26 @@ crush logout copilot
 			defer func() { _, _ = fmt.Fprintf(os.Stderr, ansi.ResetProgressBar) }()
 		}
 
-		var provider string
+		var registration providerregistry.Registration
 		if len(args) == 0 {
-			provider, err = pickLoggedInProvider(c, ws.ID)
+			registration, err = pickLoggedInProvider(client, ws.ID)
 			if err != nil {
 				return err
 			}
-			if provider == "" {
+			if registration.ProviderID == "" {
 				return nil
 			}
 		} else {
-			provider = args[0]
+			var ok bool
+			registration, ok = config.ProviderCapabilities().Lookup(args[0])
+			if !ok || registration.OAuth == nil {
+				return fmt.Errorf("unknown OAuth platform: %s", args[0])
+			}
 		}
 
 		force, _ := cmd.Flags().GetBool("force")
 		if !force {
-			fmt.Print(logoutPromptStyle.Render(fmt.Sprintf("Are you sure you want to logout %s? (y/N) ", provider)))
+			fmt.Print(logoutPromptStyle.Render(fmt.Sprintf("Are you sure you want to logout %s? (y/N) ", registration.Name)))
 			var response string
 			_, err := fmt.Scanln(&response)
 			if err != nil || (response != "y" && response != "Y" && response != "yes" && response != "Yes" && response != "YES") {
@@ -78,96 +73,64 @@ crush logout copilot
 				return nil
 			}
 		}
-
-		switch provider {
-		case "hyper":
-			return logoutHyper(c, ws.ID)
-		case "copilot", "github", "github-copilot":
-			return logoutCopilot(c, ws.ID)
-		default:
-			return fmt.Errorf("unknown platform: %s", provider)
-		}
+		return logoutProvider(client, ws.ID, registration)
 	},
 }
 
-func logoutHyper(c *client.Client, wsID string) error {
+func logoutProvider(client *client.Client, workspaceID string, registration providerregistry.Registration) error {
 	ctx := getLogoutContext()
-
-	if err := cmp.Or(
-		c.RemoveConfigField(ctx, wsID, config.ScopeGlobal, "providers.hyper.api_key"),
-		c.RemoveConfigField(ctx, wsID, config.ScopeGlobal, "providers.hyper.oauth"),
-	); err != nil {
-		return err
-	}
-
-	fmt.Println(logoutHeaderStyle.Render("Successfully logged out of Hyper."))
-	return nil
-}
-
-func logoutCopilot(c *client.Client, wsID string) error {
-	ctx := getLogoutContext()
-
-	if err := cmp.Or(
-		c.RemoveConfigField(ctx, wsID, config.ScopeGlobal, "providers.copilot.api_key"),
-		c.RemoveConfigField(ctx, wsID, config.ScopeGlobal, "providers.copilot.oauth"),
-	); err != nil {
-		return err
-	}
-
-	fmt.Println(logoutHeaderStyle.Render("Successfully logged out of GitHub Copilot."))
-	return nil
-}
-
-func pickLoggedInProvider(c *client.Client, wsID string) (string, error) {
-	ctx := getLogoutContext()
-
-	cfg, err := c.GetConfig(ctx, wsID)
-	if err != nil {
-		return "", fmt.Errorf("failed to get config: %w", err)
-	}
-
-	type loggedInProvider struct {
-		id   string
-		name string
-	}
-
-	// Only OAuth-based providers support login/logout. Keep this list in sync
-	// with the switch in RunE and the login command.
-	oauthProviders := map[string]string{
-		"hyper":   "Hyper",
-		"copilot": "GitHub Copilot",
-	}
-
-	var loggedIn []loggedInProvider
-	for id, name := range oauthProviders {
-		if p, ok := cfg.Providers.Get(id); ok && p.OAuthToken != nil {
-			loggedIn = append(loggedIn, loggedInProvider{id: id, name: name})
+	var firstErr error
+	for _, field := range []string{"api_key", "oauth"} {
+		key := fmt.Sprintf("providers.%s.%s", registration.ProviderID, field)
+		if err := client.RemoveConfigField(ctx, workspaceID, config.ScopeGlobal, key); err != nil && firstErr == nil {
+			firstErr = err
 		}
 	}
+	if firstErr != nil {
+		return firstErr
+	}
+	if registration.AccountNamespace != "" {
+		if err := accounts.RemoveProvider(ctx, registration.AccountNamespace); err != nil {
+			return err
+		}
+	}
+	fmt.Println(logoutHeaderStyle.Render("Successfully logged out of " + registration.Name + "."))
+	return nil
+}
 
-	if len(loggedIn) == 0 {
-		fmt.Println(logoutPromptStyle.Render("You are not logged in to any platform."))
-		return "", nil
+func pickLoggedInProvider(client *client.Client, workspaceID string) (providerregistry.Registration, error) {
+	ctx := getLogoutContext()
+	cfg, err := client.GetConfig(ctx, workspaceID)
+	if err != nil {
+		return providerregistry.Registration{}, fmt.Errorf("failed to get config: %w", err)
 	}
 
+	var loggedIn []providerregistry.Registration
+	for _, registration := range oauthRegistrations() {
+		if provider, ok := cfg.Providers.Get(registration.ProviderID); ok && provider.OAuthToken != nil {
+			loggedIn = append(loggedIn, registration)
+		}
+	}
+	if len(loggedIn) == 0 {
+		fmt.Println(logoutPromptStyle.Render("You are not logged in to any platform."))
+		return providerregistry.Registration{}, nil
+	}
 	if len(loggedIn) == 1 {
-		return loggedIn[0].id, nil
+		return loggedIn[0], nil
 	}
 
 	fmt.Println(logoutHeaderStyle.Render("Logged-in platforms:"))
-	for i, p := range loggedIn {
-		fmt.Println(logoutItemStyle.Render(fmt.Sprintf("  %d. %s", i+1, p.name)))
+	for i, registration := range loggedIn {
+		fmt.Println(logoutItemStyle.Render(fmt.Sprintf("  %d. %s", i+1, registration.Name)))
 	}
 	fmt.Print(logoutPromptStyle.Render(fmt.Sprintf("Select a platform to logout (1-%d): ", len(loggedIn))))
-
 	var choice int
 	_, err = fmt.Scanln(&choice)
 	if err != nil || choice < 1 || choice > len(loggedIn) {
 		fmt.Println(logoutHeaderStyle.Render("Logout cancelled."))
-		return "", nil
+		return providerregistry.Registration{}, nil
 	}
-
-	return loggedIn[choice-1].id, nil
+	return loggedIn[choice-1], nil
 }
 
 func init() {

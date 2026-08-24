@@ -10,11 +10,11 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/fsext"
-	"github.com/charmbracelet/crush/internal/ui/list"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/ordered"
+	"github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/ui/list"
 )
 
 const (
@@ -182,6 +182,38 @@ func (c *Completions) SetItems(files []FileCompletionValue, resources []Resource
 			c.matchStyle,
 		)
 		items = append(items, item)
+	}
+
+	c.open = true
+	c.query = ""
+	c.allItems = items
+	c.filtered = append([]list.FilterableItem(nil), items...)
+	c.list.SetItems(c.filtered...)
+	c.list.SetFilter("")
+	c.list.Focus()
+
+	c.width = maxWidth
+	c.height = ordered.Clamp(len(items), int(minHeight), int(maxHeight))
+	c.list.SetSize(c.width, c.height)
+	c.list.SelectFirst()
+	c.list.ScrollToSelected()
+
+	c.updateSize()
+}
+
+// SetCommandItems sets slash-command completion items and opens the
+// popup. Items are provided synchronously (no filesystem or MCP round
+// trip) so the popup appears on the same frame as the trigger keystroke.
+func (c *Completions) SetCommandItems(commands []CommandCompletionValue) {
+	items := make([]list.FilterableItem, 0, len(commands))
+	for _, cmd := range commands {
+		items = append(items, NewCompletionItem(
+			cmd.Title,
+			cmd,
+			c.normalStyle,
+			c.focusedStyle,
+			c.matchStyle,
+		))
 	}
 
 	c.open = true
@@ -382,6 +414,11 @@ func (c *Completions) selectCurrent(keepOpen bool) tea.Msg {
 		}
 	case FileCompletionValue:
 		return SelectionMsg[FileCompletionValue]{
+			Value:    item,
+			KeepOpen: keepOpen,
+		}
+	case CommandCompletionValue:
+		return SelectionMsg[CommandCompletionValue]{
 			Value:    item,
 			KeepOpen: keepOpen,
 		}

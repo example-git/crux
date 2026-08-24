@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/env"
-	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/oauth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,21 +44,43 @@ func TestConfig_LoadFromBytes(t *testing.T) {
 	require.Equal(t, "https://api.openai.com/v2", pc.BaseURL)
 }
 
+func TestConfig_LoadCodebaseSearchPaths(t *testing.T) {
+	loadedConfig, err := loadFromBytes([][]byte{[]byte(`{"tools":{"codebase_search":{"database_path":"/var/lib/crux/index-db","store_directory":"/var/lib/crux/index-store","enabled":false,"include_paths":["src","internal"],"exclude_paths":["src/generated"]}}}`)})
+	require.NoError(t, err)
+	require.Equal(t, "/var/lib/crux/index-db", loadedConfig.Tools.CodebaseSearch.DatabasePath)
+	require.Equal(t, "/var/lib/crux/index-store", loadedConfig.Tools.CodebaseSearch.GetStoreDirectory())
+	require.False(t, loadedConfig.Tools.CodebaseSearch.IsEnabled())
+	require.Equal(t, []string{"src", "internal"}, loadedConfig.Tools.CodebaseSearch.IncludePaths)
+	require.Equal(t, []string{"src/generated"}, loadedConfig.Tools.CodebaseSearch.ExcludePaths)
+
+	legacyConfig, err := loadFromBytes([][]byte{[]byte(`{"tools":{"codebase_search":{"ann_directory":"/var/lib/crux/index-ann"}}}`)})
+	require.NoError(t, err)
+	require.Equal(t, "/var/lib/crux/index-ann", legacyConfig.Tools.CodebaseSearch.GetStoreDirectory())
+	require.False(t, legacyConfig.Tools.CodebaseSearch.IsEnabled())
+
+	enabledConfig, err := loadFromBytes([][]byte{[]byte(`{"tools":{"codebase_search":{"enabled":true}}}`)})
+	require.NoError(t, err)
+	require.True(t, enabledConfig.Tools.CodebaseSearch.IsEnabled())
+
+	_, err = loadFromBytes([][]byte{[]byte(`{"tools":{"codebase_search":{"enabled":"yes"}}}`)})
+	require.Error(t, err)
+}
+
 func TestLookupConfigs_BoundedByProject(t *testing.T) {
 	// Force GlobalConfig and GlobalConfigData to point at locations we
 	// control so they can be present in the result without polluting
 	// the developer's real config.
 	globalDir := t.TempDir()
 	dataDir := t.TempDir()
-	t.Setenv("CRUSH_GLOBAL_CONFIG", globalDir)
-	t.Setenv("CRUSH_GLOBAL_DATA", dataDir)
+	t.Setenv("CRUX_GLOBAL_CONFIG", globalDir)
+	t.Setenv("CRUX_GLOBAL_DATA", dataDir)
 
-	t.Run("does not pick up crush.json above non-git project", func(t *testing.T) {
+	t.Run("does not pick up crux.json above non-git project", func(t *testing.T) {
 		parent := t.TempDir()
 
-		// crush.json above the project must not be adopted.
+		// crux.json above the project must not be adopted.
 		require.NoError(t, os.WriteFile(
-			filepath.Join(parent, "crush.json"),
+			filepath.Join(parent, "crux.json"),
 			[]byte(`{}`),
 			0o644,
 		))
@@ -68,11 +90,11 @@ func TestLookupConfigs_BoundedByProject(t *testing.T) {
 
 		got := lookupConfigs(project)
 		for _, p := range got {
-			require.NotEqual(t, filepath.Join(parent, "crush.json"), p)
+			require.NotEqual(t, filepath.Join(parent, "crux.json"), p)
 		}
 	})
 
-	t.Run("does not climb out of git worktree to find crush.json", func(t *testing.T) {
+	t.Run("does not climb out of git worktree to find crux.json", func(t *testing.T) {
 		if _, err := exec.LookPath("git"); err != nil {
 			t.Skip("git not available")
 		}
@@ -80,7 +102,7 @@ func TestLookupConfigs_BoundedByProject(t *testing.T) {
 		parent := t.TempDir()
 
 		require.NoError(t, os.WriteFile(
-			filepath.Join(parent, "crush.json"),
+			filepath.Join(parent, "crux.json"),
 			[]byte(`{}`),
 			0o644,
 		))
@@ -92,20 +114,20 @@ func TestLookupConfigs_BoundedByProject(t *testing.T) {
 		require.NoError(t, gitInit.Run())
 
 		got := lookupConfigs(worktree)
-		strayEval, err := filepath.EvalSymlinks(filepath.Join(parent, "crush.json"))
+		strayEval, err := filepath.EvalSymlinks(filepath.Join(parent, "crux.json"))
 		require.NoError(t, err)
 		for _, p := range got {
 			pEval, err := filepath.EvalSymlinks(p)
 			if err != nil {
 				continue
 			}
-			require.NotEqual(t, strayEval, pEval, "must not adopt parent crush.json")
+			require.NotEqual(t, strayEval, pEval, "must not adopt parent crux.json")
 		}
 	})
 
-	t.Run("picks up crush.json inside the project", func(t *testing.T) {
+	t.Run("picks up crux.json inside the project", func(t *testing.T) {
 		project := t.TempDir()
-		local := filepath.Join(project, "crush.json")
+		local := filepath.Join(project, "crux.json")
 		require.NoError(t, os.WriteFile(local, []byte(`{}`), 0o644))
 
 		got := lookupConfigs(project)
@@ -123,7 +145,7 @@ func TestLookupConfigs_BoundedByProject(t *testing.T) {
 				break
 			}
 		}
-		require.True(t, foundLocal, "expected project crush.json to be in lookup result: %v", got)
+		require.True(t, foundLocal, "expected project crux.json to be in lookup result: %v", got)
 	})
 
 	t.Run("global config is always included regardless of boundary", func(t *testing.T) {
@@ -136,24 +158,24 @@ func TestLookupConfigs_BoundedByProject(t *testing.T) {
 		require.Contains(t, got, GlobalConfigData())
 	})
 
-	t.Run("global shell config (crushrc) is included", func(t *testing.T) {
+	t.Run("global shell config (cruxrc) is included", func(t *testing.T) {
 		project := t.TempDir()
 
 		got := lookupConfigs(project)
-		// A global crushrc is discovered only beside the user config. The data
-		// directory is machine-owned state and must never execute a crushrc.
+		// A global cruxrc is discovered only beside the user config. The data
+		// directory is machine-owned state and must never execute a cruxrc.
 		require.Contains(t, got, shellConfigSibling(GlobalConfig()))
 		require.NotContains(t, got, shellConfigSibling(GlobalConfigData()))
 	})
 
-	t.Run("project crushrc and .crushrc are discovered", func(t *testing.T) {
+	t.Run("project cruxrc and .cruxrc are discovered", func(t *testing.T) {
 		project := t.TempDir()
-		require.NoError(t, os.WriteFile(filepath.Join(project, "crushrc"), []byte(""), 0o644))
-		require.NoError(t, os.WriteFile(filepath.Join(project, ".crushrc"), []byte(""), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(project, "cruxrc"), []byte(""), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(project, ".cruxrc"), []byte(""), 0o644))
 
 		got := lookupConfigs(project)
-		require.Contains(t, got, filepath.Join(project, "crushrc"))
-		require.Contains(t, got, filepath.Join(project, ".crushrc"))
+		require.Contains(t, got, filepath.Join(project, "cruxrc"))
+		require.Contains(t, got, filepath.Join(project, ".cruxrc"))
 	})
 
 	t.Run("system config is loaded first", func(t *testing.T) {
@@ -165,8 +187,41 @@ func TestLookupConfigs_BoundedByProject(t *testing.T) {
 		require.NotEmpty(t, got)
 		// The system-wide config must be first so it has the lowest
 		// priority when configs are merged.
-		require.Equal(t, "/etc/crush/crush.json", got[0])
+		require.Equal(t, "/etc/crux/crux.json", got[0])
 	})
+}
+
+func TestLegacyCrushIdentityIsIgnored(t *testing.T) {
+	legacyRoot := t.TempDir()
+	configRoot := t.TempDir()
+	dataRoot := t.TempDir()
+	cacheRoot := t.TempDir()
+
+	t.Setenv("CRUX_GLOBAL_CONFIG", "")
+	t.Setenv("CRUX_GLOBAL_DATA", "")
+	t.Setenv("CRUX_CACHE_DIR", "")
+	t.Setenv("CRUSH_GLOBAL_CONFIG", filepath.Join(legacyRoot, "config"))
+	t.Setenv("CRUSH_GLOBAL_DATA", filepath.Join(legacyRoot, "data"))
+	t.Setenv("CRUSH_CACHE_DIR", filepath.Join(legacyRoot, "cache"))
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	t.Setenv("XDG_CACHE_HOME", cacheRoot)
+
+	require.Equal(t, filepath.Join(configRoot, "crux", "crux.json"), GlobalConfig())
+	require.Equal(t, filepath.Join(dataRoot, "crux", "crux.json"), GlobalConfigData())
+	require.Equal(t, filepath.Join(cacheRoot, "crux"), GlobalCacheDir())
+
+	project := t.TempDir()
+	legacyConfigs := []string{"crush.json", ".crush.json", "crushrc", ".crushrc"}
+	for _, name := range legacyConfigs {
+		path := filepath.Join(project, name)
+		require.NoError(t, os.WriteFile(path, []byte(`{}`), 0o644))
+	}
+
+	configs := lookupConfigs(project)
+	for _, name := range legacyConfigs {
+		require.NotContains(t, configs, filepath.Join(project, name))
+	}
 }
 
 func TestLoadFromConfigPaths_InvalidJSON(t *testing.T) {
@@ -202,7 +257,7 @@ func TestLoadFromConfigPaths_InvalidJSON(t *testing.T) {
 }
 
 // TestLoadFromConfigPaths_ConflictWarningNamesKeys verifies that when a JSON
-// config and a crushrc coexist in the same directory, the merge warning names
+// config and a cruxrc coexist in the same directory, the merge warning names
 // the overlapping top-level keys so incremental migrations can spot stale
 // duplicates.
 func TestLoadFromConfigPaths_ConflictWarningNamesKeys(t *testing.T) {
@@ -218,28 +273,28 @@ func TestLoadFromConfigPaths_ConflictWarningNamesKeys(t *testing.T) {
 	t.Run("names overlapping keys", func(t *testing.T) {
 		buf := capture(t)
 		tmpDir := t.TempDir()
-		jsonPath := filepath.Join(tmpDir, "crush.json")
-		rcPath := filepath.Join(tmpDir, "crushrc")
+		jsonPath := filepath.Join(tmpDir, "crux.json")
+		rcPath := filepath.Join(tmpDir, "cruxrc")
 		require.NoError(t, os.WriteFile(jsonPath, []byte(`{"options":{"debug":true},"providers":{}}`), 0o644))
 		require.NoError(t, os.WriteFile(rcPath, []byte("option debug true\n"), 0o644))
 
 		_, _, err := loadFromConfigPaths(context.Background(), []string{jsonPath, rcPath})
 		require.NoError(t, err)
-		require.Contains(t, buf.String(), "crushrc taking precedence")
+		require.Contains(t, buf.String(), "cruxrc taking precedence")
 		require.Contains(t, buf.String(), `"conflicting_keys":"options"`)
 	})
 
 	t.Run("no warning when nothing overlaps", func(t *testing.T) {
 		buf := capture(t)
 		tmpDir := t.TempDir()
-		jsonPath := filepath.Join(tmpDir, "crush.json")
-		rcPath := filepath.Join(tmpDir, "crushrc")
+		jsonPath := filepath.Join(tmpDir, "crux.json")
+		rcPath := filepath.Join(tmpDir, "cruxrc")
 		require.NoError(t, os.WriteFile(jsonPath, []byte(`{"providers":{}}`), 0o644))
 		require.NoError(t, os.WriteFile(rcPath, []byte("option debug true\n"), 0o644))
 
 		_, _, err := loadFromConfigPaths(context.Background(), []string{jsonPath, rcPath})
 		require.NoError(t, err)
-		require.NotContains(t, buf.String(), "crushrc taking precedence",
+		require.NotContains(t, buf.String(), "cruxrc taking precedence",
 			"disjoint coexistence should not warn")
 	})
 }
@@ -247,6 +302,13 @@ func TestLoadFromConfigPaths_ConflictWarningNamesKeys(t *testing.T) {
 // testStore wraps a Config in a minimal ConfigStore for testing.
 func testStore(cfg *Config) *ConfigStore {
 	return &ConfigStore{config: cfg}
+}
+
+func TestOptions_validatePromptOptions(t *testing.T) {
+	require.NoError(t, (&Options{}).validatePromptOptions())
+	require.NoError(t, (&Options{ResponseVerbosity: "high", AnalysisEffort: "max"}).validatePromptOptions())
+	require.ErrorContains(t, (&Options{ResponseVerbosity: "verbose"}).validatePromptOptions(), "response_verbosity")
+	require.ErrorContains(t, (&Options{AnalysisEffort: "unlimited"}).validatePromptOptions(), "analysis_effort")
 }
 
 func TestConfig_setDefaults(t *testing.T) {
@@ -263,8 +325,8 @@ func TestConfig_setDefaults(t *testing.T) {
 		require.NotNil(t, cfg.Models)
 		require.NotNil(t, cfg.LSP)
 		require.NotNil(t, cfg.MCP)
-		require.Equal(t, filepath.Join(workingDir, ".crush"), cfg.Options.DataDirectory)
-		require.Equal(t, "AGENTS.md", cfg.Options.InitializeAs)
+		require.Equal(t, filepath.Join(workingDir, ".crux"), cfg.Options.DataDirectory)
+		require.Equal(t, AiCliProjectInstructionsPath(workingDir), cfg.Options.InitializeAs)
 		for _, path := range defaultContextPaths {
 			require.Contains(t, cfg.Options.ContextPaths, path)
 		}
@@ -336,10 +398,20 @@ func TestConfig_setDefaults(t *testing.T) {
 		require.Equal(t, filepath.Join(workingDir, "state"), cfg.Options.DataDirectory)
 	})
 
-	t.Run("does not adopt .crush from a parent project", func(t *testing.T) {
+	t.Run("ignores a legacy .crush directory", func(t *testing.T) {
+		workingDir := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(workingDir, ".crush"), 0o755))
+
+		cfg := &Config{}
+		cfg.setDefaults(workingDir, "")
+
+		require.Equal(t, filepath.Join(workingDir, ".crux"), cfg.Options.DataDirectory)
+	})
+
+	t.Run("does not adopt .crux from a parent project", func(t *testing.T) {
 		parent := t.TempDir()
 
-		// .crush in the parent: it should not be reused by the child
+		// .crux in the parent: it should not be reused by the child
 		// because there is no git context joining them.
 		require.NoError(t, os.Mkdir(filepath.Join(parent, defaultDataDirectory), 0o755))
 
@@ -356,14 +428,14 @@ func TestConfig_setDefaults(t *testing.T) {
 		)
 	})
 
-	t.Run("does not climb out of git worktree to find .crush", func(t *testing.T) {
+	t.Run("does not climb out of git worktree to find .crux", func(t *testing.T) {
 		if _, err := exec.LookPath("git"); err != nil {
 			t.Skip("git not available")
 		}
 
 		parent := t.TempDir()
 
-		// Stray .crush above the worktree root.
+		// Stray .crux above the worktree root.
 		require.NoError(t, os.Mkdir(filepath.Join(parent, defaultDataDirectory), 0o755))
 
 		worktree := filepath.Join(parent, "worktree")
@@ -392,7 +464,7 @@ func TestConfig_setDefaults(t *testing.T) {
 
 		strayEval, err := filepath.EvalSymlinks(filepath.Join(parent, defaultDataDirectory))
 		require.NoError(t, err)
-		require.NotEqual(t, strayEval, gotEval, "must not adopt parent .crush")
+		require.NotEqual(t, strayEval, gotEval, "must not adopt parent .crux")
 
 		subEval, err := filepath.EvalSymlinks(sub)
 		require.NoError(t, err)
@@ -520,139 +592,6 @@ func TestConfig_configureProvidersWithNewProvider(t *testing.T) {
 	require.True(t, ok, "OpenAI provider should still be present")
 }
 
-func TestConfig_configureProvidersBedrockWithCredentials(t *testing.T) {
-	knownProviders := []catwalk.Provider{
-		{
-			ID:          catwalk.InferenceProviderBedrock,
-			APIKey:      "",
-			APIEndpoint: "",
-			Models: []catwalk.Model{{
-				ID: "anthropic.claude-sonnet-4-20250514-v1:0",
-			}},
-		},
-	}
-
-	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
-	env := env.NewFromMap(map[string]string{
-		"AWS_ACCESS_KEY_ID":     "test-key-id",
-		"AWS_SECRET_ACCESS_KEY": "test-secret-key",
-	})
-	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-	require.NoError(t, err)
-	require.Equal(t, cfg.Providers.Len(), 1)
-
-	bedrockProvider, ok := cfg.Providers.Get("bedrock")
-	require.True(t, ok, "Bedrock provider should be present")
-	require.Len(t, bedrockProvider.Models, 1)
-	require.Equal(t, "anthropic.claude-sonnet-4-20250514-v1:0", bedrockProvider.Models[0].ID)
-}
-
-func TestConfig_configureProvidersBedrockWithoutCredentials(t *testing.T) {
-	knownProviders := []catwalk.Provider{
-		{
-			ID:          catwalk.InferenceProviderBedrock,
-			APIKey:      "",
-			APIEndpoint: "",
-			Models: []catwalk.Model{{
-				ID: "anthropic.claude-sonnet-4-20250514-v1:0",
-			}},
-		},
-	}
-
-	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
-	env := env.NewFromMap(map[string]string{})
-	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-	require.NoError(t, err)
-	// Provider should not be configured without credentials
-	require.Equal(t, cfg.Providers.Len(), 0)
-}
-
-func TestConfig_configureProvidersVertexAIWithCredentials(t *testing.T) {
-	knownProviders := []catwalk.Provider{
-		{
-			ID:          catwalk.InferenceProviderVertexAI,
-			APIKey:      "",
-			APIEndpoint: "",
-			Models: []catwalk.Model{{
-				ID: "gemini-pro",
-			}},
-		},
-	}
-
-	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
-	env := env.NewFromMap(map[string]string{
-		"VERTEXAI_PROJECT":  "test-project",
-		"VERTEXAI_LOCATION": "us-central1",
-	})
-	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-	require.NoError(t, err)
-	require.Equal(t, cfg.Providers.Len(), 1)
-
-	vertexProvider, ok := cfg.Providers.Get("vertexai")
-	require.True(t, ok, "VertexAI provider should be present")
-	require.Len(t, vertexProvider.Models, 1)
-	require.Equal(t, "gemini-pro", vertexProvider.Models[0].ID)
-	require.Equal(t, "test-project", vertexProvider.ExtraParams["project"])
-	require.Equal(t, "us-central1", vertexProvider.ExtraParams["location"])
-}
-
-func TestConfig_configureProvidersVertexAIWithoutCredentials(t *testing.T) {
-	knownProviders := []catwalk.Provider{
-		{
-			ID:          catwalk.InferenceProviderVertexAI,
-			APIKey:      "",
-			APIEndpoint: "",
-			Models: []catwalk.Model{{
-				ID: "gemini-pro",
-			}},
-		},
-	}
-
-	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
-	env := env.NewFromMap(map[string]string{
-		"GOOGLE_GENAI_USE_VERTEXAI": "false",
-		"GOOGLE_CLOUD_PROJECT":      "test-project",
-		"GOOGLE_CLOUD_LOCATION":     "us-central1",
-	})
-	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-	require.NoError(t, err)
-	// Provider should not be configured without proper credentials
-	require.Equal(t, cfg.Providers.Len(), 0)
-}
-
-func TestConfig_configureProvidersVertexAIMissingProject(t *testing.T) {
-	knownProviders := []catwalk.Provider{
-		{
-			ID:          catwalk.InferenceProviderVertexAI,
-			APIKey:      "",
-			APIEndpoint: "",
-			Models: []catwalk.Model{{
-				ID: "gemini-pro",
-			}},
-		},
-	}
-
-	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
-	env := env.NewFromMap(map[string]string{
-		"GOOGLE_GENAI_USE_VERTEXAI": "true",
-		"GOOGLE_CLOUD_LOCATION":     "us-central1",
-	})
-	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-	require.NoError(t, err)
-	// Provider should not be configured without project
-	require.Equal(t, cfg.Providers.Len(), 0)
-}
-
 func TestConfig_configureProvidersSetProviderID(t *testing.T) {
 	knownProviders := []catwalk.Provider{
 		{
@@ -775,6 +714,54 @@ func TestConfig_IsConfigured(t *testing.T) {
 	})
 }
 
+func TestConfig_CanInitializeAgent(t *testing.T) {
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+	t.Setenv("CRUX_PROVIDER_PROFILE", string(ProviderProfileCoreOnly))
+
+	available := ProviderConfig{
+		ID:     "available",
+		APIKey: "key",
+		Type:   catwalk.TypeOpenAICompat,
+		Models: []catwalk.Model{{ID: "available-model"}},
+	}
+	codex := ProviderConfig{
+		ID:         "codex",
+		OAuthToken: &oauth.Token{AccessToken: "persisted-token"},
+		Plugin:     &ProviderPluginReference{ID: "private.plugin", Version: "1"},
+		Models:     []catwalk.Model{{ID: "codex-model"}},
+	}
+	cfg := &Config{
+		Providers: csync.NewMapFrom(map[string]ProviderConfig{
+			available.ID: available,
+			codex.ID:     codex,
+		}),
+		Models: map[SelectedModelType]SelectedModel{
+			SelectedModelTypeLarge: {Provider: codex.ID, Model: "codex-model"},
+			SelectedModelTypeSmall: {Provider: codex.ID, Model: "codex-model"},
+		},
+	}
+
+	require.True(t, cfg.IsConfigured(), "the available provider reproduces the broad startup gate")
+	require.False(t, cfg.IsProviderIntegrationAvailable(codex.ID))
+
+	// Legacy target configurations may predate durable plugin ownership
+	// markers. Their OAuth credential still distinguishes them from custom
+	// OpenAI-compatible providers, so an inactive native profile must hide them.
+	for _, id := range []string{"legacy-codex", "legacy-gemini"} {
+		cfg.Providers.Set(id, ProviderConfig{
+			ID: id, OAuthToken: &oauth.Token{AccessToken: "persisted-token"},
+			Models: []catwalk.Model{{ID: "legacy-model"}},
+		})
+		require.False(t, cfg.IsProviderIntegrationAvailable(id))
+	}
+	require.False(t, cfg.CanInitializeAgent(), "the retained Codex selection cannot initialize without its active integration")
+
+	cfg.Models[SelectedModelTypeLarge] = SelectedModel{Provider: available.ID, Model: "available-model"}
+	cfg.Models[SelectedModelTypeSmall] = SelectedModel{Provider: available.ID, Model: "available-model"}
+	require.True(t, cfg.CanInitializeAgent())
+}
+
 func TestConfig_setupAgentsWithNoDisabledTools(t *testing.T) {
 	cfg := &Config{
 		Options: &Options{
@@ -789,7 +776,7 @@ func TestConfig_setupAgentsWithNoDisabledTools(t *testing.T) {
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
-	assert.Equal(t, []string{"lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "grep", "ls", "sourcegraph", "view"}, taskAgent.AllowedTools)
+	assert.Equal(t, resolveReadOnlyTools(allToolNames()), taskAgent.AllowedTools)
 }
 
 func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
@@ -807,23 +794,34 @@ func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
 	coderAgent, ok := cfg.Agents[AgentCoder]
 	require.True(t, ok)
 
-	assert.Equal(t, []string{"agent", "bash", "crush_info", "crush_logs", "job_output", "job_kill", "multiedit", "lsp_diagnostics", "lsp_references", "lsp_restart", "lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "lsp_rename", "lsp_replace_symbol", "fetch", "agentic_fetch", "glob", "ls", "question", "sourcegraph", "todos", "view", "write", "list_mcp_resources", "read_mcp_resource"}, coderAgent.AllowedTools)
+	allowedTools := resolveAllowedTools(allToolNames(), cfg.Options.DisabledTools)
+	assert.Equal(t, allowedTools, coderAgent.AllowedTools)
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
-	assert.Equal(t, []string{"lsp_symbols", "lsp_definition", "lsp_call_hierarchy", "glob", "ls", "sourcegraph", "view"}, taskAgent.AllowedTools)
+	assert.Equal(t, resolveReadOnlyTools(allowedTools), taskAgent.AllowedTools)
 }
 
 func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 	cfg := &Config{
 		Options: &Options{
 			DisabledTools: []string{
+				"codebase_search",
+				"git_inspect",
 				"glob",
 				"grep",
+				"job_list",
+				"job_output",
+				"task_list",
+				"task_output",
 				"ls",
 				"lsp_call_hierarchy",
 				"lsp_definition",
 				"lsp_symbols",
+				"memory_list",
+				"project_status",
+				"skill_list",
+				"skill_load",
 				"sourcegraph",
 				"view",
 			},
@@ -833,7 +831,7 @@ func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 	cfg.SetupAgents()
 	coderAgent, ok := cfg.Agents[AgentCoder]
 	require.True(t, ok)
-	assert.Equal(t, []string{"agent", "bash", "crush_info", "crush_logs", "job_output", "job_kill", "download", "edit", "multiedit", "lsp_diagnostics", "lsp_references", "lsp_restart", "lsp_rename", "lsp_replace_symbol", "fetch", "agentic_fetch", "question", "todos", "write", "list_mcp_resources", "read_mcp_resource"}, coderAgent.AllowedTools)
+	assert.Equal(t, resolveAllowedTools(allToolNames(), cfg.Options.DisabledTools), coderAgent.AllowedTools)
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
@@ -1105,7 +1103,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				"custom": {
 					APIKey:  "test-key",
 					BaseURL: "https://api.custom.com/v1",
-					Type:    catwalk.TypeOpenAI,
+					Type:    catwalk.TypeOpenAICompat,
 					Models: []catwalk.Model{{
 						ID: "test-model",
 					}},
@@ -1127,7 +1125,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 		require.Equal(t, "https://api.custom.com/v1", customProvider.BaseURL)
 	})
 
-	t.Run("custom anthropic provider is supported", func(t *testing.T) {
+	t.Run("removed custom provider type is rejected", func(t *testing.T) {
 		cfg := &Config{
 			Providers: csync.NewMapFrom(map[string]ProviderConfig{
 				"custom-anthropic": {
@@ -1147,22 +1145,18 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
 		require.NoError(t, err)
 
-		require.Equal(t, cfg.Providers.Len(), 1)
-		customProvider, exists := cfg.Providers.Get("custom-anthropic")
-		require.True(t, exists)
-		require.Equal(t, "custom-anthropic", customProvider.ID)
-		require.Equal(t, "test-key", customProvider.APIKey)
-		require.Equal(t, "https://api.anthropic.com/v1", customProvider.BaseURL)
-		require.Equal(t, catwalk.TypeAnthropic, customProvider.Type)
+		require.Equal(t, 0, cfg.Providers.Len())
+		_, exists := cfg.Providers.Get("custom-anthropic")
+		require.False(t, exists)
 	})
 
-	t.Run("disabled custom provider is removed", func(t *testing.T) {
+	t.Run("disabled custom provider is preserved", func(t *testing.T) {
 		cfg := &Config{
 			Providers: csync.NewMapFrom(map[string]ProviderConfig{
 				"custom": {
 					APIKey:  "test-key",
 					BaseURL: "https://api.custom.com/v1",
-					Type:    catwalk.TypeOpenAI,
+					Type:    catwalk.TypeOpenAICompat,
 					Disable: true,
 					Models: []catwalk.Model{{
 						ID: "test-model",
@@ -1177,139 +1171,10 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
 		require.NoError(t, err)
 
-		require.Equal(t, cfg.Providers.Len(), 0)
-		_, exists := cfg.Providers.Get("custom")
-		require.False(t, exists)
-	})
-}
-
-func TestConfig_configureProvidersEnhancedCredentialValidation(t *testing.T) {
-	t.Run("VertexAI provider removed when credentials missing with existing config", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
-			{
-				ID:          catwalk.InferenceProviderVertexAI,
-				APIKey:      "",
-				APIEndpoint: "",
-				Models: []catwalk.Model{{
-					ID: "gemini-pro",
-				}},
-			},
-		}
-
-		cfg := &Config{
-			Providers: csync.NewMapFrom(map[string]ProviderConfig{
-				"vertexai": {
-					BaseURL: "custom-url",
-				},
-			}),
-		}
-		cfg.setDefaults("/tmp", "")
-
-		env := env.NewFromMap(map[string]string{
-			"GOOGLE_GENAI_USE_VERTEXAI": "false",
-		})
-		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-		require.NoError(t, err)
-
-		require.Equal(t, cfg.Providers.Len(), 0)
-		_, exists := cfg.Providers.Get("vertexai")
-		require.False(t, exists)
-	})
-
-	t.Run("Bedrock provider removed when AWS credentials missing with existing config", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
-			{
-				ID:          catwalk.InferenceProviderBedrock,
-				APIKey:      "",
-				APIEndpoint: "",
-				Models: []catwalk.Model{{
-					ID: "anthropic.claude-sonnet-4-20250514-v1:0",
-				}},
-			},
-		}
-
-		cfg := &Config{
-			Providers: csync.NewMapFrom(map[string]ProviderConfig{
-				"bedrock": {
-					BaseURL: "custom-url",
-				},
-			}),
-		}
-		cfg.setDefaults("/tmp", "")
-
-		env := env.NewFromMap(map[string]string{})
-		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-		require.NoError(t, err)
-
-		require.Equal(t, cfg.Providers.Len(), 0)
-		_, exists := cfg.Providers.Get("bedrock")
-		require.False(t, exists)
-	})
-
-	t.Run("provider removed when API key missing with existing config", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
-			{
-				ID:          "openai",
-				APIKey:      "$MISSING_API_KEY",
-				APIEndpoint: "https://api.openai.com/v1",
-				Models: []catwalk.Model{{
-					ID: "test-model",
-				}},
-			},
-		}
-
-		cfg := &Config{
-			Providers: csync.NewMapFrom(map[string]ProviderConfig{
-				"openai": {
-					BaseURL: "custom-url",
-				},
-			}),
-		}
-		cfg.setDefaults("/tmp", "")
-
-		env := env.NewFromMap(map[string]string{})
-		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-		require.NoError(t, err)
-
-		require.Equal(t, cfg.Providers.Len(), 0)
-		_, exists := cfg.Providers.Get("openai")
-		require.False(t, exists)
-	})
-
-	t.Run("known provider should still be added if the endpoint is missing the client will use default endpoints", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
-			{
-				ID:          "openai",
-				APIKey:      "$OPENAI_API_KEY",
-				APIEndpoint: "$MISSING_ENDPOINT",
-				Models: []catwalk.Model{{
-					ID: "test-model",
-				}},
-			},
-		}
-
-		cfg := &Config{
-			Providers: csync.NewMapFrom(map[string]ProviderConfig{
-				"openai": {
-					APIKey: "test-key",
-				},
-			}),
-		}
-		cfg.setDefaults("/tmp", "")
-
-		env := env.NewFromMap(map[string]string{
-			"OPENAI_API_KEY": "test-key",
-		})
-		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-		require.NoError(t, err)
-
-		require.Equal(t, cfg.Providers.Len(), 1)
-		_, exists := cfg.Providers.Get("openai")
+		require.Equal(t, 1, cfg.Providers.Len())
+		pc, exists := cfg.Providers.Get("custom")
 		require.True(t, exists)
+		require.True(t, pc.Disable)
 	})
 }
 
@@ -1737,7 +1602,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 
 func TestConfig_setDefaultsDisableDefaultProvidersEnvVar(t *testing.T) {
 	t.Run("sets option from environment variable", func(t *testing.T) {
-		t.Setenv("CRUSH_DISABLE_DEFAULT_PROVIDERS", "true")
+		t.Setenv("CRUX_DISABLE_DEFAULT_PROVIDERS", "true")
 
 		cfg := &Config{}
 		cfg.setDefaults("/tmp", "")
@@ -1760,7 +1625,7 @@ func TestConfig_setDefaultsDisableDefaultProvidersEnvVar(t *testing.T) {
 func TestConfig_configureSelectedModels(t *testing.T) {
 	t.Run("reload mode should not persist fallback defaults", func(t *testing.T) {
 		dir := t.TempDir()
-		globalPath := filepath.Join(dir, "crush.json")
+		globalPath := filepath.Join(dir, "crux.json")
 		require.NoError(t, os.WriteFile(globalPath, []byte(`{"models":{"large":{"provider":"ghost","model":"missing"}}}`), 0o600))
 
 		knownProviders := []catwalk.Provider{
@@ -1963,7 +1828,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 	})
 	t.Run("resolve and persist fallback under writeMu does not deadlock", func(t *testing.T) {
 		dir := t.TempDir()
-		globalPath := filepath.Join(dir, "crush.json")
+		globalPath := filepath.Join(dir, "crux.json")
 		require.NoError(t, os.WriteFile(globalPath, []byte(`{}`), 0o600))
 
 		knownProviders := []catwalk.Provider{
@@ -2037,90 +1902,6 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 			t.Fatal("resolve + persist deadlocked under writeMu")
 		}
 	})
-}
-
-func TestConfig_configureProviders_HyperAPIKeyFromEnv(t *testing.T) {
-	// Test that HYPER_API_KEY environment variable works without config
-	knownProviders := []catwalk.Provider{
-		{
-			ID:                  "hyper",
-			APIKey:              "", // No API key in provider definition
-			DefaultLargeModelID: "large-model",
-			DefaultSmallModelID: "small-model",
-			Models: []catwalk.Model{
-				{
-					ID:               "large-model",
-					DefaultMaxTokens: 1000,
-				},
-				{
-					ID:               "small-model",
-					DefaultMaxTokens: 500,
-				},
-			},
-		},
-	}
-
-	cfg := &Config{}
-	cfg.setDefaults("/tmp", "")
-	env := env.NewFromMap(map[string]string{
-		"HYPER_API_KEY": "env-api-key",
-	})
-	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-	require.NoError(t, err)
-	require.Equal(t, 1, cfg.Providers.Len())
-
-	// Verify Hyper provider is configured with the env var API key
-	pc, ok := cfg.Providers.Get("hyper")
-	require.True(t, ok, "Hyper provider should be configured")
-	require.Equal(t, "env-api-key", pc.APIKey)
-	require.Equal(t, "env-api-key", pc.APIKeyTemplate)
-}
-
-func TestConfig_configureProviders_HyperAPIKeyFromConfigOverrides(t *testing.T) {
-	// Test that config API key takes precedence when HYPER_API_KEY is also set
-	knownProviders := []catwalk.Provider{
-		{
-			ID:                  "hyper",
-			APIKey:              "provider-api-key",
-			DefaultLargeModelID: "large-model",
-			DefaultSmallModelID: "small-model",
-			Models: []catwalk.Model{
-				{
-					ID:               "large-model",
-					DefaultMaxTokens: 1000,
-				},
-				{
-					ID:               "small-model",
-					DefaultMaxTokens: 500,
-				},
-			},
-		},
-	}
-
-	// User has Hyper configured with an API key
-	cfg := &Config{
-		Providers: csync.NewMapFrom(map[string]ProviderConfig{
-			"hyper": {
-				APIKey: "config-api-key",
-			},
-		}),
-	}
-	cfg.setDefaults("/tmp", "")
-
-	// But they also have HYPER_API_KEY set - env var should take precedence
-	env := env.NewFromMap(map[string]string{
-		"HYPER_API_KEY": "env-api-key",
-	})
-	resolver := NewShellVariableResolver(env)
-	err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, knownProviders)
-	require.NoError(t, err)
-	require.Equal(t, 1, cfg.Providers.Len())
-
-	// Verify env var takes precedence (as per requirements)
-	pc, ok := cfg.Providers.Get("hyper")
-	require.True(t, ok, "Hyper provider should be configured")
-	require.Equal(t, "env-api-key", pc.APIKey)
 }
 
 // TestConfig_configureProviders_ProviderHeaderResolveError verifies
@@ -2208,7 +1989,7 @@ func TestConfig_configureProviders_LiteralEmptyHeaderDropped(t *testing.T) {
 			"my-llm": {
 				APIKey:  "test-key",
 				BaseURL: "https://my-llm.example.com/v1",
-				Type:    catwalk.TypeOpenAI,
+				Type:    catwalk.TypeOpenAICompat,
 				Models:  []catwalk.Model{{ID: "m"}},
 				ExtraHeaders: map[string]string{
 					"X-Custom": "",
@@ -2362,35 +2143,6 @@ func TestConfig_configureProviders_FailingAPIKeyCmdSkipsProvider(t *testing.T) {
 // of the shared skip pattern (APIKey default path and APIEndpoint
 // Azure path) are tested; a future refactor that unifies them can
 // rely on these two tests to catch drift.
-func TestConfig_configureProviders_UnsetAzureEndpointSkipsProvider(t *testing.T) {
-	knownProviders := []catwalk.Provider{
-		{
-			ID:          catwalk.InferenceProviderAzure,
-			APIKey:      "test-key",
-			APIEndpoint: "$UNSET_AZURE_ENDPOINT",
-			Models:      []catwalk.Model{{ID: "test-model"}},
-		},
-	}
-
-	cfg := &Config{
-		Providers: csync.NewMapFrom(map[string]ProviderConfig{
-			"azure": {BaseURL: ""},
-		}),
-	}
-	cfg.setDefaults("/tmp", "")
-
-	testEnv := env.NewFromMap(map[string]string{
-		"PATH": os.Getenv("PATH"),
-	})
-	resolver := NewShellVariableResolver(testEnv)
-
-	err := cfg.configureProviders(context.Background(), testStore(cfg), testEnv, resolver, knownProviders)
-	require.NoError(t, err)
-
-	require.Equal(t, 0, cfg.Providers.Len(), "azure provider with unset endpoint must be skipped")
-	_, exists := cfg.Providers.Get("azure")
-	require.False(t, exists)
-}
 
 func TestConfig_LoadFromBytes_Env(t *testing.T) {
 	data := []byte(`{"env": {"AWS_PROFILE": "my-profile", "AWS_REGION": "us-west-2"}}`)

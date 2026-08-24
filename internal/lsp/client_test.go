@@ -2,14 +2,16 @@ package lsp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/env"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/env"
 	"github.com/stretchr/testify/require"
 )
 
@@ -199,4 +201,39 @@ func TestWaitForDiagnostics_NilClient(t *testing.T) {
 	var c *Client
 	// Should not panic.
 	c.WaitForDiagnostics(context.Background(), time.Second)
+}
+
+func TestDiagnosticsCallbackConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	client := newTestClient()
+	params, err := json.Marshal(protocol.PublishDiagnosticsParams{
+		URI:         protocol.DocumentURI("file:///test.go"),
+		Diagnostics: []protocol.Diagnostic{{Message: "test"}},
+	})
+	require.NoError(t, err)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for range 1_000 {
+			client.SetDiagnosticsCallback(func(string, int) {})
+			client.SetDiagnosticsCallback(nil)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 1_000 {
+			HandleDiagnostics(client, params)
+		}
+	}()
+	wg.Wait()
+
+	called := make(chan int, 1)
+	client.SetDiagnosticsCallback(func(_ string, count int) {
+		called <- count
+	})
+	HandleDiagnostics(client, params)
+	require.Equal(t, 1, <-called)
 }

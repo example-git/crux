@@ -1,29 +1,34 @@
-name: Update files
+name: generated files
 
 on:
-  push:
-    branches: [main]
+  pull_request:
     paths:
+      - "foundation/**"
       - "internal/config/**"
-      - "internal/agent/hyper/**"
+      - "internal/providerplugin/manifest/**"
+      - "internal/cmd/schema.go"
+      - "internal/swagger/**"
+      - "main.go"
+      - "schema.json"
+      - "provider-plugin.schema.json"
+      - "provider-preset-plugin.schema.json"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  update-schema:
+  verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          token: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version-file: go.mod
-      - run: go run . schema > ./schema.json
-      - run: go generate ./internal/agent/hyper/...
-      - uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v5
-        with:
-          commit_message: "chore: auto-update files"
-          branch: main
-          commit_user_name: Charm
-          commit_user_email: 124303983+charmcli@users.noreply.github.com
-          commit_author: Charm <124303983+charmcli@users.noreply.github.com>
+      - run: go run . schema > schema.json
+      - run: go run . schema provider-plugin > provider-plugin.schema.json
+      - run: go run . schema provider-preset-plugin > provider-preset-plugin.schema.json
+      - run: go run github.com/swaggo/swag/cmd/swag@v1.16.6 init --generalInfo main.go --dir . --output internal/swagger --packageName swagger --parseDependency --parseInternal --parseDepth 5
+      - run: git diff --exit-code

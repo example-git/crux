@@ -5,10 +5,11 @@ import (
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/crush/internal/agent/notify"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/question"
+	"github.com/example-git/crux/internal/agent/notify"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/shell"
 )
 
 // NewForTest constructs a minimal [App] suitable for in-process tests
@@ -31,6 +32,7 @@ func NewForTest(ctx context.Context) *App {
 	app := &App{
 		Permissions:        permission.NewPermissionService("", false, nil),
 		Questions:          question.NewService(),
+		BackgroundShells:   shell.NewBackgroundShellManager("test"),
 		globalCtx:          ctx,
 		events:             pubsub.NewBroker[tea.Msg](),
 		serviceEventsWG:    &sync.WaitGroup{},

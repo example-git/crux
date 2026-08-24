@@ -10,7 +10,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/x/term"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
@@ -55,6 +54,9 @@ func Setup(logFile string, debug bool, ws ...io.Writer) {
 		}
 
 		slog.SetDefault(slog.New(slog.NewMultiHandler(handlers...)))
+		if err := SetupTraffic(); err != nil {
+			slog.Error("Failed to initialize traffic logging", "error", err)
+		}
 		initialized.Store(true)
 	})
 }
@@ -65,11 +67,9 @@ func Initialized() bool {
 
 func RecoverPanic(name string, cleanup func()) {
 	if r := recover(); r != nil {
-		event.Error(r, "panic", true, "name", name)
-
 		// Create a timestamped panic log file
 		timestamp := time.Now().Format("20060102-150405")
-		filename := fmt.Sprintf("crush-panic-%s-%s.log", name, timestamp)
+		filename := fmt.Sprintf("crux-panic-%s-%s.log", name, timestamp)
 
 		file, err := os.Create(filename)
 		if err == nil {

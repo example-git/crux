@@ -27,44 +27,49 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/agent/hyper"
-	"github.com/charmbracelet/crush/internal/agent/notify"
-	agenttools "github.com/charmbracelet/crush/internal/agent/tools"
-	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/clipboard"
-	"github.com/charmbracelet/crush/internal/commands"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/event"
-	"github.com/charmbracelet/crush/internal/fsext"
-	"github.com/charmbracelet/crush/internal/history"
-	"github.com/charmbracelet/crush/internal/home"
-	"github.com/charmbracelet/crush/internal/lsp"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/question"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/skills"
-	"github.com/charmbracelet/crush/internal/stringext"
-	"github.com/charmbracelet/crush/internal/ui/anim"
-	"github.com/charmbracelet/crush/internal/ui/attachments"
-	"github.com/charmbracelet/crush/internal/ui/chat"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/completions"
-	"github.com/charmbracelet/crush/internal/ui/dialog"
-	fimage "github.com/charmbracelet/crush/internal/ui/image"
-	"github.com/charmbracelet/crush/internal/ui/logo"
-	"github.com/charmbracelet/crush/internal/ui/notification"
-	"github.com/charmbracelet/crush/internal/ui/styles"
-	"github.com/charmbracelet/crush/internal/ui/util"
-	"github.com/charmbracelet/crush/internal/version"
-	"github.com/charmbracelet/crush/internal/workspace"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/layout"
 	"github.com/charmbracelet/ultraviolet/screen"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/editor"
 	xstrings "github.com/charmbracelet/x/exp/strings"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/agent/notify"
+	agenttools "github.com/example-git/crux/internal/agent/tools"
+	"github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/clipboard"
+	"github.com/example-git/crux/internal/commands"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/home"
+	"github.com/example-git/crux/internal/imageattachment"
+	"github.com/example-git/crux/internal/lsp"
+	"github.com/example-git/crux/internal/message"
+	oauthusage "github.com/example-git/crux/internal/oauth/usage"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/skills"
+	"github.com/example-git/crux/internal/stringext"
+	managedtask "github.com/example-git/crux/internal/task"
+	"github.com/example-git/crux/internal/ui/anim"
+	"github.com/example-git/crux/internal/ui/attachments"
+	"github.com/example-git/crux/internal/ui/chat"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/completions"
+	"github.com/example-git/crux/internal/ui/dialog"
+	fimage "github.com/example-git/crux/internal/ui/image"
+	"github.com/example-git/crux/internal/ui/logo"
+	"github.com/example-git/crux/internal/ui/notification"
+	"github.com/example-git/crux/internal/ui/styles"
+	"github.com/example-git/crux/internal/ui/util"
+	"github.com/example-git/crux/internal/version"
+	"github.com/example-git/crux/internal/workspace"
+	"github.com/google/uuid"
 )
 
 // Compact mode breakpoints.
@@ -131,9 +136,39 @@ type shellStreamMsg struct {
 	streamCh  <-chan string // unexported; used to continue draining
 }
 
+const (
+	queuedPromptMaxAttachments = 16
+	queuedPromptMaxBytes       = 32 * 1024 * 1024
+	queuedPromptPendingGrace   = 10 * time.Second
+	queuedPromptRetention      = 15 * time.Minute
+)
+
 type (
-	// cancelTimerExpiredMsg is sent when the cancel timer expires.
-	cancelTimerExpiredMsg struct{}
+	queuedPromptDraft struct {
+		attachments  []message.Attachment
+		pendingUntil time.Time
+		expiresAt    time.Time
+		confirmed    bool
+		expired      bool
+	}
+	// rewindEscTimerExpiredMsg is sent when the double-escape rewind
+	// window expires.
+	rewindEscTimerExpiredMsg struct{}
+	// promptSuggestionTickMsg fires after the suggestion debounce
+	// window; gen guards against stale timers.
+	promptSuggestionTickMsg struct{ gen int }
+	// promptSuggestionMsg carries a fetched prompt suggestion.
+	promptSuggestionMsg struct {
+		gen  int
+		text string
+	}
+	tasksAvailabilityMsg struct {
+		available bool
+		err       error
+	}
+	planModeToggledMsg struct {
+		session session.Session
+	}
 	// userCommandsLoadedMsg is sent when user commands are loaded.
 	userCommandsLoadedMsg struct {
 		Commands []commands.CustomCommand
@@ -156,25 +191,18 @@ type (
 	// closeDialogMsg is sent to close the current dialog.
 	closeDialogMsg struct{}
 
-	// hyperRefreshDoneMsg is sent after a silent Hyper OAuth refresh
-	// finishes. It carries the original model-selection action so the
-	// selection can be resumed.
-	hyperRefreshDoneMsg struct {
-		action dialog.ActionSelectModel
-	}
-
 	// copyChatHighlightMsg is sent to copy the current chat highlight to clipboard.
-	copyChatHighlightMsg struct{}
+	copyChatHighlightMsg   struct{}
+	chatHighlightCopiedMsg struct{}
 
 	// sessionFilesUpdatesMsg is sent when the files for this session have been updated
 	sessionFilesUpdatesMsg struct {
 		sessionFiles []SessionFile
-	}
-	// creditsUpdatedMsg is sent when the remaining Hyper credits have been
-	// fetched from the API. credits is nil when the team has hypercredit
-	// display disabled.
-	creditsUpdatedMsg struct {
-		credits *int
+	} // usageUpdatedMsg is sent when provider quota usage (rate-limit
+	// windows) has been fetched for the current provider.
+	usageUpdatedMsg struct {
+		gen   uint64
+		usage *oauthusage.Usage
 	}
 )
 
@@ -215,8 +243,20 @@ type UI struct {
 	dialog *dialog.Overlay
 	status *Status
 
-	// isCanceling tracks whether the user has pressed escape once to cancel.
-	isCanceling bool
+	// escForRewind tracks whether the user pressed escape once while the
+	// agent is idle; a second press opens the rewind dialog.
+	escForRewind bool
+
+	// promptSuggestion is the AI-predicted next user message, shown as
+	// placeholder ghost text when the editor is empty and the agent is
+	// idle. Accepted with tab.
+	promptSuggestion        string
+	promptSuggestionGen     int
+	promptSuggestionPending bool
+	// promptSuggestionDone is true once a fetch completed for the
+	// current state, preventing refetch loops when the model returns
+	// no suggestion. Cleared by invalidatePromptSuggestion.
+	promptSuggestionDone bool
 
 	// bangMode tracks whether the editor is in bang (!) shell mode.
 	bangMode     bool
@@ -265,6 +305,11 @@ type UI struct {
 	completionsStartIndex    int
 	completionsQuery         string
 	completionsPositionStart image.Point // x,y where user typed '@'
+	runningTaskCount         int
+	taskRefreshInFlight      bool
+	// commandCompletionActions maps command completion IDs to their
+	// dialog actions for the inline slash-command completions.
+	commandCompletionActions map[string]dialog.Action
 
 	// Chat components
 	chat *Chat
@@ -288,6 +333,9 @@ type UI struct {
 	lspRefreshQueued bool
 	lspCheckedAt     time.Time
 
+	activityStatus        proto.CodebaseIndexStatus
+	activityFetchInFlight bool
+
 	// mcp
 	mcpStates map[string]mcp.ClientInfo
 
@@ -295,7 +343,8 @@ type UI struct {
 	skillStates []*skills.SkillState
 
 	// sidebarLogo keeps a cached version of the sidebar sidebarLogo.
-	sidebarLogo string
+	sidebarLogo         string
+	sidebarShowCruxLogo bool
 
 	// Sidebar scroll state for virtual scrolling.
 	sidebarOffset           int  // current scroll offset in lines
@@ -308,6 +357,7 @@ type UI struct {
 	sidebarContentHeight    int    // available height for sidebar content
 	sidebarContentWidth     int    // available width for sidebar content
 	sidebarDrawLogo         string // logo to render (may differ from sidebarLogo for short heights)
+	sidebarBrandLogoHeight  int
 
 	// Notification state
 	notifyBackend       notification.Backend
@@ -335,7 +385,8 @@ type UI struct {
 	// dispatchPromptQueueRefresh (see workspace_cache.go); promptQueue is
 	// always len(promptQueueItems).
 	promptQueue          int
-	promptQueueItems     []string
+	promptQueueItems     []agent.QueuedPrompt
+	promptQueueDrafts    map[string]queuedPromptDraft
 	promptQueueCheckedAt time.Time
 	promptQueueInFlight  bool
 	// promptQueueGen is bumped by every queue state transition; an
@@ -370,10 +421,15 @@ type UI struct {
 	hoverX        int
 	hoverY        int
 
-	// hyperCredits is the remaining Hyper credits, updated after each prompt.
-	// It is nil when unknown, or when the team has hypercredit display
-	// disabled, and no balance is rendered in either case.
-	hyperCredits *int
+	// providerUsage is the latest quota usage snapshot for the current
+	// provider (Claude, Codex, or Gemini/Antigravity OAuth). It is nil
+	// when unknown or unsupported.
+	providerUsage *oauthusage.Usage
+	usageFetchGen uint64
+
+	// brand is the provider wordmark branding for the current large
+	// model provider; nil renders the default Crux branding.
+	brand *providerBrand
 
 	// Prompt history for up/down navigation through previous messages.
 	promptHistory struct {
@@ -459,7 +515,12 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 	// Seed the active theme key from the large model provider so the
 	// first model selection can correctly skip a redundant theme swap.
 	if cfg := com.Config(); cfg != nil {
-		ui.themeKey = styles.ThemeKeyForProvider(cfg.Models[config.SelectedModelTypeLarge].Provider)
+		providerID := cfg.Models[config.SelectedModelTypeLarge].Provider
+		ui.themeKey = styles.ThemeKeyForProvider(providerID)
+		// Seed provider wordmark branding the same way so the first
+		// frame renders the branded logo.
+		ui.brand = ui.brandForProvider(providerID)
+		ui.header.setBrand(ui.brand)
 	}
 
 	// Seed the yolo cache once at construction; afterwards it is kept
@@ -488,9 +549,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 
 	desiredState := uiLanding
 	desiredFocus := uiFocusEditor
-	if !com.Config().IsConfigured() {
-		desiredState = uiOnboarding
-	} else if n, _ := com.Workspace.ProjectNeedsInitialization(); n {
+	if n, _ := com.Workspace.ProjectNeedsInitialization(); n {
 		desiredState = uiInitialize
 	}
 
@@ -527,11 +586,14 @@ func (m *UI) Init() tea.Cmd {
 	if cmd := m.loadInitialSession(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
-	if m.com.IsHyper() {
-		cmds = append(cmds, m.fetchHyperCredits())
-	}
 	// Prime the memoized busy/permission state off-thread.
 	if cmd := m.dispatchBusyRefresh(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	if cmd := m.requestActivityRefresh(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	if cmd := m.requestTaskStatusRefresh(); cmd != nil {
 		cmds = append(cmds, cmd)
 	}
 	cmds = append(cmds, m.checkPendingMCPAuth())
@@ -715,8 +777,32 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.applyBusyState(msg)...)
 	case promptQueueMsg:
 		cmds = append(cmds, m.applyPromptQueue(msg)...)
+	case planModeToggledMsg:
+		m.session = &msg.session
+		m.setEditorPrompt(m.yoloModeCached())
+		status := "disabled"
+		if msg.session.Mode.IsPlan() {
+			status = "enabled"
+		}
+		cmds = append(cmds, util.ReportInfo("Plan mode "+status))
 	case lspStatesMsg:
 		if cmd := m.applyLSPStates(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case activityStatusMsg:
+		if cmd := m.applyActivityStatus(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case activityStatusTickMsg:
+		if cmd := m.requestActivityRefresh(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case taskStatusMsg:
+		if cmd := m.applyTaskStatus(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case taskStatusTickMsg:
+		if cmd := m.requestTaskStatusRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	case agentModelChangedMsg:
@@ -730,6 +816,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A prompt was just accepted (run started or enqueued): fetch the
 		// authoritative busy/queue state to confirm the optimistic values
 		// sendMessage wrote.
+		if msg.queuedDraft != nil {
+			if m.promptQueueDrafts == nil {
+				m.promptQueueDrafts = make(map[string]queuedPromptDraft)
+			}
+			m.promptQueueDrafts[msg.submissionID] = *msg.queuedDraft
+		}
 		m.invalidateBusyCaches()
 		m.invalidatePromptQueue()
 		if cmd := m.dispatchBusyRefresh(); cmd != nil {
@@ -744,6 +836,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.setState(uiChat, m.focus)
 		m.session = msg.session
+		m.setEditorPrompt(m.yoloModeCached())
 		m.sidebarOffset = 0
 		m.sessionFiles = msg.files
 		// Session switch: the memoized busy state and queued prompts
@@ -754,6 +847,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.invalidatePromptQueue()
 		m.promptQueue = 0
 		m.promptQueueItems = nil
+		m.promptQueueDrafts = nil
 		m.promptQueueCheckedAt = time.Time{}
 		if cmd := m.dispatchBusyRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -841,8 +935,30 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.promptHistory.index = -1
 		m.promptHistory.draft = ""
 
+	case tasksAvailabilityMsg:
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+		} else if msg.available && !m.dialog.HasDialogs() {
+			if m.completionsOpen {
+				m.closeCompletions()
+			}
+			cmds = append(cmds, m.openTasksDialog())
+		}
+
 	case closeDialogMsg:
 		m.dialog.CloseFrontDialog()
+
+	case pubsub.Event[managedtask.Notification]:
+		message := msg.Payload.Summary
+		if msg.Payload.OutputRef != "" {
+			message += "\nOutput: " + msg.Payload.OutputRef
+		}
+		if cmd := m.sendNotification(notification.Notification{
+			Title:   "Background task finished",
+			Message: message,
+		}); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 
 	case pubsub.Event[session.Session]:
 		if msg.Type == pubsub.DeletedEvent {
@@ -856,7 +972,11 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.session != nil && msg.Payload.ID == m.session.ID {
 			prevHasInProgress := hasInProgressTodo(m.session.Todos)
 			prevPillsHeight := m.pillsAreaHeight()
+			prevMode := m.session.Mode
 			m.session = &msg.Payload
+			if prevMode != m.session.Mode {
+				m.setEditorPrompt(m.yoloModeCached())
+			}
 			if !prevHasInProgress && hasInProgressTodo(m.session.Todos) {
 				m.todoIsSpinning = true
 				cmds = append(cmds, m.todoSpinner.Tick)
@@ -906,6 +1026,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case pubsub.UpdatedEvent:
 			cmds = append(cmds, m.updateSessionMessage(msg.Payload))
+			if msg.Payload.IsFinished() {
+				cmds = append(cmds, scheduleActivityRefresh(activityRefreshDelay))
+			}
 		case pubsub.DeletedEvent:
 			m.chat.RemoveMessage(msg.Payload.ID)
 		}
@@ -954,7 +1077,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 		if cmd := m.sendNotification(notification.Notification{
-			Title:   "Crush is waiting...",
+			Title:   "Crux is waiting...",
 			Message: fmt.Sprintf("Permission required to execute \"%s\"", msg.Payload.ToolName),
 		}); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -967,15 +1090,57 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 		if cmd := m.sendNotification(notification.Notification{
-			Title:   "Crush is waiting...",
+			Title:   "Crux is waiting...",
 			Message: fmt.Sprintf("%d questions need your input", len(msg.Payload.Questions)),
 		}); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	case pubsub.Event[question.Notification]:
 		m.handleQuestionNotification(msg.Payload)
-	case cancelTimerExpiredMsg:
-		m.isCanceling = false
+	case rewindEscTimerExpiredMsg:
+		m.escForRewind = false
+	case promptSuggestionTickMsg:
+		if msg.gen != m.promptSuggestionGen {
+			m.promptSuggestionPending = false
+			break
+		}
+		if !m.canShowPromptSuggestion() {
+			m.promptSuggestionPending = false
+			break
+		}
+		gen := msg.gen
+		sessionID := m.session.ID
+		cmds = append(cmds, func() tea.Msg {
+			text, err := m.com.Workspace.AgentSuggestPrompt(context.Background(), sessionID)
+			if err != nil {
+				slog.Info("Prompt suggestion failed", "error", err)
+				text = ""
+			}
+			slog.Info("Prompt suggestion fetched", "text", text)
+			return promptSuggestionMsg{gen: gen, text: text}
+		})
+	case promptSuggestionMsg:
+		m.promptSuggestionPending = false
+		if msg.gen != m.promptSuggestionGen {
+			break
+		}
+		m.promptSuggestionDone = true
+		slog.Info("Prompt suggestion received",
+			"text", msg.text,
+			"canShow", m.canShowPromptSuggestion(),
+			"state", m.state,
+			"focus", m.focus,
+			"textareaEmpty", m.textarea.Value() == "",
+			"bangMode", m.bangMode,
+			"completionsOpen", m.completionsOpen,
+			"hasDialogs", m.dialog.HasDialogs(),
+			"agentReady", m.agentReady,
+			"agentBusy", m.isAgentBusy(),
+			"yolo", m.yoloModeCached(),
+		)
+		if m.canShowPromptSuggestion() {
+			m.promptSuggestion = msg.text
+		}
 	case tea.TerminalVersionMsg:
 		termVersion := strings.ToLower(msg.Name)
 		// Only enable progress bar for the following terminals.
@@ -1005,6 +1170,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case copyChatHighlightMsg:
 		cmds = append(cmds, m.copyChatHighlight())
+	case chatHighlightCopiedMsg:
+		m.chat.ClearMouse()
 	case DelayedClickMsg:
 		// Handle delayed single-click action (e.g., expansion).
 		m.chat.HandleDelayedClick(msg)
@@ -1027,6 +1194,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, tea.Batch(cmds...)
 				}
 			}
+		}
+
+		if m.handleSidebarLogoClick(msg) {
+			return m, tea.Batch(cmds...)
 		}
 
 		if cmd := m.handleClickFocus(msg); cmd != nil {
@@ -1137,6 +1308,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case common.CoalescedWheelMsg:
+		// Pass mouse events to dialogs first if any are open.
+		if m.dialog.HasDialogs() {
+			m.dialog.Update(msg)
+			return m, tea.Batch(cmds...)
+		}
+
 		// Route wheel events to active inline editor only when the
 		// mouse is over the editor area, so scrolling over the chat
 		// still scrolls the chat.
@@ -1145,12 +1322,6 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				we.HandleWheel(msg.DeltaX, msg.DeltaY)
 				return m, tea.Batch(cmds...)
 			}
-		}
-
-		// Pass mouse events to dialogs first if any are open.
-		if m.dialog.HasDialogs() {
-			m.dialog.Update(msg)
-			return m, tea.Batch(cmds...)
 		}
 
 		// Otherwise handle mouse wheel for chat. Use the coalesced delta
@@ -1311,12 +1482,10 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		cmds = append(cmds, m.loadPromptHistory())
-	case hyperRefreshDoneMsg:
-		if cmd := m.handleSelectModel(msg.action); cmd != nil {
-			cmds = append(cmds, cmd)
+	case usageUpdatedMsg:
+		if msg.gen == m.usageFetchGen {
+			m.providerUsage = msg.usage
 		}
-	case creditsUpdatedMsg:
-		m.hyperCredits = msg.credits
 	case util.InfoMsg:
 		if msg.Type == util.InfoTypeError {
 			slog.Error("Error reported", "error", msg.Msg)
@@ -1326,18 +1495,6 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if ttl <= 0 {
 			ttl = DefaultStatusTTL
 		}
-		cmds = append(cmds, clearInfoMsgCmd(ttl))
-	case app.UpdateAvailableMsg:
-		text := fmt.Sprintf("Crush update available: v%s → v%s.", msg.CurrentVersion, msg.LatestVersion)
-		if msg.IsDevelopment {
-			text = fmt.Sprintf("This is a development version of Crush. The latest version is v%s.", msg.LatestVersion)
-		}
-		ttl := 10 * time.Second
-		m.status.SetInfoMsg(util.InfoMsg{
-			Type: util.InfoTypeUpdate,
-			Msg:  text,
-			TTL:  ttl,
-		})
 		cmds = append(cmds, clearInfoMsgCmd(ttl))
 	case workspace.ConnectionEvent:
 		cmds = append(cmds, m.handleConnectionEvent(msg)...)
@@ -1374,15 +1531,38 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case uiFocusMain:
 	case uiFocusEditor:
 		// Textarea placeholder logic
-		if m.bangMode {
+		showSuggestion := m.promptSuggestion != "" && m.canShowPromptSuggestion()
+		switch {
+		case m.bangMode:
 			m.textarea.Placeholder = "Run a shell command"
-		} else if m.isAgentBusy() {
+		case m.isAgentBusy():
 			m.textarea.Placeholder = m.workingPlaceholder
-		} else {
+		case showSuggestion:
+			// The predicted next message wins over the idle/yolo
+			// placeholders: it is actionable (tab accepts it).
+			//
+			// Kept to a single line: the textarea only applies the
+			// dim placeholder style to the first wrapped line, so a
+			// multi-line suggestion would render the remainder as
+			// normal text and look like real input.
+			m.textarea.Placeholder = m.suggestionPlaceholder()
+		case m.yoloModeCached():
+			m.textarea.Placeholder = "Yolo mode!"
+		default:
 			m.textarea.Placeholder = m.readyPlaceholder
 		}
-		if !m.bangMode && m.yoloModeCached() {
-			m.textarea.Placeholder = "Yolo mode!"
+		// Schedule a prompt suggestion fetch when the editor sits empty
+		// with an idle agent and no suggestion yet.
+		if m.promptSuggestion == "" && !m.promptSuggestionPending && !m.promptSuggestionDone && m.canShowPromptSuggestion() && m.chat != nil && m.chat.Len() > 0 {
+			m.promptSuggestionPending = true
+			m.promptSuggestionGen++
+			cmds = append(cmds, promptSuggestionTickCmd(m.promptSuggestionGen))
+		}
+		// Invalidate a shown suggestion once it no longer applies, and
+		// reset fetch state whenever the agent runs so the next idle
+		// state gets a fresh prediction.
+		if (m.promptSuggestion != "" || m.promptSuggestionDone) && (m.isAgentBusy() || m.promptSuggestion != "" && !m.canShowPromptSuggestion()) {
+			m.invalidatePromptSuggestion()
 		}
 	}
 
@@ -1465,7 +1645,7 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
 	info := util.InfoMsg{
 		Type: util.InfoTypeWarn,
-		Msg:  "Lost connection to the Crush server — reconnecting…",
+		Msg:  "Lost connection to the Crux server — reconnecting…",
 		TTL:  30 * time.Second,
 	}
 	switch msg.State {
@@ -1473,13 +1653,13 @@ func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
 		slog.Warn("Server connection degraded", "error", msg.Err, "stuck", msg.Stuck)
 		if msg.Stuck {
 			info.Type = util.InfoTypeError
-			info.Msg = "Can't restore the connection to the Crush server. Restart Crush to recover."
+			info.Msg = "Can't restore the connection to the Crux server. Restart Crux to recover."
 			info.TTL = time.Minute
 		}
 	case workspace.ConnectionRecovered:
 		info = util.InfoMsg{
 			Type: util.InfoTypeSuccess,
-			Msg:  "Reconnected to the Crush server.",
+			Msg:  "Reconnected to the Crux server.",
 			TTL:  DefaultStatusTTL,
 		}
 	}
@@ -1827,18 +2007,25 @@ func (m *UI) handleChildSessionMessage(event pubsub.Event[message.Message]) tea.
 }
 
 func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
-	var cmds []tea.Cmd
 	action := m.dialog.Update(msg)
 	if action == nil {
-		return tea.Batch(cmds...)
+		return nil
 	}
+	return m.handleDialogAction(action)
+}
+
+// handleDialogAction processes a dialog action. It is called for
+// actions returned by open dialogs and for actions dispatched directly
+// (e.g. by the inline command completions).
+func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
+	var cmds []tea.Cmd
 
 	isOnboarding := m.state == uiOnboarding
 
 	switch msg := action.(type) {
 	// Generic dialog messages
 	case dialog.ActionClose:
-		if isOnboarding && m.dialog.ContainsDialog(dialog.ModelsID) {
+		if isOnboarding && m.dialog.ContainsDialog(dialog.ModelsID) && !msg.Dismiss {
 			break
 		}
 
@@ -1848,7 +2035,7 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 
 		m.dialog.CloseFrontDialog()
 
-		if isOnboarding {
+		if isOnboarding && !msg.Dismiss {
 			if cmd := m.openModelsDialog(); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
@@ -1858,6 +2045,41 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			cmds = append(cmds, m.textarea.Focus())
 		}
 	case dialog.ActionCmd:
+		if msg.Cmd != nil {
+			cmds = append(cmds, msg.Cmd)
+		}
+	case dialog.ActionAgentDefinitionCreated:
+		m.dialog.CloseDialog(dialog.AgentDefinitionsID)
+		info := util.InfoMsg{
+			Type: util.InfoTypeSuccess,
+			Msg:  "Created agent definition: " + msg.Path,
+			TTL:  DefaultStatusTTL,
+		}
+		if msg.RefreshErr != nil {
+			info.Type = util.InfoTypeWarn
+			info.Msg += " (agent refresh failed: " + msg.RefreshErr.Error() + ")"
+		}
+		cmds = append(cmds, util.CmdHandler(info))
+
+	// Provider toggle messages — the dialog stays open for more toggles.
+	case dialog.ActionProviderToggled:
+
+	// Instructions config changed — dialog stays open for more changes.
+	case dialog.ActionInstructionsChanged:
+		cmds = append(cmds, func() tea.Msg {
+			if err := m.com.Workspace.UpdateAgentModel(context.TODO()); err != nil {
+				return util.ReportError(err)()
+			}
+			return nil
+		})
+	case dialog.ActionPreviewInstructions:
+		preview := dialog.NewInstructionsPreview(m.com, msg.Sections, m.width)
+		m.dialog.OpenDialog(preview)
+		cmds = append(cmds, preview.StartLoading())
+	case dialog.ActionPreviewInstructionSectionToggled:
+		if instructions, ok := m.dialog.Dialog(dialog.InstructionsID).(*dialog.Instructions); ok {
+			instructions.SetSectionDisabled(msg.ID, msg.Disabled)
+		}
 		if msg.Cmd != nil {
 			cmds = append(cmds, msg.Cmd)
 		}
@@ -1878,6 +2100,52 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionToggleYoloMode:
 		m.toggleYoloMode()
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionTogglePlanMode:
+		cmds = append(cmds, m.togglePlanMode())
+		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionSwitchAccount:
+		m.dialog.CloseDialog(dialog.AccountSwitcherID)
+		cmds = append(cmds, dialog.SwitchAccountCmd(m.com, msg))
+	case dialog.AccountSwitchedMsg:
+		if msg.Err != nil {
+			cmds = append(cmds, util.ReportError(msg.Err))
+			break
+		}
+		if msg.Continuation != nil {
+			cmds = append(cmds, util.CmdHandler(*msg.Continuation))
+		} else {
+			cmds = append(cmds, util.CmdHandler(util.NewInfoMsg("Switched "+msg.CruxProviderID+" account to "+msg.DisplayName)))
+		}
+	case dialog.ActionLogout:
+		m.dialog.CloseDialog(dialog.LogoutID)
+		cmds = append(cmds, dialog.LogoutCmd(m.com, msg))
+	case dialog.LogoutDoneMsg:
+		if msg.Err != nil {
+			cmds = append(cmds, util.ReportError(msg.Err))
+			break
+		}
+		cmds = append(cmds, util.CmdHandler(util.NewInfoMsg("Logged out of "+msg.Label)))
+	case dialog.LoginDoneMsg:
+		m.dialog.CloseDialog(dialog.LoginID)
+		cmds = append(cmds, dialog.SaveLoginCmd(m.com, msg))
+	case dialog.ActionSelectProject:
+		cmds = append(cmds, func() tea.Msg {
+			return dialog.ProjectSelectionDoneMsg{
+				Slug: msg.Slug,
+				Err:  m.com.Workspace.SelectProject(context.Background(), msg.Slug),
+			}
+		})
+	case dialog.ProjectSelectionDoneMsg:
+		if msg.Err != nil {
+			cmds = append(cmds, util.ReportError(msg.Err))
+			break
+		}
+		m.dialog.CloseDialog(dialog.ProjectsID)
+		if msg.Slug == "" {
+			cmds = append(cmds, util.CmdHandler(util.NewInfoMsg("Project tracking disabled")))
+		} else {
+			cmds = append(cmds, util.CmdHandler(util.NewInfoMsg("Selected project: "+msg.Slug)))
+		}
 	case dialog.ActionSelectNotificationStyle:
 		cfg := m.com.Config()
 		if cfg != nil && cfg.Options != nil {
@@ -1913,6 +2181,23 @@ func (m *UI) handleDialogMsg(msg tea.Msg) tea.Cmd {
 			return nil
 		})
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionRewind:
+		if m.isAgentBusy() {
+			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait before rewinding session..."))
+			break
+		}
+		m.dialog.CloseDialog(dialog.RewindID)
+		prevHeight := m.textarea.Height()
+		m.textarea.SetValue(msg.Text)
+		m.textarea.MoveToEnd()
+		m.syncBangModeFromTextarea()
+		cmds = append(cmds, m.updateTextareaWithPrevHeight(nil, prevHeight))
+		cmds = append(cmds, func() tea.Msg {
+			if err := m.com.Workspace.SessionRewind(context.Background(), msg.SessionID, msg.MessageID, msg.Summarize); err != nil {
+				return util.ReportError(err)()
+			}
+			return nil
+		})
 	case dialog.ActionToggleHelp:
 		m.status.ToggleHelp()
 		m.dialog.CloseDialog(dialog.CommandsID)
@@ -2112,64 +2397,39 @@ func substituteArgs(content string, args map[string]string) string {
 	return content
 }
 
-// refreshHyperAndRetrySelect returns a command that silently refreshes
-// the Hyper OAuth token and then re-runs the model selection. If the
-// refresh fails, the selection resumes with ReAuthenticate set so the
-// OAuth dialog opens.
-func (m *UI) refreshHyperAndRetrySelect(msg dialog.ActionSelectModel) tea.Cmd {
+// fetchProviderUsage returns a command that asynchronously fetches quota
+// usage (rate-limit windows) for the current large-model provider. Sends a
+// usageUpdatedMsg with a nil snapshot when the provider is unsupported so
+// stale usage from a previous provider is cleared.
+func (m *UI) fetchProviderUsage() tea.Cmd {
+	providerID := ""
+	if model := m.selectedLargeModel(); model != nil {
+		providerID = model.ModelCfg.Provider
+	}
+	if providerID == "" {
+		if cfg := m.com.Config(); cfg != nil {
+			providerID = cfg.Models[config.SelectedModelTypeLarge].Provider
+		}
+	}
+	return m.fetchProviderUsageFor(providerID)
+}
+
+func (m *UI) fetchProviderUsageFor(providerID string) tea.Cmd {
+	m.usageFetchGen++
+	gen := m.usageFetchGen
+	registration, ok := config.ProviderCapabilities().Lookup(providerID)
+	if providerID == "" || !ok || registration.ProviderID != providerID || registration.Quota == nil {
+		return func() tea.Msg { return usageUpdatedMsg{gen: gen} }
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := m.com.Workspace.RefreshOAuthToken(ctx, config.ScopeGlobal, "hyper"); err != nil {
-			slog.Warn("Hyper OAuth refresh failed, requesting re-auth", "error", err)
-			msg.ReAuthenticate = true
-		}
-		return hyperRefreshDoneMsg{action: msg}
-	}
-}
-
-// fetchHyperCredits returns a command that asynchronously fetches the
-// remaining Hyper credits from the API.
-func (m *UI) fetchHyperCredits() tea.Cmd {
-	return func() tea.Msg {
-		var (
-			apiKey      string
-			cfg         *config.Config
-			providerCfg config.ProviderConfig
-		)
-		getAPIKey := func() (ok bool) {
-			if cfg = m.com.Config(); cfg == nil {
-				return false
-			}
-			if providerCfg, ok = cfg.Providers.Get(hyper.Name); !ok {
-				return false
-			}
-			var err error
-			apiKey, err = m.com.Workspace.Resolver().ResolveValue(providerCfg.APIKey)
-			return err == nil && apiKey != ""
-		}
-		if !getAPIKey() {
-			return nil
-		}
-
-		if providerCfg.OAuthToken != nil && providerCfg.OAuthToken.IsExpired() {
-			ctxRefresh, cancelRefresh := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancelRefresh()
-			if err := m.com.Workspace.RefreshOAuthToken(ctxRefresh, config.ScopeGlobal, hyper.Name); err != nil {
-				slog.Warn("Hyper OAuth refresh failed before fetching credits, trying with existing token", "error", err)
-			} else if !getAPIKey() {
-				return nil
-			}
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		credits, err := hyper.FetchCredits(ctx, apiKey)
+		u, err := oauthusage.Fetch(ctx, providerID, registration.AccountNamespace, registration.Quota)
 		if err != nil {
-			slog.Error("Failed to fetch Hyper credits", "error", err)
-			return nil
+			slog.Warn("Failed to fetch provider usage", "provider", providerID, "error", err)
+			return usageUpdatedMsg{gen: gen}
 		}
-		return creditsUpdatedMsg{credits: credits}
+		return usageUpdatedMsg{gen: gen, usage: u}
 	}
 }
 
@@ -2236,13 +2496,12 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 	})
 }
 
-// handleSelectModel performs the model selection after any provider
-// pre-checks (such as a silent Hyper OAuth refresh) have completed.
+// handleSelectModel performs model selection for the requested provider.
 func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	var cmds []tea.Cmd
 
-	// we ignore dialogs with the oauth id as they need to be able to be dismissed
-	if m.isAgentBusy() && !m.dialog.ContainsDialog(dialog.OAuthID) {
+	// Login must remain dismissible while authentication is in progress.
+	if m.isAgentBusy() && !m.dialog.ContainsDialog(dialog.LoginID) {
 		return util.ReportWarn("Agent is busy, please wait...")
 	}
 
@@ -2257,16 +2516,6 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		isConfigured = func() bool { _, ok := cfg.Providers.Get(providerID); return ok }
 		isOnboarding = m.state == uiOnboarding
 	)
-
-	// For Hyper, if the stored OAuth token is expired, try a silent
-	// refresh before deciding whether the provider is configured. Keeps
-	// users from hitting a 401 on their first message after the
-	// short-lived access token ages out.
-	if !msg.ReAuthenticate && providerID == "hyper" {
-		if pc, ok := cfg.Providers.Get(providerID); ok && pc.OAuthToken != nil && pc.OAuthToken.IsExpired() {
-			return m.refreshHyperAndRetrySelect(msg)
-		}
-	}
 
 	// Attempt to import GitHub Copilot tokens from VSCode if available.
 	if isCopilot && !isConfigured() && !msg.ReAuthenticate {
@@ -2318,7 +2567,7 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	}))
 
 	m.dialog.CloseDialog(dialog.APIKeyInputID)
-	m.dialog.CloseDialog(dialog.OAuthID)
+	m.dialog.CloseDialog(dialog.LoginID)
 	m.dialog.CloseDialog(dialog.ModelsID)
 
 	if isOnboarding {
@@ -2334,8 +2583,9 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		if cmd := m.dispatchBusyRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-	} else if m.com.IsHyper() {
-		cmds = append(cmds, m.fetchHyperCredits())
+	}
+	if msg.ModelType == config.SelectedModelTypeLarge {
+		cmds = append(cmds, m.fetchProviderUsageFor(providerID))
 	}
 
 	return tea.Batch(cmds...)
@@ -2349,12 +2599,15 @@ func (m *UI) openAuthenticationDialog(provider catwalk.Provider, model config.Se
 		isOnboarding = m.state == uiOnboarding
 	)
 
-	switch provider.ID {
-	case "hyper":
-		dlg, cmd = dialog.NewOAuthHyper(m.com, isOnboarding, provider, model, modelType)
-	case catwalk.InferenceProviderCopilot:
-		dlg, cmd = dialog.NewOAuthCopilot(m.com, isOnboarding, provider, model, modelType)
-	default:
+	if registration, ok := config.ProviderCapabilities().Lookup(string(provider.ID)); ok && registration.OAuth != nil {
+		login, loginCmd, err := dialog.NewLoginForModel(m.com, dialog.ActionSelectModel{
+			Provider: provider, Model: model, ModelType: modelType,
+		})
+		if err != nil {
+			return util.ReportError(err)
+		}
+		dlg, cmd = login, loginCmd
+	} else {
 		dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
 	}
 
@@ -2385,6 +2638,12 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			if cmd := m.openModelsDialog(); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
+			return true
+		case key.Matches(msg, m.keyMap.Providers):
+			m.openProvidersDialog()
+			return true
+		case key.Matches(msg, m.keyMap.Instructions):
+			m.openInstructionsDialog()
 			return true
 		case key.Matches(msg, m.keyMap.Sessions):
 			if cmd := m.openSessionsDialog(); cmd != nil {
@@ -2438,22 +2697,41 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			}
 			cmds = append(cmds, util.ReportInfo("Yolo mode "+status))
 			return true
+		case key.Matches(msg, m.keyMap.TogglePlan):
+			cmds = append(cmds, m.togglePlanMode())
+			return true
 		}
 		return false
 	}
 
+	// Route all keys to the frontmost dialog before global UI handlers.
+	if m.dialog.HasDialogs() {
+		return m.handleDialogMsg(msg)
+	}
+
+	if msg.Code == tea.KeyDown && msg.Mod == tea.ModCtrl && (m.state == uiChat || m.state == uiLanding) {
+		cmds = append(cmds, m.openTasksIfPresent())
+		return tea.Batch(cmds...)
+	}
+
+	if m.completionsOpen && key.Matches(msg, m.keyMap.Quit) {
+		m.closeCompletions()
+		return tea.Batch(cmds...)
+	}
+
 	if key.Matches(msg, m.keyMap.Quit) && !m.dialog.ContainsDialog(dialog.QuitID) {
+		// A partially typed prompt takes priority: ctrl+c clears it instead
+		// of prompting to quit. Press again on an empty input to quit.
+		if m.activeInline == nil && strings.TrimSpace(m.textarea.Value()) != "" {
+			m.textarea.Reset()
+			return tea.Batch(cmds...)
+		}
 		// Always handle quit keys first
 		if cmd := m.openQuitDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 
 		return tea.Batch(cmds...)
-	}
-
-	// Route all messages to dialog if one is open.
-	if m.dialog.HasDialogs() {
-		return m.handleDialogMsg(msg)
 	}
 
 	// Tab always toggles focus between editor and chat, even when
@@ -2499,6 +2777,33 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			}
 			return tea.Batch(cmds...)
 		}
+		// Agent idle: double-escape opens the rewind dialog.
+		if m.state == uiChat && m.hasSession() &&
+			m.focus == uiFocusEditor && m.textarea.Value() == "" &&
+			!m.completionsOpen && m.promptHistory.index < 0 {
+			if m.escForRewind {
+				m.escForRewind = false
+				if cmd := m.openRewindDialog(); cmd != nil {
+					cmds = append(cmds, cmd)
+				}
+				return tea.Batch(cmds...)
+			}
+			m.escForRewind = true
+			cmds = append(cmds, rewindEscTimerCmd())
+		}
+	}
+
+	// ctrl+b while the agent is busy: send the foreground shell
+	// command (if any) to the background.
+	if key.Matches(msg, m.keyMap.DetachJob) && m.isAgentBusy() {
+		cmds = append(cmds, func() tea.Msg {
+			n := m.com.Workspace.AgentDetachForegroundJobs()
+			if n == 0 {
+				return util.InfoMsg{Type: util.InfoTypeWarn, Msg: "No running command to send to background"}
+			}
+			return util.InfoMsg{Type: util.InfoTypeInfo, Msg: "Command sent to background"}
+		})
+		return tea.Batch(cmds...)
 	}
 
 	switch m.state {
@@ -2524,6 +2829,11 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 						if !msg.KeepOpen {
 							m.closeCompletions()
 						}
+					case completions.SelectionMsg[completions.CommandCompletionValue]:
+						if cmd := m.runCommandCompletion(msg.Value.ID); cmd != nil {
+							cmds = append(cmds, cmd)
+						}
+						m.closeCompletions()
 					case completions.ClosedMsg:
 						m.completionsOpen = false
 					}
@@ -2563,6 +2873,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 
 				// Otherwise, send the message
+				if err := validateQueuedPromptAttachments(m.attachments.List()); err != nil {
+					return util.ReportError(err)
+				}
 				m.textarea.Reset()
 				if cmd := m.handleTextareaHeightChange(prevHeight); cmd != nil {
 					cmds = append(cmds, cmd)
@@ -2603,6 +2916,14 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					cmds = append(cmds, cmd)
 				}
 			case key.Matches(msg, m.keyMap.Tab):
+				if m.promptSuggestion != "" && m.textarea.Value() == "" && m.canShowPromptSuggestion() {
+					prevHeight := m.textarea.Height()
+					m.textarea.SetValue(m.promptSuggestion)
+					m.textarea.MoveToEnd()
+					m.invalidatePromptSuggestion()
+					cmds = append(cmds, m.updateTextareaWithPrevHeight(nil, prevHeight))
+					break
+				}
 				if m.state != uiLanding {
 					m.setState(m.state, uiFocusMain)
 					m.textarea.Blur()
@@ -2640,7 +2961,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					cmds = append(cmds, cmd)
 				}
 			case key.Matches(msg, m.keyMap.Editor.Commands) && m.textarea.Value() == "":
-				if cmd := m.openCommandsDialog(); cmd != nil {
+				if cmd := m.openCommandCompletions(); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
 			default:
@@ -2729,6 +3050,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 						// Extract current word and filter.
 						word := m.textareaWord()
 						if strings.HasPrefix(word, "@") {
+							m.completionsQuery = word[1:]
+							m.completions.Filter(m.completionsQuery)
+						} else if strings.HasPrefix(word, "/") && m.completionsStartIndex == 0 {
 							m.completionsQuery = word[1:]
 							m.completions.Filter(m.completionsQuery)
 						} else if m.completionsOpen {
@@ -2881,7 +3205,7 @@ func (m *UI) drawHeader(scr uv.Screen, area uv.Rectangle) {
 		m.detailsOpen,
 		area.Dx(),
 		m.lspErrorCount(),
-		m.hyperCredits,
+		m.providerUsage,
 	)
 }
 
@@ -2937,7 +3261,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 				m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
 			}
 		} else {
-			editor := uv.NewStyledString(m.renderEditorView(scr.Bounds().Dx()))
+			editor := uv.NewStyledString(m.renderEditorView(layout.editor.Dx()))
 			editor.Draw(scr, layout.editor)
 			m.inlineCursor = nil
 		}
@@ -2965,11 +3289,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 				m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
 			}
 		} else {
-			editorWidth := scr.Bounds().Dx()
-			if !m.isCompact {
-				editorWidth -= layout.sidebar.Dx()
-			}
-			editor := uv.NewStyledString(m.renderEditorView(editorWidth))
+			editor := uv.NewStyledString(m.renderEditorView(layout.editor.Dx()))
 			editor.Draw(scr, layout.editor)
 			m.inlineCursor = nil
 		}
@@ -3007,7 +3327,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	}
 
 	// Debugging rendering (visually see when the tui rerenders)
-	if os.Getenv("CRUSH_UI_DEBUG") == "true" {
+	if os.Getenv("CRUX_UI_DEBUG") == "true" {
 		debugView := lipgloss.NewStyle().Background(lipgloss.ANSIColor(rand.Intn(256))).Width(4).Height(2)
 		debug := uv.NewStyledString(debugView.String())
 		debug.Draw(scr, image.Rectangle{
@@ -3066,7 +3386,7 @@ func (m *UI) View() tea.View {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
 	v.ReportFocus = m.caps.ReportFocusEvents
-	v.WindowTitle = "crush " + home.Short(m.com.Workspace.WorkingDir())
+	v.WindowTitle = "crux " + home.Short(m.com.Workspace.WorkingDir())
 
 	canvas := uv.NewScreenBuffer(m.width, m.height)
 	v.Cursor = m.Draw(canvas, canvas.Bounds())
@@ -3113,12 +3433,10 @@ func (m *UI) ShortHelp() []key.Binding {
 		// Show cancel binding if agent is busy.
 		if m.isAgentBusy() {
 			cancelBinding := k.Chat.Cancel
-			if m.isCanceling {
-				cancelBinding.SetHelp("esc", "press again to cancel")
-			} else if m.promptQueue > 0 {
+			if m.promptQueue > 0 {
 				cancelBinding.SetHelp("esc", "clear queue")
 			}
-			binds = append(binds, cancelBinding)
+			binds = append(binds, cancelBinding, k.DetachJob)
 		}
 
 		switch m.focus {
@@ -3131,8 +3449,11 @@ func (m *UI) ShortHelp() []key.Binding {
 		binds = append(
 			binds,
 			tab,
+			k.TogglePlan,
 			commands,
 			k.Models,
+			k.Providers,
+			k.Instructions,
 		)
 
 		switch m.focus {
@@ -3209,12 +3530,10 @@ func (m *UI) FullHelp() [][]key.Binding {
 		// Show cancel binding if agent is busy.
 		if m.isAgentBusy() {
 			cancelBinding := k.Chat.Cancel
-			if m.isCanceling {
-				cancelBinding.SetHelp("esc", "press again to cancel")
-			} else if m.promptQueue > 0 {
+			if m.promptQueue > 0 {
 				cancelBinding.SetHelp("esc", "clear queue")
 			}
-			binds = append(binds, []key.Binding{cancelBinding})
+			binds = append(binds, []key.Binding{cancelBinding, k.DetachJob})
 		}
 
 		mainBinds := []key.Binding{}
@@ -3229,9 +3548,12 @@ func (m *UI) FullHelp() [][]key.Binding {
 		mainBinds = append(
 			mainBinds,
 			tab,
+			k.TogglePlan,
 			commands,
 			k.Models,
 			k.Sessions,
+			k.Providers,
+			k.Instructions,
 			k.ToggleYolo,
 		)
 		if hasSession {
@@ -3359,7 +3681,50 @@ func (m *UI) currentModelSupportsImages() bool {
 	return model != nil && model.SupportsImages
 }
 
-// toggleCompactMode toggles compact mode between uiChat and uiChatCompact states.
+func (m *UI) currentImageProviderID() string {
+	cfg := m.com.Config()
+	if cfg == nil {
+		return ""
+	}
+	agentCfg, ok := cfg.Agents[config.AgentCoder]
+	if !ok {
+		return ""
+	}
+	return cfg.Models[agentCfg.Model].Provider
+}
+
+func (m *UI) currentImageExtensions() []string {
+	return imageattachment.ExtensionsFor(m.currentImageProviderID())
+}
+
+func (m *UI) currentImageSourceLimit() int64 {
+	return imageattachment.SourceLimitFor(m.currentImageProviderID())
+}
+
+// togglePlanMode toggles plan mode for the active session.
+func (m *UI) togglePlanMode() tea.Cmd {
+	if m.session == nil {
+		return util.ReportWarn("Start a session before toggling plan mode")
+	}
+	if m.session.Mode == session.ModePlanExecution {
+		return util.ReportWarn("Complete the approved plan and request completion review before leaving plan mode")
+	}
+
+	sessionID := m.session.ID
+	mode := session.ModePlan
+	if m.session.Mode.IsPlan() {
+		mode = session.ModeDefault
+	}
+
+	return func() tea.Msg {
+		updated, err := m.com.Workspace.SetSessionMode(context.TODO(), sessionID, mode)
+		if err != nil {
+			return util.ReportError(err)()
+		}
+		return planModeToggledMsg{session: updated}
+	}
+}
+
 func (m *UI) toggleCompactMode() tea.Cmd {
 	m.forceCompactMode = !m.forceCompactMode
 
@@ -3696,7 +4061,7 @@ func (m *UI) openEditor(value string) tea.Cmd {
 		return util.ReportError(err)
 	}
 	cmd, err := editor.Command(
-		"crush",
+		"crux",
 		tmpPath,
 		editor.AtPosition(
 			m.textarea.Line()+1,
@@ -3727,11 +4092,14 @@ func (m *UI) openEditor(value string) tea.Cmd {
 	})
 }
 
-// setEditorPrompt configures the textarea prompt function based on whether
-// yolo mode or bang mode is enabled.
+// setEditorPrompt configures the textarea prompt function for the active mode.
 func (m *UI) setEditorPrompt(yolo bool) {
 	if m.bangMode {
 		m.textarea.SetPromptFunc(4, m.bangPromptFunc)
+		return
+	}
+	if m.session != nil && m.session.Mode.IsPlan() {
+		m.textarea.SetPromptFunc(5, m.planPromptFunc)
 		return
 	}
 	if yolo {
@@ -3774,6 +4142,20 @@ func (m *UI) yoloPromptFunc(info textarea.PromptInfo) string {
 	return t.Editor.PromptYoloDotsBlurred.Render()
 }
 
+func (m *UI) planPromptFunc(info textarea.PromptInfo) string {
+	t := m.com.Styles
+	if info.LineNumber == 0 {
+		if info.Focused {
+			return t.Editor.PromptPlanIconFocused.Render()
+		}
+		return t.Editor.PromptPlanIconBlurred.Render()
+	}
+	if info.Focused {
+		return t.Editor.PromptPlanDotsFocused.Render()
+	}
+	return t.Editor.PromptPlanDotsBlurred.Render()
+}
+
 // bangPromptFunc returns the bang mode editor prompt style with Turtle-colored
 // icon and dots.
 func (m *UI) bangPromptFunc(info textarea.PromptInfo) string {
@@ -3813,6 +4195,61 @@ func (m *UI) insertCompletionText(text string) bool {
 	m.textarea.MoveToEnd()
 	m.textarea.InsertRune(' ')
 	return true
+}
+
+// openCommandCompletions inserts the typed "/" into the textarea and
+// opens the inline slash-command completions popup, listing every
+// available command (system, user, and MCP prompts). Items are built
+// synchronously so the popup appears on the same frame as the
+// keystroke.
+func (m *UI) openCommandCompletions() tea.Cmd {
+	var sessionID string
+	hasSession := m.hasSession()
+	if hasSession {
+		sessionID = m.session.ID
+	}
+	hasTodos := hasSession && hasIncompleteTodos(m.session.Todos)
+	hasQueue := m.promptQueue > 0
+
+	cmdsDialog, err := dialog.NewCommands(m.com, sessionID, hasSession, hasTodos, hasQueue, m.customCommands, m.mcpPrompts)
+	if err != nil {
+		return util.ReportError(err)
+	}
+	cmdsDialog.SetWindowWidth(m.width)
+
+	items := cmdsDialog.AllItems()
+	values := make([]completions.CommandCompletionValue, 0, len(items))
+	m.commandCompletionActions = make(map[string]dialog.Action, len(items))
+	for _, item := range items {
+		values = append(values, completions.CommandCompletionValue{
+			ID:    item.ID(),
+			Title: item.Title(),
+		})
+		m.commandCompletionActions[item.ID()] = item.Action()
+	}
+
+	prevHeight := m.textarea.Height()
+	m.textarea.InsertString("/")
+
+	m.completionsOpen = true
+	m.completionsQuery = ""
+	m.completionsStartIndex = 0
+	m.completionsPositionStart = m.completionsPosition()
+	m.completions.SetCommandItems(values)
+
+	return m.handleTextareaHeightChange(prevHeight)
+}
+
+// runCommandCompletion dispatches the action for the selected command
+// completion and clears the slash query from the textarea.
+func (m *UI) runCommandCompletion(id string) tea.Cmd {
+	action, ok := m.commandCompletionActions[id]
+	if !ok {
+		return nil
+	}
+	m.textarea.Reset()
+	m.promptHistory.draft = ""
+	return m.handleDialogAction(action)
 }
 
 // insertFileCompletion inserts the selected file path into the textarea,
@@ -3991,20 +4428,26 @@ func (m *UI) randomizePlaceholders() {
 
 // renderEditorView renders the editor view with attachments if any.
 func (m *UI) renderEditorView(width int) string {
-	var attachmentsView string
-	if len(m.attachments.List()) > 0 {
-		attachmentsView = m.attachments.Render(width)
+	label := activityStatusLabel(m.activityStatus)
+	statusWidth := 0
+	if label != "" {
+		statusWidth = min(ansi.StringWidth(label)+1, width)
 	}
+	var attachmentsView string
+	if m.attachments != nil && len(m.attachments.List()) > 0 {
+		attachmentsView = m.attachments.Render(max(width-statusWidth, 0))
+	}
+	accent := m.editorAccent()
 	return strings.Join([]string{
-		attachmentsView,
-		m.textarea.View(),
-		"", // margin at bottom of editor
+		renderEditorFrameLine(width, attachmentsView, label, accent),
+		paintEditorBody(m.textarea.View(), width, m.com.Styles.Editor.Background),
+		renderEditorFrameLine(width, m.taskStatusTab(), "", accent),
 	}, "\n")
 }
 
 // cacheSidebarLogo renders and caches the sidebar logo at the specified width.
 func (m *UI) cacheSidebarLogo(width int) {
-	m.sidebarLogo = renderLogo(m.com.Styles, true, m.com.IsHyper(), width)
+	m.sidebarLogo = renderLogo(m.com.Styles, true, true, max(width-2, 1), m.sidebarBrand())
 }
 
 // applyThemeForProvider swaps the active theme to the one associated with
@@ -4014,6 +4457,16 @@ func (m *UI) cacheSidebarLogo(width int) {
 // invalidating the markdown renderer cache and re-rendering the entire
 // transcript for no visible change.
 func (m *UI) applyThemeForProvider(providerID string) {
+	// Update provider branding for the wordmark (header + sidebar logos)
+	// even when the theme itself does not change.
+	brand := m.brandForProvider(providerID)
+	if !brandEqual(m.brand, brand) {
+		m.brand = brand
+		m.header.setBrand(brand)
+		if m.layout.sidebar.Dx() > 0 {
+			m.cacheSidebarLogo(m.layout.sidebar.Dx())
+		}
+	}
 	key := styles.ThemeKeyForProvider(providerID)
 	if key == m.themeKey {
 		return
@@ -4083,9 +4536,23 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 	if err := m.com.Workspace.AgentReadyErr(); err != nil {
 		return util.ReportError(err)
 	}
+	if err := validateQueuedPromptAttachments(attachments); err != nil {
+		return util.ReportError(err)
+	}
 
 	// Start the turn timer.
 	common.StartTurn()
+
+	submissionID := uuid.NewString()
+	var queuedDraft *queuedPromptDraft
+	if len(attachments) > 0 {
+		now := time.Now()
+		queuedDraft = &queuedPromptDraft{
+			attachments:  append([]message.Attachment(nil), attachments...),
+			pendingUntil: now.Add(queuedPromptPendingGrace),
+			expiresAt:    now.Add(queuedPromptRetention),
+		}
+	}
 
 	var cmds []tea.Cmd
 	if !m.hasSession() {
@@ -4128,14 +4595,15 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 		// been accepted (HTTP 202) or synchronously with a validation
 		// or transport error. Run failures and cancellation surface
 		// through SSE-derived events, not this return value.
-		err := m.com.Workspace.AgentRun(context.Background(), sessionID, content, attachments...)
+		runCtx := agent.WithSubmissionID(context.Background(), submissionID)
+		err := m.com.Workspace.AgentRun(runCtx, sessionID, content, attachments...)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return util.InfoMsg{
 				Type: util.InfoTypeError,
 				Msg:  fmt.Sprintf("%v", err),
 			}
 		}
-		return agentRunSubmittedMsg{}
+		return agentRunSubmittedMsg{submissionID: submissionID, queuedDraft: queuedDraft}
 	})
 	return tea.Batch(cmds...)
 }
@@ -4231,18 +4699,153 @@ func (m *UI) runShellCommandInternal(command string, isFirstMessage bool) tea.Cm
 	return tea.Batch(cmds...)
 }
 
-const cancelTimerDuration = 2 * time.Second
+const rewindEscTimerDuration = 2 * time.Second
 
-// cancelTimerCmd creates a command that expires the cancel timer.
-func cancelTimerCmd() tea.Cmd {
-	return tea.Tick(cancelTimerDuration, func(time.Time) tea.Msg {
-		return cancelTimerExpiredMsg{}
+// promptSuggestionDebounce is how long the editor must sit empty and
+// idle before a prompt suggestion is fetched.
+const promptSuggestionDebounce = 1 * time.Second
+
+// promptSuggestionTickCmd fires the suggestion debounce timer.
+func promptSuggestionTickCmd(gen int) tea.Cmd {
+	return tea.Tick(promptSuggestionDebounce, func(time.Time) tea.Msg {
+		return promptSuggestionTickMsg{gen: gen}
 	})
 }
 
-// cancelAgent handles the cancel key press. The first press sets isCanceling to true
-// and starts a timer. The second press (before the timer expires) actually
-// cancels the agent.
+// canShowPromptSuggestion reports whether the AI prompt suggestion may
+// be shown or fetched right now: chat state, editor focused and empty,
+// agent ready and idle, no bang mode, no open completions or dialogs.
+func (m *UI) canShowPromptSuggestion() bool {
+	return m.state == uiChat &&
+		m.hasSession() &&
+		m.focus == uiFocusEditor &&
+		m.textarea.Value() == "" &&
+		!m.bangMode &&
+		!m.completionsOpen &&
+		!m.dialog.HasDialogs() &&
+		m.agentReady &&
+		!m.isAgentBusy()
+}
+
+// suggestionPlaceholder renders the predicted next message as
+// placeholder text with an accept hint.
+//
+// The textarea only applies the dim placeholder style to the first
+// wrapped line (continuation lines inherit the cursor-line style), so
+// wrapped lines would otherwise look like real input. To avoid that,
+// wrap here and bake the placeholder color into every line after the
+// first; the textarea's wrapping is ANSI-aware, so the styling
+// survives.
+func (m *UI) suggestionPlaceholder() string {
+	text := m.promptSuggestion + "  (tab to accept)"
+
+	width := m.textarea.Width()
+	// Account for the cursor cell the textarea renders over the first
+	// grapheme of the placeholder.
+	if width <= 1 || ansi.StringWidth(text) <= width-1 {
+		return text
+	}
+
+	wrapped := ansi.Hardwrap(ansi.Wordwrap(text, width-1, ""), width-1, true)
+	lines := strings.Split(wrapped, "\n")
+	if len(lines) < 2 {
+		return text
+	}
+
+	style := m.com.Styles.Editor.Textarea.Focused.Placeholder
+	for i := 1; i < len(lines); i++ {
+		lines[i] = style.Render(lines[i])
+	}
+	return strings.Join(lines, "\n")
+}
+
+// invalidatePromptSuggestion drops the current suggestion and cancels
+// any in-flight fetch.
+func (m *UI) invalidatePromptSuggestion() {
+	m.promptSuggestion = ""
+	m.promptSuggestionPending = false
+	m.promptSuggestionDone = false
+	m.promptSuggestionGen++
+}
+
+// rewindEscTimerCmd creates a command that expires the double-escape
+// rewind window.
+func rewindEscTimerCmd() tea.Cmd {
+	return tea.Tick(rewindEscTimerDuration, func(time.Time) tea.Msg {
+		return rewindEscTimerExpiredMsg{}
+	})
+}
+
+// openRewindDialog opens the rewind dialog for the current session.
+func (m *UI) openRewindDialog() tea.Cmd {
+	if !m.hasSession() {
+		return nil
+	}
+	if m.dialog.ContainsDialog(dialog.RewindID) {
+		m.dialog.BringToFront(dialog.RewindID)
+		return nil
+	}
+	d, err := dialog.NewRewind(m.com, m.session.ID)
+	if err != nil {
+		return util.ReportError(err)
+	}
+	m.dialog.OpenDialog(d)
+	return nil
+}
+
+func validateQueuedPromptAttachments(items []message.Attachment) error {
+	if len(items) > queuedPromptMaxAttachments {
+		return fmt.Errorf("queued prompts support at most %d attachments", queuedPromptMaxAttachments)
+	}
+	total := 0
+	for _, item := range items {
+		if len(item.Content) > int(imageattachment.MaxSourceBytes) {
+			return fmt.Errorf("attachment %q exceeds the %d MiB queued-prompt limit", item.FileName, imageattachment.MaxSourceBytes/(1024*1024))
+		}
+		total += len(item.Content)
+		if total > queuedPromptMaxBytes {
+			return fmt.Errorf("queued prompt attachments exceed the %d MiB aggregate limit", queuedPromptMaxBytes/(1024*1024))
+		}
+	}
+	return nil
+}
+
+func queuedPromptText(items []agent.QueuedPrompt) string {
+	prompts := make([]string, len(items))
+	for i, item := range items {
+		prompts[i] = item.Prompt
+	}
+	return strings.Join(prompts, "\n\n")
+}
+
+func (m *UI) reconcileQueuedDrafts(prompts []agent.QueuedPrompt, now time.Time) {
+	queued := make(map[string]struct{}, len(prompts))
+	for _, prompt := range prompts {
+		if prompt.SubmissionID != "" {
+			queued[prompt.SubmissionID] = struct{}{}
+		}
+	}
+	for submissionID, draft := range m.promptQueueDrafts {
+		_, present := queued[submissionID]
+		if present {
+			draft.confirmed = true
+		} else if draft.confirmed || draft.pendingUntil.IsZero() || !now.Before(draft.pendingUntil) {
+			delete(m.promptQueueDrafts, submissionID)
+			continue
+		}
+		if !draft.expired && !draft.expiresAt.IsZero() && !now.Before(draft.expiresAt) {
+			draft.attachments = nil
+			draft.expired = true
+			m.promptQueueDrafts[submissionID] = draft
+		}
+	}
+	if len(m.promptQueueDrafts) == 0 {
+		m.promptQueueDrafts = nil
+	}
+}
+
+// cancelAgent handles the cancel key press: a single escape cancels
+// the running agent (or clears the prompt queue when one is pending).
 func (m *UI) cancelAgent() tea.Cmd {
 	if !m.hasSession() {
 		return nil
@@ -4254,44 +4857,63 @@ func (m *UI) cancelAgent() tea.Cmd {
 		return nil
 	}
 
-	if m.isCanceling {
-		// Second escape press — actually cancel.
-		m.isCanceling = false
-
-		// Cancel a running bang command if one is in progress.
-		if m.bangCancel != nil {
-			m.bangCancel()
-			m.bangCancel = nil
-		}
-
-		m.com.Workspace.AgentCancel(m.session.ID)
-		// Stop the spinning todo indicator and drop the memoized busy
-		// state the cancel just changed; the pill re-renders now from
-		// last-known state and again when the off-thread refresh (and
-		// the agent's own events) land.
-		m.todoIsSpinning = false
-		m.invalidateBusyCaches()
-		m.renderPills()
-		return m.dispatchBusyRefresh()
-	}
-
 	// Queued prompts pending: esc clears the queue. Decide from the cached
 	// count (event-driven) instead of a synchronous workspace probe.
 	if m.promptQueue > 0 {
+		prevHeight := m.textarea.Height()
+		queued := queuedPromptText(m.promptQueueItems)
+		m.reconcileQueuedDrafts(m.promptQueueItems, time.Now())
+		var restoredAttachments []message.Attachment
+		expiredAttachments := false
+		for _, prompt := range m.promptQueueItems {
+			draft, ok := m.promptQueueDrafts[prompt.SubmissionID]
+			if !ok {
+				continue
+			}
+			restoredAttachments = append(restoredAttachments, draft.attachments...)
+			expiredAttachments = expiredAttachments || draft.expired
+		}
+		m.attachments.Prepend(restoredAttachments...)
+		if draft := m.textarea.Value(); draft != "" {
+			if queued != "" {
+				queued += "\n\n"
+			}
+			queued += draft
+		}
+		m.textarea.SetValue(queued)
+		m.textarea.MoveToEnd()
+		m.syncBangModeFromTextarea()
 		m.com.Workspace.AgentClearQueue(m.session.ID)
 		m.promptQueue = 0
 		m.promptQueueItems = nil
+		m.promptQueueDrafts = nil
 		m.promptQueueCheckedAt = time.Now()
 		// Bump the queue generation so a fetch started before this clear
 		// cannot land and repopulate the pill we just emptied.
 		m.invalidatePromptQueue()
 		m.updateLayoutAndSize()
-		return nil
+		resize := m.handleTextareaHeightChange(prevHeight)
+		if expiredAttachments {
+			return tea.Batch(resize, util.ReportWarn("Queued attachment retention expired; prompt text was restored without those attachments"))
+		}
+		return resize
 	}
 
-	// First escape press - set canceling state and start timer.
-	m.isCanceling = true
-	return cancelTimerCmd()
+	// Cancel a running bang command if one is in progress.
+	if m.bangCancel != nil {
+		m.bangCancel()
+		m.bangCancel = nil
+	}
+
+	m.com.Workspace.AgentCancel(m.session.ID)
+	// Stop the spinning todo indicator and drop the memoized busy
+	// state the cancel just changed; the pill re-renders now from
+	// last-known state and again when the off-thread refresh (and
+	// the agent's own events) land.
+	m.todoIsSpinning = false
+	m.invalidateBusyCaches()
+	m.renderPills()
+	return m.dispatchBusyRefresh()
 }
 
 // openDialog opens a dialog by its ID.
@@ -4314,8 +4936,32 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openReasoningDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.RewindID:
+		if cmd := m.openRewindDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case dialog.NotificationsID:
 		if cmd := m.openNotificationsDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case dialog.ProjectsID:
+		if cmd := m.openProjectsDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case dialog.TasksID:
+		if cmd := m.openTasksDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case dialog.CodebaseIndexID:
+		if cmd := m.openCodebaseIndexDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case dialog.MCPServersID:
+		if cmd := m.openMCPServersDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case dialog.AgentDefinitionsID:
+		if cmd := m.openAgentDefinitionsDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	case dialog.FilePickerID:
@@ -4326,8 +4972,17 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openQuitDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.LoginID:
+		if cmd := m.openLoginDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case dialog.LogoutID:
+		m.dialog.CloseDialog(dialog.LogoutID)
+		m.dialog.OpenDialog(dialog.NewLogout(m.com))
+	case dialog.AccountSwitcherID:
+		m.dialog.CloseDialog(dialog.AccountSwitcherID)
+		m.dialog.OpenDialog(dialog.NewAccountSwitcher(m.com))
 	default:
-		// Unknown dialog
 		break
 	}
 	return tea.Batch(cmds...)
@@ -4344,6 +4999,17 @@ func (m *UI) openQuitDialog() tea.Cmd {
 	quitDialog := dialog.NewQuit(m.com)
 	m.dialog.OpenDialog(quitDialog)
 	return nil
+}
+
+// openLoginDialog opens the OAuth login dialog.
+func (m *UI) openLoginDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.LoginID) {
+		m.dialog.BringToFront(dialog.LoginID)
+		return nil
+	}
+	loginDialog, cmd := dialog.NewLogin(m.com)
+	m.dialog.OpenDialog(loginDialog)
+	return cmd
 }
 
 // openModelsDialog opens the models dialog.
@@ -4365,6 +5031,19 @@ func (m *UI) openModelsDialog() tea.Cmd {
 	return nil
 }
 
+// openProvidersDialog opens the providers toggle dialog. Always recreates
+// the dialog so the list reflects the latest config state.
+func (m *UI) openProvidersDialog() {
+	m.dialog.CloseDialog(dialog.ProvidersID)
+	m.dialog.OpenDialog(dialog.NewProviders(m.com))
+}
+
+// openInstructionsDialog opens the instructions toggle dialog.
+func (m *UI) openInstructionsDialog() {
+	m.dialog.CloseDialog(dialog.InstructionsID)
+	m.dialog.OpenDialog(dialog.NewInstructions(m.com))
+}
+
 // openCommandsDialog opens the commands dialog.
 func (m *UI) openCommandsDialog() tea.Cmd {
 	if m.dialog.ContainsDialog(dialog.CommandsID) {
@@ -4374,7 +5053,7 @@ func (m *UI) openCommandsDialog() tea.Cmd {
 	}
 
 	var sessionID string
-	hasSession := m.session != nil
+	hasSession := m.hasSession()
 	if hasSession {
 		sessionID = m.session.ID
 	}
@@ -4385,6 +5064,7 @@ func (m *UI) openCommandsDialog() tea.Cmd {
 	if err != nil {
 		return util.ReportError(err)
 	}
+	commands.SetWindowWidth(m.width)
 
 	m.dialog.OpenDialog(commands)
 
@@ -4416,6 +5096,64 @@ func (m *UI) openNotificationsDialog() tea.Cmd {
 
 	notificationsDialog := dialog.NewNotifications(m.com)
 	m.dialog.OpenDialog(notificationsDialog)
+	return nil
+}
+
+func (m *UI) openProjectsDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.ProjectsID) {
+		m.dialog.BringToFront(dialog.ProjectsID)
+		return nil
+	}
+	projectsDialog := dialog.NewProjects(m.com)
+	m.dialog.OpenDialog(projectsDialog)
+	return projectsDialog.InitialCmd()
+}
+
+func (m *UI) openTasksIfPresent() tea.Cmd {
+	return func() tea.Msg {
+		tasks, err := m.com.Workspace.ListTasks(context.Background())
+		return tasksAvailabilityMsg{available: len(tasks) > 0, err: err}
+	}
+}
+
+func (m *UI) openTasksDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.TasksID) {
+		m.dialog.BringToFront(dialog.TasksID)
+		return nil
+	}
+	tasksDialog := dialog.NewTasks(m.com)
+	m.dialog.OpenDialog(tasksDialog)
+	return tasksDialog.InitialCmd()
+}
+
+func (m *UI) openCodebaseIndexDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.CodebaseIndexID) {
+		m.dialog.BringToFront(dialog.CodebaseIndexID)
+		return nil
+	}
+
+	indexDialog, cmd := dialog.NewCodebaseIndex(m.com)
+	m.dialog.OpenDialog(indexDialog)
+	return cmd
+}
+
+func (m *UI) openMCPServersDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.MCPServersID) {
+		m.dialog.BringToFront(dialog.MCPServersID)
+		return nil
+	}
+
+	serversDialog, cmd := dialog.NewMCPServers(m.com)
+	m.dialog.OpenDialog(serversDialog)
+	return cmd
+}
+
+func (m *UI) openAgentDefinitionsDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.AgentDefinitionsID) {
+		m.dialog.BringToFront(dialog.AgentDefinitionsID)
+		return nil
+	}
+	m.dialog.OpenDialog(dialog.NewAgentDefinitions(m.com))
 	return nil
 }
 
@@ -4451,11 +5189,9 @@ func (m *UI) openFilesDialog() tea.Cmd {
 		return nil
 	}
 
-	filePicker, cmd := dialog.NewFilePicker(m.com)
+	filePicker, cmd := dialog.NewFilePicker(m.com, m.currentImageExtensions(), m.currentImageSourceLimit())
 	filePicker.SetImageCapabilities(&m.caps)
 	m.dialog.OpenDialog(filePicker)
-	event.FilePickerOpened()
-
 	return cmd
 }
 
@@ -4563,21 +5299,15 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 	case notify.TypeAgentFinished:
 		common.StopTurn()
 		cmds = append(cmds, m.sendNotification(notification.Notification{
-			Title:   "Crush is waiting...",
+			Title:   "Crux is waiting...",
 			Message: fmt.Sprintf("Agent's turn completed in \"%s\"", n.SessionTitle),
 		}))
-		if m.com.IsHyper() {
-			cmds = append(cmds, m.fetchHyperCredits())
-		}
+		cmds = append(cmds, m.fetchProviderUsage())
 	case notify.TypeAgentError:
 		// Terminal edge like TypeAgentFinished; fall through to the
 		// busy/queue refresh below.
 	case notify.TypeReAuthenticate:
 		return m.handleReAuthenticate(n.ProviderID)
-	case notify.TypeAWSSSOAuth:
-		return m.handleAWSSSOAuth(n.AWSSOCommand, n.AWSSOURL)
-	case notify.TypeAWSSSOAuthResult:
-		return m.handleAWSSSOAuthResult(n.Message)
 	default:
 		return nil
 	}
@@ -4601,58 +5331,27 @@ func (m *UI) handleReAuthenticate(providerID string) tea.Cmd {
 	if cfg == nil {
 		return nil
 	}
-	providerCfg, ok := cfg.Providers.Get(providerID)
-	if !ok {
+	if _, ok := cfg.Providers.Get(providerID); !ok {
 		return nil
+	}
+	if registration, ok := config.ProviderCapabilities().Lookup(providerID); ok && registration.OAuth != nil {
+		login, cmd, err := dialog.NewLoginForProvider(m.com, registration.ProviderID)
+		if err != nil {
+			return util.ReportError(err)
+		}
+		if m.dialog.ContainsDialog(dialog.LoginID) {
+			m.dialog.BringToFront(dialog.LoginID)
+			return nil
+		}
+		m.dialog.OpenDialogWithGrace(login)
+		return cmd
 	}
 	agentCfg, ok := cfg.Agents[config.AgentCoder]
 	if !ok {
 		return nil
 	}
+	providerCfg, _ := cfg.Providers.Get(providerID)
 	return m.openAuthenticationDialog(providerCfg.ToProvider(), cfg.Models[agentCfg.Model], agentCfg.Model)
-}
-
-// handleAWSSSOAuth opens the AWS SSO progress dialog (or updates the SSO URL
-// on an already-open one). The refresh command runs in the coordinator; this
-// dialog is a display surface driven by agent notifications.
-func (m *UI) handleAWSSSOAuth(command, url string) tea.Cmd {
-	// Update the URL on an already-open dialog.
-	if existing := m.dialog.Dialog(dialog.AWSSSOID); existing != nil {
-		if awsDlg, ok := existing.(*dialog.AWSSSO); ok && url != "" {
-			awsDlg.SetURL(url)
-		}
-		m.dialog.BringToFront(dialog.AWSSSOID)
-		return nil
-	}
-	if command == "" {
-		return nil
-	}
-	dlg, cmd := dialog.NewAWSSSO(m.com, command)
-	if url != "" {
-		dlg.SetURL(url)
-	}
-	m.dialog.OpenDialogWithGrace(dlg)
-	return cmd
-}
-
-// handleAWSSSOAuthResult finishes the AWS SSO dialog once the refresh command
-// exits: it closes on success or shows the error so the user can dismiss it.
-func (m *UI) handleAWSSSOAuthResult(errMsg string) tea.Cmd {
-	existing := m.dialog.Dialog(dialog.AWSSSOID)
-	if existing == nil {
-		return nil
-	}
-	awsDlg, ok := existing.(*dialog.AWSSSO)
-	if !ok {
-		return nil
-	}
-	if errMsg == "" {
-		// Success: the turn retries transparently, so no need to linger.
-		m.dialog.CloseDialog(dialog.AWSSSOID)
-		return nil
-	}
-	awsDlg.Finish(errMsg)
-	return nil
 }
 
 // newSession clears the current session state and prepares for a new session.
@@ -4664,6 +5363,7 @@ func (m *UI) newSession() tea.Cmd {
 	}
 
 	m.session = nil
+	m.setEditorPrompt(m.yoloModeCached())
 	m.sidebarOffset = 0
 	m.sessionFiles = nil
 	m.sessionFileReads = nil
@@ -4675,6 +5375,7 @@ func (m *UI) newSession() tea.Cmd {
 	m.pillsAutoExpanded = false
 	m.promptQueue = 0
 	m.promptQueueItems = nil
+	m.promptQueueDrafts = nil
 	m.promptQueueCheckedAt = time.Now()
 	m.invalidateBusyCaches()
 	m.invalidatePromptQueue()
@@ -4688,6 +5389,7 @@ func (m *UI) newSession() tea.Cmd {
 		},
 		m.loadPromptHistory(),
 		m.reportCurrentSession(""),
+		m.fetchProviderUsage(),
 	)
 }
 
@@ -4756,15 +5458,7 @@ func (m *UI) handlePasteMsg(msg tea.PasteMsg) tea.Cmd {
 				return false
 			}
 
-			lowerPath := strings.ToLower(path)
-			isValid := false
-			for _, ext := range common.AllowedImageTypes {
-				if strings.HasSuffix(lowerPath, ext) {
-					isValid = true
-					break
-				}
-			}
-			if !isValid {
+			if !hasAllowedImageExtension(path, m.currentImageExtensions()) {
 				return false
 			}
 		}
@@ -4782,6 +5476,11 @@ func (m *UI) handlePasteMsg(msg tea.PasteMsg) tea.Cmd {
 		cmds = append(cmds, m.handleFilePathPaste(path))
 	}
 	return tea.Batch(cmds...)
+}
+
+func hasAllowedImageExtension(path string, allowed []string) bool {
+	extension := strings.ToLower(filepath.Ext(path))
+	return slices.Contains(allowed, extension)
 }
 
 func hasPasteExceededThreshold(msg tea.PasteMsg) bool {
@@ -4810,8 +5509,12 @@ func (m *UI) handleFilePathPaste(path string) tea.Cmd {
 		if fileInfo.IsDir() {
 			return util.ReportWarn("Cannot attach a directory")
 		}
-		if fileInfo.Size() > common.MaxAttachmentSize {
-			return util.ReportWarn("File is too big (>5mb)")
+		limit := common.MaxAttachmentSize
+		if hasAllowedImageExtension(path, m.currentImageExtensions()) {
+			limit = m.currentImageSourceLimit()
+		}
+		if fileInfo.Size() > limit {
+			return util.ReportWarn(fmt.Sprintf("File is too big (>%dmb)", limit/(1024*1024)))
 		}
 
 		content, err := os.ReadFile(path)
@@ -4836,10 +5539,10 @@ func (m *UI) handleFilePathPaste(path string) tea.Cmd {
 // interpreting clipboard text as a file path.
 func (m *UI) pasteImageFromClipboard() tea.Msg {
 	imageData, err := clipboard.Read(clipboard.FormatImage)
-	if int64(len(imageData)) > common.MaxAttachmentSize {
+	if int64(len(imageData)) > m.currentImageSourceLimit() {
 		return util.InfoMsg{
 			Type: util.InfoTypeError,
-			Msg:  "File too large, max 5MB",
+			Msg:  fmt.Sprintf("File too large, max %dMB before resizing", m.currentImageSourceLimit()/(1024*1024)),
 		}
 	}
 	name := fmt.Sprintf("paste_%d.png", m.pasteIdx())
@@ -4863,15 +5566,7 @@ func (m *UI) pasteImageFromClipboard() tea.Msg {
 		return nil // Clipboard does not contain an image or valid file path
 	}
 
-	lowerPath := strings.ToLower(path)
-	isAllowed := false
-	for _, ext := range common.AllowedImageTypes {
-		if strings.HasSuffix(lowerPath, ext) {
-			isAllowed = true
-			break
-		}
-	}
-	if !isAllowed {
+	if !hasAllowedImageExtension(path, m.currentImageExtensions()) {
 		return util.NewInfoMsg("File type is not a supported image format")
 	}
 
@@ -4882,10 +5577,10 @@ func (m *UI) pasteImageFromClipboard() tea.Msg {
 			Msg:  fmt.Sprintf("Unable to read file: %v", statErr),
 		}
 	}
-	if fileInfo.Size() > common.MaxAttachmentSize {
+	if fileInfo.Size() > m.currentImageSourceLimit() {
 		return util.InfoMsg{
 			Type: util.InfoTypeError,
-			Msg:  "File too large, max 5MB",
+			Msg:  fmt.Sprintf("File too large, max %dMB before resizing", m.currentImageSourceLimit()/(1024*1024)),
 		}
 	}
 
@@ -4939,6 +5634,9 @@ func (m *UI) drawSessionDetails(scr uv.Screen, area uv.Rectangle) {
 		"",
 		m.modelInfo(width),
 		"",
+	}
+	if usageBars := m.usageBars(width, true); usageBars != "" {
+		blocks = append(blocks, usageBars, "")
 	}
 
 	detailsHeader := lipgloss.JoinVertical(
@@ -5036,8 +5734,7 @@ func (m *UI) copyChatHighlight() tea.Cmd {
 		text,
 		"Selected text copied to clipboard",
 		func() tea.Msg {
-			m.chat.ClearMouse()
-			return nil
+			return chatHighlightCopiedMsg{}
 		},
 	)
 }
@@ -5059,15 +5756,25 @@ func (m *UI) disableDockerMCP() tea.Msg {
 	return util.NewInfoMsg("Docker MCP disabled successfully")
 }
 
-// renderLogo renders the Crush logo with the given styles and dimensions.
-func renderLogo(t *styles.Styles, compact, hyper bool, width int) string {
-	return logo.Render(t.Logo.GradCanvas, version.Version, compact, logo.Opts{
+// renderLogo renders the Crux logo with the given styles and dimensions.
+// A non-nil brand replaces the wordmark and gradient with provider branding.
+func renderLogo(t *styles.Styles, compact, sidebar bool, width int, brand *providerBrand) string {
+	opts := logo.Opts{
 		FieldColor:   t.Logo.FieldColor,
 		TitleColorA:  t.Logo.TitleColorA,
 		TitleColorB:  t.Logo.TitleColorB,
-		CharmColor:   t.Logo.CharmColor,
 		VersionColor: t.Logo.VersionColor,
 		Width:        width,
-		Hyper:        hyper,
-	})
+		Sidebar:      sidebar,
+	}
+	if brand != nil {
+		opts.Title = brand.Title
+		opts.TitleColorA = brand.GradA
+		opts.TitleColorB = brand.GradB
+		opts.VersionColor = brand.Accent
+		// Match the diagonal fields above/below the wordmark to the
+		// brand color.
+		opts.FieldColor = brand.Accent
+	}
+	return logo.Render(t.Logo.GradCanvas, version.Version, compact, opts)
 }

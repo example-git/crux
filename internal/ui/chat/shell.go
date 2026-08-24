@@ -8,11 +8,11 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/charmbracelet/crush/internal/ui/anim"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/list"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/ui/anim"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/list"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 // shellSeq provides unique IDs for ShellItems even when the same
@@ -228,7 +228,7 @@ func (s *ShellItem) RawRender(width int) string {
 	}
 
 	// Remap raw ANSI 16-color codes onto legible Charmtone colors so
-	// dark terminal defaults don't render illegibly on Crush's
+	// dark terminal defaults don't render illegibly on Crux's
 	// background.
 	// Strip trailing whitespace and bare ANSI resets before remapping.
 	// Programs like `task` emit "\x1b[0m\n" after their last line of

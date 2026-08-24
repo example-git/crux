@@ -10,8 +10,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/csync"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/csync"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/shell"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/shell"
 	"github.com/stretchr/testify/require"
 )
 
@@ -188,20 +188,20 @@ func TestBuildEnv(t *testing.T) {
 		}
 	}
 
-	require.Equal(t, EventPreToolUse, envMap["CRUSH_EVENT"])
-	require.Equal(t, "bash", envMap["CRUSH_TOOL_NAME"])
-	require.Equal(t, "sess-1", envMap["CRUSH_SESSION_ID"])
-	require.Equal(t, "/work", envMap["CRUSH_CWD"])
-	require.Equal(t, "/project", envMap["CRUSH_PROJECT_DIR"])
-	require.Equal(t, "ls", envMap["CRUSH_TOOL_INPUT_COMMAND"])
-	require.Equal(t, "/tmp/f.txt", envMap["CRUSH_TOOL_INPUT_FILE_PATH"])
+	require.Equal(t, EventPreToolUse, envMap["CRUX_EVENT"])
+	require.Equal(t, "bash", envMap["CRUX_TOOL_NAME"])
+	require.Equal(t, "sess-1", envMap["CRUX_SESSION_ID"])
+	require.Equal(t, "/work", envMap["CRUX_CWD"])
+	require.Equal(t, "/project", envMap["CRUX_PROJECT_DIR"])
+	require.Equal(t, "ls", envMap["CRUX_TOOL_INPUT_COMMAND"])
+	require.Equal(t, "/tmp/f.txt", envMap["CRUX_TOOL_INPUT_FILE_PATH"])
 
-	// Shared Crush markers must be present so hook-authored scripts can
-	// detect they're running under Crush the same way bash-tool-invoked
+	// Shared Crux markers must be present so hook-authored scripts can
+	// detect they're running under Crux the same way bash-tool-invoked
 	// scripts can.
-	require.Equal(t, "1", envMap["CRUSH"])
-	require.Equal(t, "crush", envMap["AGENT"])
-	require.Equal(t, "crush", envMap["AI_AGENT"])
+	require.Equal(t, "1", envMap["CRUX"])
+	require.Equal(t, "crux", envMap["AGENT"])
+	require.Equal(t, "crux", envMap["AI_AGENT"])
 }
 
 func splitFirst(s, sep string) []string {
@@ -524,7 +524,7 @@ func TestRunnerParallelExecution(t *testing.T) {
 func TestRunnerEnvVarsPropagated(t *testing.T) {
 	t.Parallel()
 	hookCfg := config.HookConfig{
-		Command: `printf '{"decision":"allow","context":"%s"}' "$CRUSH_TOOL_NAME"`,
+		Command: `printf '{"decision":"allow","context":"%s"}' "$CRUX_TOOL_NAME"`,
 	}
 	r := NewRunner([]config.HookConfig{hookCfg}, t.TempDir(), t.TempDir())
 	result, err := r.Run(context.Background(), EventPreToolUse, "sess", "bash", `{}`)
@@ -661,6 +661,7 @@ func TestRunnerAbandonRaceSafety(t *testing.T) {
 	// Synchronize shutdown with the abandoned goroutine so the test
 	// exits cleanly even under -race.
 	var wg sync.WaitGroup
+	wg.Add(1)
 	release := make(chan struct{})
 	t.Cleanup(func() {
 		close(release)
@@ -668,7 +669,6 @@ func TestRunnerAbandonRaceSafety(t *testing.T) {
 	})
 
 	runShell = func(_ context.Context, opts shell.RunOptions) error {
-		wg.Add(1)
 		defer wg.Done()
 		// Write before the caller observes ctx.Done(); the caller will
 		// not read the buffer while we still own it.
@@ -748,7 +748,7 @@ func TestParseStdoutClaudeCodeFormat(t *testing.T) {
 		require.Equal(t, DecisionNone, r.Decision)
 	})
 
-	t.Run("crush format still works", func(t *testing.T) {
+	t.Run("crux format still works", func(t *testing.T) {
 		t.Parallel()
 		r := parseStdout(`{"decision":"allow","context":"hello"}`)
 		require.Equal(t, DecisionAllow, r.Decision)

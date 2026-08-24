@@ -21,8 +21,8 @@ func TestWrite_Success(t *testing.T) {
 	require.Contains(t, page, "linear")
 	// A successful page counts itself down and closes.
 	require.Contains(t, page, `data-delay="5"`)
-	// Everything needed to render must be inlined, so the page still
-	// works with no network beyond the optional web font.
+	// Everything needed to render must be inlined, so the page works
+	// without network access.
 	require.Contains(t, page, "<svg")
 	require.Contains(t, page, "data:image/svg")
 }
@@ -48,23 +48,20 @@ func TestWrite_FailureDoesNotAutoClose(t *testing.T) {
 	require.NotContains(t, page, `data-delay=`)
 }
 
-// TestWrite_GrumpyOnFailure proves the artwork matches the outcome: a
-// grumpy heart when authorization fails, the smiling one when it works.
-// The two are told apart by a path unique to each drawing.
-func TestWrite_GrumpyOnFailure(t *testing.T) {
+// TestWrite_FailureArtwork proves the artwork matches the outcome.
+func TestWrite_FailureArtwork(t *testing.T) {
 	t.Parallel()
 
-	// The grumpy drawing carries a dark red accent (#ab2454) that the
-	// smiling heart does not.
-	const grumpy = "#ab2454"
+	// The failure mark carries an amber accent absent from the success mark.
+	const failureAccent = "#ff9f1c"
 
 	var failed strings.Builder
 	require.NoError(t, Write(&failed, Result{ErrorCode: "access_denied"}))
-	require.Contains(t, failed.String(), grumpy)
+	require.Contains(t, failed.String(), failureAccent)
 
 	var ok strings.Builder
 	require.NoError(t, Write(&ok, Result{Subject: "linear"}))
-	require.NotContains(t, ok.String(), grumpy)
+	require.NotContains(t, ok.String(), failureAccent)
 }
 
 // TestWrite_TerseFailure covers providers that report an error code with no
@@ -80,7 +77,7 @@ func TestWrite_TerseFailure(t *testing.T) {
 	require.Contains(t, page, "did not")
 	// With no subject the sentence must not dangle on a preposition.
 	require.NotContains(t, page, "access to <span")
-	require.Contains(t, page, "Crush was not granted access.")
+	require.Contains(t, page, "Crux was not granted access.")
 }
 
 // TestWrite_EscapesUntrustedText proves provider-supplied strings cannot

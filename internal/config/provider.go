@@ -1,12 +1,12 @@
 package config
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,20 +17,47 @@ import (
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/catwalk/pkg/embedded"
-	"github.com/charmbracelet/crush/internal/agent/hyper"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/home"
 	"github.com/charmbracelet/x/etag"
+	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/home"
+	"github.com/example-git/crux/internal/oauth/codex"
+	"github.com/example-git/crux/internal/oauth/gemini"
+	"github.com/example-git/crux/internal/providerplugin"
+	"github.com/example-git/crux/internal/providerregistry"
 )
 
 type syncer[T any] interface {
 	Get(context.Context) (T, error)
 }
 
+type ProviderProfile string
+
+const (
+	ProviderProfileCoreOnly     ProviderProfile = "core-only"
+	ProviderProfileIntegrated   ProviderProfile = "integrated"
+	ProviderProfilePluginCompat ProviderProfile = "plugin-compat"
+	ProviderProfilePluginNative ProviderProfile = "plugin-native"
+)
+
+// DefaultProviderProfile is a release-time ceiling and may be set with -ldflags
+// -X. The host environment can select another supported profile only when the
+// release uses the default compatibility profile.
+var DefaultProviderProfile = string(ProviderProfilePluginCompat)
+
+type providerRolloutPolicy struct {
+	Profile         ProviderProfile
+	Enabled         map[string]bool
+	LegacyCompat    map[string]bool
+	ExplicitProfile bool
+}
+
 var (
-	providerOnce sync.Once
-	providerList []catwalk.Provider
-	providerErr  error
+	providerOnce           sync.Once
+	providerList           []catwalk.Provider
+	providerRegistry       *providerregistry.Registry
+	providerPluginStatuses map[string]providerplugin.Status
+	providerOwnerModes     map[string]providerregistry.OwnerMode
+	providerErr            error
 )
 
 // file to cache provider data
@@ -41,8 +68,8 @@ func cachePathFor(name string) string {
 	}
 
 	// return the path to the main data directory
-	// for windows, it should be in `%LOCALAPPDATA%/crush/`
-	// for linux and macOS, it should be in `$HOME/.local/share/crush/`
+	// for Windows, it should be in `%LOCALAPPDATA%/crux/`
+	// for Linux and macOS, it should be in `$HOME/.ai-cli/data/crux/`
 	if runtime.GOOS == "windows" {
 		localAppData := os.Getenv("LOCALAPPDATA")
 		if localAppData == "" {
@@ -51,13 +78,15 @@ func cachePathFor(name string) string {
 		return filepath.Join(localAppData, appName, name+".json")
 	}
 
-	return filepath.Join(home.Dir(), ".local", "share", appName, name+".json")
+	return filepath.Join(home.Data(), appName, name+".json")
 }
 
 // UpdateProviders updates the Catwalk providers list from a specified source.
 func UpdateProviders(pathOrURL string) error {
 	var providers []catwalk.Provider
-	pathOrURL = cmp.Or(pathOrURL, os.Getenv("CATWALK_URL"), defaultCatwalkURL)
+	if pathOrURL == "" {
+		pathOrURL = "embedded"
+	}
 
 	switch {
 	case pathOrURL == "embedded":
@@ -66,7 +95,7 @@ func UpdateProviders(pathOrURL string) error {
 		var err error
 		providers, err = catwalk.NewWithURL(pathOrURL).GetProviders(context.Background(), "")
 		if err != nil {
-			return fmt.Errorf("failed to fetch providers from Catwalk: %w", err)
+			return fmt.Errorf("failed to fetch providers: %w", err)
 		}
 	default:
 		content, err := os.ReadFile(pathOrURL)
@@ -81,182 +110,358 @@ func UpdateProviders(pathOrURL string) error {
 		}
 	}
 
+	providers = retainedCatalogProviders(providers)
+	if len(providers) == 0 {
+		return fmt.Errorf("no supported OpenAI-compatible providers found in the provided source")
+	}
 	if err := newCache[[]catwalk.Provider](cachePathFor("providers")).Store(providers); err != nil {
 		return fmt.Errorf("failed to save providers to cache: %w", err)
 	}
 
-	slog.Info("Providers updated successfully", "count", len(providers), "from", pathOrURL, "to", cachePathFor)
+	slog.Info("Providers updated successfully", "count", len(providers), "from", pathOrURL, "to", cachePathFor("providers"))
 	return nil
 }
 
-// resolveHyperAPIKey returns the Hyper API key from the environment or
-// the raw config value. The env var takes precedence.
-func resolveHyperAPIKey(cfg *Config) string {
-	if key := os.Getenv("HYPER_API_KEY"); key != "" {
-		return key
-	}
-	if cfg == nil || cfg.Providers == nil {
-		return ""
-	}
-	pc, ok := cfg.Providers.Get("hyper")
-	if !ok {
-		return ""
-	}
-	return pc.APIKey
-}
+var catwalkSyncer = &catwalkSync{}
 
-// HyperTokenRefresher is a function that refreshes the Hyper OAuth
-// token. It is passed to Providers so the catalog fetch can retry on
-// 401 without relying on package-global state.
-type HyperTokenRefresher func(context.Context) error
-
-// UpdateHyper updates the Hyper provider information from a specified URL.
-func UpdateHyper(pathOrURL string) error {
-	var provider catwalk.Provider
-	pathOrURL = cmp.Or(pathOrURL, hyper.BaseURL())
-
-	switch {
-	case pathOrURL == "embedded":
-		provider = hyper.Embedded()
-	case strings.HasPrefix(pathOrURL, "http://") || strings.HasPrefix(pathOrURL, "https://"):
-		client := realHyperClient{
-			baseURL:    pathOrURL,
-			resolveKey: func() string { return resolveHyperAPIKey(nil) },
-		}
-		var err error
-		provider, err = client.Get(context.Background(), "")
-		if err != nil {
-			return fmt.Errorf("failed to fetch provider from Hyper: %w", err)
-		}
-	default:
-		content, err := os.ReadFile(pathOrURL)
-		if err != nil {
-			return fmt.Errorf("failed to read file: %w", err)
-		}
-		if err := json.Unmarshal(content, &provider); err != nil {
-			return fmt.Errorf("failed to unmarshal provider data: %w", err)
-		}
-	}
-
-	if err := newCache[catwalk.Provider](cachePathFor("hyper")).Store(provider); err != nil {
-		return fmt.Errorf("failed to save Hyper provider to cache: %w", err)
-	}
-
-	slog.Info("Hyper provider updated successfully", "from", pathOrURL, "to", cachePathFor("hyper"))
-	return nil
-}
-
-var (
-	catwalkSyncer = &catwalkSync{}
-	hyperSyncer   = &hyperSync{}
-)
-
-// Providers returns the list of providers, taking into account cached results
-// and whether or not auto update is enabled.
-//
-// It will:
-// 1. if auto update is disabled, it'll return the embedded providers at the
-// time of release.
-// 2. load the cached providers
-// 3. try to get the fresh list of providers, and return either this new list,
-// the cached list, or the embedded list if all others fail.
-//
-// A returned error is advisory: it reports that the catalog could not be
-// cached, or that an upstream returned nothing usable. It never means that no
-// providers are available, so callers should surface it as a warning and keep
-// using the returned list. A refresh that simply could not reach the network
-// is not an error at all: the cached or embedded catalog is a sound answer, so
-// those are logged and the fallback is returned.
-func Providers(cfg *Config, opts ...HyperTokenRefresher) ([]catwalk.Provider, error) {
+func Providers(cfg *Config) ([]catwalk.Provider, error) {
 	providerOnce.Do(func() {
 		var wg sync.WaitGroup
 		providers := csync.NewSlice[catwalk.Provider]()
-		autoupdate := !cfg.Options.DisableProviderAutoUpdate
 		customProvidersOnly := cfg.Options.DisableDefaultProviders
 
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 
-		// Each goroutine owns its own error so the two can report
-		// independently without racing on a shared slice.
-		var catwalkErr, hyperErr error
-		var hyperProvider catwalk.Provider
+		var catalogErr error
 
 		wg.Go(func() {
 			if customProvidersOnly {
 				return
 			}
-			catwalkURL := cmp.Or(os.Getenv("CATWALK_URL"), defaultCatwalkURL)
-			client := catwalk.NewWithURL(catwalkURL)
-			path := cachePathFor("providers")
-			catwalkSyncer.Init(client, path, autoupdate)
-
-			// A failure to refresh or cache the catalog is worth
-			// reporting, but the syncer still hands back the cached or
-			// embedded list. Dropping that would leave the user with no
-			// providers at all over a transient disk or network problem.
+			catwalkSyncer.Init(cachePathFor("providers"))
 			items, err := catwalkSyncer.Get(ctx)
 			if err != nil {
-				catwalkURL := fmt.Sprintf("%s/v2/providers", cmp.Or(os.Getenv("CATWALK_URL"), defaultCatwalkURL))
-				catwalkErr = fmt.Errorf("Crush was unable to fetch an updated list of providers from %s. Consider setting CRUSH_DISABLE_PROVIDER_AUTO_UPDATE=1 to use the embedded providers bundled at the time of this Crush release. You can also update providers manually. For more info see crush update-providers --help.\n\nCause: %w", catwalkURL, err) //nolint:staticcheck
+				catalogErr = err
 			}
 			providers.Append(items...)
 		})
 
-		wg.Go(func() {
-			if customProvidersOnly {
-				return
-			}
-			path := cachePathFor("hyper")
-			cfgSnapshot := cfg
-			var refresher func(context.Context) error
-			if len(opts) > 0 {
-				refresher = opts[0]
-			}
-			hyperSyncer.Init(realHyperClient{
-				baseURL:      hyper.BaseURL(),
-				resolveKey:   func() string { return resolveHyperAPIKey(cfgSnapshot) },
-				refreshToken: refresher,
-			}, path, autoupdate)
-
-			// As above: keep whatever provider we were handed. The syncer
-			// already falls back to the cached or embedded copy, so an
-			// error here means "could not refresh", not "no Hyper". This
-			// matters more than for other providers because Hyper's
-			// endpoint and model list live in the catalog rather than in
-			// the user's config: dropping it signs a logged-in user out.
-			item, err := hyperSyncer.Get(ctx)
-			if err != nil {
-				hyperErr = fmt.Errorf("Crush was unable to fetch updated information from Hyper: %w", err) //nolint:staticcheck
-			}
-			hyperProvider = item
-		})
-
 		wg.Wait()
 
-		if hyperProvider.ID != "" {
-			providerList = append([]catwalk.Provider{hyperProvider}, slices.Collect(providers.Seq())...)
-		} else {
-			providerList = slices.Collect(providers.Seq())
+		providerList = slices.Collect(providers.Seq())
+		var registrations []providerregistry.Registration
+		if !customProvidersOnly {
+			policy, policyErr := parseProviderRolloutPolicy()
+			if policyErr != nil {
+				catalogErr = errors.Join(catalogErr, policyErr)
+				policy = providerRolloutPolicy{Profile: ProviderProfileCoreOnly}
+			}
+			registrations = providerregistry.Integrated()
+			integrated := []catwalk.Provider{
+				gemini.CatwalkProvider(),
+				codex.CatwalkProvider(),
+			}
+			if policy.Profile == ProviderProfileCoreOnly || policy.Profile == ProviderProfilePluginNative {
+				providerList = filterExcludedIntegratedCatalog(providerList, registrations)
+				registrations = slices.DeleteFunc(registrations, func(registration providerregistry.Registration) bool {
+					return registration.Construction != providerregistry.ConstructionCopilot
+				})
+				integrated = nil
+			}
+			pluginManager, pluginErr := providerplugin.NewManager(ctx, providerplugin.DefaultPaths(GlobalWorkspaceDir(), GlobalCacheDir()))
+			var pluginProviders []catwalk.Provider
+			var presetProviders []catwalk.Provider
+			var pluginRegistrations []providerregistry.Registration
+			if pluginErr == nil {
+				providerPluginStatuses = make(map[string]providerplugin.Status)
+				for _, status := range pluginManager.Snapshot().Plugins {
+					if status.ID != "" {
+						providerPluginStatuses[status.ID] = status
+					}
+				}
+				pluginProviders, pluginErr = pluginManager.CatalogProviders()
+				presetProviders = pluginManager.CatalogPresets()
+				if pluginErr == nil {
+					for _, bundle := range pluginManager.RegisteredBundles() {
+						registration, err := providerregistry.FromManifest(bundle.Manifest, bundle.StaticText)
+						if err != nil {
+							pluginErr = errors.Join(pluginErr, err)
+							continue
+						}
+						pluginRegistrations = append(pluginRegistrations, registration)
+					}
+				}
+				pluginManager.Close()
+			}
+			if pluginErr != nil {
+				catalogErr = errors.Join(catalogErr, fmt.Errorf("load provider plugins: %w", pluginErr))
+			}
+			providerList = composeProviderPresets(providerList, presetProviders)
+			ownerModes := rolloutOwnerModes(policy, registrations, pluginRegistrations)
+			providerOwnerModes = maps.Clone(ownerModes)
+			coreOwned := make(map[string]bool, len(providerList)+len(integrated))
+			for _, provider := range append(cloneProviderCatalog(providerList), integrated...) {
+				coreOwned[string(provider.ID)] = true
+			}
+			var registryErr error
+			providerList, registryErr = composeProviderCatalog(providerList, integrated, pluginProviders, ownerModes)
+			if registryErr != nil {
+				catalogErr = errors.Join(catalogErr, registryErr)
+			}
+			owned := make(map[string]bool, len(providerList))
+			for _, provider := range providerList {
+				owned[string(provider.ID)] = true
+			}
+			eligiblePlugins := make([]providerregistry.Registration, 0, len(pluginRegistrations))
+			for _, registration := range pluginRegistrations {
+				declared := slices.ContainsFunc(pluginProviders, func(provider catwalk.Provider) bool {
+					return string(provider.ID) == registration.ProviderID
+				})
+				pluginSelected := ownerModes[registration.ProviderID] == providerregistry.OwnerPluginCompat || ownerModes[registration.ProviderID] == providerregistry.OwnerPluginNative
+				if declared && owned[registration.ProviderID] && (!coreOwned[registration.ProviderID] || pluginSelected) {
+					eligiblePlugins = append(eligiblePlugins, registration)
+				}
+			}
+			registrations, registryErr = providerregistry.SelectOwners(registrations, eligiblePlugins, ownerModes)
+			if registryErr != nil {
+				catalogErr = errors.Join(catalogErr, fmt.Errorf("select provider owners: %w", registryErr))
+			}
 		}
-		providerErr = errors.Join(catwalkErr, hyperErr)
+		providerRegistry, providerErr = providerregistry.New(registrations...)
+		if providerErr != nil {
+			catalogErr = errors.Join(catalogErr, fmt.Errorf("build provider capability registry: %w", providerErr))
+		}
+		providerErr = catalogErr
 	})
-	return providerList, providerErr
+	return cloneProviderCatalog(providerList), providerErr
 }
 
-// UpdateProviderInList replaces a provider in the memoized provider list
-// returned by Providers(). This is used after re-fetching a single
-// provider (e.g. Hyper after OAuth) so that all callers of Providers()
-// see the updated entry without needing to reset sync.Once.
-func UpdateProviderInList(provider catwalk.Provider) {
-	for i, p := range providerList {
-		if p.ID == provider.ID {
-			providerList[i] = provider
-			return
+// ProviderRegistry returns the immutable capability registry composed with the
+// provider catalog. Providers must be called first; a nil result means catalog
+// initialization failed before a registry could be committed.
+func ProviderRegistry() *providerregistry.Registry {
+	if providerRegistry == nil {
+		return nil
+	}
+	return providerRegistry.Clone()
+}
+
+// ProviderCapabilities returns the current capability registry. Before catalog
+// initialization, command and UI entrypoints use the core-owned registrations;
+// after initialization an intentionally empty registry remains empty.
+func ProviderPluginAvailability(pluginID string) (providerplugin.Status, providerregistry.OwnerMode, bool) {
+	status, found := providerPluginStatuses[pluginID]
+	mode := providerOwnerModes[status.ProviderID]
+	return status, mode, found
+}
+
+func ProviderCapabilities() *providerregistry.Registry {
+	if registry := ProviderRegistry(); registry != nil {
+		return registry
+	}
+	policy, err := parseProviderRolloutPolicy()
+	registrations := providerregistry.Integrated()
+	if err != nil || policy.Profile != ProviderProfileIntegrated {
+		registrations = slices.DeleteFunc(registrations, func(registration providerregistry.Registration) bool {
+			return registration.Construction != providerregistry.ConstructionCopilot
+		})
+	}
+	registry, _ := providerregistry.New(registrations...)
+	return registry
+}
+
+func ProviderBehaviorCapabilities(providerID string) (providerregistry.Registration, bool) {
+	if registration, ok := ProviderCapabilities().Lookup(providerID); ok && registration.ProviderID == providerID {
+		return registration, true
+	}
+	for _, registration := range providerregistry.Integrated() {
+		if registration.ProviderID == providerID {
+			return registration, true
 		}
 	}
-	// Provider not found in list; prepend it.
-	providerList = append([]catwalk.Provider{provider}, providerList...)
+	return providerregistry.Registration{}, false
+}
+
+// composeProviderCatalog creates one ordered provider registry projection.
+// Base catalog entries keep their original slots. Integrated compatibility
+// registrations append only when absent. Trusted plugin registrations append in
+// manager order only when selected by the host rollout policy.
+func parseProviderIDSet(value string) map[string]bool {
+	result := map[string]bool{}
+	for providerID := range strings.SplitSeq(value, ",") {
+		if providerID = strings.TrimSpace(providerID); providerID != "" {
+			result[providerID] = true
+		}
+	}
+	return result
+}
+
+func EffectiveProviderRollout() (ProviderProfile, []string, error) {
+	policy, err := parseProviderRolloutPolicy()
+	if err != nil {
+		return "", nil, err
+	}
+	enabled := make([]string, 0, len(policy.Enabled))
+	for providerID := range policy.Enabled {
+		enabled = append(enabled, providerID)
+	}
+	slices.Sort(enabled)
+	return policy.Profile, enabled, nil
+}
+
+func parseProviderRolloutPolicy() (providerRolloutPolicy, error) {
+	raw := strings.TrimSpace(os.Getenv("CRUX_PROVIDER_PROFILE"))
+	compiled := ProviderProfile(strings.TrimSpace(DefaultProviderProfile))
+	if compiled == "" {
+		compiled = ProviderProfilePluginCompat
+	}
+	policy := providerRolloutPolicy{
+		Profile:         compiled,
+		Enabled:         parseProviderIDSet(os.Getenv("CRUX_PROVIDER_PLUGINS")),
+		LegacyCompat:    parseProviderIDSet(os.Getenv("CRUX_PROVIDER_PLUGIN_COMPAT")),
+		ExplicitProfile: raw != "",
+	}
+	if raw != "" {
+		if compiled != ProviderProfilePluginCompat && ProviderProfile(raw) != compiled {
+			return providerRolloutPolicy{}, fmt.Errorf("provider rollout profile %q exceeds compiled release profile %q", raw, compiled)
+		}
+		policy.Profile = ProviderProfile(raw)
+	}
+	switch policy.Profile {
+	case ProviderProfileCoreOnly, ProviderProfileIntegrated, ProviderProfilePluginCompat, ProviderProfilePluginNative:
+		return policy, nil
+	default:
+		return providerRolloutPolicy{}, fmt.Errorf("unknown provider rollout profile %q", raw)
+	}
+}
+
+func rolloutOwnerModes(policy providerRolloutPolicy, integrated, plugins []providerregistry.Registration) map[string]providerregistry.OwnerMode {
+	modes := make(map[string]providerregistry.OwnerMode, len(integrated)+len(plugins))
+	integratedIDs := make(map[string]bool, len(integrated))
+	for _, registration := range integrated {
+		integratedIDs[registration.ProviderID] = true
+		if policy.Profile == ProviderProfileIntegrated || registration.Construction == providerregistry.ConstructionCopilot {
+			modes[registration.ProviderID] = providerregistry.OwnerIntegrated
+		} else {
+			modes[registration.ProviderID] = providerregistry.OwnerDisabled
+		}
+	}
+	allowAll := len(policy.Enabled) == 0
+	for _, plugin := range plugins {
+		allowed := allowAll || policy.Enabled[plugin.ProviderID]
+		if policy.Profile == ProviderProfileCoreOnly {
+			modes[plugin.ProviderID] = providerregistry.OwnerDisabled
+			continue
+		}
+		if !allowed || policy.Profile == ProviderProfileIntegrated {
+			if !integratedIDs[plugin.ProviderID] {
+				modes[plugin.ProviderID] = providerregistry.OwnerDisabled
+			}
+			continue
+		}
+		switch policy.Profile {
+		case ProviderProfilePluginNative:
+			if plugin.CompatibilityAdapter == "" {
+				modes[plugin.ProviderID] = providerregistry.OwnerPluginNative
+			} else {
+				modes[plugin.ProviderID] = providerregistry.OwnerDisabled
+			}
+		case ProviderProfilePluginCompat:
+			if plugin.CompatibilityAdapter == "" {
+				modes[plugin.ProviderID] = providerregistry.OwnerPluginNative
+			} else {
+				modes[plugin.ProviderID] = providerregistry.OwnerPluginCompat
+			}
+		}
+	}
+	return modes
+}
+
+func filterExcludedIntegratedCatalog(catalog []catwalk.Provider, registrations []providerregistry.Registration) []catwalk.Provider {
+	excluded := make(map[string]bool, len(registrations))
+	for _, registration := range registrations {
+		if registration.Construction != providerregistry.ConstructionCopilot {
+			excluded[registration.ProviderID] = true
+		}
+	}
+	result := cloneProviderCatalog(catalog)
+	return slices.DeleteFunc(result, func(provider catwalk.Provider) bool {
+		return excluded[string(provider.ID)]
+	})
+}
+
+func composeProviderPresets(base, presets []catwalk.Provider) []catwalk.Provider {
+	result := cloneProviderCatalog(base)
+	positions := make(map[catwalk.InferenceProvider]int, len(result)+len(presets))
+	for i, provider := range result {
+		positions[provider.ID] = i
+	}
+	for _, preset := range presets {
+		if position, exists := positions[preset.ID]; exists {
+			result[position] = cloneProvider(preset)
+			continue
+		}
+		positions[preset.ID] = len(result)
+		result = append(result, cloneProvider(preset))
+	}
+	return result
+}
+
+func composeProviderCatalog(base, integrated, plugins []catwalk.Provider, modes map[string]providerregistry.OwnerMode) ([]catwalk.Provider, error) {
+	result := slices.DeleteFunc(cloneProviderCatalog(base), func(provider catwalk.Provider) bool {
+		return modes[string(provider.ID)] == providerregistry.OwnerDisabled
+	})
+	positions := make(map[catwalk.InferenceProvider]int, len(base)+len(integrated)+len(plugins))
+	for i, provider := range result {
+		positions[provider.ID] = i
+	}
+	for _, provider := range integrated {
+		if modes[string(provider.ID)] == providerregistry.OwnerDisabled {
+			continue
+		}
+		if _, exists := positions[provider.ID]; exists {
+			continue
+		}
+		positions[provider.ID] = len(result)
+		result = append(result, cloneProvider(provider))
+	}
+	var conflicts []error
+	for _, provider := range plugins {
+		mode := modes[string(provider.ID)]
+		if mode == providerregistry.OwnerDisabled || mode == providerregistry.OwnerIntegrated {
+			continue
+		}
+		if position, exists := positions[provider.ID]; exists {
+			if mode == providerregistry.OwnerPluginCompat || mode == providerregistry.OwnerPluginNative {
+				result[position] = cloneProvider(provider)
+				continue
+			}
+			conflicts = append(conflicts, fmt.Errorf("provider plugin claim %q conflicts with an existing catalog owner", provider.ID))
+			continue
+		}
+		positions[provider.ID] = len(result)
+		result = append(result, cloneProvider(provider))
+	}
+	return result, errors.Join(conflicts...)
+}
+
+func cloneProviderCatalog(providers []catwalk.Provider) []catwalk.Provider {
+	result := make([]catwalk.Provider, len(providers))
+	for i, provider := range providers {
+		result[i] = cloneProvider(provider)
+	}
+	return result
+}
+
+func cloneProvider(provider catwalk.Provider) catwalk.Provider {
+	provider.Models = slices.Clone(provider.Models)
+	for i := range provider.Models {
+		provider.Models[i].ReasoningLevels = slices.Clone(provider.Models[i].ReasoningLevels)
+		provider.Models[i].Options.ProviderOptions = maps.Clone(provider.Models[i].Options.ProviderOptions)
+	}
+	provider.DefaultHeaders = maps.Clone(provider.DefaultHeaders)
+	return provider
 }
 
 type cache[T any] struct {
@@ -292,7 +497,7 @@ func (c cache[T]) Store(v T) error {
 		return fmt.Errorf("failed to marshal provider data: %w", err)
 	}
 
-	// Written through a temporary file and renamed into place. Several Crush
+	// Written through a temporary file and renamed into place. Several Crux
 	// instances start independently and race to refresh this cache, and a
 	// truncating write would let one of them read a half-written catalog and
 	// silently fall back to the bundled copy.

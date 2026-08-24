@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -102,12 +101,7 @@ func bodyToString(body io.ReadCloser) string {
 func formatHeaders(headers http.Header) map[string][]string {
 	filtered := make(map[string][]string)
 	for key, values := range headers {
-		lowerKey := strings.ToLower(key)
-		// Filter out sensitive headers
-		if strings.Contains(lowerKey, "authorization") ||
-			strings.Contains(lowerKey, "api-key") ||
-			strings.Contains(lowerKey, "token") ||
-			strings.Contains(lowerKey, "secret") {
+		if sensitiveName(key) {
 			filtered[key] = []string{"[REDACTED]"}
 		} else {
 			filtered[key] = values

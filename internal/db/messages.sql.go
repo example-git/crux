@@ -178,11 +178,66 @@ const listMessagesBySession = `-- name: ListMessagesBySession :many
 SELECT id, session_id, role, parts, model, created_at, updated_at, finished_at, provider, is_summary_message
 FROM messages
 WHERE session_id = ?
-ORDER BY created_at ASC
+ORDER BY created_at ASC, rowid ASC
 `
 
 func (q *Queries) ListMessagesBySession(ctx context.Context, sessionID string) ([]Message, error) {
 	rows, err := q.query(ctx, q.listMessagesBySessionStmt, listMessagesBySession, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Message{}
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Role,
+			&i.Parts,
+			&i.Model,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.FinishedAt,
+			&i.Provider,
+			&i.IsSummaryMessage,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMessagesBySessionFrom = `-- name: ListMessagesBySessionFrom :many
+SELECT m.id, m.session_id, m.role, m.parts, m.model, m.created_at, m.updated_at, m.finished_at, m.provider, m.is_summary_message
+FROM messages m
+JOIN messages checkpoint ON checkpoint.id = ?1
+WHERE m.session_id = ?2
+  AND checkpoint.session_id = m.session_id
+  AND (
+    m.created_at > checkpoint.created_at
+    OR (
+      m.created_at = checkpoint.created_at
+      AND m.rowid >= checkpoint.rowid
+    )
+  )
+ORDER BY m.created_at ASC, m.rowid ASC
+`
+
+type ListMessagesBySessionFromParams struct {
+	MessageID string `json:"message_id"`
+	SessionID string `json:"session_id"`
+}
+
+func (q *Queries) ListMessagesBySessionFrom(ctx context.Context, arg ListMessagesBySessionFromParams) ([]Message, error) {
+	rows, err := q.query(ctx, q.listMessagesBySessionFromStmt, listMessagesBySessionFrom, arg.MessageID, arg.SessionID)
 	if err != nil {
 		return nil, err
 	}

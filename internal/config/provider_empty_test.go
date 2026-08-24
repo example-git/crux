@@ -1,39 +1,61 @@
 package config
 
 import (
-	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"charm.land/catwalk/pkg/embedded"
 	"github.com/stretchr/testify/require"
 )
 
-type emptyProviderClient struct{}
+func TestUpdateProvidersDefaultsToEmbedded(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-func (m *emptyProviderClient) GetProviders(context.Context, string) ([]catwalk.Provider, error) {
-	return []catwalk.Provider{}, nil
+	require.NoError(t, UpdateProviders(""))
+	providers, _, err := newCache[[]catwalk.Provider](cachePathFor("providers")).Get()
+	require.NoError(t, err)
+	require.Equal(t, retainedCatalogProviders(embedded.GetAll()), providers)
 }
 
-// TestCatwalkSync_GetEmptyResultFromClient tests that when the client returns
-// an empty list, we fall back to cached providers and return an error.
-func TestCatwalkSync_GetEmptyResultFromClient(t *testing.T) {
-	t.Parallel()
+func TestUpdateProvidersFromExplicitFile(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	tmpDir := t.TempDir()
-	path := tmpDir + "/providers.json"
+	want := []catwalk.Provider{{ID: "local", Name: "Local", Type: catwalk.TypeOpenAICompat}}
+	data, err := json.Marshal(want)
+	require.NoError(t, err)
+	path := filepath.Join(t.TempDir(), "providers.json")
+	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	syncer := &catwalkSync{}
-	client := &emptyProviderClient{}
+	require.NoError(t, UpdateProviders(path))
+	got, _, err := newCache[[]catwalk.Provider](cachePathFor("providers")).Get()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
 
-	syncer.Init(client, path, true)
+func TestUpdateProvidersFromExplicitURL(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	providers, err := syncer.Get(t.Context())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "empty providers list from catwalk")
-	require.NotEmpty(t, providers) // Should have embedded providers as fallback.
+	want := []catwalk.Provider{{ID: "remote", Name: "Remote", Type: catwalk.TypeOpenAICompat}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v2/providers", r.URL.Path)
+		require.NoError(t, json.NewEncoder(w).Encode(want))
+	}))
+	defer server.Close()
 
-	// Check that no cache file was created for empty results.
-	_, statErr := os.Stat(path)
-	require.True(t, os.IsNotExist(statErr), "Cache file should not exist for empty results")
+	require.NoError(t, UpdateProviders(server.URL))
+	got, _, err := newCache[[]catwalk.Provider](cachePathFor("providers")).Get()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
+func TestUpdateProvidersRejectsInvalidSource(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	err := UpdateProviders(filepath.Join(t.TempDir(), "missing.json"))
+	require.ErrorContains(t, err, "failed to read file")
 }

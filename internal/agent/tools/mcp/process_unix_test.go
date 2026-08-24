@@ -5,14 +5,14 @@ package mcp
 import (
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/config"
+	"github.com/example-git/crux/internal/config"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
 
 // TestCreateTransport_StdioProcessGroup pins that a stdio MCP child is spawned
 // as its own process-group leader with a cancel hook wired up. This is what
-// lets Crush reap a server's descendant processes (e.g. signal-cli launched by
+// lets Crux reap a server's descendant processes (e.g. signal-cli launched by
 // signal-mcp) when the session context is cancelled, instead of orphaning them.
 func TestCreateTransport_StdioProcessGroup(t *testing.T) {
 	t.Parallel()

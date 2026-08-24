@@ -9,11 +9,14 @@ import "context"
 // then copied onto SessionAgentCall.RunID by the coordinator so the
 // agent's terminal RunComplete event can echo it back to the
 // originating caller.
-type runIDContextKey struct{}
+type (
+	runIDContextKey        struct{}
+	submissionIDContextKey struct{}
+)
 
 // WithRunID returns ctx tagged with a per-request RunID. It is the
 // boundary helper for callers that need their SendMessage→Run
-// terminal event to be uniquely correlatable (e.g. `crush run`
+// terminal event to be uniquely correlatable (e.g. `crux run`
 // against a session that may be busy). Empty runIDs are stored
 // as-is; downstream code treats an empty RunID as "caller did not
 // supply one" and falls back to SessionID-only correlation.
@@ -27,6 +30,17 @@ func WithRunID(ctx context.Context, runID string) context.Context {
 // call on any context.
 func RunIDFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(runIDContextKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+func WithSubmissionID(ctx context.Context, submissionID string) context.Context {
+	return context.WithValue(ctx, submissionIDContextKey{}, submissionID)
+}
+
+func SubmissionIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(submissionIDContextKey{}).(string); ok {
 		return v
 	}
 	return ""

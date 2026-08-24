@@ -5,9 +5,9 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/stretchr/testify/require"
 )
 

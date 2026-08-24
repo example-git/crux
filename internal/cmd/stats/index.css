@@ -1,28 +1,28 @@
 :root {
-  /* Dark mode colors - charmtone dark palette */
+  /* Dark mode colors - Crux dark palette */
   --bg: #201f26;
   --bg-secondary: #2d2c35;
   --text: #fffaf1;
   --text-muted: #858392;
 
-  /* Charmtone colors (global - same in both light and dark modes) */
-  --charple: #6b50ff;
-  --cherry: #ff388b;
-  --julep: #00ffb2;
-  --urchin: #c337e0;
-  --butter: #fffaf1;
-  --squid: #858392;
-  --pepper: #201f26;
-  --iron: #4d4c57;
-  --tuna: #ff6daa;
-  --uni: #ff937d;
-  --coral: #ff577d;
+  /* Brand colors shared by light and dark modes. */
+  --primary: #6b50ff;
+  --pink: #ff388b;
+  --green: #00ffb2;
+  --purple: #c337e0;
+  --light: #fffaf1;
+  --muted: #858392;
+  --dark: #201f26;
+  --border: #4d4c57;
+  --rose: #ff6daa;
+  --orange: #ff937d;
+  --error: #ff577d;
   --violet: #c259ff;
-  --malibu: #00a4ff;
-  --hazy: #8b75ff;
+  --blue: #00a4ff;
+  --accent: #8b75ff;
 }
 
-/* Light mode colors - charmtone light palette */
+/* Light mode colors - Crux light palette */
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #f0f0f0;
@@ -87,14 +87,14 @@ body {
   pointer-events: none;
 }
 
-.heartbit-svg {
+.crux-mark-svg {
   flex-shrink: 0;
   width: 70px;
   flex-basis: 70px;
   margin-left: 1rem;
 }
 
-.heartbit-svg svg {
+.crux-mark-svg svg {
   width: 100%;
   height: auto;
   display: block;
@@ -103,7 +103,7 @@ body {
 .header-info {
   margin-bottom: 2rem;
   font-size: 0.875rem;
-  color: var(--hazy);
+  color: var(--accent);
   font-family: "JetBrains Mono", "SF Mono", Consolas, monospace;
 }
 
@@ -125,7 +125,7 @@ body {
 
 @media (prefers-color-scheme: light) {
   .stat-card {
-    background: var(--butter);
+    background: var(--light);
   }
 }
 
@@ -152,7 +152,7 @@ body {
 .stat-card .value {
   font-size: 2rem;
   font-weight: 700;
-  color: var(--butter);
+  color: var(--light);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -160,7 +160,7 @@ body {
 
 @media (prefers-color-scheme: light) {
   .stat-card .value {
-    color: var(--pepper);
+    color: var(--dark);
   }
 }
 
@@ -182,7 +182,7 @@ body {
 
 @media (prefers-color-scheme: light) {
   .chart-card {
-    background: var(--butter);
+    background: var(--light);
   }
 }
 
@@ -272,14 +272,14 @@ td {
   display: block;
 }
 
-/* Override charm brand colors in footer */
+/* Keep footer artwork legible in dark mode. */
 .footer-container .st2 {
   fill: #fffaf1 !important;
 }
 
 @media (prefers-color-scheme: light) {
 
-  /* Override charm brand colors in footer */
+  /* Keep footer artwork legible in light mode. */
   .footer-container .st2 {
     fill: #644ced !important;
   }

@@ -1,82 +1,90 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/charmbracelet/crush/internal/config/config",
-  "$ref": "#/$defs/Config",
   "$defs": {
     "Attribution": {
+      "additionalProperties": false,
       "properties": {
+        "co_authored_by": {
+          "deprecated": true,
+          "description": "Deprecated: use trailer_style instead",
+          "type": "boolean"
+        },
+        "generated_with": {
+          "default": true,
+          "description": "Add Generated with Crux line to commit messages and issues and PRs",
+          "type": "boolean"
+        },
         "trailer_style": {
-          "type": "string",
+          "default": "assisted-by",
+          "description": "Style of attribution trailer to add to commits",
           "enum": [
             "none",
             "co-authored-by",
             "assisted-by"
           ],
-          "description": "Style of attribution trailer to add to commits",
-          "default": "assisted-by"
-        },
-        "co_authored_by": {
-          "type": "boolean",
-          "description": "Deprecated: use trailer_style instead",
-          "deprecated": true
-        },
-        "generated_with": {
-          "type": "boolean",
-          "description": "Add Generated with Crush line to commit messages and issues and PRs",
-          "default": true
+          "type": "string"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "Completions": {
+      "additionalProperties": false,
       "properties": {
         "max_depth": {
-          "type": "integer",
-          "description": "Maximum depth for the ls tool",
           "default": 0,
+          "description": "Maximum depth for the ls tool",
           "examples": [
             10
-          ]
+          ],
+          "type": "integer"
         },
         "max_items": {
-          "type": "integer",
-          "description": "Maximum number of items to return for the ls tool",
           "default": 1000,
+          "description": "Maximum number of items to return for the ls tool",
           "examples": [
             100
-          ]
+          ],
+          "type": "integer"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "Config": {
+      "additionalProperties": false,
       "properties": {
         "$schema": {
           "type": "string"
         },
-        "models": {
+        "env": {
           "additionalProperties": {
-            "$ref": "#/$defs/SelectedModel"
+            "type": "string"
           },
-          "type": "object",
-          "description": "Model configurations for different model types"
+          "description": "Environment variables to set on startup",
+          "type": "object"
         },
-        "providers": {
+        "hooks": {
           "additionalProperties": {
-            "$ref": "#/$defs/ProviderConfig"
+            "items": {
+              "$ref": "#/$defs/HookConfig"
+            },
+            "type": "array"
           },
-          "type": "object",
-          "description": "AI provider configurations"
+          "description": "User-defined shell commands that fire on hook events (e.g. PreToolUse)",
+          "type": "object"
+        },
+        "lsp": {
+          "$ref": "#/$defs/LSPs",
+          "description": "Language Server Protocol configurations"
         },
         "mcp": {
           "$ref": "#/$defs/MCPs",
           "description": "Model Context Protocol server configurations"
         },
-        "lsp": {
-          "$ref": "#/$defs/LSPs",
-          "description": "Language Server Protocol configurations"
+        "models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SelectedModel"
+          },
+          "description": "Model configurations for different model types",
+          "type": "object"
         },
         "options": {
           "$ref": "#/$defs/Options",
@@ -86,88 +94,79 @@
           "$ref": "#/$defs/Permissions",
           "description": "Permission settings for tool usage"
         },
+        "providers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ProviderConfig"
+          },
+          "description": "AI provider configurations",
+          "properties": {},
+          "type": "object"
+        },
         "tools": {
           "$ref": "#/$defs/Tools",
           "description": "Tool configurations"
-        },
-        "hooks": {
-          "additionalProperties": {
-            "items": {
-              "$ref": "#/$defs/HookConfig"
-            },
-            "type": "array"
-          },
-          "type": "object",
-          "description": "User-defined shell commands that fire on hook events (e.g. PreToolUse)"
-        },
-        "env": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object",
-          "description": "Environment variables to set on startup"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "HookConfig": {
+      "additionalProperties": false,
       "properties": {
-        "name": {
-          "type": "string",
-          "description": "Friendly display name shown in the TUI for this hook"
+        "command": {
+          "description": "Shell command to execute when the hook fires",
+          "type": "string"
         },
         "matcher": {
-          "type": "string",
-          "description": "Regex pattern tested against the tool name. Empty means match all tools."
+          "description": "Regex pattern tested against the tool name. Empty means match all tools.",
+          "type": "string"
         },
-        "command": {
-          "type": "string",
-          "description": "Shell command to execute when the hook fires"
+        "name": {
+          "description": "Friendly display name shown in the TUI for this hook",
+          "type": "string"
         },
         "timeout": {
-          "type": "integer",
+          "default": 30,
           "description": "Timeout in seconds for the hook command",
-          "default": 30
+          "type": "integer"
         }
       },
-      "additionalProperties": false,
-      "type": "object",
       "required": [
         "command"
-      ]
+      ],
+      "type": "object"
     },
     "LSPConfig": {
+      "additionalProperties": false,
       "properties": {
-        "disabled": {
-          "type": "boolean",
-          "description": "Whether this LSP server is disabled",
-          "default": false
-        },
-        "command": {
-          "type": "string",
-          "description": "Command to execute for the LSP server",
-          "examples": [
-            "gopls"
-          ]
-        },
         "args": {
+          "description": "Arguments to pass to the LSP server command",
           "items": {
             "type": "string"
           },
-          "type": "array",
-          "description": "Arguments to pass to the LSP server command"
+          "type": "array"
+        },
+        "command": {
+          "description": "Command to execute for the LSP server",
+          "examples": [
+            "gopls"
+          ],
+          "type": "string"
+        },
+        "disabled": {
+          "default": false,
+          "description": "Whether this LSP server is disabled",
+          "type": "boolean"
         },
         "env": {
           "additionalProperties": {
             "type": "string"
           },
-          "type": "object",
-          "description": "Environment variables to set to the LSP server command"
+          "description": "Environment variables to set to the LSP server command",
+          "type": "object"
         },
         "filetypes": {
+          "description": "File types this LSP server handles",
           "items": {
-            "type": "string",
             "examples": [
               "go",
               "mod",
@@ -175,42 +174,41 @@
               "c",
               "js",
               "ts"
-            ]
+            ],
+            "type": "string"
           },
-          "type": "array",
-          "description": "File types this LSP server handles"
+          "type": "array"
+        },
+        "init_options": {
+          "description": "Initialization options passed to the LSP server during initialize request",
+          "type": "object"
+        },
+        "options": {
+          "description": "LSP server-specific settings passed during initialization",
+          "type": "object"
         },
         "root_markers": {
+          "description": "Files or directories that indicate the project root",
           "items": {
-            "type": "string",
             "examples": [
               "go.mod",
               "package.json",
               "Cargo.toml"
-            ]
+            ],
+            "type": "string"
           },
-          "type": "array",
-          "description": "Files or directories that indicate the project root"
-        },
-        "init_options": {
-          "type": "object",
-          "description": "Initialization options passed to the LSP server during initialize request"
-        },
-        "options": {
-          "type": "object",
-          "description": "LSP server-specific settings passed during initialization"
+          "type": "array"
         },
         "timeout": {
-          "type": "integer",
-          "description": "Timeout in seconds for LSP server initialization",
           "default": 30,
+          "description": "Timeout in seconds for LSP server initialization",
           "examples": [
             60,
             120
-          ]
+          ],
+          "type": "integer"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "LSPs": {
@@ -220,111 +218,111 @@
       "type": "object"
     },
     "MCPConfig": {
+      "additionalProperties": false,
       "properties": {
+        "args": {
+          "description": "Arguments to pass to the MCP server command",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "command": {
-          "type": "string",
           "description": "Command to execute for stdio MCP servers",
           "examples": [
             "npx"
-          ]
+          ],
+          "type": "string"
+        },
+        "disabled": {
+          "default": false,
+          "description": "Whether this MCP server is disabled",
+          "type": "boolean"
+        },
+        "disabled_tools": {
+          "description": "List of tools from this MCP server to disable",
+          "items": {
+            "examples": [
+              "get-library-doc"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "enabled_tools": {
+          "description": "Allow list of tools from this MCP server",
+          "items": {
+            "examples": [
+              "get-library-doc"
+            ],
+            "type": "string"
+          },
+          "type": "array"
         },
         "env": {
           "additionalProperties": {
             "type": "string"
           },
-          "type": "object",
-          "description": "Environment variables to set for the MCP server"
-        },
-        "args": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array",
-          "description": "Arguments to pass to the MCP server command"
-        },
-        "type": {
-          "type": "string",
-          "enum": [
-            "stdio",
-            "sse",
-            "http"
-          ],
-          "description": "Type of MCP connection",
-          "default": "stdio"
-        },
-        "url": {
-          "type": "string",
-          "format": "uri",
-          "description": "URL for HTTP or SSE MCP servers",
-          "examples": [
-            "http://localhost:3000/mcp"
-          ]
-        },
-        "disabled": {
-          "type": "boolean",
-          "description": "Whether this MCP server is disabled",
-          "default": false
-        },
-        "disabled_tools": {
-          "items": {
-            "type": "string",
-            "examples": [
-              "get-library-doc"
-            ]
-          },
-          "type": "array",
-          "description": "List of tools from this MCP server to disable"
-        },
-        "enabled_tools": {
-          "items": {
-            "type": "string",
-            "examples": [
-              "get-library-doc"
-            ]
-          },
-          "type": "array",
-          "description": "Allow list of tools from this MCP server"
-        },
-        "timeout": {
-          "type": "integer",
-          "description": "Timeout in seconds for MCP server connections",
-          "default": 10,
-          "examples": [
-            30,
-            60,
-            120
-          ]
+          "description": "Environment variables to set for the MCP server",
+          "type": "object"
         },
         "headers": {
           "additionalProperties": {
             "type": "string"
           },
-          "type": "object",
-          "description": "HTTP headers for HTTP/SSE MCP servers"
+          "description": "HTTP headers for HTTP/SSE MCP servers",
+          "type": "object"
         },
         "oauth": {
-          "type": "boolean",
+          "default": false,
           "description": "Enable OAuth 2.1 authorization flow for this MCP server (HTTP transport only)",
-          "default": false
-        },
-        "oauth_client_id": {
-          "type": "string",
-          "description": "Pre-registered OAuth client ID for servers without dynamic client registration"
-        },
-        "oauth_client_secret": {
-          "type": "string",
-          "description": "Pre-registered OAuth client secret paired with oauth_client_id"
+          "type": "boolean"
         },
         "oauth_callback_port": {
-          "type": "integer",
-          "description": "Fixed localhost port for the OAuth callback"
+          "description": "Fixed localhost port for the OAuth callback",
+          "type": "integer"
+        },
+        "oauth_client_id": {
+          "description": "Pre-registered OAuth client ID for servers without dynamic client registration",
+          "type": "string"
+        },
+        "oauth_client_secret": {
+          "description": "Pre-registered OAuth client secret paired with oauth_client_id",
+          "type": "string"
+        },
+        "timeout": {
+          "default": 10,
+          "description": "Timeout in seconds for MCP server connections",
+          "examples": [
+            30,
+            60,
+            120
+          ],
+          "type": "integer"
+        },
+        "type": {
+          "default": "stdio",
+          "description": "Type of MCP connection",
+          "enum": [
+            "stdio",
+            "sse",
+            "http"
+          ],
+          "type": "string"
+        },
+        "url": {
+          "description": "URL for HTTP or SSE MCP servers",
+          "examples": [
+            "http://localhost:3000/mcp"
+          ],
+          "format": "uri",
+          "type": "string"
         }
       },
-      "additionalProperties": false,
-      "type": "object",
       "required": [
         "type"
-      ]
+      ],
+      "type": "object"
     },
     "MCPs": {
       "additionalProperties": {
@@ -333,33 +331,40 @@
       "type": "object"
     },
     "Model": {
+      "additionalProperties": false,
       "properties": {
+        "can_reason": {
+          "type": "boolean"
+        },
+        "context_window": {
+          "type": "integer"
+        },
+        "cost_per_1m_in": {
+          "type": "number"
+        },
+        "cost_per_1m_in_cached": {
+          "type": "number"
+        },
+        "cost_per_1m_out": {
+          "type": "number"
+        },
+        "cost_per_1m_out_cached": {
+          "type": "number"
+        },
+        "default_max_tokens": {
+          "type": "integer"
+        },
+        "default_reasoning_effort": {
+          "type": "string"
+        },
         "id": {
           "type": "string"
         },
         "name": {
           "type": "string"
         },
-        "cost_per_1m_in": {
-          "type": "number"
-        },
-        "cost_per_1m_out": {
-          "type": "number"
-        },
-        "cost_per_1m_in_cached": {
-          "type": "number"
-        },
-        "cost_per_1m_out_cached": {
-          "type": "number"
-        },
-        "context_window": {
-          "type": "integer"
-        },
-        "default_max_tokens": {
-          "type": "integer"
-        },
-        "can_reason": {
-          "type": "boolean"
+        "options": {
+          "$ref": "#/$defs/ModelOptions"
         },
         "reasoning_levels": {
           "items": {
@@ -367,18 +372,10 @@
           },
           "type": "array"
         },
-        "default_reasoning_effort": {
-          "type": "string"
-        },
         "supports_attachments": {
           "type": "boolean"
-        },
-        "options": {
-          "$ref": "#/$defs/ModelOptions"
         }
       },
-      "additionalProperties": false,
-      "type": "object",
       "required": [
         "id",
         "name",
@@ -390,19 +387,12 @@
         "default_max_tokens",
         "can_reason",
         "supports_attachments"
-      ]
+      ],
+      "type": "object"
     },
     "ModelOptions": {
+      "additionalProperties": false,
       "properties": {
-        "temperature": {
-          "type": "number"
-        },
-        "top_p": {
-          "type": "number"
-        },
-        "top_k": {
-          "type": "integer"
-        },
         "frequency_penalty": {
           "type": "number"
         },
@@ -411,147 +401,174 @@
         },
         "provider_options": {
           "type": "object"
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "top_k": {
+          "type": "integer"
+        },
+        "top_p": {
+          "type": "number"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "OAuthClient": {
+      "additionalProperties": false,
       "properties": {
+        "auth_style": {
+          "type": "integer"
+        },
+        "auth_url": {
+          "type": "string"
+        },
         "client_id": {
           "type": "string"
         },
         "client_secret": {
           "type": "string"
         },
-        "auth_url": {
-          "type": "string"
-        },
         "token_url": {
           "type": "string"
-        },
-        "auth_style": {
-          "type": "integer"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "Options": {
+      "additionalProperties": false,
       "properties": {
-        "context_paths": {
-          "items": {
-            "type": "string",
-            "examples": [
-              ".cursorrules",
-              "CRUSH.md"
-            ]
-          },
-          "type": "array",
-          "description": "Paths to files containing context information for the AI"
-        },
-        "global_context_paths": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array",
-          "description": "Paths to files containing global context information for the AI",
-          "default": [
-            "~/.config/crush/CRUSH.md",
-            "~/.config/AGENTS.md"
-          ]
-        },
-        "skills_paths": {
-          "items": {
-            "type": "string",
-            "examples": [
-              "~/.config/crush/skills",
-              "./skills"
-            ]
-          },
-          "type": "array",
-          "description": "Paths to directories containing Agent Skills (folders with SKILL.md files)"
-        },
-        "tui": {
-          "$ref": "#/$defs/TUIOptions",
-          "description": "Terminal user interface options"
-        },
-        "debug": {
-          "type": "boolean",
-          "description": "Enable debug logging",
-          "default": false
-        },
-        "debug_lsp": {
-          "type": "boolean",
-          "description": "Enable debug logging for LSP servers",
-          "default": false
-        },
-        "disable_auto_summarize": {
-          "type": "boolean",
-          "description": "Disable automatic conversation summarization",
-          "default": false
-        },
-        "data_directory": {
-          "type": "string",
-          "description": "Directory for storing application data. Relative paths are resolved against the working directory; absolute paths are used as-is.",
-          "default": ".crush",
-          "examples": [
-            ".crush"
-          ]
-        },
-        "disabled_tools": {
-          "items": {
-            "type": "string",
-            "examples": [
-              "bash",
-              "sourcegraph"
-            ]
-          },
-          "type": "array",
-          "description": "List of built-in tools to disable and hide from the agent"
-        },
-        "disable_provider_auto_update": {
-          "type": "boolean",
-          "description": "Disable providers auto-update",
-          "default": false
-        },
-        "disable_default_providers": {
-          "type": "boolean",
-          "description": "Ignore all default/embedded providers. When enabled, providers must be fully specified in the config file with base_url, models, and api_key - no merging with defaults occurs",
-          "default": false
+        "analysis_effort": {
+          "description": "GPT-5.6 reasoning effort sent through the ChatGPT Codex wire adapter",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "type": "string"
         },
         "attribution": {
           "$ref": "#/$defs/Attribution",
           "description": "Attribution settings for generated content"
         },
-        "disable_metrics": {
-          "type": "boolean",
-          "description": "Disable sending metrics",
-          "default": false
+        "auto_lsp": {
+          "default": true,
+          "description": "Automatically setup LSPs based on root markers",
+          "type": "boolean"
+        },
+        "context_paths": {
+          "description": "Paths to files containing context information for the AI",
+          "items": {
+            "examples": [
+              ".cursorrules",
+              "CRUX.md"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "data_directory": {
+          "default": ".crux",
+          "description": "Directory for storing application data. Relative paths are resolved against the working directory; absolute paths are used as-is.",
+          "examples": [
+            ".crux"
+          ],
+          "type": "string"
+        },
+        "debug": {
+          "default": false,
+          "description": "Enable debug logging",
+          "type": "boolean"
+        },
+        "debug_lsp": {
+          "default": false,
+          "description": "Enable debug logging for LSP servers",
+          "type": "boolean"
+        },
+        "disable_auto_summarize": {
+          "default": false,
+          "description": "Disable automatic conversation summarization",
+          "type": "boolean"
+        },
+        "disable_default_providers": {
+          "default": false,
+          "description": "Ignore all default/embedded providers. When enabled, providers must be fully specified in the config file with base_url, models, and api_key - no merging with defaults occurs",
+          "type": "boolean"
+        },
+        "disable_provider_auto_update": {
+          "default": false,
+          "description": "Disable providers auto-update",
+          "type": "boolean"
+        },
+        "disabled_instruction_sections": {
+          "description": "List of native instruction section IDs to disable",
+          "items": {
+            "examples": [
+              "whitespace",
+              "memory"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "disabled_skills": {
+          "description": "List of skill names to disable and hide from the agent",
+          "items": {
+            "examples": [
+              "crux-config"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "disabled_tools": {
+          "description": "List of built-in tools to disable and hide from the agent",
+          "items": {
+            "examples": [
+              "bash",
+              "sourcegraph"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "global_context_paths": {
+          "default": [
+            "~/.ai-cli/crux/CRUX.md",
+            "~/.ai-cli/AGENTS.md"
+          ],
+          "description": "Paths to files containing global context information for the AI",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "initialize_as": {
-          "type": "string",
-          "description": "Name of the context file to create/update during project initialization",
-          "default": "AGENTS.md",
+          "description": "Context file to create or update during project initialization. Defaults to the per-project ~/.ai-cli/project-prompts path.",
           "examples": [
             "AGENTS.md",
-            "CRUSH.md",
+            "CRUX.md",
             "CLAUDE.md",
             "docs/LLMs.md"
-          ]
+          ],
+          "type": "string"
         },
-        "auto_lsp": {
-          "type": "boolean",
-          "description": "Automatically setup LSPs based on root markers",
-          "default": true
-        },
-        "progress": {
-          "type": "boolean",
-          "description": "Show indeterminate progress updates during long operations",
-          "default": true
+        "instruction_mode": {
+          "default": "all",
+          "description": "Which instruction sources are active: all (default), project, or native",
+          "enum": [
+            "all",
+            "project",
+            "native"
+          ],
+          "type": "string"
         },
         "notifications": {
-          "type": "string",
+          "default": "auto",
+          "description": "Notification style to use. Options: auto (default), native, osc, bell, disabled. Auto selects based on environment: native for local sessions, osc for SSH (with automatic OSC 99/777 detection).",
           "enum": [
             "auto",
             "native",
@@ -559,344 +576,430 @@
             "bell",
             "disabled"
           ],
-          "description": "Notification style to use. Options: auto (default), native, osc, bell, disabled. Auto selects based on environment: native for local sessions, osc for SSH (with automatic OSC 99/777 detection).",
-          "default": "auto"
+          "type": "string"
         },
-        "disabled_skills": {
+        "progress": {
+          "default": true,
+          "description": "Show indeterminate progress updates during long operations",
+          "type": "boolean"
+        },
+        "response_verbosity": {
+          "description": "GPT-5.6 final response verbosity sent through the ChatGPT Codex wire adapter",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "type": "string"
+        },
+        "skills_paths": {
+          "description": "Paths to directories containing Agent Skills (folders with SKILL.md files)",
           "items": {
-            "type": "string",
             "examples": [
-              "crush-config"
-            ]
+              "~/.ai-cli/crux/skills",
+              "./skills"
+            ],
+            "type": "string"
           },
-          "type": "array",
-          "description": "List of skill names to disable and hide from the agent"
+          "type": "array"
+        },
+        "system_prompt_override": {
+          "default": false,
+          "description": "Replace the generated coder system prompt with ~/.ai-cli/instructions/\u003cprovider-id\u003e.txt and initialize a missing file from the generated prompt",
+          "type": "boolean"
+        },
+        "tui": {
+          "$ref": "#/$defs/TUIOptions",
+          "description": "Terminal user interface options"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "Permissions": {
+      "additionalProperties": false,
       "properties": {
         "allowed_tools": {
+          "description": "List of tools that don't require permission prompts",
           "items": {
-            "type": "string",
             "examples": [
               "bash",
               "view"
-            ]
+            ],
+            "type": "string"
           },
-          "type": "array",
-          "description": "List of tools that don't require permission prompts"
+          "type": "array"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "ProviderConfig": {
+      "additionalProperties": false,
       "properties": {
-        "id": {
-          "type": "string",
-          "description": "Unique identifier for the provider",
+        "api_key": {
+          "description": "API key for authentication with the provider",
           "examples": [
-            "openai"
-          ]
-        },
-        "name": {
-          "type": "string",
-          "description": "Human-readable name for the provider",
-          "examples": [
-            "OpenAI"
-          ]
+            "$OPENAI_API_KEY"
+          ],
+          "type": "string"
         },
         "base_url": {
-          "type": "string",
-          "format": "uri",
           "description": "Base URL for the provider's API",
           "examples": [
             "https://api.openai.com/v1"
-          ]
+          ],
+          "format": "uri",
+          "type": "string"
+        },
+        "configuration": {
+          "description": "Declarative provider-plugin configuration values",
+          "type": "object"
+        },
+        "disable": {
+          "default": false,
+          "description": "Whether this provider is disabled",
+          "type": "boolean"
+        },
+        "discover_models": {
+          "default": true,
+          "description": "Auto-discover models from /v1/models endpoint. When true with existing models they are merged (yours win)",
+          "type": "boolean"
+        },
+        "extra_body": {
+          "description": "Additional fields to include in request bodies, only works with openai-compatible providers",
+          "type": "object"
+        },
+        "extra_headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Additional HTTP headers to send with requests",
+          "type": "object"
+        },
+        "flat_rate": {
+          "description": "Flat-rate mode for this provider",
+          "type": "boolean"
+        },
+        "id": {
+          "description": "Unique identifier for the provider",
+          "examples": [
+            "openai"
+          ],
+          "type": "string"
+        },
+        "models": {
+          "description": "List of models available from this provider",
+          "items": {
+            "$ref": "#/$defs/Model"
+          },
+          "type": "array"
+        },
+        "name": {
+          "description": "Human-readable name for the provider",
+          "examples": [
+            "OpenAI"
+          ],
+          "type": "string"
+        },
+        "oauth": {
+          "$ref": "#/$defs/Token",
+          "description": "OAuth2 token for authentication with the provider"
+        },
+        "plugin": {
+          "$ref": "#/$defs/ProviderPluginReference",
+          "description": "Provider-plugin ownership reference"
+        },
+        "provider_options": {
+          "description": "Additional provider-specific options for this provider",
+          "type": "object"
+        },
+        "system_prompt_prefix": {
+          "description": "Custom prefix to add to system prompts for this provider",
+          "type": "string"
+        },
+        "tooling_instructions": {
+          "default": "crux",
+          "description": "Tooling instruction profile for this provider",
+          "enum": [
+            "crux",
+            "native"
+          ],
+          "type": "string"
         },
         "type": {
-          "type": "string",
+          "default": "openai-compat",
+          "description": "OpenAI-compatible provider type",
           "enum": [
-            "openai",
             "openai-compat",
-            "openrouter",
-            "vercel",
-            "anthropic",
-            "google",
-            "azure",
-            "bedrock",
-            "google-vertex",
-            "hyper",
             "litellm",
             "llamacpp",
             "lmstudio",
             "ollama",
             "omlx"
           ],
-          "description": "Provider type that determines the API format",
-          "default": "openai"
-        },
-        "api_key": {
-          "type": "string",
-          "description": "API key for authentication with the provider",
-          "examples": [
-            "$OPENAI_API_KEY"
-          ]
-        },
-        "oauth": {
-          "$ref": "#/$defs/Token",
-          "description": "OAuth2 token for authentication with the provider"
-        },
-        "disable": {
-          "type": "boolean",
-          "description": "Whether this provider is disabled",
-          "default": false
-        },
-        "system_prompt_prefix": {
-          "type": "string",
-          "description": "Custom prefix to add to system prompts for this provider"
-        },
-        "extra_headers": {
-          "additionalProperties": {
-            "type": "string"
-          },
-          "type": "object",
-          "description": "Additional HTTP headers to send with requests"
-        },
-        "extra_body": {
-          "type": "object",
-          "description": "Additional fields to include in request bodies, only works with openai-compatible providers"
-        },
-        "provider_options": {
-          "type": "object",
-          "description": "Additional provider-specific options for this provider"
-        },
-        "aws_auth_refresh": {
-          "type": "string",
-          "description": "Shell command to run when AWS credentials expire (Bedrock only)."
-        },
-        "flat_rate": {
-          "type": "boolean",
-          "description": "Flat-rate mode for this provider"
-        },
-        "discover_models": {
-          "type": "boolean",
-          "description": "Auto-discover models from /v1/models endpoint. When true with existing models they are merged (yours win)",
-          "default": true
-        },
-        "models": {
-          "items": {
-            "$ref": "#/$defs/Model"
-          },
-          "type": "array",
-          "description": "List of models available from this provider"
+          "type": "string"
         }
       },
+      "type": "object"
+    },
+    "ProviderPluginReference": {
       "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Stable provider-plugin identity",
+          "type": "string"
+        },
+        "version": {
+          "description": "Plugin version that last owned this configuration",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
       "type": "object"
     },
     "SelectedModel": {
+      "additionalProperties": false,
       "properties": {
+        "frequency_penalty": {
+          "description": "Frequency penalty to reduce repetition",
+          "type": "number"
+        },
+        "max_tokens": {
+          "description": "Maximum number of tokens for model responses",
+          "examples": [
+            4096
+          ],
+          "maximum": 200000,
+          "type": "integer"
+        },
         "model": {
-          "type": "string",
           "description": "The model ID as used by the provider API",
           "examples": [
             "gpt-4o"
-          ]
+          ],
+          "type": "string"
+        },
+        "presence_penalty": {
+          "description": "Presence penalty to increase topic diversity",
+          "type": "number"
         },
         "provider": {
-          "type": "string",
           "description": "The model provider ID that matches a key in the providers config",
           "examples": [
             "openai"
-          ]
+          ],
+          "type": "string"
+        },
+        "provider_options": {
+          "description": "Additional provider-specific options for the model",
+          "type": "object"
         },
         "reasoning_effort": {
-          "type": "string",
+          "description": "Reasoning effort level for OpenAI models that support it",
           "enum": [
             "low",
             "medium",
             "high"
           ],
-          "description": "Reasoning effort level for OpenAI models that support it"
-        },
-        "think": {
-          "type": "boolean",
-          "description": "Enable thinking mode for Anthropic models that support reasoning"
-        },
-        "max_tokens": {
-          "type": "integer",
-          "maximum": 200000,
-          "description": "Maximum number of tokens for model responses",
-          "examples": [
-            4096
-          ]
+          "type": "string"
         },
         "temperature": {
-          "type": "number",
-          "maximum": 1,
-          "minimum": 0,
           "description": "Sampling temperature",
           "examples": [
             0.7
-          ]
-        },
-        "top_p": {
-          "type": "number",
+          ],
           "maximum": 1,
           "minimum": 0,
+          "type": "number"
+        },
+        "think": {
+          "description": "Enable provider reasoning mode when supported",
+          "type": "boolean"
+        },
+        "top_k": {
+          "description": "Top-k sampling parameter",
+          "type": "integer"
+        },
+        "top_p": {
           "description": "Top-p (nucleus) sampling parameter",
           "examples": [
             0.9
-          ]
-        },
-        "top_k": {
-          "type": "integer",
-          "description": "Top-k sampling parameter"
-        },
-        "frequency_penalty": {
-          "type": "number",
-          "description": "Frequency penalty to reduce repetition"
-        },
-        "presence_penalty": {
-          "type": "number",
-          "description": "Presence penalty to increase topic diversity"
-        },
-        "provider_options": {
-          "type": "object",
-          "description": "Additional provider-specific options for the model"
+          ],
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
         }
       },
-      "additionalProperties": false,
-      "type": "object",
       "required": [
         "model",
         "provider"
-      ]
+      ],
+      "type": "object"
     },
     "TUIOptions": {
+      "additionalProperties": false,
       "properties": {
         "compact_mode": {
-          "type": "boolean",
+          "default": false,
           "description": "Enable compact mode for the TUI interface",
-          "default": false
-        },
-        "diff_mode": {
-          "type": "string",
-          "enum": [
-            "unified",
-            "split"
-          ],
-          "description": "Diff mode for the TUI interface"
+          "type": "boolean"
         },
         "completions": {
           "$ref": "#/$defs/Completions",
           "description": "Completions UI options"
         },
-        "transparent": {
-          "type": "boolean",
-          "description": "Enable transparent background for the TUI interface",
-          "default": false
+        "diff_mode": {
+          "description": "Diff mode for the TUI interface",
+          "enum": [
+            "unified",
+            "split"
+          ],
+          "type": "string"
         },
         "scrollbar": {
-          "type": "string",
+          "default": "default",
+          "description": "Chat scrollbar visibility",
           "enum": [
             "default",
             "always",
             "never"
           ],
-          "description": "Chat scrollbar visibility",
-          "default": "default"
+          "type": "string"
+        },
+        "transparent": {
+          "default": false,
+          "description": "Enable transparent background for the TUI interface",
+          "type": "boolean"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "Token": {
+      "additionalProperties": false,
       "properties": {
         "access_token": {
           "type": "string"
         },
-        "refresh_token": {
-          "type": "string"
-        },
-        "expires_in": {
-          "type": "integer"
+        "client": {
+          "$ref": "#/$defs/OAuthClient"
         },
         "expires_at": {
           "type": "integer"
         },
-        "client": {
-          "$ref": "#/$defs/OAuthClient"
+        "expires_in": {
+          "type": "integer"
+        },
+        "refresh_token": {
+          "type": "string"
         }
       },
-      "additionalProperties": false,
-      "type": "object",
       "required": [
         "access_token",
         "expires_in",
         "expires_at"
-      ]
+      ],
+      "type": "object"
     },
-    "ToolGlob": {
+    "ToolCodebaseSearch": {
+      "additionalProperties": false,
       "properties": {
-        "timeout": {
-          "type": "integer",
-          "description": "Timeout for the glob tool call"
+        "ann_directory": {
+          "description": "Deprecated alias for store_directory",
+          "type": "string"
+        },
+        "database_path": {
+          "description": "Path to a tui-files codebase index database or directory containing project databases",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether background semantic indexing and codebase search are enabled",
+          "type": "boolean"
+        },
+        "exclude_paths": {
+          "description": "Project-relative path prefixes to exclude from the semantic index",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "include_paths": {
+          "description": "Project-relative path prefixes to include in the semantic index",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "store_directory": {
+          "description": "Directory containing standalone partitioned codebase search stores",
+          "type": "string"
         }
       },
+      "type": "object"
+    },
+    "ToolGlob": {
       "additionalProperties": false,
+      "properties": {
+        "timeout": {
+          "description": "Timeout for the glob tool call",
+          "type": "integer"
+        }
+      },
       "type": "object"
     },
     "ToolGrep": {
+      "additionalProperties": false,
       "properties": {
         "timeout": {
-          "type": "integer",
-          "description": "Timeout for the grep tool call"
+          "description": "Timeout for the grep tool call",
+          "type": "integer"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "ToolLs": {
+      "additionalProperties": false,
       "properties": {
         "max_depth": {
-          "type": "integer",
-          "description": "Maximum depth for the ls tool",
           "default": 0,
+          "description": "Maximum depth for the ls tool",
           "examples": [
             10
-          ]
+          ],
+          "type": "integer"
         },
         "max_items": {
-          "type": "integer",
-          "description": "Maximum number of items to return for the ls tool",
           "default": 1000,
+          "description": "Maximum number of items to return for the ls tool",
           "examples": [
             100
-          ]
+          ],
+          "type": "integer"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     },
     "Tools": {
+      "additionalProperties": false,
       "properties": {
-        "ls": {
-          "$ref": "#/$defs/ToolLs"
+        "codebase_search": {
+          "$ref": "#/$defs/ToolCodebaseSearch"
+        },
+        "glob": {
+          "$ref": "#/$defs/ToolGlob"
         },
         "grep": {
           "$ref": "#/$defs/ToolGrep"
         },
-        "glob": {
-          "$ref": "#/$defs/ToolGlob"
+        "ls": {
+          "$ref": "#/$defs/ToolLs"
         }
       },
-      "additionalProperties": false,
       "type": "object"
     }
-  }
+  },
+  "$id": "https://raw.githubusercontent.com/example-git/crux/main/schema.json",
+  "$ref": "#/$defs/Config",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
 }

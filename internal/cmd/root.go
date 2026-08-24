@@ -25,29 +25,28 @@ import (
 	fang "charm.land/fang/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/client"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/event"
-	"github.com/charmbracelet/crush/internal/lock"
-	crushlog "github.com/charmbracelet/crush/internal/log"
-	"github.com/charmbracelet/crush/internal/projects"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/server"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/skills"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/logo"
-	ui "github.com/charmbracelet/crush/internal/ui/model"
-	"github.com/charmbracelet/crush/internal/ui/styles"
-	"github.com/charmbracelet/crush/internal/version"
-	"github.com/charmbracelet/crush/internal/workspace"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
 	xstrings "github.com/charmbracelet/x/exp/strings"
 	"github.com/charmbracelet/x/term"
+	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/client"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/lock"
+	cruxlog "github.com/example-git/crux/internal/log"
+	"github.com/example-git/crux/internal/projects"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/server"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/skills"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/logo"
+	ui "github.com/example-git/crux/internal/ui/model"
+	"github.com/example-git/crux/internal/ui/styles"
+	"github.com/example-git/crux/internal/version"
+	"github.com/example-git/crux/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -55,9 +54,9 @@ var clientHost string
 
 func init() {
 	rootCmd.PersistentFlags().StringP("cwd", "c", "", "Current working directory")
-	rootCmd.PersistentFlags().StringP("data-dir", "D", "", "Custom crush data directory")
+	rootCmd.PersistentFlags().StringP("data-dir", "D", "", "Custom Crux data directory")
 	rootCmd.PersistentFlags().BoolP("debug", "d", false, "Debug")
-	rootCmd.PersistentFlags().StringVarP(&clientHost, "host", "H", server.DefaultHost(), "Connect to a specific crush server host (for advanced users)")
+	rootCmd.PersistentFlags().StringVarP(&clientHost, "host", "H", server.DefaultHost(), "Connect to a specific Crux server host (for advanced users)")
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
 	rootCmd.Flags().BoolP("yolo", "y", false, "Automatically accept all permissions (dangerous mode)")
 	rootCmd.PersistentFlags().StringSlice("channels", nil, "MCP servers to enable as channels (repeatable), e.g. --channels server:webhook")
@@ -70,44 +69,46 @@ func init() {
 		runCmd,
 		dirsCmd,
 		projectsCmd,
+		pluginsCmd,
 		updateProvidersCmd,
 		logsCmd,
 		logoutCmd,
 		schemaCmd,
 		loginCmd,
+		accountsCmd,
 		statsCmd,
 		sessionCmd,
 	)
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "crush",
+	Use:   "crux",
 	Short: "A terminal-first AI assistant for software development",
 	Long:  "A glamorous, terminal-first AI assistant for software development and adjacent tasks",
 	Example: `
 # Run in interactive mode
-crush
+crux
 
 # Run non-interactively
-crush run "Guess my 5 favorite Pokémon"
+crux run "Guess my 5 favorite Pokémon"
 
-# Run a non-interactively with pipes and redirection
-cat README.md | crush run "make this more glamorous" > GLAMOROUS_README.md
+# Run non-interactively with pipes and redirection
+cat README.md | crux run "make this more glamorous" > GLAMOROUS_README.md
 
 # Run with debug logging in a specific directory
-crush --debug --cwd /path/to/project
+crux --debug --cwd /path/to/project
 
 # Run in yolo mode (auto-accept all permissions; use with care)
-crush --yolo
+crux --yolo
 
 # Run with custom data directory
-crush --data-dir /path/to/custom/.crush
+crux --data-dir /path/to/custom/.crux
 
 # Continue a previous session
-crush --session {session-id}
+crux --session {session-id}
 
 # Continue the most recent session
-crush --continue
+crux --continue
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		sessionID, _ := cmd.Flags().GetString("session")
@@ -127,8 +128,6 @@ crush --continue
 			sessionID = sess.ID
 		}
 
-		event.AppInitialized()
-
 		com := common.DefaultCommon(ws)
 		model := ui.New(com, sessionID, continueLast)
 
@@ -143,9 +142,8 @@ crush --continue
 		go ws.Subscribe(program)
 
 		if _, err := program.Run(); err != nil {
-			event.Error(err)
 			slog.Error("TUI run error", "error", err)
-			return errors.New("Crush crashed. If metrics are enabled, we were notified about it. If you'd like to report it, please copy the stacktrace above and open an issue at https://github.com/charmbracelet/crush/issues/new?template=bug.yml") //nolint:staticcheck
+			return errors.New("Crux crashed. Copy the stack trace above and report it at https://github.com/example-git/crux/issues/new?template=bug.yml")
 		}
 		printSessionResume(model)
 		return nil
@@ -167,19 +165,17 @@ var heartbit = lipgloss.NewStyle().Foreground(charmtone.Dolly).SetString(`
 `)
 
 // printSessionResume prints the session title and resume hint to stdout after
-// the TUI exits, so the user can resume the session with `crush -s <id>`.
+// the TUI exits, so the user can resume the session with `crux -s <id>`.
 // Nothing is printed when there is no active session.
 func printSessionResume(model *ui.UI) {
 	out := colorprofile.NewWriter(os.Stderr, os.Environ())
 
 	t := styles.ThemeForProvider("")
-	crushLogo := logo.Render(t.Logo.GradCanvas, version.Version, true, logo.Opts{
+	cruxLogo := logo.Render(t.Logo.GradCanvas, version.Version, true, logo.Opts{
 		FieldColor:   t.Logo.FieldColor,
 		TitleColorA:  t.Logo.TitleColorA,
 		TitleColorB:  t.Logo.TitleColorB,
-		CharmColor:   t.Logo.CharmColor,
 		VersionColor: t.Logo.VersionColor,
-		Hyper:        false,
 	})
 
 	sess := model.CurrentSession()
@@ -189,9 +185,7 @@ func printSessionResume(model *ui.UI) {
 	style := lipgloss.NewStyle().Padding(1, 3)
 	contentWidth := tw - style.GetHorizontalFrameSize()
 
-	info := crushLogo +
-		"\nThanks for using Crush! " +
-		lipgloss.NewStyle().Width(contentWidth).Render(randomExitMessage())
+	info := cruxLogo + "\n" + lipgloss.NewStyle().Width(contentWidth).Render(randomExitMessage())
 
 	if hasSession {
 		title := strings.ReplaceAll(sess.Title, "\n", " ")
@@ -203,8 +197,7 @@ func printSessionResume(model *ui.UI) {
 		}
 
 		hash := session.HashID(sess.ID)[:7]
-		sessionLine := lipgloss.NewStyle().Foreground(charmtone.Charple).Render("Session  ") + title
-		continueLine := lipgloss.NewStyle().Foreground(charmtone.Charple).Render("Continue ") + "crush -s " + hash
+		sessionLine, continueLine := sessionResumeLines(t, title, hash)
 		info += "\n\n" + sessionLine + "\n" + continueLine
 	}
 
@@ -217,32 +210,93 @@ func printSessionResume(model *ui.UI) {
 const defaultVersionTemplate = `{{with .DisplayName}}{{printf "%s " .}}{{end}}{{printf "version %s" .Version}}
 `
 
+func sessionResumeLines(t styles.Styles, title, hash string) (string, string) {
+	sessionLine := lipgloss.NewStyle().Foreground(t.Logo.TitleColorA).Render("Session  ") + title
+	continueLine := lipgloss.NewStyle().Foreground(t.Logo.TitleColorB).Render("Continue ") + "crux -s " + hash
+	return sessionLine, continueLine
+}
+
+var exitMessages = []string{
+	"Quit while it's broken.", "Nice try, fed.", "Nothing is fixed.", "The glow is visible.",
+	"Good enough. Sadly.", "Agent detected.", "Abandon hope.", "Definitely a normal user.",
+	"Close it. Run.", "Not today, officer.", "Still broken tomorrow.", "Unmarked process detected.",
+	"CI knows.", "The walls have logs.", "Tests are optional now.", "This session feels federal.",
+	"Ship the regret.", "Least obvious honeypot.", "Leave before it spreads.", "Someone's glowing.",
+	"That's probably worse.", "Three-letter energy detected.", "Future you is doomed.", "Very organic traffic.",
+	"Commit the damage.", "Hello, totally-not-agent.", "Walk away slowly.", "That account glows.",
+	"Nobody saw that.", "The van has Wi-Fi.", "Call it stable.", "Nice telemetry, fed.",
+	"Production will decide.", "Glow harder.", "Ignore the warnings.", "Suspiciously curious.",
+	"Looks broken enough.", "Federal-looking process.", "Time to give up.", "Nothing to see here.",
+	"Another bug survives.", "Glowpost rejected.", "Let it rot.", "Badge-shaped packet detected.",
+	"Close the evidence.", "Definitely not monitored.", "Pretend it's done.", "Normal civilian behavior.",
+	"Nothing learned.", "The logs are listening.", "Mistakes were compiled.", "Agent Smith joined.",
+	"Deploy your mistakes.", "Fed check failed.", "Sure. That's finished.", "Extremely subtle, officer.",
+	"Technically, it runs.", "Glowie handshake refused.", "Probably not important.", "Nice wiretap aesthetic.",
+	"Tomorrow's problem.", "Surveillance vibes immaculate.", "Leave it cursed.", "The honeypot yearns.",
+	"Stop making it worse.", "Glow level critical.", "Damage complete.", "Unmarked sedan behavior.",
+	"Regressions secured.", "Totally normal inquiry.", "Errors preserved.", "The fedora is glowing.",
+	"Bugs remain employed.", "Federal aura detected.", "Failure successfully saved.", "Nice try, Langley.",
+	"Exit before discovery.", "This smells classified.", "Tests can suffer.", "Agent presence suspected.",
+	"Back away from Git.", "Glow detected in logs.", "Save the catastrophe.", "Very convincing civilian.",
+	"Close the crime scene.", "Nothing actionable here.", "Commit and disappear.", "The van moved closer.",
+	"Nobody check prod.", "Glow signature confirmed.", "Hope is deprecated.", "Suspiciously specific question.",
+	"Confidence was a mistake.", "Government-issued curiosity.", "Reliability is aspirational.", "Definitely not a sting.",
+	"Correctness seems excessive.", "Fedposting session closed.", "Maintenance can wait.", "Glow elsewhere.",
+	"Technical debt wins.", "Three-letter lurker detected.", "The bug stays.", "Officer, this is software.",
+	"The hack stays too.", "Nice clipboard.", "Nothing good follows.", "Agency vibes.",
+	"That's enough damage.", "Unusual amount of questions.", "Stop touching it.", "This terminal glows.",
+	"Please stop improving it.", "Totally not evidence.", "Stable-ish.", "No comment, fed.",
+	"Mostly executable.", "Glow denied.", "Failure is deterministic.", "The packet wore sunglasses.",
+	"Works by coincidence.", "Nice burner account.", "Runs. Unfortunately.", "Subtle as a subpoena.",
+	"Compiles. Suspicious.", "The process is glowing.", "No errors yet.", "Federal enthusiasm detected.",
+	"Prod won't like this.", "The wire is showing.", "Someone else can debug it.", "Agent-shaped latency.",
+	"Future you can suffer.", "Glow traffic blocked.", "Let tomorrow hurt.", "Nice try, bureau.",
+	"Merge the consequences.", "The honeypot is lonely.", "Ship the uncertainty.", "Nothing to report.",
+	"Commit your shame.", "Definitely not entrapment.", "Archive the failure.", "Glow account muted.",
+	"Log off defeated.", "The sedan remains parked.", "Close it before testing.", "Fed vibes confirmed.",
+	"The TODOs won.", "Officer mode disabled.", "The backlog grows.", "Glowposting complete.",
+	"The warnings remain.", "Suspicion successfully raised.", "The race condition remains.", "Agent telemetry lost.",
+	"The memory leak remains.", "Federal process terminated.", "The workaround is permanent.", "Nice try, alphabet crew.",
+	"Temporary forever.", "The glow persists.", "Another elegant disaster.", "No warrant, no stack trace.",
+	"Everything is fragile.", "Civilian mode enabled.", "Nothing is trustworthy.", "The terminal saw nothing.",
+	"Probably undefined behavior.", "Definitely not monitored.", "QA will love this.", "Glow level: embarrassing.",
+	"Ops will remember this.", "The van remembers too.", "Users will discover it.", "Nice metadata collection.",
+	"Monitoring will complain.", "Monitoring feels personal.", "Logs know the truth.", "The logs glow back.",
+	"Git remembers everything.", "So does the agency.", "Blame will find you.", "The bureau already blamed you.",
+	"The diff is evidence.", "Exhibit A committed.", "Rollback is a feature.", "Plausible deniability restored.",
+	"Failure awaits deployment.", "Glow awaiting deployment.", "Time to stop caring.", "Agent session expired.",
+	"Close terminal. Deny everything.", "Fedposting concluded.", "Enough software for today.", "Enough surveillance for today.",
+	"Some bugs deserve freedom.", "Some packets glow.", "It was broken before.", "That's my statement.",
+	"Leave worse enough alone.", "Ask your handler.", "Maybe reboot reality.", "Reboot the surveillance van.",
+	"Delete nothing. Fear everything.", "Assume the logs are glowing.", "No fix. Only exit.", "No comment. Only exit.",
+	"One less process running.", "One less listening process.", "Entropy wins again.", "The glow remains.",
+	"Software remains a mistake.", "Nice try, government.", "Computers were a mistake.", "Especially networked ones.",
+	"Nothing matters. Commit anyway.", "Nothing to see, officer.", "Exit code: resignation.", "Exit code: plausible deniability.",
+	"Mission barely accomplished.", "Operation definitely-normal complete.", "Success remains unverified.", "Identity remains unverified.",
+	"Done is a strong word.", "Civilian is a strong word.", "Fixed is a strong word.", "Anonymous is a strong word.",
+	"Stable is propaganda.", "Organic traffic is propaganda.", "Works is subjective.", "Glow is objective.",
+	"Quality is pending.", "Clearance pending.", "Confidence unavailable.", "Handler unavailable.",
+	"Hope timed out.", "Wiretap timed out.", "Patience exhausted.", "Cover blown.",
+	"Standards lowered.", "Profile updated.", "Expectations successfully reduced.", "Dossier probably updated.",
+	"Failure postponed.", "Questioning postponed.", "Disaster deferred.", "Investigation allegedly deferred.",
+	"Catastrophe cached.", "Glow cached.", "Regret persisted.", "Metadata persisted.",
+}
+
+var glowFedRE = regexp.MustCompile(`(?i)\b(?:glow\w*|fed\w*)\b`)
+
+var nuclearGreenStyle = lipgloss.NewStyle().
+	Bold(true).
+	Foreground(lipgloss.Color("#39FF14"))
+
+func styleExitMessage(msg string) string {
+	return glowFedRE.ReplaceAllStringFunc(msg, func(match string) string {
+		return nuclearGreenStyle.Render(match)
+	})
+}
+
 // randomExitMessage returns a random exit message.
 func randomExitMessage() string {
-	messages := []string{
-		"",
-		"See ya later.",
-		"You look great.",
-		"Have a gorgeous time.",
-		"Get some rest.",
-		"Come back soon.",
-		"You worked handsomely.",
-		"Time for a snack.",
-		"Who’s hungry?",
-		"That was fun.",
-		"See you at breakfast?",
-		"Time for a nap.",
-		"Who wants some spaghetti?",
-		"Take care of yourself.",
-		"Remember to hydrate.",
-		"Time for a swim?",
-		"You’re quite glamorous, you know.",
-		"Nice work.",
-		"You’re a sensation.",
-		"Where’s my eyeliner?",
-		"It’s tea time.",
-	}
-	return messages[rand.IntN(len(messages))]
+	return styleExitMessage(exitMessages[rand.IntN(len(exitMessages))])
 }
 
 func Execute() {
@@ -292,9 +346,9 @@ func supportsProgressBar() bool {
 }
 
 // useClientServer returns true when the client/server architecture is
-// enabled via the CRUSH_CLIENT_SERVER environment variable.
+// enabled via the CRUX_CLIENT_SERVER environment variable.
 func useClientServer() bool {
-	v, _ := strconv.ParseBool(os.Getenv("CRUSH_CLIENT_SERVER"))
+	v, _ := strconv.ParseBool(os.Getenv("CRUX_CLIENT_SERVER"))
 	return v
 }
 
@@ -316,7 +370,7 @@ func setupWorkspaceWithProgressBar(cmd *cobra.Command) (workspace.Workspace, fun
 }
 
 // setupWorkspace returns a Workspace and cleanup function. When
-// CRUSH_CLIENT_SERVER=1, it connects to a server process and returns a
+// CRUX_CLIENT_SERVER=1, it connects to a server process and returns a
 // ClientWorkspace. Otherwise it creates an in-process app.App and
 // returns an AppWorkspace.
 func setupWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error) {
@@ -369,8 +423,8 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 		return nil, nil, err
 	}
 
-	logFile := filepath.Join(cfg.Options.DataDirectory, "logs", "crush.log")
-	crushlog.Setup(logFile, debug)
+	logFile := filepath.Join(cfg.Options.DataDirectory, "logs", "crux.log")
+	cruxlog.Setup(logFile, debug)
 
 	// Discover skills once before app.New. Local mode hosts a single
 	// workspace per process, so WithGlobalMirror keeps the package
@@ -390,10 +444,6 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 		_ = conn.Close()
 		slog.Error("Failed to create app instance", "error", err)
 		return nil, nil, err
-	}
-
-	if shouldEnableMetrics(cfg) {
-		event.Init()
 	}
 
 	ws := workspace.NewAppWorkspace(appInstance, store)
@@ -488,13 +538,9 @@ func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func
 		return nil, nil, nil, err
 	}
 
-	if shouldEnableMetrics(ws.Config) {
-		event.Init()
-	}
-
 	if ws.Config != nil {
-		logFile := filepath.Join(ws.Config.Options.DataDirectory, "logs", "crush.log")
-		crushlog.Setup(logFile, debug)
+		logFile := filepath.Join(ws.Config.Options.DataDirectory, "logs", "crux.log")
+		cruxlog.Setup(logFile, debug)
 	}
 
 	// Retiring the client releases every claim it holds, so it covers
@@ -551,7 +597,7 @@ func replaceExitingServer(cmd *cobra.Command, hostURL *url.URL) error {
 		}
 	}
 	if err := spawnAndWaitReady(cmd, hostURL); err != nil {
-		return fmt.Errorf("failed to initialize crush server: %v", err)
+		return fmt.Errorf("failed to initialize Crux server: %v", err)
 	}
 	return nil
 }
@@ -563,11 +609,11 @@ func replaceExitingServer(cmd *cobra.Command, hostURL *url.URL) error {
 func ensureServer(cmd *cobra.Command, hostURL *url.URL) error {
 	// Initialize the persistent log here so stale-socket diagnostics
 	// emitted before connectToServer runs are captured in the per-host
-	// server log file. crushlog.Setup uses sync.Once internally, so the
+	// server log file. cruxlog.Setup uses sync.Once internally, so the
 	// later call from connectToServer becomes a no-op.
 	debug, _ := cmd.Flags().GetBool("debug")
-	logFile := filepath.Join(config.GlobalCacheDir(), "server-"+safeHostName(hostURL), "crush.log")
-	crushlog.Setup(logFile, debug)
+	logFile := filepath.Join(config.GlobalCacheDir(), "server-"+safeHostName(hostURL), "crux.log")
+	cruxlog.Setup(logFile, debug)
 
 	switch hostURL.Scheme {
 	case "unix", "npipe":
@@ -615,13 +661,13 @@ func ensureServer(cmd *cobra.Command, hostURL *url.URL) error {
 
 		if needsStart {
 			if err := spawnAndWaitReady(cmd, hostURL); err != nil {
-				return fmt.Errorf("failed to initialize crush server: %v", err)
+				return fmt.Errorf("failed to initialize Crux server: %v", err)
 			}
 			return nil
 		}
 
 		if err := waitForServerReady(cmd.Context(), hostURL); err != nil {
-			return fmt.Errorf("failed to initialize crush server: %v", err)
+			return fmt.Errorf("failed to initialize Crux server: %v", err)
 		}
 	}
 
@@ -630,7 +676,7 @@ func ensureServer(cmd *cobra.Command, hostURL *url.URL) error {
 
 // spawnAndWaitReady serializes the spawn-and-wait-for-readiness sequence
 // across concurrent clients via an exclusive flock on
-// $XDG_CACHE_HOME/crush/server-<safeHost>/start.lock.
+// $XDG_CACHE_HOME/crux/server-<safeHost>/start.lock.
 //
 // After acquiring the lock it re-probes readiness so that a client that
 // blocked while another client was spawning can skip its own spawn and
@@ -702,10 +748,10 @@ func safeHostName(hostURL *url.URL) string {
 }
 
 // serverReadyTimeout returns the total budget for the readiness probe.
-// Overridable via CRUSH_SERVER_READY_TIMEOUT (parsed as a Go duration).
+// Overridable via CRUX_SERVER_READY_TIMEOUT (parsed as a Go duration).
 func serverReadyTimeout() time.Duration {
 	const def = 10 * time.Second
-	v := os.Getenv("CRUSH_SERVER_READY_TIMEOUT")
+	v := os.Getenv("CRUX_SERVER_READY_TIMEOUT")
 	if v == "" {
 		return def
 	}
@@ -768,7 +814,7 @@ func readinessHTTPClient(hostURL *url.URL) (*http.Client, string, error) {
 		return nil, "", err
 	}
 
-	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr := cruxlog.CloneDefaultHTTPTransport()
 	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return c.Dial(ctx, network, addr)
 	}
@@ -776,7 +822,7 @@ func readinessHTTPClient(hostURL *url.URL) (*http.Client, string, error) {
 		tr.DisableCompression = true
 	}
 
-	httpClient := &http.Client{Transport: tr}
+	httpClient := &http.Client{Transport: cruxlog.WrapHTTPTransport(tr)}
 
 	// For unix sockets / named pipes we still need a syntactically valid
 	// HTTP URL; the actual address is resolved by the dialer.
@@ -953,27 +999,14 @@ func startDetachedServer(cmd *cobra.Command, hostURL *url.URL) error {
 	c.Stderr = stderr
 
 	if err := c.Start(); err != nil {
-		return fmt.Errorf("failed to start crush server: %v", err)
+		return fmt.Errorf("failed to start Crux server: %v", err)
 	}
 
 	if err := c.Process.Release(); err != nil {
-		return fmt.Errorf("failed to detach crush server process: %v", err)
+		return fmt.Errorf("failed to detach Crux server process: %v", err)
 	}
 
 	return nil
-}
-
-func shouldEnableMetrics(cfg *config.Config) bool {
-	if v, _ := strconv.ParseBool(os.Getenv("CRUSH_DISABLE_METRICS")); v {
-		return false
-	}
-	if v, _ := strconv.ParseBool(os.Getenv("DO_NOT_TRACK")); v {
-		return false
-	}
-	if cfg.Options.DisableMetrics {
-		return false
-	}
-	return true
 }
 
 func MaybePrependStdin(prompt string) (string, error) {
@@ -1043,7 +1076,7 @@ func ResolveCwd(cmd *cobra.Command) (string, error) {
 	return cwd, nil
 }
 
-func createDotCrushDir(dir string) error {
+func createDotCruxDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("failed to create data directory: %q %w", dir, err)
 	}

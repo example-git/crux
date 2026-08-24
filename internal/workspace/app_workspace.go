@@ -5,24 +5,29 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/crush/internal/agent"
-	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/commands"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/history"
-	"github.com/charmbracelet/crush/internal/lsp"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/question"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/shell"
-	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/example-git/crux/internal/agent"
+	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/codebaseindex"
+	"github.com/example-git/crux/internal/commands"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/lsp"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/projects"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/shell"
+	"github.com/example-git/crux/internal/skills"
+	managedtask "github.com/example-git/crux/internal/task"
 )
 
 // AppWorkspace implements the Workspace interface by delegating
@@ -58,6 +63,13 @@ func (w *AppWorkspace) ListSessions(ctx context.Context) ([]session.Session, err
 
 func (w *AppWorkspace) SaveSession(ctx context.Context, sess session.Session) (session.Session, error) {
 	return w.app.Sessions.Save(ctx, sess)
+}
+
+func (w *AppWorkspace) SetSessionMode(ctx context.Context, sessionID string, mode session.Mode) (session.Session, error) {
+	if err := w.app.Sessions.SetMode(ctx, sessionID, mode); err != nil {
+		return session.Session{}, err
+	}
+	return w.app.Sessions.Get(ctx, sessionID)
 }
 
 func (w *AppWorkspace) DeleteSession(ctx context.Context, sessionID string) error {
@@ -206,7 +218,7 @@ func (w *AppWorkspace) AgentQueuedPrompts(sessionID string) int {
 	return w.app.AgentCoordinator.QueuedPrompts(sessionID)
 }
 
-func (w *AppWorkspace) AgentQueuedPromptsList(sessionID string) []string {
+func (w *AppWorkspace) AgentQueuedPromptsList(sessionID string) []agent.QueuedPrompt {
 	if w.app.AgentCoordinator == nil {
 		return nil
 	}
@@ -219,6 +231,10 @@ func (w *AppWorkspace) AgentClearQueue(sessionID string) {
 	}
 }
 
+func (w *AppWorkspace) AgentDetachForegroundJobs() int {
+	return w.app.BackgroundShells.DetachForeground()
+}
+
 func (w *AppWorkspace) AgentSummarize(ctx context.Context, sessionID string) error {
 	if w.app.AgentCoordinator == nil {
 		return errors.New("agent coordinator not initialized")
@@ -226,8 +242,50 @@ func (w *AppWorkspace) AgentSummarize(ctx context.Context, sessionID string) err
 	return w.app.AgentCoordinator.Summarize(ctx, sessionID)
 }
 
+func (w *AppWorkspace) SessionRewind(ctx context.Context, sessionID, messageID string, summarize bool) error {
+	return w.app.RewindSession(ctx, sessionID, messageID, summarize)
+}
+
+func (w *AppWorkspace) AgentSuggestPrompt(ctx context.Context, sessionID string) (string, error) {
+	if w.app.AgentCoordinator == nil {
+		return "", errors.New("agent coordinator not initialized")
+	}
+	return w.app.AgentCoordinator.SuggestPrompt(ctx, sessionID)
+}
+
 func (w *AppWorkspace) UpdateAgentModel(ctx context.Context) error {
 	return w.app.UpdateAgentModel(ctx)
+}
+
+func (w *AppWorkspace) CreateAgentDefinition(_ context.Context, request proto.CreateAgentDefinitionRequest) (string, error) {
+	return agent.CreateAgentDefinition(w.WorkingDir(), w.Config(), agentDefinitionTemplate(request))
+}
+
+func agentDefinitionTemplate(request proto.CreateAgentDefinitionRequest) agent.AgentDefinitionTemplate {
+	template := agent.AgentDefinitionTemplate{
+		Scope:       agent.AgentDefinitionScope(request.Scope),
+		Name:        request.Name,
+		Description: request.Description,
+		Model:       request.Model,
+		Tools:       request.Tools,
+	}
+	if request.Script != nil {
+		template.Script = &agent.AgentDefinitionScriptTemplate{
+			Path:      request.Script.Path,
+			Timeout:   request.Script.Timeout,
+			Variables: make(map[string]agent.AgentDefinitionScriptVariableTemplate, len(request.Script.Variables)),
+		}
+		for name, variable := range request.Script.Variables {
+			template.Script.Variables[name] = agent.AgentDefinitionScriptVariableTemplate{
+				Flag:     variable.Flag,
+				Required: variable.Required,
+				Default:  variable.Default,
+				Value:    variable.Value,
+				Values:   variable.Values,
+			}
+		}
+	}
+	return template
 }
 
 func (w *AppWorkspace) InitCoderAgent(ctx context.Context) error {
@@ -240,6 +298,32 @@ func (w *AppWorkspace) InitCoderAgentNonInteractive(ctx context.Context) error {
 
 func (w *AppWorkspace) GetDefaultSmallModel(providerID string) config.SelectedModel {
 	return w.app.GetDefaultSmallModel(providerID)
+}
+
+// -- Tasks --
+
+func (w *AppWorkspace) ListTasks(ctx context.Context) ([]managedtask.View, error) {
+	return w.app.ListTasks(ctx)
+}
+
+func (w *AppWorkspace) TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error) {
+	return w.app.TaskOutput(ctx, id, wait, timeout)
+}
+
+func (w *AppWorkspace) StopTask(ctx context.Context, id string) (managedtask.View, error) {
+	return w.app.StopTask(ctx, id)
+}
+
+func (w *AppWorkspace) ContinueTask(ctx context.Context, id, parentSessionID, prompt string) (managedtask.View, error) {
+	return w.app.ContinueTask(ctx, id, parentSessionID, prompt)
+}
+
+func (w *AppWorkspace) ListTaskNotifications(ctx context.Context, parentSessionID string, unreadOnly bool) ([]managedtask.Notification, error) {
+	return w.app.ListTaskNotifications(ctx, parentSessionID, unreadOnly)
+}
+
+func (w *AppWorkspace) MarkTaskNotificationRead(ctx context.Context, notificationID string) (managedtask.Notification, error) {
+	return w.app.MarkTaskNotificationRead(ctx, notificationID)
 }
 
 // -- Permissions --
@@ -333,6 +417,14 @@ func (w *AppWorkspace) Config() *config.Config {
 	return w.store.Config()
 }
 
+func (w *AppWorkspace) ProviderSurfaces() []providerregistry.Surface {
+	surfaces := config.ProviderSurfaces(w.store.Config())
+	for i := range surfaces {
+		surfaces[i] = surfaces[i].Clone()
+	}
+	return surfaces
+}
+
 func (w *AppWorkspace) WorkingDir() string {
 	return w.store.WorkingDir()
 }
@@ -360,11 +452,19 @@ func (w *AppWorkspace) SetProviderAPIKey(scope config.Scope, providerID string, 
 }
 
 func (w *AppWorkspace) SetConfigField(scope config.Scope, key string, value any) error {
-	return w.store.SetConfigField(scope, key, value)
+	if err := w.store.SetConfigField(scope, key, value); err != nil {
+		return err
+	}
+	go mcptools.Reinitialize(context.Background(), w.store)
+	return nil
 }
 
 func (w *AppWorkspace) RemoveConfigField(scope config.Scope, key string) error {
-	return w.store.RemoveConfigField(scope, key)
+	if err := w.store.RemoveConfigField(scope, key); err != nil {
+		return err
+	}
+	go mcptools.Reinitialize(context.Background(), w.store)
+	return nil
 }
 
 func (w *AppWorkspace) ImportCopilot() (*oauth.Token, bool) {
@@ -373,6 +473,72 @@ func (w *AppWorkspace) ImportCopilot() (*oauth.Token, bool) {
 
 func (w *AppWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Scope, providerID string) error {
 	return w.store.RefreshOAuthToken(ctx, scope, providerID)
+}
+
+func (w *AppWorkspace) CodebaseIndexStatus(ctx context.Context) (proto.CodebaseIndexStatus, error) {
+	status, err := agent.CodebaseIndexStatus(ctx, w.app.AgentCoordinator)
+	if err != nil {
+		return proto.CodebaseIndexStatus{}, err
+	}
+	result := codebaseIndexStatusProto(w.store.Config().Tools.CodebaseSearch, status)
+	result.MemoryActivity = agent.AutoMemoryActivity(w.app.AgentCoordinator)
+	return result, nil
+}
+
+func (w *AppWorkspace) UpdateCodebaseIndex(ctx context.Context, update proto.CodebaseIndexUpdate) (proto.CodebaseIndexStatus, error) {
+	filters := codebaseindex.NormalizeProjectFilters(codebaseindex.ProjectFilters{
+		IncludePaths: update.IncludePaths,
+		ExcludePaths: update.ExcludePaths,
+	})
+	if err := w.store.SetConfigFields(config.ScopeWorkspace, map[string]any{
+		"tools.codebase_search.enabled":         update.Enabled,
+		"tools.codebase_search.database_path":   strings.TrimSpace(update.DatabasePath),
+		"tools.codebase_search.store_directory": strings.TrimSpace(update.StoreDirectory),
+		"tools.codebase_search.include_paths":   filters.IncludePaths,
+		"tools.codebase_search.exclude_paths":   filters.ExcludePaths,
+	}); err != nil {
+		return proto.CodebaseIndexStatus{}, err
+	}
+	if err := w.app.AgentCoordinator.UpdateModels(ctx); err != nil {
+		return proto.CodebaseIndexStatus{}, err
+	}
+	if update.Reindex {
+		status, err := agent.ReconcileCodebaseIndex(ctx, w.app.AgentCoordinator)
+		if err != nil {
+			return proto.CodebaseIndexStatus{}, err
+		}
+		result := codebaseIndexStatusProto(w.store.Config().Tools.CodebaseSearch, status)
+		result.MemoryActivity = agent.AutoMemoryActivity(w.app.AgentCoordinator)
+		return result, nil
+	}
+	return w.CodebaseIndexStatus(ctx)
+}
+
+func codebaseIndexStatusProto(settings config.ToolCodebaseSearch, status codebaseindex.StoreStatus) proto.CodebaseIndexStatus {
+	result := proto.CodebaseIndexStatus{
+		Enabled:          settings.IsEnabled(),
+		State:            string(status.State),
+		ProjectRoot:      status.ProjectRoot,
+		DatabasePath:     status.DatabasePath,
+		StoreDirectory:   status.StoreDirectory,
+		SourceMode:       status.SourceMode,
+		CredentialStatus: status.CredentialStatus,
+		Model:            status.Model,
+		IncludePaths:     append([]string(nil), settings.IncludePaths...),
+		ExcludePaths:     append([]string(nil), settings.ExcludePaths...),
+		FilesTotal:       status.FilesTotal,
+		FilesProcessed:   status.FilesProcessed,
+		ChunksCreated:    status.ChunksCreated,
+		FilesSkipped:     status.FilesSkipped,
+		CurrentPath:      status.CurrentPath,
+		Stage:            status.Stage,
+		StartedAt:        status.StartedAt,
+		FinishedAt:       status.FinishedAt,
+	}
+	if status.Err != nil {
+		result.Error = status.Err.Error()
+	}
+	return result
 }
 
 // -- Project lifecycle --
@@ -387,6 +553,45 @@ func (w *AppWorkspace) MarkProjectInitialized() error {
 
 func (w *AppWorkspace) InitializePrompt() (string, error) {
 	return agent.InitializePrompt(w.store)
+}
+
+func (w *AppWorkspace) ListProjects(_ context.Context) ([]proto.ProjectInfo, error) {
+	service := projects.NewService()
+	documents, err := service.List()
+	if err != nil {
+		return nil, err
+	}
+	active, hasActive, err := service.Active(w.store.WorkingDir())
+	if err != nil {
+		return nil, err
+	}
+	result := make([]proto.ProjectInfo, len(documents))
+	for index, document := range documents {
+		completed := 0
+		for _, task := range document.Tasks {
+			if task.Completed {
+				completed++
+			}
+		}
+		result[index] = proto.ProjectInfo{
+			Slug:      document.Metadata.Slug,
+			Name:      document.Metadata.Name,
+			Status:    string(document.Metadata.Status),
+			Selected:  hasActive && active.Metadata.Slug == document.Metadata.Slug,
+			Completed: completed,
+			Total:     len(document.Tasks),
+		}
+	}
+	return result, nil
+}
+
+func (w *AppWorkspace) SelectProject(_ context.Context, slug string) error {
+	service := projects.NewService()
+	if slug == "" {
+		return service.Disable(w.store.WorkingDir())
+	}
+	_, err := service.Activate(slug, w.store.WorkingDir())
+	return err
 }
 
 func (w *AppWorkspace) ListSkills(_ context.Context) ([]skills.CatalogEntry, error) {

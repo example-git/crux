@@ -1,12 +1,12 @@
-// Package main is the entry point for the Crush CLI.
+// Package main is the entry point for the Crux CLI.
 //
-//	@title			Crush API
+//	@title			Crux API
 //	@version		1.0
-//	@description	Crush is a terminal-based AI coding assistant. This API is served over a Unix socket (or Windows named pipe) and provides programmatic access to workspaces, sessions, agents, LSP, MCP, and more.
-//	@contact.name	Charm
-//	@contact.url	https://charm.sh
-//	@license.name	MIT
-//	@license.url	https://github.com/charmbracelet/crush/blob/main/LICENSE
+//	@description	Crux is a terminal-based AI coding assistant. This API is served over a Unix socket (or Windows named pipe) and provides programmatic access to workspaces, sessions, agents, LSP, MCP, and more.
+//	@contact.name	Crux
+//	@contact.url	https://github.com/example-git/crux
+//	@license.name	FSL-1.1-MIT
+//	@license.url	https://github.com/example-git/crux/blob/main/LICENSE.md
 //	@BasePath		/v1
 package main
 
@@ -16,13 +16,17 @@ import (
 	_ "net/http/pprof"
 	"os"
 
-	"github.com/charmbracelet/crush/internal/cmd"
-	_ "github.com/charmbracelet/crush/internal/dns"
+	"github.com/example-git/crux/internal/cmd"
+	_ "github.com/example-git/crux/internal/dns"
+	cruxlog "github.com/example-git/crux/internal/log"
 	_ "github.com/joho/godotenv/autoload"
 )
 
 func main() {
-	if os.Getenv("CRUSH_PROFILE") != "" {
+	if err := cruxlog.SetupTraffic(); err != nil {
+		slog.Error("Failed to initialize traffic logging", "error", err)
+	}
+	if os.Getenv("CRUX_PROFILE") != "" {
 		go func() {
 			slog.Info("Serving pprof at localhost:6060")
 			if httpErr := http.ListenAndServe("localhost:6060", nil); httpErr != nil {

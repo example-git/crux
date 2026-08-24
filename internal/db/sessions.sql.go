@@ -20,6 +20,8 @@ INSERT INTO sessions (
     completion_tokens,
     cost,
     summary_message_id,
+    mode,
+    plan,
     updated_at,
     created_at
 ) VALUES (
@@ -31,9 +33,11 @@ INSERT INTO sessions (
     ?,
     ?,
     null,
+    'default',
+    '',
     strftime('%s', 'now'),
     strftime('%s', 'now')
-) RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos
+) RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
 `
 
 type CreateSessionParams struct {
@@ -69,6 +73,8 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.CreatedAt,
 		&i.SummaryMessageID,
 		&i.Todos,
+		&i.Mode,
+		&i.Plan,
 	)
 	return i, err
 }
@@ -84,7 +90,7 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 }
 
 const getLastSession = `-- name: GetLastSession :one
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
 FROM sessions
 ORDER BY updated_at DESC
 LIMIT 1
@@ -105,12 +111,14 @@ func (q *Queries) GetLastSession(ctx context.Context) (Session, error) {
 		&i.CreatedAt,
 		&i.SummaryMessageID,
 		&i.Todos,
+		&i.Mode,
+		&i.Plan,
 	)
 	return i, err
 }
 
 const getSessionByID = `-- name: GetSessionByID :one
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
 FROM sessions
 WHERE id = ? LIMIT 1
 `
@@ -130,12 +138,14 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 		&i.CreatedAt,
 		&i.SummaryMessageID,
 		&i.Todos,
+		&i.Mode,
+		&i.Plan,
 	)
 	return i, err
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
 FROM sessions
 WHERE parent_session_id is NULL
 ORDER BY updated_at DESC
@@ -162,6 +172,8 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 			&i.CreatedAt,
 			&i.SummaryMessageID,
 			&i.Todos,
+			&i.Mode,
+			&i.Plan,
 		); err != nil {
 			return nil, err
 		}
@@ -193,6 +205,26 @@ func (q *Queries) RenameSession(ctx context.Context, arg RenameSessionParams) er
 	return err
 }
 
+const setSessionPlanState = `-- name: SetSessionPlanState :exec
+UPDATE sessions
+SET
+    mode = ?,
+    plan = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+`
+
+type SetSessionPlanStateParams struct {
+	Mode string `json:"mode"`
+	Plan string `json:"plan"`
+	ID   string `json:"id"`
+}
+
+func (q *Queries) SetSessionPlanState(ctx context.Context, arg SetSessionPlanStateParams) error {
+	_, err := q.exec(ctx, q.setSessionPlanStateStmt, setSessionPlanState, arg.Mode, arg.Plan, arg.ID)
+	return err
+}
+
 const updateSession = `-- name: UpdateSession :one
 UPDATE sessions
 SET
@@ -203,7 +235,7 @@ SET
     cost = ?,
     todos = ?
 WHERE id = ?
-RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
 `
 
 type UpdateSessionParams struct {
@@ -239,36 +271,74 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 		&i.CreatedAt,
 		&i.SummaryMessageID,
 		&i.Todos,
+		&i.Mode,
+		&i.Plan,
 	)
 	return i, err
 }
 
-const updateSessionTitleAndUsage = `-- name: UpdateSessionTitleAndUsage :exec
+const updateSessionCompaction = `-- name: UpdateSessionCompaction :one
 UPDATE sessions
 SET
-    title = ?,
-    prompt_tokens = prompt_tokens + ?,
-    completion_tokens = completion_tokens + ?,
-    cost = cost + ?,
-    updated_at = strftime('%s', 'now')
+    summary_message_id = ?,
+    prompt_tokens = ?,
+    completion_tokens = ?,
+    cost = ?
 WHERE id = ?
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
 `
 
-type UpdateSessionTitleAndUsageParams struct {
-	Title            string  `json:"title"`
-	PromptTokens     int64   `json:"prompt_tokens"`
-	CompletionTokens int64   `json:"completion_tokens"`
-	Cost             float64 `json:"cost"`
-	ID               string  `json:"id"`
+type UpdateSessionCompactionParams struct {
+	SummaryMessageID sql.NullString `json:"summary_message_id"`
+	PromptTokens     int64          `json:"prompt_tokens"`
+	CompletionTokens int64          `json:"completion_tokens"`
+	Cost             float64        `json:"cost"`
+	ID               string         `json:"id"`
 }
 
-func (q *Queries) UpdateSessionTitleAndUsage(ctx context.Context, arg UpdateSessionTitleAndUsageParams) error {
-	_, err := q.exec(ctx, q.updateSessionTitleAndUsageStmt, updateSessionTitleAndUsage,
-		arg.Title,
+func (q *Queries) UpdateSessionCompaction(ctx context.Context, arg UpdateSessionCompactionParams) (Session, error) {
+	row := q.queryRow(ctx, q.updateSessionCompactionStmt, updateSessionCompaction,
+		arg.SummaryMessageID,
 		arg.PromptTokens,
 		arg.CompletionTokens,
 		arg.Cost,
 		arg.ID,
 	)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.ParentSessionID,
+		&i.Title,
+		&i.MessageCount,
+		&i.PromptTokens,
+		&i.CompletionTokens,
+		&i.Cost,
+		&i.UpdatedAt,
+		&i.CreatedAt,
+		&i.SummaryMessageID,
+		&i.Todos,
+		&i.Mode,
+		&i.Plan,
+	)
+	return i, err
+}
+
+const updateSessionTitleAndCost = `-- name: UpdateSessionTitleAndCost :exec
+UPDATE sessions
+SET
+    title = ?,
+    cost = cost + ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+`
+
+type UpdateSessionTitleAndCostParams struct {
+	Title string  `json:"title"`
+	Cost  float64 `json:"cost"`
+	ID    string  `json:"id"`
+}
+
+func (q *Queries) UpdateSessionTitleAndCost(ctx context.Context, arg UpdateSessionTitleAndCostParams) error {
+	_, err := q.exec(ctx, q.updateSessionTitleAndCostStmt, updateSessionTitleAndCost, arg.Title, arg.Cost, arg.ID)
 	return err
 }

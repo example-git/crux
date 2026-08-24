@@ -11,7 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/oauth/useragent"
 )
 
 const (
@@ -44,7 +45,7 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", useragent.CopilotGitHubUserAgent())
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -114,7 +115,7 @@ func tryGetToken(ctx context.Context, deviceCode string) (*oauth.Token, error) {
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("User-Agent", useragent.CopilotGitHubUserAgent())
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)

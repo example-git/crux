@@ -4,25 +4,40 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
 
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/event"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
 	"github.com/zeebo/xxh3"
 )
 
 type TodoStatus string
 
+type Mode string
+
 const (
 	TodoStatusPending    TodoStatus = "pending"
 	TodoStatusInProgress TodoStatus = "in_progress"
 	TodoStatusCompleted  TodoStatus = "completed"
+
+	ModeDefault       Mode = "default"
+	ModePlan          Mode = "plan"
+	ModePlanRevision  Mode = "plan_revision"
+	ModePlanExecution Mode = "plan_execution"
 )
+
+func (m Mode) IsPlan() bool {
+	return m == ModePlan || m == ModePlanRevision || m == ModePlanExecution
+}
+
+func (m Mode) IsReadOnlyPlan() bool {
+	return m == ModePlan || m == ModePlanRevision
+}
 
 // HashID returns the XXH3 hash of a session ID (UUID) as a hex string.
 func HashID(id string) string {
@@ -58,6 +73,8 @@ type Session struct {
 	SummaryMessageID string
 	Cost             float64
 	Todos            []Todo
+	Mode             Mode
+	Plan             string
 	CreatedAt        int64
 	UpdatedAt        int64
 }
@@ -71,7 +88,10 @@ type Service interface {
 	GetLast(ctx context.Context) (Session, error)
 	List(ctx context.Context) ([]Session, error)
 	Save(ctx context.Context, session Session) (Session, error)
-	UpdateTitleAndUsage(ctx context.Context, sessionID, title string, promptTokens, completionTokens int64, cost float64) error
+	SetMode(ctx context.Context, sessionID string, mode Mode) error
+	SetPlanState(ctx context.Context, sessionID string, mode Mode, plan string) error
+	UpdateTitleAndCost(ctx context.Context, sessionID, title string, cost float64) error
+	PublishCompaction(ctx context.Context, sessionID string, estimatedUsage bool) error
 	Rename(ctx context.Context, id string, title string) error
 	Delete(ctx context.Context, id string) error
 
@@ -103,7 +123,6 @@ func (s *service) Create(ctx context.Context, title string) (Session, error) {
 	}
 	session := s.fromDBItem(dbSession)
 	s.Publish(pubsub.CreatedEvent, session)
-	event.SessionCreated()
 	return session, nil
 }
 
@@ -164,7 +183,6 @@ func (s *service) Delete(ctx context.Context, id string) error {
 	session := s.fromDBItem(dbSession)
 	s.clearEstimatedUsageState(dbSession.ID)
 	s.Publish(pubsub.DeletedEvent, session)
-	event.SessionDeleted()
 	return nil
 }
 
@@ -220,19 +238,69 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 	return session, nil
 }
 
-// UpdateTitleAndUsage updates only the title and usage fields atomically.
-// This is safer than fetching, modifying, and saving the entire session.
-func (s *service) UpdateTitleAndUsage(ctx context.Context, sessionID, title string, promptTokens, completionTokens int64, cost float64) error {
-	if err := s.q.UpdateSessionTitleAndUsage(ctx, db.UpdateSessionTitleAndUsageParams{
-		ID:               sessionID,
-		Title:            title,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		Cost:             cost,
+func (s *service) SetMode(ctx context.Context, sessionID string, mode Mode) error {
+	switch mode {
+	case ModeDefault:
+		current, err := s.Get(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		if current.Mode == ModePlanExecution {
+			return errors.New("approved plan execution can only end after completion approval")
+		}
+	case ModePlan:
+	default:
+		return fmt.Errorf("invalid session mode %q", mode)
+	}
+	return s.SetPlanState(ctx, sessionID, mode, "")
+}
+
+func (s *service) SetPlanState(ctx context.Context, sessionID string, mode Mode, plan string) error {
+	plan = strings.TrimSpace(plan)
+	switch mode {
+	case ModeDefault, ModePlan:
+		if plan != "" {
+			return fmt.Errorf("session mode %q cannot retain a plan", mode)
+		}
+	case ModePlanRevision, ModePlanExecution:
+		if plan == "" {
+			return fmt.Errorf("session mode %q requires a plan", mode)
+		}
+	default:
+		return fmt.Errorf("invalid session mode %q", mode)
+	}
+	if err := s.q.SetSessionPlanState(ctx, db.SetSessionPlanStateParams{
+		ID:   sessionID,
+		Mode: string(mode),
+		Plan: plan,
 	}); err != nil {
 		return err
 	}
 	s.publishSessionUpdate(ctx, sessionID)
+	return nil
+}
+
+// UpdateTitleAndCost updates only the title and cost fields atomically.
+// This is safer than fetching, modifying, and saving the entire session.
+func (s *service) UpdateTitleAndCost(ctx context.Context, sessionID, title string, cost float64) error {
+	if err := s.q.UpdateSessionTitleAndCost(ctx, db.UpdateSessionTitleAndCostParams{
+		ID:    sessionID,
+		Title: title,
+		Cost:  cost,
+	}); err != nil {
+		return err
+	}
+	s.publishSessionUpdate(ctx, sessionID)
+	return nil
+}
+
+func (s *service) PublishCompaction(ctx context.Context, sessionID string, estimatedUsage bool) error {
+	s.setEstimatedUsageState(sessionID, estimatedUsage)
+	session, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	s.Publish(pubsub.UpdatedEvent, session)
 	return nil
 }
 
@@ -310,6 +378,8 @@ func (s *service) fromDBItem(item db.Session) Session {
 		SummaryMessageID: item.SummaryMessageID.String,
 		Cost:             item.Cost,
 		Todos:            todos,
+		Mode:             Mode(item.Mode),
+		Plan:             item.Plan,
 		CreatedAt:        item.CreatedAt,
 		UpdatedAt:        item.UpdatedAt,
 	}

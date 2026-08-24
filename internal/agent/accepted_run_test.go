@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/message"
+	"github.com/example-git/crux/internal/message"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

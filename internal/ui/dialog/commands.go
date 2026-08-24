@@ -9,12 +9,12 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/crush/internal/commands"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/list"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/internal/commands"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/list"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 // CommandsID is the identifier for the commands dialog.
@@ -290,12 +290,7 @@ func (c *Commands) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	t := c.com.Styles
 	width := max(0, min(defaultDialogMaxWidth, area.Dx()-t.Dialog.View.GetHorizontalBorderSize()))
 	height := max(0, min(defaultDialogHeight, area.Dy()-t.Dialog.View.GetVerticalBorderSize()))
-	if area.Dx() != c.windowWidth && c.selected == SystemCommands {
-		c.windowWidth = area.Dx()
-		// since some items in the list depend on width (e.g. toggle sidebar command),
-		// we need to reset the command items when width changes
-		c.setCommandItems(c.selected)
-	}
+	c.SetWindowWidth(area.Dx())
 
 	innerWidth := width - c.com.Styles.Dialog.View.GetHorizontalFrameSize()
 	heightOffset := t.Dialog.Title.GetVerticalFrameSize() + titleContentHeight +
@@ -405,33 +400,12 @@ func (c *Commands) setCommandItems(commandType CommandType) {
 			commandItems = append(commandItems, cmd)
 		}
 	case UserCommands:
-		for _, cmd := range c.customCommands {
-			var action Action
-			if cmd.Skill != nil {
-				action = ActionAttachSkill{ID: cmd.Skill.SkillFilePath, Name: cmd.Skill.Name}
-			} else {
-				action = ActionRunCustomCommand{
-					Content:   cmd.Content,
-					Arguments: cmd.Arguments,
-					Skill:     cmd.Skill,
-				}
-			}
-			item := NewCommandItem(c.com.Styles, "custom_"+cmd.ID, cmd.Name, "", action)
-			if cmd.Skill != nil {
-				item = item.WithDescription(cmd.Skill.Description)
-			}
-			commandItems = append(commandItems, item)
+		for _, cmd := range c.customCommandItems() {
+			commandItems = append(commandItems, cmd)
 		}
 	case MCPPrompts:
-		for _, cmd := range c.mcpPrompts {
-			action := ActionRunMCPPrompt{
-				Title:       cmd.Title,
-				Description: cmd.Description,
-				PromptID:    cmd.PromptID,
-				ClientID:    cmd.ClientID,
-				Arguments:   cmd.Arguments,
-			}
-			commandItems = append(commandItems, NewCommandItem(c.com.Styles, "mcp_"+cmd.ID, cmd.PromptID, "", action))
+		for _, cmd := range c.mcpPromptItems() {
+			commandItems = append(commandItems, cmd)
 		}
 	}
 
@@ -440,6 +414,65 @@ func (c *Commands) setCommandItems(commandType CommandType) {
 	c.list.ScrollToTop()
 	c.list.SetSelected(0)
 	c.input.SetValue("")
+}
+
+// customCommandItems returns the user custom command items.
+func (c *Commands) customCommandItems() []*CommandItem {
+	items := make([]*CommandItem, 0, len(c.customCommands))
+	for _, cmd := range c.customCommands {
+		var action Action
+		if cmd.Skill != nil {
+			action = ActionAttachSkill{ID: cmd.Skill.SkillFilePath, Name: cmd.Skill.Name}
+		} else {
+			action = ActionRunCustomCommand{
+				Content:   cmd.Content,
+				Arguments: cmd.Arguments,
+				Skill:     cmd.Skill,
+			}
+		}
+		item := NewCommandItem(c.com.Styles, "custom_"+cmd.ID, cmd.Name, "", action)
+		if cmd.Skill != nil {
+			item = item.WithDescription(cmd.Skill.Description)
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+// mcpPromptItems returns the MCP prompt command items.
+func (c *Commands) mcpPromptItems() []*CommandItem {
+	items := make([]*CommandItem, 0, len(c.mcpPrompts))
+	for _, cmd := range c.mcpPrompts {
+		action := ActionRunMCPPrompt{
+			Title:       cmd.Title,
+			Description: cmd.Description,
+			PromptID:    cmd.PromptID,
+			ClientID:    cmd.ClientID,
+			Arguments:   cmd.Arguments,
+		}
+		items = append(items, NewCommandItem(c.com.Styles, "mcp_"+cmd.ID, cmd.PromptID, "", action))
+	}
+	return items
+}
+
+// AllItems returns every available command item across all command types
+// (system, user, and MCP prompts). Used for inline command completions.
+func (c *Commands) AllItems() []*CommandItem {
+	items := c.defaultCommands()
+	items = append(items, c.customCommandItems()...)
+	items = append(items, c.mcpPromptItems()...)
+	return items
+}
+
+// SetWindowWidth updates terminal-width-dependent command availability.
+func (c *Commands) SetWindowWidth(width int) {
+	if width == c.windowWidth {
+		return
+	}
+	c.windowWidth = width
+	if c.selected == SystemCommands {
+		c.setCommandItems(c.selected)
+	}
 }
 
 // defaultCommands returns the list of default system commands.
@@ -452,7 +485,9 @@ func (c *Commands) defaultCommands() []*CommandItem {
 
 	// Only show compact command if there's an active session
 	if c.hasSession {
+		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_plan", "Toggle Plan Mode", "shift+tab", ActionTogglePlanMode{}).WithAliases("plan"))
 		commands = append(commands, NewCommandItem(c.com.Styles, "summarize", "Summarize Session", "", ActionSummarize{SessionID: c.sessionID}))
+		commands = append(commands, NewCommandItem(c.com.Styles, "rewind", "Rewind Session", "esc esc", ActionOpenDialog{RewindID}))
 	}
 
 	// Add reasoning toggle for models that support it
@@ -527,9 +562,21 @@ func (c *Commands) defaultCommands() []*CommandItem {
 		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_pills", label, "ctrl+t", ActionTogglePills{}))
 	}
 
+	// Account management: login, logout, and the account switcher live in
+	// this menu (no key combos; the bottom bar is out of space).
+	commands = append(commands,
+		NewCommandItem(c.com.Styles, "login", "Log In to a Provider", "", ActionOpenDialog{DialogID: LoginID}).WithAliases("login"),
+		NewCommandItem(c.com.Styles, "logout", "Log Out of a Provider", "", ActionOpenDialog{DialogID: LogoutID}).WithAliases("logout", "signout"),
+		NewCommandItem(c.com.Styles, "switch_account", "Switch Account", "", ActionOpenDialog{DialogID: AccountSwitcherID}).WithAliases("accounts"),
+	)
+
 	// Add a command for selecting notification style via picker dialog.
 	notificationLabel := "Notification Style"
 	commands = append(commands, NewCommandItem(c.com.Styles, "select_notifications", notificationLabel, "", ActionOpenDialog{DialogID: NotificationsID}))
+	commands = append(commands, NewCommandItem(c.com.Styles, "projects", "Projects", "", ActionOpenDialog{DialogID: ProjectsID}).WithAliases("project"))
+	commands = append(commands, NewCommandItem(c.com.Styles, "codebase_index", "Codebase Index", "", ActionOpenDialog{DialogID: CodebaseIndexID}).WithAliases("index", "semantic_index"))
+	commands = append(commands, NewCommandItem(c.com.Styles, "mcp_servers", "MCP Servers", "", ActionOpenDialog{DialogID: MCPServersID}).WithAliases("mcp", "mcp_config", "servers"))
+	commands = append(commands, NewCommandItem(c.com.Styles, "create_agent", "Create Agent Definition", "", ActionOpenDialog{DialogID: AgentDefinitionsID}).WithAliases("agent_definition", "new_agent"))
 
 	commands = append(
 		commands,

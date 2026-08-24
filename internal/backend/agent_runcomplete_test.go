@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/proto"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/proto"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -42,12 +42,14 @@ func (c *errorCoordinator) CancelAll()                                        {}
 func (c *errorCoordinator) IsBusy() bool                                      { return false }
 func (c *errorCoordinator) IsSessionBusy(string) bool                         { return false }
 func (c *errorCoordinator) QueuedPrompts(string) int                          { return 0 }
-func (c *errorCoordinator) QueuedPromptsList(string) []string                 { return nil }
+func (c *errorCoordinator) QueuedPromptsList(string) []agent.QueuedPrompt     { return nil }
 func (c *errorCoordinator) ClearQueue(string)                                 {}
 func (c *errorCoordinator) Summarize(context.Context, string) error           { return nil }
 func (c *errorCoordinator) Model() agent.Model                                { return agent.Model{} }
 func (c *errorCoordinator) UpdateModels(context.Context) error                { return nil }
 func (c *errorCoordinator) GenerateTitle(context.Context, string, string)     {}
+
+func (c *errorCoordinator) SuggestPrompt(context.Context, string) (string, error) { return "", nil }
 
 // insertRunCompleteWorkspace installs a workspace backed by a real
 // app.App (so the runCompletions broker exists) with the given
@@ -77,7 +79,7 @@ func insertRunCompleteWorkspace(t *testing.T, b *Backend, base context.Context, 
 // error returned from RunAccepted before the coordinator could publish
 // its own terminal event (e.g. a readyWg or UpdateModels failure,
 // modeled here by a stub coordinator) still yields a reliable terminal
-// RunComplete for the run's RunID. Without it, a `crush run` caller
+// RunComplete for the run's RunID. Without it, a `crux run` caller
 // blocking on that RunID would hang because the lossy TypeAgentError
 // event is not a guaranteed terminal signal.
 func TestRunAgent_PreRunErrorPublishesTerminalRunComplete(t *testing.T) {

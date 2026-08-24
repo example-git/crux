@@ -8,7 +8,8 @@ import (
 	"net/http"
 	"time"
 
-	"charm.land/fantasy"
+	fantasy "github.com/example-git/crux/foundation"
+	cruxlog "github.com/example-git/crux/internal/log"
 )
 
 //go:embed web_search.md.tpl
@@ -22,14 +23,14 @@ var webSearchDescriptionTpl = template.Must(
 // NewWebSearchTool creates a web search tool for sub-agents (no permissions needed).
 func NewWebSearchTool(client *http.Client) fantasy.AgentTool {
 	if client == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport := cruxlog.CloneDefaultHTTPTransport()
 		transport.MaxIdleConns = 100
 		transport.MaxIdleConnsPerHost = 10
 		transport.IdleConnTimeout = 90 * time.Second
 
 		client = &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: transport,
+			Transport: cruxlog.WrapHTTPTransport(transport),
 		}
 	}
 

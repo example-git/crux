@@ -1,8 +1,8 @@
-Analyze this codebase and create/update **{{.Config.Options.InitializeAs}}** to help future agents work effectively in this repository.
+Analyze this codebase and create/update **{{.Config.Options.InitializeAs}}** to help future sessions work effectively in this repository.
 
 **First**: Check if directory is empty or contains only config files. If so, stop and say "Directory appears empty or only contains config. Add source code first, then run this command to generate {{.Config.Options.InitializeAs}}."
 
-**Goal**: Document what an agent needs to know to work in this codebase - commands, patterns, conventions, gotchas, overall architecture, how components fit together
+**Goal**: Document what a tool-use session needs to work in this codebase — commands, patterns, conventions, gotchas, overall architecture, how components fit together
 
 **Discovery process**:
 
@@ -10,7 +10,7 @@ Analyze this codebase and create/update **{{.Config.Options.InitializeAs}}** to 
 2. Look for existing rule files (`.cursor/rules/*.md`, `.cursorrules`, `.github/copilot-instructions.md`, `claude.md`, `agents.md`) - only read if they exist
 3. Identify project type from config files and directory structure
 4. Find build/test/lint commands from config files, scripts, Makefiles, or CI configs
-5. Read representative source files to understand code patterns, architecture, control/data flow
+5. Read representative source files to capture code patterns, architecture, control/data flow
 6. If {{.Config.Options.InitializeAs}} exists, read and improve it
 
 **Content to include**:
@@ -22,8 +22,8 @@ Analyze this codebase and create/update **{{.Config.Options.InitializeAs}}** to 
 - Important gotchas or non-obvious patterns
 - Any project-specific context from existing rule files
 
-**Note:** LLM agents learn and adapt to their context as they obtain it, so mentioning obvious details they would immediately pick up from reading a file or two is actively detrimental. Keep the principles of progressive disclosure in mind and focus primarily on non-obvious knowledge that saves the agent from trial-and-error discovery: gotchas, implicit conventions, commands with surprising flags, and context that isn't self-evident from the code in a single file.
+**Note:** Token engines absorb context from files they read, so mentioning obvious details visible in any single file is actively detrimental. Focus on non-obvious knowledge that prevents trial-and-error discovery: gotchas, implicit conventions, commands with surprising flags, and context that isn't self-evident from the code.
 
-**Format**: Clear markdown sections. Use your judgment on structure based on what you find. Aim for completeness over brevity - include everything an agent would need to know.
+**Format**: Clear markdown sections. Structure based on what the codebase contains. Aim for completeness over brevity — include everything a future session would need.
 
 **Critical**: Only document what you actually observe. Never invent commands, patterns, or conventions. If you can't find something, don't include it.

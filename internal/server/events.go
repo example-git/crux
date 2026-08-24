@@ -6,18 +6,19 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/charmbracelet/crush/internal/agent/notify"
-	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/backend"
-	"github.com/charmbracelet/crush/internal/history"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/question"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/example-git/crux/internal/agent/notify"
+	"github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/backend"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/skills"
+	managedtask "github.com/example-git/crux/internal/task"
 )
 
 // wrapEvent converts a raw tea.Msg (a pubsub.Event[T] from the app
@@ -120,8 +121,6 @@ func wrapEvent(ev any) *pubsub.Payload {
 			SessionTitle: e.Payload.SessionTitle,
 			RunID:        e.Payload.RunID,
 			Type:         proto.AgentEventType(e.Payload.Type),
-			AWSSOCommand: e.Payload.AWSSOCommand,
-			AWSSOURL:     e.Payload.AWSSOURL,
 		}
 		// Carry any human-readable message across the wire; the client
 		// maps Error back into Notification.Message.
@@ -135,6 +134,8 @@ func wrapEvent(ev any) *pubsub.Payload {
 			Type:    e.Type,
 			Payload: payload,
 		})
+	case pubsub.Event[managedtask.Notification]:
+		return envelope(pubsub.PayloadTypeTaskNotification, pubsub.Event[proto.TaskNotification](e))
 	case pubsub.Event[notify.RunComplete]:
 		return envelope(pubsub.PayloadTypeRunComplete, pubsub.Event[proto.RunComplete]{
 			Type: e.Type,
@@ -149,15 +150,6 @@ func wrapEvent(ev any) *pubsub.Payload {
 		})
 	case pubsub.Event[proto.ConfigChanged]:
 		return envelope(pubsub.PayloadTypeConfigChanged, e)
-	case app.UpdateAvailableMsg:
-		return envelope(pubsub.PayloadTypeUpdateAvailable, pubsub.Event[proto.UpdateAvailable]{
-			Type: pubsub.UpdatedEvent,
-			Payload: proto.UpdateAvailable{
-				CurrentVersion: e.CurrentVersion,
-				LatestVersion:  e.LatestVersion,
-				IsDevelopment:  e.IsDevelopment,
-			},
-		})
 	case pubsub.Event[skills.Event]:
 		return envelope(pubsub.PayloadTypeSkillsEvent, pubsub.Event[proto.SkillsEvent]{
 			Type:    e.Type,
@@ -210,6 +202,8 @@ func sessionToProto(s session.Session) proto.Session {
 		CompletionTokens: s.CompletionTokens,
 		Cost:             s.Cost,
 		Todos:            todosToProto(s.Todos),
+		Mode:             string(s.Mode),
+		Plan:             s.Plan,
 		CreatedAt:        s.CreatedAt,
 		UpdatedAt:        s.UpdatedAt,
 	}
@@ -280,30 +274,37 @@ func messageToProto(m message.Message) proto.Message {
 	for _, p := range m.Parts {
 		switch v := p.(type) {
 		case message.TextContent:
-			msg.Parts = append(msg.Parts, proto.TextContent{Text: v.Text})
+			msg.Parts = append(msg.Parts, proto.TextContent{
+				Text:             v.Text,
+				ProviderMetadata: v.ProviderMetadata.Clone(),
+			})
 		case message.ReasoningContent:
 			msg.Parts = append(msg.Parts, proto.ReasoningContent{
-				Thinking:   v.Thinking,
-				Signature:  v.Signature,
-				StartedAt:  v.StartedAt,
-				FinishedAt: v.FinishedAt,
+				Thinking:         v.Thinking,
+				ProviderMetadata: v.ProviderMetadata.Clone(),
+				StartedAt:        v.StartedAt,
+				FinishedAt:       v.FinishedAt,
 			})
 		case message.ToolCall:
 			msg.Parts = append(msg.Parts, proto.ToolCall{
-				ID:       v.ID,
-				Name:     v.Name,
-				Input:    v.Input,
-				Finished: v.Finished,
+				ID:               v.ID,
+				Name:             v.Name,
+				Input:            v.Input,
+				ProviderExecuted: v.ProviderExecuted,
+				Finished:         v.Finished,
+				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
 		case message.ToolResult:
 			msg.Parts = append(msg.Parts, proto.ToolResult{
-				ToolCallID: v.ToolCallID,
-				Name:       v.Name,
-				Content:    v.Content,
-				Data:       v.Data,
-				MIMEType:   v.MIMEType,
-				Metadata:   v.Metadata,
-				IsError:    v.IsError,
+				ToolCallID:       v.ToolCallID,
+				Name:             v.Name,
+				Content:          v.Content,
+				Data:             v.Data,
+				MIMEType:         v.MIMEType,
+				Metadata:         v.Metadata,
+				IsError:          v.IsError,
+				ProviderExecuted: v.ProviderExecuted,
+				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
 		case message.Finish:
 			msg.Parts = append(msg.Parts, proto.Finish{
@@ -321,6 +322,10 @@ func messageToProto(m message.Message) proto.Message {
 				Command:  v.Command,
 				Output:   v.Output,
 				ExitCode: v.ExitCode,
+			})
+		case message.ProviderMetadataContent:
+			msg.Parts = append(msg.Parts, proto.ProviderMetadataContent{
+				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
 		}
 	}

@@ -6,11 +6,11 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/charmbracelet/crush/internal/agent/tools"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/agent/tools"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 // -----------------------------------------------------------------------------

@@ -14,10 +14,10 @@ import (
 	"sort"
 	"strings"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/filepathext"
-	"github.com/charmbracelet/crush/internal/fsext"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/filepathext"
+	"github.com/example-git/crux/internal/fsext"
 )
 
 const GlobToolName = "glob"

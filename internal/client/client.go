@@ -13,16 +13,17 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/server"
+	"github.com/example-git/crux/internal/config"
+	cruxlog "github.com/example-git/crux/internal/log"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/server"
 	"github.com/google/uuid"
 )
 
 // DummyHost is used to satisfy the http.Client's requirement for a URL.
-const DummyHost = "api.crush.localhost"
+const DummyHost = "api.crux.localhost"
 
-// Client represents an RPC client connected to a Crush server.
+// Client represents an RPC client connected to a Crux server.
 type Client struct {
 	h        *http.Client
 	path     string
@@ -51,14 +52,14 @@ func NewClient(path, network, address string) (*Client, error) {
 	p := &http.Protocols{}
 	p.SetHTTP1(true)
 	p.SetUnencryptedHTTP2(true)
-	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr := cruxlog.CloneDefaultHTTPTransport()
 	tr.Protocols = p
 	tr.DialContext = c.dialer
 	if c.network == "npipe" || c.network == "unix" {
 		tr.DisableCompression = true
 	}
 	c.h = &http.Client{
-		Transport: tr,
+		Transport: cruxlog.WrapHTTPTransport(tr),
 		Timeout:   0,
 	}
 	return c, nil

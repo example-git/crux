@@ -16,17 +16,16 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
-	"github.com/charmbracelet/crush/internal/agent/tools"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/event"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/ui/chat"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
 	"github.com/charmbracelet/x/term"
+	"github.com/example-git/crux/internal/agent/tools"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/ui/chat"
+	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +33,7 @@ var sessionCmd = &cobra.Command{
 	Use:     "session",
 	Aliases: []string{"sessions", "s"},
 	Short:   "Manage sessions",
-	Long:    "Manage Crush sessions. Agents can use --json for machine-readable output.",
+	Long:    "Manage Crux sessions. Agents can use --json for machine-readable output.",
 }
 
 var (
@@ -115,10 +114,6 @@ func sessionSetup(cmd *cobra.Command) (context.Context, *sessionServices, func()
 	if dataDir == "" {
 		dataDir = cfg.Config().Options.DataDirectory
 	}
-	if shouldEnableMetrics(cfg.Config()) {
-		event.Init()
-	}
-
 	conn, err := db.Connect(ctx, dataDir)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to connect to database: %w", err)
@@ -134,15 +129,11 @@ func sessionSetup(cmd *cobra.Command) (context.Context, *sessionServices, func()
 }
 
 func runSessionList(cmd *cobra.Command, _ []string) error {
-	event.SetNonInteractive(true)
-
 	ctx, svc, cleanup, err := sessionSetup(cmd)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-
-	event.SessionListed(sessionListJSON)
 
 	list, err := svc.sessions.List(ctx)
 	if err != nil {
@@ -258,15 +249,11 @@ func resolveSessionID(ctx context.Context, svc session.Service, id string) (sess
 }
 
 func runSessionShow(cmd *cobra.Command, args []string) error {
-	event.SetNonInteractive(true)
-
 	ctx, svc, cleanup, err := sessionSetup(cmd)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-
-	event.SessionShown(sessionShowJSON)
 
 	sess, err := resolveSessionID(ctx, svc.sessions, args[0])
 	if err != nil {
@@ -286,15 +273,11 @@ func runSessionShow(cmd *cobra.Command, args []string) error {
 }
 
 func runSessionDelete(cmd *cobra.Command, args []string) error {
-	event.SetNonInteractive(true)
-
 	ctx, svc, cleanup, err := sessionSetup(cmd)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-
-	event.SessionDeletedCommand(sessionDeleteJSON)
 
 	sess, err := resolveSessionID(ctx, svc.sessions, args[0])
 	if err != nil {
@@ -322,15 +305,11 @@ func runSessionDelete(cmd *cobra.Command, args []string) error {
 }
 
 func runSessionRename(cmd *cobra.Command, args []string) error {
-	event.SetNonInteractive(true)
-
 	ctx, svc, cleanup, err := sessionSetup(cmd)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-
-	event.SessionRenamed(sessionRenameJSON)
 
 	sess, err := resolveSessionID(ctx, svc.sessions, args[0])
 	if err != nil {
@@ -359,15 +338,11 @@ func runSessionRename(cmd *cobra.Command, args []string) error {
 }
 
 func runSessionLast(cmd *cobra.Command, _ []string) error {
-	event.SetNonInteractive(true)
-
 	ctx, svc, cleanup, err := sessionSetup(cmd)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
-
-	event.SessionLastShown(sessionLastJSON)
 
 	list, err := svc.sessions.List(ctx)
 	if err != nil {
@@ -559,13 +534,15 @@ func sessionWriter(ctx context.Context, contentHeight int) (io.Writer, func(), b
 		return colorprofile.NewWriter(os.Stdout, os.Environ()), func() {}, false
 	}
 
-	return &colorprofile.Writer{
-			Forward: pipe,
-			Profile: profile,
-		}, func() {
-			pipe.Close()
-			_ = cmd.Wait()
-		}, true
+	writer := &colorprofile.Writer{
+		Forward: pipe,
+		Profile: profile,
+	}
+	cleanup := func() {
+		pipe.Close()
+		_ = cmd.Wait()
+	}
+	return writer, cleanup, true
 }
 
 type sessionShowMeta struct {
@@ -597,7 +574,9 @@ type sessionShowMessage struct {
 }
 
 type sessionShowPart struct {
-	Type string `json:"type"`
+	Type             string                   `json:"type"`
+	ProviderMetadata message.ProviderMetadata `json:"provider_metadata,omitempty"`
+	ProviderExecuted bool                     `json:"provider_executed,omitempty"`
 
 	// Text content
 	Text string `json:"text,omitempty"`
@@ -669,31 +648,37 @@ func convertParts(parts []message.ContentPart) []sessionShowPart {
 		switch p := part.(type) {
 		case message.TextContent:
 			result = append(result, sessionShowPart{
-				Type: "text",
-				Text: p.Text,
+				Type:             "text",
+				Text:             p.Text,
+				ProviderMetadata: p.ProviderMetadata.Clone(),
 			})
 		case message.ReasoningContent:
 			result = append(result, sessionShowPart{
-				Type:       "reasoning",
-				Thinking:   p.Thinking,
-				StartedAt:  p.StartedAt,
-				FinishedAt: p.FinishedAt,
+				Type:             "reasoning",
+				Thinking:         p.Thinking,
+				StartedAt:        p.StartedAt,
+				FinishedAt:       p.FinishedAt,
+				ProviderMetadata: p.ProviderMetadata.Clone(),
 			})
 		case message.ToolCall:
 			result = append(result, sessionShowPart{
-				Type:       "tool_call",
-				ToolCallID: p.ID,
-				Name:       p.Name,
-				Input:      p.Input,
+				Type:             "tool_call",
+				ToolCallID:       p.ID,
+				Name:             p.Name,
+				Input:            p.Input,
+				ProviderMetadata: p.ProviderMetadata.Clone(),
+				ProviderExecuted: p.ProviderExecuted,
 			})
 		case message.ToolResult:
 			result = append(result, sessionShowPart{
-				Type:       "tool_result",
-				ToolCallID: p.ToolCallID,
-				Name:       p.Name,
-				Content:    p.Content,
-				IsError:    p.IsError,
-				MIMEType:   p.MIMEType,
+				Type:             "tool_result",
+				ToolCallID:       p.ToolCallID,
+				Name:             p.Name,
+				Content:          p.Content,
+				IsError:          p.IsError,
+				MIMEType:         p.MIMEType,
+				ProviderMetadata: p.ProviderMetadata.Clone(),
+				ProviderExecuted: p.ProviderExecuted,
 			})
 		case message.BinaryContent:
 			result = append(result, sessionShowPart{
@@ -712,6 +697,11 @@ func convertParts(parts []message.ContentPart) []sessionShowPart {
 				Type:   "finish",
 				Reason: string(p.Reason),
 				Time:   p.Time,
+			})
+		case message.ProviderMetadataContent:
+			result = append(result, sessionShowPart{
+				Type:             "provider_metadata",
+				ProviderMetadata: p.ProviderMetadata.Clone(),
 			})
 		default:
 			result = append(result, sessionShowPart{

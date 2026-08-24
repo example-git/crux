@@ -6,19 +6,16 @@ import (
 	"os"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/crush/internal/clipboard"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/ui/styles"
-	"github.com/charmbracelet/crush/internal/ui/util"
-	"github.com/charmbracelet/crush/internal/workspace"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/internal/clipboard"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/ui/styles"
+	"github.com/example-git/crux/internal/ui/util"
+	"github.com/example-git/crux/internal/workspace"
 )
 
 // MaxAttachmentSize defines the maximum allowed size for file attachments (5 MB).
 const MaxAttachmentSize = int64(5 * 1024 * 1024)
-
-// AllowedImageTypes defines the permitted image file types.
-var AllowedImageTypes = []string{".jpg", ".jpeg", ".png"}
 
 // Common defines common UI options and configurations.
 type Common struct {
@@ -53,12 +50,6 @@ func largeModelProviderID(ws workspace.Workspace) string {
 		return ""
 	}
 	return cfg.Models[config.SelectedModelTypeLarge].Provider
-}
-
-// IsHyper reports whether the currently selected large model is provided
-// by Hyper.
-func (c *Common) IsHyper() bool {
-	return largeModelProviderID(c.Workspace) == "hyper"
 }
 
 // CenterRect returns a new [Rectangle] centered within the given area with the

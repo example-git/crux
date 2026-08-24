@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/proto"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/proto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,7 +50,7 @@ func TestConfigProviderKeyRequestOAuthRoundTrip(t *testing.T) {
 
 	src := proto.ConfigProviderKeyRequest{
 		Scope:      config.ScopeGlobal,
-		ProviderID: "hyper",
+		ProviderID: "codex",
 		Kind:       proto.APIKeyKindOAuth,
 		APIKey:     apiKey,
 	}

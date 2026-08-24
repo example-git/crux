@@ -9,19 +9,20 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/commands"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/skills"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/util"
+	"github.com/example-git/crux/internal/commands"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/skills"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/util"
 )
 
 // ActionClose is a message to close the current dialog.
-type ActionClose struct{}
+type ActionClose struct {
+	Dismiss bool
+}
 
 // ActionQuit is a message to quit the application.
 type ActionQuit = tea.QuitMsg
@@ -29,6 +30,11 @@ type ActionQuit = tea.QuitMsg
 // ActionOpenDialog is a message to open a dialog.
 type ActionOpenDialog struct {
 	DialogID string
+}
+
+type ActionAgentDefinitionCreated struct {
+	Path       string
+	RefreshErr error
 }
 
 // ActionSelectSession is a message indicating a session has been selected.
@@ -53,9 +59,17 @@ type (
 	ActionTogglePills             struct{}
 	ActionExternalEditor          struct{}
 	ActionToggleYoloMode          struct{}
+	ActionTogglePlanMode          struct{}
 	ActionToggleNotifications     struct{}
 	ActionSelectNotificationStyle struct {
 		Style string
+	}
+	ActionSelectProject struct {
+		Slug string
+	}
+	ProjectSelectionDoneMsg struct {
+		Slug string
+		Err  error
 	}
 	ActionToggleTransparentBackground struct{}
 	ActionInitializeProject           struct{}
@@ -129,29 +143,6 @@ type (
 	}
 )
 
-// Messages for OAuth2 device flow dialog.
-type (
-	// ActionInitiateOAuth is sent when the device auth is initiated
-	// successfully.
-	ActionInitiateOAuth struct {
-		DeviceCode      string
-		UserCode        string
-		ExpiresIn       int
-		VerificationURL string
-		Interval        int
-	}
-
-	// ActionCompleteOAuth is sent when the device flow completes successfully.
-	ActionCompleteOAuth struct {
-		Token *oauth.Token
-	}
-
-	// ActionOAuthErrored is sent when the device flow encounters an error.
-	ActionOAuthErrored struct {
-		Error error
-	}
-)
-
 // ActionCmd represents an action that carries a [tea.Cmd] to be passed to the
 // Bubble Tea program loop.
 type ActionCmd struct {
@@ -161,7 +152,8 @@ type ActionCmd struct {
 // ActionFilePickerSelected is a message indicating a file has been selected in
 // the file picker dialog.
 type ActionFilePickerSelected struct {
-	Path string
+	Path           string
+	MaxSourceBytes int64
 }
 
 // Cmd returns a command that reads the file at path and sends a
@@ -172,7 +164,11 @@ func (a ActionFilePickerSelected) Cmd() tea.Cmd {
 		return nil
 	}
 	return func() tea.Msg {
-		isFileLarge, err := common.IsFileTooBig(path, common.MaxAttachmentSize)
+		limit := a.MaxSourceBytes
+		if limit <= 0 {
+			limit = common.MaxAttachmentSize
+		}
+		isFileLarge, err := common.IsFileTooBig(path, limit)
 		if err != nil {
 			return util.InfoMsg{
 				Type: util.InfoTypeError,
@@ -182,7 +178,7 @@ func (a ActionFilePickerSelected) Cmd() tea.Cmd {
 		if isFileLarge {
 			return util.InfoMsg{
 				Type: util.InfoTypeError,
-				Msg:  "file too large, max 5MB",
+				Msg:  fmt.Sprintf("image too large, max %dMB before resizing", limit/(1024*1024)),
 			}
 		}
 

@@ -9,13 +9,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/ui/anim"
-	"github.com/charmbracelet/crush/internal/ui/attachments"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/list"
-	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/ui/anim"
+	"github.com/example-git/crux/internal/ui/attachments"
+	"github.com/example-git/crux/internal/ui/brand"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/list"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 // MessageLeftPaddingTotal is the total width that is taken up by the border +
@@ -349,7 +350,11 @@ func (a *AssistantInfoItem) renderContent(width int) string {
 	if providerConfig, ok := a.cfg.Providers.Get(a.message.Provider); ok {
 		providerName = providerConfig.Name
 	}
-	provider := a.sty.Messages.AssistantInfoProvider.Render(fmt.Sprintf("via %s", providerName))
+	providerStyle := a.sty.Messages.AssistantInfoProvider
+	if providerBrand := brand.ForProvider(a.message.Provider); providerBrand != nil {
+		providerStyle = providerStyle.Foreground(providerBrand.Accent)
+	}
+	provider := providerStyle.Render(fmt.Sprintf("via %s", providerName))
 	assistant := fmt.Sprintf("%s %s %s %s", icon, modelFormatted, provider, infoMsg)
 	return common.Section(a.sty, assistant, width)
 }
@@ -367,6 +372,9 @@ func cappedMessageWidth(availableWidth int) int {
 func ExtractMessageItems(sty *styles.Styles, msg *message.Message, toolResults map[string]message.ToolResult, workingDir string) []MessageItem {
 	switch msg.Role {
 	case message.User:
+		if item, ok := newTaskNotificationMessageItem(sty, msg); ok {
+			return []MessageItem{item}
+		}
 		// Reconstruct shell command items from ShellCommand parts.
 		var items []MessageItem
 		for _, part := range msg.Parts {

@@ -1,18 +1,20 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/clipboard"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/oauth/copilot"
-	"github.com/charmbracelet/crush/internal/oauth/hyper"
-	"github.com/charmbracelet/crush/internal/workspace"
+	"github.com/example-git/crux/internal/clipboard"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/workspace"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 )
@@ -20,27 +22,21 @@ import (
 var loginCmd = &cobra.Command{
 	Aliases: []string{"auth"},
 	Use:     "login [platform]",
-	Short:   "Login Crush to a platform",
-	Long: `Login Crush to a specified platform.
-The platform should be provided as an argument.
-Available platforms are: hyper, copilot.`,
+	Short:   "Login Crux to a platform",
+	Long: `Login Crux to a specified platform.
+The platform must expose a registered OAuth capability.`,
 	Example: `
-# Authenticate with Charm Hyper
-crush login
+# Authenticate with the first registered OAuth provider
+crux login
 
 # Authenticate with GitHub Copilot
-crush login copilot
+crux login copilot
 
 # Force re-authentication even if already logged in
-crush login -f copilot
+crux login --force copilot
   `,
-	ValidArgs: []cobra.Completion{
-		"hyper",
-		"copilot",
-		"github",
-		"github-copilot",
-	},
-	Args: cobra.MaximumNArgs(1),
+	ValidArgs: oauthProviderCompletions(),
+	Args:      cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
 		if err != nil {
@@ -48,19 +44,12 @@ crush login -f copilot
 		}
 		defer cleanup()
 
-		provider := "hyper"
-		if len(args) > 0 {
-			provider = args[0]
+		registration, err := resolveOAuthRegistration(args)
+		if err != nil {
+			return err
 		}
 		force, _ := cmd.Flags().GetBool("force")
-		switch provider {
-		case "hyper":
-			return loginHyper(ws, force)
-		case "copilot", "github", "github-copilot":
-			return loginCopilot(ws, force)
-		default:
-			return fmt.Errorf("unknown platform: %s", args[0])
-		}
+		return loginProvider(ws, registration, force)
 	},
 }
 
@@ -68,144 +57,176 @@ func init() {
 	loginCmd.Flags().BoolP("force", "f", false, "Force re-authentication even if already logged in")
 }
 
-func loginHyper(ws workspace.Workspace, force bool) error {
-	ctx := getLoginContext()
+func oauthRegistrations() []providerregistry.Registration {
+	registry := config.ProviderCapabilities()
+	registrations := registry.Registrations()
+	result := registrations[:0]
+	for _, registration := range registrations {
+		if registration.OAuth != nil {
+			result = append(result, registration)
+		}
+	}
+	return result
+}
 
+func oauthProviderCompletions() []cobra.Completion {
+	var result []cobra.Completion
+	for _, registration := range oauthRegistrations() {
+		result = append(result, cobra.Completion(registration.ProviderID))
+		for _, alias := range registration.Aliases {
+			result = append(result, cobra.Completion(alias))
+		}
+	}
+	return result
+}
+
+func resolveOAuthRegistration(args []string) (providerregistry.Registration, error) {
+	registry := config.ProviderCapabilities()
+	if len(args) == 0 {
+		for _, registration := range registry.Registrations() {
+			if registration.OAuth != nil {
+				return registration, nil
+			}
+		}
+		return providerregistry.Registration{}, fmt.Errorf("no OAuth provider is registered")
+	}
+	registration, ok := registry.Lookup(args[0])
+	if !ok || registration.OAuth == nil {
+		return providerregistry.Registration{}, fmt.Errorf("unknown OAuth platform: %s", args[0])
+	}
+	return registration, nil
+}
+
+func loginProvider(ws workspace.Workspace, registration providerregistry.Registration, force bool) error {
+	ctx := getLoginContext()
 	if !force {
-		cfg := ws.Config()
-		if cfg != nil {
-			if pc, ok := cfg.Providers.Get("hyper"); ok && pc.OAuthToken != nil {
-				fmt.Println("You are already logged in to Hyper.")
+		if cfg := ws.Config(); cfg != nil {
+			if provider, ok := cfg.Providers.Get(registration.ProviderID); ok && provider.OAuthToken != nil {
+				fmt.Printf("You are already logged in to %s.\n", registration.Name)
 				fmt.Println("Use --force to re-authenticate.")
 				return nil
 			}
 		}
 	}
 
-	resp, err := hyper.InitiateDeviceAuth(ctx)
+	token, err := authorizeProvider(ctx, registration)
 	if err != nil {
 		return err
 	}
-
-	clipboard.WriteText(resp.UserCode)
-	fmt.Println("The following code should be on clipboard already:")
-
-	fmt.Println()
-	lipgloss.Println(lipgloss.NewStyle().Bold(true).Render(resp.UserCode))
-	fmt.Println()
-	fmt.Println("Press enter to open this URL, and then paste it there:")
-	fmt.Println()
-	lipgloss.Println(lipgloss.NewStyle().Hyperlink(resp.VerificationURL, "id=hyper").Render(resp.VerificationURL))
-	fmt.Println()
-	waitEnter()
-	if err := browser.OpenURL(resp.VerificationURL); err != nil {
-		fmt.Println("Could not open the URL. You'll need to manually open the URL in your browser.")
-	}
-
-	fmt.Println("Exchanging authorization code...")
-	refreshToken, err := hyper.PollForToken(ctx, resp.DeviceCode, resp.ExpiresIn)
-	if err != nil {
+	if err := ws.SetProviderAPIKey(config.ScopeGlobal, registration.ProviderID, token); err != nil {
 		return err
 	}
-
-	fmt.Println("Exchanging refresh token for access token...")
-	token, err := hyper.ExchangeToken(ctx, refreshToken)
-	if err != nil {
-		return err
-	}
-
-	fmt.Println("Verifying access token...")
-	introspect, err := hyper.IntrospectToken(ctx, token.AccessToken)
-	if err != nil {
-		return fmt.Errorf("token introspection failed: %w", err)
-	}
-	if !introspect.Active {
-		return fmt.Errorf("access token is not active")
-	}
-
-	if err := ws.SetProviderAPIKey(config.ScopeGlobal, "hyper", token); err != nil {
-		return err
-	}
+	accountID, displayName, raw := providerAccountIdentity(ctx, registration, token)
+	saveOAuthAccount(ctx, registration, accountID, displayName, raw, token)
 
 	fmt.Println()
-	fmt.Println("You're now authenticated with Hyper!")
+	if displayName != "default" {
+		fmt.Printf("You're now authenticated with %s as %s!\n", registration.Name, displayName)
+	} else {
+		fmt.Printf("You're now authenticated with %s!\n", registration.Name)
+	}
 	return nil
 }
 
-func loginCopilot(ws workspace.Workspace, force bool) error {
-	loginCtx := getLoginContext()
-
-	if !force {
-		cfg := ws.Config()
-		if cfg != nil {
-			if pc, ok := cfg.Providers.Get("copilot"); ok && pc.OAuthToken != nil {
-				fmt.Println("You are already logged in to GitHub Copilot.")
-				fmt.Println("Use --force to re-authenticate.")
-				return nil
-			}
+func authorizeProvider(ctx context.Context, registration providerregistry.Registration) (*oauth.Token, error) {
+	capability := registration.OAuth
+	if capability == nil {
+		return nil, fmt.Errorf("provider %s has no OAuth capability", registration.ProviderID)
+	}
+	if capability.Import != nil {
+		token, found, err := capability.Import(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("import %s credential: %w", registration.Name, err)
+		}
+		if found {
+			fmt.Printf("Found an existing %s credential on disk.\n", registration.Name)
+			return token, nil
 		}
 	}
 
-	diskToken, hasDiskToken := copilot.RefreshTokenFromDisk()
-	var token *oauth.Token
-
-	switch {
-	case hasDiskToken:
-		fmt.Println("Found existing GitHub Copilot token on disk. Using it to authenticate...")
-
-		t, err := copilot.RefreshToken(loginCtx, diskToken)
-		if err != nil {
-			return fmt.Errorf("unable to refresh token from disk: %w", err)
+	switch capability.Adapter {
+	case providerregistry.LoginBrowser, providerregistry.LoginHostedPaste:
+		if capability.Authorize == nil {
+			return nil, fmt.Errorf("OAuth login for provider %s is declared but its core interpreter is unavailable", registration.ProviderID)
 		}
-		token = t
-	default:
-		fmt.Println("Requesting device code from GitHub...")
-		dc, err := copilot.RequestDeviceCode(loginCtx)
-		if err != nil {
-			return err
+		fmt.Printf("Opening browser for %s authorization...\n", registration.Name)
+		open := func(url string) error {
+			fmt.Println()
+			fmt.Println("If the browser doesn't open, visit:")
+			fmt.Println()
+			lipgloss.Println(lipgloss.NewStyle().Hyperlink(url, "id="+registration.ProviderID).Render(url))
+			fmt.Println()
+			return browser.OpenURL(url)
 		}
-
-		clipboard.WriteText(dc.UserCode)
+		var read providerregistry.ReadCode
+		if capability.Adapter == providerregistry.LoginHostedPaste {
+			read = func() (string, error) {
+				fmt.Println("After approving access, paste the authorization code")
+				fmt.Println("(or the full callback URL) here and press enter:")
+				fmt.Print("> ")
+				line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+				if err != nil && line == "" {
+					return "", err
+				}
+				return strings.TrimSpace(line), nil
+			}
+		}
+		return capability.Authorize(ctx, open, read)
+	case providerregistry.LoginDeviceCode:
+		if capability.RequestDeviceCode == nil || capability.PollDeviceCode == nil {
+			return nil, fmt.Errorf("device OAuth login for provider %s is unavailable", registration.ProviderID)
+		}
+		authorization, err := capability.RequestDeviceCode(ctx)
+		if err != nil {
+			return nil, err
+		}
+		clipboard.WriteText(authorization.UserCode)
 		fmt.Println()
 		fmt.Println("The following code should be on clipboard already:")
 		fmt.Println()
-		lipgloss.Println(lipgloss.NewStyle().Bold(true).Render(dc.UserCode))
+		lipgloss.Println(lipgloss.NewStyle().Bold(true).Render(authorization.UserCode))
 		fmt.Println()
-		fmt.Println("Press enter to open this URL and authenticate with GitHub Copilot:")
+		fmt.Println("Press enter to open this URL and authenticate:")
 		fmt.Println()
-		lipgloss.Println(lipgloss.NewStyle().Hyperlink(dc.VerificationURI, "id=copilot").Render(dc.VerificationURI))
+		lipgloss.Println(lipgloss.NewStyle().Hyperlink(authorization.VerificationURL, "id="+registration.ProviderID).Render(authorization.VerificationURL))
 		fmt.Println()
 		waitEnter()
-		if err := browser.OpenURL(dc.VerificationURI); err != nil {
-			fmt.Println("Could not open the URL. You'll need to manually open the URL in your browser.")
+		if err := browser.OpenURL(authorization.VerificationURL); err != nil {
+			fmt.Println("Could not open the URL. You'll need to manually open it in your browser.")
 		}
-
 		fmt.Println("Waiting for authorization...")
-
-		t, err := copilot.PollForToken(loginCtx, dc)
-		if err == copilot.ErrNotAvailable {
-			fmt.Println()
-			fmt.Println("GitHub Copilot is unavailable for this account. To signup, go to the following page:")
-			fmt.Println()
-			lipgloss.Println(lipgloss.NewStyle().Hyperlink(copilot.SignupURL, "id=copilot-signup").Render(copilot.SignupURL))
-			fmt.Println()
-			fmt.Println("You may be able to request free access if eligible. For more information, see:")
-			fmt.Println()
-			lipgloss.Println(lipgloss.NewStyle().Hyperlink(copilot.FreeURL, "id=copilot-free").Render(copilot.FreeURL))
-		}
-		if err != nil {
-			return err
-		}
-		token = t
+		return capability.PollDeviceCode(ctx, authorization)
+	default:
+		return nil, fmt.Errorf("provider %s uses unsupported OAuth adapter %q", registration.ProviderID, capability.Adapter)
 	}
+}
 
-	if err := ws.SetProviderAPIKey(config.ScopeGlobal, "copilot", token); err != nil {
-		return err
+func providerAccountIdentity(ctx context.Context, registration providerregistry.Registration, token *oauth.Token) (string, string, []byte) {
+	accountID, displayName := "", ""
+	var raw []byte
+	if registration.Identity != nil && token != nil {
+		accountID, displayName, raw = registration.Identity(ctx, token.AccessToken)
 	}
+	if accountID == "" {
+		accountID = "default"
+	}
+	if displayName == "" {
+		displayName = accountID
+	}
+	return accountID, displayName, raw
+}
 
-	fmt.Println()
-	fmt.Println("You're now authenticated with GitHub Copilot!")
-	return nil
+// saveOAuthAccount stores the credential in the multi-account store. Provider
+// configuration remains the inference credential source during migration.
+func saveOAuthAccount(ctx context.Context, registration providerregistry.Registration, accountID, displayName string, raw []byte, token *oauth.Token) {
+	if registration.AccountNamespace == "" || token == nil {
+		return
+	}
+	entry := accounts.FromToken(accountID, displayName, token, nil)
+	entry.Raw = raw
+	if err := accounts.Save(ctx, registration.AccountNamespace, entry); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not save account to multi-account store: %v\n", err)
+	}
 }
 
 func getLoginContext() context.Context {

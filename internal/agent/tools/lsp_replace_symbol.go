@@ -8,12 +8,12 @@ import (
 	"os"
 	"strings"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/filetracker"
-	"github.com/charmbracelet/crush/internal/history"
-	"github.com/charmbracelet/crush/internal/lsp"
-	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/filetracker"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/lsp"
+	"github.com/example-git/crux/internal/permission"
 )
 
 type ReplaceSymbolParams struct {

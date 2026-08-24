@@ -9,11 +9,13 @@ import (
 	"os"
 	"time"
 
-	"charm.land/fantasy"
+	fantasy "github.com/example-git/crux/foundation"
 
-	"github.com/charmbracelet/crush/internal/agent/prompt"
-	"github.com/charmbracelet/crush/internal/agent/tools"
-	"github.com/charmbracelet/crush/internal/permission"
+	"github.com/example-git/crux/internal/agent/prompt"
+	"github.com/example-git/crux/internal/agent/tools"
+	"github.com/example-git/crux/internal/config"
+	cruxlog "github.com/example-git/crux/internal/log"
+	"github.com/example-git/crux/internal/permission"
 )
 
 //go:embed templates/agentic_fetch.md
@@ -52,14 +54,14 @@ var agenticFetchPromptTmpl []byte
 
 func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (fantasy.AgentTool, error) {
 	if client == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport := cruxlog.CloneDefaultHTTPTransport()
 		transport.MaxIdleConns = 100
 		transport.MaxIdleConnsPerHost = 10
 		transport.IdleConnTimeout = 90 * time.Second
 
 		client = &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: transport,
+			Transport: cruxlog.WrapHTTPTransport(transport),
 		}
 	}
 
@@ -99,7 +101,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				return tools.NewPermissionDeniedResponse(), nil
 			}
 
-			tmpDir, err := os.MkdirTemp(c.cfg.Config().Options.DataDirectory, "crush-fetch-*")
+			tmpDir, err := os.MkdirTemp(c.cfg.Config().Options.DataDirectory, "crux-fetch-*")
 			if err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to create temporary directory: %s", err)), nil
 			}
@@ -147,12 +149,12 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				return fantasy.ToolResponse{}, fmt.Errorf("error creating prompt: %s", err)
 			}
 
-			_, small, err := c.buildAgentModels(ctx, true)
+			_, small, err := c.buildAgentModels(ctx, config.Agent{Model: config.SelectedModelTypeLarge}, true)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error building models: %s", err)
 			}
 
-			systemPrompt, err := promptTemplate.Build(ctx, small.Model.Provider(), small.Model.Model(), c.cfg)
+			systemPrompt, err := promptTemplate.Build(ctx, small.ModelCfg.Provider, small.Model.Model(), c.cfg)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error building system prompt: %s", err)
 			}

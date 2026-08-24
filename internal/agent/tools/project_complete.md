@@ -1,0 +1,1 @@
+Complete the active durable project only after every task, subtask, and success criterion is complete. The operation validates the project, marks it completed, and disables it for the current workspace. It does not complete or modify a plan.

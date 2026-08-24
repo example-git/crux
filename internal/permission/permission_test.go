@@ -1,6 +1,10 @@
 package permission
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -81,6 +85,40 @@ func TestPermissionService_AllowedCommands(t *testing.T) {
 	}
 }
 
+func TestPermissionServiceTrustedPathsAreContainedAndToolScoped(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	service := NewPermissionService(t.TempDir(), false, nil, root).(*permissionService)
+
+	for _, toolName := range []string{"view", "write", "edit", "multiedit"} {
+		require.True(t, service.isTrustedFileRequest(CreatePermissionRequest{
+			ToolName: toolName,
+			Path:     filepath.Join(root, "topics", "preferences.md"),
+		}))
+	}
+	require.False(t, service.isTrustedFileRequest(CreatePermissionRequest{
+		ToolName: "bash",
+		Path:     filepath.Join(root, "preferences.md"),
+	}))
+	require.False(t, service.isTrustedFileRequest(CreatePermissionRequest{
+		ToolName: "write",
+		Path:     filepath.Join(outside, "preferences.md"),
+	}))
+	require.False(t, service.isTrustedFileRequest(CreatePermissionRequest{
+		ToolName: "write",
+		Path:     root + "-sibling/preferences.md",
+	}))
+
+	link := filepath.Join(root, "outside")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	require.False(t, service.isTrustedFileRequest(CreatePermissionRequest{
+		ToolName: "write",
+		Path:     filepath.Join(link, "preferences.md"),
+	}))
+}
+
 func TestSkipRace(t *testing.T) {
 	svc := NewPermissionService("/tmp", false, nil)
 	var wg sync.WaitGroup
@@ -112,6 +150,29 @@ func TestPermissionService_SkipMode(t *testing.T) {
 	if !result {
 		t.Error("expected permission to be granted in skip mode")
 	}
+}
+
+func TestPermissionService_PlanExecutionApprovalIsContextScoped(t *testing.T) {
+	service := NewPermissionService("/tmp", false, nil)
+	request := CreatePermissionRequest{
+		SessionID:   "plan-session",
+		ToolCallID:  "call-1",
+		ToolName:    "bash",
+		Action:      "execute",
+		Description: "plan command",
+		Path:        "/tmp",
+	}
+
+	granted, err := service.Request(WithPlanExecutionApproval(t.Context()), request)
+	require.NoError(t, err)
+	require.True(t, granted)
+	require.False(t, service.SkipRequests())
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	granted, err = service.Request(ctx, request)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.False(t, granted)
 }
 
 func TestPermissionService_HookApproval(t *testing.T) {
@@ -187,6 +248,137 @@ func TestPermissionService_HookApproval(t *testing.T) {
 		event := <-notifications
 		assert.Equal(t, "call-99", event.Payload.ToolCallID)
 		assert.True(t, event.Payload.Granted, "subscribers should see a granted notification")
+	})
+}
+
+func TestPermissionService_DetachedAgent(t *testing.T) {
+	request := CreatePermissionRequest{
+		SessionID:   "child",
+		ToolCallID:  "call-1",
+		ToolName:    "bash",
+		Action:      "execute",
+		Description: "detached command",
+		Path:        t.TempDir(),
+	}
+
+	grantPersistent := func(t *testing.T, service Service, permissionRequest CreatePermissionRequest) {
+		t.Helper()
+		events := service.Subscribe(t.Context())
+		result := make(chan error, 1)
+		go func() {
+			granted, err := service.Request(t.Context(), permissionRequest)
+			if err == nil && !granted {
+				err = errors.New("permission was not granted")
+			}
+			result <- err
+		}()
+		select {
+		case event := <-events:
+			require.True(t, service.GrantPersistent(event.Payload))
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for permission request")
+		}
+		require.NoError(t, <-result)
+	}
+
+	t.Run("unresolved request is denied without publication", func(t *testing.T) {
+		service := NewPermissionService(t.TempDir(), false, nil)
+		events := service.Subscribe(t.Context())
+		notifications := service.SubscribeNotifications(t.Context())
+
+		granted, err := service.Request(WithDetachedAgent(t.Context()), request)
+		require.False(t, granted)
+		require.ErrorIs(t, err, ErrInteractivePermissionUnavailable)
+		require.ErrorContains(t, err, "bash:execute")
+
+		select {
+		case event := <-events:
+			t.Fatalf("unexpected interactive permission request: %#v", event.Payload)
+		case <-time.After(25 * time.Millisecond):
+		}
+		select {
+		case event := <-notifications:
+			require.Equal(t, request.ToolCallID, event.Payload.ToolCallID)
+			require.True(t, event.Payload.Denied)
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for denial notification")
+		}
+	})
+
+	t.Run("YOLO grants", func(t *testing.T) {
+		service := NewPermissionService(t.TempDir(), true, nil)
+		granted, err := service.Request(WithDetachedAgent(t.Context()), request)
+		require.NoError(t, err)
+		require.True(t, granted)
+	})
+
+	t.Run("allowed tool grants", func(t *testing.T) {
+		service := NewPermissionService(t.TempDir(), false, []string{"bash:execute"})
+		granted, err := service.Request(WithDetachedAgent(t.Context()), request)
+		require.NoError(t, err)
+		require.True(t, granted)
+	})
+
+	t.Run("trusted path grants", func(t *testing.T) {
+		root := t.TempDir()
+		service := NewPermissionService(t.TempDir(), false, nil, root)
+		trustedRequest := request
+		trustedRequest.ToolName = "view"
+		trustedRequest.Action = "read"
+		trustedRequest.Path = filepath.Join(root, "topic.md")
+		granted, err := service.Request(WithDetachedAgent(t.Context()), trustedRequest)
+		require.NoError(t, err)
+		require.True(t, granted)
+	})
+
+	t.Run("hook approval grants", func(t *testing.T) {
+		service := NewPermissionService(t.TempDir(), false, nil)
+		ctx := WithDetachedAgent(WithHookApproval(t.Context(), request.ToolCallID))
+		granted, err := service.Request(ctx, request)
+		require.NoError(t, err)
+		require.True(t, granted)
+	})
+
+	t.Run("child session auto-approval grants", func(t *testing.T) {
+		service := NewPermissionService(t.TempDir(), false, nil)
+		service.AutoApproveSession(request.SessionID)
+		granted, err := service.Request(WithDetachedAgent(t.Context()), request)
+		require.NoError(t, err)
+		require.True(t, granted)
+	})
+
+	t.Run("child persistent grant applies", func(t *testing.T) {
+		service := NewPermissionService(t.TempDir(), false, nil)
+		grantPersistent(t, service, request)
+		granted, err := service.Request(WithDetachedAgent(t.Context()), request)
+		require.NoError(t, err)
+		require.True(t, granted)
+	})
+
+	t.Run("parent persistent grant does not leak to child", func(t *testing.T) {
+		service := NewPermissionService(t.TempDir(), false, nil)
+		parentRequest := request
+		parentRequest.SessionID = "parent"
+		grantPersistent(t, service, parentRequest)
+		granted, err := service.Request(WithDetachedAgent(t.Context()), request)
+		require.False(t, granted)
+		require.ErrorIs(t, err, ErrInteractivePermissionUnavailable)
+	})
+
+	t.Run("disconnected caller still receives deterministic denial", func(t *testing.T) {
+		service := NewPermissionService(t.TempDir(), false, nil)
+		events := service.Subscribe(t.Context())
+		ctx, cancel := context.WithCancel(WithDetachedAgent(t.Context()))
+		cancel()
+		granted, err := service.Request(ctx, request)
+		require.False(t, granted)
+		require.ErrorIs(t, err, ErrInteractivePermissionUnavailable)
+		require.NotErrorIs(t, err, context.Canceled)
+		select {
+		case event := <-events:
+			t.Fatalf("unexpected interactive permission request: %#v", event.Payload)
+		case <-time.After(25 * time.Millisecond):
+		}
 	})
 }
 

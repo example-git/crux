@@ -4,9 +4,9 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/ui/list"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/ui/list"
+	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/sahilm/fuzzy"
 )
 
@@ -103,6 +103,16 @@ func (c *CommandItem) SetMatch(m fuzzy.Match) {
 // Action returns the action associated with the command item.
 func (c *CommandItem) Action() Action {
 	return c.action
+}
+
+// Title returns the display title of the command item.
+func (c *CommandItem) Title() string {
+	return c.title
+}
+
+// Aliases returns the aliases of the command item.
+func (c *CommandItem) Aliases() []string {
+	return c.aliases
 }
 
 // Shortcut returns the shortcut associated with the command item.

@@ -13,12 +13,11 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	hyperp "github.com/charmbracelet/crush/internal/agent/hyper"
-	"github.com/charmbracelet/crush/internal/env"
-	"github.com/charmbracelet/crush/internal/lock"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/oauth/copilot"
-	"github.com/charmbracelet/crush/internal/oauth/hyper"
+	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/lock"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/oauth/copilot"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"golang.org/x/sync/singleflight"
@@ -91,10 +90,11 @@ type ConfigStore struct {
 	config             *Config
 	workingDir         string
 	resolver           VariableResolver
-	globalDataPath     string   // ~/.local/share/crush/crush.json
-	workspacePath      string   // .crush/crush.json
+	globalDataPath     string   // ~/.ai-cli/data/crux/crux.json
+	workspacePath      string   // .crux/crux.json
 	loadedPaths        []string // config files that were successfully loaded
 	knownProviders     []catwalk.Provider
+	providerRegistry   *providerregistry.Registry
 	overrides          RuntimeOverrides
 	trackedConfigPaths []string                // unique, normalized config file paths
 	snapshots          map[string]fileSnapshot // path -> snapshot at last capture
@@ -178,67 +178,16 @@ func (s *ConfigStore) Resolve(key string) (string, error) {
 func (s *ConfigStore) KnownProviders() []catwalk.Provider {
 	s.writeMu.RLock()
 	defer s.writeMu.RUnlock()
-	return s.knownProviders
+	return cloneProviderCatalog(s.knownProviders)
 }
 
-// RefetchHyperProvider re-fetches the Hyper provider catalog from the
-// remote API and updates the in-memory known providers list and config.
-// This is called after OAuth authentication completes so the latest
-// models are available without restarting.
-func (s *ConfigStore) RefetchHyperProvider(ctx context.Context) error {
-	// Build a fresh client that reads the API key from the live config,
-	// not the stale snapshot captured at startup. The syncer's original
-	// client closes over the startup config and would send an expired
-	// token after OAuth re-authentication.
-	freshClient := realHyperClient{
-		baseURL:    hyperp.BaseURL(),
-		resolveKey: func() string { return resolveHyperAPIKey(s.Config()) },
-	}
-	hyperSyncer.SetClient(freshClient)
-
-	hyperProvider, err := hyperSyncer.Refetch(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to refetch Hyper provider: %w", err)
-	}
-	if hyperProvider.ID == "" {
-		return nil
-	}
-
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
-	// Replace or insert the Hyper entry in knownProviders.
-	found := false
-	for i, p := range s.knownProviders {
-		if string(p.ID) == string(hyperProvider.ID) {
-			s.knownProviders[i] = hyperProvider
-			found = true
-			break
-		}
-	}
-	if !found {
-		s.knownProviders = append([]catwalk.Provider{hyperProvider}, s.knownProviders...)
-	}
-
-	// Update the Hyper provider config with the refreshed model list
-	// and endpoint. Use cloneForWrite so readers always see a consistent
-	// snapshot (the store's contract forbids in-place config mutation).
-	nc := s.config.cloneForWrite()
-	if pc, ok := nc.Providers.Get(string(hyperProvider.ID)); ok {
-		pc.Models = hyperProvider.Models
-		if hyperProvider.APIEndpoint != "" {
-			pc.BaseURL = hyperProvider.APIEndpoint
-		}
-		nc.Providers.Set(string(hyperProvider.ID), pc)
-	}
-	s.setConfig(nc)
-
-	// Also update the memoized provider list so callers of
-	// config.Providers() (e.g. the models dialog) see fresh data.
-	UpdateProviderInList(hyperProvider)
-
-	s.SetupAgents()
-	return nil
+// ProviderRegistration returns the immutable capability registration selected
+// for a logical provider in this configuration generation.
+func (s *ConfigStore) ProviderRegistration(providerID string) (providerregistry.Registration, bool) {
+	s.writeMu.RLock()
+	registry := s.providerRegistry
+	s.writeMu.RUnlock()
+	return registry.Lookup(providerID)
 }
 
 // SetupAgents configures the coder and task agents on the config.
@@ -470,7 +419,7 @@ func (s *ConfigStore) OverridePreferredModel(modelType SelectedModelType, model 
 
 // pinPreferredModelLocked records a model choice made in this instance so
 // that a later config reload cannot replace it with a choice made
-// somewhere else. Several Crush instances share one global config file, so
+// somewhere else. Several Crux instances share one global config file, so
 // a reload triggered by an unrelated write (a token refresh, say) would
 // otherwise import whichever model a sibling instance last selected and
 // switch models out from under the user mid-session.
@@ -627,21 +576,14 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 		cfg.Providers.Set(providerID, providerConfig)
 	}
 
-	// After authenticating with Hyper, re-fetch the provider catalog so
-	// the latest models are available without restarting.
-	if providerID == "hyper" {
-		if refetchErr := s.RefetchHyperProvider(context.Background()); refetchErr != nil {
-			slog.Warn("Failed to refetch Hyper provider after auth", "error", refetchErr)
-		}
-	}
 	return nil
 }
 
 // RefreshOAuthToken refreshes the OAuth token for the given provider.
 //
-// Providers like Hyper rotate refresh tokens: each exchange consumes the
+// Providers may rotate refresh tokens: each exchange consumes the
 // caller's refresh token, issues a new pair, and revokes the old one. If
-// two crush instances (or two goroutines) refresh concurrently with the
+// two crux instances (or two goroutines) refresh concurrently with the
 // same stored refresh token, the second exchange reuses an already-revoked
 // token, trips the provider's reuse detection, and revokes the entire
 // token family — leaving both with dead tokens even though each refresh
@@ -864,14 +806,11 @@ func (s *ConfigStore) exchange(ctx context.Context, providerID, refreshToken str
 	if s.exchangeToken != nil {
 		return s.exchangeToken(ctx, providerID, refreshToken)
 	}
-	switch providerID {
-	case string(catwalk.InferenceProviderCopilot):
-		return copilot.RefreshToken(ctx, refreshToken)
-	case hyperp.Name:
-		return hyper.ExchangeToken(ctx, refreshToken)
-	default:
+	registration, ok := s.ProviderRegistration(providerID)
+	if !ok || registration.OAuth == nil || registration.OAuth.Refresh == nil {
 		return nil, fmt.Errorf("OAuth refresh not supported for provider %s", providerID)
 	}
+	return registration.OAuth.Refresh(ctx, refreshToken)
 }
 
 // withRefreshLock runs fn while holding the per-provider cross-process
@@ -986,10 +925,12 @@ func nextRecentModels(cfg *Config, modelType SelectedModelType, model SelectedMo
 
 // NewTestStore creates a ConfigStore for testing purposes.
 func NewTestStore(cfg *Config, loadedPaths ...string) *ConfigStore {
+	registry, _ := providerregistry.New(providerregistry.Integrated()...)
 	return &ConfigStore{
-		config:      cfg,
-		loadedPaths: loadedPaths,
-		resolver:    NewShellVariableResolver(env.New()),
+		config:           cfg,
+		loadedPaths:      loadedPaths,
+		resolver:         NewShellVariableResolver(env.New()),
+		providerRegistry: registry,
 	}
 }
 
@@ -1210,6 +1151,9 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	if err := cfg.ValidateHooks(); err != nil {
 		return fmt.Errorf("invalid hook configuration on reload: %w", err)
 	}
+	if err := cfg.Options.validatePromptOptions(); err != nil {
+		return fmt.Errorf("invalid prompt options on reload: %w", err)
+	}
 
 	// Save current state for potential rollback BEFORE configureProviders,
 	// which may write to disk via RemoveConfigField (e.g. removing stale
@@ -1219,6 +1163,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	oldLoadedPaths := s.loadedPaths
 	oldResolver := s.resolver
 	oldKnownProviders := s.knownProviders
+	oldProviderRegistry := s.providerRegistry
 	oldOverrides := s.overrides
 	oldWorkspacePath := s.workspacePath
 
@@ -1256,7 +1201,8 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	s.setConfig(cfg)
 	s.loadedPaths = loadedPaths
 	s.resolver = resolver
-	s.knownProviders = providers
+	s.knownProviders = cloneProviderCatalog(providers)
+	s.providerRegistry = ProviderRegistry()
 	s.overrides = overrides
 	s.workspacePath = workspacePath
 
@@ -1281,6 +1227,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		s.loadedPaths = oldLoadedPaths
 		s.resolver = oldResolver
 		s.knownProviders = oldKnownProviders
+		s.providerRegistry = oldProviderRegistry
 		s.overrides = oldOverrides
 		s.workspacePath = oldWorkspacePath
 		return setupErr

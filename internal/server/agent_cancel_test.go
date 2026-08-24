@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/backend"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/proto"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/backend"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/proto"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -73,15 +73,17 @@ func (s *runCoordinator) IsBusy() bool  { return false }
 func (s *runCoordinator) IsSessionBusy(string) bool {
 	return false
 }
-func (s *runCoordinator) QueuedPrompts(string) int          { return 0 }
-func (s *runCoordinator) QueuedPromptsList(string) []string { return nil }
-func (s *runCoordinator) ClearQueue(string)                 {}
+func (s *runCoordinator) QueuedPrompts(string) int                      { return 0 }
+func (s *runCoordinator) QueuedPromptsList(string) []agent.QueuedPrompt { return nil }
+func (s *runCoordinator) ClearQueue(string)                             {}
 func (s *runCoordinator) Summarize(context.Context, string) error {
 	return nil
 }
 func (s *runCoordinator) Model() agent.Model                            { return agent.Model{} }
 func (s *runCoordinator) UpdateModels(context.Context) error            { return nil }
 func (s *runCoordinator) GenerateTitle(context.Context, string, string) {}
+
+func (s *runCoordinator) SuggestPrompt(context.Context, string) (string, error) { return "", nil }
 
 func (s *runCoordinator) capturedCtx() context.Context {
 	s.mu.Lock()

@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/filepathext"
-	"github.com/charmbracelet/crush/internal/fsext"
-	"github.com/charmbracelet/crush/internal/permission"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/filepathext"
+	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/permission"
 )
 
 type LSParams struct {

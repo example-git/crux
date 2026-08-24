@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/shell"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/shell"
+	managedtask "github.com/example-git/crux/internal/task"
 )
 
 const (
@@ -30,63 +31,44 @@ type JobOutputResponseMetadata struct {
 	WorkingDirectory string `json:"working_directory"`
 }
 
-func NewJobOutputTool() fantasy.AgentTool {
+func NewJobOutputTool(service TaskService, backgroundShells *shell.BackgroundShellManager) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		JobOutputToolName,
 		jobOutputDescription,
-		func(ctx context.Context, params JobOutputParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, params JobOutputParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.ShellID == "" {
 				return fantasy.NewTextErrorResponse("missing shell_id"), nil
 			}
 
-			bgManager := shell.GetBackgroundShellManager()
-			bgShell, ok := bgManager.Get(params.ShellID)
-			if !ok {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("background shell not found: %s", params.ShellID)), nil
+			result, err := service.TaskOutput(ctx, params.ShellID, params.Wait, managedtask.DefaultOutputWait)
+			if err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
-			if params.Wait {
-				bgShell.WaitContext(ctx)
+			outputParts := make([]string, 0, 2)
+			if result.Output != "" {
+				outputParts = append(outputParts, result.Output)
 			}
-
-			stdout, stderr, done, err := bgShell.GetOutput()
-
-			var outputParts []string
-			if stdout != "" {
-				outputParts = append(outputParts, stdout)
+			if result.Task.State.ExitCode != nil && *result.Task.State.ExitCode != 0 {
+				outputParts = append(outputParts, fmt.Sprintf("Exit code %d", *result.Task.State.ExitCode))
 			}
-			if stderr != "" {
-				outputParts = append(outputParts, stderr)
-			}
-
-			status := "running"
-			if done {
-				status = "completed"
-				if err != nil {
-					exitCode := shell.ExitCode(err)
-					if exitCode != 0 {
-						outputParts = append(outputParts, fmt.Sprintf("Exit code %d", exitCode))
-					}
-				}
-			}
-
-			output := strings.Join(outputParts, "\n")
-			output = TruncateOutput(output)
-
-			metadata := JobOutputResponseMetadata{
-				ShellID:          params.ShellID,
-				Command:          bgShell.Command,
-				Description:      bgShell.Description,
-				Done:             done,
-				WorkingDirectory: bgShell.WorkingDir,
-			}
-
+			output := TruncateOutput(strings.Join(outputParts, "\n"))
 			if output == "" {
 				output = BashNoOutput
 			}
 
-			result := fmt.Sprintf("Status: %s\n\n%s", status, output)
-			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata), nil
+			metadata := JobOutputResponseMetadata{
+				ShellID:     result.Task.ID,
+				Description: result.Task.Description,
+				Done:        result.Task.State.Status.Terminal(),
+			}
+			if backgroundShell, ok := backgroundShells.Get(params.ShellID); ok {
+				metadata.Command = backgroundShell.Command
+				metadata.WorkingDirectory = backgroundShell.WorkingDir
+			}
+
+			response := fmt.Sprintf("Status: %s\n\n%s", result.Task.State.Status, output)
+			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
 		},
 	)
 }

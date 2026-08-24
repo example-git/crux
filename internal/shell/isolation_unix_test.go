@@ -71,7 +71,13 @@ func TestProcessIsolation_TTYAccessDoesNotBlock(t *testing.T) {
 			t.Fatal("expected error from /dev/tty access in detached session, got nil")
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatalf("/dev/tty access blocked for >3s; session isolation may be broken (stderr=%q)", stderr.String())
+		cancel()
+		select {
+		case <-done:
+			t.Fatalf("/dev/tty access blocked for >3s; session isolation may be broken (stderr=%q)", stderr.String())
+		case <-time.After(3 * time.Second):
+			t.Fatal("/dev/tty access did not stop after cancellation; session isolation may be broken")
+		}
 	}
 }
 
@@ -91,12 +97,14 @@ func TestProcessIsolation_ZshJobControlDoesNotSuspend(t *testing.T) {
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
+	workingDir := t.TempDir()
+	env := append(os.Environ(), "ZDOTDIR="+t.TempDir())
 	done := make(chan error, 1)
 	go func() {
 		done <- Run(ctx, RunOptions{
 			Command: `zsh -i -c 'echo ok'`,
-			Cwd:     t.TempDir(),
-			Env:     os.Environ(),
+			Cwd:     workingDir,
+			Env:     env,
 			Stdout:  &stdout,
 			Stderr:  &stderr,
 		})
@@ -112,7 +120,13 @@ func TestProcessIsolation_ZshJobControlDoesNotSuspend(t *testing.T) {
 			t.Errorf("expected 'ok' in stdout, got %q (stderr=%q)", out, stderr.String())
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatalf("zsh -i -c did not complete within 5s; likely suspended on TTY (stderr=%q)", stderr.String())
+		cancel()
+		select {
+		case <-done:
+			t.Fatalf("zsh -i -c did not complete within 5s; likely suspended on TTY (stderr=%q)", stderr.String())
+		case <-time.After(3 * time.Second):
+			t.Fatal("zsh -i -c did not stop after cancellation; likely suspended on TTY")
+		}
 	}
 }
 
