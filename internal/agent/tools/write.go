@@ -12,7 +12,6 @@ import (
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/diff"
-	"github.com/example-git/crux/internal/filepathext"
 	"github.com/example-git/crux/internal/filetracker"
 	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/history"
@@ -63,7 +62,17 @@ func NewWriteTool(
 				return fantasy.ToolResponse{}, fmt.Errorf("session_id is required")
 			}
 
-			filePath := filepathext.SmartJoin(workingDir, params.FilePath)
+			filePath, err := canonicalToolPath(workingDir, params.FilePath)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			granted, err := authorizeExternalPath(ctx, permissions, workingDir, filePath, call.ID, WriteToolName, "read", fmt.Sprintf("Inspect file outside working directory before writing: %s", filePath), params)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			if !granted {
+				return NewPermissionDeniedResponse(), nil
+			}
 
 			fileInfo, err := os.Stat(filePath)
 			if err == nil {

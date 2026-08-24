@@ -14,7 +14,6 @@ import (
 	"time"
 
 	fantasy "github.com/example-git/crux/foundation"
-	"github.com/example-git/crux/internal/filepathext"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/permission"
 )
@@ -79,7 +78,10 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 				return fantasy.NewTextErrorResponse("URL must start with http:// or https://"), nil
 			}
 
-			filePath := filepathext.SmartJoin(workingDir, params.FilePath)
+			filePath, err := canonicalToolPath(workingDir, params.FilePath)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
 			relPath, _ := filepath.Rel(workingDir, filePath)
 			relPath = filepath.ToSlash(cmp.Or(relPath, filePath))
 
@@ -93,6 +95,7 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 				permission.CreatePermissionRequest{
 					SessionID:   sessionID,
 					Path:        filePath,
+					ToolCallID:  call.ID,
 					ToolName:    DownloadToolName,
 					Action:      "download",
 					Description: fmt.Sprintf("Download file from URL: %s to %s", params.URL, filePath),

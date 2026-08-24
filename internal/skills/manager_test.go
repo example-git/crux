@@ -210,6 +210,43 @@ func TestDiscoverFromConfig_ProjectSkillSymlinkDoesNotEscapeWorkspace(t *testing
 	}
 }
 
+func TestDiscoverFromConfig_ProjectSkillRootSymlinkDoesNotEscapeWorkspace(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires special privileges on Windows")
+	}
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	externalSkills := t.TempDir()
+	externalSkill := filepath.Join(externalSkills, "external-skill")
+	require.NoError(t, os.MkdirAll(externalSkill, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(externalSkill, SkillFileName),
+		[]byte("---\nname: external-skill\ndescription: Must stay outside.\n---\nDo not load.\n"),
+		0o644,
+	))
+	projectSkills := filepath.Join(workingDir, ".agents", "skills")
+	require.NoError(t, os.MkdirAll(filepath.Dir(projectSkills), 0o755))
+	require.NoError(t, os.Symlink(externalSkills, projectSkills))
+
+	allSkills, _, states := DiscoverFromConfig(DiscoveryConfig{
+		SkillsPaths: []string{projectSkills},
+		WorkingDir:  workingDir,
+	})
+
+	for _, skill := range allSkills {
+		require.NotEqual(t, "external-skill", skill.Name)
+	}
+	require.Condition(t, func() bool {
+		for _, state := range states {
+			if state.Path == projectSkills && state.State == StateError {
+				return true
+			}
+		}
+		return false
+	})
+}
+
 func TestDiscoverFromConfig_DisabledFiltered(t *testing.T) {
 	t.Parallel()
 

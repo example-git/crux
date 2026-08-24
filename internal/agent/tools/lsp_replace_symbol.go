@@ -48,6 +48,7 @@ func NewReplaceSymbolTool(
 	permissions permission.Service,
 	files history.Service,
 	filetracker filetracker.Service,
+	workingDir string,
 ) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		ReplaceSymbolToolName,
@@ -71,6 +72,19 @@ func NewReplaceSymbolTool(
 			}
 			if (action == "replace" || action == "add_before" || action == "add_after") && params.Replacement == "" {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("replacement is required for action %q", action)), nil
+			}
+
+			resolvedPath, err := canonicalToolPath(workingDir, params.FilePath)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			params.FilePath = resolvedPath
+			granted, err := authorizeExternalPath(ctx, permissions, workingDir, params.FilePath, call.ID, ReplaceSymbolToolName, "read", fmt.Sprintf("Inspect file outside working directory before replacing a symbol: %s", params.FilePath), params)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			if !granted {
+				return NewPermissionDeniedResponse(), nil
 			}
 
 			lspManager.Start(ctx, params.FilePath)
@@ -135,6 +149,7 @@ func NewReplaceSymbolTool(
 				granted, err := permissions.Request(ctx, permission.CreatePermissionRequest{
 					SessionID:   sessionID,
 					Path:        params.FilePath,
+					ToolCallID:  call.ID,
 					ToolName:    ReplaceSymbolToolName,
 					Description: fmt.Sprintf("%s symbol '%s' in %s", action, params.Symbol, params.FilePath),
 					Params: ReplaceSymbolPermissionsParams{

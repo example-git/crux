@@ -13,7 +13,6 @@ import (
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/diff"
-	"github.com/example-git/crux/internal/filepathext"
 	"github.com/example-git/crux/internal/filetracker"
 	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/history"
@@ -70,10 +69,20 @@ func NewEditTool(
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
 			}
 
-			params.FilePath = filepathext.SmartJoin(workingDir, params.FilePath)
+			resolvedPath, err := canonicalToolPath(workingDir, params.FilePath)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			params.FilePath = resolvedPath
+			granted, err := authorizeExternalPath(ctx, permissions, workingDir, params.FilePath, call.ID, EditToolName, "read", fmt.Sprintf("Inspect file outside working directory before editing: %s", params.FilePath), params)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			if !granted {
+				return NewPermissionDeniedResponse(), nil
+			}
 
 			var response fantasy.ToolResponse
-			var err error
 
 			editCtx := editContext{ctx, permissions, files, filetracker, workingDir}
 

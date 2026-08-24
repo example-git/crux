@@ -8,13 +8,13 @@ import (
 	"image/draw"
 	_ "image/gif"
 	"image/jpeg"
-	_ "image/png"
+	"image/png"
 	"math"
 	"path/filepath"
 	"strings"
 
-	"github.com/disintegration/imaging"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/imageutil"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	_ "golang.org/x/image/webp"
@@ -135,7 +135,7 @@ func Normalize(policy Policy, attachment message.Attachment) (message.Attachment
 	}
 	width, height := targetDimensions(config.Width, config.Height, policy)
 	if width != config.Width || height != config.Height {
-		decoded = imaging.Resize(decoded, width, height, imaging.Lanczos)
+		decoded = imageutil.Resize(decoded, width, height)
 	}
 	return encodeWithinPolicy(attachment, decoded, policy)
 }
@@ -188,13 +188,13 @@ func encodeWithinPolicy(attachment message.Attachment, value image.Image, policy
 			if bounds.Dx() <= 1 && bounds.Dy() <= 1 {
 				break
 			}
-			current = imaging.Resize(current, max(1, bounds.Dx()*policy.ResizePercent/100), max(1, bounds.Dy()*policy.ResizePercent/100), imaging.Lanczos)
+			current = imageutil.Resize(current, max(1, bounds.Dx()*policy.ResizePercent/100), max(1, bounds.Dy()*policy.ResizePercent/100))
 		}
 	} else {
 		current := value
 		for {
 			var output bytes.Buffer
-			if err := imaging.Encode(&output, current, imaging.PNG); err != nil {
+			if err := png.Encode(&output, current); err != nil {
 				return message.Attachment{}, err
 			}
 			if policy.MaxRawBytes == 0 || output.Len() <= policy.MaxRawBytes {
@@ -207,7 +207,7 @@ func encodeWithinPolicy(attachment message.Attachment, value image.Image, policy
 			if bounds.Dx() <= 1 && bounds.Dy() <= 1 {
 				break
 			}
-			current = imaging.Resize(current, max(1, bounds.Dx()*policy.ResizePercent/100), max(1, bounds.Dy()*policy.ResizePercent/100), imaging.Lanczos)
+			current = imageutil.Resize(current, max(1, bounds.Dx()*policy.ResizePercent/100), max(1, bounds.Dy()*policy.ResizePercent/100))
 		}
 	}
 	return message.Attachment{}, fmt.Errorf("image cannot be reduced below the provider payload limit")

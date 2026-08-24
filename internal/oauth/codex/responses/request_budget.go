@@ -13,7 +13,7 @@ import (
 	_ "image/png"
 	"strings"
 
-	"github.com/disintegration/imaging"
+	"github.com/example-git/crux/internal/imageutil"
 	_ "golang.org/x/image/webp"
 )
 
@@ -175,7 +175,7 @@ func compressImageToJPEG(data []byte, target int) ([]byte, error) {
 		if bounds.Dx() <= 1 && bounds.Dy() <= 1 {
 			return nil, fmt.Errorf("image cannot be reduced below %d bytes", target)
 		}
-		current = imaging.Resize(current, max(1, bounds.Dx()*4/5), max(1, bounds.Dy()*4/5), imaging.Lanczos)
+		current = imageutil.Resize(current, max(1, bounds.Dx()*4/5), max(1, bounds.Dy()*4/5))
 	}
 }
 

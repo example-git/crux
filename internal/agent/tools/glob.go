@@ -18,6 +18,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/filepathext"
 	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/permission"
 )
 
 const GlobToolName = "glob"
@@ -50,7 +51,7 @@ type GlobResponseMetadata struct {
 	Truncated     bool `json:"truncated"`
 }
 
-func NewGlobTool(workingDir string, cfg config.ToolGlob) fantasy.AgentTool {
+func NewGlobTool(permissions permission.Service, workingDir string, cfg config.ToolGlob) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		GlobToolName,
 		globDescription(),
@@ -59,7 +60,17 @@ func NewGlobTool(workingDir string, cfg config.ToolGlob) fantasy.AgentTool {
 				return fantasy.NewTextErrorResponse("pattern is required"), nil
 			}
 
-			searchPath := cmp.Or(params.Path, workingDir)
+			searchPath, err := canonicalToolPath(workingDir, cmp.Or(params.Path, workingDir))
+			if err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+			granted, err := authorizeExternalPath(ctx, permissions, workingDir, searchPath, call.ID, GlobToolName, "list", fmt.Sprintf("Search files outside working directory: %s", searchPath), params)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			if !granted {
+				return NewPermissionDeniedResponse(), nil
+			}
 
 			// Bound the search so a huge or symlink-heavy root (e.g. $HOME
 			// or a module cache) fails cleanly instead of pinning the CPU
