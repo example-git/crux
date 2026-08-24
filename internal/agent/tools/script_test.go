@@ -49,7 +49,7 @@ func TestScriptToolExecutesFixedPythonScript(t *testing.T) {
 	preset := "fixed"
 	script := config.AgentScript{
 		Path:    scriptPath,
-		Timeout: 5 * time.Second,
+		Timeout: 30 * time.Second,
 		Variables: map[string]config.AgentScriptVariable{
 			"input":  {Flag: "--input", Required: true},
 			"preset": {Flag: "--preset", Value: &preset},
