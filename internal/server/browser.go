@@ -37,34 +37,15 @@ func (s *Server) allowedWorkspacePath(path string, requireDirectory bool) (strin
 		return "", "", fmt.Errorf("path %q is outside configured workspace roots", path)
 	}
 	if requireDirectory {
-		info, statErr := os.Stat(canonical)
-		if statErr != nil {
-			return "", "", fmt.Errorf("access directory %q: %w", path, statErr)
+		directory, openErr := openWorkspaceDirectory(root, canonical)
+		if openErr != nil {
+			return "", "", fmt.Errorf("access directory %q: %w", path, openErr)
 		}
-		if !info.IsDir() {
-			return "", "", fmt.Errorf("path %q is not a directory", path)
+		if closeErr := directory.Close(); closeErr != nil {
+			return "", "", fmt.Errorf("close directory %q: %w", path, closeErr)
 		}
 	}
 	return canonical, root, nil
-}
-
-func validateOpenedWorkspaceDirectory(directory *os.File, path, root string) error {
-	openedInfo, err := directory.Stat()
-	if err != nil {
-		return fmt.Errorf("inspect opened directory %q: %w", path, err)
-	}
-	resolved, err := fsext.CanonicalPath(path)
-	if err != nil || !fsext.HasPrefix(resolved, root) {
-		return fmt.Errorf("opened directory %q escaped its configured workspace root", path)
-	}
-	currentInfo, err := os.Stat(resolved)
-	if err != nil {
-		return fmt.Errorf("revalidate opened directory %q: %w", path, err)
-	}
-	if !os.SameFile(openedInfo, currentInfo) {
-		return fmt.Errorf("opened directory %q changed during authorization", path)
-	}
-	return nil
 }
 
 func (s *Server) browse(path string) (proto.BrowserListing, error) {
@@ -72,7 +53,7 @@ func (s *Server) browse(path string) (proto.BrowserListing, error) {
 	if err != nil {
 		return proto.BrowserListing{}, err
 	}
-	directory, err := os.Open(canonical)
+	directory, err := openWorkspaceDirectory(root, canonical)
 	if err != nil {
 		return proto.BrowserListing{}, fmt.Errorf("open directory %q: %w", canonical, err)
 	}
