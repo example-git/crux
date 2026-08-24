@@ -384,18 +384,28 @@ func TestBackgroundShellManager_AtomicAdmission(t *testing.T) {
 	workingDir := t.TempDir()
 	var waitGroup sync.WaitGroup
 	var admitted atomic.Int64
+	errorsChannel := make(chan error, MaxBackgroundJobs+20)
 	for range MaxBackgroundJobs + 20 {
 		waitGroup.Go(func() {
-			backgroundShell, err := manager.Start(t.Context(), workingDir, nil, "sleep 10", "")
-			if err == nil {
-				admitted.Add(1)
-				t.Cleanup(func() { _ = manager.Kill(backgroundShell.ID) })
+			backgroundShell, err := manager.Start(t.Context(), workingDir, nil, "sleep 300", "")
+			if err != nil {
+				errorsChannel <- err
+				return
 			}
+			admitted.Add(1)
+			t.Cleanup(func() { _ = manager.Kill(backgroundShell.ID) })
 		})
 	}
 	waitGroup.Wait()
+	close(errorsChannel)
 
+	denied := 0
+	for err := range errorsChannel {
+		require.ErrorContains(t, err, "maximum number of background jobs")
+		denied++
+	}
 	require.EqualValues(t, MaxBackgroundJobs, admitted.Load())
+	require.Equal(t, 20, denied)
 	require.Equal(t, MaxBackgroundJobs, manager.ActiveCount())
 }
 
