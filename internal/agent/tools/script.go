@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -127,7 +128,11 @@ func NewScriptTool(permissions permission.Service, workingDir string, script con
 }
 
 func pythonInterpreter() (string, error) {
-	for _, name := range []string{"python3", "python"} {
+	names := []string{"python3", "python"}
+	if runtime.GOOS == "windows" {
+		names = []string{"python", "python3"}
+	}
+	for _, name := range names {
 		path, err := exec.LookPath(name)
 		if err == nil {
 			return path, nil
