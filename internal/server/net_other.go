@@ -57,5 +57,11 @@ func listen(network, address string) (net.Listener, bool, error) {
 	if err != nil {
 		return nil, removedStale, err
 	}
+	if network == "unix" {
+		if err := os.Chmod(address, 0o600); err != nil {
+			_ = ln.Close()
+			return nil, removedStale, err
+		}
+	}
 	return ln, removedStale, nil
 }

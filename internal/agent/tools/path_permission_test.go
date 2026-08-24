@@ -3,10 +3,13 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/stretchr/testify/require"
 )
@@ -17,6 +20,35 @@ type denyPermissionService struct {
 
 func (d *denyPermissionService) Request(context.Context, permission.CreatePermissionRequest) (bool, error) {
 	return false, nil
+}
+
+func TestSearchToolsRequirePermissionBeforeReadingOutsideWorkspace(t *testing.T) {
+	workingDir := t.TempDir()
+	outsideDir := t.TempDir()
+	secretPath := filepath.Join(outsideDir, "secret-value.txt")
+	require.NoError(t, os.WriteFile(secretPath, []byte("private contents"), 0o600))
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, "session")
+	permissions := &denyPermissionService{}
+
+	testCases := map[string]fantasy.AgentTool{
+		"glob": NewGlobTool(permissions, workingDir, config.ToolGlob{}),
+		"grep": NewGrepTool(permissions, workingDir, config.ToolGrep{}),
+	}
+	inputs := map[string]any{
+		"glob": GlobParams{Pattern: "*", Path: outsideDir},
+		"grep": GrepParams{Pattern: "private", Path: outsideDir},
+	}
+	for name, tool := range testCases {
+		t.Run(name, func(t *testing.T) {
+			input, err := json.Marshal(inputs[name])
+			require.NoError(t, err)
+			response, err := tool.Run(ctx, fantasy.ToolCall{ID: "call", Name: name, Input: string(input)})
+			require.NoError(t, err)
+			require.NotContains(t, response.Content, "secret-value")
+			require.NotContains(t, response.Content, "private contents")
+			require.True(t, strings.Contains(strings.ToLower(response.Content), "permission") || response.IsError)
+		})
+	}
 }
 
 func TestDeniedFileCreationDoesNotCreateParentDirectories(t *testing.T) {

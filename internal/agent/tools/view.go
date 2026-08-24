@@ -17,7 +17,6 @@ import (
 	"unicode/utf8"
 
 	fantasy "github.com/example-git/crux/foundation"
-	"github.com/example-git/crux/internal/filepathext"
 	"github.com/example-git/crux/internal/filetracker"
 	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/imageattachment"
@@ -112,22 +111,17 @@ func NewViewTool(
 				return resp, err
 			}
 
-			// Handle relative paths
-			filePath := filepathext.SmartJoin(workingDir, params.FilePath)
-
-			// Check if file is outside working directory and request permission if needed
-			absWorkingDir, err := filepath.Abs(workingDir)
+			filePath, err := canonicalToolPath(workingDir, params.FilePath)
 			if err != nil {
-				return fantasy.ToolResponse{}, fmt.Errorf("error resolving working directory: %w", err)
+				return fantasy.ToolResponse{}, err
+			}
+			resolvedWorkingDir, err := canonicalToolPath(workingDir, ".")
+			if err != nil {
+				return fantasy.ToolResponse{}, err
 			}
 
-			absFilePath, err := filepath.Abs(filePath)
-			if err != nil {
-				return fantasy.ToolResponse{}, fmt.Errorf("error resolving file path: %w", err)
-			}
-
-			isOutsideWorkDir := !fsext.HasPrefix(absFilePath, absWorkingDir)
-			isSkillFile := isInSkillsPath(absFilePath, skillsPaths)
+			isOutsideWorkDir := !fsext.HasPrefix(filePath, resolvedWorkingDir)
+			isSkillFile := isInSkillsPath(filePath, skillsPaths)
 
 			sessionID := GetSessionFromContext(ctx)
 			if sessionID == "" {
@@ -140,11 +134,11 @@ func NewViewTool(
 					ctx,
 					permission.CreatePermissionRequest{
 						SessionID:   sessionID,
-						Path:        absFilePath,
+						Path:        filePath,
 						ToolCallID:  call.ID,
 						ToolName:    ViewToolName,
 						Action:      "read",
-						Description: fmt.Sprintf("Read file outside working directory: %s", absFilePath),
+						Description: fmt.Sprintf("Read file outside working directory: %s", filePath),
 						Params:      ViewPermissionsParams(params),
 					},
 				)

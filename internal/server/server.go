@@ -53,6 +53,11 @@ func ParseHostURL(host string) (*url.URL, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid tcp address: %v", err)
 		}
+		hostname := parsed.Hostname()
+		ip := net.ParseIP(hostname)
+		if !strings.EqualFold(hostname, "localhost") && (ip == nil || !ip.IsLoopback()) {
+			return nil, fmt.Errorf("tcp host must be loopback: %s", hostname)
+		}
 		addr = parsed.Host
 		basePath = parsed.Path
 	}

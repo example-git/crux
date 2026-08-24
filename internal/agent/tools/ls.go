@@ -12,7 +12,6 @@ import (
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/config"
-	"github.com/example-git/crux/internal/filepathext"
 	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/permission"
 )
@@ -81,20 +80,16 @@ func NewLsTool(permissions permission.Service, workingDir string, lsConfig confi
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("error expanding path: %v", err)), nil
 			}
 
-			searchPath = filepathext.SmartJoin(workingDir, searchPath)
-
-			// Check if directory is outside working directory and request permission if needed
-			absWorkingDir, err := filepath.Abs(workingDir)
+			searchPath, err = canonicalToolPath(workingDir, searchPath)
 			if err != nil {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("error resolving working directory: %v", err)), nil
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+			resolvedWorkingDir, err := canonicalToolPath(workingDir, ".")
+			if err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
-			absSearchPath, err := filepath.Abs(searchPath)
-			if err != nil {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("error resolving search path: %v", err)), nil
-			}
-
-			if !fsext.HasPrefix(absSearchPath, absWorkingDir) {
+			if !fsext.HasPrefix(searchPath, resolvedWorkingDir) {
 				// Directory is outside working directory, request permission
 				sessionID := GetSessionFromContext(ctx)
 				if sessionID == "" {
@@ -105,11 +100,11 @@ func NewLsTool(permissions permission.Service, workingDir string, lsConfig confi
 					ctx,
 					permission.CreatePermissionRequest{
 						SessionID:   sessionID,
-						Path:        absSearchPath,
+						Path:        searchPath,
 						ToolCallID:  call.ID,
 						ToolName:    LSToolName,
 						Action:      "list",
-						Description: fmt.Sprintf("List directory outside working directory: %s", absSearchPath),
+						Description: fmt.Sprintf("List directory outside working directory: %s", searchPath),
 						Params:      LSPermissionsParams(params),
 					},
 				)

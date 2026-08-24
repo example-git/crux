@@ -14,7 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
-	"github.com/disintegration/imaging"
+	"github.com/example-git/crux/internal/imageutil"
 	"github.com/example-git/crux/internal/ui/util"
 	paintbrush "github.com/jordanella/go-ansi-paintbrush"
 )
@@ -98,7 +98,7 @@ func fitImage(id string, img image.Image, cs CellSize, cols, rows int) image.Ima
 	maxWidth := cols * cs.Width
 	maxHeight := rows * cs.Height
 
-	img = imaging.Fit(img, maxWidth, maxHeight, imaging.Lanczos)
+	img = imageutil.Fit(img, maxWidth, maxHeight)
 
 	cachedMutex.Lock()
 	cachedImages[key] = cachedImage{

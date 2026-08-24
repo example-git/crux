@@ -2,11 +2,13 @@ package skills
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/home"
 	"github.com/example-git/crux/internal/pubsub"
 )
@@ -179,6 +181,10 @@ func DiscoverFromConfig(cfg DiscoveryConfig) (allSkills, activeSkills []*Skill, 
 	userPaths := cfg.ResolvePaths()
 	for _, path := range userPaths {
 		followSymlinks := cfg.WorkingDir == "" || !lexicallyWithin(path, cfg.WorkingDir)
+		if !followSymlinks && !fsext.HasPrefix(path, cfg.WorkingDir) {
+			userStates = append(userStates, &SkillState{Path: path, State: StateError, Err: fmt.Errorf("project skill path resolves outside the workspace")})
+			continue
+		}
 		userSkills, states := discoverWithStates([]string{path}, followSymlinks)
 		discovered = append(discovered, userSkills...)
 		userStates = append(userStates, states...)

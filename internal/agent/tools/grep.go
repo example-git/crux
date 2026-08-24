@@ -24,6 +24,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/permission"
 )
 
 // regexCache provides thread-safe caching of compiled regex patterns
@@ -121,7 +122,7 @@ func escapeRegexPattern(pattern string) string {
 	return escaped
 }
 
-func NewGrepTool(workingDir string, config config.ToolGrep) fantasy.AgentTool {
+func NewGrepTool(permissions permission.Service, workingDir string, config config.ToolGrep) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		GrepToolName,
 		grepDescription(),
@@ -135,7 +136,17 @@ func NewGrepTool(workingDir string, config config.ToolGrep) fantasy.AgentTool {
 				searchPattern = escapeRegexPattern(params.Pattern)
 			}
 
-			searchPath := cmp.Or(params.Path, workingDir)
+			searchPath, err := canonicalToolPath(workingDir, cmp.Or(params.Path, workingDir))
+			if err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+			granted, err := authorizeExternalPath(ctx, permissions, workingDir, searchPath, call.ID, GrepToolName, "read", fmt.Sprintf("Search file contents outside working directory: %s", searchPath), params)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			if !granted {
+				return NewPermissionDeniedResponse(), nil
+			}
 
 			searchCtx, cancel := context.WithTimeout(ctx, config.GetTimeout())
 			defer cancel()

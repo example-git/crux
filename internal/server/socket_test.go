@@ -145,6 +145,9 @@ func TestListen_RemovesStaleSocket(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, ln)
 	require.True(t, removedStale, "listen should report removedStale=true")
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 	t.Cleanup(func() {
 		_ = ln.Close()
 	})
