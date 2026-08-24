@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/term"
+	"github.com/example-git/crux/internal/redact"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
@@ -40,16 +41,16 @@ func Setup(logFile string, debug bool, ws ...io.Writer) {
 		}
 
 		var handlers []slog.Handler
-		handlers = append(handlers, slog.NewJSONHandler(logRotator, opts))
+		handlers = append(handlers, redactingHandler{handler: slog.NewJSONHandler(logRotator, opts)})
 
 		for _, w := range ws {
 			if w == nil {
 				continue
 			}
 			if f, ok := w.(term.File); ok && term.IsTerminal(f.Fd()) {
-				handlers = append(handlers, slog.NewTextHandler(w, opts))
+				handlers = append(handlers, redactingHandler{handler: slog.NewTextHandler(w, opts)})
 			} else {
-				handlers = append(handlers, slog.NewJSONHandler(w, opts))
+				handlers = append(handlers, redactingHandler{handler: slog.NewJSONHandler(w, opts)})
 			}
 		}
 
@@ -76,9 +77,9 @@ func RecoverPanic(name string, cleanup func()) {
 			defer file.Close()
 
 			// Write panic information and stack trace
-			fmt.Fprintf(file, "Panic in %s: %v\n\n", name, r)
+			fmt.Fprintf(file, "Panic in %s: %s\n\n", redact.String(name), redact.String(fmt.Sprint(r)))
 			fmt.Fprintf(file, "Time: %s\n\n", time.Now().Format(time.RFC3339))
-			fmt.Fprintf(file, "Stack Trace:\n%s\n", debug.Stack())
+			fmt.Fprintf(file, "Stack Trace:\n%s\n", redact.Bytes(debug.Stack()))
 
 			// Execute cleanup function if provided
 			if cleanup != nil {

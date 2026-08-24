@@ -16,10 +16,31 @@ import (
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/config"
+	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
 )
+
+func (c *Client) Browse(ctx context.Context, path string) (proto.BrowserListing, error) {
+	query := url.Values{}
+	if path != "" {
+		query.Set("path", path)
+	}
+	rsp, err := c.get(ctx, "/browser", query, nil)
+	if err != nil {
+		return proto.BrowserListing{}, fmt.Errorf("failed to browse server path: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return proto.BrowserListing{}, fmt.Errorf("failed to browse server path: %w", err)
+	}
+	var listing proto.BrowserListing
+	if err := json.NewDecoder(rsp.Body).Decode(&listing); err != nil {
+		return proto.BrowserListing{}, fmt.Errorf("failed to decode browser listing: %w", err)
+	}
+	return listing, nil
+}
 
 // ListWorkspaces retrieves all workspaces from the server.
 func (c *Client) ListWorkspaces(ctx context.Context) ([]proto.Workspace, error) {
@@ -38,10 +59,18 @@ func (c *Client) ListWorkspaces(ctx context.Context) ([]proto.Workspace, error) 
 	return workspaces, nil
 }
 
+func (c *Client) RefreshWorkspaces(ctx context.Context) ([]proto.Workspace, error) {
+	return c.ListWorkspaces(ctx)
+}
+
 // CreateWorkspace creates a new workspace on the server.
 func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*proto.Workspace, error) {
 	ws.ClientID = c.clientID
-	rsp, err := c.post(ctx, "/workspaces", nil, jsonBody(ws), http.Header{"Content-Type": []string{"application/json"}})
+	headers := http.Header{"Content-Type": []string{"application/json"}}
+	if len(ws.ForwardedProviders) > 0 || len(ws.ForwardedAccounts) > 0 {
+		headers.Set(cruxlog.EphemeralStateHeader, "1")
+	}
+	rsp, err := c.post(ctx, "/workspaces", nil, jsonBody(ws), headers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
 	}
@@ -73,6 +102,10 @@ func (c *Client) GetWorkspace(ctx context.Context, id string) (*proto.Workspace,
 	return &ws, nil
 }
 
+func (c *Client) OpenWorkspace(ctx context.Context, id string) (*proto.Workspace, error) {
+	return c.GetWorkspace(ctx, id)
+}
+
 // DeleteWorkspace deletes a workspace on the server.
 func (c *Client) DeleteWorkspace(ctx context.Context, id string) error {
 	q := url.Values{"client_id": []string{c.clientID}}
@@ -83,6 +116,18 @@ func (c *Client) DeleteWorkspace(ctx context.Context, id string) error {
 	defer rsp.Body.Close()
 	if rsp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to delete workspace: status code %d", rsp.StatusCode)
+	}
+	return nil
+}
+
+func (c *Client) CloseIdleWorkspace(ctx context.Context, id string) error {
+	rsp, err := c.delete(ctx, fmt.Sprintf("/workspaces/%s/idle", id), nil, nil)
+	if err != nil {
+		return fmt.Errorf("failed to close idle workspace: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to close idle workspace: %w", err)
 	}
 	return nil
 }

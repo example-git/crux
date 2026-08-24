@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/config"
+	cruxconnection "github.com/example-git/crux/internal/connection"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/server"
@@ -30,6 +32,7 @@ type Client struct {
 	network  string
 	addr     string
 	clientID string
+	secure   bool
 }
 
 // DefaultClient creates a new [Client] connected to the default server address.
@@ -44,17 +47,38 @@ func DefaultClient(path string) (*Client, error) {
 // NewClient creates a new [Client] connected to the server at the given
 // network and address.
 func NewClient(path, network, address string) (*Client, error) {
+	return newClient(path, network, address, nil)
+}
+
+func NewAuthenticatedClient(path string, saved cruxconnection.Connection) (*Client, error) {
+	host, err := server.ParseHostURL(saved.Address)
+	if err != nil {
+		return nil, fmt.Errorf("invalid saved connection address: %w", err)
+	}
+	if host.Scheme != "tcp" {
+		return nil, errors.New("authenticated connections require a TCP address")
+	}
+	tlsConfig, err := cruxconnection.ClientTLSConfig(saved)
+	if err != nil {
+		return nil, err
+	}
+	return newClient(path, host.Scheme, host.Host, tlsConfig)
+}
+
+func newClient(path, network, address string, tlsConfig *tls.Config) (*Client, error) {
 	c := new(Client)
 	c.path = filepath.Clean(path)
 	c.network = network
 	c.addr = address
 	c.clientID = uuid.New().String()
+	c.secure = tlsConfig != nil
 	p := &http.Protocols{}
 	p.SetHTTP1(true)
 	p.SetUnencryptedHTTP2(true)
 	tr := cruxlog.CloneDefaultHTTPTransport()
 	tr.Protocols = p
 	tr.DialContext = c.dialer
+	tr.TLSClientConfig = tlsConfig
 	if c.network == "npipe" || c.network == "unix" {
 		tr.DisableCompression = true
 	}
@@ -270,6 +294,9 @@ func (c *Client) buildReq(ctx context.Context, method, url string, body io.Reade
 	}
 
 	r.URL.Scheme = "http"
+	if c.secure {
+		r.URL.Scheme = "https"
+	}
 	r.URL.Host = c.addr
 	if c.network == "npipe" || c.network == "unix" {
 		r.Host = DummyHost

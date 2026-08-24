@@ -358,6 +358,8 @@ type UI struct {
 	sidebarContentWidth     int    // available width for sidebar content
 	sidebarDrawLogo         string // logo to render (may differ from sidebarLogo for short heights)
 	sidebarBrandLogoHeight  int
+	sidebarFilesHeaderLine  int
+	sidebarFilesCollapsed   bool
 
 	// Notification state
 	notifyBackend       notification.Backend
@@ -1199,6 +1201,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.handleSidebarLogoClick(msg) {
 			return m, tea.Batch(cmds...)
 		}
+		if m.handleSidebarFilesClick(msg) {
+			return m, tea.Batch(cmds...)
+		}
 
 		if cmd := m.handleClickFocus(msg); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -1607,6 +1612,8 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap, m.com.Workspace.WorkingDir())...)
 		}
 	}
+
+	items = chat.CompactActivityHistory(m.com.Styles, items, chat.ActivityHistoryLimit)
 
 	// Load nested tool calls for agent/agentic_fetch tools.
 	m.loadNestedToolCalls(items)

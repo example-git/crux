@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/layout"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
 	mcp "github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/config"
@@ -84,6 +85,22 @@ func (m *UI) handleSidebarLogoClick(msg tea.MouseClickMsg) bool {
 	return true
 }
 
+func (m *UI) handleSidebarFilesClick(msg tea.MouseClickMsg) bool {
+	if m.state != uiChat || m.isCompact || msg.Button != uv.MouseLeft || m.sidebarContent == "" || m.sidebarFilesHeaderLine < 0 {
+		return false
+	}
+	if !image.Pt(msg.X, msg.Y).In(m.layout.sidebar) {
+		return false
+	}
+	contentTop := m.layout.sidebar.Min.Y + lipgloss.Height(m.sidebarDrawLogo)
+	contentLine := msg.Y - contentTop + m.sidebarOffset
+	if contentLine != m.sidebarFilesHeaderLine {
+		return false
+	}
+	m.sidebarFilesCollapsed = !m.sidebarFilesCollapsed
+	return true
+}
+
 // updateSidebarScrollState renders the sidebar content and computes scroll
 // state (scrollability, max offset, clamp) before drawing. This keeps all
 // state mutation in the update path rather than in the draw function.
@@ -150,6 +167,14 @@ func (m *UI) updateSidebarScrollState() {
 		"",
 		skillsSection,
 	)
+
+	m.sidebarFilesHeaderLine = -1
+	for i, line := range strings.Split(content, "\n") {
+		if strings.Contains(ansi.Strip(line), "Modified Files") {
+			m.sidebarFilesHeaderLine = i
+			break
+		}
+	}
 
 	totalLines := strings.Count(content, "\n") + 1
 	m.sidebarContent = content

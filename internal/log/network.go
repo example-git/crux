@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/example-git/crux/internal/redact"
 	_ "modernc.org/sqlite"
 )
 
@@ -366,6 +367,10 @@ func (t *networkTrace) record(event TrafficEvent) {
 	if t == nil {
 		return
 	}
+	event.URL = redact.String(event.URL)
+	event.Headers = formatHeaders(event.Headers)
+	event.Body = redact.String(event.Body)
+	event.Error = redact.String(event.Error)
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now().UTC()
 	}
@@ -601,6 +606,8 @@ func QueryTraffic(ctx context.Context, database *sql.DB, query TrafficQuery) ([]
 	return events, rows.Err()
 }
 
+const EphemeralStateHeader = "X-Crux-Ephemeral-State"
+
 func WrapHTTPTransport(base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = defaultHTTPBase
@@ -629,15 +636,19 @@ func (t *networkRoundTripper) RoundTrip(request *http.Request) (*http.Response, 
 	}
 	traceID := nextNetworkTraceID()
 	requestEvent := TrafficEvent{Timestamp: time.Now().UTC(), TraceID: traceID, Protocol: "http", Direction: "outbound", Phase: "request", Method: request.Method, URL: sanitizeURL(request.URL), Headers: formatHeaders(request.Header), ContentLength: request.ContentLength}
-	body, copied, copyErr := copyRequestBody(request)
-	if copied {
-		requestEvent.Body, requestEvent.BodyEncoding = encodeNetworkBody(body, request.Header.Get("Content-Type"))
-		if copyErr != nil {
-			requestEvent.Error = copyErr.Error()
-		}
+	if request.Header.Get(EphemeralStateHeader) != "" {
 		trace.record(requestEvent)
 	} else {
-		request.Body = &networkTraceBody{ReadCloser: request.Body, trace: trace, event: requestEvent}
+		body, copied, copyErr := copyRequestBody(request)
+		if copied {
+			requestEvent.Body, requestEvent.BodyEncoding = encodeNetworkBody(body, request.Header.Get("Content-Type"))
+			if copyErr != nil {
+				requestEvent.Error = copyErr.Error()
+			}
+			trace.record(requestEvent)
+		} else {
+			request.Body = &networkTraceBody{ReadCloser: request.Body, trace: trace, event: requestEvent}
+		}
 	}
 
 	started := time.Now()
@@ -737,7 +748,7 @@ func TraceHTTPHandler(next http.Handler) http.Handler {
 		started := time.Now()
 		wrapped := &networkResponseWriter{ResponseWriter: writer, statusCode: http.StatusOK}
 		requestEvent := TrafficEvent{Timestamp: started.UTC(), TraceID: traceID, Protocol: "http", Direction: "inbound", Phase: "request", Method: request.Method, URL: sanitizeURL(request.URL), Headers: formatHeaders(request.Header), ContentLength: request.ContentLength}
-		if request.Body == nil || request.Body == http.NoBody {
+		if request.Body == nil || request.Body == http.NoBody || request.Header.Get(EphemeralStateHeader) != "" {
 			trace.record(requestEvent)
 		} else {
 			request.Body = &networkTraceBody{ReadCloser: request.Body, trace: trace, event: requestEvent}
@@ -851,7 +862,8 @@ func encodeNetworkBody(data []byte, contentType string) (string, string) {
 		return "", ""
 	}
 	truncated := len(data) > trafficMaxPayloadBytes
-	if truncated {
+	data = redact.Bytes(data)
+	if len(data) > trafficMaxPayloadBytes {
 		data = data[:trafficMaxPayloadBytes]
 	}
 	encoding := "utf-8"
@@ -938,13 +950,13 @@ func sanitizeURL(raw *url.URL) string {
 		}
 	}
 	clone.RawQuery = query.Encode()
-	return clone.String()
+	return redact.String(clone.String())
 }
 
 func sanitizeURLString(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return raw
+		return redact.String(raw)
 	}
 	return sanitizeURL(parsed)
 }

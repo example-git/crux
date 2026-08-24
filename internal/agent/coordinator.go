@@ -1283,8 +1283,15 @@ func (c *coordinator) buildCodexProvider(registration providerregistry.Registrat
 		if registration.AccountNamespace == "" {
 			return ""
 		}
-		entry, err := accounts.Active(context.Background(), registration.AccountNamespace)
-		if err != nil || entry == nil || entry.AccessToken != apiKey {
+		entry, ok := c.cfg.EphemeralAccount(registration.AccountNamespace)
+		if !ok {
+			var err error
+			entry, err = accounts.Active(context.Background(), registration.AccountNamespace)
+			if err != nil {
+				return ""
+			}
+		}
+		if entry == nil || entry.AccessToken != apiKey {
 			return ""
 		}
 		var raw struct {

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example-git/crux/internal/redact"
 	"github.com/stretchr/testify/require"
 )
 
@@ -92,6 +93,61 @@ func TestNetworkTraceCapturesOutboundHTTPInTypedTables(t *testing.T) {
 	require.Contains(t, events[0].Body, `"hello"`)
 	require.Contains(t, events[1].Body, `"world"`)
 	require.Equal(t, os.Getpid(), events[0].ProcessID)
+}
+
+func TestNetworkTraceRedactsCopiesWithoutChangingProviderRequest(t *testing.T) {
+	secret := "provider-request-secret-value"
+	redact.Register(secret)
+	trace, database := testTrafficTrace(t)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		require.Equal(t, secret, request.Header.Get("X-Custom-Credential"))
+		require.Equal(t, "payload "+secret, readTestBody(t, request.Body))
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/"+secret, strings.NewReader("payload "+secret))
+	require.NoError(t, err)
+	request.Header.Set("X-Custom-Credential", secret)
+	response, err := (&http.Client{Transport: WrapHTTPTransport(server.Client().Transport)}).Do(request)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	trace.flush()
+	events, err := QueryTraffic(t.Context(), database, TrafficQuery{Sort: "asc", Limit: 10, IncludeBody: true})
+	require.NoError(t, err)
+	require.NotEmpty(t, events)
+	for _, event := range events {
+		require.NotContains(t, event.URL, secret)
+		require.NotContains(t, event.Body, secret)
+		for _, values := range event.Headers {
+			require.NotContains(t, strings.Join(values, " "), secret)
+		}
+	}
+}
+
+func TestNetworkTraceDoesNotPersistEphemeralStateBodies(t *testing.T) {
+	trace, database := testTrafficTrace(t)
+	server := httptest.NewServer(TraceHTTPHandler(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		require.Equal(t, `{"forwarded_accounts":{"codex":{"accessToken":"secret"}}}`, readTestBody(t, request.Body))
+		writer.WriteHeader(http.StatusNoContent)
+	})))
+	defer server.Close()
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, strings.NewReader(`{"forwarded_accounts":{"codex":{"accessToken":"secret"}}}`))
+	require.NoError(t, err)
+	request.Header.Set(EphemeralStateHeader, "1")
+	response, err := (&http.Client{Transport: WrapHTTPTransport(server.Client().Transport)}).Do(request)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	trace.flush()
+
+	var requestPayloads int
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM http_request_payloads`).Scan(&requestPayloads))
+	require.Zero(t, requestPayloads)
+	events, err := QueryTraffic(t.Context(), database, TrafficQuery{Sort: "asc", Limit: 10, IncludeBody: true})
+	require.NoError(t, err)
+	for _, event := range events {
+		require.NotContains(t, event.Body, "secret")
+	}
 }
 
 func TestNetworkTraceStreamsRequestBodiesWithoutGetBody(t *testing.T) {

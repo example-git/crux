@@ -402,14 +402,53 @@ func (m *Chat) InvalidateRenderCaches() {
 
 // SetMessages sets the chat messages to the provided list of message items.
 func (m *Chat) SetMessages(msgs ...chat.MessageItem) tea.Cmd {
-	m.idInxMap = make(map[string]int)
 	m.pausedAnimations = make(map[string]struct{})
 	m.scrollbarVisible = false // Reset scrollbar visibility on new session load
+	m.setMessageItems(chat.CompactActivityHistory(m.com.Styles, msgs, chat.ActivityHistoryLimit))
+	m.ScrollToBottom()
+	return nil
+}
 
+// AppendMessages appends a new message item to the chat list.
+func (m *Chat) AppendMessages(msgs ...chat.MessageItem) {
+	compact := false
+	for _, msg := range msgs {
+		if chat.IsAgentTaskActivity(msg) {
+			compact = true
+			break
+		}
+	}
+	if !compact {
+		items := make([]list.Item, len(msgs))
+		indexOffset := m.list.Len()
+		for i, msg := range msgs {
+			m.idInxMap[msg.ID()] = indexOffset + i
+			if container, ok := msg.(chat.NestedToolContainer); ok {
+				for _, nested := range container.NestedTools() {
+					m.idInxMap[nested.ID()] = indexOffset + i
+				}
+			}
+			items[i] = msg
+		}
+		m.list.AppendItems(items...)
+		return
+	}
+
+	items := make([]chat.MessageItem, 0, m.list.Len()+len(msgs))
+	for i := range m.list.Len() {
+		if item, ok := m.list.ItemAt(i).(chat.MessageItem); ok {
+			items = append(items, item)
+		}
+	}
+	items = append(items, msgs...)
+	m.setMessageItems(chat.CompactActivityHistory(m.com.Styles, items, chat.ActivityHistoryLimit))
+}
+
+func (m *Chat) setMessageItems(msgs []chat.MessageItem) {
+	m.idInxMap = make(map[string]int, len(msgs))
 	items := make([]list.Item, len(msgs))
 	for i, msg := range msgs {
 		m.idInxMap[msg.ID()] = i
-		// Register nested tool IDs for tools that contain nested tools.
 		if container, ok := msg.(chat.NestedToolContainer); ok {
 			for _, nested := range container.NestedTools() {
 				m.idInxMap[nested.ID()] = i
@@ -418,25 +457,6 @@ func (m *Chat) SetMessages(msgs ...chat.MessageItem) tea.Cmd {
 		items[i] = msg
 	}
 	m.list.SetItems(items...)
-	m.ScrollToBottom()
-	return nil
-}
-
-// AppendMessages appends a new message item to the chat list.
-func (m *Chat) AppendMessages(msgs ...chat.MessageItem) {
-	items := make([]list.Item, len(msgs))
-	indexOffset := m.list.Len()
-	for i, msg := range msgs {
-		m.idInxMap[msg.ID()] = indexOffset + i
-		// Register nested tool IDs for tools that contain nested tools.
-		if container, ok := msg.(chat.NestedToolContainer); ok {
-			for _, nested := range container.NestedTools() {
-				m.idInxMap[nested.ID()] = indexOffset + i
-			}
-		}
-		items[i] = msg
-	}
-	m.list.AppendItems(items...)
 }
 
 // UpdateNestedToolIDs updates the ID map for nested tools within a container.

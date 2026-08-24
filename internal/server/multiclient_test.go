@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/example-git/crux/internal/backend"
+	"github.com/example-git/crux/internal/config"
+	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -69,6 +71,29 @@ func TestPostWorkspaces_RejectsMalformedClientID(t *testing.T) {
 	c.handlePostWorkspaces(rec, req)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestPostWorkspaces_RequiresAuthenticatedTLSForForwardedState(t *testing.T) {
+	c := newTestController()
+	body, err := json.Marshal(proto.Workspace{
+		Path:               t.TempDir(),
+		ClientID:           uuid.New().String(),
+		ForwardedProviders: map[string]config.ProviderConfig{"remote": {ID: "remote", APIKey: "secret"}},
+	})
+	require.NoError(t, err)
+
+	withoutMarker := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/workspaces", bytes.NewReader(body))
+	withoutMarker.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	c.handlePostWorkspaces(response, withoutMarker)
+	require.Equal(t, http.StatusBadRequest, response.Code)
+
+	withoutTLS := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/workspaces", bytes.NewReader(body))
+	withoutTLS.Header.Set("Content-Type", "application/json")
+	withoutTLS.Header.Set(cruxlog.EphemeralStateHeader, "1")
+	response = httptest.NewRecorder()
+	c.handlePostWorkspaces(response, withoutTLS)
+	require.Equal(t, http.StatusForbidden, response.Code)
 }
 
 func TestDeleteWorkspace_RejectsMissingClientID(t *testing.T) {

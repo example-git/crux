@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/example-git/crux/internal/backend"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/connection"
+	"github.com/example-git/crux/internal/fsext"
 	cruxlog "github.com/example-git/crux/internal/log"
 	_ "github.com/example-git/crux/internal/swagger"
 	httpswagger "github.com/swaggo/http-swagger/v2"
@@ -52,11 +56,6 @@ func ParseHostURL(host string) (*url.URL, error) {
 		parsed, err := url.Parse("tcp://" + addr)
 		if err != nil {
 			return nil, fmt.Errorf("invalid tcp address: %v", err)
-		}
-		hostname := parsed.Hostname()
-		ip := net.ParseIP(hostname)
-		if !strings.EqualFold(hostname, "localhost") && (ip == nil || !ip.IsLoopback()) {
-			return nil, fmt.Errorf("tcp host must be loopback: %s", hostname)
 		}
 		addr = parsed.Host
 		basePath = parsed.Path
@@ -99,11 +98,13 @@ type Server struct {
 	Addr    string
 	network string
 
-	h  *http.Server
-	ln net.Listener
+	h         *http.Server
+	ln        net.Listener
+	tlsConfig *tls.Config
 
-	backend *backend.Backend
-	logger  *slog.Logger
+	backend        *backend.Backend
+	logger         *slog.Logger
+	workspaceRoots []string
 }
 
 // SetLogger sets the logger for the server.
@@ -116,6 +117,81 @@ func (s *Server) SetLogger(logger *slog.Logger) {
 // HTTP surface.
 func (s *Server) Backend() *backend.Backend {
 	return s.backend
+}
+
+func (s *Server) EnableNetworkAuth(ctx context.Context) error {
+	if s.network != "tcp" {
+		return errors.New("network authentication is only available for TCP servers")
+	}
+	tlsConfig, err := connection.ServerTLSConfig(ctx)
+	if err != nil {
+		return err
+	}
+	s.tlsConfig = tlsConfig
+	if s.remoteManagement() {
+		s.backend.SetPersistent(true)
+	}
+	return nil
+}
+
+func (s *Server) SetWorkspaceRoots(paths []string) error {
+	home, err := os.UserHomeDir()
+	if err != nil && len(paths) == 0 {
+		return fmt.Errorf("resolve home directory: %w", err)
+	}
+	candidates := make([]string, 0, len(paths)+1)
+	if home != "" {
+		candidates = append(candidates, home)
+	}
+	candidates = append(candidates, paths...)
+	roots := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, path := range candidates {
+		canonical, canonicalErr := fsext.CanonicalPath(path)
+		if canonicalErr != nil {
+			return fmt.Errorf("resolve workspace root %q: %w", path, canonicalErr)
+		}
+		info, statErr := os.Stat(canonical)
+		if statErr != nil {
+			return fmt.Errorf("access workspace root %q: %w", path, statErr)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("workspace root %q is not a directory", path)
+		}
+		if _, exists := seen[canonical]; exists {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		roots = append(roots, canonical)
+	}
+	s.workspaceRoots = roots
+	return nil
+}
+
+func (s *Server) remoteManagement() bool {
+	if s.network != "tcp" {
+		return false
+	}
+	host := s.Addr
+	if parsedHost, _, err := net.SplitHostPort(s.Addr); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(host, "[]")
+	ip := net.ParseIP(host)
+	return !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback())
+}
+
+func (s *Server) authenticatedManagementRequest(r *http.Request) bool {
+	return !s.remoteManagement() || (r.TLS != nil && len(r.TLS.PeerCertificates) > 0)
+}
+
+func IsLoopbackHost(hostURL *url.URL) bool {
+	if hostURL.Scheme != "tcp" {
+		return true
+	}
+	hostname := hostURL.Hostname()
+	ip := net.ParseIP(hostname)
+	return strings.EqualFold(hostname, "localhost") || (ip != nil && ip.IsLoopback())
 }
 
 // DefaultServer returns a new [Server] with the default address.
@@ -144,6 +220,9 @@ func NewServer(cfg *config.ConfigStore, network, address string) *Server {
 			}
 		}()
 	})
+	if err := s.SetWorkspaceRoots(nil); err != nil {
+		slog.Warn("Failed to configure default workspace root", "error", err)
+	}
 	s.installHandler()
 	if network == "tcp" {
 		s.h.Addr = address
@@ -167,9 +246,11 @@ func (s *Server) installHandler() {
 	mux.HandleFunc("GET /v1/config", c.handleGetConfig)
 	mux.HandleFunc("POST /v1/control", c.handlePostControl)
 	mux.HandleFunc("DELETE /v1/clients/{client_id}", c.handleDeleteClient)
+	mux.HandleFunc("GET /v1/browser", c.handleGetBrowser)
 	mux.HandleFunc("GET /v1/workspaces", c.handleGetWorkspaces)
 	mux.HandleFunc("POST /v1/workspaces", c.handlePostWorkspaces)
 	mux.HandleFunc("DELETE /v1/workspaces/{id}", c.handleDeleteWorkspaces)
+	mux.HandleFunc("DELETE /v1/workspaces/{id}/idle", c.handleDeleteIdleWorkspace)
 	mux.HandleFunc("POST /v1/workspaces/{id}/current-session", c.handlePostWorkspaceCurrentSession)
 	mux.HandleFunc("GET /v1/workspaces/{id}", c.handleGetWorkspace)
 	mux.HandleFunc("GET /v1/workspaces/{id}/config", c.handleGetWorkspaceConfig)
@@ -277,6 +358,9 @@ func (s *Server) ListenAndServe() error {
 	}
 	if removedStale && s.logger != nil {
 		s.logger.Warn("Removed stale socket before binding", "address", s.Addr)
+	}
+	if s.tlsConfig != nil {
+		ln = tls.NewListener(ln, s.tlsConfig)
 	}
 	return s.Serve(ln)
 }
