@@ -379,9 +379,9 @@ func (b *BackgroundShell) finishExecution(executionError error) {
 	}
 	notification := b.notificationLocked()
 	_ = b.persistLocked()
-	b.terminalOnce.Do(func() { close(b.done) })
 	b.stateMu.Unlock()
 	b.releaseActive()
+	b.terminalOnce.Do(func() { close(b.done) })
 	b.publishNotification(notification)
 }
 
@@ -421,9 +421,9 @@ func (b *BackgroundShell) markLost(reason string) {
 	b.completedAt.Store(now.Unix())
 	notification := b.notificationLocked()
 	_ = b.persistLocked()
-	b.terminalOnce.Do(func() { close(b.done) })
 	b.stateMu.Unlock()
 	b.releaseActive()
+	b.terminalOnce.Do(func() { close(b.done) })
 	b.publishNotification(notification)
 }
 
