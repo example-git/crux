@@ -3328,6 +3328,33 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "accounts.Entry": {
+            "type": "object",
+            "properties": {
+                "accessToken": {
+                    "type": "string"
+                },
+                "displayName": {
+                    "type": "string"
+                },
+                "expiresAt": {
+                    "description": "ExpiresAt is epoch milliseconds, matching the reference schema.",
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "raw": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "refreshToken": {
+                    "type": "string"
+                }
+            }
+        },
         "catwalk.Model": {
             "type": "object",
             "properties": {
@@ -3398,6 +3425,31 @@ const docTemplate = `{
                     "type": "number"
                 }
             }
+        },
+        "catwalk.Type": {
+            "type": "string",
+            "enum": [
+                "openai",
+                "openai-compat",
+                "openrouter",
+                "vercel",
+                "anthropic",
+                "google",
+                "azure",
+                "bedrock",
+                "google-vertex"
+            ],
+            "x-enum-varnames": [
+                "TypeOpenAI",
+                "TypeOpenAICompat",
+                "TypeOpenRouter",
+                "TypeVercel",
+                "TypeAnthropic",
+                "TypeGoogle",
+                "TypeAzure",
+                "TypeBedrock",
+                "TypeVertexAI"
+            ]
         },
         "config.Completions": {
             "type": "object",
@@ -3585,6 +3637,110 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                }
+            }
+        },
+        "config.ProviderConfig": {
+            "type": "object",
+            "properties": {
+                "api_key": {
+                    "description": "The provider's API key.",
+                    "type": "string"
+                },
+                "base_url": {
+                    "description": "The provider's API endpoint.",
+                    "type": "string"
+                },
+                "configuration": {
+                    "description": "Configuration preserves declarative plugin configuration values. Values\nare validated against the active provider registry when that plugin is\ninstalled; missing-plugin values remain lossless and untouched.",
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "disable": {
+                    "description": "Marks the provider as disabled.",
+                    "type": "boolean"
+                },
+                "discover_models": {
+                    "description": "AutoDiscoverModels controls model discovery via /v1/models endpoint.\nWhen Models is empty and this is nil or true, Crux auto-discovers\nmodels. When true and Models is non-empty, discovered models are\nmerged in (user-specified models take precedence). When false,\nonly explicitly listed models are used.",
+                    "type": "boolean"
+                },
+                "extra_body": {
+                    "description": "ExtraBody is merged verbatim into OpenAI-compatible request\nbodies. String values are NOT shell-expanded: this is a plain\nJSON passthrough so that arbitrary provider-extension fields\n(numbers, nested objects, booleans) round-trip without a\nrecursive walker guessing at intent. If you need an env-var-\ndriven value at request time, put it in extra_headers, or in\nthe provider's top-level api_key / base_url, all of which do\nexpand.",
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "extra_headers": {
+                    "description": "Extra headers to send with each request to the provider. Values\nrun through shell expansion at config-load time, so $VAR and\n$(cmd) work the same way they do in MCP headers. A header whose\nvalue resolves to the empty string (unset bare $VAR under\nlenient nounset, $(echo), or literal \"\") is omitted from the\noutgoing request rather than sent as \"Header:\".",
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "flat_rate": {
+                    "description": "Skip cost accumulation for this provider when using subscription or flat rate billing.",
+                    "type": "boolean"
+                },
+                "id": {
+                    "description": "The provider's id.",
+                    "type": "string"
+                },
+                "models": {
+                    "description": "The provider models",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/catwalk.Model"
+                    }
+                },
+                "name": {
+                    "description": "The provider's name, used for display purposes.",
+                    "type": "string"
+                },
+                "oauth": {
+                    "description": "OAuthToken for providers that use OAuth2 authentication.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/oauth.Token"
+                        }
+                    ]
+                },
+                "plugin": {
+                    "description": "Plugin records durable ownership so configuration and selections remain\nunavailable rather than falling through to a generic provider when the\nbundle is missing, disabled, invalid, incompatible, or untrusted.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/config.ProviderPluginReference"
+                        }
+                    ]
+                },
+                "provider_options": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "system_prompt_prefix": {
+                    "description": "Custom system prompt prefix.",
+                    "type": "string"
+                },
+                "tooling_instructions": {
+                    "description": "Tooling instruction profile used for this provider.",
+                    "type": "string"
+                },
+                "type": {
+                    "description": "The provider type. Empty custom-provider types default to openai-compat;\nregistered local aliases use the same protocol.",
+                    "allOf": [
+                        {
+                            "$ref": "#/definitions/catwalk.Type"
+                        }
+                    ]
+                }
+            }
+        },
+        "config.ProviderPluginReference": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
                 }
             }
         },
@@ -4977,6 +5133,9 @@ const docTemplate = `{
                 "config": {
                     "$ref": "#/definitions/github_com_example-git_crux_internal_config.Config"
                 },
+                "connected_clients": {
+                    "type": "integer"
+                },
                 "data_dir": {
                     "type": "string"
                 },
@@ -4987,6 +5146,18 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "type": "string"
+                    }
+                },
+                "forwarded_accounts": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/accounts.Entry"
+                    }
+                },
+                "forwarded_providers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/config.ProviderConfig"
                     }
                 },
                 "id": {
