@@ -1,18 +1,16 @@
 :root {
-  /* Dark mode surface colors - charmtone dark palette. */
-  --bg: #201f26; /* Pepper */
-  --bg-card: #2d2c36; /* BBQ */
-  --bg-inset: #201f26; /* Pepper */
-  --text: #f7f6fb; /* Salt */
-  --text-muted: #f7f6fb; /* Salt */
-  --border: #4d4c57; /* Iron */
+  /* Dark mode surface colors. */
+  --bg: #201f26;
+  --bg-card: #2d2c36;
+  --bg-inset: #201f26;
+  --text: #f7f6fb;
+  --text-muted: #f7f6fb;
+  --border: #4d4c57;
 
-  /* Outcome accents; subject highlight follows --text unless light
-     mode overrides below. Error codes use Coral; the success rail
-     uses Blush. */
-  --blush: #ff84ff; /* Blush */
-  --coral: #ff577d; /* Coral */
-  --hazy: #f7f6fb; /* Salt — matches body text in dark */
+  /* Outcome accents and highlighted detail text. */
+  --success: #ff84ff;
+  --error: #ff577d;
+  --highlight: #f7f6fb;
 
   /* Code-like fragments (the error code, the countdown) use mono. */
   --font-mono: "JetBrains Mono", "SF Mono", Consolas, monospace;
@@ -21,17 +19,17 @@
   --card-shadow: 0 32px 96px rgba(0, 0, 0, 0.05);
 }
 
-/* Light: Sash ground, Salt card, Charple type — error codes stay Coral. */
+/* Light mode keeps the same outcome accents on brighter surfaces. */
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #ecebf0; /* Sash */
-    --bg-card: #f7f6fb; /* Salt */
-    --bg-inset: #ecebf0; /* Sash */
-    --text: #6b50ff; /* Charple */
-    --text-muted: #6b50ff; /* Charple */
-    --border: #d6d3dc; /* Steep */
-    --hazy: #6b50ff; /* Charple */
-    --card-shadow: 0 32px 96px rgba(32, 31, 38, 0.1); /* Pepper */
+    --bg: #ecebf0;
+    --bg-card: #f7f6fb;
+    --bg-inset: #ecebf0;
+    --text: #6b50ff;
+    --text-muted: #6b50ff;
+    --border: #d6d3dc;
+    --highlight: #6b50ff;
+    --card-shadow: 0 32px 96px rgba(32, 31, 38, 0.1);
   }
 }
 
@@ -66,11 +64,11 @@ body {
 }
 
 .card.ok {
-  --accent: var(--blush);
+  --accent: var(--success);
 }
 
 .card.failed {
-  --accent: var(--coral);
+  --accent: var(--error);
 }
 
 .mark {
@@ -82,12 +80,6 @@ body {
   width: 100%;
   height: auto;
   display: block;
-}
-
-/* Tint the heart to match the outcome so the state is legible before a
-   single word is read. */
-.card.failed .mark .heart {
-  fill: var(--coral);
 }
 
 h1 {
@@ -103,7 +95,7 @@ h1 {
 }
 
 .detail .subject {
-  color: var(--hazy);
+  color: var(--highlight);
 }
 
 .reason {

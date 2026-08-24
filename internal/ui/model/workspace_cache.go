@@ -30,7 +30,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/charmbracelet/crush/internal/workspace"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/workspace"
 )
 
 // busyCacheTTL bounds how long the memoized busy/permission state may go
@@ -90,13 +91,16 @@ type promptQueueMsg struct {
 	// busyStateMsg.gen it guards against a stale in-flight result
 	// overwriting newer optimistic or invalidated queue state.
 	gen     uint64
-	prompts []string
+	prompts []agent.QueuedPrompt
 }
 
 // agentRunSubmittedMsg reports that AgentRun accepted a prompt (it either
 // started a run or was enqueued behind one), so busy and queue state should
 // be re-fetched.
-type agentRunSubmittedMsg struct{}
+type agentRunSubmittedMsg struct {
+	submissionID string
+	queuedDraft  *queuedPromptDraft
+}
 
 // agentModelChangedMsg reports that the coordinator's model was updated
 // (model selection, thinking toggle, reasoning effort), so the memoized
@@ -221,6 +225,7 @@ func (m *UI) dispatchPromptQueueRefresh() tea.Cmd {
 	}
 	if !m.hasSession() {
 		m.promptQueueItems = nil
+		m.promptQueueDrafts = nil
 		m.promptQueueCheckedAt = time.Now()
 		// Bump the generation so any in-flight fetch scoped to the
 		// now-departed session is discarded rather than repopulating the
@@ -263,6 +268,7 @@ func (m *UI) applyPromptQueue(msg promptQueueMsg) []tea.Cmd {
 	itemsChanged := !slices.Equal(m.promptQueueItems, msg.prompts)
 	countChanged := len(msg.prompts) != m.promptQueue
 	m.promptQueueItems = msg.prompts
+	m.reconcileQueuedDrafts(msg.prompts, m.promptQueueCheckedAt)
 	m.promptQueue = len(msg.prompts)
 	if countChanged {
 		m.updateLayoutAndSize()

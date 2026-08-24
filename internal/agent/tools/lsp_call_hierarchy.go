@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/lsp"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/lsp"
 )
 
 type CallHierarchyParams struct {

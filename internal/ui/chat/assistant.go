@@ -9,12 +9,12 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/ui/anim"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/list"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/ui/anim"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/list"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 // assistantMessageTruncateFormat is the text shown when an assistant message is
@@ -114,7 +114,7 @@ func fnv64(s string) uint64 {
 
 // countLines returns the number of lines in s (i.e. the number of
 // newline-separated segments). Equivalent to len(strings.Split(s,
-// "\n")) but allocates nothing. See CHARM-1785.
+// "\n")) but allocates nothing.
 func countLines(s string) int {
 	if s == "" {
 		return 1
@@ -132,7 +132,7 @@ func countLines(s string) int {
 // (earlier) lines. totalLines is the pre-computed line count of s
 // (from countLines). It finds the cut point with a bounded backward
 // scan so the cost is O(n) in the number of kept lines, not O(L)
-// in the total document length. See CHARM-1785.
+// in the total document length.
 func tailLines(s string, n, totalLines int) (tail string, hidden int) {
 	if n <= 0 {
 		return "", totalLines
@@ -189,10 +189,11 @@ type AssistantMessageItem struct {
 	// tick. thinkingHashSample holds a short prefix of the hashed
 	// text so we can detect divergence (e.g. a user retry that
 	// rewrites the thinking from scratch) without re-hashing the
-	// whole thing. See CHARM-1785.
+	// whole thing.
 	thinkingHash       uint64
 	thinkingHashLen    int
 	thinkingHashSample string
+	thinkingLineCount  int
 
 	// Per-section render caches. Splitting these out means content
 	// streaming does not invalidate the (often expensive) thinking
@@ -208,11 +209,10 @@ type AssistantMessageItem struct {
 	// streaming_markdown.go for the full algorithm.
 	streamingContent streamingMarkdown
 
-	// streamingThinking applies the same stable-prefix caching to
-	// the thinking/reasoning section. Without this, every streaming
-	// delta forces a full glamour re-render of the entire accumulated
-	// thinking text, which burns CPU and starves the terminal emulator
-	// during long reasoning traces.
+	// streamingThinking renders completed reasoning Markdown and preserves
+	// its stable-prefix cache across view-mode changes. Active reasoning uses
+	// a bounded plain-text window instead, so streaming deltas never invoke
+	// Glamour or materialize the full accumulated document.
 	streamingThinking streamingMarkdown
 }
 
@@ -432,7 +432,7 @@ func (a *AssistantMessageItem) renderMessageContent(width int) (string, int) {
 // The source hash is computed incrementally: during streaming the
 // thinking text only grows by appending, so we continue the FNV-64a
 // hash from the saved state rather than re-hashing the entire
-// accumulated text. See CHARM-1785.
+// accumulated text.
 func (a *AssistantMessageItem) thinkingKey() (uint64, uint64) {
 	thinking := a.message.ReasoningContent().Thinking
 	srcHash := a.thinkingHashIncremental(thinking)
@@ -474,8 +474,10 @@ func (a *AssistantMessageItem) thinkingHashIncremental(thinking string) uint64 {
 			h ^= uint64(thinking[i])
 			h *= 1099511628211
 		}
+		delta := thinking[a.thinkingHashLen:]
 		a.thinkingHash = h
 		a.thinkingHashLen = len(thinking)
+		a.thinkingLineCount += strings.Count(delta, "\n")
 		return h
 	}
 	// Full re-hash (first call, or text diverged/shrank).
@@ -483,6 +485,7 @@ func (a *AssistantMessageItem) thinkingHashIncremental(thinking string) uint64 {
 	a.thinkingHash = h
 	a.thinkingHashLen = len(thinking)
 	a.thinkingHashSample = thinking[:sampleLen]
+	a.thinkingLineCount = countLines(thinking)
 	return h
 }
 
@@ -549,12 +552,63 @@ func (a *AssistantMessageItem) cachedError(width int) string {
 
 // renderThinking renders the thinking/reasoning content with footer.
 //
-// Slicing happens AFTER glamour rendering so fenced code blocks, list
-// continuations, and tables are not split mid-block — the same
-// boundary problem §4.4 of the design note flags. The bordered
-// ThinkingBox style is applied on top of the (already-windowed)
-// lines so the visual box matches what the user sees today.
+// Active reasoning is shown as a bounded plain-text window and defers Markdown
+// parsing until the section finishes. Completed reasoning is sliced only after
+// Glamour rendering so fenced code blocks, list continuations, and tables are
+// not split mid-block. ThinkingBox styling is applied after either path.
+// renderLiveThinkingWindow renders active reasoning as bounded plain text.
+// Markdown is deferred until the reasoning section finishes, avoiding a
+// Glamour parse and full-document materialization on every streaming update.
+func renderLiveThinkingWindow(thinking string, width, limit, totalLines int) (string, int) {
+	thinking = strings.TrimSpace(thinking)
+	if thinking == "" {
+		return "", 0
+	}
+
+	hidden := 0
+	if limit > 0 {
+		thinking, hidden = tailLines(thinking, limit, totalLines)
+	}
+
+	width = max(width, 1)
+	rendered := ansi.Wrap(thinking, width, "")
+	rendered = strings.TrimSpace(rendered)
+	if limit > 0 {
+		lineCount := countLines(rendered)
+		if lineCount > limit {
+			var wrappedHidden int
+			rendered, wrappedHidden = tailLines(rendered, limit, lineCount)
+			hidden += wrappedHidden
+		}
+	}
+	return rendered, hidden
+}
+
 func (a *AssistantMessageItem) renderThinking(thinking string, width int) string {
+	if a.thinkingHashLen != len(thinking) {
+		a.thinkingHashIncremental(thinking)
+	}
+	if a.message.IsThinking() {
+		limit := 0
+		hintFormat := ""
+		switch a.thinkingViewMode {
+		case thinkingCollapsed:
+			limit = maxCollapsedThinkingHeight
+			hintFormat = assistantMessageTruncateFormat
+		case thinkingTailWindow:
+			limit = maxExpandedThinkingTailLines
+			hintFormat = assistantMessageTailWindowFormat
+		}
+		rendered, hidden := renderLiveThinkingWindow(thinking, width, limit, a.thinkingLineCount)
+		if hidden > 0 {
+			hint := a.sty.Messages.ThinkingTruncationHint.Render(fmt.Sprintf(hintFormat, hidden))
+			rendered = hint + "\n\n" + rendered
+		}
+		result := a.sty.Messages.ThinkingBox.Width(width).Render(rendered)
+		a.thinkingBoxHeight = lipgloss.Height(result)
+		return result
+	}
+
 	renderer := common.QuietMarkdownRenderer(a.sty, width)
 	rendered := a.streamingThinking.Render(thinking, width, renderer)
 	rendered = strings.TrimSpace(rendered)
@@ -563,7 +617,7 @@ func (a *AssistantMessageItem) renderThinking(thinking string, width int) string
 	// WITHOUT splitting the entire rendered document. Splitting a
 	// 1200-line render just to keep the last 10 lines is O(n) per
 	// tick; tailLines finds the cut point with a bounded backward
-	// scan. See CHARM-1785.
+	// scan.
 	var lines []string
 	var totalLines int
 	switch a.thinkingViewMode {
@@ -597,17 +651,10 @@ func (a *AssistantMessageItem) renderThinking(thinking string, width int) string
 	result := thinkingStyle.Render(strings.Join(lines, "\n"))
 	a.thinkingBoxHeight = lipgloss.Height(result)
 
-	var footer string
-	// if thinking is done add the thought for footer
-	if !a.message.IsThinking() || len(a.message.ToolCalls()) > 0 {
-		duration := a.message.ThinkingDuration()
-		if duration.String() != "0s" {
-			footer = a.sty.Messages.ThinkingFooterTitle.Render("Thought for ") +
-				a.sty.Messages.ThinkingFooterDuration.Render(duration.String())
-		}
-	}
-
-	if footer != "" {
+	duration := a.message.ThinkingDuration()
+	if duration.String() != "0s" {
+		footer := a.sty.Messages.ThinkingFooterTitle.Render("Thought for ") +
+			a.sty.Messages.ThinkingFooterDuration.Render(duration.String())
 		result += "\n\n" + footer
 	}
 
@@ -717,6 +764,7 @@ func (a *AssistantMessageItem) clearCache() {
 	a.thinkingHash = 0
 	a.thinkingHashLen = 0
 	a.thinkingHashSample = ""
+	a.thinkingLineCount = 0
 }
 
 // ToggleExpanded advances the F5 thinking view-mode cycle and returns
@@ -747,11 +795,9 @@ func (a *AssistantMessageItem) ToggleExpanded() bool {
 	case thinkingFullExpanded:
 		a.thinkingViewMode = thinkingCollapsed
 	}
-	// View-mode changes alter the windowing slice applied after
-	// glamour render. The streaming prefix cache may have been
-	// seeded under a different slice regime, and glued renders are
-	// not byte-identical to monolithic ones. Drop the prefix cache
-	// so the next render is clean.
+	// View-mode changes alter completed reasoning's post-Markdown windowing.
+	// Drop its prefix cache so the next finished render is monolithic and clean;
+	// active reasoning is plain text and does not populate this cache.
 	a.streamingThinking.Reset()
 	a.Bump()
 	return a.thinkingViewMode != thinkingCollapsed

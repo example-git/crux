@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/fantasy"
+	fantasy "github.com/example-git/crux/foundation"
+	cruxlog "github.com/example-git/crux/internal/log"
 )
 
 type SourcegraphParams struct {
@@ -49,14 +50,14 @@ func sourcegraphDescription() string {
 
 func NewSourcegraphTool(client *http.Client) fantasy.AgentTool {
 	if client == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport := cruxlog.CloneDefaultHTTPTransport()
 		transport.MaxIdleConns = 100
 		transport.MaxIdleConnsPerHost = 10
 		transport.IdleConnTimeout = 90 * time.Second
 
 		client = &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: transport,
+			Transport: cruxlog.WrapHTTPTransport(transport),
 		}
 	}
 	return fantasy.NewParallelAgentTool(
@@ -118,7 +119,7 @@ func NewSourcegraphTool(client *http.Client) fantasy.AgentTool {
 			}
 
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("User-Agent", "crush/1.0")
+			req.Header.Set("User-Agent", "crux/1.0")
 
 			resp, err := client.Do(req)
 			if err != nil {

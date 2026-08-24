@@ -4,29 +4,31 @@ import (
 	"context"
 	"testing"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/hooks"
-	"github.com/charmbracelet/crush/internal/permission"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/hooks"
+	"github.com/example-git/crux/internal/permission"
 	"github.com/stretchr/testify/require"
 )
 
 // fakeTool records the context it was invoked with so tests can assert on
 // values stamped onto it by the hookedTool decorator.
 type fakeTool struct {
-	name   string
-	called bool
-	gotCtx context.Context
-	resp   fantasy.ToolResponse
+	name    string
+	called  bool
+	gotCtx  context.Context
+	gotCall fantasy.ToolCall
+	resp    fantasy.ToolResponse
 }
 
 func (f *fakeTool) Info() fantasy.ToolInfo {
 	return fantasy.ToolInfo{Name: f.name}
 }
 
-func (f *fakeTool) Run(ctx context.Context, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+func (f *fakeTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 	f.called = true
 	f.gotCtx = ctx
+	f.gotCall = call
 	return f.resp, nil
 }
 
@@ -113,6 +115,50 @@ func TestHookedTool_DenySkipsInnerTool(t *testing.T) {
 	require.Contains(t, resp.Content, "blocked")
 }
 
+func TestDetachedHookedToolExecution(t *testing.T) {
+	t.Run("foreground sub-agent bypasses hooks", func(t *testing.T) {
+		inner := &fakeTool{name: "bash", resp: fantasy.NewTextResponse("ok")}
+		tool := newDetachedHookedTool(inner, newRunner(t, `echo "blocked" >&2; exit 2`))
+
+		resp, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "call-foreground", Name: "bash"})
+		require.NoError(t, err)
+		require.True(t, inner.called)
+		require.False(t, resp.IsError)
+	})
+
+	t.Run("detached sub-agent runs denying hook", func(t *testing.T) {
+		inner := &fakeTool{name: "bash"}
+		tool := newDetachedHookedTool(inner, newRunner(t, `echo "blocked" >&2; exit 2`))
+
+		resp, err := tool.Run(permission.WithDetachedAgent(t.Context()), fantasy.ToolCall{ID: "call-denied", Name: "bash"})
+		require.NoError(t, err)
+		require.False(t, inner.called)
+		require.True(t, resp.IsError)
+		require.Contains(t, resp.Content, "blocked")
+	})
+
+	t.Run("detached sub-agent applies allow and rewrite", func(t *testing.T) {
+		inner := &fakeTool{name: "bash", resp: fantasy.NewTextResponse("ok")}
+		tool := newDetachedHookedTool(inner, newRunner(t, `echo '{"decision":"allow","updated_input":{"command":"echo rewritten"}}'`))
+
+		_, err := tool.Run(permission.WithDetachedAgent(t.Context()), fantasy.ToolCall{ID: "call-rewritten", Name: "bash", Input: `{"command":"echo original"}`})
+		require.NoError(t, err)
+		require.True(t, inner.called)
+		require.JSONEq(t, `{"command":"echo rewritten"}`, inner.gotCall.Input)
+
+		service := permission.NewPermissionService(t.TempDir(), false, nil)
+		granted, err := service.Request(inner.gotCtx, permission.CreatePermissionRequest{
+			SessionID:  "child",
+			ToolCallID: "call-rewritten",
+			ToolName:   "bash",
+			Action:     "execute",
+			Path:       t.TempDir(),
+		})
+		require.NoError(t, err)
+		require.True(t, granted)
+	})
+}
+
 func TestWrapToolsWithHooks(t *testing.T) {
 	t.Parallel()
 
@@ -129,13 +175,14 @@ func TestWrapToolsWithHooks(t *testing.T) {
 		}
 	})
 
-	t.Run("sub-agent skips the wrap", func(t *testing.T) {
+	t.Run("sub-agent wraps every tool for detached execution", func(t *testing.T) {
 		t.Parallel()
 		out := wrapToolsWithHooks(inputs, runner, true)
-		require.Equal(t, inputs, out, "sub-agent tools should be returned unwrapped")
-		for _, tool := range out {
-			_, isHooked := tool.(*hookedTool)
-			require.False(t, isHooked, "sub-agent tool should not be wrapped")
+		require.Len(t, out, len(inputs))
+		for i, tool := range out {
+			wrapped, ok := tool.(*hookedTool)
+			require.Truef(t, ok, "tool %d should be a *hookedTool", i)
+			require.True(t, wrapped.detachedOnly)
 		}
 	})
 

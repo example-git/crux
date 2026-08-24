@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"charm.land/glamour/v2"
-	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/stretchr/testify/require"
 )
 
@@ -40,6 +40,19 @@ func freshRender(t *testing.T, content string, width int) string {
 // stripANSI removes all ANSI CSI escape sequences from s so two
 // renders with different colour state can be compared on their
 // visible glyphs alone.
+func TestMarkdownHeadingSpacing(t *testing.T) {
+	const content = "### Behavior\n\n- First item\n- Second item"
+	renderer := newTestRenderer(t, 80)
+	var streaming streamingMarkdown
+	_ = streaming.Render("### Behavior\n\n", 80, renderer)
+	rendered := stripANSI(streaming.Render(content, 80, renderer))
+	lines := strings.Split(rendered, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], " ")
+	}
+	require.Equal(t, "### Behavior\n\n• First item\n• Second item", strings.Join(lines, "\n"))
+}
+
 func stripANSI(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

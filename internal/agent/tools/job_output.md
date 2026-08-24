@@ -1,1 +1,1 @@
-Get stdout/stderr from a background shell by ID; set wait=true to block until completion.
+Read output from a background shell by ID, optionally waiting for completion.

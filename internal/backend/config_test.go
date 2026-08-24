@@ -6,9 +6,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -108,8 +108,17 @@ func TestSetCompactMode_PublishesConfigChanged(t *testing.T) {
 func TestSetProviderAPIKey_PublishesConfigChanged(t *testing.T) {
 	b, ws, evc := newPublishingWorkspace(t)
 
-	require.NoError(t, b.SetProviderAPIKey(ws.ID, config.ScopeGlobal, "openai", "test-key"))
+	require.NoError(t, b.SetProviderAPIKey(ws.ID, config.ScopeGlobal, "copilot", "test-key"))
 	awaitConfigChanged(t, evc, ws.ID)
+}
+
+func TestSetProviderAPIKeySignalsRemoteReauthentication(t *testing.T) {
+	b, ws, _ := newPublishingWorkspace(t)
+
+	require.NoError(t, b.SetProviderAPIKey(ws.ID, config.ScopeGlobal, "copilot", "test-key"))
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	require.NoError(t, ws.Cfg.WaitForTokenChange(ctx, "copilot"))
 }
 
 func TestMarkProjectInitialized_PublishesConfigChanged(t *testing.T) {

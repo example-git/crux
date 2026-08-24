@@ -1,0 +1,1 @@
+Update one task or success criterion in the active durable project. Include concise evidence in `note` when completing work. This changes project progress only and does not change plan state or session todos.

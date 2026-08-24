@@ -7,10 +7,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/tree"
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/ui/anim"
-	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/ui/anim"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 // -----------------------------------------------------------------------------
@@ -126,25 +126,28 @@ type AgentToolRenderContext struct {
 // RenderTool implements the [ToolRenderer] interface.
 func (r *AgentToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	cappedWidth := cappedMessageWidth(width)
-	if !opts.ToolCall.Finished && !opts.IsCanceled() && len(r.agent.nestedTools) == 0 {
-		return pendingTool(sty, "Agent", opts.Anim, opts.Compact)
-	}
-
 	var params agent.AgentParams
 	_ = json.Unmarshal([]byte(opts.ToolCall.Input), &params)
+	name := "Agent"
+	if params.RunInBackground {
+		name = "Background Agent"
+	}
+	if !opts.ToolCall.Finished && !opts.IsCanceled() && len(r.agent.nestedTools) == 0 {
+		return pendingTool(sty, name, opts.Anim, opts.Compact)
+	}
 
 	prompt := params.Prompt
 	if !opts.ExpandedContent {
 		prompt = strings.ReplaceAll(prompt, "\n", " ")
 	}
 
-	header := toolHeader(sty, opts.Status, "Agent", cappedWidth, opts)
+	header := toolHeader(sty, opts.Status, name, cappedWidth, opts)
 	if opts.Compact {
 		return header
 	}
 
 	// Build the task tag and prompt.
-	taskTag := sty.Tool.AgentTaskTag.Render("Task")
+	taskTag := sty.Tool.AgentTaskTag.Render(agentTypeLabel(opts.ToolCall.Input))
 	taskTagWidth := lipgloss.Width(taskTag)
 
 	// Calculate remaining width for prompt.
@@ -185,11 +188,29 @@ func (r *AgentToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 
 	// Add body content when completed.
 	if opts.HasResult() && opts.Result.Content != "" {
-		body := toolOutputMarkdownContent(sty, opts.Result.Content, cappedWidth-toolBodyLeftPaddingTotal, opts.ExpandedContent)
+		content := opts.Result.Content
+		if params.RunInBackground {
+			var metadata agent.AgentResponseMetadata
+			if json.Unmarshal([]byte(opts.Result.Metadata), &metadata) == nil && metadata.TaskID != "" {
+				content = "Started " + metadata.TaskID
+				if metadata.ChildSessionID != "" {
+					content += " · child session ready"
+				}
+			}
+		}
+		body := toolOutputMarkdownContent(sty, content, cappedWidth-toolBodyLeftPaddingTotal, opts.ExpandedContent)
 		return joinToolParts(result, body)
 	}
 
 	return result
+}
+
+func agentTypeLabel(input string) string {
+	var params agent.AgentParams
+	if err := json.Unmarshal([]byte(input), &params); err != nil || params.SubagentType == "" {
+		return "Task"
+	}
+	return params.SubagentType
 }
 
 // -----------------------------------------------------------------------------

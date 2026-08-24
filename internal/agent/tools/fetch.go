@@ -11,10 +11,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"charm.land/fantasy"
 	md "github.com/JohannesKaufmann/html-to-markdown"
 	"github.com/PuerkitoBio/goquery"
-	"github.com/charmbracelet/crush/internal/permission"
+	fantasy "github.com/example-git/crux/foundation"
+	cruxlog "github.com/example-git/crux/internal/log"
+	"github.com/example-git/crux/internal/permission"
 )
 
 const (
@@ -44,14 +45,14 @@ func fetchDescription() string {
 
 func NewFetchTool(permissions permission.Service, workingDir string, client *http.Client) fantasy.AgentTool {
 	if client == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport := cruxlog.CloneDefaultHTTPTransport()
 		transport.MaxIdleConns = 100
 		transport.MaxIdleConnsPerHost = 10
 		transport.IdleConnTimeout = 90 * time.Second
 
 		client = &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: transport,
+			Transport: cruxlog.WrapHTTPTransport(transport),
 		}
 	}
 
@@ -115,7 +116,7 @@ func NewFetchTool(permissions permission.Service, workingDir string, client *htt
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to create request: %w", err)
 			}
 
-			req.Header.Set("User-Agent", "crush/1.0")
+			req.Header.Set("User-Agent", "crux/1.0")
 
 			resp, err := client.Do(req)
 			if err != nil {

@@ -1,0 +1,288 @@
+{
+  "$schema": "../../../../provider-plugin.schema.json",
+  "manifest_version": 1,
+  "id": "example.responses-oauth",
+  "version": "1.2.0",
+  "name": "Example Responses OAuth",
+  "description": "Synthetic provider demonstrating OAuth, Responses over SSE, transforms, continuation, usage, images, and metadata.",
+  "publisher": {
+    "id": "example.docs",
+    "name": "Example Documentation",
+    "url": "https://example.invalid/providers"
+  },
+  "compatibility": {
+    "host_api": {"min": 1, "max": 1},
+    "required_features": ["transport.openai-responses-http"],
+    "optional_features": ["continuation.previous-response"]
+  },
+  "provider": {
+    "id": "example-responses",
+    "name": "Example Responses",
+    "description": "A nonfunctional documentation provider.",
+    "account_namespace": "example.responses",
+    "default_large_model": "example-reasoner",
+    "default_small_model": "example-small",
+    "login_order": 1000,
+    "account_order": 1000,
+    "brand": {"label": "Example", "short_name": "EX", "color": "#5F5FFF"}
+  },
+  "models": [
+    {
+      "id": "example-reasoner",
+      "name": "Example Reasoner",
+      "cost_per_1m_in": 1,
+      "cost_per_1m_out": 4,
+      "cost_per_1m_in_cached": 0.25,
+      "context_window": 131072,
+      "default_max_tokens": 16384,
+      "reasoning": {"levels": ["low", "medium", "high"], "default": "medium"},
+      "modalities": {"input": ["text", "image"], "output": ["text"]},
+      "default_options": {"reasoning_summary": "auto"}
+    },
+    {
+      "id": "example-small",
+      "name": "Example Small",
+      "context_window": 32768,
+      "default_max_tokens": 4096,
+      "modalities": {"input": ["text"], "output": ["text"]}
+    }
+  ],
+  "capabilities": {
+    "credentials": [
+      {
+        "id": "account",
+        "kind": "oauth2",
+        "audience": ["api"],
+        "scopes": ["openid", "offline_access"],
+        "legacy_fields": ["api_key", "oauth"]
+      }
+    ],
+    "oauth": [
+      {
+        "id": "login",
+        "credential": "account",
+        "authorization_endpoint": "authorize",
+        "token_endpoint": "token",
+        "client_id": {"kind": "config", "ref": "oauth_client_id"},
+        "scopes": ["openid", "offline_access"],
+        "refresh_scopes": ["openid"],
+        "pkce": "required-s256",
+        "redirect": {"mode": "loopback-dynamic", "callback_path": "/callback", "state_required": true},
+        "authorization_params": [
+          {"name": "access_type", "value": {"kind": "literal", "value": "offline"}}
+        ],
+        "token_request": {
+          "encoding": "form",
+          "auth_style": "params",
+          "authorization_code": [
+            {"name": "grant_type", "value": {"kind": "literal", "value": "authorization_code"}},
+            {"name": "code", "value": {"kind": "context", "ref": "oauth.code"}},
+            {"name": "code_verifier", "value": {"kind": "context", "ref": "oauth.pkce_verifier"}}
+          ],
+          "refresh_token": [
+            {"name": "grant_type", "value": {"kind": "literal", "value": "refresh_token"}},
+            {"name": "refresh_token", "value": {"kind": "context", "ref": "oauth.refresh_token"}}
+          ]
+        },
+        "token_response": {
+          "access_token_pointer": "/access_token",
+          "refresh_token_pointer": "/refresh_token",
+          "expires_in_pointer": "/expires_in",
+          "preserve_refresh_token_when_omitted": true,
+          "max_body_bytes": 1048576
+        },
+        "timeout_seconds": 300
+      }
+    ],
+    "endpoints": [
+      {
+        "id": "authorize",
+        "base_url": "https://auth.example.invalid/authorize",
+        "allowed_schemes": ["https"],
+        "allowed_hosts": ["auth.example.invalid"],
+        "override": "forbidden"
+      },
+      {
+        "id": "token",
+        "base_url": "https://auth.example.invalid/token",
+        "allowed_schemes": ["https"],
+        "allowed_hosts": ["auth.example.invalid"],
+        "override": "forbidden"
+      },
+      {
+        "id": "api",
+        "base_url": "https://api.example.invalid",
+        "allowed_schemes": ["https"],
+        "allowed_hosts": ["api.example.invalid"],
+        "override": "same-origin",
+        "credential": "account"
+      }
+    ],
+    "headers": [
+      {"operation": "set", "name": "User-Agent", "value": {"kind": "literal", "value": "example-plugin/1.2.0"}, "protected": true},
+      {"operation": "append-unique", "name": "X-Example-Feature", "value": {"kind": "literal", "value": "responses"}}
+    ],
+    "json_transforms": {
+      "prepare-request": {
+        "max_operations": 4,
+        "operations": [
+          {"operation": "set-if-absent", "path": "/store", "value": {"kind": "literal", "value": "true"}},
+          {"operation": "delete", "path": "/unsupported_parameter"}
+        ]
+      }
+    },
+    "prompt_transforms": {
+      "provider-prefix": {
+        "operations": [
+          {"operation": "prepend", "role": "system", "text": {"kind": "literal", "value": "Use the Example provider protocol."}}
+        ]
+      }
+    },
+    "role_maps": {
+      "responses": {
+        "system": "system",
+        "developer": "developer",
+        "user": "user",
+        "assistant": "assistant",
+        "tool": "tool",
+        "unknown": "reject"
+      }
+    },
+    "tool_codecs": {
+      "example-tools": {
+        "aliases": [
+          {"host": "view", "provider": "read_file"},
+          {"host": "write", "provider": "write_file"}
+        ],
+        "parameters": [
+          {"tool": "view", "host": "file_path", "provider": "path"}
+        ],
+        "surfaces": ["definitions", "prompt-references", "history-calls", "history-results", "stream-events"]
+      }
+    },
+    "operations": [
+      {
+        "id": "responses",
+        "kind": "inference",
+        "protocol": "openai-responses",
+        "transport": "sse",
+        "endpoint": "api",
+        "method": "POST",
+        "path": "/v1/responses",
+        "request_transform": "prepare-request",
+        "prompt_transform": "provider-prefix",
+        "role_map": "responses",
+        "tool_codec": "example-tools",
+        "streaming": {
+          "event_source": "sse-data-json",
+          "done_marker": "[DONE]",
+          "event_type_pointer": "/type",
+          "mappings": [
+            {"source": "response.output_text.delta", "event": "text-delta", "fields": {"delta": "/delta"}},
+            {"source": "response.completed", "event": "finish", "fields": {"response_id": "/response/id"}},
+            {"source": "error", "event": "error", "fields": {"message": "/message"}}
+          ],
+          "require_terminal": true,
+          "unknown_event": "warn",
+          "max_event_bytes": 1048576
+        },
+        "retry": {
+          "max_attempts": 3,
+          "initial_delay_ms": 1000,
+          "max_delay_ms": 30000,
+          "factor": 2,
+          "jitter": true,
+          "retry_after": true,
+          "statuses": [408, 409, 429, 500, 502, 503, 504],
+          "transport_errors": true,
+          "unexpected_eof": true,
+          "authentication": "refresh-once",
+          "replay_requirement": "before-first-event"
+        },
+        "continuation": {
+          "mode": "previous-response",
+          "response_id_pointer": "/id",
+          "request_field": "previous_response_id",
+          "required_stable_fields": ["model", "instructions", "tools"],
+          "append_only_history": true,
+          "store": "required",
+          "fallback": "full-replay",
+          "metadata_namespace": "example.responses.continuation"
+        },
+        "timeouts": {"connect_seconds": 30, "request_seconds": 300, "idle_seconds": 60}
+      }
+    ],
+    "usage": {
+      "source": "stream",
+      "mappings": [
+        {"target": "input_tokens", "pointer": "/response/usage/input_tokens", "operation": "replace"},
+        {"target": "output_tokens", "pointer": "/response/usage/output_tokens", "operation": "replace"},
+        {"target": "cache_read_tokens", "pointer": "/response/usage/input_tokens_details/cached_tokens", "operation": "replace"}
+      ],
+      "fallback": "estimate"
+    },
+    "images": {
+      "accepted_media_types": ["image/jpeg", "image/png", "image/webp"],
+      "max_source_bytes": 26214400,
+      "max_side_pixels": 2048,
+      "max_output_bytes": 1048576,
+      "output_media_type": "image/jpeg",
+      "flatten_alpha": "white",
+      "quality_steps": [85, 70, 55, 40],
+      "resize_percent": 80
+    },
+    "instructions": {
+      "profiles": {"native": "instructions/native.txt"},
+      "default": "native"
+    },
+    "runtime_controls": [
+      {
+        "id": "reasoning_effort",
+        "label": "Reasoning effort",
+        "type": "enum",
+        "values": ["low", "medium", "high"],
+        "default": "medium",
+        "scope": "model",
+        "request_path": "/reasoning/effort"
+      }
+    ],
+    "metadata": [
+      {
+        "namespace": "example.responses.continuation",
+        "version": 1,
+        "scope": "continuation",
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "properties": {"response_id": {"type": "string"}},
+          "required": ["response_id"],
+          "additionalProperties": false
+        }
+      }
+    ],
+    "errors": [
+      {"class": "authentication", "statuses": [401, 403], "title": "Authentication required"},
+      {"class": "rate-limit", "statuses": [429], "code_pointer": "/error/code", "message_pointer": "/error/message", "retryable": true},
+      {"class": "context-overflow", "codes": ["context_length_exceeded"], "context_overflow": true}
+    ]
+  },
+  "configuration": {
+    "schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "oauth_client_id": {"type": "string", "minLength": 1},
+        "api_base": {"type": "string", "format": "uri"}
+      },
+      "required": ["oauth_client_id"],
+      "additionalProperties": false
+    },
+    "fields": {
+      "oauth_client_id": {"label": "OAuth client ID", "order": 10},
+      "api_base": {"label": "API base URL", "description": "Optional same-origin endpoint override.", "advanced": true, "order": 20}
+    }
+  },
+  "extensions": {
+    "x-example.docs": {"example_only": true}
+  }
+}

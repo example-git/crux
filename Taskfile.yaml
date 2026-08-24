@@ -43,7 +43,7 @@ tasks:
   build:
     desc: Run build
     vars:
-      LDFLAGS: '{{if .VERSION}}-ldflags="-X github.com/charmbracelet/crush/internal/version.Version={{.VERSION}}"{{end}}'
+      LDFLAGS: '{{if .VERSION}}-ldflags="-X github.com/example-git/crux/internal/version.Version={{.VERSION}}"{{end}}'
     cmds:
       - "go build -v {{if .RACE}}-race{{end}} {{.LDFLAGS}} ."
     sources:
@@ -51,33 +51,44 @@ tasks:
       - go.mod
       - internal/agent/**/*.md
       - internal/agent/**/*.md.tpl
-      - internal/agent/hyper/provider.json
     generates:
-      - crush{{exeExt}}
+      - crux{{exeExt}}
+
+  build:core-only:
+    desc: Build with only core-owned provider capabilities
+    cmds:
+      - go build -v -o crux-core-only{{exeExt}} -ldflags="-X github.com/example-git/crux/internal/config.DefaultProviderProfile=core-only" .
+
+  build:integrated:
+    desc: Build with integrated and core-owned provider capabilities
+    cmds:
+      - go build -v -o crux-integrated{{exeExt}} -ldflags="-X github.com/example-git/crux/internal/config.DefaultProviderProfile=integrated" .
+
+  build:plugin-compat:
+    desc: Build with staged compatibility and native plugin support
+    cmds:
+      - go build -v -o crux-plugin-compat{{exeExt}} -ldflags="-X github.com/example-git/crux/internal/config.DefaultProviderProfile=plugin-compat" .
+
+  build:plugin-native:
+    desc: Build with native data-only plugins and core-owned capabilities
+    cmds:
+      - go build -v -o crux-plugin-native{{exeExt}} -ldflags="-X github.com/example-git/crux/internal/config.DefaultProviderProfile=plugin-native" .
 
   run:
     desc: Run build
     cmds:
       - task: build
-      - "./crush{{exeExt}} {{.CLI_ARGS}} {{if .RACE}}2>race.log{{end}}"
-
-  run:catwalk:
-    desc: Run build with local Catwalk
-    env:
-      CATWALK_URL: http://localhost:8080
-    cmds:
-      - task: build
-      - ./crush{{exeExt}} {{.CLI_ARGS}}
+      - "./crux{{exeExt}} {{.CLI_ARGS}} {{if .RACE}}2>race.log{{end}}"
 
   run:onboarding:
     desc: Run build with custom config to test onboarding
     env:
-      CRUSH_GLOBAL_DATA: tmp/onboarding/data
-      CRUSH_GLOBAL_CONFIG: tmp/onboarding/config
+      CRUX_GLOBAL_DATA: tmp/onboarding/data
+      CRUX_GLOBAL_CONFIG: tmp/onboarding/config
     cmds:
       - task: build
       - rm -rf tmp/onboarding
-      - ./crush{{exeExt}} {{.CLI_ARGS}}
+      - ./crux{{exeExt}} {{.CLI_ARGS}}
 
   test:
     desc: Run tests
@@ -109,23 +120,21 @@ tasks:
   dev:
     desc: Run with profiling enabled
     env:
-      CRUSH_PROFILE: true
+      CRUX_PROFILE: true
     cmds:
       - go run .
 
   install:
     desc: Install the application
     vars:
-      LDFLAGS: '{{if .VERSION}}-ldflags="-X github.com/charmbracelet/crush/internal/version.Version={{.VERSION}}"{{end}}'
+      LDFLAGS: '{{if .VERSION}}-ldflags="-X github.com/example-git/crux/internal/version.Version={{.VERSION}}"{{end}}'
     cmds:
-      - task: fetch-tags
       - go install {{.LDFLAGS}} -v .
     sources:
       - ./**/*.go
       - go.mod
       - internal/agent/**/*.md
       - internal/agent/**/*.md.tpl
-      - internal/agent/hyper/provider.json
 
   profile:cpu:
     desc: 10s CPU profile
@@ -143,58 +152,37 @@ tasks:
       - go tool pprof -http :6061 'http://localhost:6060/debug/pprof/allocs'
 
   schema:
-    desc: Generate JSON schema for configuration
+    desc: Generate JSON schemas for configuration and provider plugins
     cmds:
       - go run main.go schema > schema.json
-      - echo "Generated schema.json"
+      - go run main.go schema provider-plugin > provider-plugin.schema.json
+      - go run main.go schema provider-preset-plugin > provider-preset-plugin.schema.json
+      - echo "Generated schema.json, provider-plugin.schema.json, and provider-preset-plugin.schema.json"
     generates:
       - schema.json
-
-  hyper:
-    desc: Update Hyper embedded provider.json
-    cmds:
-      - go generate ./internal/agent/hyper/...
-    generates:
-      - ./internal/agent/hyper/provider.json
+      - provider-plugin.schema.json
+      - provider-preset-plugin.schema.json
 
   release:
-    desc: Create and push a new tag following semver
-    vars:
-      NEXT:
-        sh: svu next --always || go run github.com/caarlos0/svu/v3@latest next --always
-    prompt: "This will release {{.NEXT}}. Continue?"
+    desc: Create and push an annotated semantic-version tag
+    requires:
+      vars: [VERSION]
+    prompt: "This will release {{.VERSION}}. Continue?"
     preconditions:
       - sh: '[ $(git symbolic-ref --short HEAD) = "main" ]'
         msg: Not on main branch
       - sh: "[ $(git status --porcelain=2 | wc -l) = 0 ]"
         msg: "Git is dirty"
+      - sh: 'printf %s "{{.VERSION}}" | grep -Eq "^v[0-9]+\\.[0-9]+\\.[0-9]+([-.][0-9A-Za-z.-]+)?$"'
+        msg: VERSION must be a semantic-version tag such as v1.2.3 or v1.2.3-rc.1
       - sh: 'gh run list --workflow build.yml --commit $(git rev-parse HEAD) --status success --json conclusion -q ".[0].conclusion" | grep -q success'
         msg: "Test build for this commit failed or not present"
       - sh: 'gh run list --workflow snapshot.yml --commit $(git rev-parse HEAD) --status success --json conclusion -q ".[0].conclusion" | grep -q success'
         msg: "Snapshot build for this commit failed or not present"
     cmds:
-      - task: fetch-tags
-      - git commit --allow-empty -m "{{.NEXT}}"
-      - git tag --annotate --sign -m "{{.NEXT}}" {{.NEXT}} {{.CLI_ARGS}}
-      - echo "Pushing {{.NEXT}}..."
-      - git push origin main --follow-tags
-
-  fetch-tags:
-    cmds:
-      - git tag -d nightly || true
       - git fetch --tags
-
-  deps:
-    desc: Update Fantasy and Catwalk
-    env:
-      # The Go proxy takes a bit of time to see the latest release. Setting
-      # these bypass it to ensure we can update to a release from a minute ago.
-      GOPROXY: direct
-      GONOSUMDB: charm.land/*
-    cmds:
-      - go get charm.land/fantasy@latest
-      - go get charm.land/catwalk@latest
-      - go mod tidy
+      - git tag --annotate -m "{{.VERSION}}" "{{.VERSION}}"
+      - git push origin "{{.VERSION}}"
 
   swag:
     desc: Generate OpenAPI spec from swag annotations

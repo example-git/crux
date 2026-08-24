@@ -5,12 +5,12 @@ import (
 	"errors"
 	"os"
 
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/agent/notify"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/shell"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/agent/notify"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/shell"
 )
 
 // SendMessage validates and accepts a prompt for the workspace's agent,
@@ -68,7 +68,7 @@ func (b *Backend) SendMessage(workspaceID string, msg proto.AgentMessage) error 
 // On a non-cancel error it surfaces the failure to observers via a
 // notify.TypeAgentError notification (lossy, best-effort). That alone is
 // not a reliable terminal signal: the agent-event fan-in uses lossy
-// subscribers, so a `crush run` caller blocking on its RunID could hang
+// subscribers, so a `crux run` caller blocking on its RunID could hang
 // if the event is dropped. To guarantee termination, when msg.RunID is
 // non-empty and the coordinator did not already publish the run's
 // authoritative terminal RunComplete (e.g. the error was returned before
@@ -89,6 +89,9 @@ func (b *Backend) runAgent(ws *Workspace, msg proto.AgentMessage, accept *agent.
 	defer accept.Close()
 
 	ctx := ws.ctx
+	if msg.SubmissionID != "" {
+		ctx = agent.WithSubmissionID(ctx, msg.SubmissionID)
+	}
 	if msg.RunID != "" {
 		ctx = agent.WithRunID(ctx, msg.RunID)
 	}
@@ -164,6 +167,37 @@ func (b *Backend) UpdateAgent(ctx context.Context, workspaceID string) error {
 	return ws.UpdateAgentModel(ctx)
 }
 
+func (b *Backend) CreateAgentDefinition(workspaceID string, request proto.CreateAgentDefinitionRequest) (string, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return "", err
+	}
+	template := agent.AgentDefinitionTemplate{
+		Scope:       agent.AgentDefinitionScope(request.Scope),
+		Name:        request.Name,
+		Description: request.Description,
+		Model:       request.Model,
+		Tools:       request.Tools,
+	}
+	if request.Script != nil {
+		template.Script = &agent.AgentDefinitionScriptTemplate{
+			Path:      request.Script.Path,
+			Timeout:   request.Script.Timeout,
+			Variables: make(map[string]agent.AgentDefinitionScriptVariableTemplate, len(request.Script.Variables)),
+		}
+		for name, variable := range request.Script.Variables {
+			template.Script.Variables[name] = agent.AgentDefinitionScriptVariableTemplate{
+				Flag:     variable.Flag,
+				Required: variable.Required,
+				Default:  variable.Default,
+				Value:    variable.Value,
+				Values:   variable.Values,
+			}
+		}
+	}
+	return agent.CreateAgentDefinition(ws.Path, ws.Cfg.Config(), template)
+}
+
 // CancelSession cancels an ongoing agent operation for the given
 // session.
 func (b *Backend) CancelSession(workspaceID, sessionID string) error {
@@ -190,6 +224,41 @@ func (b *Backend) SummarizeSession(ctx context.Context, workspaceID, sessionID s
 	}
 
 	return ws.AgentCoordinator.Summarize(ctx, sessionID)
+}
+
+// RewindSession rewinds a session to a given message, optionally
+// summarizing the conversation first.
+func (b *Backend) RewindSession(ctx context.Context, workspaceID, sessionID, messageID string, summarize bool) error {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return err
+	}
+
+	return ws.RewindSession(ctx, sessionID, messageID, summarize)
+}
+
+// SuggestPrompt predicts the user's likely next message for a session.
+func (b *Backend) SuggestPrompt(ctx context.Context, workspaceID, sessionID string) (string, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return "", err
+	}
+
+	if ws.AgentCoordinator == nil {
+		return "", ErrAgentNotInitialized
+	}
+
+	return ws.AgentCoordinator.SuggestPrompt(ctx, sessionID)
+}
+
+// DetachForegroundJobs sends commands a bash tool call is waiting on
+// to the background. Returns the number of commands detached.
+func (b *Backend) DetachForegroundJobs(workspaceID string) (int, error) {
+	workspace, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return workspace.BackgroundShells.DetachForeground(), nil
 }
 
 // QueuedPrompts returns the number of queued prompts for the session.
@@ -221,7 +290,7 @@ func (b *Backend) ClearQueue(workspaceID, sessionID string) error {
 
 // QueuedPromptsList returns the list of queued prompt strings for a
 // session.
-func (b *Backend) QueuedPromptsList(workspaceID, sessionID string) ([]string, error) {
+func (b *Backend) QueuedPromptsList(workspaceID, sessionID string) ([]proto.QueuedPrompt, error) {
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {
 		return nil, err
@@ -231,7 +300,15 @@ func (b *Backend) QueuedPromptsList(workspaceID, sessionID string) ([]string, er
 		return nil, nil
 	}
 
-	return ws.AgentCoordinator.QueuedPromptsList(sessionID), nil
+	queued := ws.AgentCoordinator.QueuedPromptsList(sessionID)
+	prompts := make([]proto.QueuedPrompt, len(queued))
+	for i, prompt := range queued {
+		prompts[i] = proto.QueuedPrompt{
+			SubmissionID: prompt.SubmissionID,
+			Prompt:       prompt.Prompt,
+		}
+	}
+	return prompts, nil
 }
 
 // GetDefaultSmallModel returns the default small model for a provider.

@@ -2,21 +2,28 @@ package permission
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
 )
 
 // hookApprovalKey is the unexported context key used to mark a tool call as
 // pre-approved by a PreToolUse hook. The value is the tool call ID so an
 // approval can't be reused across calls that happen to share a context.
-type hookApprovalKey struct{}
+type (
+	hookApprovalKey          struct{}
+	planExecutionApprovalKey struct{}
+	detachedAgentKey         struct{}
+)
 
 // WithHookApproval returns a context that marks the given tool call ID as
 // pre-approved by a hook. When the permission service sees a matching
@@ -33,6 +40,26 @@ func hookApproved(ctx context.Context, toolCallID string) bool {
 	}
 	v, _ := ctx.Value(hookApprovalKey{}).(string)
 	return v == toolCallID
+}
+
+func WithPlanExecutionApproval(ctx context.Context) context.Context {
+	return context.WithValue(ctx, planExecutionApprovalKey{}, true)
+}
+
+func planExecutionApproved(ctx context.Context) bool {
+	approved, _ := ctx.Value(planExecutionApprovalKey{}).(bool)
+	return approved
+}
+
+var ErrInteractivePermissionUnavailable = errors.New("interactive_permission_unavailable")
+
+func WithDetachedAgent(ctx context.Context) context.Context {
+	return context.WithValue(ctx, detachedAgentKey{}, true)
+}
+
+func IsDetachedAgent(ctx context.Context) bool {
+	detached, _ := ctx.Value(detachedAgentKey{}).(bool)
+	return detached
 }
 
 type CreatePermissionRequest struct {
@@ -64,18 +91,8 @@ type PermissionRequest struct {
 
 type Service interface {
 	pubsub.Subscriber[PermissionRequest]
-	// GrantPersistent grants a permission request and remembers the grant
-	// for the session. It returns true if this call actually resolved the
-	// pending request; false if the request had already been resolved
-	// (e.g., by another concurrent caller) or is unknown.
 	GrantPersistent(permission PermissionRequest) bool
-	// Grant grants a permission request. It returns true if this call
-	// actually resolved the pending request; false if the request had
-	// already been resolved or is unknown.
 	Grant(permission PermissionRequest) bool
-	// Deny denies a permission request. It returns true if this call
-	// actually resolved the pending request; false if the request had
-	// already been resolved or is unknown.
 	Deny(permission PermissionRequest) bool
 	Request(ctx context.Context, opts CreatePermissionRequest) (bool, error)
 	AutoApproveSession(sessionID string)
@@ -103,6 +120,7 @@ type permissionService struct {
 	autoApproveSessionsMu sync.RWMutex
 	skip                  atomic.Bool
 	allowedTools          []string
+	trustedPaths          []string
 
 	// used to make sure we only process one request at a time
 	requestMu       sync.Mutex
@@ -179,41 +197,19 @@ func (s *permissionService) Deny(permission PermissionRequest) bool {
 }
 
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) (bool, error) {
-	if s.skip.Load() {
+	if s.skip.Load() || planExecutionApproved(ctx) {
 		return true, nil
 	}
 
-	// Check if the tool/action combination is in the allowlist
 	commandKey := opts.ToolName + ":" + opts.Action
 	if slices.Contains(s.allowedTools, commandKey) || slices.Contains(s.allowedTools, opts.ToolName) {
 		return true, nil
 	}
-
-	// A PreToolUse hook that returned decision=allow stamps the context
-	// with the tool call ID. Treat that as a pre-approval and skip the
-	// prompt entirely. We still publish a granted notification so the UI
-	// and audit subscribers see the outcome.
-	if hookApproved(ctx, opts.ToolCallID) {
-		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
-			ToolCallID: opts.ToolCallID,
-			Granted:    true,
-		})
+	if s.isTrustedFileRequest(opts) {
 		return true, nil
 	}
 
-	s.requestMu.Lock()
-	defer s.requestMu.Unlock()
-
-	// tell the UI that a permission was requested
-	s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
-		ToolCallID: opts.ToolCallID,
-	})
-
-	s.autoApproveSessionsMu.RLock()
-	autoApprove := s.autoApproveSessions[opts.SessionID]
-	s.autoApproveSessionsMu.RUnlock()
-
-	if autoApprove {
+	if hookApproved(ctx, opts.ToolCallID) {
 		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 			ToolCallID: opts.ToolCallID,
 			Granted:    true,
@@ -230,7 +226,6 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 			dir = filepath.Dir(opts.Path)
 		}
 	}
-
 	if dir == "." {
 		dir = s.workingDir
 	}
@@ -245,12 +240,38 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		Params:      opts.Params,
 	}
 
-	if _, ok := s.sessionPermissions.Get(PermissionKey{
+	s.autoApproveSessionsMu.RLock()
+	autoApprove := s.autoApproveSessions[opts.SessionID]
+	s.autoApproveSessionsMu.RUnlock()
+	_, persistentlyGranted := s.sessionPermissions.Get(PermissionKey{
 		SessionID: permission.SessionID,
 		ToolName:  permission.ToolName,
 		Action:    permission.Action,
 		Path:      permission.Path,
-	}); ok {
+	})
+
+	if IsDetachedAgent(ctx) {
+		if autoApprove || persistentlyGranted {
+			s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+				ToolCallID: opts.ToolCallID,
+				Granted:    true,
+			})
+			return true, nil
+		}
+		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+			ToolCallID: opts.ToolCallID,
+			Denied:     true,
+		})
+		return false, fmt.Errorf("%w: detached agent cannot request interactive approval for %s:%s", ErrInteractivePermissionUnavailable, opts.ToolName, opts.Action)
+	}
+
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+
+	s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
+		ToolCallID: opts.ToolCallID,
+	})
+	if autoApprove || persistentlyGranted {
 		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 			ToolCallID: opts.ToolCallID,
 			Granted:    true,
@@ -266,7 +287,6 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 	s.pendingRequests.Set(permission.ID, respCh)
 	defer s.pendingRequests.Del(permission.ID)
 
-	// Publish the request
 	s.Publish(pubsub.CreatedEvent, permission)
 
 	select {
@@ -295,7 +315,58 @@ func (s *permissionService) SkipRequests() bool {
 	return s.skip.Load()
 }
 
-func NewPermissionService(workingDir string, skip bool, allowedTools []string) Service {
+func (s *permissionService) isTrustedFileRequest(opts CreatePermissionRequest) bool {
+	if !slices.Contains([]string{"view", "write", "edit", "multiedit"}, opts.ToolName) || opts.Path == "" {
+		return false
+	}
+	for _, root := range s.trustedPaths {
+		if pathWithin(root, opts.Path) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathWithin(root, candidate string) bool {
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return false
+	}
+	resolvedCandidate, err := resolvePath(candidate)
+	if err != nil {
+		return false
+	}
+	relative, err := filepath.Rel(resolvedRoot, resolvedCandidate)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func resolvePath(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	var suffix []string
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(path)
+		if resolveErr == nil {
+			for i := len(suffix) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, suffix[i])
+			}
+			return resolved, nil
+		}
+		if !os.IsNotExist(resolveErr) {
+			return "", resolveErr
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", resolveErr
+		}
+		suffix = append(suffix, filepath.Base(path))
+		path = parent
+	}
+}
+
+func NewPermissionService(workingDir string, skip bool, allowedTools []string, trustedPaths ...string) Service {
 	svc := &permissionService{
 		Broker:              pubsub.NewBroker[PermissionRequest](),
 		notificationBroker:  pubsub.NewBroker[PermissionNotification](),
@@ -303,6 +374,7 @@ func NewPermissionService(workingDir string, skip bool, allowedTools []string) S
 		sessionPermissions:  csync.NewMap[PermissionKey, bool](),
 		autoApproveSessions: make(map[string]bool),
 		allowedTools:        allowedTools,
+		trustedPaths:        trustedPaths,
 		pendingRequests:     csync.NewMap[string, chan bool](),
 	}
 	svc.skip.Store(skip)

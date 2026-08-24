@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/lsp"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/lsp"
 )
 
 const LSPRestartToolName = "lsp_restart"

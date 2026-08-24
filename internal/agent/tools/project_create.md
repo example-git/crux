@@ -1,0 +1,1 @@
+Create and activate a durable project for the current workspace. Use this when the user asks to create a project. Define the complete goal, measurable success criteria, ordered tasks, and parent-linked subtasks. The service creates both `<slug>.md` and `<slug>.notes.md` under `~/.ai-cli/projects`; invalid or existing slugs fail clearly. Projects are independent from plans.

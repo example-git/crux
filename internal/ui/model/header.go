@@ -5,13 +5,14 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/fsext"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/fsext"
+	oauthusage "github.com/example-git/crux/internal/oauth/usage"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 const (
@@ -30,6 +31,7 @@ type header struct {
 	com     *common.Common
 	width   int
 	compact bool
+	brand   *providerBrand
 }
 
 // newHeader creates a new header model.
@@ -41,21 +43,35 @@ func newHeader(com *common.Common) *header {
 	return h
 }
 
+// setBrand updates the provider branding used for the wordmark and
+// rebuilds the cached logos when it changed.
+func (h *header) setBrand(brand *providerBrand) {
+	if brandEqual(h.brand, brand) {
+		return
+	}
+	h.brand = brand
+	h.refresh()
+}
+
+// brandEqual reports whether two brands render identically.
+func brandEqual(a, b *providerBrand) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Title == b.Title
+}
+
 // refresh rebuilds cached logo strings using the current styles. Call
 // after the theme changes.
 func (h *header) refresh() {
 	t := h.com.Styles
-	isHyper := h.com.IsHyper()
-	charm := "Charm™"
-	if !isHyper {
-		charm = " " + charm
+	name := "CRUX"
+	gradA, gradB := t.Header.LogoGradFromColor, t.Header.LogoGradToColor
+	if h.brand != nil {
+		name = h.brand.Title
+		gradA, gradB = h.brand.GradA, h.brand.GradB
 	}
-	name := "CRUSH"
-	if isHyper {
-		name = "HYPERCRUSH"
-	}
-	h.compactLogo = t.Header.Charm.Render(charm) + " " +
-		styles.ApplyBoldForegroundGrad(t.Header.LogoGradCanvas, name, t.Header.LogoGradFromColor, t.Header.LogoGradToColor) + " "
+	h.compactLogo = styles.ApplyBoldForegroundGrad(t.Header.LogoGradCanvas, name, gradA, gradB) + " "
 	// Force drawHeader to re-render the wide logo on the next frame.
 	h.width = 0
 	h.logo = ""
@@ -72,11 +88,11 @@ func (h *header) drawHeader(
 	detailsOpen bool,
 	width int,
 	lspErrorCount int,
-	hyperCredits *int,
+	providerUsage *oauthusage.Usage,
 ) {
 	t := h.com.Styles
 	if width != h.width || compact != h.compact {
-		h.logo = renderLogo(h.com.Styles, compact, h.com.IsHyper(), width)
+		h.logo = renderLogo(h.com.Styles, compact, false, width, h.brand)
 	}
 
 	h.width = width
@@ -101,7 +117,7 @@ func (h *header) drawHeader(
 		lspErrorCount,
 		detailsOpen,
 		availDetailWidth,
-		hyperCredits,
+		providerUsage,
 	)
 
 	remainingWidth := width -
@@ -112,7 +128,11 @@ func (h *header) drawHeader(
 		diagToDetailsSpacing
 
 	if remainingWidth > 0 {
-		b.WriteString(t.Header.Diagonals.Render(
+		diagonals := t.Header.Diagonals
+		if h.brand != nil {
+			diagonals = diagonals.Foreground(h.brand.Accent)
+		}
+		b.WriteString(diagonals.Render(
 			strings.Repeat(headerDiag, max(minHeaderDiags, remainingWidth)),
 		))
 		b.WriteString(" ")
@@ -133,7 +153,7 @@ func renderHeaderDetails(
 	lspErrorCount int,
 	detailsOpen bool,
 	availWidth int,
-	hyperCredits *int,
+	providerUsage *oauthusage.Usage,
 ) string {
 	t := com.Styles
 
@@ -155,9 +175,8 @@ func renderHeaderDetails(
 		parts = append(parts, formattedPercentage)
 	}
 
-	if com.IsHyper() && hyperCredits != nil {
-		hc := t.Header.HypercreditIcon.Render(styles.HypercreditIcon) + " " + t.Header.Percentage.Render(common.FormatCredits(*hyperCredits))
-		parts = append(parts, hc)
+	if usageText := formatUsageWindows(providerUsage); usageText != "" {
+		parts = append(parts, t.Header.Percentage.Render(usageText))
 	}
 
 	const keystroke = "ctrl+d"
@@ -177,4 +196,17 @@ func renderHeaderDetails(
 
 	result := cwd + metadata
 	return ansi.Truncate(result, max(0, availWidth), "…")
+}
+
+// formatUsageWindows renders provider quota windows as a compact string,
+// e.g. "5h 32% · wk 12%". Returns "" when no usage data is available.
+func formatUsageWindows(u *oauthusage.Usage) string {
+	if u == nil || len(u.Windows) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(u.Windows))
+	for _, w := range u.Windows {
+		parts = append(parts, fmt.Sprintf("%s %d%%", w.Name, w.Percent))
+	}
+	return strings.Join(parts, " · ")
 }

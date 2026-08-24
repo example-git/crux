@@ -15,14 +15,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/skills"
-	"github.com/charmbracelet/crush/internal/ui/util"
-	"github.com/charmbracelet/crush/internal/version"
+	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/projects"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerplugin"
+	"github.com/example-git/crux/internal/skills"
+	"github.com/example-git/crux/internal/ui/util"
+	"github.com/example-git/crux/internal/version"
 	"github.com/google/uuid"
 )
 
@@ -40,6 +42,7 @@ var (
 	ErrServerShuttingDown      = errors.New("server is shutting down")
 	ErrServerNotIdle           = errors.New("server is hosting live workspaces")
 	ErrClientRetired           = errors.New("client has been retired")
+	ErrPluginStatusUnavailable = errors.New("provider plugin status unavailable")
 	ErrChannelOptInMismatch    = errors.New("requested channels differ from the existing workspace; channels are an explicit opt-in and are not shared across duplicate creates")
 )
 
@@ -56,7 +59,7 @@ var DefaultCreateGrace = 30 * time.Second
 // new client can attach to — or create a workspace on — a server that is
 // already tearing down, and then observe its coder agent as "offline".
 // Any workspace create within the window cancels the pending shutdown.
-// Overridable via CRUSH_SERVER_IDLE_TIMEOUT (seconds; 0 restores the
+// Overridable via CRUX_SERVER_IDLE_TIMEOUT (seconds; 0 restores the
 // old shut-down-immediately behavior).
 var DefaultIdleShutdownDelay = 60 * time.Second
 
@@ -67,14 +70,16 @@ var DefaultIdleShutdownDelay = 60 * time.Second
 // timeout) into a permanently lost workspace: the client's reconnect comes
 // back milliseconds later to an ID the server no longer knows. A client
 // that released its claim first (a clean exit) skips the grace. Overridable
-// via CRUSH_SERVER_DETACH_GRACE (seconds; 0 restores immediate teardown).
+// via CRUX_SERVER_DETACH_GRACE (seconds; 0 restores immediate teardown).
 var DefaultDetachGrace = 10 * time.Second
+
+var workspaceShutdownTimeout = 5 * time.Second
 
 // ShutdownFunc is called when the backend needs to trigger a server
 // shutdown (e.g. when the last workspace is removed).
 type ShutdownFunc func()
 
-// Backend provides transport-agnostic business logic for the Crush
+// Backend provides transport-agnostic business logic for the Crux
 // server. It manages workspaces and delegates to [app.App] services.
 //
 // Locking order: when both [Backend.mu] and [Workspace.clientsMu] are
@@ -126,14 +131,22 @@ type Backend struct {
 	// client process, and the server only outlives its clients for as long
 	// as sessions keep arriving inside the idle-shutdown window.
 	retired map[string]struct{}
-	mu      sync.Mutex
+	// pendingResponses counts HTTP create responses being delivered for each
+	// client. Their bridge claims remain unarmed until the last response is
+	// complete, so server-side serialization does not consume createGrace.
+	pendingResponses map[string]int
+	mu               sync.Mutex
 
-	cfg         *config.ConfigStore
-	ctx         context.Context
-	shutdownFn  ShutdownFunc
-	createGrace time.Duration
-	lingerDelay time.Duration
-	detachGrace time.Duration
+	cfg            *config.ConfigStore
+	projectService *projects.Service
+	pluginOnce     sync.Once
+	plugins        *providerplugin.Manager
+	pluginErr      error
+	ctx            context.Context
+	shutdownFn     ShutdownFunc
+	createGrace    time.Duration
+	lingerDelay    time.Duration
+	detachGrace    time.Duration
 }
 
 // clientState tracks one client's claim on a workspace.
@@ -163,6 +176,7 @@ type clientState struct {
 	holdTimer        *time.Timer
 	currentSessionID string
 	released         bool
+	responsePending  bool
 }
 
 // Workspace represents a running [app.App] workspace with its
@@ -193,9 +207,10 @@ type Workspace struct {
 	// closing is set by Shutdown so no new runs are accepted once
 	// teardown has begun. runWG tracks dispatched agent goroutines
 	// so Shutdown can wait for them to return before app cleanup.
-	runMu   sync.Mutex
-	closing bool
-	runWG   sync.WaitGroup
+	runMu        sync.Mutex
+	closing      bool
+	runWG        sync.WaitGroup
+	shutdownOnce sync.Once
 
 	// clientsMu guards clients. It is held only briefly (no IO).
 	clientsMu sync.Mutex
@@ -213,13 +228,15 @@ type Workspace struct {
 // invokeShutdown calls the workspace shutdown hook if set, falling
 // back to the workspace [Workspace.Shutdown] wrapper when not.
 func (w *Workspace) invokeShutdown() {
-	if w.shutdownFn != nil {
-		w.shutdownFn()
-		return
-	}
-	if w.App != nil {
-		w.Shutdown()
-	}
+	w.shutdownOnce.Do(func() {
+		if w.shutdownFn != nil {
+			w.shutdownFn()
+			return
+		}
+		if w.App != nil {
+			w.shutdown()
+		}
+	})
 }
 
 // Shutdown tears the workspace down in an order that is safe for
@@ -240,6 +257,10 @@ func (w *Workspace) invokeShutdown() {
 // is harmless; the important guarantee is that cancel -> CancelAll ->
 // runWG.Wait completes before the embedded cleanup touches the DB.
 func (w *Workspace) Shutdown() {
+	w.shutdownOnce.Do(w.shutdown)
+}
+
+func (w *Workspace) shutdown() {
 	w.runMu.Lock()
 	w.closing = true
 	w.runMu.Unlock()
@@ -250,7 +271,19 @@ func (w *Workspace) Shutdown() {
 	if w.App != nil && w.AgentCoordinator != nil {
 		w.AgentCoordinator.CancelAll()
 	}
-	w.runWG.Wait()
+	runsDone := make(chan struct{})
+	go func() {
+		w.runWG.Wait()
+		close(runsDone)
+	}()
+	timer := time.NewTimer(workspaceShutdownTimeout)
+	select {
+	case <-runsDone:
+		if !timer.Stop() {
+			<-timer.C
+		}
+	case <-timer.C:
+	}
 	if w.App != nil {
 		w.App.Shutdown()
 	}
@@ -259,22 +292,24 @@ func (w *Workspace) Shutdown() {
 // New creates a new [Backend].
 func New(ctx context.Context, cfg *config.ConfigStore, shutdownFn ShutdownFunc) *Backend {
 	return &Backend{
-		workspaces:  csync.NewMap[string, *Workspace](),
-		pathIndex:   make(map[string]string),
-		retired:     make(map[string]struct{}),
-		cfg:         cfg,
-		ctx:         ctx,
-		shutdownFn:  shutdownFn,
-		createGrace: DefaultCreateGrace,
-		lingerDelay: idleShutdownDelayFromEnv(),
-		detachGrace: durationFromEnv("CRUSH_SERVER_DETACH_GRACE", DefaultDetachGrace),
+		workspaces:       csync.NewMap[string, *Workspace](),
+		pathIndex:        make(map[string]string),
+		retired:          make(map[string]struct{}),
+		pendingResponses: make(map[string]int),
+		cfg:              cfg,
+		projectService:   projects.NewService(),
+		ctx:              ctx,
+		shutdownFn:       shutdownFn,
+		createGrace:      DefaultCreateGrace,
+		lingerDelay:      idleShutdownDelayFromEnv(),
+		detachGrace:      durationFromEnv("CRUX_SERVER_DETACH_GRACE", DefaultDetachGrace),
 	}
 }
 
 // idleShutdownDelayFromEnv returns the idle-shutdown delay, honoring a
-// CRUSH_SERVER_IDLE_TIMEOUT override (in seconds; 0 disables lingering).
+// CRUX_SERVER_IDLE_TIMEOUT override (in seconds; 0 disables lingering).
 func idleShutdownDelayFromEnv() time.Duration {
-	return durationFromEnv("CRUSH_SERVER_IDLE_TIMEOUT", DefaultIdleShutdownDelay)
+	return durationFromEnv("CRUX_SERVER_IDLE_TIMEOUT", DefaultIdleShutdownDelay)
 }
 
 // durationFromEnv reads a whole number of seconds from the named
@@ -332,6 +367,66 @@ func (b *Backend) ListWorkspaces() []proto.Workspace {
 		workspaces = append(workspaces, workspaceToProto(ws))
 	}
 	return workspaces
+}
+
+// CreateWorkspaceForResponse creates a workspace while keeping the calling
+// client's bridge claim unarmed until complete is called after the HTTP
+// response has been delivered. This prevents server-side response work from
+// consuming the client's create-grace window. The completion function is
+// idempotent and must always be called, including after response-write failure.
+func (b *Backend) CreateWorkspaceForResponse(args proto.Workspace) (*Workspace, proto.Workspace, func(), error) {
+	clientID, err := validateClientID(args.ClientID)
+	if err != nil {
+		return nil, proto.Workspace{}, nil, err
+	}
+	b.mu.Lock()
+	if b.pendingResponses == nil {
+		b.pendingResponses = make(map[string]int)
+	}
+	b.pendingResponses[clientID]++
+	b.mu.Unlock()
+
+	ws, result, err := b.CreateWorkspace(args)
+	var once sync.Once
+	complete := func() {
+		once.Do(func() { b.completeWorkspaceResponse(ws, clientID) })
+	}
+	if err != nil {
+		complete()
+		return nil, proto.Workspace{}, nil, err
+	}
+	return ws, result, complete, nil
+}
+
+func (b *Backend) completeWorkspaceResponse(ws *Workspace, clientID string) {
+	b.mu.Lock()
+	remaining := b.pendingResponses[clientID] - 1
+	if remaining > 0 {
+		b.pendingResponses[clientID] = remaining
+		b.mu.Unlock()
+		return
+	}
+	delete(b.pendingResponses, clientID)
+	if ws == nil {
+		b.mu.Unlock()
+		return
+	}
+	current, ok := b.workspaces.Get(ws.ID)
+	if !ok || current != ws {
+		b.mu.Unlock()
+		return
+	}
+	ws.clientsMu.Lock()
+	if claim, ok := ws.clients[clientID]; ok && claim.responsePending {
+		claim.responsePending = false
+		if claim.streams == 0 && !claim.released {
+			claim.holdTimer = time.AfterFunc(b.createGrace, func() {
+				b.expireHold(ws, clientID, claim)
+			})
+		}
+	}
+	ws.clientsMu.Unlock()
+	b.mu.Unlock()
 }
 
 // CreateWorkspace initializes a new workspace from the given
@@ -419,7 +514,7 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 	cfg.Overrides().SkipPermissionRequests = args.YOLO
 	cfg.Overrides().EnabledChannels = args.Channels
 
-	if err := createDotCrushDir(cfg.Config().Options.DataDirectory); err != nil {
+	if err := createDotCruxDir(cfg.Config().Options.DataDirectory); err != nil {
 		return nil, proto.Workspace{}, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
@@ -593,6 +688,7 @@ func (b *Backend) AttachClient(workspaceID, clientID string) error {
 		cs.holdTimer.Stop()
 		cs.holdTimer = nil
 	}
+	cs.responsePending = false
 	cs.streams++
 	return nil
 }
@@ -693,14 +789,27 @@ func (b *Backend) releaseHold(workspaceID, clientID string) error {
 func (b *Backend) registerClient(ws *Workspace, clientID string) {
 	ws.clientsMu.Lock()
 	defer ws.clientsMu.Unlock()
+	responsePending := b.pendingResponses[clientID] > 0
 	if old, ok := ws.clients[clientID]; ok {
 		old.released = false
-		if old.holdTimer == nil {
-			// Live streams hold the claim; nothing to re-arm.
+		if old.streams > 0 {
+			// Live streams already hold the claim; response completion must not
+			// replace them with a timer.
+			old.responsePending = false
 			return
 		}
-		old.holdTimer.Stop()
-		ws.clients[clientID] = b.newHeldClient(ws, clientID, old.currentSessionID, b.createGrace)
+		if old.holdTimer != nil {
+			old.holdTimer.Stop()
+		}
+		if responsePending {
+			ws.clients[clientID] = &clientState{currentSessionID: old.currentSessionID, responsePending: true}
+		} else {
+			ws.clients[clientID] = b.newHeldClient(ws, clientID, old.currentSessionID, b.createGrace)
+		}
+		return
+	}
+	if responsePending {
+		ws.clients[clientID] = &clientState{responsePending: true}
 		return
 	}
 	ws.clients[clientID] = b.newHeldClient(ws, clientID, "", b.createGrace)
@@ -1069,15 +1178,16 @@ func validateClientID(id string) (string, error) {
 func workspaceToProto(ws *Workspace) proto.Workspace {
 	cfg := ws.Cfg.Config()
 	out := proto.Workspace{
-		ID:       ws.ID,
-		Path:     ws.Path,
-		YOLO:     ws.Cfg.Overrides().SkipPermissionRequests,
-		Channels: ws.Cfg.Overrides().EnabledChannels,
-		DataDir:  cfg.Options.DataDirectory,
-		Debug:    cfg.Options.Debug,
-		Config:   cfg,
-		Env:      ws.Env,
-		Version:  version.Version,
+		ID:               ws.ID,
+		Path:             ws.Path,
+		YOLO:             ws.Cfg.Overrides().SkipPermissionRequests,
+		Channels:         ws.Cfg.Overrides().EnabledChannels,
+		DataDir:          cfg.Options.DataDirectory,
+		Debug:            cfg.Options.Debug,
+		Config:           cfg.RedactedForTransport(),
+		ProviderSurfaces: config.ProviderSurfaces(cfg),
+		Env:              ws.Env,
+		Version:          version.Version,
 	}
 	if ws.Skills != nil {
 		out.Skills = skillStatesToProto(ws.Skills.States())

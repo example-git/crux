@@ -1,13 +1,13 @@
 package main
 
 import (
-    "fmt"
+	"fmt"
 )
 
 func main() {
-    fmt.Println(getContent())
+	fmt.Println(getContent())
 }
 
 func getContent() string {
-    return "Hello, world!"
+	return "Hello, world!"
 }

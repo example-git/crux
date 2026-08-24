@@ -26,7 +26,15 @@ func Dir() string {
 func Config() string {
 	return cmp.Or(
 		os.Getenv("XDG_CONFIG_HOME"),
-		filepath.Join(Dir(), ".config"),
+		filepath.Join(Dir(), ".ai-cli"),
+	)
+}
+
+// Data returns the user data directory.
+func Data() string {
+	return cmp.Or(
+		os.Getenv("XDG_DATA_HOME"),
+		filepath.Join(Dir(), ".ai-cli", "data"),
 	)
 }
 

@@ -10,8 +10,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/message"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/message"
 )
 
 const maxFilename = 15
@@ -38,6 +38,15 @@ type Attachments struct {
 
 func (m *Attachments) List() []message.Attachment { return m.list }
 func (m *Attachments) Reset()                     { m.list = nil }
+
+func (m *Attachments) Prepend(items ...message.Attachment) {
+	if len(items) == 0 {
+		return
+	}
+	list := make([]message.Attachment, 0, len(items)+len(m.list))
+	list = append(list, items...)
+	m.list = append(list, m.list...)
+}
 
 func (m *Attachments) Update(msg tea.Msg) bool {
 	switch msg := msg.(type) {

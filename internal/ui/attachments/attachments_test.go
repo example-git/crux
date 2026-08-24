@@ -6,8 +6,8 @@ import (
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,6 +21,23 @@ func newTestRenderer() *Renderer {
 		sty.Attachments.Skill,
 		sty.Attachments.Remove,
 	)
+}
+
+func TestPrependKeepsRestoredAttachmentsBeforeCurrentDraft(t *testing.T) {
+	t.Parallel()
+
+	model := New(newTestRenderer(), Keymap{})
+	model.Update(message.Attachment{FileName: "draft.txt"})
+	model.Prepend(
+		message.Attachment{FileName: "first.png"},
+		message.Attachment{FileName: "second.jpg"},
+	)
+
+	require.Equal(t, []string{"first.png", "second.jpg", "draft.txt"}, []string{
+		model.List()[0].FileName,
+		model.List()[1].FileName,
+		model.List()[2].FileName,
+	})
 }
 
 func TestRender_IncludesRemoveButton(t *testing.T) {

@@ -13,11 +13,12 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
 )
 
 // ListWorkspaces retrieves all workspaces from the server.
@@ -209,7 +210,10 @@ func (c *Client) SubscribeEvents(ctx context.Context, id string) (<-chan any, er
 				}
 			case pubsub.PayloadTypeMessage:
 				var e pubsub.Event[proto.Message]
-				_ = json.Unmarshal(p.Payload, &e)
+				if err := json.Unmarshal(p.Payload, &e); err != nil {
+					slog.Error("Unmarshaling message event", "error", err)
+					continue
+				}
 				if !sendEvent(ctx, events, e) {
 					return
 				}
@@ -243,14 +247,14 @@ func (c *Client) SubscribeEvents(ctx context.Context, id string) (<-chan any, er
 				if !sendEvent(ctx, events, e) {
 					return
 				}
-			case pubsub.PayloadTypeRunComplete:
-				var e pubsub.Event[proto.RunComplete]
+			case pubsub.PayloadTypeTaskNotification:
+				var e pubsub.Event[proto.TaskNotification]
 				_ = json.Unmarshal(p.Payload, &e)
 				if !sendEvent(ctx, events, e) {
 					return
 				}
-			case pubsub.PayloadTypeUpdateAvailable:
-				var e pubsub.Event[proto.UpdateAvailable]
+			case pubsub.PayloadTypeRunComplete:
+				var e pubsub.Event[proto.RunComplete]
 				_ = json.Unmarshal(p.Payload, &e)
 				if !sendEvent(ctx, events, e) {
 					return
@@ -483,6 +487,22 @@ func (c *Client) UpdateAgent(ctx context.Context, id string) error {
 	return nil
 }
 
+func (c *Client) CreateAgentDefinition(ctx context.Context, id string, request proto.CreateAgentDefinitionRequest) (string, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent/definitions", id), nil, jsonBody(request), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return "", fmt.Errorf("failed to create agent definition: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp, http.StatusCreated); err != nil {
+		return "", fmt.Errorf("failed to create agent definition: %w", err)
+	}
+	var response proto.CreateAgentDefinitionResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&response); err != nil {
+		return "", fmt.Errorf("failed to decode agent definition response: %w", err)
+	}
+	return response.Path, nil
+}
+
 // SendMessage sends a message to the agent for a workspace.
 //
 // When runID is non-empty it is echoed back on the resulting
@@ -492,10 +512,11 @@ func (c *Client) UpdateAgent(ctx context.Context, id string) error {
 // turn on the same session (e.g. interactive TUI usage).
 func (c *Client) SendMessage(ctx context.Context, id string, sessionID, runID, prompt string, attachments ...message.Attachment) error {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent", id), nil, jsonBody(proto.AgentMessage{
-		SessionID:   sessionID,
-		RunID:       runID,
-		Prompt:      prompt,
-		Attachments: proto.AttachmentsFromMessage(attachments),
+		SessionID:    sessionID,
+		SubmissionID: agent.SubmissionIDFromContext(ctx),
+		RunID:        runID,
+		Prompt:       prompt,
+		Attachments:  proto.AttachmentsFromMessage(attachments),
 	}), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
 		return fmt.Errorf("failed to send message to agent: %w", err)
@@ -571,6 +592,60 @@ func (c *Client) AgentSummarizeSession(ctx context.Context, id string, sessionID
 		return fmt.Errorf("failed to summarize session: status code %d", rsp.StatusCode)
 	}
 	return nil
+}
+
+// SessionRewind rewinds a session to a given message, optionally
+// summarizing the conversation first.
+func (c *Client) SessionRewind(ctx context.Context, id, sessionID, messageID string, summarize bool) error {
+	body := jsonBody(map[string]any{"message_id": messageID, "summarize": summarize})
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/rewind", id, sessionID), nil, body, http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return fmt.Errorf("failed to rewind session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to rewind session: status code %d", rsp.StatusCode)
+	}
+	return nil
+}
+
+// AgentSuggestPrompt requests a predicted next user message for a session.
+func (c *Client) AgentSuggestPrompt(ctx context.Context, id, sessionID string) (string, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent/sessions/%s/suggest", id, sessionID), nil, nil, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to suggest prompt: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to suggest prompt: status code %d", rsp.StatusCode)
+	}
+	var out struct {
+		Suggestion string `json:"suggestion"`
+	}
+	if err := json.NewDecoder(rsp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("failed to decode suggestion: %w", err)
+	}
+	return out.Suggestion, nil
+}
+
+// AgentDetachForegroundJobs sends foreground-waited commands to the
+// background. Returns how many were detached.
+func (c *Client) AgentDetachForegroundJobs(ctx context.Context, id string) (int, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent/jobs/detach", id), nil, nil, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to detach jobs: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("failed to detach jobs: status code %d", rsp.StatusCode)
+	}
+	var out struct {
+		Detached int `json:"detached"`
+	}
+	if err := json.NewDecoder(rsp.Body).Decode(&out); err != nil {
+		return 0, fmt.Errorf("failed to decode detach response: %w", err)
+	}
+	return out.Detached, nil
 }
 
 // InitiateAgentProcessing triggers agent initialization on the server.
@@ -802,6 +877,22 @@ func (c *Client) SaveSession(ctx context.Context, id string, sess proto.Session)
 	return &saved, nil
 }
 
+func (c *Client) SetSessionMode(ctx context.Context, id, sessionID, mode string) (*proto.Session, error) {
+	rsp, err := c.put(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/mode", id, sessionID), nil, jsonBody(proto.Session{Mode: mode}), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return nil, fmt.Errorf("failed to set session mode: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to set session mode: status code %d", rsp.StatusCode)
+	}
+	var saved proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&saved); err != nil {
+		return nil, fmt.Errorf("failed to decode session: %w", err)
+	}
+	return &saved, nil
+}
+
 // DeleteSession deletes a session from a workspace.
 func (c *Client) DeleteSession(ctx context.Context, id string, sessionID string) error {
 	rsp, err := c.delete(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s", id, sessionID), nil, nil)
@@ -862,9 +953,8 @@ func (c *Client) CancelAgentSession(ctx context.Context, id string, sessionID st
 	return nil
 }
 
-// GetAgentSessionQueuedPromptsList retrieves the list of queued prompt
-// strings for a session.
-func (c *Client) GetAgentSessionQueuedPromptsList(ctx context.Context, id string, sessionID string) ([]string, error) {
+// GetAgentSessionQueuedPromptsList retrieves the list of queued prompts for a session.
+func (c *Client) GetAgentSessionQueuedPromptsList(ctx context.Context, id string, sessionID string) ([]proto.QueuedPrompt, error) {
 	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/agent/sessions/%s/prompts/list", id, sessionID), nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get queued prompts list: %w", err)
@@ -873,7 +963,7 @@ func (c *Client) GetAgentSessionQueuedPromptsList(ctx context.Context, id string
 	if rsp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("failed to get queued prompts list: status code %d", rsp.StatusCode)
 	}
-	var prompts []string
+	var prompts []proto.QueuedPrompt
 	if err := json.NewDecoder(rsp.Body).Decode(&prompts); err != nil {
 		return nil, fmt.Errorf("failed to decode queued prompts list: %w", err)
 	}

@@ -10,55 +10,51 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/catwalk/pkg/catwalk"
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/agent/notify"
-	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/clipboard"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/event"
-	"github.com/charmbracelet/crush/internal/filetracker"
-	"github.com/charmbracelet/crush/internal/format"
-	"github.com/charmbracelet/crush/internal/herdr"
-	"github.com/charmbracelet/crush/internal/history"
-	"github.com/charmbracelet/crush/internal/log"
-	"github.com/charmbracelet/crush/internal/lsp"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/question"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/shell"
-	"github.com/charmbracelet/crush/internal/skills"
-	"github.com/charmbracelet/crush/internal/ui/anim"
-	"github.com/charmbracelet/crush/internal/ui/styles"
-	"github.com/charmbracelet/crush/internal/update"
-	"github.com/charmbracelet/crush/internal/version"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/agent/notify"
+	"github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/automemory"
+	"github.com/example-git/crux/internal/clipboard"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/filetracker"
+	"github.com/example-git/crux/internal/format"
+	"github.com/example-git/crux/internal/herdr"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/log"
+	"github.com/example-git/crux/internal/lsp"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/shell"
+	"github.com/example-git/crux/internal/skills"
+	managedtask "github.com/example-git/crux/internal/task"
+	"github.com/example-git/crux/internal/ui/anim"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
-// UpdateAvailableMsg is sent when a new version is available.
-type UpdateAvailableMsg struct {
-	CurrentVersion string
-	LatestVersion  string
-	IsDevelopment  bool
-}
-
 type App struct {
-	Sessions    session.Service
-	Messages    message.Service
-	History     history.Service
-	Permissions permission.Service
-	Questions   question.Service
-	FileTracker filetracker.Service
+	Sessions         session.Service
+	Messages         message.Service
+	History          history.Service
+	Permissions      permission.Service
+	Questions        question.Service
+	FileTracker      filetracker.Service
+	BackgroundShells *shell.BackgroundShellManager
+	BackgroundAgents *agent.BackgroundAgentManager
+	TaskStore        *managedtask.Store
 
 	AgentCoordinator agent.Coordinator
 
@@ -80,14 +76,18 @@ type App struct {
 	// runCompletions is the authoritative per-run completion signal,
 	// emitted once per top-level agent turn after all message
 	// updates have been flushed. Bridged into app.events so SSE
-	// subscribers (notably `crush run` in client/server mode) can
+	// subscribers (notably `crux run` in client/server mode) can
 	// drive their exit on a deterministic, payload-bearing event
 	// instead of guessing from message finish parts.
 	runCompletions *pubsub.Broker[notify.RunComplete]
 
 	// herdrClient reports agent state to herdr when running inside
 	// a herdr-managed pane. Nil when not in a herdr environment.
-	herdrClient *herdr.Client
+	herdrClient                *herdr.Client
+	shutdownOnce               sync.Once
+	taskNotificationsOnce      sync.Once
+	taskNotificationDeliveryMu sync.Mutex
+	taskNotificationDeliveries map[string]struct{}
 }
 
 // New initializes a new application instance. skillsMgr carries the
@@ -97,7 +97,7 @@ type App struct {
 func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr *skills.Manager) (*App, error) {
 	q := db.New(conn)
 	sessions := session.NewService(q, conn)
-	messages := message.NewService(q)
+	messages := message.NewService(q, message.WithCompactionStore(conn, sessions))
 	files := history.NewService(q, conn)
 	cfg := store.Config()
 	skipPermissionsRequests := store.Overrides().SkipPermissionRequests
@@ -105,26 +105,63 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	if cfg.Permissions != nil && cfg.Permissions.AllowedTools != nil {
 		allowedTools = cfg.Permissions.AllowedTools
 	}
+	var trustedPaths []string
+	memory, memoryErr := automemory.Load(ctx, store.WorkingDir())
+	if memoryErr != nil {
+		var configurationError *automemory.ConfigurationError
+		if errors.As(memoryErr, &configurationError) {
+			return nil, fmt.Errorf("initialize auto memory: %w", memoryErr)
+		}
+		slog.Debug("Failed to initialize auto memory", "error", memoryErr)
+	} else if memory.Managed && memory.Directory != "" {
+		trustedPaths = append(trustedPaths, memory.Directory)
+	}
+
+	outputStore, err := managedtask.NewOutputStore(filepath.Join(cfg.Options.DataDirectory, "tasks", "output"), managedtask.OutputStoreOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("initialize task output storage: %w", err)
+	}
+	recordStore, err := managedtask.NewStore(filepath.Join(cfg.Options.DataDirectory, "tasks", "metadata"))
+	if err != nil {
+		_ = outputStore.Close()
+		return nil, fmt.Errorf("initialize task metadata storage: %w", err)
+	}
+	backgroundShells, err := shell.NewBackgroundShellManagerWithStores(store.WorkingDir(), outputStore, recordStore)
+	if err != nil {
+		_ = recordStore.Close()
+		_ = outputStore.Close()
+		return nil, fmt.Errorf("recover background shells: %w", err)
+	}
+	backgroundAgents, err := agent.NewBackgroundAgentManagerWithStore(store.WorkingDir(), backgroundShells, recordStore)
+	if err != nil {
+		_ = recordStore.Close()
+		_ = outputStore.Close()
+		return nil, fmt.Errorf("recover background agents: %w", err)
+	}
 
 	app := &App{
-		Sessions:    sessions,
-		Messages:    messages,
-		History:     files,
-		Permissions: permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools),
-		Questions:   question.NewService(),
-		FileTracker: filetracker.NewService(q),
-		LSPManager:  lsp.NewManager(store),
-		Skills:      skillsMgr,
+		Sessions:         sessions,
+		Messages:         messages,
+		History:          files,
+		Permissions:      permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools, trustedPaths...),
+		Questions:        question.NewService(),
+		FileTracker:      filetracker.NewService(q),
+		BackgroundShells: backgroundShells,
+		BackgroundAgents: backgroundAgents,
+		TaskStore:        recordStore,
+		LSPManager:       lsp.NewManager(store),
+		Skills:           skillsMgr,
 
 		globalCtx: ctx,
 
 		config: store,
 
-		events:             pubsub.NewBroker[tea.Msg](),
-		serviceEventsWG:    &sync.WaitGroup{},
-		tuiWG:              &sync.WaitGroup{},
-		agentNotifications: pubsub.NewBroker[notify.Notification](),
-		runCompletions:     pubsub.NewBroker[notify.RunComplete](),
+		events:                     pubsub.NewBroker[tea.Msg](),
+		serviceEventsWG:            &sync.WaitGroup{},
+		tuiWG:                      &sync.WaitGroup{},
+		agentNotifications:         pubsub.NewBroker[notify.Notification](),
+		runCompletions:             pubsub.NewBroker[notify.RunComplete](),
+		taskNotificationDeliveries: make(map[string]struct{}),
 	}
 
 	app.setupEvents()
@@ -134,9 +171,6 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	if err := clipboard.Init(); err != nil {
 		slog.Warn("Clipboard initialization failed", "error", err)
 	}
-
-	// Check for updates in the background.
-	go app.checkForUpdates(ctx)
 
 	// Arm initialization synchronously before launching it so WaitForInit
 	// blocks for the in-flight init instead of racing the goroutine and
@@ -163,8 +197,8 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	)
 
 	// TODO: remove the concept of agent config, most likely.
-	if !cfg.IsConfigured() {
-		slog.Warn("No agent configuration found")
+	if !cfg.CanInitializeAgent() {
+		slog.Warn("Selected models are unavailable; starting without an agent")
 		return app, nil
 	}
 	if err := app.InitCoderAgent(ctx); err != nil {
@@ -437,6 +471,70 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	}
 }
 
+// RewindSession rewinds a session to the given user message: every
+// message from that point onward (inclusive) is deleted. When
+// summarize is true, the conversation is summarized first and the
+// summary message is preserved so the agent keeps condensed context.
+func (app *App) RewindSession(ctx context.Context, sessionID, messageID string, summarize bool) error {
+	if app.AgentCoordinator != nil && app.AgentCoordinator.IsSessionBusy(sessionID) {
+		return errors.New("session is busy")
+	}
+
+	if summarize {
+		if app.AgentCoordinator == nil {
+			return errors.New("agent coordinator not initialized")
+		}
+		if err := app.AgentCoordinator.Summarize(ctx, sessionID); err != nil {
+			return fmt.Errorf("failed to summarize before rewind: %w", err)
+		}
+	}
+
+	if err := app.Messages.FlushAll(ctx); err != nil {
+		return err
+	}
+	msgs, err := app.Messages.List(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+
+	idx := -1
+	for i, m := range msgs {
+		if m.ID == messageID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("message %q not found in session %q", messageID, sessionID)
+	}
+
+	sess, err := app.Sessions.Get(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+
+	summaryDeleted := false
+	for _, m := range msgs[idx:] {
+		if summarize && m.ID == sess.SummaryMessageID {
+			continue
+		}
+		if err := app.Messages.Delete(ctx, m.ID); err != nil {
+			return err
+		}
+		if m.ID == sess.SummaryMessageID {
+			summaryDeleted = true
+		}
+	}
+
+	if summaryDeleted {
+		sess.SummaryMessageID = ""
+		if _, err := app.Sessions.Save(ctx, sess); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (app *App) UpdateAgentModel(ctx context.Context) error {
 	if app.AgentCoordinator == nil {
 		return fmt.Errorf("agent configuration is missing")
@@ -594,6 +692,8 @@ func (app *App) setupEvents() {
 	setupSubscriber(ctx, app.serviceEventsWG, "history", app.History.Subscribe, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "agent-notifications", app.agentNotifications.Subscribe, app.events)
 	setupSubscriberMustDeliver(ctx, app.serviceEventsWG, "run-completions", app.runCompletions.Subscribe, app.events)
+	setupSubscriber(ctx, app.serviceEventsWG, "shell-task-notifications", app.BackgroundShells.SubscribeNotifications, app.events)
+	setupSubscriber(ctx, app.serviceEventsWG, "agent-task-notifications", app.BackgroundAgents.SubscribeNotifications, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "mcp", mcp.SubscribeEvents, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "lsp", SubscribeLSPEvents, app.events)
 	if app.Skills != nil {
@@ -638,7 +738,7 @@ func setupSubscriber[T any](
 // app.events broker using PublishMustDeliver instead of Publish. Use
 // this for terminal events that subscribers cannot tolerate losing —
 // notably RunComplete, which is the authoritative end-of-run signal
-// for `crush run`. A lossy fan-in here can drop the only terminal
+// for `crux run`. A lossy fan-in here can drop the only terminal
 // event and hang non-interactive clients waiting on it.
 func setupSubscriberMustDeliver[T any](
 	ctx context.Context,
@@ -682,23 +782,26 @@ func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 	}
 	var err error
 	app.AgentCoordinator, err = agent.NewCoordinator(ctx, agent.CoordinatorOptions{
-		Config:      app.config,
-		Sessions:    app.Sessions,
-		Messages:    app.Messages,
-		Permissions: app.Permissions,
-		Questions:   app.Questions,
-		History:     app.History,
-		FileTracker: app.FileTracker,
-		LSPManager:  app.LSPManager,
-		Notify:      app.agentNotifications,
-		RunComplete: app.runCompletions,
-		Skills:      app.Skills,
-		Interactive: interactive,
+		Config:           app.config,
+		Sessions:         app.Sessions,
+		Messages:         app.Messages,
+		Permissions:      app.Permissions,
+		Questions:        app.Questions,
+		History:          app.History,
+		FileTracker:      app.FileTracker,
+		LSPManager:       app.LSPManager,
+		Notify:           app.agentNotifications,
+		RunComplete:      app.runCompletions,
+		Skills:           app.Skills,
+		Interactive:      interactive,
+		BackgroundShells: app.BackgroundShells,
+		BackgroundAgents: app.BackgroundAgents,
 	})
 	if err != nil {
 		slog.Error("Failed to create coder agent", "err", err)
 		return err
 	}
+	app.startTaskNotificationDelivery()
 	return nil
 }
 
@@ -737,18 +840,26 @@ func (app *App) Subscribe(program *tea.Program) {
 
 // Shutdown performs a graceful shutdown of the application.
 func (app *App) Shutdown() {
+	app.shutdownOnce.Do(app.shutdown)
+}
+
+func (app *App) shutdown() {
 	start := time.Now()
 	defer func() { slog.Debug("Shutdown took " + time.Since(start).String()) }()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	// First, cancel all agents and wait for them to finish. This must complete
 	// before closing the DB so agents can finish writing their state.
 	if app.AgentCoordinator != nil {
 		app.AgentCoordinator.CancelAll()
+		if closer, ok := app.AgentCoordinator.(interface{ CloseContext(context.Context) }); ok {
+			closer.CloseContext(shutdownCtx)
+		} else if closer, ok := app.AgentCoordinator.(interface{ Close() }); ok {
+			closer.Close()
+		}
 	}
-
-	// Shared shutdown context for all timeout-bounded cleanup.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	// Drain any debounced message updates before the DB-close cleanup
 	// runs in the parallel block below. message.Service buffers
@@ -763,14 +874,9 @@ func (app *App) Shutdown() {
 	// Now run remaining cleanup tasks in parallel.
 	var wg sync.WaitGroup
 
-	// Send exit event
-	wg.Go(func() {
-		event.AppExited()
-	})
-
 	// Kill all background shells.
 	wg.Go(func() {
-		shell.GetBackgroundShellManager().KillAll(shutdownCtx)
+		app.BackgroundShells.KillAll(shutdownCtx)
 	})
 
 	// Close herdr client to stop its background writer.
@@ -792,20 +898,9 @@ func (app *App) Shutdown() {
 		}
 	}
 	wg.Wait()
-}
-
-// checkForUpdates checks for available updates.
-func (app *App) checkForUpdates(ctx context.Context) {
-	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	info, err := update.Check(checkCtx, version.Version, update.Default)
-	if err != nil || !info.Available() {
-		return
+	if app.TaskStore != nil {
+		if err := app.TaskStore.Close(); err != nil {
+			slog.Error("Failed to close task metadata storage", "error", err)
+		}
 	}
-	app.events.Publish(pubsub.UpdatedEvent, UpdateAvailableMsg{
-		CurrentVersion: info.Current,
-		LatestVersion:  info.Latest,
-		IsDevelopment:  info.IsDevelopment(),
-	})
 }

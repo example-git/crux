@@ -13,14 +13,13 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/charmbracelet/crush/internal/app"
-	"github.com/charmbracelet/crush/internal/client"
-	"github.com/charmbracelet/crush/internal/commands"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/example-git/crux/internal/client"
+	"github.com/example-git/crux/internal/commands"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/skills"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,18 +31,24 @@ import (
 func TestProtoToMessageToolResult(t *testing.T) {
 	t.Parallel()
 
+	payload := []byte("{ \"lexical\": 1.00e+2 }")
+	envelope, err := message.NewProviderMetadataEnvelope("missing.plugin", 5, message.ProviderMetadataScopeToolResult, payload)
+	require.NoError(t, err)
+
 	src := proto.Message{
 		ID:   "m1",
 		Role: proto.Tool,
 		Parts: []proto.ContentPart{
 			proto.ToolResult{
-				ToolCallID: "call-1",
-				Name:       "view",
-				Content:    "<file>\n  1| hi\n</file>",
-				Data:       "base64data",
-				MIMEType:   "image/png",
-				Metadata:   `{"file_path":"/tmp/x","content":"hi"}`,
-				IsError:    false,
+				ToolCallID:       "call-1",
+				Name:             "view",
+				Content:          "<file>\n  1| hi\n</file>",
+				Data:             "base64data",
+				MIMEType:         "image/png",
+				Metadata:         `{"file_path":"/tmp/x","content":"hi"}`,
+				IsError:          false,
+				ProviderExecuted: true,
+				ProviderMetadata: message.ProviderMetadata{envelope},
 			},
 		},
 	}
@@ -59,6 +64,125 @@ func TestProtoToMessageToolResult(t *testing.T) {
 	require.Equal(t, "image/png", tr.MIMEType)
 	require.Equal(t, `{"file_path":"/tmp/x","content":"hi"}`, tr.Metadata)
 	require.False(t, tr.IsError)
+	require.True(t, tr.ProviderExecuted)
+	require.Len(t, tr.ProviderMetadata, 1)
+	require.Equal(t, payload, tr.ProviderMetadata[0].Payload)
+}
+
+func TestProtoToMessagePreservesAllProviderMetadataScopes(t *testing.T) {
+	t.Parallel()
+
+	makeEnvelope := func(scope message.ProviderMetadataScope) message.ProviderMetadataEnvelope {
+		envelope, err := message.NewProviderMetadataEnvelope("missing.plugin", 13, scope, []byte(`{ "number" : -0.00e-0 }`))
+		require.NoError(t, err)
+		return envelope
+	}
+	src := proto.Message{Role: proto.Assistant, Parts: []proto.ContentPart{
+		proto.TextContent{Text: "text", ProviderMetadata: message.ProviderMetadata{makeEnvelope(message.ProviderMetadataScopeText), makeEnvelope(message.ProviderMetadataScopeCompaction)}},
+		proto.ReasoningContent{Thinking: "reasoning", ProviderMetadata: message.ProviderMetadata{makeEnvelope(message.ProviderMetadataScopeReasoning)}},
+		proto.ToolCall{ID: "call", Name: "tool", Input: "{}", Finished: true, ProviderExecuted: true, ProviderMetadata: message.ProviderMetadata{makeEnvelope(message.ProviderMetadataScopeToolCall)}},
+		proto.ToolResult{ToolCallID: "call", Name: "tool", Content: "result", ProviderExecuted: true, ProviderMetadata: message.ProviderMetadata{makeEnvelope(message.ProviderMetadataScopeToolResult)}},
+		proto.ProviderMetadataContent{ProviderMetadata: message.ProviderMetadata{
+			makeEnvelope(message.ProviderMetadataScopeMessage),
+			makeEnvelope(message.ProviderMetadataScopeContinuation),
+		}},
+	}}
+
+	decoded := protoToMessage(src)
+	require.Len(t, decoded.Parts, 5)
+	text := decoded.Parts[0].(message.TextContent)
+	require.Equal(t, message.ProviderMetadataScopeText, text.ProviderMetadata[0].Scope)
+	require.Equal(t, message.ProviderMetadataScopeCompaction, text.ProviderMetadata[1].Scope)
+	require.Equal(t, message.ProviderMetadataScopeReasoning, decoded.Parts[1].(message.ReasoningContent).ProviderMetadata[0].Scope)
+	toolCall := decoded.Parts[2].(message.ToolCall)
+	require.True(t, toolCall.ProviderExecuted)
+	require.Equal(t, message.ProviderMetadataScopeToolCall, toolCall.ProviderMetadata[0].Scope)
+	toolResult := decoded.Parts[3].(message.ToolResult)
+	require.True(t, toolResult.ProviderExecuted)
+	require.Equal(t, message.ProviderMetadataScopeToolResult, toolResult.ProviderMetadata[0].Scope)
+	metadata := decoded.Parts[4].(message.ProviderMetadataContent).ProviderMetadata
+	require.Equal(t, message.ProviderMetadataScopeMessage, metadata[0].Scope)
+	require.Equal(t, message.ProviderMetadataScopeContinuation, metadata[1].Scope)
+	var envelopes message.ProviderMetadata
+	for _, part := range decoded.Parts {
+		switch value := part.(type) {
+		case message.TextContent:
+			envelopes = append(envelopes, value.ProviderMetadata...)
+		case message.ReasoningContent:
+			envelopes = append(envelopes, value.ProviderMetadata...)
+		case message.ToolCall:
+			envelopes = append(envelopes, value.ProviderMetadata...)
+		case message.ToolResult:
+			envelopes = append(envelopes, value.ProviderMetadata...)
+		case message.ProviderMetadataContent:
+			envelopes = append(envelopes, value.ProviderMetadata...)
+		}
+	}
+	require.Len(t, envelopes, 7)
+	for _, envelope := range envelopes {
+		require.Equal(t, []byte(`{ "number" : -0.00e-0 }`), envelope.Payload)
+	}
+}
+
+func TestClientWorkspaceListMessagesPreservesUnknownProviderMetadata(t *testing.T) {
+	payload := []byte(`{ "lexical" : 1.2300e+02 }`)
+	envelope := func(scope message.ProviderMetadataScope) message.ProviderMetadataEnvelope {
+		value, err := message.NewProviderMetadataEnvelope("missing.plugin", 29, scope, payload)
+		require.NoError(t, err)
+		return value
+	}
+	wire := []proto.Message{{
+		ID:       "message-1",
+		Role:     proto.Assistant,
+		Provider: "missing.plugin",
+		Model:    "future-model",
+		Parts: []proto.ContentPart{
+			proto.TextContent{Text: "text", ProviderMetadata: message.ProviderMetadata{envelope(message.ProviderMetadataScopeText), envelope(message.ProviderMetadataScopeCompaction)}},
+			proto.ReasoningContent{Thinking: "reasoning", ProviderMetadata: message.ProviderMetadata{envelope(message.ProviderMetadataScopeReasoning)}},
+			proto.ToolCall{ID: "call", Name: "tool", Input: "{}", ProviderExecuted: true, ProviderMetadata: message.ProviderMetadata{envelope(message.ProviderMetadataScopeToolCall)}},
+			proto.ToolResult{ToolCallID: "call", Name: "tool", Content: "result", ProviderExecuted: true, ProviderMetadata: message.ProviderMetadata{envelope(message.ProviderMetadataScopeToolResult)}},
+			proto.ProviderMetadataContent{ProviderMetadata: message.ProviderMetadata{envelope(message.ProviderMetadataScopeMessage), envelope(message.ProviderMetadataScopeContinuation)}},
+		},
+	}}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/v1/workspaces/ws-1/sessions/session-1/messages", r.URL.Path)
+		require.NoError(t, json.NewEncoder(w).Encode(wire))
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+
+	messages, err := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"}).ListMessages(t.Context(), "session-1")
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	require.Equal(t, "missing.plugin", messages[0].Provider)
+	require.Equal(t, "future-model", messages[0].Model)
+
+	var metadata message.ProviderMetadata
+	for _, part := range messages[0].Parts {
+		switch value := part.(type) {
+		case message.TextContent:
+			metadata = append(metadata, value.ProviderMetadata...)
+		case message.ReasoningContent:
+			metadata = append(metadata, value.ProviderMetadata...)
+		case message.ToolCall:
+			require.True(t, value.ProviderExecuted)
+			metadata = append(metadata, value.ProviderMetadata...)
+		case message.ToolResult:
+			require.True(t, value.ProviderExecuted)
+			metadata = append(metadata, value.ProviderMetadata...)
+		case message.ProviderMetadataContent:
+			metadata = append(metadata, value.ProviderMetadata...)
+		}
+	}
+	require.Len(t, metadata, 7)
+	for _, value := range metadata {
+		require.Equal(t, payload, value.Payload)
+	}
 }
 
 // TestClientWorkspace_PermissionGrantMapping verifies that
@@ -217,31 +341,6 @@ func TestNewClientWorkspace_SeedsSkillsCache(t *testing.T) {
 	got := skills.GetLatestStates()
 	require.Len(t, got, 1)
 	require.Equal(t, "seeded", got[0].Name)
-}
-
-// TestTranslateEvent_UpdateAvailable verifies that an incoming
-// proto.UpdateAvailable event is converted back into the
-// app.UpdateAvailableMsg that the TUI expects, so client/server mode
-// shows the same update notification as local mode.
-func TestTranslateEvent_UpdateAvailable(t *testing.T) {
-	t.Parallel()
-
-	w := NewClientWorkspace(nil, proto.Workspace{})
-	ev := pubsub.Event[proto.UpdateAvailable]{
-		Type: pubsub.UpdatedEvent,
-		Payload: proto.UpdateAvailable{
-			CurrentVersion: "1.0.0",
-			LatestVersion:  "1.1.0",
-			IsDevelopment:  true,
-		},
-	}
-
-	out := w.translateEvent(ev)
-	got, ok := out.(app.UpdateAvailableMsg)
-	require.True(t, ok, "expected app.UpdateAvailableMsg, got %T", out)
-	require.Equal(t, "1.0.0", got.CurrentVersion)
-	require.Equal(t, "1.1.0", got.LatestVersion)
-	require.True(t, got.IsDevelopment)
 }
 
 func TestClientWorkspaceListMCPPrompts(t *testing.T) {
@@ -803,7 +902,7 @@ func TestClientWorkspace_ShutdownFallsBackForLegacyServer(t *testing.T) {
 
 // TestClientWorkspace_AgentReadyErr_WorkspaceGone checks the status the
 // UI is given while recovery runs. A 404 from a live server used to print
-// "lost connection to the crush server: ... status code 404", which is
+// "lost connection to the crux server: ... status code 404", which is
 // both wrong and unactionable.
 func TestClientWorkspace_AgentReadyErr_WorkspaceGone(t *testing.T) {
 	t.Parallel()

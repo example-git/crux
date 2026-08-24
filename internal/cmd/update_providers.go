@@ -5,8 +5,8 @@ import (
 	"log/slog"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/x/exp/charmtone"
+	"github.com/example-git/crux/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -17,23 +17,17 @@ var updateProvidersCmd = &cobra.Command{
 	Short: "Update providers",
 	Long:  `Update provider information from a specified local path or remote URL.`,
 	Example: `
-# Update Catwalk providers remotely (default)
-crush update-providers
+# Reset providers to the embedded catalog
+crux update-providers
 
-# Update Catwalk providers from a custom URL
-crush update-providers https://example.com/providers.json
+# Update providers from an explicit URL
+crux update-providers https://example.com/providers.json
 
-# Update Catwalk providers from a local file
-crush update-providers /path/to/local-providers.json
+# Update providers from a local file
+crux update-providers /path/to/local-providers.json
 
-# Update Catwalk providers from embedded version
-crush update-providers embedded
-
-# Update Hyper provider information
-crush update-providers --source=hyper
-
-# Update Hyper from a custom URL
-crush update-providers --source=hyper https://hyper.example.com
+# Reset providers to the embedded catalog explicitly
+crux update-providers embedded
 `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// NOTE(@andreynering): We want to skip logging output do stdout here.
@@ -48,10 +42,8 @@ crush update-providers --source=hyper https://hyper.example.com
 		switch updateProvidersSource {
 		case "catwalk":
 			err = config.UpdateProviders(pathOrURL)
-		case "hyper":
-			err = config.UpdateHyper(pathOrURL)
 		default:
-			return fmt.Errorf("invalid source %q, must be 'catwalk' or 'hyper'", updateProvidersSource)
+			return fmt.Errorf("invalid source %q, must be 'catwalk'", updateProvidersSource)
 		}
 
 		if err != nil {
@@ -78,5 +70,5 @@ crush update-providers --source=hyper https://hyper.example.com
 }
 
 func init() {
-	updateProvidersCmd.Flags().StringVar(&updateProvidersSource, "source", "catwalk", "Provider source to update (catwalk or hyper)")
+	updateProvidersCmd.Flags().StringVar(&updateProvidersSource, "source", "catwalk", "Provider source to update (catwalk)")
 }

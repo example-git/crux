@@ -1,0 +1,1 @@
+Read the active durable project's status, task tree, current incomplete goal, and its incomplete subtasks for this workspace. Use the existing `todos` tool to track those current subtasks during the session.

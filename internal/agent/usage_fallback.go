@@ -3,7 +3,7 @@ package agent
 import (
 	"fmt"
 
-	"charm.land/fantasy"
+	fantasy "github.com/example-git/crux/foundation"
 )
 
 func usageIsZero(usage fantasy.Usage) bool {
@@ -48,6 +48,23 @@ func estimateMessageTokens(messages []fantasy.Message) int64 {
 		tokens += approxTokenCount(string(msg.Role))
 		for _, part := range msg.Content {
 			tokens += estimateMessagePartTokens(part)
+		}
+	}
+	return tokens
+}
+
+func estimateUnseenToolResultTokens(step fantasy.StepResult) int64 {
+	var tokens int64
+	for _, content := range step.Content {
+		switch result := content.(type) {
+		case fantasy.ToolResultContent:
+			if !result.ProviderExecuted {
+				tokens += estimateToolResultContentTokens(result.ToolCallID, result.ToolName, result.ClientMetadata, result.Result)
+			}
+		case *fantasy.ToolResultContent:
+			if !result.ProviderExecuted {
+				tokens += estimateToolResultContentTokens(result.ToolCallID, result.ToolName, result.ClientMetadata, result.Result)
+			}
 		}
 	}
 	return tokens

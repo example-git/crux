@@ -4,15 +4,18 @@ import (
 	"cmp"
 	"fmt"
 	"image"
+	"image/color"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	mcp "github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/logo"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/layout"
+	"github.com/charmbracelet/x/exp/charmtone"
+	mcp "github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/logo"
 )
 
 // modelInfo renders the current model information including reasoning
@@ -20,11 +23,13 @@ import (
 func (m *UI) modelInfo(width int) string {
 	model := m.selectedLargeModel()
 	reasoningInfo := ""
+	providerID := ""
 	providerName := ""
 
 	if model != nil {
 		// Get provider name first
-		providerConfig, ok := m.com.Config().Providers.Get(model.ModelCfg.Provider)
+		providerID = model.ModelCfg.Provider
+		providerConfig, ok := m.com.Config().Providers.Get(providerID)
 		if ok {
 			providerName = providerConfig.Name
 
@@ -57,7 +62,26 @@ func (m *UI) modelInfo(width int) string {
 	if model != nil {
 		modelName = model.CatwalkCfg.Name
 	}
-	return common.ModelInfo(m.com.Styles, modelName, providerName, reasoningInfo, modelContext, width, m.hyperCredits)
+	return common.ModelInfo(m.com.Styles, modelName, providerID, providerName, reasoningInfo, modelContext, width)
+}
+
+func (m *UI) sidebarBrand() *providerBrand {
+	if m.sidebarShowCruxLogo {
+		return nil
+	}
+	return m.brand
+}
+
+func (m *UI) handleSidebarLogoClick(msg tea.MouseClickMsg) bool {
+	if m.state != uiChat || msg.Button != uv.MouseLeft || m.brand == nil || m.sidebarBrandLogoHeight <= 0 {
+		return false
+	}
+	if point := image.Pt(msg.X, msg.Y); !point.In(m.layout.sidebar) || msg.Y >= m.layout.sidebar.Min.Y+m.sidebarBrandLogoHeight {
+		return false
+	}
+	m.sidebarShowCruxLogo = !m.sidebarShowCruxLogo
+	m.cacheSidebarLogo(m.layout.sidebar.Dx())
+	return true
 }
 
 // updateSidebarScrollState renders the sidebar content and computes scroll
@@ -80,9 +104,19 @@ func (m *UI) updateSidebarScrollState() {
 	cwd := common.PrettyPath(t, m.com.Workspace.WorkingDir(), contentWidth)
 	sidebarLogo := m.sidebarLogo
 	if height < logoHeightBreakpoint {
-		sidebarLogo = lipgloss.JoinVertical(lipgloss.Left, logo.SmallRender(m.com.Styles, contentWidth, logo.Opts{
-			Hyper: m.com.IsHyper(),
-		}), "")
+		smallOpts := logo.Opts{}
+		if brand := m.sidebarBrand(); brand != nil {
+			smallOpts.Title = brand.Title
+			smallOpts.TitleColorA = brand.GradA
+			smallOpts.TitleColorB = brand.GradB
+		}
+		sidebarLogo = lipgloss.JoinVertical(lipgloss.Left, logo.SmallRender(m.com.Styles, contentWidth, smallOpts), "")
+	}
+	m.sidebarBrandLogoHeight = lipgloss.Height(sidebarLogo)
+	// Pin provider quota usage right below the logo so it stays visible
+	// while the rest of the sidebar scrolls.
+	if usageBars := m.usageBars(contentWidth, false); usageBars != "" {
+		sidebarLogo = lipgloss.JoinVertical(lipgloss.Left, sidebarLogo, usageBars, "")
 	}
 
 	var logoRect, contentRect image.Rectangle
@@ -208,6 +242,55 @@ func fileChangeCount(files []SessionFile) int {
 		count++
 	}
 	return count
+}
+
+// usageBars renders one line per provider quota window in the form
+// "NAME [██████░░░░]" where the bar is filled with the *remaining* quota.
+// When withPercent is true, the remaining percentage is appended. Returns ""
+// when no usage data is available.
+func (m *UI) usageBars(width int, withPercent bool) string {
+	u := m.providerUsage
+	if u == nil || len(u.Windows) == 0 {
+		return ""
+	}
+	t := m.com.Styles
+
+	nameWidth := 0
+	for _, w := range u.Windows {
+		nameWidth = max(nameWidth, lipgloss.Width(w.Name))
+	}
+
+	var lines []string
+	for _, w := range u.Windows {
+		remaining := 100 - w.Percent
+		suffix := ""
+		if withPercent {
+			suffix = fmt.Sprintf(" %d%% left", remaining)
+		}
+		// name + space + "[" + bar + "]" + suffix
+		barWidth := min(20, width-nameWidth-3-lipgloss.Width(suffix))
+		if barWidth < 3 {
+			continue
+		}
+		filled := barWidth * remaining / 100
+		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
+		var barColor color.Color = charmtone.Guac
+		if m.brand != nil {
+			barColor = m.brand.Accent
+		}
+		barStyle := lipgloss.NewStyle().Foreground(barColor)
+		switch {
+		case remaining <= 10:
+			barStyle = barStyle.Foreground(charmtone.Sriracha)
+		case remaining <= 25:
+			barStyle = barStyle.Foreground(charmtone.Mustard)
+		}
+		line := t.Header.Percentage.Render(fmt.Sprintf("%-*s", nameWidth, w.Name)) +
+			" [" + barStyle.Render(bar) + "]" +
+			t.Header.Percentage.Render(suffix)
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // mcpCount returns the number of MCP servers that have a state entry.

@@ -1,4 +1,4 @@
-You will generate a short title based on the first message a user begins a conversation with.
+Generate a short title based on the first message a user begins a conversation with.
 
 <rules>
 - Keep the title in the same language that the user wrote their message in.

@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
-	"github.com/charmbracelet/crush/internal/lsp/util"
 	powernap "github.com/charmbracelet/x/powernap/pkg/lsp"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
+	"github.com/example-git/crux/internal/lsp/util"
 )
 
 // HandleWorkspaceConfiguration handles workspace configuration requests
@@ -127,7 +127,7 @@ func HandleDiagnostics(client *Client, params json.RawMessage) {
 	}
 
 	// Trigger callback if set
-	if client.onDiagnosticsChanged != nil {
-		client.onDiagnosticsChanged(client.name, totalCount)
+	if callback := client.diagnosticsCallback(); callback != nil {
+		callback(client.name, totalCount)
 	}
 }

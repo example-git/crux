@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/history"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
 

@@ -11,18 +11,21 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/catwalk/pkg/catwalk"
-	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/commands"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/history"
-	"github.com/charmbracelet/crush/internal/lsp"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/question"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/example-git/crux/internal/agent"
+	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/commands"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/lsp"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/skills"
+	managedtask "github.com/example-git/crux/internal/task"
 )
 
 // Reasons the coder agent may be unavailable, returned by
@@ -35,7 +38,7 @@ var (
 	// ErrServerUnreachable means the client could not reach the server
 	// to determine the agent's status (server down, or the workspace was
 	// torn down out from under the client).
-	ErrServerUnreachable = errors.New("lost connection to the crush server")
+	ErrServerUnreachable = errors.New("lost connection to the crux server")
 	// ErrWorkspaceGone means the server is reachable but no longer knows
 	// this client's workspace: it was torn down, or the server was
 	// replaced underneath the client. The subscription loop re-registers
@@ -120,6 +123,7 @@ type Workspace interface {
 	GetSession(ctx context.Context, sessionID string) (session.Session, error)
 	ListSessions(ctx context.Context) ([]session.Session, error)
 	SaveSession(ctx context.Context, sess session.Session) (session.Session, error)
+	SetSessionMode(ctx context.Context, sessionID string, mode session.Mode) (session.Session, error)
 	DeleteSession(ctx context.Context, sessionID string) error
 	CreateAgentToolSessionID(messageID, toolCallID string) string
 	ParseAgentToolSessionID(sessionID string) (messageID string, toolCallID string, ok bool)
@@ -151,13 +155,33 @@ type Workspace interface {
 	// both cases into "agent offline".
 	AgentReadyErr() error
 	AgentQueuedPrompts(sessionID string) int
-	AgentQueuedPromptsList(sessionID string) []string
+	AgentQueuedPromptsList(sessionID string) []agent.QueuedPrompt
 	AgentClearQueue(sessionID string)
+	// AgentDetachForegroundJobs sends any command a bash tool call is
+	// synchronously waiting on to the background. Returns the number
+	// of commands detached.
+	AgentDetachForegroundJobs() int
 	AgentSummarize(ctx context.Context, sessionID string) error
+	// AgentSuggestPrompt predicts the user's likely next message using
+	// the small model with a minimal call.
+	AgentSuggestPrompt(ctx context.Context, sessionID string) (string, error)
+	// SessionRewind deletes the given user message and everything after
+	// it. When summarize is true the conversation is summarized first
+	// and the summary message is kept.
+	SessionRewind(ctx context.Context, sessionID, messageID string, summarize bool) error
 	UpdateAgentModel(ctx context.Context) error
+	CreateAgentDefinition(ctx context.Context, request proto.CreateAgentDefinitionRequest) (string, error)
 	InitCoderAgent(ctx context.Context) error
 	InitCoderAgentNonInteractive(ctx context.Context) error
 	GetDefaultSmallModel(providerID string) config.SelectedModel
+
+	// Tasks
+	ListTasks(ctx context.Context) ([]managedtask.View, error)
+	TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error)
+	StopTask(ctx context.Context, id string) (managedtask.View, error)
+	ContinueTask(ctx context.Context, id, parentSessionID, prompt string) (managedtask.View, error)
+	ListTaskNotifications(ctx context.Context, parentSessionID string, unreadOnly bool) ([]managedtask.Notification, error)
+	MarkTaskNotificationRead(ctx context.Context, notificationID string) (managedtask.Notification, error)
 
 	// Permissions
 	//
@@ -198,6 +222,7 @@ type Workspace interface {
 
 	// Config (read-only data)
 	Config() *config.Config
+	ProviderSurfaces() []providerregistry.Surface
 	WorkingDir() string
 	Resolver() config.VariableResolver
 
@@ -209,11 +234,15 @@ type Workspace interface {
 	RemoveConfigField(scope config.Scope, key string) error
 	ImportCopilot() (*oauth.Token, bool)
 	RefreshOAuthToken(ctx context.Context, scope config.Scope, providerID string) error
+	CodebaseIndexStatus(ctx context.Context) (proto.CodebaseIndexStatus, error)
+	UpdateCodebaseIndex(ctx context.Context, update proto.CodebaseIndexUpdate) (proto.CodebaseIndexStatus, error)
 
 	// Project lifecycle
 	ProjectNeedsInitialization() (bool, error)
 	MarkProjectInitialized() error
 	InitializePrompt() (string, error)
+	ListProjects(ctx context.Context) ([]proto.ProjectInfo, error)
+	SelectProject(ctx context.Context, slug string) error
 	ListSkills(ctx context.Context) ([]skills.CatalogEntry, error)
 	ReadSkill(ctx context.Context, skillID string) ([]byte, skills.SkillReadResult, error)
 

@@ -8,9 +8,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/client"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/version"
+	"github.com/example-git/crux/internal/client"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/version"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )

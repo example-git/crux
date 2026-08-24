@@ -6,8 +6,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/ui/common"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/internal/ui/common"
 )
 
 // Dialog sizing constants.
@@ -24,8 +24,8 @@ const (
 
 // CloseKey is the default key binding to close dialogs.
 var CloseKey = key.NewBinding(
-	key.WithKeys("esc", "alt+esc"),
-	key.WithHelp("esc", "exit"),
+	key.WithKeys("esc", "alt+esc", "ctrl+c"),
+	key.WithHelp("esc/ctrl+c", "exit"),
 )
 
 // Action represents an action taken in a dialog after handling a message.
@@ -216,6 +216,14 @@ func (d *Overlay) BringToFront(dialogID string) {
 func (d *Overlay) Update(msg tea.Msg) tea.Msg {
 	if len(d.dialogs) == 0 {
 		return nil
+	}
+
+	if msg, ok := msg.(tea.KeyPressMsg); ok && key.Matches(msg, CloseKey) && msg.String() == "ctrl+c" {
+		front := d.dialogs[len(d.dialogs)-1]
+		if front != nil && front.ID() == QuitID {
+			return front.HandleMsg(msg)
+		}
+		return ActionClose{Dismiss: true}
 	}
 
 	// Absorb keystrokes during the grace period for async dialogs.

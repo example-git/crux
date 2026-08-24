@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/agent/notify"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/agent/notify"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -202,7 +202,7 @@ func TestRun_NormalCompletionClearsStalePendingCancel(t *testing.T) {
 
 // newCancelTestAgentWithRunComplete builds a DB-backed sessionAgent wired
 // to a RunComplete broker so tests can observe the terminal event a
-// RunID-bearing caller (e.g. `crush run`) blocks on.
+// RunID-bearing caller (e.g. `crux run`) blocks on.
 func newCancelTestAgentWithRunComplete(t *testing.T) (*sessionAgent, fakeEnv, *pubsub.Broker[notify.RunComplete]) {
 	t.Helper()
 	env := testEnv(t)
@@ -220,7 +220,7 @@ func newCancelTestAgentWithRunComplete(t *testing.T) (*sessionAgent, fakeEnv, *p
 // finding: the cancel-on-entry path returned before the streaming defer
 // that publishes RunComplete was installed. A caller that dispatches a
 // run with a RunID and blocks on RunComplete (ignoring message events,
-// like `crush run`) would hang on an immediately-canceled accepted run.
+// like `crux run`) would hang on an immediately-canceled accepted run.
 // The cancel-on-entry path must publish a terminal RunComplete carrying
 // the originating RunID.
 func TestRun_CancelOnEntryPublishesRunComplete(t *testing.T) {

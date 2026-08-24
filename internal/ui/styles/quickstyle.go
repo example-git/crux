@@ -10,9 +10,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2/ansi"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/ui/diffview"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/exp/charmtone"
+	"github.com/example-git/crux/internal/ui/diffview"
 )
 
 // quickStyleOpts is the palette of colors used by quickStyle to simplify the
@@ -87,10 +87,11 @@ type quickStyleOpts struct {
 // then add overrides as needed.
 func quickStyle(o quickStyleOpts) Styles {
 	var (
-		base   = lipgloss.NewStyle().Foreground(o.fgBase)
-		muted  = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
-		subtle = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
-		s      Styles
+		base       = lipgloss.NewStyle().Foreground(o.fgBase)
+		editorBase = base.Background(o.bgLeastVisible)
+		muted      = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
+		subtle     = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
+		s          Styles
 	)
 
 	s.Background = o.bgBase
@@ -121,24 +122,25 @@ func quickStyle(o quickStyleOpts) Styles {
 		},
 	}
 
+	s.Editor.Background = o.bgLeastVisible
 	s.Editor.Textarea = textarea.Styles{
 		Focused: textarea.StyleState{
-			Base:             base,
-			Text:             base,
-			LineNumber:       base.Foreground(o.fgMostSubtle),
-			CursorLine:       base,
-			CursorLineNumber: base.Foreground(o.fgMostSubtle),
-			Placeholder:      base.Foreground(o.fgMostSubtle),
-			Prompt:           base.Foreground(o.accent),
+			Base:             editorBase,
+			Text:             editorBase,
+			LineNumber:       editorBase.Foreground(o.fgMostSubtle),
+			CursorLine:       editorBase,
+			CursorLineNumber: editorBase.Foreground(o.fgMostSubtle),
+			Placeholder:      editorBase.Foreground(o.fgMostSubtle),
+			Prompt:           editorBase.Foreground(o.accent),
 		},
 		Blurred: textarea.StyleState{
-			Base:             base,
-			Text:             base.Foreground(o.fgMoreSubtle),
-			LineNumber:       base.Foreground(o.fgMoreSubtle),
-			CursorLine:       base,
-			CursorLineNumber: base.Foreground(o.fgMoreSubtle),
-			Placeholder:      base.Foreground(o.fgMostSubtle),
-			Prompt:           base.Foreground(o.fgMoreSubtle),
+			Base:             editorBase,
+			Text:             editorBase.Foreground(o.fgMoreSubtle),
+			LineNumber:       editorBase.Foreground(o.fgMoreSubtle),
+			CursorLine:       editorBase,
+			CursorLineNumber: editorBase.Foreground(o.fgMoreSubtle),
+			Placeholder:      editorBase.Foreground(o.fgMostSubtle),
+			Prompt:           editorBase.Foreground(o.fgMoreSubtle),
 		},
 		Cursor: textarea.CursorStyle{
 			Color: o.secondary,
@@ -599,10 +601,8 @@ func quickStyle(o quickStyleOpts) Styles {
 	// borders
 	s.ToolCallSuccess = lipgloss.NewStyle().Foreground(o.success).SetString(ToolSuccess)
 
-	s.Header.Charm = base.Foreground(o.secondary)
 	s.Header.Diagonals = base.Foreground(o.primary)
 	s.Header.Percentage = muted
-	s.Header.HypercreditIcon = base.Foreground(o.secondary)
 	s.Header.Keystroke = muted
 	s.Header.KeystrokeTip = subtle
 	s.Header.WorkingDir = muted
@@ -725,6 +725,10 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Editor.PromptYoloIconBlurred = s.Editor.PromptYoloIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
 	s.Editor.PromptYoloDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.warningSubtle).SetString(":::")
 	s.Editor.PromptYoloDotsBlurred = s.Editor.PromptYoloDotsFocused.Foreground(o.fgMoreSubtle)
+	s.Editor.PromptPlanIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.onPrimary).Background(o.info).Bold(true).SetString("PLAN")
+	s.Editor.PromptPlanIconBlurred = s.Editor.PromptPlanIconFocused.Foreground(o.bgBase).Background(o.infoMoreSubtle)
+	s.Editor.PromptPlanDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.info).SetString("::::")
+	s.Editor.PromptPlanDotsBlurred = s.Editor.PromptPlanDotsFocused.Foreground(o.infoMoreSubtle)
 	s.Editor.PromptBangIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.onPrimary).Background(o.primary).Bold(true).SetString(" ! ")
 	s.Editor.PromptBangIconBlurred = s.Editor.PromptBangIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
 	s.Editor.PromptBangDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.primary).SetString(":::")
@@ -741,6 +745,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Editor.QuestionRadioOff = lipgloss.NewStyle().Foreground(o.fgSubtle).SetString(RadioOff)
 	s.Editor.QuestionCheckOn = lipgloss.NewStyle().Foreground(o.secondary).SetString(RadioOn)
 	s.Editor.QuestionCheckOff = lipgloss.NewStyle().Foreground(o.fgSubtle).SetString(RadioOff)
+	s.Editor.TasksTab = lipgloss.NewStyle().Bold(true)
 
 	s.Radio.On = lipgloss.NewStyle().Foreground(o.fgSubtle).SetString(RadioOn)
 	s.Radio.Off = lipgloss.NewStyle().Foreground(o.fgSubtle).SetString(RadioOff)
@@ -777,16 +782,14 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Tab.InactiveStyle = uv.Style{Fg: o.fgMoreSubtle}
 
 	// Logo
-	s.Logo.FieldColor = o.primary
-	s.Logo.TitleColorA = o.secondary
-	s.Logo.TitleColorB = o.primary
-	s.Logo.CharmColor = o.secondary
-	s.Logo.VersionColor = o.primary
-	s.Logo.SmallCharm = lipgloss.NewStyle().Foreground(o.secondary)
+	s.Logo.TitleColorA = lipgloss.Color("#39FF14")
+	s.Logo.TitleColorB = lipgloss.Color("#FF3B1F")
+	s.Logo.FieldColor = s.Logo.TitleColorA
+	s.Logo.VersionColor = s.Logo.TitleColorB
 	s.Logo.SmallDiagonals = lipgloss.NewStyle().Foreground(o.primary)
 	s.Logo.GradCanvas = lipgloss.NewStyle()
-	s.Logo.SmallGradFromColor = o.secondary
-	s.Logo.SmallGradToColor = o.primary
+	s.Logo.SmallGradFromColor = s.Logo.TitleColorA
+	s.Logo.SmallGradToColor = s.Logo.TitleColorB
 
 	// Section
 	s.Section.Title = subtle
@@ -842,8 +845,6 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.ModelInfo.TokenPercentage = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 	s.ModelInfo.EstimatedUsagePrefix = s.ModelInfo.TokenPercentage
 	s.ModelInfo.Cost = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
-	s.ModelInfo.HypercreditIcon = lipgloss.NewStyle().Foreground(o.secondary)
-	s.ModelInfo.HypercreditText = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 
 	// ResourceGroup
 	s.Resource.DefaultTitleFg = o.fgMoreSubtle
@@ -961,6 +962,15 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Dialog.List = base.Margin(0, 0, 1, 0)
 	s.Dialog.ContentPanel = base.Background(o.bgLessVisible).Foreground(o.fgBase).Padding(1, 2)
 	s.Dialog.ContentPanelBg = o.bgLessVisible
+	s.Dialog.CommandPanel = base.Background(o.bgLessVisible).Foreground(o.fgBase).Padding(0, 1)
+	s.Dialog.TerminalPanel = base.Background(o.ansiBlack).Foreground(o.fgBase).Border(lipgloss.NormalBorder()).BorderForeground(o.fgMostSubtle).Padding(0, 1)
+	s.Dialog.TerminalPanelFocused = s.Dialog.TerminalPanel.BorderForeground(o.primary)
+	s.Dialog.TaskStatus.Pending = base.Foreground(o.fgMoreSubtle)
+	s.Dialog.TaskStatus.Running = base.Foreground(o.busy)
+	s.Dialog.TaskStatus.Completed = base.Foreground(o.success)
+	s.Dialog.TaskStatus.Failed = base.Foreground(o.error)
+	s.Dialog.TaskStatus.Killed = base.Foreground(o.warningSubtle)
+	s.Dialog.TaskStatus.Lost = base.Foreground(o.destructive)
 	s.Dialog.Spinner = base.Foreground(o.secondary)
 	s.Dialog.ScrollbarThumb = base.Foreground(o.secondary)
 	s.Dialog.ScrollbarTrack = base.Foreground(o.separator)

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/example-git/crux/internal/session"
 )
 
 // roundedBorderRunes are chars that only appear when a pill has a visible
@@ -32,8 +32,8 @@ func queuePillHasBorder(view string) bool {
 	return false
 }
 
-// TestQueuePillAlwaysHasBorder guards CHARM-1678: the queued-prompts pill must
-// render with its rounded border regardless of panel expansion or which pill
+// TestQueuePillAlwaysHasBorder verifies that the queued-prompts pill renders
+// with its rounded border regardless of panel expansion or which pill
 // section is nominally focused.
 func TestQueuePillAlwaysHasBorder(t *testing.T) {
 	incompleteTodos := []session.Todo{{Content: "a", Status: session.TodoStatusPending}}

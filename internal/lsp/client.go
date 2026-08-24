@@ -12,13 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/fsext"
-	"github.com/charmbracelet/crush/internal/home"
 	powernap "github.com/charmbracelet/x/powernap/pkg/lsp"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 	"github.com/charmbracelet/x/powernap/pkg/transport"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/home"
 )
 
 // DiagnosticCounts holds the count of diagnostics by severity.
@@ -51,7 +51,8 @@ type Client struct {
 	resolver  config.VariableResolver
 
 	// Diagnostic change callback
-	onDiagnosticsChanged func(name string, count int)
+	onDiagnosticsChanged  func(name string, count int)
+	diagnosticsCallbackMu sync.RWMutex
 
 	// Diagnostic cache
 	diagnostics *csync.VersionedMap[protocol.DocumentURI, []protocol.Diagnostic]
@@ -337,7 +338,16 @@ func (c *Client) FileTypes() []string {
 
 // SetDiagnosticsCallback sets the callback function for diagnostic changes
 func (c *Client) SetDiagnosticsCallback(callback func(name string, count int)) {
+	c.diagnosticsCallbackMu.Lock()
 	c.onDiagnosticsChanged = callback
+	c.diagnosticsCallbackMu.Unlock()
+}
+
+func (c *Client) diagnosticsCallback() func(name string, count int) {
+	c.diagnosticsCallbackMu.RLock()
+	callback := c.onDiagnosticsChanged
+	c.diagnosticsCallbackMu.RUnlock()
+	return callback
 }
 
 // WaitForServerReady waits for the server to be ready

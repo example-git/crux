@@ -61,14 +61,20 @@ type KeyMap struct {
 	}
 
 	// Global key maps
-	Quit       key.Binding
-	Help       key.Binding
-	Commands   key.Binding
-	Models     key.Binding
-	Suspend    key.Binding
-	Sessions   key.Binding
-	Tab        key.Binding
-	ToggleYolo key.Binding
+	Quit         key.Binding
+	Help         key.Binding
+	Commands     key.Binding
+	Models       key.Binding
+	Providers    key.Binding
+	Instructions key.Binding
+	Suspend      key.Binding
+	Sessions     key.Binding
+	Tab          key.Binding
+	ToggleYolo   key.Binding
+	TogglePlan   key.Binding
+	// DetachJob sends a foreground-waited shell command to the
+	// background while the agent is busy.
+	DetachJob key.Binding
 }
 
 func DefaultKeyMap() KeyMap {
@@ -89,6 +95,18 @@ func DefaultKeyMap() KeyMap {
 			key.WithKeys("ctrl+m", "ctrl+l"),
 			key.WithHelp("ctrl+l", "models"),
 		),
+		Providers: key.NewBinding(
+			key.WithKeys("alt+p"),
+			key.WithHelp("alt+p", "providers"),
+		),
+		DetachJob: key.NewBinding(
+			key.WithKeys("ctrl+b"),
+			key.WithHelp("ctrl+b", "send command to background"),
+		),
+		Instructions: key.NewBinding(
+			key.WithKeys("alt+i"),
+			key.WithHelp("alt+i", "instructions"),
+		),
 		Suspend: key.NewBinding(
 			key.WithKeys("ctrl+z"),
 			key.WithHelp("ctrl+z", "suspend"),
@@ -104,6 +122,10 @@ func DefaultKeyMap() KeyMap {
 		ToggleYolo: key.NewBinding(
 			key.WithKeys("ctrl+y"),
 			key.WithHelp("ctrl+y", "toggle yolo"),
+		),
+		TogglePlan: key.NewBinding(
+			key.WithKeys("shift+tab"),
+			key.WithHelp("shift+tab", "toggle plan"),
 		),
 	}
 

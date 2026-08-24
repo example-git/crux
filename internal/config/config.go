@@ -3,45 +3,50 @@ package config
 import (
 	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"maps"
 	"net/http"
-	"net/url"
 	"slices"
 	"strings"
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/oauth/copilot"
+	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/discover"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/oauth/copilot"
 	"github.com/invopop/jsonschema"
 )
 
 const (
-	appName              = "crush"
-	defaultDataDirectory = ".crush"
+	appName              = "crux"
+	defaultDataDirectory = ".crux"
 	defaultInitializeAs  = "AGENTS.md"
+
+	ToolingInstructionsCrux   = "crux"
+	ToolingInstructionsNative = "native"
 )
 
+// defaultContextPaths are project-local context files loaded into the
+// system prompt. The ~/.ai-cli/ project-specific instructions are added
+// dynamically in setDefaults() since they depend on the working directory.
 var defaultContextPaths = []string{
-	".github/copilot-instructions.md",
-	".cursorrules",
-	".cursor/rules/",
+	"AGENTS.md",
+	"agents.md",
+	"Agents.md",
+	"CRUX.md",
+	"CRUX.local.md",
+	"Crux.md",
+	"Crux.local.md",
+	"crux.md",
+	"crux.local.md",
 	"CLAUDE.md",
 	"CLAUDE.local.md",
 	"GEMINI.md",
 	"gemini.md",
-	"crush.md",
-	"crush.local.md",
-	"Crush.md",
-	"Crush.local.md",
-	"CRUSH.md",
-	"CRUSH.local.md",
-	"AGENTS.md",
-	"agents.md",
-	"Agents.md",
+	".github/copilot-instructions.md",
+	".cursorrules",
+	".cursor/rules/",
 }
 
 type SelectedModelType string
@@ -72,8 +77,8 @@ type SelectedModel struct {
 	// Only used by models that use the openai provider and need this set.
 	ReasoningEffort string `json:"reasoning_effort,omitempty" jsonschema:"description=Reasoning effort level for OpenAI models that support it,enum=low,enum=medium,enum=high"`
 
-	// Used by anthropic models that can reason to indicate if the model should think.
-	Think bool `json:"think,omitempty" jsonschema:"description=Enable thinking mode for Anthropic models that support reasoning"`
+	// Enables provider-specific reasoning when the selected model supports it.
+	Think bool `json:"think,omitempty" jsonschema:"description=Enable provider reasoning mode when supported"`
 
 	// Overrides the default model configuration.
 	MaxTokens        int64    `json:"max_tokens,omitempty" jsonschema:"description=Maximum number of tokens for model responses,maximum=200000,example=4096"`
@@ -87,6 +92,11 @@ type SelectedModel struct {
 	ProviderOptions map[string]any `json:"provider_options,omitempty" jsonschema:"description=Additional provider-specific options for the model"`
 }
 
+type ProviderPluginReference struct {
+	ID      string `json:"id" jsonschema:"required,description=Stable provider-plugin identity"`
+	Version string `json:"version,omitempty" jsonschema:"description=Plugin version that last owned this configuration"`
+}
+
 type ProviderConfig struct {
 	// The provider's id.
 	ID string `json:"id,omitempty" jsonschema:"description=Unique identifier for the provider,example=openai"`
@@ -94,19 +104,27 @@ type ProviderConfig struct {
 	Name string `json:"name,omitempty" jsonschema:"description=Human-readable name for the provider,example=OpenAI"`
 	// The provider's API endpoint.
 	BaseURL string `json:"base_url,omitempty" jsonschema:"description=Base URL for the provider's API,format=uri,example=https://api.openai.com/v1"`
-	// The provider type, e.g. "openai", "anthropic", etc. if empty it defaults to openai.
-	Type catwalk.Type `json:"type,omitempty" jsonschema:"description=Provider type that determines the API format,default=openai"`
+	// The provider type. Empty custom-provider types default to openai-compat;
+	// registered local aliases use the same protocol.
+	Type catwalk.Type `json:"type,omitempty" jsonschema:"description=OpenAI-compatible provider type,default=openai-compat"`
 	// The provider's API key.
 	APIKey string `json:"api_key,omitempty" jsonschema:"description=API key for authentication with the provider,example=$OPENAI_API_KEY"`
 	// The original API key template before resolution (for re-resolution on auth errors).
 	APIKeyTemplate string `json:"-"`
 	// OAuthToken for providers that use OAuth2 authentication.
 	OAuthToken *oauth.Token `json:"oauth,omitempty" jsonschema:"description=OAuth2 token for authentication with the provider"`
+	// Plugin records durable ownership so configuration and selections remain
+	// unavailable rather than falling through to a generic provider when the
+	// bundle is missing, disabled, invalid, incompatible, or untrusted.
+	Plugin *ProviderPluginReference `json:"plugin,omitempty" jsonschema:"description=Provider-plugin ownership reference"`
 	// Marks the provider as disabled.
 	Disable bool `json:"disable,omitempty" jsonschema:"description=Whether this provider is disabled,default=false"`
 
 	// Custom system prompt prefix.
 	SystemPromptPrefix string `json:"system_prompt_prefix,omitempty" jsonschema:"description=Custom prefix to add to system prompts for this provider"`
+
+	// Tooling instruction profile used for this provider.
+	ToolingInstructions string `json:"tooling_instructions,omitempty" jsonschema:"description=Tooling instruction profile for this provider,enum=crux,enum=native,default=crux"`
 
 	// Extra headers to send with each request to the provider. Values
 	// run through shell expansion at config-load time, so $VAR and
@@ -127,18 +145,19 @@ type ProviderConfig struct {
 
 	ProviderOptions map[string]any `json:"provider_options,omitempty" jsonschema:"description=Additional provider-specific options for this provider"`
 
+	// Configuration preserves declarative plugin configuration values. Values
+	// are validated against the active provider registry when that plugin is
+	// installed; missing-plugin values remain lossless and untouched.
+	Configuration map[string]any `json:"configuration,omitempty" jsonschema:"description=Declarative provider-plugin configuration values"`
+
 	// Used to pass extra parameters to the provider.
 	ExtraParams map[string]string `json:"-"`
-
-	// AWSAuthRefresh is a shell command run when Bedrock returns a
-	// credential error. Output is discarded to avoid corrupting the TUI.
-	AWSAuthRefresh string `json:"aws_auth_refresh,omitempty" jsonschema:"description=Shell command to run when AWS credentials expire (Bedrock only)."`
 
 	// Skip cost accumulation for this provider when using subscription or flat rate billing.
 	FlatRate bool `json:"flat_rate,omitempty" jsonschema:"description=Flat-rate mode for this provider"`
 
 	// AutoDiscoverModels controls model discovery via /v1/models endpoint.
-	// When Models is empty and this is nil or true, Crush auto-discovers
+	// When Models is empty and this is nil or true, Crux auto-discovers
 	// models. When true and Models is non-empty, discovered models are
 	// merged in (user-specified models take precedence). When false,
 	// only explicitly listed models are used.
@@ -230,7 +249,7 @@ type MCPConfig struct {
 	// OAuthCallbackPort pins the localhost port used for the OAuth
 	// redirect listener. Set this when the OAuth provider requires an
 	// exact-match callback URL (e.g. GitHub OAuth Apps). When omitted,
-	// Crush picks the first free port from its default range.
+	// Crux picks the first free port from its default range.
 	OAuthCallbackPort int `json:"oauth_callback_port,omitempty" jsonschema:"description=Fixed localhost port for the OAuth callback, required by providers that enforce exact-match redirect URIs"`
 
 	// OAuthToken is the persisted OAuth token for this server. It is
@@ -299,7 +318,7 @@ const (
 type Attribution struct {
 	TrailerStyle  TrailerStyle `json:"trailer_style,omitempty" jsonschema:"description=Style of attribution trailer to add to commits,enum=none,enum=co-authored-by,enum=assisted-by,default=assisted-by"`
 	CoAuthoredBy  *bool        `json:"co_authored_by,omitempty" jsonschema:"description=Deprecated: use trailer_style instead"`
-	GeneratedWith bool         `json:"generated_with,omitempty" jsonschema:"description=Add Generated with Crush line to commit messages and issues and PRs,default=true"`
+	GeneratedWith bool         `json:"generated_with,omitempty" jsonschema:"description=Add Generated with Crux line to commit messages and issues and PRs,default=true"`
 }
 
 // JSONSchemaExtend marks the co_authored_by field as deprecated in the schema.
@@ -312,28 +331,51 @@ func (Attribution) JSONSchemaExtend(schema *jsonschema.Schema) {
 }
 
 type Options struct {
-	ContextPaths         []string    `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUSH.md"`
-	GlobalContextPaths   []string    `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.config/crush/CRUSH.md,default=~/.config/AGENTS.md"`
-	SkillsPaths          []string    `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.config/crush/skills,example=./skills"`
+	ContextPaths         []string    `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUX.md"`
+	GlobalContextPaths   []string    `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.ai-cli/crux/CRUX.md,default=~/.ai-cli/AGENTS.md"`
+	SkillsPaths          []string    `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.ai-cli/crux/skills,example=./skills"`
 	TUI                  *TUIOptions `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
 	Debug                bool        `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
 	DebugLSP             bool        `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
 	DisableAutoSummarize bool        `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
-	// DataDirectory is where Crush keeps per-project state such as
+	// DataDirectory is where Crux keeps per-project state such as
 	// the SQLite database and workspace overrides. Relative paths are
 	// resolved against the working directory; absolute paths are used
 	// verbatim. After defaulting the stored value is always absolute.
-	DataDirectory             string       `json:"data_directory,omitempty" jsonschema:"description=Directory for storing application data. Relative paths are resolved against the working directory; absolute paths are used as-is.,default=.crush,example=.crush"`
+	DataDirectory             string       `json:"data_directory,omitempty" jsonschema:"description=Directory for storing application data. Relative paths are resolved against the working directory; absolute paths are used as-is.,default=.crux,example=.crux"`
 	DisabledTools             []string     `json:"disabled_tools,omitempty" jsonschema:"description=List of built-in tools to disable and hide from the agent,example=bash,example=sourcegraph"`
 	DisableProviderAutoUpdate bool         `json:"disable_provider_auto_update,omitempty" jsonschema:"description=Disable providers auto-update,default=false"`
 	DisableDefaultProviders   bool         `json:"disable_default_providers,omitempty" jsonschema:"description=Ignore all default/embedded providers. When enabled\\, providers must be fully specified in the config file with base_url\\, models\\, and api_key - no merging with defaults occurs,default=false"`
 	Attribution               *Attribution `json:"attribution,omitempty" jsonschema:"description=Attribution settings for generated content"`
-	DisableMetrics            bool         `json:"disable_metrics,omitempty" jsonschema:"description=Disable sending metrics,default=false"`
-	InitializeAs              string       `json:"initialize_as,omitempty" jsonschema:"description=Name of the context file to create/update during project initialization,default=AGENTS.md,example=AGENTS.md,example=CRUSH.md,example=CLAUDE.md,example=docs/LLMs.md"`
+	InitializeAs              string       `json:"initialize_as,omitempty" jsonschema:"description=Context file to create or update during project initialization. Defaults to the per-project ~/.ai-cli/project-prompts path.,example=AGENTS.md,example=CRUX.md,example=CLAUDE.md,example=docs/LLMs.md"`
 	AutoLSP                   *bool        `json:"auto_lsp,omitempty" jsonschema:"description=Automatically setup LSPs based on root markers,default=true"`
 	Progress                  *bool        `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
 	Notifications             string       `json:"notifications,omitempty" jsonschema:"description=Notification style to use. Options: auto (default)\\, native\\, osc\\, bell\\, disabled. Auto selects based on environment: native for local sessions\\, osc for SSH (with automatic OSC 99/777 detection).,enum=auto,enum=native,enum=osc,enum=bell,enum=disabled,default=auto"`
-	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crush-config"`
+	DisabledSkills            []string     `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crux-config"`
+
+	// InstructionMode controls which instruction sources are active:
+	//   "all"     — native sections + project context (default)
+	//   "project" — project context files only (skip native instruction sections)
+	//   "native"  — native instruction sections only (skip project context files)
+	InstructionMode      string `json:"instruction_mode,omitempty" jsonschema:"description=Which instruction sources are active: all (default)\\, project\\, or native,enum=all,enum=project,enum=native,default=all"`
+	SystemPromptOverride bool   `json:"system_prompt_override,omitempty" jsonschema:"description=Replace the generated coder system prompt with ~/.ai-cli/instructions/<provider-id>.txt and initialize a missing file from the generated prompt,default=false"`
+	ResponseVerbosity    string `json:"response_verbosity,omitempty" jsonschema:"description=GPT-5.6 final response verbosity sent through the ChatGPT Codex wire adapter,enum=low,enum=medium,enum=high"`
+	AnalysisEffort       string `json:"analysis_effort,omitempty" jsonschema:"description=GPT-5.6 reasoning effort sent through the ChatGPT Codex wire adapter,enum=none,enum=low,enum=medium,enum=high,enum=xhigh,enum=max"`
+
+	// DisabledInstructionSections lists native instruction section IDs to
+	// skip when building the system prompt. Section IDs match the file
+	// names in internal/agent/templates/sections/ without the .md extension.
+	DisabledInstructionSections []string `json:"disabled_instruction_sections,omitempty" jsonschema:"description=List of native instruction section IDs to disable,example=whitespace,example=memory"`
+}
+
+func (o *Options) validatePromptOptions() error {
+	if o.ResponseVerbosity != "" && !slices.Contains([]string{"low", "medium", "high"}, o.ResponseVerbosity) {
+		return fmt.Errorf("response_verbosity must be low, medium, or high")
+	}
+	if o.AnalysisEffort != "" && !slices.Contains([]string{"none", "low", "medium", "high", "xhigh", "max"}, o.AnalysisEffort) {
+		return fmt.Errorf("analysis_effort must be none, low, medium, high, xhigh, or max")
+	}
+	return nil
 }
 
 type MCPs map[string]MCPConfig
@@ -546,6 +588,20 @@ func (l LSPConfig) ResolvedEnv(r VariableResolver) (map[string]string, error) {
 	return out, nil
 }
 
+type AgentScriptVariable struct {
+	Flag     string
+	Required bool
+	Default  *string
+	Value    *string
+	Values   []string
+}
+
+type AgentScript struct {
+	Path      string
+	Timeout   time.Duration
+	Variables map[string]AgentScriptVariable
+}
+
 type Agent struct {
 	ID          string `json:"id,omitempty"`
 	Name        string `json:"name,omitempty"`
@@ -553,7 +609,12 @@ type Agent struct {
 	// This is the id of the system prompt used by the agent
 	Disabled bool `json:"disabled,omitempty"`
 
-	Model SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=large,enum=small,default=large"`
+	Model                SelectedModelType `json:"model" jsonschema:"required,description=The model type to use for this agent,enum=large,enum=small,default=large"`
+	PrimaryModelOverride *SelectedModel    `json:"-" jsonschema:"-"`
+	Instructions         string            `json:"-" jsonschema:"-"`
+	DefinitionPath       string            `json:"-" jsonschema:"-"`
+	AllowAllTools        bool              `json:"-" jsonschema:"-"`
+	Script               *AgentScript      `json:"-" jsonschema:"-"`
 
 	// The available tools for the agent
 	//  if this is nil, all tools are available
@@ -570,9 +631,10 @@ type Agent struct {
 }
 
 type Tools struct {
-	Ls   ToolLs   `json:"ls,omitzero"`
-	Grep ToolGrep `json:"grep,omitzero"`
-	Glob ToolGlob `json:"glob,omitzero"`
+	Ls             ToolLs             `json:"ls,omitzero"`
+	Grep           ToolGrep           `json:"grep,omitzero"`
+	Glob           ToolGlob           `json:"glob,omitzero"`
+	CodebaseSearch ToolCodebaseSearch `json:"codebase_search,omitzero"`
 }
 
 type ToolLs struct {
@@ -601,6 +663,26 @@ type ToolGlob struct {
 // GetTimeout returns the user-defined timeout or the default.
 func (t ToolGlob) GetTimeout() time.Duration {
 	return ptrValOr(t.Timeout, 30*time.Second)
+}
+
+type ToolCodebaseSearch struct {
+	DatabasePath   string   `json:"database_path,omitempty" jsonschema:"description=Path to a tui-files codebase index database or directory containing project databases"`
+	StoreDirectory string   `json:"store_directory,omitempty" jsonschema:"description=Directory containing standalone partitioned codebase search stores"`
+	ANNDirectory   string   `json:"ann_directory,omitempty" jsonschema:"description=Deprecated alias for store_directory"`
+	Enabled        *bool    `json:"enabled,omitempty" jsonschema:"description=Whether background semantic indexing and codebase search are enabled,default=false"`
+	IncludePaths   []string `json:"include_paths,omitempty" jsonschema:"description=Project-relative path prefixes to include in the semantic index"`
+	ExcludePaths   []string `json:"exclude_paths,omitempty" jsonschema:"description=Project-relative path prefixes to exclude from the semantic index"`
+}
+
+func (t ToolCodebaseSearch) GetStoreDirectory() string {
+	if t.StoreDirectory != "" {
+		return t.StoreDirectory
+	}
+	return t.ANNDirectory
+}
+
+func (t ToolCodebaseSearch) IsEnabled() bool {
+	return t.Enabled != nil && *t.Enabled
 }
 
 // HookConfig defines a user-configured shell command that fires on a hook
@@ -636,7 +718,7 @@ func (h *HookConfig) TimeoutDuration() time.Duration {
 	return time.Duration(h.Timeout) * time.Second
 }
 
-// Config holds the configuration for crush.
+// Config holds the configuration for crux.
 type Config struct {
 	Schema string `json:"$schema,omitempty"`
 
@@ -708,17 +790,60 @@ func (c *Config) ensureTUI() *TUIOptions {
 
 func (c *Config) EnabledProviders() []ProviderConfig {
 	var enabled []ProviderConfig
-	for p := range c.Providers.Seq() {
-		if !p.Disable {
+	for id, p := range c.Providers.Seq2() {
+		if !p.Disable && c.IsProviderAvailable(id) {
 			enabled = append(enabled, p)
 		}
 	}
 	return enabled
 }
 
-// IsConfigured  return true if at least one provider is configured
+// IsConfigured returns true if at least one provider is configured and
+// available. It is used before selected models have necessarily been resolved.
 func (c *Config) IsConfigured() bool {
 	return len(c.EnabledProviders()) > 0
+}
+
+// CanInitializeAgent returns true when both selected models can be constructed
+// by this host generation. Unavailable plugin-backed selections remain
+// persisted, but must not make application startup fail while their plugin is
+// absent or excluded by the active provider profile.
+func (c *Config) CanInitializeAgent() bool {
+	large, largeOK := c.Models[SelectedModelTypeLarge]
+	small, smallOK := c.Models[SelectedModelTypeSmall]
+	return largeOK && smallOK &&
+		c.IsModelAvailable(large.Provider, large.Model) &&
+		c.IsModelAvailable(small.Provider, small.Model)
+}
+
+// RedactedForTransport returns a snapshot safe to send to a frontend. Provider
+// credentials and manifest fields marked secret are removed while selections,
+// catalogs, and non-secret presentation configuration remain available.
+func (c *Config) RedactedForTransport() *Config {
+	if c == nil {
+		return nil
+	}
+	result := *c
+	providers := csync.NewMap[string, ProviderConfig]()
+	if c.Providers != nil {
+		for id, provider := range c.Providers.Seq2() {
+			provider.APIKey = ""
+			provider.APIKeyTemplate = ""
+			provider.OAuthToken = nil
+			provider.ExtraHeaders = nil
+			provider.Configuration = maps.Clone(provider.Configuration)
+			if registration, ok := ProviderCapabilities().Lookup(id); ok && registration.Manifest != nil {
+				for field, display := range registration.Manifest.Configuration.Fields {
+					if display.Secret {
+						delete(provider.Configuration, field)
+					}
+				}
+			}
+			providers.Set(id, provider)
+		}
+	}
+	result.Providers = providers
+	return &result
 }
 
 func (c *Config) GetModel(provider, model string) *catwalk.Model {
@@ -732,11 +857,28 @@ func (c *Config) GetModel(provider, model string) *catwalk.Model {
 	return nil
 }
 
-// IsModelAvailable returns true if the provider is enabled and the model
-// exists in its catalog. Unlike GetModel, it rejects disabled providers.
+// IsProviderIntegrationAvailable returns false when a configured provider's
+// durable plugin or non-compat OAuth owner is not active in this host
+// generation. It intentionally ignores the user's disable flag so disabled
+// providers can remain visible in controls that allow re-enabling them.
+func (c *Config) IsProviderIntegrationAvailable(provider string) bool {
+	_, ok := c.Providers.Get(provider)
+	return ok && !c.isUnavailableRegisteredProvider(provider)
+}
+
+// IsProviderAvailable returns false for disabled providers and for providers
+// whose durable plugin or non-compat OAuth owner is not active in this host
+// generation.
+func (c *Config) IsProviderAvailable(provider string) bool {
+	providerConfig, ok := c.Providers.Get(provider)
+	return ok && !providerConfig.Disable && c.IsProviderIntegrationAvailable(provider)
+}
+
+// IsModelAvailable returns true if the provider is available and the model
+// exists in its catalog.
 func (c *Config) IsModelAvailable(provider, model string) bool {
 	providerConfig, ok := c.Providers.Get(provider)
-	if !ok || providerConfig.Disable {
+	if !ok || !c.IsProviderAvailable(provider) {
 		return false
 	}
 	for _, m := range providerConfig.Models {
@@ -788,10 +930,17 @@ func allToolNames() []string {
 	return []string{
 		"agent",
 		"bash",
-		"crush_info",
-		"crush_logs",
+		"crux_info",
+		"crux_logs",
+		"traffic_logs",
+		"git_inspect",
+		"job_list",
 		"job_output",
 		"job_kill",
+		"task_list",
+		"task_output",
+		"task_stop",
+		"task_continue",
 		"download",
 		"edit",
 		"multiedit",
@@ -805,10 +954,25 @@ func allToolNames() []string {
 		"lsp_replace_symbol",
 		"fetch",
 		"agentic_fetch",
+		"codebase_search",
+		"complete_plan",
 		"glob",
 		"grep",
 		"ls",
+		"memory_list",
+		"memory_upsert",
+		"memory_remove",
+		"enter_plan",
+		"exit_plan",
+		"skill_list",
+		"skill_load",
+		"project_complete",
+		"project_create",
+		"project_notes",
+		"project_status",
+		"project_update",
 		"question",
+		"script",
 		"sourcegraph",
 		"todos",
 		"view",
@@ -827,7 +991,7 @@ func resolveAllowedTools(allTools []string, disabledTools []string) []string {
 }
 
 func resolveReadOnlyTools(tools []string) []string {
-	readOnlyTools := []string{"glob", "grep", "ls", "lsp_call_hierarchy", "lsp_definition", "lsp_symbols", "sourcegraph", "view"}
+	readOnlyTools := []string{"codebase_search", "git_inspect", "glob", "grep", "job_list", "job_output", "ls", "lsp_call_hierarchy", "lsp_definition", "lsp_symbols", "memory_list", "project_status", "skill_list", "skill_load", "sourcegraph", "task_list", "task_output", "view"}
 	// filter to only include tools that are in allowedtools (include mode)
 	return filterSlice(tools, readOnlyTools, true)
 }
@@ -872,104 +1036,64 @@ func (c *Config) SetupAgents() {
 }
 
 func (c *ProviderConfig) TestConnection(resolver VariableResolver) error {
-	var (
-		providerID = catwalk.InferenceProvider(c.ID)
-		testURL    = ""
-		headers    = make(map[string]string)
-		apiKey, _  = resolver.ResolveValue(c.APIKey)
-	)
+	providerID := catwalk.InferenceProvider(c.ID)
+	apiKey, _ := resolver.ResolveValue(c.APIKey)
 
 	switch providerID {
 	case catwalk.InferenceProviderMiniMax, catwalk.InferenceProviderMiniMaxChina:
-		// NOTE: MiniMax has no good endpoint we can use to validate the API key.
+		// MiniMax has no reliable endpoint for validating an API key.
 		return nil
 	case catwalk.InferenceProviderAlibabaSingapore:
-		// NOTE: Alibaba has no good endpoint we can use to validate the API key.
-		// Let's at least check the pattern.
 		if !strings.HasPrefix(apiKey, "sk-") {
 			return fmt.Errorf("invalid API key format for provider %s", c.ID)
 		}
 		return nil
 	}
 
-	switch c.Type {
-	case catwalk.TypeOpenAI, catwalk.TypeOpenAICompat, catwalk.TypeOpenRouter:
-		baseURL, _ := resolver.ResolveValue(c.BaseURL)
-		baseURL = cmp.Or(baseURL, "https://api.openai.com/v1")
-
-		switch providerID {
-		case catwalk.InferenceProviderOpenRouter:
-			testURL = baseURL + "/credits"
-		case catwalk.InferenceProviderOpenCodeGo:
-			testURL = strings.Replace(baseURL, "/go", "", 1) + "/models"
-		default:
-			testURL = baseURL + "/models"
-		}
-
-		headers["Authorization"] = "Bearer " + apiKey
-	case catwalk.TypeAnthropic:
-		baseURL, _ := resolver.ResolveValue(c.BaseURL)
-		baseURL = cmp.Or(baseURL, "https://api.anthropic.com/v1")
-
-		switch providerID {
-		case catwalk.InferenceKimiCoding:
-			testURL = baseURL + "/v1/models"
-		default:
-			testURL = baseURL + "/models"
-		}
-
-		headers["x-api-key"] = apiKey
-		headers["anthropic-version"] = "2023-06-01"
-	case catwalk.TypeGoogle:
-		baseURL, _ := resolver.ResolveValue(c.BaseURL)
-		baseURL = cmp.Or(baseURL, "https://generativelanguage.googleapis.com")
-		testURL = baseURL + "/v1beta/models?key=" + url.QueryEscape(apiKey)
-	case catwalk.TypeBedrock:
-		// NOTE: Bedrock has a `/foundation-models` endpoint that we could in
-		// theory use, but apparently the authorization is region-specific,
-		// so it's not so trivial.
-		if strings.HasPrefix(apiKey, "ABSK") { // Bedrock API keys
-			return nil
-		}
-		return errors.New("not a valid bedrock api key")
-	case catwalk.TypeVercel:
-		// NOTE: Vercel does not validate API keys on the `/models` endpoint.
-		if strings.HasPrefix(apiKey, "vck_") { // Vercel API keys
-			return nil
-		}
-		return errors.New("not a valid vercel api key")
+	providerType := cmp.Or(c.Type, catwalk.TypeOpenAICompat)
+	if providerType != catwalk.TypeOpenAICompat && !discover.IsKnownCustomProvider(string(providerType)) {
+		return fmt.Errorf("unsupported provider type %q", providerType)
+	}
+	baseURL, err := resolver.ResolveValue(c.BaseURL)
+	if err != nil {
+		return fmt.Errorf("resolve provider %s base URL: %w", c.ID, err)
+	}
+	if baseURL == "" {
+		return fmt.Errorf("provider %s is missing an API endpoint", c.ID)
+	}
+	testURL := strings.TrimRight(baseURL, "/") + "/models"
+	if providerID == catwalk.InferenceProviderOpenCodeGo {
+		testURL = strings.TrimRight(strings.Replace(baseURL, "/go", "", 1), "/") + "/models"
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	client := &http.Client{}
-	req, err := http.NewRequestWithContext(ctx, "GET", testURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create request for provider %s: %w", c.ID, err)
 	}
-	for k, v := range headers {
-		req.Header.Set(k, v)
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	for k, v := range c.ExtraHeaders {
-		req.Header.Set(k, v)
+	for key, value := range c.ExtraHeaders {
+		req.Header.Set(key, value)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to create request for provider %s: %w", c.ID, err)
+		return fmt.Errorf("failed to connect to provider %s: %w", c.ID, err)
 	}
 	defer resp.Body.Close()
 
-	switch providerID {
-	case catwalk.InferenceProviderZAI:
+	if providerID == catwalk.InferenceProviderZAI {
 		if resp.StatusCode == http.StatusUnauthorized {
 			return fmt.Errorf("failed to connect to provider %s: %s", c.ID, resp.Status)
 		}
-	default:
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("failed to connect to provider %s: %s", c.ID, resp.Status)
-		}
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to connect to provider %s: %s", c.ID, resp.Status)
 	}
 	return nil
 }

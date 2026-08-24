@@ -3,9 +3,9 @@ package backend
 import (
 	"context"
 
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/session"
 )
 
 // CreateSession creates a new session in the given workspace.
@@ -60,6 +60,8 @@ func (b *Backend) GetAgentSession(ctx context.Context, workspaceID, sessionID st
 		Session: proto.Session{
 			ID:    se.ID,
 			Title: se.Title,
+			Mode:  string(se.Mode),
+			Plan:  se.Plan,
 		},
 		IsBusy: isSessionBusy,
 	}, nil
@@ -99,6 +101,17 @@ func (b *Backend) SaveSession(ctx context.Context, workspaceID string, sess sess
 	}
 
 	return ws.Sessions.Save(ctx, sess)
+}
+
+func (b *Backend) SetSessionMode(ctx context.Context, workspaceID, sessionID string, mode session.Mode) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if err := ws.Sessions.SetMode(ctx, sessionID, mode); err != nil {
+		return session.Session{}, err
+	}
+	return ws.Sessions.Get(ctx, sessionID)
 }
 
 // DeleteSession deletes a session from the given workspace.

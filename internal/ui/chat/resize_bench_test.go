@@ -5,26 +5,26 @@ import (
 	"os"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/ui/list"
-	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/ui/list"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 // BenchmarkResizeSession reproduces the resize re-render path over a real
-// session's messages. Point CRUSH_BENCH_SESSION at a full session id and
-// CRUSH_BENCH_DATADIR at the crush data dir (defaults to ./.crush).
+// session's messages. Point CRUX_BENCH_SESSION at a full session id and
+// CRUX_BENCH_DATADIR at the crux data dir (defaults to ./.crux).
 //
-//	CRUSH_BENCH_SESSION=e6368d820207a406 go test ./internal/ui/chat/ \
+//	CRUX_BENCH_SESSION=e6368d820207a406 go test ./internal/ui/chat/ \
 //	  -run x -bench BenchmarkResizeSession -benchtime 20x -cpuprofile /tmp/cpu.out
 func BenchmarkResizeSession(b *testing.B) {
-	sessionID := os.Getenv("CRUSH_BENCH_SESSION")
+	sessionID := os.Getenv("CRUX_BENCH_SESSION")
 	if sessionID == "" {
-		b.Skip("set CRUSH_BENCH_SESSION to a full session id")
+		b.Skip("set CRUX_BENCH_SESSION to a full session id")
 	}
-	dataDir := os.Getenv("CRUSH_BENCH_DATADIR")
+	dataDir := os.Getenv("CRUX_BENCH_DATADIR")
 	if dataDir == "" {
-		dataDir = ".crush"
+		dataDir = ".crux"
 	}
 
 	ctx := context.Background()

@@ -10,9 +10,9 @@ import (
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/aymanbagabas/go-udiff"
-	"github.com/charmbracelet/crush/internal/ansiext"
-	"github.com/charmbracelet/crush/internal/ui/xchroma"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/ansiext"
+	"github.com/example-git/crux/internal/ui/xchroma"
 	"github.com/zeebo/xxh3"
 )
 
@@ -78,7 +78,7 @@ func New() *DiffView {
 		layout:       layoutUnified,
 		contextLines: udiff.DefaultContextLines,
 		lineNumbers:  true,
-		tabWidth:     8,
+		tabWidth:     4,
 		syntaxCache:  make(map[string]string),
 	}
 	dv.style = DefaultDarkStyle()

@@ -5,11 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/session"
 	"github.com/google/uuid"
 )
 
@@ -26,6 +28,17 @@ type CreateMessageParams struct {
 	Model            string
 	Provider         string
 	IsSummaryMessage bool
+}
+
+type CommitCompactionParams struct {
+	SessionID        string
+	Parts            []ContentPart
+	Model            string
+	Provider         string
+	PromptTokens     int64
+	CompletionTokens int64
+	Cost             float64
+	EstimatedUsage   bool
 }
 
 // Service is the public interface to the message store.
@@ -46,9 +59,11 @@ type CreateMessageParams struct {
 type Service interface {
 	pubsub.Subscriber[Message]
 	Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error)
+	CommitCompaction(ctx context.Context, params CommitCompactionParams) (Message, error)
 	Update(ctx context.Context, message Message) error
 	Get(ctx context.Context, id string) (Message, error)
 	List(ctx context.Context, sessionID string) ([]Message, error)
+	ListFrom(ctx context.Context, sessionID, messageID string) ([]Message, error)
 	ListUserMessages(ctx context.Context, sessionID string) ([]Message, error)
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
 	GetLastAssistantMessage(ctx context.Context, sessionID string) (Message, error)
@@ -104,6 +119,8 @@ type pendingState struct {
 type service struct {
 	*pubsub.Broker[Message]
 	q        db.Querier
+	db       *sql.DB
+	sessions session.Service
 	debounce time.Duration
 
 	mu      sync.Mutex
@@ -119,6 +136,13 @@ type ServiceOption func(*service)
 func WithDebounce(d time.Duration) ServiceOption {
 	return func(s *service) {
 		s.debounce = d
+	}
+}
+
+func WithCompactionStore(conn *sql.DB, sessions session.Service) ServiceOption {
+	return func(s *service) {
+		s.db = conn
+		s.sessions = sessions
 	}
 }
 
@@ -193,6 +217,65 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	// Clone the message before publishing to avoid race conditions with
 	// concurrent modifications to the Parts slice.
 	s.Publish(pubsub.CreatedEvent, message.Clone())
+	return message, nil
+}
+
+func (s *service) CommitCompaction(ctx context.Context, params CommitCompactionParams) (Message, error) {
+	if s.db == nil || s.sessions == nil {
+		return Message{}, fmt.Errorf("atomic compaction persistence is not configured")
+	}
+	partsJSON, err := marshalParts(params.Parts)
+	if err != nil {
+		return Message{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Message{}, fmt.Errorf("beginning compaction transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	qtx := db.New(tx)
+	dbMessage, err := qtx.CreateMessage(ctx, db.CreateMessageParams{
+		ID:               uuid.New().String(),
+		SessionID:        params.SessionID,
+		Role:             string(Assistant),
+		Parts:            string(partsJSON),
+		Model:            sql.NullString{String: params.Model, Valid: params.Model != ""},
+		Provider:         sql.NullString{String: params.Provider, Valid: params.Provider != ""},
+		IsSummaryMessage: 1,
+	})
+	if err != nil {
+		return Message{}, fmt.Errorf("creating compacted summary: %w", err)
+	}
+	if err := qtx.UpdateMessage(ctx, db.UpdateMessageParams{
+		Parts:      string(partsJSON),
+		FinishedAt: sql.NullInt64{Int64: time.Now().Unix(), Valid: true},
+		ID:         dbMessage.ID,
+	}); err != nil {
+		return Message{}, fmt.Errorf("finishing compacted summary: %w", err)
+	}
+	if _, err := qtx.UpdateSessionCompaction(ctx, db.UpdateSessionCompactionParams{
+		SummaryMessageID: sql.NullString{String: dbMessage.ID, Valid: true},
+		PromptTokens:     params.PromptTokens,
+		CompletionTokens: params.CompletionTokens,
+		Cost:             params.Cost,
+		ID:               params.SessionID,
+	}); err != nil {
+		return Message{}, fmt.Errorf("installing compacted checkpoint: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Message{}, fmt.Errorf("committing compacted checkpoint: %w", err)
+	}
+
+	message, err := s.fromDBItem(dbMessage)
+	if err != nil {
+		return Message{}, err
+	}
+	s.PublishMustDeliver(ctx, pubsub.CreatedEvent, message.Clone())
+	if err := s.sessions.PublishCompaction(ctx, params.SessionID, params.EstimatedUsage); err != nil {
+		slog.Error("Failed to publish committed compaction", "error", err, "session_id", params.SessionID)
+	}
 	return message, nil
 }
 
@@ -469,6 +552,24 @@ func (s *service) List(ctx context.Context, sessionID string) ([]Message, error)
 	return messages, nil
 }
 
+func (s *service) ListFrom(ctx context.Context, sessionID, messageID string) ([]Message, error) {
+	dbMessages, err := s.q.ListMessagesBySessionFrom(ctx, db.ListMessagesBySessionFromParams{
+		MessageID: messageID,
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	messages := make([]Message, len(dbMessages))
+	for i, dbMessage := range dbMessages {
+		messages[i], err = s.fromDBItem(dbMessage)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return messages, nil
+}
+
 func (s *service) ListUserMessages(ctx context.Context, sessionID string) ([]Message, error) {
 	dbMessages, err := s.q.ListUserMessagesBySession(ctx, sessionID)
 	if err != nil {
@@ -528,14 +629,15 @@ func (s *service) fromDBItem(item db.Message) (Message, error) {
 type partType string
 
 const (
-	reasoningType    partType = "reasoning"
-	textType         partType = "text"
-	imageURLType     partType = "image_url"
-	binaryType       partType = "binary"
-	toolCallType     partType = "tool_call"
-	toolResultType   partType = "tool_result"
-	finishType       partType = "finish"
-	shellCommandType partType = "shell_command"
+	reasoningType        partType = "reasoning"
+	textType             partType = "text"
+	imageURLType         partType = "image_url"
+	binaryType           partType = "binary"
+	toolCallType         partType = "tool_call"
+	toolResultType       partType = "tool_result"
+	finishType           partType = "finish"
+	shellCommandType     partType = "shell_command"
+	providerMetadataType partType = "provider_metadata"
 )
 
 type partWrapper struct {
@@ -566,6 +668,8 @@ func marshalParts(parts []ContentPart) ([]byte, error) {
 			typ = finishType
 		case ShellCommand:
 			typ = shellCommandType
+		case ProviderMetadataContent:
+			typ = providerMetadataType
 		default:
 			return nil, fmt.Errorf("unknown part type: %T", part)
 		}
@@ -603,11 +707,17 @@ func unmarshalParts(data []byte) ([]ContentPart, error) {
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
 			}
+			if err := migrateLegacyReasoningMetadata(wrapper.Data, &part); err != nil {
+				return nil, fmt.Errorf("migrate legacy reasoning metadata: %w", err)
+			}
 			parts = append(parts, part)
 		case textType:
 			part := TextContent{}
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
+			}
+			if err := migrateLegacyTextMetadata(wrapper.Data, &part); err != nil {
+				return nil, fmt.Errorf("migrate legacy text metadata: %w", err)
 			}
 			parts = append(parts, part)
 		case imageURLType:
@@ -627,6 +737,9 @@ func unmarshalParts(data []byte) ([]ContentPart, error) {
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
 			}
+			if err := migrateLegacyToolCallMetadata(wrapper.Data, &part); err != nil {
+				return nil, fmt.Errorf("migrate legacy tool-call metadata: %w", err)
+			}
 			parts = append(parts, part)
 		case toolResultType:
 			part := ToolResult{}
@@ -642,6 +755,12 @@ func unmarshalParts(data []byte) ([]ContentPart, error) {
 			parts = append(parts, part)
 		case shellCommandType:
 			part := ShellCommand{}
+			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+		case providerMetadataType:
+			part := ProviderMetadataContent{}
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
 			}

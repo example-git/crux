@@ -16,12 +16,13 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/filepathext"
-	"github.com/charmbracelet/crush/internal/filetracker"
-	"github.com/charmbracelet/crush/internal/lsp"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/skills"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/filepathext"
+	"github.com/example-git/crux/internal/filetracker"
+	"github.com/example-git/crux/internal/imageattachment"
+	"github.com/example-git/crux/internal/lsp"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/skills"
 )
 
 //go:embed view.md.tpl
@@ -73,7 +74,8 @@ type ViewResponseMetadata struct {
 
 const (
 	ViewToolName     = "view"
-	MaxViewSize      = 200 * 1024 // 200KB
+	MaxViewSize      = 200 * 1024
+	MaxViewImageSize = imageattachment.MaxSourceBytes
 	DefaultReadLimit = 200
 	MaxLineLength    = 2000
 )
@@ -103,7 +105,7 @@ func NewViewTool(
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
 			}
 
-			// Handle builtin skill files (crush: prefix).
+			// Handle builtin skill files (crux: prefix).
 			if strings.HasPrefix(params.FilePath, skills.BuiltinPrefix) {
 				resp, err := readBuiltinFile(params, skillTracker)
 				return resp, err
@@ -202,9 +204,9 @@ func NewViewTool(
 
 			isSupportedImage, mimeType := getImageMimeType(filePath)
 			if isSupportedImage {
-				if fileInfo.Size() > MaxViewSize {
+				if fileInfo.Size() > MaxViewImageSize {
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("Image file is too large (%d bytes). Maximum size is %d bytes",
-						fileInfo.Size(), MaxViewSize)), nil
+						fileInfo.Size(), MaxViewImageSize)), nil
 				}
 				if !GetSupportsImagesFromContext(ctx) {
 					modelName := GetModelNameFromContext(ctx)

@@ -5,8 +5,8 @@ import (
 	_ "embed"
 	"fmt"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/session"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/session"
 )
 
 //go:embed todos.md

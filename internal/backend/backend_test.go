@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/proto"
+	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/proto"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -191,6 +191,29 @@ func TestDetachClient_LastStreamTearsDown(t *testing.T) {
 	require.Equal(t, int32(1), srvShutdowns.Load(), "last workspace shut down must trigger server shutdown")
 	_, err := b.GetWorkspace(ws.ID)
 	require.ErrorIs(t, err, ErrWorkspaceNotFound)
+}
+
+func TestWorkspaceShutdownIsBoundedAndIdempotent(t *testing.T) {
+	previousTimeout := workspaceShutdownTimeout
+	workspaceShutdownTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { workspaceShutdownTimeout = previousTimeout })
+
+	workspaceContext, cancel := context.WithCancel(t.Context())
+	workspace := &Workspace{ctx: workspaceContext, cancel: cancel}
+	workspace.runWG.Add(1)
+	started := time.Now()
+	workspace.Shutdown()
+	require.Less(t, time.Since(started), time.Second)
+	workspace.runWG.Done()
+
+	var shutdowns atomic.Int32
+	workspace = &Workspace{shutdownFn: func() { shutdowns.Add(1) }}
+	var waitGroup sync.WaitGroup
+	for range 20 {
+		waitGroup.Go(workspace.invokeShutdown)
+	}
+	waitGroup.Wait()
+	require.Equal(t, int32(1), shutdowns.Load())
 }
 
 func TestHoldExpiry_TearsDown(t *testing.T) {
@@ -609,6 +632,33 @@ func TestPathDedupe_ParallelCreates(t *testing.T) {
 
 // TestCreateWorkspace_RejectsBadClientID covers the 400 path from the
 // backend side.
+func TestCreateWorkspaceForResponseStartsGraceAfterCompletion(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	b := New(context.Background(), nil, func() {})
+	b.SetCreateGrace(20 * time.Millisecond)
+	t.Cleanup(func() { drainBackend(t, b) })
+
+	clientID := uuid.New().String()
+	ws, _, complete, err := b.CreateWorkspaceForResponse(protoWS(t.TempDir(), t.TempDir(), clientID))
+	require.NoError(t, err)
+	require.NotNil(t, complete)
+
+	time.Sleep(60 * time.Millisecond)
+	_, err = b.GetWorkspace(ws.ID)
+	require.NoError(t, err, "response delivery must not consume the create-grace window")
+
+	complete()
+	complete() // Completion is safe to call from both explicit and deferred paths.
+	require.Eventually(t, func() bool {
+		_, err := b.GetWorkspace(ws.ID)
+		return errors.Is(err, ErrWorkspaceNotFound)
+	}, time.Second, 5*time.Millisecond)
+}
+
 func TestCreateWorkspace_RejectsBadClientID(t *testing.T) {
 	t.Parallel()
 
@@ -1434,7 +1484,7 @@ func TestServer_CreateCancelsPendingIdleShutdown(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("CRUSH_DISABLE_PROVIDER_AUTO_UPDATE", "1")
+	t.Setenv("CRUX_DISABLE_PROVIDER_AUTO_UPDATE", "1")
 
 	b, shutdownCount := newTestBackend(t)
 	b.SetIdleShutdownDelay(10 * time.Second) // long enough not to fire mid-test

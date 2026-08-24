@@ -1,8 +1,6 @@
 package config
 
 import (
-	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,213 +8,96 @@ import (
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/stretchr/testify/require"
 )
 
 func resetProviderState() {
 	providerOnce = sync.Once{}
 	providerList = nil
+	providerRegistry = nil
+	providerPluginStatuses = nil
+	providerOwnerModes = nil
 	providerErr = nil
 	catwalkSyncer = &catwalkSync{}
-	hyperSyncer = &hyperSync{}
+}
+
+func TestProviderRolloutPolicyProfilesAndIndependentGates(t *testing.T) {
+	integrated := []providerregistry.Registration{{ProviderID: "compat", Construction: "integrated-compat"}, {ProviderID: "copilot", Construction: providerregistry.ConstructionCopilot}}
+	plugins := []providerregistry.Registration{
+		{ProviderID: "compat", CompatibilityAdapter: "integrated-compat"},
+		{ProviderID: "native"},
+	}
+
+	policy := providerRolloutPolicy{Profile: ProviderProfilePluginCompat, ExplicitProfile: true, Enabled: map[string]bool{"compat": true}}
+	modes := rolloutOwnerModes(policy, integrated, plugins)
+	require.Equal(t, providerregistry.OwnerPluginCompat, modes["compat"])
+	require.Equal(t, providerregistry.OwnerIntegrated, modes["copilot"])
+	require.Equal(t, providerregistry.OwnerDisabled, modes["native"])
+
+	modes = rolloutOwnerModes(providerRolloutPolicy{Profile: ProviderProfilePluginCompat}, integrated, nil)
+	require.Equal(t, providerregistry.OwnerDisabled, modes["compat"], "compatibility targets require an active plugin")
+	require.Equal(t, providerregistry.OwnerIntegrated, modes["copilot"], "core-owned Copilot remains active")
+
+	policy = providerRolloutPolicy{Profile: ProviderProfilePluginNative}
+	modes = rolloutOwnerModes(policy, integrated, plugins)
+	require.Equal(t, providerregistry.OwnerDisabled, modes["compat"])
+	require.Equal(t, providerregistry.OwnerPluginNative, modes["native"])
+
+	policy = providerRolloutPolicy{Profile: ProviderProfileCoreOnly}
+	modes = rolloutOwnerModes(policy, integrated, plugins)
+	require.Equal(t, providerregistry.OwnerDisabled, modes["compat"])
+	require.Equal(t, providerregistry.OwnerDisabled, modes["native"])
+}
+
+func TestParseProviderRolloutPolicyRejectsUnknownProfile(t *testing.T) {
+	t.Setenv("CRUX_PROVIDER_PROFILE", "surprise")
+	_, err := parseProviderRolloutPolicy()
+	require.EqualError(t, err, `unknown provider rollout profile "surprise"`)
+}
+
+func TestCompiledProviderProfileIsACeiling(t *testing.T) {
+	previous := DefaultProviderProfile
+	DefaultProviderProfile = string(ProviderProfileCoreOnly)
+	t.Cleanup(func() { DefaultProviderProfile = previous })
+	t.Setenv("CRUX_PROVIDER_PROFILE", string(ProviderProfilePluginNative))
+	_, err := parseProviderRolloutPolicy()
+	require.EqualError(t, err, `provider rollout profile "plugin-native" exceeds compiled release profile "core-only"`)
+}
+
+func TestProviderBehaviorCapabilitiesPreserveInactiveIntegratedBehavior(t *testing.T) {
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+	t.Setenv("CRUX_PROVIDER_PROFILE", string(ProviderProfileCoreOnly))
+
+	_, active := ProviderCapabilities().Lookup("codex")
+	require.False(t, active)
+	registration, ok := ProviderBehaviorCapabilities("codex")
+	require.True(t, ok)
+	require.NotNil(t, registration.Runtime)
+	require.NotNil(t, registration.Instructions)
+	require.NotNil(t, registration.Images)
 }
 
 func TestProviders_Integration_AutoUpdateDisabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
 
-	// Use a test-specific instance to avoid global state interference.
-	testCatwalkSyncer := &catwalkSync{}
-	testHyperSyncer := &hyperSync{}
-
-	originalCatwalSyncer := catwalkSyncer
-	originalHyperSyncer := hyperSyncer
+	originalCatwalkSyncer := catwalkSyncer
 	defer func() {
-		catwalkSyncer = originalCatwalSyncer
-		hyperSyncer = originalHyperSyncer
+		catwalkSyncer = originalCatwalkSyncer
 	}()
-
-	catwalkSyncer = testCatwalkSyncer
-	hyperSyncer = testHyperSyncer
+	catwalkSyncer = &catwalkSync{}
 
 	resetProviderState()
 	defer resetProviderState()
 
-	cfg := &Config{
-		Options: &Options{
-			DisableProviderAutoUpdate: true,
-		},
-	}
-
-	providers, err := Providers(cfg)
+	providers, err := Providers(&Config{
+		Options: &Options{DisableProviderAutoUpdate: true},
+	})
 	require.NoError(t, err)
 	require.NotNil(t, providers)
-	require.Greater(t, len(providers), 5, "Expected embedded providers")
-}
-
-func TestProviders_Integration_WithMockClients(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-
-	// Create fresh syncers for this test.
-	testCatwalkSyncer := &catwalkSync{}
-	testHyperSyncer := &hyperSync{}
-
-	// Initialize with mock clients.
-	mockCatwalkClient := &mockCatwalkClient{
-		providers: []catwalk.Provider{
-			{Name: "Provider1", ID: "p1"},
-			{Name: "Provider2", ID: "p2"},
-		},
-	}
-	mockHyperClient := &mockHyperClient{
-		provider: catwalk.Provider{
-			Name: "Hyper",
-			ID:   "hyper",
-			Models: []catwalk.Model{
-				{ID: "hyper-1", Name: "Hyper Model"},
-			},
-		},
-	}
-
-	catwalkPath := tmpDir + "/crush/providers.json"
-	hyperPath := tmpDir + "/crush/hyper.json"
-
-	testCatwalkSyncer.Init(mockCatwalkClient, catwalkPath, true)
-	testHyperSyncer.Init(mockHyperClient, hyperPath, true)
-
-	// Get providers from each syncer.
-	catwalkProviders, err := testCatwalkSyncer.Get(t.Context())
-	require.NoError(t, err)
-	require.Len(t, catwalkProviders, 2)
-
-	hyperProvider, err := testHyperSyncer.Get(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, "Hyper", hyperProvider.Name)
-
-	// Verify total.
-	allProviders := append(catwalkProviders, hyperProvider)
-	require.Len(t, allProviders, 3)
-}
-
-func TestProviders_Integration_WithCachedData(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-
-	// Create cache files.
-	catwalkPath := tmpDir + "/crush/providers.json"
-	hyperPath := tmpDir + "/crush/hyper.json"
-
-	require.NoError(t, os.MkdirAll(tmpDir+"/crush", 0o755))
-
-	// Write Catwalk cache.
-	catwalkProviders := []catwalk.Provider{
-		{Name: "Cached1", ID: "c1"},
-		{Name: "Cached2", ID: "c2"},
-	}
-	data, err := json.Marshal(catwalkProviders)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(catwalkPath, data, 0o644))
-
-	// Write Hyper cache.
-	hyperProvider := catwalk.Provider{
-		Name: "Cached Hyper",
-		ID:   "hyper",
-	}
-	data, err = json.Marshal(hyperProvider)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(hyperPath, data, 0o644))
-
-	// Create fresh syncers.
-	testCatwalkSyncer := &catwalkSync{}
-	testHyperSyncer := &hyperSync{}
-
-	// Mock clients that return ErrNotModified.
-	mockCatwalkClient := &mockCatwalkClient{
-		err: catwalk.ErrNotModified,
-	}
-	mockHyperClient := &mockHyperClient{
-		err: catwalk.ErrNotModified,
-	}
-
-	testCatwalkSyncer.Init(mockCatwalkClient, catwalkPath, true)
-	testHyperSyncer.Init(mockHyperClient, hyperPath, true)
-
-	// Get providers - should use cached.
-	catwalkResult, err := testCatwalkSyncer.Get(t.Context())
-	require.NoError(t, err)
-	require.Len(t, catwalkResult, 2)
-	require.Equal(t, "Cached1", catwalkResult[0].Name)
-
-	hyperResult, err := testHyperSyncer.Get(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, "Cached Hyper", hyperResult.Name)
-}
-
-func TestProviders_Integration_CatwalkFailsHyperSucceeds(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-
-	testCatwalkSyncer := &catwalkSync{}
-	testHyperSyncer := &hyperSync{}
-
-	// Catwalk fails, Hyper succeeds.
-	mockCatwalkClient := &mockCatwalkClient{
-		err: catwalk.ErrNotModified, // Will use embedded.
-	}
-	mockHyperClient := &mockHyperClient{
-		provider: catwalk.Provider{
-			Name: "Hyper",
-			ID:   "hyper",
-			Models: []catwalk.Model{
-				{ID: "hyper-1", Name: "Hyper Model"},
-			},
-		},
-	}
-
-	catwalkPath := tmpDir + "/crush/providers.json"
-	hyperPath := tmpDir + "/crush/hyper.json"
-
-	testCatwalkSyncer.Init(mockCatwalkClient, catwalkPath, true)
-	testHyperSyncer.Init(mockHyperClient, hyperPath, true)
-
-	catwalkResult, err := testCatwalkSyncer.Get(t.Context())
-	require.NoError(t, err)
-	require.NotEmpty(t, catwalkResult) // Should have embedded.
-
-	hyperResult, err := testHyperSyncer.Get(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, "Hyper", hyperResult.Name)
-}
-
-func TestProviders_Integration_BothFail(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-
-	testCatwalkSyncer := &catwalkSync{}
-	testHyperSyncer := &hyperSync{}
-
-	// Both fail.
-	mockCatwalkClient := &mockCatwalkClient{
-		err: catwalk.ErrNotModified,
-	}
-	mockHyperClient := &mockHyperClient{
-		provider: catwalk.Provider{}, // Empty provider.
-	}
-
-	catwalkPath := tmpDir + "/crush/providers.json"
-	hyperPath := tmpDir + "/crush/hyper.json"
-
-	testCatwalkSyncer.Init(mockCatwalkClient, catwalkPath, true)
-	testHyperSyncer.Init(mockHyperClient, hyperPath, true)
-
-	catwalkResult, err := testCatwalkSyncer.Get(t.Context())
-	require.NoError(t, err)
-	require.NotEmpty(t, catwalkResult) // Should fall back to embedded.
-
-	hyperResult, err := testHyperSyncer.Get(t.Context())
-	require.NoError(t, err)
-	require.Equal(t, "Charm Hyper", hyperResult.Name) // Falls back to embedded when no models.
+	require.Greater(t, len(providers), 3, "expected embedded providers")
 }
 
 func TestCache_StoreAndGet(t *testing.T) {
@@ -232,11 +113,9 @@ func TestCache_StoreAndGet(t *testing.T) {
 		{Name: "Provider2", ID: "p2"},
 	}
 
-	// Store.
 	err := cache.Store(providers)
 	require.NoError(t, err)
 
-	// Get.
 	result, etag, err := cache.Get()
 	require.NoError(t, err)
 	require.Len(t, result, 2)
@@ -281,12 +160,12 @@ func TestCachePathFor(t *testing.T) {
 		{
 			name:        "with XDG_DATA_HOME",
 			xdgDataHome: "/custom/data",
-			expected:    "/custom/data/crush/providers.json",
+			expected:    "/custom/data/crux/providers.json",
 		},
 		{
 			name:        "without XDG_DATA_HOME",
 			xdgDataHome: "",
-			expected:    "", // Will use platform-specific default.
+			expected:    "",
 		},
 	}
 
@@ -302,90 +181,28 @@ func TestCachePathFor(t *testing.T) {
 			if tt.expected != "" {
 				require.Equal(t, tt.expected, filepath.ToSlash(result))
 			} else {
-				require.Contains(t, result, "crush")
+				require.Contains(t, result, "crux")
 				require.Contains(t, result, "providers.json")
 			}
 		})
 	}
 }
 
-// TestProviders_KeepsCatalogWhenCachingFails covers the case that used to
-// sign Hyper users out: the provider list was fetched successfully but could
-// not be written to the on-disk cache, and Providers discarded it. Hyper's
-// endpoint and models live in the catalog rather than in the user's config,
-// so losing it there removed the provider entirely and invalidated the
-// user's saved model.
-func TestProviders_KeepsCatalogWhenCachingFails(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", tmpDir)
+func TestProvidersUsesCachedCatalog(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
-	// A file where a directory needs to be, so every cache write fails.
-	blocked := filepath.Join(tmpDir, "blocked")
-	require.NoError(t, os.WriteFile(blocked, []byte("block"), 0o644))
-	unwritable := filepath.Join(blocked, "subdir", "cache.json")
+	cached := []catwalk.Provider{{Name: "Provider1", ID: "p1", Type: catwalk.TypeOpenAICompat}}
+	require.NoError(t, newCache[[]catwalk.Provider](cachePathFor("providers")).Store(cached))
 
 	resetProviderState()
 	defer resetProviderState()
-
-	// Prime both syncers with mock clients so Providers reuses the memoized
-	// outcome instead of reaching the network.
-	catwalkSyncer.Init(&mockCatwalkClient{
-		providers: []catwalk.Provider{{Name: "Provider1", ID: "p1"}},
-	}, unwritable, true)
-	hyperSyncer.Init(&mockHyperClient{
-		provider: catwalk.Provider{
-			Name:   "Hyper",
-			ID:     "hyper",
-			Models: []catwalk.Model{{ID: "hyper-1", Name: "Hyper Model"}},
-		},
-	}, unwritable, true)
-
-	catwalkProviders, catwalkErr := catwalkSyncer.Get(t.Context())
-	require.Error(t, catwalkErr, "cache write should fail")
-	require.NotEmpty(t, catwalkProviders, "syncer still returns a usable catalog")
-
-	hyperProvider, hyperErr := hyperSyncer.Get(t.Context())
-	require.Error(t, hyperErr, "cache write should fail")
-	require.Equal(t, "Hyper", hyperProvider.Name)
-
-	providers, err := Providers(&Config{Options: &Options{}})
-
-	// The failure is reported, but as a warning alongside a usable catalog.
-	require.Error(t, err)
-	require.Len(t, providers, 2)
-	require.Equal(t, catwalk.InferenceProvider("hyper"), providers[0].ID, "Hyper stays at the front")
-	require.Equal(t, catwalk.InferenceProvider("p1"), providers[1].ID)
-}
-
-// TestProviders_FallsBackToEmbeddedHyper checks that Hyper is still in the
-// catalog when it could not be fetched at all, using the copy bundled with
-// this release.
-func TestProviders_FallsBackToEmbeddedHyper(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-
-	resetProviderState()
-	defer resetProviderState()
-
-	catwalkSyncer.Init(&mockCatwalkClient{
-		providers: []catwalk.Provider{{Name: "Provider1", ID: "p1"}},
-	}, filepath.Join(tmpDir, "providers.json"), true)
-	hyperSyncer.Init(&mockHyperClient{
-		err: errors.New("network error"),
-	}, filepath.Join(tmpDir, "hyper.json"), true)
-
-	_, _ = catwalkSyncer.Get(t.Context())
-	_, _ = hyperSyncer.Get(t.Context())
 
 	providers, err := Providers(&Config{Options: &Options{}})
 	require.NoError(t, err)
-	require.Len(t, providers, 2)
-	require.Equal(t, catwalk.InferenceProvider("hyper"), providers[0].ID)
-	require.NotEmpty(t, providers[0].Models, "the embedded Hyper provider carries models")
+	require.Len(t, providers, 1, "plugin-compat must not add Codex or Gemini without their plugins")
+	require.Equal(t, catwalk.InferenceProvider("p1"), providers[0].ID)
 }
 
-// TestProviders_HonorsDisableDefaultProviders makes sure the embedded Hyper
-// fallback does not smuggle a default provider back in.
 func TestProviders_HonorsDisableDefaultProviders(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 
@@ -399,11 +216,6 @@ func TestProviders_HonorsDisableDefaultProviders(t *testing.T) {
 	require.Empty(t, providers)
 }
 
-// TestCacheStore_ReplacesFileInsteadOfRewritingIt guards the property that
-// several Crush instances depend on: the provider cache is swapped into place
-// as a finished file, never truncated and refilled underneath a reader that is
-// already reading it. A reader that loses that race cannot parse the catalog
-// and silently falls back to the bundled copy.
 func TestCacheStore_ReplacesFileInsteadOfRewritingIt(t *testing.T) {
 	t.Parallel()
 
@@ -419,17 +231,11 @@ func TestCacheStore_ReplacesFileInsteadOfRewritingIt(t *testing.T) {
 	after, err := os.Stat(path)
 	require.NoError(t, err)
 
-	// os.Stat on Windows resolves file identity lazily by reopening the path,
-	// so both stats describe whichever file the path points at by the time
-	// they are compared and SameFile cannot observe the replacement. The
-	// write path is shared, so asserting this on the other platforms covers
-	// it. The checks below still run everywhere.
 	if runtime.GOOS != "windows" {
 		require.False(t, os.SameFile(before, after),
 			"the cache should be replaced by a rename, not rewritten in place")
 	}
 
-	// The new contents are complete and no temporary files are left behind.
 	got, _, err := c.Get()
 	require.NoError(t, err)
 	require.Len(t, got, 1)

@@ -26,9 +26,63 @@ func keyMsg(r rune) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: r, Text: string(r)}
 }
 
+func ctrlCMsg() tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+}
+
+func TestOverlay_CtrlCClosesFrontDialog(t *testing.T) {
+	t.Parallel()
+
+	back := &stubDialog{id: "back"}
+	front := &stubDialog{id: "front"}
+	o := NewOverlay(back, front)
+
+	action := o.Update(ctrlCMsg())
+	require.Equal(t, ActionClose{Dismiss: true}, action)
+	require.Empty(t, back.received)
+	require.Empty(t, front.received)
+}
+
+func TestOverlay_CtrlCClosesDialogDuringGracePeriod(t *testing.T) {
+	t.Parallel()
+
+	d := &stubDialog{id: "test"}
+	o := NewOverlay()
+	o.OpenDialogWithGrace(d)
+
+	action := o.Update(ctrlCMsg())
+	require.Equal(t, ActionClose{Dismiss: true}, action)
+	require.Empty(t, d.received)
+}
+
+func TestQuit_CtrlCConfirmsQuit(t *testing.T) {
+	t.Parallel()
+
+	action := NewQuit(nil).HandleMsg(ctrlCMsg())
+	require.Equal(t, ActionQuit{}, action)
+}
+
+func TestOverlay_CtrlCConfirmsFrontQuitDialog(t *testing.T) {
+	t.Parallel()
+
+	o := NewOverlay(NewQuit(nil))
+	action := o.Update(ctrlCMsg())
+	require.Equal(t, ActionQuit{}, action)
+}
+
 // TestOverlay_GracePeriodSwallowsKeys verifies that all keystrokes
 // arriving within the grace period after OpenDialogWithGrace are absorbed
 // and never forwarded to the dialog.
+func TestOverlay_CtrlCStillClosesOrdinaryDialog(t *testing.T) {
+	t.Parallel()
+
+	d := &stubDialog{id: "ordinary"}
+	o := NewOverlay(d)
+	action := o.Update(ctrlCMsg())
+	require.Equal(t, ActionClose{Dismiss: true}, action)
+	require.Empty(t, d.received)
+}
+
 func TestOverlay_GracePeriodSwallowsKeys(t *testing.T) {
 	t.Parallel()
 

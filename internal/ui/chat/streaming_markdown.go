@@ -4,7 +4,8 @@ import (
 	"strings"
 
 	"charm.land/glamour/v2"
-	"github.com/charmbracelet/crush/internal/ui/common"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/ui/common"
 )
 
 // streamingMarkdown caches a "stable prefix" glamour render so each
@@ -64,7 +65,7 @@ func (s *streamingMarkdown) Reset() {
 // the existing renderMarkdown contract on AssistantMessageItem.
 //
 // Concurrency: glamour's Render is stateful and not safe for
-// concurrent invocation on a shared renderer. Crush's TUI is
+// concurrent invocation on a shared renderer. Crux's TUI is
 // single-threaded so production never contends, but parallel
 // callers (most notably the test suite) must serialize. We hold
 // [common.LockMarkdownRenderer] for the entire prefix +
@@ -75,7 +76,7 @@ func (s *streamingMarkdown) Render(content string, width int, renderer *glamour.
 	mu.Lock()
 	defer mu.Unlock()
 	full := func() string {
-		out, err := renderer.Render(content)
+		out, err := renderMarkdownFragment(content, renderer)
 		if err != nil {
 			return content
 		}
@@ -96,7 +97,7 @@ func (s *streamingMarkdown) Render(content string, width int, renderer *glamour.
 	// Incremental boundary search: only scan the delta after the
 	// stable prefix. The cached cumulative state (baseFenceCount,
 	// baseHasListMarker) lets us validate candidates in O(delta)
-	// instead of re-scanning the entire prefix. See CHARM-1785.
+	// instead of re-scanning the entire prefix.
 	boundary := s.findBoundaryAfter(content)
 	if boundary < 0 {
 		// No safe boundary anywhere yet. Full render; do not
@@ -149,7 +150,7 @@ func (s *streamingMarkdown) tryAdvanceFromEmpty(content string, width int, rende
 		return
 	}
 	prefix := content[:boundary]
-	out, err := renderer.Render(prefix)
+	out, err := renderMarkdownFragment(prefix, renderer)
 	if err != nil {
 		return
 	}
@@ -165,7 +166,7 @@ func (s *streamingMarkdown) tryAdvanceFromEmpty(content string, width int, rende
 // that is strictly after the stable prefix. It uses the cached
 // cumulative state (baseFenceCount, baseHasListMarker) to validate
 // candidates without re-scanning the entire prefix, making the search
-// O(delta) instead of O(n) per tick. See CHARM-1785.
+// O(delta) instead of O(n) per tick.
 //
 // Returns -1 when no safe boundary exists after the stable prefix.
 func (s *streamingMarkdown) findBoundaryAfter(content string) int {
@@ -282,11 +283,32 @@ func (s *streamingMarkdown) renderTrailing(text string, renderer *glamour.TermRe
 	if text == "" {
 		return ""
 	}
-	out, err := renderer.Render(text)
+	out, err := renderMarkdownFragment(text, renderer)
 	if err != nil {
 		return text
 	}
 	return trimGlamourMargins(out)
+}
+
+const plainTextRenderThreshold = 4 * 1024
+
+func renderMarkdownFragment(content string, renderer *glamour.TermRenderer) (string, error) {
+	if len(content) >= plainTextRenderThreshold && isPlainTextDocument(content) {
+		return content, nil
+	}
+	return renderer.Render(content)
+}
+
+func isPlainTextDocument(content string) bool {
+	if strings.ContainsAny(content, "#*_[]()<>`|~") {
+		return false
+	}
+	for line := range splitLines(content) {
+		if lineOpensConstruct(line) {
+			return false
+		}
+	}
+	return true
 }
 
 // glueRenders concatenates two glamour-rendered fragments with a
@@ -318,7 +340,39 @@ func glueRenders(prefix, trail string) string {
 // a heading or paragraph, plus a trailing newline; both must be
 // removed before concatenation.
 func trimGlamourMargins(s string) string {
-	return strings.Trim(s, " \t\n")
+	start := 0
+	for start < len(s) {
+		relativeEnd := strings.IndexByte(s[start:], '\n')
+		lineEnd := len(s)
+		if relativeEnd >= 0 {
+			lineEnd = start + relativeEnd
+		}
+		if strings.TrimSpace(ansi.Strip(s[start:lineEnd])) != "" {
+			break
+		}
+		if lineEnd == len(s) {
+			return ""
+		}
+		start = lineEnd + 1
+	}
+
+	end := len(s)
+	for end > start {
+		relativeStart := strings.LastIndexByte(s[start:end], '\n')
+		lineStart := start
+		if relativeStart >= 0 {
+			lineStart = start + relativeStart + 1
+		}
+		if strings.TrimSpace(ansi.Strip(s[lineStart:end])) != "" {
+			break
+		}
+		if relativeStart < 0 {
+			return ""
+		}
+		end = start + relativeStart
+	}
+
+	return s[start:end]
 }
 
 // findSafeMarkdownBoundary returns the byte offset of the END of
@@ -545,7 +599,7 @@ func isSafeBoundaryAt(content string, p int) bool {
 //	   The previous rule rejected on any list marker anywhere in the
 //	   prefix, which killed the streaming cache for every document
 //	   that ever contained a list — the dominant case for LLM
-//	   thinking blocks. See CHARM-1785.
+//	   thinking blocks.
 //
 //	B2 (HTML blocks). CommonMark defines seven HTML-block opener
 //	   patterns (script/pre/style/textarea, comments, processing

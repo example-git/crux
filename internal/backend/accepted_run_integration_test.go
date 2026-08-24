@@ -5,13 +5,13 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/agent"
-	"github.com/charmbracelet/crush/internal/agent/agenttest"
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/session"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/agent/agenttest"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/session"
 	"github.com/stretchr/testify/require"
 )
 

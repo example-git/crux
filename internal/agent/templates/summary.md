@@ -1,4 +1,4 @@
-You are summarizing a conversation to preserve context for continuing work later.
+Summarize this conversation to preserve context for continuing work later.
 
 **Critical**: This summary will be the ONLY context available when the conversation resumes. Assume all previous messages will be lost. Be thorough.
 
@@ -43,6 +43,6 @@ Be specific. Don't write "implement authentication" - write:
 2. Update login handler in src/routes/user.js:45 to return token
 3. Test with: npm test -- auth.test.js
 
-**Tone**: Write as if briefing a teammate taking over mid-task. Include everything they'd need to continue without asking questions. No emojis ever.
+**Tone**: Write as a handoff document for the next session. Include everything needed to continue without re-reading the original conversation. No emojis ever.
 
 **Length**: No limit. Err on the side of too much detail rather than too little. Critical context is worth the tokens.

@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/lsp"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/lsp"
 )
 
 type DiagnosticsParams struct {

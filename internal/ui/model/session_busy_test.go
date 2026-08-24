@@ -10,16 +10,21 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
-	"github.com/charmbracelet/crush/internal/agent/notify"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/lsp"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/ui/attachments"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/dialog"
-	"github.com/charmbracelet/crush/internal/workspace"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/agent/notify"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/imageattachment"
+	"github.com/example-git/crux/internal/lsp"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/session"
+	managedtask "github.com/example-git/crux/internal/task"
+	"github.com/example-git/crux/internal/ui/attachments"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/completions"
+	"github.com/example-git/crux/internal/ui/dialog"
+	"github.com/example-git/crux/internal/workspace"
 )
 
 // countingWorkspace is a workspace.Workspace stub that counts every probe
@@ -32,10 +37,12 @@ type countingWorkspace struct {
 	ready     bool
 	agentBusy bool
 	yolo      bool
-	queued    []string
+	queued    []agent.QueuedPrompt
 	model     workspace.AgentModel
 	lspStates map[string]workspace.LSPClientInfo
 	lspDiags  map[string]lsp.DiagnosticCounts
+	mode      session.Mode
+	tasks     []managedtask.View
 
 	readyCalls      int
 	agentBusyCalls  int
@@ -48,6 +55,8 @@ type countingWorkspace struct {
 	modelCalls      int
 	lspStateCalls   int
 	lspDiagCalls    int
+	modeCalls       int
+	taskListCalls   int
 }
 
 func (w *countingWorkspace) AgentIsReady() bool { w.readyCalls++; return w.ready }
@@ -66,9 +75,17 @@ func (w *countingWorkspace) AgentQueuedPrompts(string) int {
 	return len(w.queued)
 }
 
-func (w *countingWorkspace) AgentQueuedPromptsList(string) []string {
+func (w *countingWorkspace) AgentQueuedPromptsList(string) []agent.QueuedPrompt {
 	w.queueListCalls++
 	return w.queued
+}
+
+func queuedPrompts(prompts ...string) []agent.QueuedPrompt {
+	queued := make([]agent.QueuedPrompt, len(prompts))
+	for i, prompt := range prompts {
+		queued[i] = agent.QueuedPrompt{SubmissionID: prompt, Prompt: prompt}
+	}
+	return queued
 }
 
 func (w *countingWorkspace) PermissionSkipRequests() bool { w.permCalls++; return w.yolo }
@@ -104,11 +121,22 @@ func (w *countingWorkspace) ListUserMessages(context.Context, string) ([]message
 	return nil, nil
 }
 
+func (w *countingWorkspace) ListTasks(context.Context) ([]managedtask.View, error) {
+	w.taskListCalls++
+	return w.tasks, nil
+}
+
 func (w *countingWorkspace) WorkingDir() string { return "" }
 
 func (w *countingWorkspace) LSPStart(context.Context, string) {}
 
 func (w *countingWorkspace) Config() *config.Config { return nil }
+
+func (w *countingWorkspace) SetSessionMode(_ context.Context, sessionID string, mode session.Mode) (session.Session, error) {
+	w.modeCalls++
+	w.mode = mode
+	return session.Session{ID: sessionID, Mode: mode}, nil
+}
 
 // syncProbes sums every synchronous counter; Update/View must keep this at
 // zero — the invariant is that no workspace call ever happens on the Update
@@ -124,6 +152,7 @@ func (w *countingWorkspace) resetCounters() {
 	w.queuedCalls, w.queueListCalls, w.permCalls = 0, 0, 0
 	w.permSetCalls, w.clearQueueCalls, w.cancelCalls = 0, 0, 0
 	w.modelCalls, w.lspStateCalls, w.lspDiagCalls = 0, 0, 0
+	w.taskListCalls = 0
 }
 
 // newBusyUI builds a UI wired to the stub workspace with an active session
@@ -180,7 +209,7 @@ func runCmds(m *UI, cmd tea.Cmd) {
 		for _, c := range msg {
 			runCmds(m, c)
 		}
-	case busyStateMsg, promptQueueMsg, agentRunSubmittedMsg, lspStatesMsg, agentModelChangedMsg:
+	case busyStateMsg, promptQueueMsg, agentRunSubmittedMsg, lspStatesMsg, agentModelChangedMsg, planModeToggledMsg:
 		_, next := m.Update(msg)
 		runCmds(m, next)
 	}
@@ -189,6 +218,187 @@ func runCmds(m *UI, cmd tea.Cmd) {
 // plainMsg is an arbitrary tea.Msg standing in for keystroke/mouse/tick
 // traffic through Update.
 type plainMsg struct{}
+
+func TestControlArrowDownFromPopulatedEditorOpensTasksWhenPresent(t *testing.T) {
+	workspace := &countingWorkspace{
+		ready: true,
+		tasks: []managedtask.View{{ID: "b12345678", Type: managedtask.TypeShell}},
+	}
+	model := newBusyUI(workspace)
+	model.textarea.SetValue("draft prompt")
+	model.promptHistory.index = -1
+
+	command := model.handleKeyPressMsg(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
+	require.NotNil(t, command)
+	require.Zero(t, workspace.taskListCalls)
+	var availability tasksAvailabilityMsg
+	switch message := command().(type) {
+	case tasksAvailabilityMsg:
+		availability = message
+	case tea.BatchMsg:
+		for _, child := range message {
+			if childMessage, matches := child().(tasksAvailabilityMsg); matches {
+				availability = childMessage
+			}
+		}
+	}
+	require.True(t, availability.available)
+	require.Equal(t, 1, workspace.taskListCalls)
+
+	model.Update(availability)
+	require.True(t, model.dialog.ContainsDialog(dialog.TasksID))
+}
+
+func TestArrowDownPreservesHistoryNavigationWithoutCheckingTasks(t *testing.T) {
+	workspace := &countingWorkspace{
+		ready: true,
+		tasks: []managedtask.View{{ID: "b12345678", Type: managedtask.TypeShell}},
+	}
+	model := newBusyUI(workspace)
+	model.promptHistory.messages = []string{"previous prompt"}
+	model.promptHistory.index = -1
+	require.True(t, model.historyPrev())
+	require.Equal(t, "previous prompt", model.textarea.Value())
+	model.textarea.MoveToEnd()
+
+	model.handleKeyPressMsg(tea.KeyPressMsg{Code: tea.KeyDown})
+
+	require.Zero(t, workspace.taskListCalls)
+	require.Equal(t, "", model.textarea.Value())
+	require.Equal(t, -1, model.promptHistory.index)
+	require.False(t, model.dialog.ContainsDialog(dialog.TasksID))
+}
+
+func TestArrowDownDoesNotOpenTasksWhileQuestionIsActive(t *testing.T) {
+	workspace := &countingWorkspace{
+		ready: true,
+		tasks: []managedtask.View{{ID: "b12345678", Type: managedtask.TypeShell}},
+	}
+	model := newBusyUI(workspace)
+	model.activeInline = dialog.NewQuestionForm(model.com.Styles, question.Request{
+		Questions: []question.Question{{
+			ID:          "question-1",
+			Type:        question.TypeYesNo,
+			Text:        "Continue?",
+			Description: "Choose whether to continue.",
+		}},
+	})
+	model.activeInline.SetFocused(true)
+
+	model.handleKeyPressMsg(tea.KeyPressMsg{Code: tea.KeyDown})
+
+	require.Zero(t, workspace.taskListCalls)
+	require.False(t, model.dialog.ContainsDialog(dialog.TasksID))
+}
+
+func TestControlArrowDownOpensTasksWhileQuestionIsActive(t *testing.T) {
+	workspace := &countingWorkspace{
+		ready: true,
+		tasks: []managedtask.View{{ID: "b12345678", Type: managedtask.TypeShell}},
+	}
+	model := newBusyUI(workspace)
+	model.activeInline = dialog.NewQuestionForm(model.com.Styles, question.Request{
+		Questions: []question.Question{{
+			ID:          "question-1",
+			Type:        question.TypeYesNo,
+			Text:        "Continue?",
+			Description: "Choose whether to continue.",
+		}},
+	})
+	model.activeInline.SetFocused(true)
+
+	command := model.handleKeyPressMsg(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
+	require.NotNil(t, command)
+	var availability tasksAvailabilityMsg
+	switch message := command().(type) {
+	case tasksAvailabilityMsg:
+		availability = message
+	case tea.BatchMsg:
+		for _, child := range message {
+			if childMessage, matches := child().(tasksAvailabilityMsg); matches {
+				availability = childMessage
+			}
+		}
+	}
+	require.True(t, availability.available)
+
+	model.Update(availability)
+	require.True(t, model.dialog.ContainsDialog(dialog.TasksID))
+}
+
+func TestControlArrowDownOpensTasksWhileAutocompleteIsActive(t *testing.T) {
+	workspace := &countingWorkspace{
+		ready: true,
+		tasks: []managedtask.View{{ID: "b12345678", Type: managedtask.TypeShell}},
+	}
+	model := newBusyUI(workspace)
+	model.completions = completions.New(
+		model.com.Styles.Completions.Normal,
+		model.com.Styles.Completions.Focused,
+		model.com.Styles.Completions.Match,
+	)
+	model.completionsOpen = true
+
+	model.handleKeyPressMsg(tea.KeyPressMsg{Code: tea.KeyDown})
+	require.Zero(t, workspace.taskListCalls)
+	require.True(t, model.completionsOpen)
+
+	command := model.handleKeyPressMsg(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
+	require.NotNil(t, command)
+	var availability tasksAvailabilityMsg
+	switch message := command().(type) {
+	case tasksAvailabilityMsg:
+		availability = message
+	case tea.BatchMsg:
+		for _, child := range message {
+			if childMessage, matches := child().(tasksAvailabilityMsg); matches {
+				availability = childMessage
+			}
+		}
+	}
+	require.True(t, availability.available)
+	require.Equal(t, 1, workspace.taskListCalls)
+
+	model.Update(availability)
+	require.False(t, model.completionsOpen)
+	require.True(t, model.dialog.ContainsDialog(dialog.TasksID))
+}
+
+func TestArrowDownDoesNotOpenTasksWhileDialogIsOpen(t *testing.T) {
+	workspace := &countingWorkspace{
+		ready: true,
+		tasks: []managedtask.View{{ID: "b12345678", Type: managedtask.TypeShell}},
+	}
+
+	for _, test := range []struct {
+		name string
+		open func(*UI)
+	}{
+		{name: "tasks", open: func(model *UI) { model.openTasksDialog() }},
+		{name: "other", open: func(model *UI) { model.openNotificationsDialog() }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := newBusyUI(workspace)
+			test.open(model)
+
+			model.handleKeyPressMsg(tea.KeyPressMsg{Code: tea.KeyDown})
+			model.handleKeyPressMsg(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
+
+			require.Zero(t, workspace.taskListCalls)
+		})
+	}
+}
+
+func TestTaskAvailabilityDoesNotOverrideNewDialog(t *testing.T) {
+	workspace := &countingWorkspace{ready: true}
+	model := newBusyUI(workspace)
+	model.openNotificationsDialog()
+
+	model.Update(tasksAvailabilityMsg{available: true})
+
+	require.True(t, model.dialog.ContainsDialog(dialog.NotificationsID))
+	require.False(t, model.dialog.ContainsDialog(dialog.TasksID))
+}
 
 // TestUpdateDoesNotProbeWorkspacePerMessage pins the hot-path fix: Update
 // used to call AgentQueuedPrompts (a synchronous HTTP GET in client/server
@@ -260,7 +470,7 @@ func TestStreamingUpdatedEventsDoNotProbe(t *testing.T) {
 func TestMessageCreatedEventRefreshesBusyAndQueue(t *testing.T) {
 	pinTTLs(t)
 
-	ws := &countingWorkspace{ready: true, agentBusy: true, queued: []string{"queued prompt"}}
+	ws := &countingWorkspace{ready: true, agentBusy: true, queued: queuedPrompts("queued prompt")}
 	m := newBusyUI(ws)
 	warmCaches(m, false)
 	ws.resetCounters()
@@ -315,11 +525,11 @@ func TestAgentTerminalNotificationsRefreshBusy(t *testing.T) {
 func TestSessionSwitchRefreshesQueueAndBusy(t *testing.T) {
 	pinTTLs(t)
 
-	ws := &countingWorkspace{ready: true, queued: []string{"a", "b"}}
+	ws := &countingWorkspace{ready: true, queued: queuedPrompts("a", "b")}
 	m := newBusyUI(ws)
 	warmCaches(m, true)
 	m.promptQueue = 5 // stale queue pill from the previous session
-	m.promptQueueItems = []string{"x", "y", "z", "w", "v"}
+	m.promptQueueItems = queuedPrompts("x", "y", "z", "w", "v")
 	ws.resetCounters()
 
 	_, cmd := m.Update(loadSessionMsg{session: &session.Session{ID: "s2"}})
@@ -329,7 +539,7 @@ func TestSessionSwitchRefreshesQueueAndBusy(t *testing.T) {
 
 	runCmds(m, cmd)
 	require.Equal(t, 2, m.promptQueue, "the new session's queue must be fetched")
-	require.Equal(t, []string{"a", "b"}, m.promptQueueItems)
+	require.Equal(t, queuedPrompts("a", "b"), m.promptQueueItems)
 }
 
 // TestToggleYoloWritesThroughCache: both yolo toggle paths share
@@ -403,38 +613,149 @@ func TestSendMessageSetsOptimisticBusy(t *testing.T) {
 	require.True(t, m.isAgentBusy(),
 		"sendMessage must optimistically mark the agent busy")
 
-	// esc right after enter: isAgentBusy gates cancelAgent, first press
-	// arms the double-press cancel.
+	// esc right after enter: isAgentBusy gates cancelAgent, a single
+	// press cancels immediately.
 	require.Zero(t, m.promptQueue)
 	m.cancelAgent()
-	require.True(t, m.isCanceling, "first esc press must arm cancellation")
-
-	// Second press must actually cancel.
-	m.cancelAgent()
-	require.Equal(t, 1, ws.cancelCalls, "second esc press must cancel the agent")
+	require.Equal(t, 1, ws.cancelCalls, "a single esc press must cancel the agent")
 }
 
-// TestCancelAgentClearsQueueFromCachedCount: the queue-clear decision must
-// come from the memoized count — no synchronous AgentQueuedPrompts probe —
-// and clearing must zero the cached count immediately.
-func TestCancelAgentClearsQueueFromCachedCount(t *testing.T) {
+// TestCancelAgentRestoresAndClearsQueueFromCachedItems: the queue-clear
+// decision and restored text must come from the memoized queue state without
+// synchronous workspace probes.
+func TestCancelAgentRestoresAndClearsQueueFromCachedItems(t *testing.T) {
 	pinTTLs(t)
 
-	ws := &countingWorkspace{ready: true, queued: []string{"a"}}
+	ws := &countingWorkspace{ready: true, queued: queuedPrompts("first", "second")}
+	m := newBusyUI(ws)
+	warmCaches(m, true)
+	m.promptQueue = 2
+	m.promptQueueItems = queuedPrompts("first", "second")
+	m.promptQueueDrafts = map[string]queuedPromptDraft{
+		"first":  {attachments: []message.Attachment{{FileName: "first.png", Content: []byte("first image")}}},
+		"second": {attachments: []message.Attachment{{FileName: "second.jpg", Content: []byte("second image")}}},
+	}
+	m.textarea.SetValue("draft")
+	m.attachments.Update(message.Attachment{FileName: "draft.txt", Content: []byte("draft attachment")})
+	ws.resetCounters()
+
+	m.cancelAgent()
+	require.Equal(t, 1, ws.clearQueueCalls, "esc with a queue must clear it")
+	require.Zero(t, ws.queuedCalls, "the decision must use the cached count, not a probe")
+	require.Zero(t, ws.queueListCalls, "the decision must use the cached items, not a probe")
+	require.Equal(t, "first\n\nsecond\n\ndraft", m.textarea.Value())
+	require.Equal(t, []string{"first.png", "second.jpg", "draft.txt"}, []string{
+		m.attachments.List()[0].FileName,
+		m.attachments.List()[1].FileName,
+		m.attachments.List()[2].FileName,
+	})
+	require.Equal(t, []byte("first image"), m.attachments.List()[0].Content)
+	require.Equal(t, []byte("second image"), m.attachments.List()[1].Content)
+	require.Zero(t, m.promptQueue, "the cached count must be zeroed immediately")
+	require.Empty(t, m.promptQueueItems)
+	require.Empty(t, m.promptQueueDrafts)
+	require.Zero(t, ws.cancelCalls, "clearing the queue must not cancel the active turn")
+}
+
+func TestValidateQueuedPromptAttachmentsEnforcesBounds(t *testing.T) {
+	require.NoError(t, validateQueuedPromptAttachments([]message.Attachment{{Content: make([]byte, imageattachment.MaxSourceBytes)}}))
+	require.Error(t, validateQueuedPromptAttachments(make([]message.Attachment, queuedPromptMaxAttachments+1)))
+	require.Error(t, validateQueuedPromptAttachments([]message.Attachment{{FileName: "large.png", Content: make([]byte, imageattachment.MaxSourceBytes+1)}}))
+	require.Error(t, validateQueuedPromptAttachments([]message.Attachment{
+		{Content: make([]byte, queuedPromptMaxBytes/2+1)},
+		{Content: make([]byte, queuedPromptMaxBytes/2+1)},
+	}))
+}
+
+func TestApplyPromptQueueRetainsDraftsBySubmissionID(t *testing.T) {
+	ws := &countingWorkspace{ready: true}
+	m := newBusyUI(ws)
+	m.promptQueueDrafts = map[string]queuedPromptDraft{
+		"completed-id": {attachments: []message.Attachment{{FileName: "old.png"}}},
+		"pending-id":   {attachments: []message.Attachment{{FileName: "pending.png"}}, expiresAt: time.Now().Add(time.Minute)},
+		"same-text-id": {attachments: []message.Attachment{{FileName: "wrong-client.png"}}, expiresAt: time.Now().Add(time.Minute)},
+	}
+
+	m.applyPromptQueue(promptQueueMsg{forSession: "s1", prompts: []agent.QueuedPrompt{
+		{SubmissionID: "remote-id", Prompt: "pending"},
+		{SubmissionID: "pending-id", Prompt: "pending"},
+	}})
+
+	require.Equal(t, 2, m.promptQueue)
+	require.Len(t, m.promptQueueDrafts, 1)
+	require.Contains(t, m.promptQueueDrafts, "pending-id")
+}
+
+func TestReconcileQueuedDraftsPreservesUnconfirmedDuringAcceptanceRace(t *testing.T) {
+	m := newBusyUI(&countingWorkspace{ready: true})
+	now := time.Now()
+	m.promptQueueDrafts = map[string]queuedPromptDraft{
+		"pending-id": {
+			attachments:  []message.Attachment{{FileName: "pending.png", Content: []byte("sensitive")}},
+			pendingUntil: now.Add(time.Second),
+			expiresAt:    now.Add(time.Minute),
+		},
+	}
+
+	m.reconcileQueuedDrafts(nil, now)
+	require.Contains(t, m.promptQueueDrafts, "pending-id")
+
+	m.reconcileQueuedDrafts(nil, now.Add(2*time.Second))
+	require.Empty(t, m.promptQueueDrafts)
+}
+
+func TestApplyPromptQueueExpiresAttachmentBytes(t *testing.T) {
+	ws := &countingWorkspace{ready: true}
+	m := newBusyUI(ws)
+	m.promptQueueDrafts = map[string]queuedPromptDraft{
+		"pending-id": {
+			attachments: []message.Attachment{{FileName: "pending.png", Content: []byte("sensitive")}},
+			expiresAt:   time.Now().Add(-time.Second),
+		},
+	}
+
+	m.applyPromptQueue(promptQueueMsg{forSession: "s1", prompts: []agent.QueuedPrompt{{SubmissionID: "pending-id", Prompt: "pending"}}})
+
+	draft := m.promptQueueDrafts["pending-id"]
+	require.True(t, draft.expired)
+	require.Nil(t, draft.attachments)
+}
+
+func TestCancelAgentDoesNotRestoreExpiredAttachmentBytes(t *testing.T) {
+	ws := &countingWorkspace{ready: true, queued: queuedPrompts("pending")}
 	m := newBusyUI(ws)
 	warmCaches(m, true)
 	m.promptQueue = 1
-	m.promptQueueItems = []string{"a"}
+	m.promptQueueItems = queuedPrompts("pending")
+	m.promptQueueDrafts = map[string]queuedPromptDraft{
+		"pending": {
+			attachments: []message.Attachment{{FileName: "pending.png", Content: []byte("sensitive")}},
+			expiresAt:   time.Now().Add(-time.Second),
+			confirmed:   true,
+		},
+	}
+
+	m.cancelAgent()
+
+	require.Equal(t, "pending", m.textarea.Value())
+	require.Empty(t, m.attachments.List())
+	require.Empty(t, m.promptQueueDrafts)
+	require.Equal(t, 1, ws.clearQueueCalls)
+}
+
+func TestEscapeCancelsAgentWithoutClearingDraft(t *testing.T) {
+	pinTTLs(t)
+
+	ws := &countingWorkspace{ready: true, agentBusy: true}
+	m := newBusyUI(ws)
+	warmCaches(m, true)
+	m.textarea.SetValue("keep this draft")
 	ws.resetCounters()
 
-	cmd := m.cancelAgent()
-	require.Nil(t, cmd)
-	require.Equal(t, 1, ws.clearQueueCalls, "esc with a queue must clear it")
-	require.Zero(t, ws.queuedCalls, "the decision must use the cached count, not a probe")
-	require.Zero(t, ws.queueListCalls, "the decision must use the cached count, not a probe")
-	require.Zero(t, m.promptQueue, "the cached count must be zeroed immediately")
-	require.Empty(t, m.promptQueueItems)
-	require.False(t, m.isCanceling, "clearing the queue must not arm cancellation")
+	m.handleKeyPressMsg(tea.KeyPressMsg{Code: tea.KeyEscape})
+	require.Equal(t, 1, ws.cancelCalls)
+	require.Equal(t, "keep this draft", m.textarea.Value())
+	require.Zero(t, ws.clearQueueCalls)
 }
 
 // TestBackstopRefreshesStaleCaches: when the memoized state outlives its TTL
@@ -542,11 +863,11 @@ func TestStaleBusyRefreshDiscardedAndReDispatched(t *testing.T) {
 func TestStalePromptQueueDiscardedAndReDispatched(t *testing.T) {
 	pinTTLs(t)
 
-	ws := &countingWorkspace{ready: true, queued: []string{"real"}}
+	ws := &countingWorkspace{ready: true, queued: queuedPrompts("real")}
 	m := newBusyUI(ws)
 	warmCaches(m, false)
 	m.promptQueue = 1
-	m.promptQueueItems = []string{"real"}
+	m.promptQueueItems = queuedPrompts("real")
 
 	// A fetch is in flight; capture its generation, then a newer transition
 	// (esc clears the queue) supersedes it.
@@ -560,7 +881,7 @@ func TestStalePromptQueueDiscardedAndReDispatched(t *testing.T) {
 	cmds := m.applyPromptQueue(promptQueueMsg{
 		forSession: "s1",
 		gen:        staleGen,
-		prompts:    []string{"stale"},
+		prompts:    queuedPrompts("stale"),
 	})
 	require.Zero(t, m.promptQueue,
 		"a stale queue result must not repopulate the cleared queue")
@@ -586,7 +907,7 @@ func TestStalePromptQueuePreservesSessionScoping(t *testing.T) {
 	cmds := m.applyPromptQueue(promptQueueMsg{
 		forSession: "other",
 		gen:        gen,
-		prompts:    []string{"from other session"},
+		prompts:    queuedPrompts("from other session"),
 	})
 	require.Zero(t, m.promptQueue,
 		"a result from a different session must never populate the queue")
@@ -752,6 +1073,52 @@ func TestLSPEventRefreshIsOffThreadAndDeduped(t *testing.T) {
 // cached one (a remote toggle), applyBusyState must update the textarea
 // prompt function too, not just the cache — otherwise the prompt icon/style
 // keeps rendering the old mode.
+func TestPlanModeUsesDistinctEditorPromptAndPreservesBangPrecedence(t *testing.T) {
+	pinTTLs(t)
+
+	m := newBusyUI(&countingWorkspace{ready: true})
+	m.textarea.Focus()
+	m.textarea.SetWidth(40)
+	m.session = &session.Session{Mode: session.ModePlan}
+	m.setEditorPrompt(true)
+	planPrompt := ansi.Strip(m.textarea.View())
+	require.Contains(t, planPrompt, "PLAN")
+	require.NotContains(t, planPrompt, " Y ")
+
+	m.bangMode = true
+	m.setEditorPrompt(true)
+	bangPrompt := ansi.Strip(m.textarea.View())
+	require.Contains(t, bangPrompt, "!")
+	require.NotContains(t, bangPrompt, "PLAN")
+}
+
+func TestShiftTabTogglesPlanModeBothWays(t *testing.T) {
+	ws := &countingWorkspace{ready: true}
+	m := newBusyUI(ws)
+	shiftTab := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+
+	runCmds(m, m.handleKeyPressMsg(shiftTab))
+	require.Equal(t, 1, ws.modeCalls)
+	require.Equal(t, session.ModePlan, ws.mode)
+	require.Equal(t, session.ModePlan, m.session.Mode)
+
+	runCmds(m, m.handleKeyPressMsg(shiftTab))
+	require.Equal(t, 2, ws.modeCalls)
+	require.Equal(t, session.ModeDefault, ws.mode)
+	require.Equal(t, session.ModeDefault, m.session.Mode)
+}
+
+func TestShiftTabCannotBypassPlanCompletionApproval(t *testing.T) {
+	ws := &countingWorkspace{ready: true}
+	m := newBusyUI(ws)
+	m.session.Mode = session.ModePlanExecution
+	shiftTab := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+
+	runCmds(m, m.handleKeyPressMsg(shiftTab))
+	require.Zero(t, ws.modeCalls)
+	require.Equal(t, session.ModePlanExecution, m.session.Mode)
+}
+
 func TestRemoteYoloToggleUpdatesEditorPrompt(t *testing.T) {
 	pinTTLs(t)
 

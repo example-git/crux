@@ -6,10 +6,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/ui/chat"
-	"github.com/charmbracelet/crush/internal/ui/styles"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/session"
+	"github.com/example-git/crux/internal/ui/chat"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 const (
@@ -111,14 +112,14 @@ func todoList(sessionTodos []session.Todo, spinnerView string, t *styles.Styles,
 }
 
 // queueList renders the expanded queue items list.
-func queueList(queueItems []string, t *styles.Styles) string {
+func queueList(queueItems []agent.QueuedPrompt, t *styles.Styles) string {
 	if len(queueItems) == 0 {
 		return ""
 	}
 
 	var lines []string
 	for _, item := range queueItems {
-		text := item
+		text := item.Prompt
 		if ansi.StringWidth(text) > maxQueueDisplayLength {
 			text = ansi.Truncate(text, maxQueueDisplayLength-1, "…")
 		}

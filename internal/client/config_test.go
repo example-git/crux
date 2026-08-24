@@ -9,9 +9,9 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/proto"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/proto"
 	"github.com/stretchr/testify/require"
 )
 
@@ -63,7 +63,7 @@ func TestSetProviderAPIKeyOAuthSendsKind(t *testing.T) {
 
 	tok := &oauth.Token{AccessToken: "a", RefreshToken: "r", ExpiresIn: 60, ExpiresAt: 1234567890}
 	c := captureClient(t, srv)
-	require.NoError(t, c.SetProviderAPIKey(context.Background(), "ws1", config.ScopeGlobal, "hyper", tok))
+	require.NoError(t, c.SetProviderAPIKey(context.Background(), "ws1", config.ScopeGlobal, "codex", tok))
 
 	require.Equal(t, proto.APIKeyKindOAuth, got.Kind)
 	decoded, err := got.DecodeAPIKey()

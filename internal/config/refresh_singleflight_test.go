@@ -10,19 +10,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/crush/internal/csync"
-	"github.com/charmbracelet/crush/internal/oauth"
+	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/oauth"
 	"github.com/stretchr/testify/require"
 )
 
-// writeTokenToDisk persists token as the hyper provider credential in the
-// config file at path, mimicking what another crush instance would leave
+// writeTokenToDisk persists token as the Codex provider credential in the
+// config file at path, mimicking what another crux instance would leave
 // behind after a successful refresh.
 func writeTokenToDisk(t *testing.T, path string, token *oauth.Token) {
 	t.Helper()
 	configContent := fmt.Sprintf(`{
 		"providers": {
-			"hyper": {
+			"codex": {
 				"api_key": %q,
 				"oauth": {
 					"access_token": %q,
@@ -36,10 +36,10 @@ func writeTokenToDisk(t *testing.T, path string, token *oauth.Token) {
 	require.NoError(t, os.WriteFile(path, []byte(configContent), 0o600))
 }
 
-// newRefreshTestStore builds a ConfigStore whose hyper provider holds an
+// newRefreshTestStore builds a ConfigStore whose Codex provider holds an
 // expired OAuth token, persisted both in memory and on disk at configPath.
 // Stores that share a configPath also share the per-provider refresh lock,
-// which lets a single test process faithfully simulate two crush instances:
+// which lets a single test process faithfully simulate two crux instances:
 // lock.File opens a fresh descriptor per call, so two stores block each
 // other on the same lock file exactly as two processes would.
 func newRefreshTestStore(t *testing.T, configPath string, exchange func(ctx context.Context, providerID, refreshToken string) (*oauth.Token, error)) *ConfigStore {
@@ -54,9 +54,9 @@ func newRefreshTestStore(t *testing.T, configPath string, exchange func(ctx cont
 	writeTokenToDisk(t, configPath, expired)
 
 	providers := csync.NewMap[string, ProviderConfig]()
-	providers.Set("hyper", ProviderConfig{
-		ID:         "hyper",
-		Name:       "Hyper",
+	providers.Set("codex", ProviderConfig{
+		ID:         "codex",
+		Name:       "Codex",
 		APIKey:     expired.AccessToken,
 		OAuthToken: expired,
 	})
@@ -75,7 +75,7 @@ func newRefreshTestStore(t *testing.T, configPath string, exchange func(ctx cont
 func TestRefreshOAuthToken_InProcessSingleFlight(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "crush.json")
+	configPath := filepath.Join(t.TempDir(), "crux.json")
 
 	var exchanges atomic.Int64
 	store := newRefreshTestStore(t, configPath, func(ctx context.Context, providerID, refreshToken string) (*oauth.Token, error) {
@@ -96,7 +96,7 @@ func TestRefreshOAuthToken_InProcessSingleFlight(t *testing.T) {
 	for range goroutines {
 		wg.Go(func() {
 			<-start
-			errs <- store.RefreshOAuthToken(context.Background(), ScopeGlobal, "hyper")
+			errs <- store.RefreshOAuthToken(context.Background(), ScopeGlobal, "codex")
 		})
 	}
 	close(start)
@@ -108,7 +108,7 @@ func TestRefreshOAuthToken_InProcessSingleFlight(t *testing.T) {
 	}
 	require.Equal(t, int64(1), exchanges.Load(), "concurrent refreshes should collapse into one exchange")
 
-	pc, ok := store.config.Providers.Get("hyper")
+	pc, ok := store.config.Providers.Get("codex")
 	require.True(t, ok)
 	require.Equal(t, "at1", pc.OAuthToken.AccessToken)
 	require.Equal(t, "rt1", pc.OAuthToken.RefreshToken)
@@ -123,7 +123,7 @@ func TestRefreshOAuthToken_InProcessSingleFlight(t *testing.T) {
 func TestRefreshOAuthToken_CrossProcessAdopt(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "crush.json")
+	configPath := filepath.Join(t.TempDir(), "crux.json")
 
 	var (
 		mu          sync.Mutex
@@ -160,7 +160,7 @@ func TestRefreshOAuthToken_CrossProcessAdopt(t *testing.T) {
 	for _, s := range []*ConfigStore{a, b} {
 		wg.Go(func() {
 			<-start
-			errs <- s.RefreshOAuthToken(context.Background(), ScopeGlobal, "hyper")
+			errs <- s.RefreshOAuthToken(context.Background(), ScopeGlobal, "codex")
 		})
 	}
 	close(start)
@@ -176,7 +176,7 @@ func TestRefreshOAuthToken_CrossProcessAdopt(t *testing.T) {
 
 	// Both instances converge on the rotated token.
 	for name, s := range map[string]*ConfigStore{"a": a, "b": b} {
-		pc, ok := s.config.Providers.Get("hyper")
+		pc, ok := s.config.Providers.Get("codex")
 		require.True(t, ok, name)
 		require.Equal(t, "at1", pc.OAuthToken.AccessToken, name)
 		require.Equal(t, "rt1", pc.OAuthToken.RefreshToken, name)
@@ -224,7 +224,7 @@ func rotatingExchange(live string, next int) (exchange func(ctx context.Context,
 func TestRefreshOAuthToken_StalePeerBorrowsRotatedRefreshToken(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "crush.json")
+	configPath := filepath.Join(t.TempDir(), "crux.json")
 	exchange, exchanges, reuse := rotatingExchange("rt3", 4)
 	store := newRefreshTestStore(t, configPath, exchange)
 
@@ -237,11 +237,11 @@ func TestRefreshOAuthToken_StalePeerBorrowsRotatedRefreshToken(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
 	})
 
-	require.NoError(t, store.RefreshOAuthToken(context.Background(), ScopeGlobal, "hyper"))
+	require.NoError(t, store.RefreshOAuthToken(context.Background(), ScopeGlobal, "codex"))
 	require.Equal(t, int64(1), exchanges.Load())
 	require.Equal(t, int64(0), reuse.Load(), "must not present its own revoked refresh token")
 
-	pc, ok := store.config.Providers.Get("hyper")
+	pc, ok := store.config.Providers.Get("codex")
 	require.True(t, ok)
 	require.Equal(t, "at4", pc.OAuthToken.AccessToken)
 	require.Equal(t, "rt4", pc.OAuthToken.RefreshToken)
@@ -254,7 +254,7 @@ func TestRefreshOAuthToken_StalePeerBorrowsRotatedRefreshToken(t *testing.T) {
 func TestRefreshOAuthToken_AdoptsFresherDiskToken(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "crush.json")
+	configPath := filepath.Join(t.TempDir(), "crux.json")
 	exchange, exchanges, _ := rotatingExchange("rt9", 10)
 	store := newRefreshTestStore(t, configPath, exchange)
 
@@ -265,10 +265,10 @@ func TestRefreshOAuthToken_AdoptsFresherDiskToken(t *testing.T) {
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 	})
 
-	require.NoError(t, store.RefreshOAuthToken(context.Background(), ScopeGlobal, "hyper"))
+	require.NoError(t, store.RefreshOAuthToken(context.Background(), ScopeGlobal, "codex"))
 	require.Equal(t, int64(0), exchanges.Load(), "a usable peer token needs no exchange")
 
-	pc, ok := store.config.Providers.Get("hyper")
+	pc, ok := store.config.Providers.Get("codex")
 	require.True(t, ok)
 	require.Equal(t, "at9", pc.OAuthToken.AccessToken)
 	require.Equal(t, "at9", pc.APIKey)
@@ -280,7 +280,7 @@ func TestRefreshOAuthToken_AdoptsFresherDiskToken(t *testing.T) {
 func TestRefreshOAuthToken_IgnoresOlderDiskToken(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "crush.json")
+	configPath := filepath.Join(t.TempDir(), "crux.json")
 	exchange, exchanges, reuse := rotatingExchange("rt0", 1)
 	store := newRefreshTestStore(t, configPath, exchange)
 
@@ -291,11 +291,11 @@ func TestRefreshOAuthToken_IgnoresOlderDiskToken(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-24 * time.Hour).Unix(),
 	})
 
-	require.NoError(t, store.RefreshOAuthToken(context.Background(), ScopeGlobal, "hyper"))
+	require.NoError(t, store.RefreshOAuthToken(context.Background(), ScopeGlobal, "codex"))
 	require.Equal(t, int64(1), exchanges.Load())
 	require.Equal(t, int64(0), reuse.Load())
 
-	pc, ok := store.config.Providers.Get("hyper")
+	pc, ok := store.config.Providers.Get("codex")
 	require.True(t, ok)
 	require.Equal(t, "rt1", pc.OAuthToken.RefreshToken)
 }

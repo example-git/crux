@@ -4,8 +4,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/ui/common"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/internal/ui/common"
 )
 
 // QuitID is the identifier for the quit dialog.
@@ -21,8 +21,7 @@ type Quit struct {
 		Yes,
 		No,
 		Tab,
-		Close,
-		Quit key.Binding
+		Close key.Binding
 	}
 }
 
@@ -44,7 +43,7 @@ func NewQuit(com *common.Common) *Quit {
 	)
 	q.keyMap.Yes = key.NewBinding(
 		key.WithKeys("y", "Y", "ctrl+c"),
-		key.WithHelp("y/Y/ctrl+c", "yes"),
+		key.WithHelp("y/ctrl+c", "yes"),
 	)
 	q.keyMap.No = key.NewBinding(
 		key.WithKeys("n", "N"),
@@ -55,10 +54,6 @@ func NewQuit(com *common.Common) *Quit {
 		key.WithHelp("tab", "switch options"),
 	)
 	q.keyMap.Close = CloseKey
-	q.keyMap.Quit = key.NewBinding(
-		key.WithKeys("ctrl+c"),
-		key.WithHelp("ctrl+c", "quit"),
-	)
 	return q
 }
 
@@ -72,7 +67,7 @@ func (q *Quit) HandleMsg(msg tea.Msg) Action {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		switch {
-		case key.Matches(msg, q.keyMap.Quit):
+		case key.Matches(msg, q.keyMap.Yes):
 			return ActionQuit{}
 		case key.Matches(msg, q.keyMap.Close):
 			return ActionClose{}
@@ -83,8 +78,6 @@ func (q *Quit) HandleMsg(msg tea.Msg) Action {
 				return ActionQuit{}
 			}
 			return ActionClose{}
-		case key.Matches(msg, q.keyMap.Yes):
-			return ActionQuit{}
 		case key.Matches(msg, q.keyMap.No, q.keyMap.Close):
 			return ActionClose{}
 		}
@@ -97,8 +90,8 @@ func (q *Quit) HandleMsg(msg tea.Msg) Action {
 func (q *Quit) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	const (
 		question    = "Are you sure you want to quit?"
-		hintLineOne = "To quit without confirmation"
-		hintLineTwo = "press ctrl+c twice."
+		hintLineOne = "Select Yep, press y, or press ctrl+c again"
+		hintLineTwo = "to confirm quitting."
 	)
 	var (
 		baseStyle = q.com.Styles.Dialog.Quit.Content

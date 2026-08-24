@@ -1,0 +1,2342 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/example-git/crux/main/provider-plugin.schema.json",
+  "$ref": "#/$defs/Manifest",
+  "$defs": {
+    "AnthropicPolicy": {
+      "properties": {
+        "client_identity": {
+          "$ref": "#/$defs/ResolvedClientIdentity"
+        },
+        "session_header": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "delete_header_prefixes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "delete_headers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "max_request_bytes": {
+          "type": "integer",
+          "maximum": 16777216,
+          "minimum": 1
+        },
+        "transform_failure": {
+          "type": "string",
+          "enum": [
+            "error",
+            "warn-original"
+          ]
+        },
+        "system_line_prefixes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "system_prefixes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 16
+        },
+        "metadata_user_id": {
+          "type": "boolean"
+        },
+        "billing": {
+          "$ref": "#/$defs/BillingAttribution"
+        },
+        "reasoning_fallback": {
+          "type": "boolean"
+        },
+        "stream_holdback_bytes": {
+          "type": "integer",
+          "maximum": 65536,
+          "minimum": 64
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_request_bytes",
+        "transform_failure"
+      ]
+    },
+    "BillingAttribution": {
+      "properties": {
+        "salt": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "byte_offsets": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array",
+          "maxItems": 16,
+          "minItems": 1
+        },
+        "missing_byte": {
+          "type": "string",
+          "maxLength": 1,
+          "minLength": 1
+        },
+        "hash_prefix": {
+          "type": "integer",
+          "maximum": 64,
+          "minimum": 1
+        },
+        "format": {
+          "type": "string",
+          "maxLength": 512
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "salt",
+        "byte_offsets",
+        "missing_byte",
+        "hash_prefix",
+        "format"
+      ]
+    },
+    "Bounds": {
+      "properties": {
+        "min": {
+          "type": "integer"
+        },
+        "max": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "Brand": {
+      "properties": {
+        "label": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "short_name": {
+          "type": "string",
+          "maxLength": 24
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "gradient_a": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "gradient_b": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "Capabilities": {
+      "properties": {
+        "compatibility_adapter": {
+          "$ref": "#/$defs/CompatibilityAdapter"
+        },
+        "credentials": {
+          "items": {
+            "$ref": "#/$defs/Credential"
+          },
+          "type": "array",
+          "maxItems": 32
+        },
+        "oauth": {
+          "items": {
+            "$ref": "#/$defs/OAuthFlow"
+          },
+          "type": "array",
+          "maxItems": 16
+        },
+        "endpoints": {
+          "items": {
+            "$ref": "#/$defs/Endpoint"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "minItems": 1
+        },
+        "headers": {
+          "items": {
+            "$ref": "#/$defs/HeaderRule"
+          },
+          "type": "array",
+          "maxItems": 256
+        },
+        "json_transforms": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JSONPipeline"
+          },
+          "type": "object"
+        },
+        "prompt_transforms": {
+          "additionalProperties": {
+            "$ref": "#/$defs/PromptPipeline"
+          },
+          "type": "object"
+        },
+        "role_maps": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RoleMap"
+          },
+          "type": "object"
+        },
+        "tool_codecs": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ToolCodec"
+          },
+          "type": "object"
+        },
+        "operations": {
+          "items": {
+            "$ref": "#/$defs/Operation"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "minItems": 1
+        },
+        "usage": {
+          "$ref": "#/$defs/UsagePolicy"
+        },
+        "images": {
+          "$ref": "#/$defs/ImagePolicy"
+        },
+        "instructions": {
+          "$ref": "#/$defs/InstructionPolicy"
+        },
+        "runtime_controls": {
+          "items": {
+            "$ref": "#/$defs/RuntimeControl"
+          },
+          "type": "array",
+          "maxItems": 64
+        },
+        "metadata": {
+          "items": {
+            "$ref": "#/$defs/MetadataContract"
+          },
+          "type": "array",
+          "maxItems": 64
+        },
+        "errors": {
+          "items": {
+            "$ref": "#/$defs/ErrorMapping"
+          },
+          "type": "array",
+          "maxItems": 256
+        },
+        "anthropic": {
+          "$ref": "#/$defs/AnthropicPolicy"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "endpoints",
+        "operations"
+      ]
+    },
+    "CompactionPolicy": {
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "local-summary",
+            "remote-operation"
+          ]
+        },
+        "operation": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "retained_token_budget": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "preserve_tool_pairs": {
+          "type": "boolean"
+        },
+        "metadata_namespace": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "mode"
+      ]
+    },
+    "Compatibility": {
+      "properties": {
+        "host_api": {
+          "$ref": "#/$defs/VersionBounds"
+        },
+        "host_version": {
+          "$ref": "#/$defs/SemverBounds"
+        },
+        "required_features": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "optional_features": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host_api"
+      ]
+    },
+    "CompatibilityAdapter": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^integrated-[a-z][a-z0-9-]*$"
+        },
+        "delegates": {
+          "items": {
+            "type": "string",
+            "enum": [
+              "construction",
+              "oauth",
+              "identity",
+              "usage",
+              "runtime",
+              "reasoning"
+            ]
+          },
+          "type": "array",
+          "maxItems": 8,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "inventory": {
+          "items": {
+            "$ref": "#/$defs/CompatibilityInventoryItem"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "delegates",
+        "inventory"
+      ]
+    },
+    "CompatibilityInventoryItem": {
+      "properties": {
+        "delegate": {
+          "type": "string",
+          "enum": [
+            "construction",
+            "oauth",
+            "identity",
+            "usage",
+            "runtime",
+            "reasoning"
+          ]
+        },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "finite-core-primitive",
+            "private-stateful"
+          ]
+        },
+        "behavior": {
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1
+        },
+        "primitive": {
+          "type": "string",
+          "maxLength": 256
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "delegate",
+        "classification",
+        "behavior"
+      ]
+    },
+    "Configuration": {
+      "properties": {
+        "schema": {
+          "type": "object",
+          "description": "Draft 2020-12 JSON Schema for provider configuration"
+        },
+        "fields": {
+          "additionalProperties": {
+            "$ref": "#/$defs/FieldDisplay"
+          },
+          "type": "object",
+          "description": "Generic presentation hints keyed by configuration property"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "schema"
+      ]
+    },
+    "ContinuationPolicy": {
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "none",
+            "previous-response",
+            "previous-interaction"
+          ]
+        },
+        "response_id_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "request_field": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "required_stable_fields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "append_only_history": {
+          "type": "boolean"
+        },
+        "store": {
+          "type": "string",
+          "enum": [
+            "required",
+            "optional",
+            "forbidden"
+          ]
+        },
+        "fallback": {
+          "type": "string",
+          "enum": [
+            "full-replay",
+            "error"
+          ]
+        },
+        "max_idle_seconds": {
+          "type": "integer",
+          "maximum": 86400,
+          "minimum": 1
+        },
+        "metadata_namespace": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "mode",
+        "store",
+        "fallback"
+      ]
+    },
+    "Credential": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "api-key",
+            "bearer",
+            "oauth2",
+            "none"
+          ]
+        },
+        "config_property": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "audience": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "description": "Endpoint IDs to which this credential may be attached"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "legacy_fields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "kind"
+      ]
+    },
+    "Endpoint": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "base_url": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri"
+        },
+        "allowed_schemes": {
+          "items": {
+            "type": "string",
+            "enum": [
+              "https",
+              "wss"
+            ]
+          },
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "allowed_hosts": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 32,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "override": {
+          "type": "string",
+          "enum": [
+            "forbidden",
+            "same-origin",
+            "allowed-hosts"
+          ]
+        },
+        "credential": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "follow_redirects": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "base_url",
+        "allowed_schemes",
+        "allowed_hosts",
+        "override"
+      ]
+    },
+    "ErrorMapping": {
+      "properties": {
+        "class": {
+          "type": "string",
+          "enum": [
+            "authentication",
+            "authorization",
+            "rate-limit",
+            "capacity",
+            "context-overflow",
+            "invalid-request",
+            "content-filter",
+            "server",
+            "transport",
+            "unknown"
+          ]
+        },
+        "statuses": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "codes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "code_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "message_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "context_overflow": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "class"
+      ]
+    },
+    "EventMapping": {
+      "properties": {
+        "source": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "event": {
+          "type": "string",
+          "enum": [
+            "warning",
+            "text-start",
+            "text-delta",
+            "text-end",
+            "reasoning-start",
+            "reasoning-delta",
+            "reasoning-end",
+            "tool-input-start",
+            "tool-input-delta",
+            "tool-input-end",
+            "tool-call",
+            "tool-result",
+            "source",
+            "usage",
+            "finish",
+            "error"
+          ]
+        },
+        "fields": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "Normalized field name to source JSON Pointer"
+        },
+        "metadata_namespace": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "condition": {
+          "$ref": "#/$defs/Predicate"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "source",
+        "event"
+      ]
+    },
+    "FieldDisplay": {
+      "properties": {
+        "label": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "secret": {
+          "type": "boolean"
+        },
+        "advanced": {
+          "type": "boolean"
+        },
+        "order": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "label"
+      ]
+    },
+    "FieldRule": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "value": {
+          "$ref": "#/$defs/Template"
+        },
+        "omit_empty": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "value"
+      ]
+    },
+    "HeaderRule": {
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": [
+            "set",
+            "set-if-absent",
+            "append",
+            "append-unique",
+            "delete"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[!#$%\u0026'*+.^_|~0-9A-Za-z-]+$"
+        },
+        "value": {
+          "$ref": "#/$defs/Template"
+        },
+        "protected": {
+          "type": "boolean",
+          "description": "Prevents user and extension overrides after this rule"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "operation",
+        "name"
+      ]
+    },
+    "ImageHistoryBudget": {
+      "properties": {
+        "request_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "retry_request_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "per_image_targets": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array",
+          "maxItems": 16,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "omit_old_images": {
+          "type": "boolean"
+        },
+        "retain_newest_image": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "request_bytes"
+      ]
+    },
+    "ImagePolicy": {
+      "properties": {
+        "accepted_media_types": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 32,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "max_source_bytes": {
+          "type": "integer",
+          "maximum": 104857600,
+          "minimum": 1
+        },
+        "max_side_pixels": {
+          "type": "integer",
+          "maximum": 32768,
+          "minimum": 1
+        },
+        "max_output_bytes": {
+          "type": "integer",
+          "maximum": 104857600,
+          "minimum": 1
+        },
+        "max_patches": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "output_media_type": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "flatten_alpha": {
+          "type": "string",
+          "enum": [
+            "none",
+            "white",
+            "black"
+          ]
+        },
+        "quality_steps": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "resize_percent": {
+          "type": "integer",
+          "maximum": 99,
+          "minimum": 1
+        },
+        "history_budget": {
+          "$ref": "#/$defs/ImageHistoryBudget"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "accepted_media_types",
+        "max_source_bytes"
+      ]
+    },
+    "InstructionPolicy": {
+      "properties": {
+        "profiles": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "Profile ID to bundle-relative UTF-8 text file"
+        },
+        "default": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "profiles",
+        "default"
+      ]
+    },
+    "JSONOperation": {
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": [
+            "set",
+            "set-if-absent",
+            "delete",
+            "copy",
+            "move",
+            "rename-key",
+            "filter-array",
+            "keep-keys",
+            "drop-keys"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^(|/)"
+        },
+        "from": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "value": {
+          "$ref": "#/$defs/Template"
+        },
+        "keys": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "predicate": {
+          "$ref": "#/$defs/Predicate"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "operation",
+        "path"
+      ]
+    },
+    "JSONPipeline": {
+      "properties": {
+        "max_operations": {
+          "type": "integer",
+          "maximum": 256,
+          "minimum": 1
+        },
+        "operations": {
+          "items": {
+            "$ref": "#/$defs/JSONOperation"
+          },
+          "type": "array",
+          "maxItems": 256,
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "operations"
+      ]
+    },
+    "Manifest": {
+      "properties": {
+        "$schema": {
+          "type": "string",
+          "format": "uri-reference",
+          "description": "Optional editor schema hint; ignored for compatibility"
+        },
+        "plugin_type": {
+          "type": "string",
+          "enum": [
+            "provider"
+          ],
+          "description": "Bundle contract type; omitted manifests are legacy provider bundles"
+        },
+        "manifest_version": {
+          "type": "integer",
+          "maximum": 1,
+          "minimum": 1,
+          "description": "Manifest schema major version"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
+          "description": "Stable plugin identity"
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$",
+          "description": "Plugin semantic version without a v prefix"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1,
+          "description": "Human-readable plugin name"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024,
+          "minLength": 1,
+          "description": "Human-readable plugin purpose"
+        },
+        "publisher": {
+          "$ref": "#/$defs/Publisher",
+          "description": "Publisher identity displayed during trust decisions"
+        },
+        "compatibility": {
+          "$ref": "#/$defs/Compatibility",
+          "description": "Host API and feature compatibility"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider",
+          "description": "Logical provider registered by this bundle"
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/Model"
+          },
+          "type": "array",
+          "maxItems": 512,
+          "minItems": 1,
+          "description": "Closed model catalog in stable display order"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/Capabilities",
+          "description": "Provider capabilities and declarative behavior"
+        },
+        "configuration": {
+          "$ref": "#/$defs/Configuration",
+          "description": "Provider configuration schema and presentation hints"
+        },
+        "extensions": {
+          "additionalProperties": true,
+          "type": "object",
+          "description": "Opaque namespaced data values; keys must begin with x-"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "manifest_version",
+        "id",
+        "version",
+        "name",
+        "description",
+        "publisher",
+        "compatibility",
+        "provider",
+        "models",
+        "capabilities",
+        "configuration"
+      ]
+    },
+    "MetadataContract": {
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "message",
+            "reasoning",
+            "text",
+            "tool-call",
+            "tool-result",
+            "continuation",
+            "compaction"
+          ]
+        },
+        "schema": {
+          "type": "object"
+        },
+        "required_for_replay": {
+          "type": "boolean"
+        },
+        "legacy_projection": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "namespace",
+        "version",
+        "scope",
+        "schema"
+      ]
+    },
+    "Modalities": {
+      "properties": {
+        "input": {
+          "items": {
+            "type": "string",
+            "enum": [
+              "text",
+              "image",
+              "audio",
+              "video",
+              "document"
+            ]
+          },
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "output": {
+          "items": {
+            "type": "string",
+            "enum": [
+              "text",
+              "image",
+              "audio"
+            ]
+          },
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "input",
+        "output"
+      ]
+    },
+    "Model": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "cost_per_1m_in": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_per_1m_out": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_per_1m_in_cached": {
+          "type": "number",
+          "minimum": 0
+        },
+        "cost_per_1m_out_cached": {
+          "type": "number",
+          "minimum": 0
+        },
+        "context_window": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_max_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reasoning": {
+          "$ref": "#/$defs/Reasoning"
+        },
+        "modalities": {
+          "$ref": "#/$defs/Modalities"
+        },
+        "default_options": {
+          "type": "object"
+        },
+        "extensions": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "context_window",
+        "default_max_tokens",
+        "modalities"
+      ]
+    },
+    "OAuthFlow": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "credential": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "authorization_endpoint": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "token_endpoint": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "revocation_endpoint": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "client_id": {
+          "$ref": "#/$defs/Template"
+        },
+        "client_secret": {
+          "$ref": "#/$defs/Template"
+        },
+        "scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "refresh_scopes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "pkce": {
+          "type": "string",
+          "enum": [
+            "required-s256",
+            "optional-s256",
+            "disabled"
+          ]
+        },
+        "redirect": {
+          "$ref": "#/$defs/OAuthRedirect"
+        },
+        "authorization_params": {
+          "items": {
+            "$ref": "#/$defs/QueryRule"
+          },
+          "type": "array",
+          "maxItems": 64
+        },
+        "token_request": {
+          "$ref": "#/$defs/TokenRequest"
+        },
+        "token_response": {
+          "$ref": "#/$defs/TokenResponse"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "maximum": 600,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "credential",
+        "authorization_endpoint",
+        "token_endpoint",
+        "client_id",
+        "scopes",
+        "pkce",
+        "redirect",
+        "token_request",
+        "token_response"
+      ]
+    },
+    "OAuthRedirect": {
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "loopback-dynamic",
+            "loopback-fixed",
+            "hosted-paste",
+            "device-code"
+          ]
+        },
+        "uri": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri"
+        },
+        "callback_path": {
+          "type": "string",
+          "maxLength": 256,
+          "pattern": "^/"
+        },
+        "port": {
+          "type": "integer",
+          "maximum": 65535,
+          "minimum": 1
+        },
+        "state_required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "mode",
+        "state_required"
+      ]
+    },
+    "Operation": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "inference",
+            "model-catalog",
+            "account",
+            "usage",
+            "compaction",
+            "custom"
+          ]
+        },
+        "protocol": {
+          "type": "string",
+          "enum": [
+            "anthropic-messages",
+            "openai-responses",
+            "gemini-generate-content",
+            "gemini-interactions",
+            "generic-json"
+          ]
+        },
+        "transport": {
+          "type": "string",
+          "enum": [
+            "http-json",
+            "sse",
+            "websocket-json"
+          ]
+        },
+        "endpoint": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "method": {
+          "type": "string",
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^/"
+        },
+        "headers": {
+          "items": {
+            "$ref": "#/$defs/HeaderRule"
+          },
+          "type": "array",
+          "maxItems": 128
+        },
+        "request_transform": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "response_transform": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "prompt_transform": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "role_map": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "tool_codec": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "streaming": {
+          "$ref": "#/$defs/StreamingPolicy"
+        },
+        "retry": {
+          "$ref": "#/$defs/RetryPolicy"
+        },
+        "continuation": {
+          "$ref": "#/$defs/ContinuationPolicy"
+        },
+        "compaction": {
+          "$ref": "#/$defs/CompactionPolicy"
+        },
+        "timeouts": {
+          "$ref": "#/$defs/TimeoutHints"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "protocol",
+        "transport",
+        "endpoint",
+        "path"
+      ]
+    },
+    "ParameterMap": {
+      "properties": {
+        "tool": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "host": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 128
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "tool",
+        "host",
+        "provider"
+      ]
+    },
+    "Predicate": {
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": [
+            "exists",
+            "equals",
+            "not-equals",
+            "contains",
+            "starts-with",
+            "matches-enum"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^(|/)"
+        },
+        "value": {
+          "$ref": "#/$defs/Template"
+        },
+        "values": {
+          "items": {
+            "$ref": "#/$defs/Template"
+          },
+          "type": "array",
+          "maxItems": 64
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "operation"
+      ]
+    },
+    "PromptOperation": {
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": [
+            "prepend",
+            "append",
+            "insert-after-role",
+            "remove-lines-with-prefix",
+            "drop-role",
+            "join-adjacent-role"
+          ]
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "system",
+            "developer",
+            "user",
+            "assistant",
+            "tool"
+          ]
+        },
+        "text": {
+          "$ref": "#/$defs/Template"
+        },
+        "prefix": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "when": {
+          "$ref": "#/$defs/Predicate"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "operation"
+      ]
+    },
+    "PromptPipeline": {
+      "properties": {
+        "operations": {
+          "items": {
+            "$ref": "#/$defs/PromptOperation"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "minItems": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "operations"
+      ]
+    },
+    "Provider": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true
+        },
+        "account_namespace": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$"
+        },
+        "legacy_account_aliases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true
+        },
+        "default_large_model": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "default_small_model": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1
+        },
+        "login_order": {
+          "type": "integer",
+          "maximum": 10000,
+          "minimum": 1
+        },
+        "account_order": {
+          "type": "integer",
+          "maximum": 10000,
+          "minimum": 1
+        },
+        "flat_rate": {
+          "type": "boolean"
+        },
+        "brand": {
+          "$ref": "#/$defs/Brand"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "account_namespace",
+        "default_large_model",
+        "default_small_model",
+        "login_order",
+        "account_order"
+      ]
+    },
+    "Publisher": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri"
+        },
+        "support_url": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "QueryRule": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "value": {
+          "$ref": "#/$defs/Template"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "value"
+      ]
+    },
+    "Reasoning": {
+      "properties": {
+        "levels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "default": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "budgets": {
+          "$ref": "#/$defs/Bounds"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ResolvedClientIdentity": {
+      "properties": {
+        "environment": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "latest_url": {
+          "type": "string",
+          "maxLength": 2048,
+          "format": "uri"
+        },
+        "cache_key": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "fallback_version": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "version_pattern": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "user_agent_format": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "probe_timeout_ms": {
+          "type": "integer",
+          "maximum": 30000,
+          "minimum": 1
+        },
+        "probe_max_bytes": {
+          "type": "integer",
+          "maximum": 65536,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "cache_key",
+        "fallback_version",
+        "version_pattern",
+        "user_agent_format",
+        "probe_timeout_ms",
+        "probe_max_bytes"
+      ]
+    },
+    "RetryPolicy": {
+      "properties": {
+        "max_attempts": {
+          "type": "integer",
+          "maximum": 10,
+          "minimum": 1
+        },
+        "initial_delay_ms": {
+          "type": "integer",
+          "maximum": 60000,
+          "minimum": 0
+        },
+        "max_delay_ms": {
+          "type": "integer",
+          "maximum": 60000,
+          "minimum": 0
+        },
+        "factor": {
+          "type": "number",
+          "maximum": 10,
+          "minimum": 1
+        },
+        "jitter": {
+          "type": "boolean"
+        },
+        "retry_after": {
+          "type": "boolean"
+        },
+        "statuses": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "codes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "transport_errors": {
+          "type": "boolean"
+        },
+        "unexpected_eof": {
+          "type": "boolean"
+        },
+        "authentication": {
+          "type": "string",
+          "enum": [
+            "never",
+            "refresh-once"
+          ]
+        },
+        "replay_requirement": {
+          "type": "string",
+          "enum": [
+            "idempotent",
+            "before-first-event",
+            "never"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "max_attempts",
+        "authentication",
+        "replay_requirement"
+      ]
+    },
+    "RoleMap": {
+      "properties": {
+        "system": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "developer": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "user": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "assistant": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "tool": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "unknown": {
+          "type": "string",
+          "enum": [
+            "reject",
+            "drop",
+            "warn-drop"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "unknown"
+      ]
+    },
+    "RuntimeControl": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_.-]*$"
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "boolean",
+            "integer",
+            "number",
+            "string",
+            "enum"
+          ]
+        },
+        "values": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "default": true,
+        "scope": {
+          "type": "string",
+          "enum": [
+            "provider",
+            "model",
+            "request"
+          ]
+        },
+        "request_path": {
+          "type": "string",
+          "pattern": "^/"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "label",
+        "type",
+        "scope"
+      ]
+    },
+    "SemverBounds": {
+      "properties": {
+        "min": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        },
+        "max": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "StreamingPolicy": {
+      "properties": {
+        "event_source": {
+          "type": "string",
+          "enum": [
+            "sse-data-json",
+            "websocket-json",
+            "json-sequence"
+          ]
+        },
+        "done_marker": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "event_type_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "mappings": {
+          "items": {
+            "$ref": "#/$defs/EventMapping"
+          },
+          "type": "array",
+          "maxItems": 256,
+          "minItems": 1
+        },
+        "require_terminal": {
+          "type": "boolean"
+        },
+        "unknown_event": {
+          "type": "string",
+          "enum": [
+            "ignore",
+            "warn",
+            "error"
+          ]
+        },
+        "max_event_bytes": {
+          "type": "integer",
+          "maximum": 16777216,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "event_source",
+        "mappings",
+        "require_terminal",
+        "unknown_event"
+      ]
+    },
+    "Template": {
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "literal",
+            "config",
+            "credential",
+            "context",
+            "concat",
+            "uuid",
+            "unix-time",
+            "random-hex"
+          ]
+        },
+        "value": {
+          "description": "JSON literal value; used only when kind is literal"
+        },
+        "ref": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "parts": {
+          "items": {
+            "$ref": "#/$defs/Template"
+          },
+          "type": "array",
+          "maxItems": 64
+        },
+        "bytes": {
+          "type": "integer",
+          "maximum": 64,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "kind"
+      ]
+    },
+    "TimeoutHints": {
+      "properties": {
+        "connect_seconds": {
+          "type": "integer",
+          "maximum": 120,
+          "minimum": 1
+        },
+        "request_seconds": {
+          "type": "integer",
+          "maximum": 600,
+          "minimum": 1
+        },
+        "idle_seconds": {
+          "type": "integer",
+          "maximum": 600,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "TokenRequest": {
+      "properties": {
+        "encoding": {
+          "type": "string",
+          "enum": [
+            "form",
+            "json"
+          ]
+        },
+        "auth_style": {
+          "type": "string",
+          "enum": [
+            "params",
+            "basic",
+            "none"
+          ]
+        },
+        "authorization_code": {
+          "items": {
+            "$ref": "#/$defs/FieldRule"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "minItems": 1
+        },
+        "refresh_token": {
+          "items": {
+            "$ref": "#/$defs/FieldRule"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "minItems": 1
+        },
+        "headers": {
+          "items": {
+            "$ref": "#/$defs/HeaderRule"
+          },
+          "type": "array",
+          "maxItems": 32
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "encoding",
+        "auth_style",
+        "authorization_code",
+        "refresh_token"
+      ]
+    },
+    "TokenResponse": {
+      "properties": {
+        "access_token_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "refresh_token_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "expires_in_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "token_type_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "default_expires_in_seconds": {
+          "type": "integer",
+          "maximum": 31536000,
+          "minimum": 1
+        },
+        "preserve_refresh_token_when_omitted": {
+          "type": "boolean"
+        },
+        "max_body_bytes": {
+          "type": "integer",
+          "maximum": 10485760,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "access_token_pointer",
+        "preserve_refresh_token_when_omitted"
+      ]
+    },
+    "ToolAlias": {
+      "properties": {
+        "host": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host",
+        "provider"
+      ]
+    },
+    "ToolCodec": {
+      "properties": {
+        "aliases": {
+          "items": {
+            "$ref": "#/$defs/ToolAlias"
+          },
+          "type": "array",
+          "maxItems": 512,
+          "minItems": 1
+        },
+        "parameters": {
+          "items": {
+            "$ref": "#/$defs/ParameterMap"
+          },
+          "type": "array",
+          "maxItems": 1024
+        },
+        "surfaces": {
+          "items": {
+            "type": "string",
+            "enum": [
+              "definitions",
+              "prompt-references",
+              "history-calls",
+              "history-results",
+              "stream-events"
+            ]
+          },
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "case_fold_inbound": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "aliases",
+        "surfaces"
+      ]
+    },
+    "UsageMapping": {
+      "properties": {
+        "target": {
+          "type": "string",
+          "enum": [
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "total_tokens"
+          ]
+        },
+        "pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "copy",
+            "subtract-cache-read",
+            "accumulate",
+            "replace"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "target",
+        "pointer"
+      ]
+    },
+    "UsagePolicy": {
+      "properties": {
+        "operation": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "source": {
+          "type": "string",
+          "enum": [
+            "response",
+            "stream",
+            "operation"
+          ]
+        },
+        "mappings": {
+          "items": {
+            "$ref": "#/$defs/UsageMapping"
+          },
+          "type": "array",
+          "maxItems": 64
+        },
+        "windows": {
+          "items": {
+            "$ref": "#/$defs/WindowMap"
+          },
+          "type": "array",
+          "maxItems": 32
+        },
+        "fallback": {
+          "type": "string",
+          "enum": [
+            "zero",
+            "estimate",
+            "unavailable"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "source",
+        "fallback"
+      ]
+    },
+    "VersionBounds": {
+      "properties": {
+        "min": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "min",
+        "max"
+      ]
+    },
+    "WindowMap": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "used_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "limit_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "remaining_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "reset_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "reset_format": {
+          "type": "string",
+          "enum": [
+            "unix-seconds",
+            "unix-milliseconds",
+            "rfc3339",
+            "duration-seconds"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id"
+      ]
+    }
+  },
+  "title": "Crux Provider Plugin Manifest",
+  "description": "Version 1 manifest.json contract for direct *.plugin provider bundles"
+}

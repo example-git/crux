@@ -1,18 +1,18 @@
-// Get all charmtone colors once from computed styles
+// Read the Crux chart palette once from computed styles
 const rootStyles = getComputedStyle(document.documentElement);
 const colors = {
-  charple: rootStyles.getPropertyValue("--charple").trim(),
-  cherry: rootStyles.getPropertyValue("--cherry").trim(),
-  julep: rootStyles.getPropertyValue("--julep").trim(),
-  urchin: rootStyles.getPropertyValue("--urchin").trim(),
-  butter: rootStyles.getPropertyValue("--butter").trim(),
-  squid: rootStyles.getPropertyValue("--squid").trim(),
-  pepper: rootStyles.getPropertyValue("--pepper").trim(),
-  tuna: rootStyles.getPropertyValue("--tuna").trim(),
-  uni: rootStyles.getPropertyValue("--uni").trim(),
-  coral: rootStyles.getPropertyValue("--coral").trim(),
+  primary: rootStyles.getPropertyValue("--primary").trim(),
+  pink: rootStyles.getPropertyValue("--pink").trim(),
+  green: rootStyles.getPropertyValue("--green").trim(),
+  purple: rootStyles.getPropertyValue("--purple").trim(),
+  light: rootStyles.getPropertyValue("--light").trim(),
+  muted: rootStyles.getPropertyValue("--muted").trim(),
+  dark: rootStyles.getPropertyValue("--dark").trim(),
+  rose: rootStyles.getPropertyValue("--rose").trim(),
+  orange: rootStyles.getPropertyValue("--orange").trim(),
+  error: rootStyles.getPropertyValue("--error").trim(),
   violet: rootStyles.getPropertyValue("--violet").trim(),
-  malibu: rootStyles.getPropertyValue("--malibu").trim(),
+  blue: rootStyles.getPropertyValue("--blue").trim(),
 };
 
 const easeDuration = 500;
@@ -51,13 +51,13 @@ function formatTime(ms) {
   return (ms / 1000).toFixed(1) + "s";
 }
 
-const charpleColor = { r: 107, g: 80, b: 255 };
-const tunaColor = { r: 255, g: 109, b: 170 };
+const primaryColor = { r: 107, g: 80, b: 255 };
+const roseColor = { r: 255, g: 109, b: 170 };
 
 function interpolateColor(ratio, alpha = 1) {
-  const r = Math.round(charpleColor.r + (tunaColor.r - charpleColor.r) * ratio);
-  const g = Math.round(charpleColor.g + (tunaColor.g - charpleColor.g) * ratio);
-  const b = Math.round(charpleColor.b + (tunaColor.b - charpleColor.b) * ratio);
+  const r = Math.round(primaryColor.r + (roseColor.r - primaryColor.r) * ratio);
+  const g = Math.round(primaryColor.g + (roseColor.g - primaryColor.g) * ratio);
+  const b = Math.round(primaryColor.b + (roseColor.b - primaryColor.b) * ratio);
   if (alpha < 1) {
     return `rgba(${r}, ${g}, ${b}, ${alpha})`;
   }
@@ -96,8 +96,8 @@ document.getElementById("avg-response").innerHTML =
   '<span title="Average">x̅</span> ' + formatTime(stats.avg_response_time_ms);
 
 // Chart defaults
-Chart.defaults.color = colors.squid;
-Chart.defaults.borderColor = colors.squid;
+Chart.defaults.color = colors.muted;
+Chart.defaults.borderColor = colors.muted;
 
 if (stats.recent_activity?.length > 0) {
   new Chart(document.getElementById("recentActivityChart"), {
@@ -108,14 +108,14 @@ if (stats.recent_activity?.length > 0) {
         {
           label: "Sessions",
           data: stats.recent_activity.map((d) => d.session_count),
-          backgroundColor: colors.charple,
+          backgroundColor: colors.primary,
           borderRadius: 4,
           yAxisID: "y",
         },
         {
           label: "Tokens (K)",
           data: stats.recent_activity.map((d) => d.total_tokens / 1000),
-          backgroundColor: colors.julep,
+          backgroundColor: colors.green,
           borderRadius: 4,
           yAxisID: "y1",
         },
@@ -272,7 +272,7 @@ new Chart(document.getElementById("tokenPieChart"), {
           stats.total.total_prompt_tokens,
           stats.total.total_completion_tokens,
         ],
-        backgroundColor: [colors.charple, colors.julep],
+        backgroundColor: [colors.primary, colors.green],
         borderWidth: 0,
       },
     ],
@@ -330,12 +330,12 @@ if (stats.usage_by_model?.length > 0) {
     return acc;
   }, {});
   const providerColors = [
-    colors.malibu,
-    colors.charple,
+    colors.blue,
+    colors.primary,
     colors.violet,
-    colors.tuna,
-    colors.coral,
-    colors.uni,
+    colors.rose,
+    colors.error,
+    colors.orange,
   ];
   new Chart(document.getElementById("providerPieChart"), {
     type: "doughnut",

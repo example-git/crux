@@ -10,9 +10,9 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/ui/common"
 	uv "github.com/charmbracelet/ultraviolet"
+	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/ui/common"
 	"github.com/pkg/browser"
 )
 
@@ -276,8 +276,6 @@ func (m *MCPAuth) innerContent() string {
 		progress = fmt.Sprintf(" (%d/%d)", m.current+1, len(m.pending))
 	}
 
-	// urlText renders the URL as a green hyperlink, matching the Hyper
-	// OAuth dialog's link style. No label, no box — just the URL.
 	urlText := func(u string) string {
 		if u == "" {
 			return ""

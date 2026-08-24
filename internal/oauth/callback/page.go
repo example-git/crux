@@ -7,8 +7,7 @@
 // failure in the provider's own words, and offers to close itself.
 //
 // Rendering is self-contained. Markup, styles, script, and artwork are
-// embedded in the binary, so the page works with no network access beyond
-// an optional web font.
+// embedded in the binary, so the page works without network access.
 package callback
 
 import (
@@ -21,7 +20,7 @@ import (
 	"time"
 )
 
-//go:embed page.html page.css page.js heartbit.svg heartbit-grumpy.svg charm.svg
+//go:embed page.html page.css page.js crux-mark.svg crux-mark-error.svg crux-wordmark.svg
 var assets embed.FS
 
 // closeDelay is how long the page counts down before asking the browser to
@@ -65,15 +64,15 @@ func Write(w io.Writer, r Result) error {
 	if err != nil {
 		return fmt.Errorf("read callback script: %w", err)
 	}
-	mark, err := assets.ReadFile("heartbit.svg")
+	mark, err := assets.ReadFile("crux-mark.svg")
 	if err != nil {
 		return fmt.Errorf("read callback artwork: %w", err)
 	}
-	grumpy, err := assets.ReadFile("heartbit-grumpy.svg")
+	failedMark, err := assets.ReadFile("crux-mark-error.svg")
 	if err != nil {
-		return fmt.Errorf("read callback grumpy artwork: %w", err)
+		return fmt.Errorf("read callback failure artwork: %w", err)
 	}
-	logo, err := assets.ReadFile("charm.svg")
+	logo, err := assets.ReadFile("crux-wordmark.svg")
 	if err != nil {
 		return fmt.Errorf("read callback logo: %w", err)
 	}
@@ -90,8 +89,8 @@ func Write(w io.Writer, r Result) error {
 		CloseDelay       int
 		CSS              template.CSS
 		JS               template.JS
-		Heartbit         template.HTML
-		Charm            template.HTML
+		CruxMark         template.HTML
+		Crux             template.HTML
 		Favicon          template.URL
 	}{
 		Subject:          r.Subject,
@@ -99,37 +98,35 @@ func Write(w io.Writer, r Result) error {
 		ErrorDescription: r.ErrorDescription,
 		CSS:              template.CSS(css),
 		JS:               template.JS(js),
-		Charm:            template.HTML(logo),
+		Crux:             template.HTML(logo),
 	}
 
-	// The artwork reflects the outcome: a smiling heart on success, a
-	// grumpy one when the authorization did not go through. The favicon
-	// matches so the tab itself carries the state.
+	// The artwork and favicon reflect the authorization outcome.
 	art := mark
 	if r.Failed() {
-		art = grumpy
+		art = failedMark
 	}
-	data.Heartbit = template.HTML(art)
+	data.CruxMark = template.HTML(art)
 	data.Favicon = template.URL("data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(art))
 
 	if r.Failed() {
-		data.Title = "Authorization failed — Crush"
+		data.Title = "Authorization failed — Crux"
 		data.Kind = "failed"
 		data.Heading = "Authorization failed"
-		data.Detail = "Crush was not granted access to"
+		data.Detail = "Crux was not granted access to"
 		if r.Subject == "" {
-			data.Detail = "Crush was not granted access."
+			data.Detail = "Crux was not granted access."
 		}
 		// A failed page keeps itself open: the reader needs the reason,
 		// and closing the tab out from under them would take it away.
-		data.Status = "Close this tab and try again from Crush."
+		data.Status = "Close this tab and try again from Crux."
 	} else {
-		data.Title = "Authorized — Crush"
+		data.Title = "Authorized — Crux"
 		data.Kind = "ok"
 		data.Heading = "You’re all set"
-		data.Detail = "Crush is now connected to"
+		data.Detail = "Crux is now connected to"
 		if r.Subject == "" {
-			data.Detail = "Crush is now connected."
+			data.Detail = "Crux is now connected."
 		}
 		// Replaced by the countdown as soon as the script runs, so this
 		// text is what a reader without JavaScript is left with.

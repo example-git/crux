@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"testing"
 
-	"charm.land/fantasy"
+	fantasy "github.com/example-git/crux/foundation"
 	"github.com/stretchr/testify/require"
 )
 

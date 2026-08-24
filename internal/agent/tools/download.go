@@ -13,9 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/filepathext"
-	"github.com/charmbracelet/crush/internal/permission"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/filepathext"
+	cruxlog "github.com/example-git/crux/internal/log"
+	"github.com/example-git/crux/internal/permission"
 )
 
 type DownloadParams struct {
@@ -52,14 +53,14 @@ func downloadDescription() string {
 
 func NewDownloadTool(permissions permission.Service, workingDir string, client *http.Client) fantasy.AgentTool {
 	if client == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport := cruxlog.CloneDefaultHTTPTransport()
 		transport.MaxIdleConns = 100
 		transport.MaxIdleConnsPerHost = 10
 		transport.IdleConnTimeout = 90 * time.Second
 
 		client = &http.Client{
 			Timeout:   5 * time.Minute, // Default 5 minute timeout for downloads
-			Transport: transport,
+			Transport: cruxlog.WrapHTTPTransport(transport),
 		}
 	}
 	return fantasy.NewParallelAgentTool(
@@ -122,7 +123,7 @@ func NewDownloadTool(permissions permission.Service, workingDir string, client *
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to create request: %w", err)
 			}
 
-			req.Header.Set("User-Agent", "crush/1.0")
+			req.Header.Set("User-Agent", "crux/1.0")
 
 			resp, err := client.Do(req)
 			if err != nil {

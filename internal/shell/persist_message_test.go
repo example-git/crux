@@ -3,9 +3,9 @@ package shell
 import (
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/session"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )

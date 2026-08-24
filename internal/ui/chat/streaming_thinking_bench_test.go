@@ -6,12 +6,12 @@ import (
 	"testing"
 
 	"charm.land/glamour/v2"
-	"github.com/charmbracelet/crush/internal/ui/styles"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 // buildThinkingBlock generates a realistic long thinking block with
 // paragraphs, lists, and code fences — the kind of content that
-// triggers the CHARM-1785 perf bug.
+// triggers the previously quadratic streaming-rendering path.
 func buildThinkingBlock(paragraphs int) string {
 	var b strings.Builder
 	for i := range paragraphs {
@@ -26,8 +26,44 @@ func buildThinkingBlock(paragraphs int) string {
 	return b.String()
 }
 
-// BenchmarkStreamingThinking benchmarks the streaming render path for
-// a long thinking block. Before CHARM-1785, every tick did a full
+// BenchmarkLiveCollapsedThinking benchmarks the production path for active
+// reasoning. Live reasoning stays plain and bounded; Markdown rendering is
+// deferred until the section finishes.
+func BenchmarkLiveCollapsedThinking(b *testing.B) {
+	full := buildThinkingBlock(200)
+	paragraphs := strings.Split(full, "\n\n")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		var accumulated strings.Builder
+		lineCount := 1
+		for _, paragraph := range paragraphs {
+			if accumulated.Len() > 0 {
+				accumulated.WriteString("\n\n")
+				lineCount += 2
+			}
+			accumulated.WriteString(paragraph)
+			lineCount += strings.Count(paragraph, "\n")
+			_, _ = renderLiveThinkingWindow(accumulated.String(), 80, maxCollapsedThinkingHeight, lineCount)
+		}
+	}
+}
+
+// BenchmarkLiveCollapsedThinkingSteadyState benchmarks one active-reasoning
+// update after the accumulated text is already large.
+func BenchmarkLiveCollapsedThinkingSteadyState(b *testing.B) {
+	content := buildThinkingBlock(200) + "Let me reconsider this approach once more.\n\n"
+	lineCount := countLines(content)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = renderLiveThinkingWindow(content, 80, maxCollapsedThinkingHeight, lineCount)
+	}
+}
+
+// BenchmarkStreamingThinking benchmarks the lower-level Markdown streaming
+// engine over a long document. Before the optimization, every tick did a full
 // glamour re-render of the entire accumulated text because
 // prefixHasOpenHazard rejected any document containing a list marker.
 // After the fix, the stable-prefix cache seeds and each tick only

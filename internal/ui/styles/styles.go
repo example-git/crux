@@ -13,16 +13,15 @@ import (
 	"charm.land/glamour/v2/ansi"
 	"charm.land/lipgloss/v2"
 	"github.com/alecthomas/chroma/v2"
-	"github.com/charmbracelet/crush/internal/ui/diffview"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/internal/ui/diffview"
 )
 
 const (
-	CheckIcon       string = "✓"
-	SpinnerIcon     string = "⋯"
-	LoadingIcon     string = "⟳"
-	ModelIcon       string = "◇"
-	HypercreditIcon string = "◆"
+	CheckIcon   string = "✓"
+	SpinnerIcon string = "⋯"
+	LoadingIcon string = "⟳"
+	ModelIcon   string = "◇"
 
 	ArrowRightIcon string = "→"
 
@@ -68,24 +67,22 @@ type Styles struct {
 	// basic 16-color SGR codes (red, green, blue, …) and leave the actual
 	// colors up to the terminal; without this palette they fall through
 	// to the user's terminal defaults, which are often illegible on
-	// Crush's background. Defining them here keeps output readable and
+	// Crux's background. Defining them here keeps output readable and
 	// on-brand regardless of terminal configuration.
 	ANSI [16]color.Color
 
 	// Header
 	Header struct {
-		Charm             lipgloss.Style // Style for "Charm™" label
 		Diagonals         lipgloss.Style // Style for diagonal separators (╱)
 		Percentage        lipgloss.Style // Style for context percentage
-		HypercreditIcon   lipgloss.Style // Style for Hypercredit count (◆ N)
 		Keystroke         lipgloss.Style // Style for keystroke hints (e.g., "ctrl+d")
 		KeystrokeTip      lipgloss.Style // Style for keystroke action text (e.g., "open", "close")
 		WorkingDir        lipgloss.Style // Style for current working directory
 		Separator         lipgloss.Style // Style for separator dots (•)
 		Wrapper           lipgloss.Style // Outer container for the entire header row
-		LogoGradCanvas    lipgloss.Style // Canvas for the compact "CRUSH" gradient
-		LogoGradFromColor color.Color    // "CRUSH" wordmark gradient start
-		LogoGradToColor   color.Color    // "CRUSH" wordmark gradient end
+		LogoGradCanvas    lipgloss.Style // Canvas for the compact "CRUX" gradient
+		LogoGradFromColor color.Color    // "CRUX" wordmark gradient start
+		LogoGradToColor   color.Color    // "CRUX" wordmark gradient end
 	}
 
 	CompactDetails struct {
@@ -126,7 +123,8 @@ type Styles struct {
 
 	// Editor
 	Editor struct {
-		Textarea textarea.Styles
+		Textarea   textarea.Styles
+		Background color.Color
 
 		// Normal mode prompt (default "::: ").
 		PromptNormalFocused lipgloss.Style
@@ -137,6 +135,11 @@ type Styles struct {
 		PromptYoloIconBlurred lipgloss.Style
 		PromptYoloDotsFocused lipgloss.Style
 		PromptYoloDotsBlurred lipgloss.Style
+
+		PromptPlanIconFocused lipgloss.Style
+		PromptPlanIconBlurred lipgloss.Style
+		PromptPlanDotsFocused lipgloss.Style
+		PromptPlanDotsBlurred lipgloss.Style
 
 		// Bang mode prompt (" ! " icon + ":::" dots, Turtle color).
 		PromptBangIconFocused lipgloss.Style
@@ -159,6 +162,7 @@ type Styles struct {
 		QuestionRadioOff   lipgloss.Style // Unselected single-choice radio.
 		QuestionCheckOn    lipgloss.Style // Checked multi-choice indicator.
 		QuestionCheckOff   lipgloss.Style // Unchecked multi-choice indicator.
+		TasksTab           lipgloss.Style
 	}
 
 	// Radio
@@ -187,13 +191,11 @@ type Styles struct {
 		FieldColor         color.Color
 		TitleColorA        color.Color
 		TitleColorB        color.Color
-		CharmColor         color.Color
 		VersionColor       color.Color
-		SmallCharm         lipgloss.Style // "Charm™" label in SmallRender
 		SmallDiagonals     lipgloss.Style // Diagonal line fill in SmallRender
 		GradCanvas         lipgloss.Style // Blank canvas for gradient painting
-		SmallGradFromColor color.Color    // Small "Crush" wordmark gradient start
-		SmallGradToColor   color.Color    // Small "Crush" wordmark gradient end
+		SmallGradFromColor color.Color    // Small "Crux" wordmark gradient start
+		SmallGradToColor   color.Color    // Small "Crux" wordmark gradient end
 	}
 
 	// Working indicator gradient (spinners/shimmers on assistant "thinking",
@@ -241,8 +243,6 @@ type Styles struct {
 		TokenPercentage      lipgloss.Style // "42%" percent of context window
 		EstimatedUsagePrefix lipgloss.Style // "~" prefix for estimated usage
 		Cost                 lipgloss.Style // "$0.42" cost readout
-		HypercreditIcon      lipgloss.Style // Hypercredit icon (◆)
-		HypercreditText      lipgloss.Style // Remaining Hypercredits text
 	}
 
 	// Resource styles the LSP/MCP/skills sidebar lists: their heading,
@@ -456,8 +456,19 @@ type Styles struct {
 		Spinner lipgloss.Style
 
 		// ContentPanel is used for content blocks with subtle background.
-		ContentPanel   lipgloss.Style
-		ContentPanelBg color.Color // Background color for ContentPanel syntax highlighting.
+		ContentPanel         lipgloss.Style
+		ContentPanelBg       color.Color // Background color for ContentPanel syntax highlighting.
+		CommandPanel         lipgloss.Style
+		TerminalPanel        lipgloss.Style
+		TerminalPanelFocused lipgloss.Style
+		TaskStatus           struct {
+			Pending   lipgloss.Style
+			Running   lipgloss.Style
+			Completed lipgloss.Style
+			Failed    lipgloss.Style
+			Killed    lipgloss.Style
+			Lost      lipgloss.Style
+		}
 
 		// Scrollbar styles for scrollable content.
 		ScrollbarThumb lipgloss.Style

@@ -11,10 +11,10 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/catwalk/pkg/catwalk"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	"github.com/charmbracelet/crush/internal/ui/util"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/util"
 )
 
 // ModelType represents the type of model to select.
@@ -371,7 +371,7 @@ func (m *Models) setProviderItems() error {
 	itemsMap := make(map[string]*ModelItem)
 	groups := []ModelGroup{}
 	for id, p := range cfg.Providers.Seq2() {
-		if p.Disable {
+		if !cfg.IsProviderAvailable(id) {
 			continue
 		}
 
@@ -401,7 +401,6 @@ func (m *Models) setProviderItems() error {
 	}
 
 	// Now add known providers from the predefined list.
-	// Providers already has Hyper at the front of the list.
 	for _, provider := range m.providers {
 		providerID := string(provider.ID)
 		if addedProviders[providerID] {
@@ -454,7 +453,6 @@ func (m *Models) setProviderItems() error {
 	if len(recentItems) > 0 {
 		recentGroup := NewModelGroup(t, "Recently used", false)
 
-		var validRecentItems []config.SelectedModel
 		for _, recent := range recentItems {
 			key := modelKey(recent.Provider, recent.Model)
 			item, ok := itemsMap[key]
@@ -466,19 +464,14 @@ func (m *Models) setProviderItems() error {
 			item = NewModelItem(t, item.prov, item.model, m.modelType, true)
 			item.showProvider = true
 
-			validRecentItems = append(validRecentItems, recent)
 			recentGroup.AppendItems(item)
 			if recent.Model == currentModel.Model && recent.Provider == currentModel.Provider {
 				selectedItemID = item.ID()
 			}
 		}
 
-		if len(validRecentItems) != len(recentItems) {
-			// FIXME: Does this need to be here? Is it mutating the config during a read?
-			if err := m.com.Workspace.SetConfigField(config.ScopeGlobal, fmt.Sprintf("recent_models.%s", selectedType), validRecentItems); err != nil {
-				return fmt.Errorf("failed to update recent models: %w", err)
-			}
-		}
+		// Missing providers and models are omitted from this view but retained in
+		// recent_models. A temporary plugin failure must never mutate history.
 
 		if len(recentGroup.Items) > 0 {
 			groups = append([]ModelGroup{recentGroup}, groups...)

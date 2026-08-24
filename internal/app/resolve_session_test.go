@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/session"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/session"
 	"github.com/stretchr/testify/require"
 )
 
@@ -60,7 +60,19 @@ func (m *mockSessionService) Save(_ context.Context, s session.Session) (session
 	return s, nil
 }
 
-func (m *mockSessionService) UpdateTitleAndUsage(context.Context, string, string, int64, int64, float64) error {
+func (m *mockSessionService) SetMode(context.Context, string, session.Mode) error {
+	return nil
+}
+
+func (m *mockSessionService) SetPlanState(context.Context, string, session.Mode, string) error {
+	return nil
+}
+
+func (m *mockSessionService) UpdateTitleAndCost(context.Context, string, string, float64) error {
+	return nil
+}
+
+func (m *mockSessionService) PublishCompaction(context.Context, string, bool) error {
 	return nil
 }
 

@@ -3,8 +3,9 @@ package dialog
 import (
 	"fmt"
 	"image"
-	_ "image/jpeg" // register JPEG format
-	_ "image/png"  // register PNG format
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"strings"
 	"sync"
@@ -14,10 +15,11 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/crush/internal/home"
-	"github.com/charmbracelet/crush/internal/ui/common"
-	fimage "github.com/charmbracelet/crush/internal/ui/image"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/internal/home"
+	"github.com/example-git/crux/internal/ui/common"
+	fimage "github.com/example-git/crux/internal/ui/image"
+	_ "golang.org/x/image/webp"
 )
 
 // FilePickerID is the identifier for the FilePicker dialog.
@@ -25,7 +27,8 @@ const FilePickerID = "filepicker"
 
 // FilePicker is a dialog that allows users to select files or directories.
 type FilePicker struct {
-	com *common.Common
+	com            *common.Common
+	maxSourceBytes int64
 
 	imgEnc                      fimage.Encoding
 	imgPrevWidth, imgPrevHeight int
@@ -58,9 +61,10 @@ func (f *FilePicker) CellSize() fimage.CellSize {
 var _ Dialog = (*FilePicker)(nil)
 
 // NewFilePicker creates a new [FilePicker] dialog.
-func NewFilePicker(com *common.Common) (*FilePicker, tea.Cmd) {
+func NewFilePicker(com *common.Common, allowedTypes []string, maxSourceBytes int64) (*FilePicker, tea.Cmd) {
 	f := new(FilePicker)
 	f.com = com
+	f.maxSourceBytes = maxSourceBytes
 
 	help := help.New()
 	help.Styles = com.Styles.DialogHelpStyles()
@@ -97,7 +101,7 @@ func NewFilePicker(com *common.Common) (*FilePicker, tea.Cmd) {
 	)
 
 	fp := filepicker.New()
-	fp.AllowedTypes = common.AllowedImageTypes
+	fp.AllowedTypes = append([]string(nil), allowedTypes...)
 	fp.ShowPermissions = false
 	fp.ShowSize = false
 	fp.AutoHeight = false
@@ -208,7 +212,7 @@ func (f *FilePicker) HandleMsg(msg tea.Msg) Action {
 	}
 
 	if didSelect, path := f.fp.DidSelectFile(msg); didSelect {
-		return ActionFilePickerSelected{Path: path}
+		return ActionFilePickerSelected{Path: path, MaxSourceBytes: f.maxSourceBytes}
 	}
 
 	return ActionCmd{tea.Batch(cmds...)}

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/filetracker"
-	"github.com/charmbracelet/crush/internal/permission"
-	"github.com/charmbracelet/crush/internal/pubsub"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/filetracker"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
 
@@ -154,12 +154,30 @@ func TestViewToolBlocksOversizedReturnedSections(t *testing.T) {
 	require.Contains(t, resp.Content, "Content section is too large")
 }
 
+func TestViewToolAllowsImagesLargerThanTextSections(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	filePath := filepath.Join(workingDir, "page.jpg")
+	require.NoError(t, os.WriteFile(filePath, []byte(strings.Repeat("a", 2*1024*1024)), 0o644))
+
+	tool := newViewToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+	ctx = context.WithValue(ctx, SupportsImagesContextKey, true)
+	resp := runViewTool(t, tool, ctx, ViewParams{FilePath: filePath})
+
+	require.False(t, resp.IsError)
+}
+
 func TestViewToolBlocksOversizedImages(t *testing.T) {
 	t.Parallel()
 
 	workingDir := t.TempDir()
 	filePath := filepath.Join(workingDir, "large.png")
-	require.NoError(t, os.WriteFile(filePath, []byte(strings.Repeat("a", MaxViewSize+1)), 0o644))
+	file, err := os.Create(filePath)
+	require.NoError(t, err)
+	require.NoError(t, file.Truncate(MaxViewImageSize+1))
+	require.NoError(t, file.Close())
 
 	tool := newViewToolForTest(workingDir)
 	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
@@ -170,6 +188,7 @@ func TestViewToolBlocksOversizedImages(t *testing.T) {
 
 	require.True(t, resp.IsError)
 	require.Contains(t, resp.Content, "Image file is too large")
+	require.Contains(t, resp.Content, fmt.Sprintf("Maximum size is %d bytes", MaxViewImageSize))
 }
 
 func TestReadTextFileEnforcesMaxContentSize(t *testing.T) {
@@ -275,22 +294,22 @@ var _ filetracker.Service = mockFileTracker{}
 func TestReadBuiltinFile(t *testing.T) {
 	t.Parallel()
 
-	t.Run("reads crush-config skill", func(t *testing.T) {
+	t.Run("reads crux-config skill", func(t *testing.T) {
 		t.Parallel()
 
 		resp, err := readBuiltinFile(ViewParams{
-			FilePath: "crush://skills/crush-config/SKILL.md",
+			FilePath: "crux://skills/crux-config/SKILL.md",
 		}, nil)
 		require.NoError(t, err)
 		require.NotEmpty(t, resp.Content)
-		require.Contains(t, resp.Content, "Crush Configuration")
+		require.Contains(t, resp.Content, "Crux Configuration")
 	})
 
 	t.Run("not found", func(t *testing.T) {
 		t.Parallel()
 
 		resp, err := readBuiltinFile(ViewParams{
-			FilePath: "crush://skills/nonexistent/SKILL.md",
+			FilePath: "crux://skills/nonexistent/SKILL.md",
 		}, nil)
 		require.NoError(t, err)
 		require.True(t, resp.IsError)
@@ -300,14 +319,14 @@ func TestReadBuiltinFile(t *testing.T) {
 		t.Parallel()
 
 		resp, err := readBuiltinFile(ViewParams{
-			FilePath: "crush://skills/crush-config/SKILL.md",
+			FilePath: "crux://skills/crux-config/SKILL.md",
 		}, nil)
 		require.NoError(t, err)
 
 		var meta ViewResponseMetadata
 		require.NoError(t, json.Unmarshal([]byte(resp.Metadata), &meta))
 		require.Equal(t, ViewResourceSkill, meta.ResourceType)
-		require.Equal(t, "crush-config", meta.ResourceName)
+		require.Equal(t, "crux-config", meta.ResourceName)
 		require.NotEmpty(t, meta.ResourceDescription)
 	})
 
@@ -315,7 +334,7 @@ func TestReadBuiltinFile(t *testing.T) {
 		t.Parallel()
 
 		resp, err := readBuiltinFile(ViewParams{
-			FilePath: "crush://skills/crush-config/SKILL.md",
+			FilePath: "crux://skills/crux-config/SKILL.md",
 			Offset:   5,
 		}, nil)
 		require.NoError(t, err)

@@ -1,0 +1,3 @@
+Use this before investigating and drafting a plan when implementation must not begin yet. It starts the plan lifecycle in read-only drafting state. Workspace writes, process execution/control, orchestration, and unknown dynamic tools become unavailable while read-only tools, codebase search, memory, skills, questions, and other typed planning services remain available.
+
+Drafting moves to revision/review by presenting the complete plan and calling `exit_plan` with the same plan. Plan approval moves to approved-plan execution rather than normal mode. Only `complete_plan` followed by user approval that the work itself is done ends the lifecycle and restores normal instructions.

@@ -5,14 +5,14 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/charmbracelet/crush/internal/agent"
-	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/commands"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/oauth"
-	"github.com/charmbracelet/crush/internal/proto"
-	"github.com/charmbracelet/crush/internal/pubsub"
-	"github.com/charmbracelet/crush/internal/skills"
+	"github.com/example-git/crux/internal/agent"
+	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/commands"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/skills"
 )
 
 // publishConfigChanged publishes a ConfigChanged event on the workspace's
@@ -110,6 +110,7 @@ func (b *Backend) SetProviderAPIKey(workspaceID string, scope config.Scope, prov
 	if err := ws.Cfg.SetProviderAPIKey(scope, providerID, apiKey); err != nil {
 		return err
 	}
+	ws.Cfg.SignalAuthComplete(providerID)
 	publishConfigChanged(ws)
 	return nil
 }

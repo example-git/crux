@@ -2,11 +2,16 @@ package shell
 
 import (
 	"context"
+	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/task"
 	"github.com/stretchr/testify/require"
 )
 
@@ -327,4 +332,493 @@ func TestBackgroundShell_WaitContext_Canceled(t *testing.T) {
 	cancel()
 
 	require.False(t, bgShell.WaitContext(ctx))
+}
+
+func TestBackgroundShellManager_OwnershipAndWorkspaceIsolation(t *testing.T) {
+	t.Parallel()
+
+	first := NewBackgroundShellManager("workspace-one")
+	second := NewBackgroundShellManager("workspace-two")
+	ownership := task.Ownership{
+		ParentSessionID:  "session-one",
+		OwnerAgentTaskID: "a12345678",
+		OriginToolCallID: "tool-one",
+	}
+	backgroundShell, err := first.StartOwned(t.Context(), t.TempDir(), nil, "sleep 10", "owned", ownership)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = first.Kill(backgroundShell.ID) })
+
+	require.Regexp(t, `^b[0-9a-z]{8}$`, backgroundShell.ID)
+	require.Equal(t, "workspace-one", backgroundShell.Ownership.WorkspaceID)
+	require.Equal(t, ownership.ParentSessionID, backgroundShell.Ownership.ParentSessionID)
+	require.Equal(t, ownership.OwnerAgentTaskID, backgroundShell.Ownership.OwnerAgentTaskID)
+	require.Equal(t, ownership.OriginToolCallID, backgroundShell.Ownership.OriginToolCallID)
+	_, ok := second.Get(backgroundShell.ID)
+	require.False(t, ok)
+	require.Equal(t, 0, second.DetachForeground())
+	require.Error(t, second.Kill(backgroundShell.ID))
+}
+
+func TestBackgroundShellManager_StopOwned(t *testing.T) {
+	t.Parallel()
+
+	manager := NewBackgroundShellManager("workspace")
+	workingDir := t.TempDir()
+	owned, err := manager.StartOwned(t.Context(), workingDir, nil, "sleep 10", "owned", task.Ownership{OwnerAgentTaskID: "a12345678"})
+	require.NoError(t, err)
+	unrelated, err := manager.StartOwned(t.Context(), workingDir, nil, "sleep 10", "unrelated", task.Ownership{OwnerAgentTaskID: "a87654321"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = manager.Kill(unrelated.ID) })
+
+	require.Equal(t, 1, manager.StopOwned(t.Context(), "a12345678"))
+	require.Equal(t, task.StatusKilled, owned.State().Status)
+	require.False(t, unrelated.State().Status.Terminal())
+	require.Equal(t, 1, manager.StopOwned(t.Context(), "a12345678"))
+	require.Equal(t, 0, manager.StopOwned(t.Context(), ""))
+}
+
+func TestBackgroundShellManager_AtomicAdmission(t *testing.T) {
+	t.Parallel()
+
+	manager := NewBackgroundShellManager("workspace")
+	workingDir := t.TempDir()
+	var waitGroup sync.WaitGroup
+	var admitted atomic.Int64
+	for range MaxBackgroundJobs + 20 {
+		waitGroup.Go(func() {
+			backgroundShell, err := manager.Start(t.Context(), workingDir, nil, "sleep 10", "")
+			if err == nil {
+				admitted.Add(1)
+				t.Cleanup(func() { _ = manager.Kill(backgroundShell.ID) })
+			}
+		})
+	}
+	waitGroup.Wait()
+
+	require.EqualValues(t, MaxBackgroundJobs, admitted.Load())
+	require.Equal(t, MaxBackgroundJobs, manager.ActiveCount())
+}
+
+func TestBackgroundShellManager_RetainedHistoryDoesNotConsumeCapacity(t *testing.T) {
+	t.Parallel()
+
+	manager := NewBackgroundShellManager("workspace")
+	workingDir := t.TempDir()
+	for range MaxBackgroundJobs {
+		backgroundShell, err := manager.Start(t.Context(), workingDir, nil, "echo done", "")
+		require.NoError(t, err)
+		backgroundShell.Wait()
+	}
+
+	require.Equal(t, 0, manager.ActiveCount())
+	require.Len(t, manager.List(), MaxBackgroundJobs)
+	backgroundShell, err := manager.Start(t.Context(), workingDir, nil, "sleep 10", "")
+	require.NoError(t, err)
+	require.NoError(t, manager.Kill(backgroundShell.ID))
+}
+
+func TestBackgroundShellManagerRecoversPersistedTasks(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	outputRoot := filepath.Join(root, "output")
+	metadataRoot := filepath.Join(root, "metadata")
+	outputStore, err := task.NewOutputStore(outputRoot, task.OutputStoreOptions{})
+	require.NoError(t, err)
+	recordStore, err := task.NewStore(metadataRoot)
+	require.NoError(t, err)
+	manager, err := NewBackgroundShellManagerWithStores("workspace", outputStore, recordStore)
+	require.NoError(t, err)
+	backgroundShell, err := manager.StartOwned(t.Context(), root, nil, "printf persisted", "persisted", task.Ownership{ParentSessionID: "parent", OriginToolCallID: "call"})
+	require.NoError(t, err)
+	backgroundShell.MarkBackgrounded()
+	backgroundShell.Wait()
+	require.Equal(t, task.StatusCompleted, backgroundShell.State().Status)
+	require.NoError(t, outputStore.Close())
+	require.NoError(t, recordStore.Close())
+
+	outputStore, err = task.NewOutputStore(outputRoot, task.OutputStoreOptions{})
+	require.NoError(t, err)
+	recordStore, err = task.NewStore(metadataRoot)
+	require.NoError(t, err)
+	recovered, err := NewBackgroundShellManagerWithStores("workspace", outputStore, recordStore)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		recovered.KillAll(t.Context())
+		require.NoError(t, recordStore.Close())
+	})
+	recoveredShell, ok := recovered.Get(backgroundShell.ID)
+	require.True(t, ok)
+	require.Equal(t, task.StatusCompleted, recoveredShell.State().Status)
+	stdout, stderr, done, err := recoveredShell.GetOutput()
+	require.NoError(t, err)
+	require.True(t, done)
+	require.Equal(t, "persisted", stdout)
+	require.Empty(t, stderr)
+	require.Equal(t, 0, recovered.ActiveCount())
+}
+
+func TestBackgroundShellManagerGracefulShutdownPersistsKilledAcrossRestart(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	outputRoot := filepath.Join(root, "output")
+	metadataRoot := filepath.Join(root, "metadata")
+	outputStore, err := task.NewOutputStore(outputRoot, task.OutputStoreOptions{})
+	require.NoError(t, err)
+	recordStore, err := task.NewStore(metadataRoot)
+	require.NoError(t, err)
+	manager, err := NewBackgroundShellManagerWithStores("workspace", outputStore, recordStore)
+	require.NoError(t, err)
+	backgroundShell, err := manager.StartOwned(context.Background(), root, nil, "sleep 30", "graceful shutdown", task.Ownership{ParentSessionID: "parent"})
+	require.NoError(t, err)
+	backgroundShell.MarkBackgrounded()
+	require.Eventually(t, func() bool {
+		return backgroundShell.State().Status == task.StatusRunning
+	}, time.Second, 10*time.Millisecond)
+
+	shutdownCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	manager.KillAll(shutdownCtx)
+	require.Equal(t, task.StatusKilled, backgroundShell.State().Status)
+	require.NoError(t, recordStore.Close())
+
+	outputStore, err = task.NewOutputStore(outputRoot, task.OutputStoreOptions{})
+	require.NoError(t, err)
+	recordStore, err = task.NewStore(metadataRoot)
+	require.NoError(t, err)
+	recovered, err := NewBackgroundShellManagerWithStores("workspace", outputStore, recordStore)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		recovered.KillAll(t.Context())
+		require.NoError(t, recordStore.Close())
+	})
+	recoveredShell, ok := recovered.Get(backgroundShell.ID)
+	require.True(t, ok)
+	require.Equal(t, task.StatusKilled, recoveredShell.State().Status)
+	require.Equal(t, 0, recovered.ActiveCount())
+	notifications, err := recordStore.ListNotifications("workspace", "parent", false, false)
+	require.NoError(t, err)
+	require.Len(t, notifications, 1)
+	require.Equal(t, backgroundShell.ID, notifications[0].TaskID)
+	require.Equal(t, task.StatusKilled, notifications[0].Status)
+}
+
+func TestBackgroundShellManagerRecoveryMarksActiveLost(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	outputStore, err := task.NewOutputStore(filepath.Join(root, "output"), task.OutputStoreOptions{})
+	require.NoError(t, err)
+	output, err := outputStore.Create("b12345678")
+	require.NoError(t, err)
+	require.NoError(t, output.Close())
+	recordStore, err := task.NewStore(filepath.Join(root, "metadata"))
+	require.NoError(t, err)
+	require.NoError(t, recordStore.Put(task.Record{
+		ID:        "b12345678",
+		Type:      task.TypeShell,
+		Ownership: task.Ownership{WorkspaceID: "workspace", ParentSessionID: "parent"},
+		State:     task.StateToRecord(task.State{Status: task.StatusRunning, StartedAt: time.Now()}),
+		OutputRef: "task-output:b12345678",
+		Shell:     &task.ShellRecord{Command: "sleep 10", WorkingDirectory: root, Backgrounded: true},
+	}))
+
+	manager, err := NewBackgroundShellManagerWithStores("workspace", outputStore, recordStore)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		manager.KillAll(t.Context())
+		require.NoError(t, recordStore.Close())
+	})
+	backgroundShell, ok := manager.Get("b12345678")
+	require.True(t, ok)
+	require.Equal(t, task.StatusLost, backgroundShell.State().Status)
+	require.Contains(t, backgroundShell.State().LostReason, "restarted")
+	require.Equal(t, 0, manager.ActiveCount())
+	record, err := recordStore.Get("b12345678")
+	require.NoError(t, err)
+	require.Equal(t, task.StatusLost, record.State.Status)
+}
+
+func TestBackgroundShellManager_DiskOutputLimit(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	store, err := task.NewOutputStore(filepath.Join(root, "output"), task.OutputStoreOptions{MaxOutputBytes: 5})
+	require.NoError(t, err)
+	manager := NewBackgroundShellManagerWithStore("workspace", store)
+	backgroundShell, err := manager.Start(t.Context(), root, nil, "printf 123456789", "")
+	require.NoError(t, err)
+	backgroundShell.Wait()
+
+	stdout, stderr, done, executionError := backgroundShell.GetOutput()
+	require.True(t, done)
+	require.Equal(t, "12345", stdout)
+	require.Empty(t, stderr)
+	require.ErrorIs(t, executionError, task.ErrOutputLimitExceeded)
+	metadata := backgroundShell.OutputMetadata()
+	require.Equal(t, int64(5), metadata.OutputBytes)
+	require.True(t, metadata.OutputTruncated)
+	state := backgroundShell.State()
+	require.Equal(t, task.StatusFailed, state.Status)
+	require.Nil(t, state.ExitCode)
+	require.Equal(t, "output_limit_exceeded", state.ErrorCode)
+	require.Equal(t, "task-output:"+backgroundShell.ID, backgroundShell.OutputRef())
+	require.NoError(t, manager.Kill(backgroundShell.ID))
+}
+
+func TestBackgroundShell_ReadOutputWaitAndRanges(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	store, err := task.NewOutputStore(filepath.Join(root, "output"), task.OutputStoreOptions{})
+	require.NoError(t, err)
+	manager := NewBackgroundShellManagerWithStore("workspace", store)
+	backgroundShell, err := manager.Start(t.Context(), root, nil, "printf first; sleep 0.2; printf second", "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = manager.Kill(backgroundShell.ID) })
+
+	result, status, err := backgroundShell.ReadOutput(t.Context(), task.ReadOptions{}, false, 0)
+	require.NoError(t, err)
+	require.Equal(t, task.RetrievalNotReady, status)
+	require.Contains(t, []string{"", "first"}, string(result.Output))
+
+	result, status, err = backgroundShell.ReadOutput(t.Context(), task.ReadOptions{}, true, 10*time.Millisecond)
+	require.NoError(t, err)
+	require.Equal(t, task.RetrievalTimeout, status)
+
+	result, status, err = backgroundShell.ReadOutput(t.Context(), task.ReadOptions{}, true, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, task.RetrievalReady, status)
+	require.Equal(t, "firstsecond", string(result.Output))
+	offset := int64(5)
+	result, status, err = backgroundShell.ReadOutput(t.Context(), task.ReadOptions{Offset: &offset, MaxBytes: 6}, false, 0)
+	require.NoError(t, err)
+	require.Equal(t, task.RetrievalReady, status)
+	require.Equal(t, "second", string(result.Output))
+}
+
+func TestBackgroundShell_ReadOutputCancellation(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	store, err := task.NewOutputStore(filepath.Join(root, "output"), task.OutputStoreOptions{})
+	require.NoError(t, err)
+	manager := NewBackgroundShellManagerWithStore("workspace", store)
+	backgroundShell, err := manager.Start(t.Context(), root, nil, "sleep 10", "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = manager.Kill(backgroundShell.ID) })
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, _, err = backgroundShell.ReadOutput(ctx, task.ReadOptions{}, true, time.Minute)
+	require.ErrorIs(t, err, context.Canceled)
+	require.False(t, backgroundShell.IsDone())
+}
+
+func TestBackgroundShellTerminalOutcomes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		command   string
+		status    task.Status
+		exitCode  int
+		errorCode string
+	}{
+		{name: "completed", command: "exit 0", status: task.StatusCompleted, exitCode: 0},
+		{name: "failed", command: "exit 7", status: task.StatusFailed, exitCode: 7, errorCode: "execution_failed"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			manager := NewBackgroundShellManager(t.TempDir())
+			backgroundShell, err := manager.Start(t.Context(), t.TempDir(), nil, test.command, test.name)
+			require.NoError(t, err)
+			backgroundShell.Wait()
+
+			state := backgroundShell.State()
+			require.Equal(t, test.status, state.Status)
+			require.NotNil(t, state.ExitCode)
+			require.Equal(t, test.exitCode, *state.ExitCode)
+			require.Equal(t, test.errorCode, state.ErrorCode)
+			require.False(t, state.EndedAt.IsZero())
+		})
+	}
+}
+
+func TestBackgroundShellManagerStopIsBoundedAndIdempotent(t *testing.T) {
+	t.Parallel()
+
+	manager := NewBackgroundShellManager("workspace")
+	backgroundShell, err := manager.Start(t.Context(), t.TempDir(), nil, "sleep 10", "stopped")
+	require.NoError(t, err)
+	require.Eventually(t, func() bool {
+		return backgroundShell.Status() == task.StatusRunning
+	}, time.Second, 10*time.Millisecond)
+
+	first, err := manager.Stop(t.Context(), backgroundShell.ID)
+	require.NoError(t, err)
+	require.Equal(t, task.StatusKilled, first.Status)
+	require.True(t, first.Interrupted)
+	require.False(t, first.StopRequestedAt.IsZero())
+
+	second, err := manager.Stop(t.Context(), backgroundShell.ID)
+	require.NoError(t, err)
+	require.Equal(t, first, second)
+	_, retained := manager.Get(backgroundShell.ID)
+	require.True(t, retained)
+}
+
+func TestBackgroundShellManagerStopLostIsImmutable(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	store, err := task.NewOutputStore(filepath.Join(root, "output"), task.OutputStoreOptions{})
+	require.NoError(t, err)
+	manager := NewBackgroundShellManagerWithStore("workspace", store)
+	manager.stopTimeout = 20 * time.Millisecond
+	id, err := task.NewID(task.TypeShell)
+	require.NoError(t, err)
+	output, err := store.Create(id)
+	require.NoError(t, err)
+	backgroundShell := &BackgroundShell{
+		ID:            id,
+		Ownership:     task.Ownership{WorkspaceID: "workspace"},
+		cancel:        func() {},
+		output:        output,
+		done:          make(chan struct{}),
+		executionDone: make(chan struct{}),
+		state: task.State{
+			Status:    task.StatusRunning,
+			StartedAt: time.Now(),
+		},
+	}
+	backgroundShell.release = func() {
+		backgroundShell.activeOnce.Do(func() {
+			manager.mu.Lock()
+			manager.active--
+			manager.mu.Unlock()
+		})
+	}
+	manager.shells[id] = backgroundShell
+	manager.active = 1
+
+	state, err := manager.Stop(t.Context(), id)
+	require.NoError(t, err)
+	require.Equal(t, task.StatusLost, state.Status)
+	require.NotEmpty(t, state.LostReason)
+	require.Equal(t, 0, manager.ActiveCount())
+
+	backgroundShell.finishExecution(nil)
+	require.Equal(t, task.StatusLost, backgroundShell.Status())
+	require.NoError(t, output.Close())
+}
+
+func TestBackgroundShellManagerStopCompletionRace(t *testing.T) {
+	t.Parallel()
+
+	manager := NewBackgroundShellManager("workspace")
+	for range 20 {
+		backgroundShell, err := manager.Start(t.Context(), t.TempDir(), nil, "sleep 0.01", "race")
+		require.NoError(t, err)
+		state, err := manager.Stop(t.Context(), backgroundShell.ID)
+		require.NoError(t, err)
+		require.Contains(t, []task.Status{task.StatusCompleted, task.StatusKilled}, state.Status)
+		repeated, err := manager.Stop(t.Context(), backgroundShell.ID)
+		require.NoError(t, err)
+		require.Equal(t, state, repeated)
+	}
+}
+
+func TestBackgroundShellManagerStopValidation(t *testing.T) {
+	t.Parallel()
+
+	manager := NewBackgroundShellManager("workspace")
+	_, err := manager.Stop(t.Context(), "invalid")
+	require.ErrorContains(t, err, "invalid task ID")
+	_, err = manager.Stop(t.Context(), "a12345678")
+	require.ErrorContains(t, err, "not a background shell")
+	_, err = manager.Stop(t.Context(), "b12345678")
+	require.ErrorContains(t, err, "background shell not found")
+}
+
+func TestBackgroundShellNotificationsAreDetachedAndDeduplicated(t *testing.T) {
+	t.Parallel()
+
+	manager := NewBackgroundShellManager("workspace")
+	notifications := manager.SubscribeNotifications(t.Context())
+	backgroundShell, err := manager.StartOwned(t.Context(), t.TempDir(), nil, "exit 7", "failed", task.Ownership{ParentSessionID: "session"})
+	require.NoError(t, err)
+	backgroundShell.Wait()
+
+	select {
+	case <-notifications:
+		t.Fatal("synchronous shell emitted a task notification")
+	default:
+	}
+
+	backgroundShell.MarkBackgrounded()
+	event := requireNotification(t, notifications)
+	require.Equal(t, backgroundShell.ID, event.TaskID)
+	require.Equal(t, task.TypeShell, event.TaskType)
+	require.Equal(t, "workspace", event.WorkspaceID)
+	require.Equal(t, "session", event.ParentSessionID)
+	require.Equal(t, task.StatusFailed, event.Status)
+	require.NotNil(t, event.ExitCode)
+	require.Equal(t, 7, *event.ExitCode)
+	require.Equal(t, backgroundShell.OutputRef(), event.OutputRef)
+
+	backgroundShell.MarkBackgrounded()
+	_, err = manager.Stop(t.Context(), backgroundShell.ID)
+	require.NoError(t, err)
+	select {
+	case duplicate := <-notifications:
+		t.Fatalf("duplicate notification emitted: %#v", duplicate.Payload)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestBackgroundShellCompletedNotification(t *testing.T) {
+	t.Parallel()
+
+	manager := NewBackgroundShellManager("workspace")
+	notifications := manager.SubscribeNotifications(t.Context())
+	backgroundShell, err := manager.Start(t.Context(), t.TempDir(), nil, "exit 0", "completed")
+	require.NoError(t, err)
+	backgroundShell.MarkBackgrounded()
+	backgroundShell.Wait()
+
+	notification := requireNotification(t, notifications)
+	require.Equal(t, task.StatusCompleted, notification.Status)
+	require.NotNil(t, notification.ExitCode)
+	require.Equal(t, 0, *notification.ExitCode)
+}
+
+func TestBackgroundShellKilledNotification(t *testing.T) {
+	t.Parallel()
+
+	manager := NewBackgroundShellManager("workspace")
+	notifications := manager.SubscribeNotifications(t.Context())
+	backgroundShell, err := manager.Start(t.Context(), t.TempDir(), nil, "sleep 10", "killed")
+	require.NoError(t, err)
+	backgroundShell.MarkBackgrounded()
+
+	state, err := manager.Stop(t.Context(), backgroundShell.ID)
+	require.NoError(t, err)
+	require.Equal(t, task.StatusKilled, state.Status)
+	notification := requireNotification(t, notifications)
+	require.Equal(t, task.StatusKilled, notification.Status)
+	require.True(t, notification.Interrupted)
+}
+
+func requireNotification(t *testing.T, notifications <-chan pubsub.Event[task.Notification]) task.Notification {
+	t.Helper()
+	select {
+	case event := <-notifications:
+		return event.Payload
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task notification")
+		return task.Notification{}
+	}
 }

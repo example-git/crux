@@ -8,11 +8,11 @@ import (
 	"log/slog"
 	"strings"
 
-	"charm.land/fantasy"
-	"github.com/charmbracelet/crush/internal/agent/tools/mcp"
-	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/filepathext"
-	"github.com/charmbracelet/crush/internal/permission"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/filepathext"
+	"github.com/example-git/crux/internal/permission"
 )
 
 type ReadMCPResourceParams struct {

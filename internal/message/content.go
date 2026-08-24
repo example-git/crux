@@ -9,12 +9,9 @@ import (
 	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
-	"charm.land/fantasy"
-	"charm.land/fantasy/providers/anthropic"
-	"charm.land/fantasy/providers/google"
-	"charm.land/fantasy/providers/openai"
-	"github.com/charmbracelet/crush/internal/stringext"
 	"github.com/charmbracelet/x/ansi"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/stringext"
 )
 
 type MessageRole string
@@ -52,14 +49,19 @@ type ContentPart interface {
 	isPart()
 }
 
+// ProviderMetadataContent stores message- and continuation-scoped opaque
+// metadata without exposing a provider-specific core field.
+type ProviderMetadataContent struct {
+	ProviderMetadata ProviderMetadata `json:"provider_metadata"`
+}
+
+func (ProviderMetadataContent) isPart() {}
+
 type ReasoningContent struct {
-	Thinking         string                             `json:"thinking"`
-	Signature        string                             `json:"signature"`
-	ThoughtSignature string                             `json:"thought_signature"` // Used for google
-	ToolID           string                             `json:"tool_id"`           // Used for openrouter google models
-	ResponsesData    *openai.ResponsesReasoningMetadata `json:"responses_data"`
-	StartedAt        int64                              `json:"started_at,omitempty"`
-	FinishedAt       int64                              `json:"finished_at,omitempty"`
+	Thinking         string           `json:"thinking"`
+	ProviderMetadata ProviderMetadata `json:"provider_metadata,omitempty"`
+	StartedAt        int64            `json:"started_at,omitempty"`
+	FinishedAt       int64            `json:"finished_at,omitempty"`
 }
 
 func (tc ReasoningContent) String() string {
@@ -68,7 +70,8 @@ func (tc ReasoningContent) String() string {
 func (ReasoningContent) isPart() {}
 
 type TextContent struct {
-	Text string `json:"text"`
+	Text             string           `json:"text"`
+	ProviderMetadata ProviderMetadata `json:"provider_metadata,omitempty"`
 }
 
 func (tc TextContent) String() string {
@@ -105,23 +108,26 @@ func (bc BinaryContent) String(p catwalk.InferenceProvider) string {
 func (BinaryContent) isPart() {}
 
 type ToolCall struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	Input            string `json:"input"`
-	ProviderExecuted bool   `json:"provider_executed"`
-	Finished         bool   `json:"finished"`
+	ID               string           `json:"id"`
+	Name             string           `json:"name"`
+	Input            string           `json:"input"`
+	ProviderExecuted bool             `json:"provider_executed"`
+	Finished         bool             `json:"finished"`
+	ProviderMetadata ProviderMetadata `json:"provider_metadata,omitempty"`
 }
 
 func (ToolCall) isPart() {}
 
 type ToolResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Name       string `json:"name"`
-	Content    string `json:"content"`
-	Data       string `json:"data"`
-	MIMEType   string `json:"mime_type"`
-	Metadata   string `json:"metadata"`
-	IsError    bool   `json:"is_error"`
+	ToolCallID       string           `json:"tool_call_id"`
+	Name             string           `json:"name"`
+	Content          string           `json:"content"`
+	Data             string           `json:"data"`
+	MIMEType         string           `json:"mime_type"`
+	Metadata         string           `json:"metadata"`
+	IsError          bool             `json:"is_error"`
+	ProviderExecuted bool             `json:"provider_executed,omitempty"`
+	ProviderMetadata ProviderMetadata `json:"provider_metadata,omitempty"`
 }
 
 func (ToolResult) isPart() {}
@@ -176,6 +182,34 @@ type Message struct {
 	CreatedAt        int64
 	UpdatedAt        int64
 	IsSummaryMessage bool
+}
+
+// SetMessageProviderMetadata replaces the metadata-only part with a deep copy.
+func (m *Message) SetMessageProviderMetadata(metadata ProviderMetadata) {
+	for i, part := range m.Parts {
+		if _, ok := part.(ProviderMetadataContent); ok {
+			if len(metadata) == 0 {
+				m.Parts = append(m.Parts[:i], m.Parts[i+1:]...)
+			} else {
+				m.Parts[i] = ProviderMetadataContent{ProviderMetadata: metadata.Clone()}
+			}
+			return
+		}
+	}
+	if len(metadata) > 0 {
+		m.Parts = append(m.Parts, ProviderMetadataContent{ProviderMetadata: metadata.Clone()})
+	}
+}
+
+// MetadataContent returns all message-level opaque metadata envelopes.
+func (m *Message) MetadataContent() ProviderMetadata {
+	var metadata ProviderMetadata
+	for _, part := range m.Parts {
+		if content, ok := part.(ProviderMetadataContent); ok {
+			metadata = append(metadata, content.ProviderMetadata...)
+		}
+	}
+	return metadata
 }
 
 func (m *Message) Content() TextContent {
@@ -285,7 +319,8 @@ func (m *Message) AppendContent(delta string) {
 	found := false
 	for i, part := range m.Parts {
 		if c, ok := part.(TextContent); ok {
-			m.Parts[i] = TextContent{Text: c.Text + delta}
+			c.Text += delta
+			m.Parts[i] = c
 			found = true
 		}
 	}
@@ -298,12 +333,8 @@ func (m *Message) AppendReasoningContent(delta string) {
 	found := false
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:   c.Thinking + delta,
-				Signature:  c.Signature,
-				StartedAt:  c.StartedAt,
-				FinishedAt: c.FinishedAt,
-			}
+			c.Thinking += delta
+			m.Parts[i] = c
 			found = true
 		}
 	}
@@ -315,62 +346,28 @@ func (m *Message) AppendReasoningContent(delta string) {
 	}
 }
 
-func (m *Message) AppendThoughtSignature(signature string, toolCallID string) {
+// SetReasoningProviderMetadata attaches opaque metadata to the current
+// reasoning part without interpreting or normalizing its payloads.
+func (m *Message) SetReasoningProviderMetadata(metadata ProviderMetadata) {
+	if len(metadata) == 0 {
+		return
+	}
 	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:         c.Thinking,
-				ThoughtSignature: c.ThoughtSignature + signature,
-				ToolID:           toolCallID,
-				Signature:        c.Signature,
-				StartedAt:        c.StartedAt,
-				FinishedAt:       c.FinishedAt,
-			}
+		if content, ok := part.(ReasoningContent); ok {
+			content.ProviderMetadata = append(content.ProviderMetadata, metadata.Clone()...)
+			m.Parts[i] = content
 			return
 		}
 	}
-	m.Parts = append(m.Parts, ReasoningContent{ThoughtSignature: signature})
-}
-
-func (m *Message) AppendReasoningSignature(signature string) {
-	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:   c.Thinking,
-				Signature:  c.Signature + signature,
-				StartedAt:  c.StartedAt,
-				FinishedAt: c.FinishedAt,
-			}
-			return
-		}
-	}
-	m.Parts = append(m.Parts, ReasoningContent{Signature: signature})
-}
-
-func (m *Message) SetReasoningResponsesData(data *openai.ResponsesReasoningMetadata) {
-	for i, part := range m.Parts {
-		if c, ok := part.(ReasoningContent); ok {
-			m.Parts[i] = ReasoningContent{
-				Thinking:      c.Thinking,
-				ResponsesData: data,
-				StartedAt:     c.StartedAt,
-				FinishedAt:    c.FinishedAt,
-			}
-			return
-		}
-	}
+	m.Parts = append(m.Parts, ReasoningContent{ProviderMetadata: metadata.Clone()})
 }
 
 func (m *Message) FinishThinking() {
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
 			if c.FinishedAt == 0 {
-				m.Parts[i] = ReasoningContent{
-					Thinking:   c.Thinking,
-					Signature:  c.Signature,
-					StartedAt:  c.StartedAt,
-					FinishedAt: time.Now().Unix(),
-				}
+				c.FinishedAt = time.Now().Unix()
+				m.Parts[i] = c
 			}
 			return
 		}
@@ -395,12 +392,8 @@ func (m *Message) FinishToolCall(toolCallID string) {
 	for i, part := range m.Parts {
 		if c, ok := part.(ToolCall); ok {
 			if c.ID == toolCallID {
-				m.Parts[i] = ToolCall{
-					ID:       c.ID,
-					Name:     c.Name,
-					Input:    c.Input,
-					Finished: true,
-				}
+				c.Finished = true
+				m.Parts[i] = c
 				return
 			}
 		}
@@ -411,12 +404,8 @@ func (m *Message) AppendToolCallInput(toolCallID string, inputDelta string) {
 	for i, part := range m.Parts {
 		if c, ok := part.(ToolCall); ok {
 			if c.ID == toolCallID {
-				m.Parts[i] = ToolCall{
-					ID:       c.ID,
-					Name:     c.Name,
-					Input:    c.Input + inputDelta,
-					Finished: c.Finished,
-				}
+				c.Input += inputDelta
+				m.Parts[i] = c
 				return
 			}
 		}
@@ -460,12 +449,34 @@ func (m *Message) SetToolResults(tr []ToolResult) {
 	}
 }
 
-// Clone returns a deep copy of the message with an independent Parts slice.
-// This prevents race conditions when the message is modified concurrently.
+// Clone returns a deep copy of the message with independent opaque metadata.
 func (m *Message) Clone() Message {
 	clone := *m
 	clone.Parts = make([]ContentPart, len(m.Parts))
-	copy(clone.Parts, m.Parts)
+	for i, part := range m.Parts {
+		switch value := part.(type) {
+		case ReasoningContent:
+			value.ProviderMetadata = value.ProviderMetadata.Clone()
+			clone.Parts[i] = value
+		case TextContent:
+			value.ProviderMetadata = value.ProviderMetadata.Clone()
+			clone.Parts[i] = value
+		case ToolCall:
+			value.ProviderMetadata = value.ProviderMetadata.Clone()
+			clone.Parts[i] = value
+		case ToolResult:
+			value.ProviderMetadata = value.ProviderMetadata.Clone()
+			clone.Parts[i] = value
+		case ProviderMetadataContent:
+			value.ProviderMetadata = value.ProviderMetadata.Clone()
+			clone.Parts[i] = value
+		case BinaryContent:
+			value.Data = slices.Clone(value.Data)
+			clone.Parts[i] = value
+		default:
+			clone.Parts[i] = part
+		}
+	}
 	return clone
 }
 
@@ -557,7 +568,10 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 			}
 		}
 		if text != "" {
-			parts = append(parts, fantasy.TextPart{Text: text})
+			content := m.Content()
+			textPart := fantasy.TextPart{Text: text}
+			textPart.ProviderOptions = mergeProviderOptions(content.ProviderMetadata.FantasyOptions(ProviderMetadataScopeText), content.ProviderMetadata.FantasyOptions(ProviderMetadataScopeCompaction))
+			parts = append(parts, textPart)
 		}
 		for _, content := range m.BinaryContent() {
 			// skip text attachements
@@ -571,8 +585,9 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 			})
 		}
 		messages = append(messages, fantasy.Message{
-			Role:    fantasy.MessageRoleUser,
-			Content: parts,
+			Role:            fantasy.MessageRoleUser,
+			Content:         parts,
+			ProviderOptions: mergeProviderOptions(m.MetadataContent().FantasyOptions(ProviderMetadataScopeMessage), m.MetadataContent().FantasyOptions(ProviderMetadataScopeContinuation)),
 		})
 	case Assistant:
 		var parts []fantasy.MessagePart
@@ -581,35 +596,27 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 			parts = append(parts, fantasy.TextPart{Text: text})
 		}
 		reasoning := m.ReasoningContent()
-		if reasoning.Thinking != "" {
-			reasoningPart := fantasy.ReasoningPart{Text: reasoning.Thinking, ProviderOptions: fantasy.ProviderOptions{}}
-			if reasoning.Signature != "" {
-				reasoningPart.ProviderOptions[anthropic.Name] = &anthropic.ReasoningOptionMetadata{
-					Signature: reasoning.Signature,
-				}
-			}
-			if reasoning.ResponsesData != nil {
-				reasoningPart.ProviderOptions[openai.Name] = reasoning.ResponsesData
-			}
-			if reasoning.ThoughtSignature != "" {
-				reasoningPart.ProviderOptions[google.Name] = &google.ReasoningMetadata{
-					Signature: reasoning.ThoughtSignature,
-					ToolID:    reasoning.ToolID,
-				}
+		if reasoning.Thinking != "" || len(reasoning.ProviderMetadata) > 0 {
+			reasoningPart := fantasy.ReasoningPart{
+				Text:            reasoning.Thinking,
+				ProviderOptions: reasoning.ProviderMetadata.FantasyOptions(ProviderMetadataScopeReasoning),
 			}
 			parts = append(parts, reasoningPart)
 		}
 		for _, call := range m.ToolCalls() {
+			providerOptions := call.ProviderMetadata.FantasyOptions(ProviderMetadataScopeToolCall)
 			parts = append(parts, fantasy.ToolCallPart{
 				ToolCallID:       call.ID,
 				ToolName:         call.Name,
 				Input:            call.Input,
 				ProviderExecuted: call.ProviderExecuted,
+				ProviderOptions:  providerOptions,
 			})
 		}
 		messages = append(messages, fantasy.Message{
-			Role:    fantasy.MessageRoleAssistant,
-			Content: parts,
+			Role:            fantasy.MessageRoleAssistant,
+			Content:         parts,
+			ProviderOptions: mergeProviderOptions(m.MetadataContent().FantasyOptions(ProviderMetadataScopeMessage), m.MetadataContent().FantasyOptions(ProviderMetadataScopeContinuation)),
 		})
 	case Tool:
 		var parts []fantasy.MessagePart
@@ -636,14 +643,30 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 				}
 			}
 			parts = append(parts, fantasy.ToolResultPart{
-				ToolCallID: result.ToolCallID,
-				Output:     content,
+				ToolCallID:       result.ToolCallID,
+				Output:           content,
+				ProviderExecuted: result.ProviderExecuted,
+				ProviderOptions:  result.ProviderMetadata.FantasyOptions(ProviderMetadataScopeToolResult),
 			})
 		}
 		messages = append(messages, fantasy.Message{
-			Role:    fantasy.MessageRoleTool,
-			Content: parts,
+			Role:            fantasy.MessageRoleTool,
+			Content:         parts,
+			ProviderOptions: mergeProviderOptions(m.MetadataContent().FantasyOptions(ProviderMetadataScopeMessage), m.MetadataContent().FantasyOptions(ProviderMetadataScopeContinuation)),
 		})
 	}
 	return messages
+}
+
+func mergeProviderOptions(groups ...fantasy.ProviderOptions) fantasy.ProviderOptions {
+	var merged fantasy.ProviderOptions
+	for _, group := range groups {
+		for provider, value := range group {
+			if merged == nil {
+				merged = make(fantasy.ProviderOptions)
+			}
+			merged[provider] = value
+		}
+	}
+	return merged
 }
