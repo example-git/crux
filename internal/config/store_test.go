@@ -46,6 +46,23 @@ func TestApplyEphemeralProviderStateDoesNotWriteCredentials(t *testing.T) {
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
+func TestApplyEphemeralProviderStateRebuildsAgents(t *testing.T) {
+	root := t.TempDir()
+	cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
+	cfg.setDefaults(root, filepath.Join(root, "state"))
+	cfg.SetupAgents()
+	store := NewTestStore(cfg)
+	store.workingDir = root
+
+	require.NoError(t, store.ApplyEphemeralProviderState(
+		map[string]ProviderConfig{"remote": {ID: "remote", Type: "openai-compat"}},
+		nil,
+	))
+
+	require.Equal(t, AgentCoder, store.Config().Agents[AgentCoder].ID)
+	require.Equal(t, AgentTask, store.Config().Agents[AgentTask].ID)
+}
+
 func TestEphemeralOAuthRefreshSurvivesConfigurationReload(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("CRUX_GLOBAL_CONFIG", root)

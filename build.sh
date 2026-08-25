@@ -20,6 +20,11 @@ build_crux() {
   CGO_ENABLED=0 GOEXPERIMENT=greenteagc go build -v -o crux .
 }
 
+build_crux_amd64() {
+  GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 GOEXPERIMENT=greenteagc go build -v -o crux-amd64 . || return
+  arch -x86_64 ./crux-amd64 --version >/dev/null
+}
+
 backup_crux() {
   local backup_dir=$HOME/.ai-cli/backups/crux
   local timestamp
@@ -45,6 +50,18 @@ run_build() {
   run_step "Building Crux" build_crux
 }
 
+run_amd64_build() {
+  if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
+    printf 'FAILURE: --build-amd64 requires Apple Silicon macOS with Rosetta.\n' >&2
+    return 2
+  fi
+  if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+    printf 'FAILURE: Rosetta is not installed or unavailable.\n' >&2
+    return 2
+  fi
+  run_step "Building and verifying the macOS amd64 Crux binary with Rosetta" build_crux_amd64
+}
+
 run_install() {
   run_build || return
   if [[ -e "$HOME/.ai-cli/bin/crux" ]]; then
@@ -63,12 +80,13 @@ run_checks() {
 }
 
 usage() {
-  printf 'Usage: %s [--build|--install|--test|--check|--all|--help]\n' "$0"
-  printf '  --build    Build ./crux without installing it\n'
-  printf '  --install  Build and install Crux (default)\n'
-  printf '  --test     Run the full race test suite\n'
-  printf '  --check    Run the race build and log capitalization check\n'
-  printf '  --all      Run tests, checks, build, and install\n'
+  printf 'Usage: %s [--build|--build-amd64|--install|--test|--check|--all|--help]\n' "$0"
+  printf '  --build        Build ./crux without installing it\n'
+  printf '  --build-amd64  Build ./crux-amd64 for macOS amd64 and verify it with Rosetta\n'
+  printf '  --install      Build and install Crux (default)\n'
+  printf '  --test         Run the full race test suite\n'
+  printf '  --check        Run the race build and log capitalization check\n'
+  printf '  --all          Run tests, checks, build, and install\n'
 }
 
 if (( $# > 1 )); then
@@ -80,6 +98,9 @@ mode=${1:---install}
 case "$mode" in
   --build)
     run_build
+    ;;
+  --build-amd64)
+    run_amd64_build
     ;;
   --install)
     run_install

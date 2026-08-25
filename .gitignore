@@ -7,7 +7,7 @@
 
 # Test binary, built with `go test -c`
 *.test
-
+mutagen*
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
@@ -63,6 +63,7 @@ docs/provider-plugins/examples/*
 **/.crux/**
 /crush
 /crux
+/crux-amd64
 /crux.json
 /tmp/
 
