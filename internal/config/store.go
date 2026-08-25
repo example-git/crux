@@ -178,6 +178,7 @@ func (s *ConfigStore) ApplyEphemeralProviderState(providers map[string]ProviderC
 		return fmt.Errorf("apply ephemeral provider state: %w", err)
 	}
 	merged.setDefaults(s.workingDir, current.Options.DataDirectory)
+	merged.SetupAgents()
 
 	registerConfigSecrets(merged)
 	clonedAccounts := make(map[string]accounts.Entry, len(forwardedAccounts))
