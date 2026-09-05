@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -332,8 +333,62 @@ func (j *ImageJob) outputRef() string {
 	return "file:" + j.Request.OutputPaths[0]
 }
 
+type OutputReservation struct {
+	manager *JobManager
+	id      string
+	paths   []string
+}
+
+func (r *OutputReservation) Paths() []string {
+	return append([]string(nil), r.paths...)
+}
+
+func (r *OutputReservation) Release() {
+	r.manager.mu.Lock()
+	defer r.manager.mu.Unlock()
+	for _, path := range r.paths {
+		if r.manager.reservedPaths[path] == r.id {
+			delete(r.manager.reservedPaths, path)
+		}
+	}
+}
+
+func (m *JobManager) ReserveNumberedOutputs(request JobRequest, directory string) (*OutputReservation, error) {
+	if !filepath.IsAbs(directory) {
+		return nil, errors.New("numbered output directory must be absolute")
+	}
+	if err := validateJobRequestBeforeAllocation(request, true); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return nil, errors.New("background image job manager is closed")
+	}
+	paths, err := nextNumberedOutputPaths(directory, request.Count, request.Force, request.Backend, m.reservedPaths, request.OutputExtension)
+	if err != nil {
+		return nil, err
+	}
+	id, err := managedtask.NewID(managedtask.TypeImage)
+	if err != nil {
+		return nil, err
+	}
+	for _, path := range paths {
+		m.reservedPaths[path] = id
+	}
+	return &OutputReservation{manager: m, id: id, paths: paths}, nil
+}
+
+func (m *JobManager) EnqueueReserved(request JobRequest, description string, ownership managedtask.Ownership, reservation *OutputReservation) (managedtask.View, error) {
+	if reservation == nil || reservation.manager != m || !slices.Equal(request.OutputPaths, reservation.paths) {
+		return managedtask.View{}, errors.New("image output reservation does not match the requested paths")
+	}
+	view, _, err := m.enqueue(request, "", description, ownership, reservation)
+	return view, err
+}
+
 func (m *JobManager) Enqueue(request JobRequest, description string, ownership managedtask.Ownership) (managedtask.View, error) {
-	view, _, err := m.enqueue(request, "", description, ownership)
+	view, _, err := m.enqueue(request, "", description, ownership, nil)
 	return view, err
 }
 
@@ -341,10 +396,10 @@ func (m *JobManager) EnqueueNumbered(request JobRequest, outputDirectory, descri
 	if outputDirectory == "" {
 		return managedtask.View{}, nil, errors.New("numbered output directory is required")
 	}
-	return m.enqueue(request, outputDirectory, description, ownership)
+	return m.enqueue(request, outputDirectory, description, ownership, nil)
 }
 
-func (m *JobManager) enqueue(request JobRequest, outputDirectory, description string, ownership managedtask.Ownership) (managedtask.View, []string, error) {
+func (m *JobManager) enqueue(request JobRequest, outputDirectory, description string, ownership managedtask.Ownership, reservation *OutputReservation) (managedtask.View, []string, error) {
 	if ownership.ParentSessionID == "" {
 		return managedtask.View{}, nil, errors.New("parent session ID is required for a background image job")
 	}
@@ -391,7 +446,12 @@ func (m *JobManager) enqueue(request JobRequest, outputDirectory, description st
 		return managedtask.View{}, nil, err
 	}
 	for _, path := range request.OutputPaths {
-		if existingID, exists := m.reservedPaths[path]; exists {
+		existingID, exists := m.reservedPaths[path]
+		if reservation != nil {
+			if !exists || existingID != reservation.id {
+				return managedtask.View{}, nil, fmt.Errorf("image output reservation is no longer active: %s", path)
+			}
+		} else if exists {
 			return managedtask.View{}, nil, fmt.Errorf("output path is already reserved by image job %s: %s", existingID, path)
 		}
 	}

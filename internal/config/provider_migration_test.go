@@ -12,6 +12,57 @@ import (
 	"github.com/example-git/crux/internal/providerregistry"
 )
 
+func TestPreparedProviderMigrationValidatesBackupBeforeCleanup(t *testing.T) {
+	for _, scenario := range []string{"valid", "external", "absent", "directory-symlink", "backup-symlink"} {
+		t.Run(scenario, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "crux.json")
+			original := []byte(`{"providers":{}}`)
+			require.NoError(t, os.WriteFile(configPath, original, 0o600))
+			migrationDir := providerMigrationDirForConfig(configPath)
+			require.NoError(t, os.MkdirAll(migrationDir, 0o700))
+			backup := filepath.Join(migrationDir, "config.test.backup")
+			require.NoError(t, os.WriteFile(backup, original, 0o600))
+			outside := filepath.Join(t.TempDir(), "config.test.backup")
+			require.NoError(t, os.WriteFile(outside, original, 0o600))
+			journal := providerMigrationJournal{
+				Version: providerOwnershipMigrationVersion,
+				State:   "prepared",
+				Config:  providerMigrationFile{Path: configPath, Backup: backup, BeforeHash: hashBytes(original), AfterHash: "post-image", Existed: true},
+			}
+			switch scenario {
+			case "external":
+				journal.Config.Backup = outside
+			case "absent":
+				require.NoError(t, os.Remove(configPath))
+				journal.Config.Existed = false
+				journal.Config.BeforeHash = ""
+				journal.Config.Backup = outside
+			case "directory-symlink":
+				relocated := filepath.Join(t.TempDir(), "v1")
+				require.NoError(t, os.Rename(migrationDir, relocated))
+				require.NoError(t, os.Symlink(relocated, migrationDir))
+			case "backup-symlink":
+				require.NoError(t, os.Remove(backup))
+				require.NoError(t, os.Symlink(outside, backup))
+			}
+			require.NoError(t, writeMigrationJournal(journal))
+			err := recoverPreparedProviderMigration(configPath)
+			if scenario == "valid" {
+				require.NoError(t, err)
+				require.NoFileExists(t, backup)
+				require.NoFileExists(t, providerMigrationJournalPathForConfig(configPath))
+			} else {
+				require.Error(t, err)
+				require.FileExists(t, providerMigrationJournalPathForConfig(configPath))
+				require.FileExists(t, backup)
+			}
+			data, err := os.ReadFile(outside)
+			require.NoError(t, err)
+			require.Equal(t, original, data)
+		})
+	}
+}
+
 func TestProviderOwnershipMigrationCreatesAndRollsBackMissingConfig(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("CRUX_GLOBAL_DATA", dataDir)

@@ -106,22 +106,38 @@ func readProviderMigrationJournalForConfig(configPath string) (providerMigration
 	return journal, data, true, nil
 }
 
-func validateProviderMigrationRecovery(configPath string, journal providerMigrationJournal) error {
+func validateProviderMigrationMetadata(configPath string, journal providerMigrationJournal) error {
 	if journal.Version != providerOwnershipMigrationVersion || journal.State != "prepared" && journal.State != "completed" {
 		return fmt.Errorf("invalid provider migration recovery journal (version=%d state=%q)", journal.Version, journal.State)
 	}
 	if journal.Config.Path != configPath || journal.Config.AfterHash == "" {
 		return errors.New("provider migration journal has incomplete config recovery metadata")
 	}
+	migrationDir := filepath.Clean(providerMigrationDirForConfig(configPath))
+	for _, path := range []string{filepath.Dir(migrationDir), migrationDir} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("inspect provider migration directory: %w", err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("provider migration directory must not be a symlink")
+		}
+	}
 	if journal.Config.Existed {
 		if journal.Config.Backup == "" || journal.Config.BeforeHash == "" {
 			return errors.New("provider migration journal has incomplete config recovery metadata")
 		}
-		migrationDir := filepath.Clean(providerMigrationDirForConfig(configPath))
 		backupPath := filepath.Clean(journal.Config.Backup)
 		backupName := filepath.Base(backupPath)
 		if filepath.Dir(backupPath) != migrationDir || !strings.HasPrefix(backupName, "config.") || !strings.HasSuffix(backupName, ".backup") {
 			return errors.New("provider migration journal has an invalid config backup path")
+		}
+		info, err := os.Lstat(backupPath)
+		if err != nil {
+			return fmt.Errorf("inspect provider migration config backup: %w", err)
+		}
+		if !info.Mode().IsRegular() {
+			return errors.New("provider migration config backup must be a regular file")
 		}
 		_, backupHash, backupExists, err := fileBytesAndHash(backupPath)
 		if err != nil {
@@ -132,6 +148,13 @@ func validateProviderMigrationRecovery(configPath string, journal providerMigrat
 		}
 	} else if journal.Config.Backup != "" || journal.Config.BeforeHash != "" {
 		return errors.New("provider migration journal has invalid absent config recovery metadata")
+	}
+	return nil
+}
+
+func validateProviderMigrationRecovery(configPath string, journal providerMigrationJournal) error {
+	if err := validateProviderMigrationMetadata(configPath, journal); err != nil {
+		return err
 	}
 	_, currentHash, exists, err := fileBytesAndHash(configPath)
 	if err != nil {
@@ -193,6 +216,9 @@ func recoverPreparedProviderMigration(configPath string) error {
 	}
 	if journal.Config.Path != configPath {
 		return errors.New("recover provider migration: prepared journal belongs to a different config path")
+	}
+	if err := validateProviderMigrationMetadata(configPath, journal); err != nil {
+		return fmt.Errorf("recover provider migration: %w", err)
 	}
 	_, currentHash, configExists, err := fileBytesAndHash(configPath)
 	if err != nil {

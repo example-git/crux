@@ -45,7 +45,21 @@ func NewRenameTool(
 			if params.NewName == "" {
 				return fantasy.NewTextErrorResponse("new_name is required"), nil
 			}
-			workingDir := cmp.Or(params.Path, ".")
+			sessionID := GetSessionFromContext(ctx)
+			if sessionID == "" || permissions == nil {
+				return fantasy.ToolResponse{}, fmt.Errorf("session and permission service are required for renaming symbols")
+			}
+			workingDir, err := canonicalToolPath(".", cmp.Or(params.Path, "."))
+			if err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+			granted, err := authorizeExternalPath(ctx, permissions, ".", workingDir, call.ID, RenameToolName, "read", "Search for rename symbol in: "+workingDir, params)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			if !granted {
+				return NewPermissionDeniedResponse(), nil
+			}
 			resolved, err := resolveSymbol(ctx, lspManager, params.Symbol, workingDir)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("Symbol '%s' not found", params.Symbol)), nil
@@ -60,12 +74,19 @@ func NewRenameTool(
 				return fantasy.NewTextResponse(fmt.Sprintf("No rename edits generated for symbol '%s'", params.Symbol)), nil
 			}
 
-			sessionID := GetSessionFromContext(ctx)
-			if sessionID != "" && permissions != nil {
+			if err := canonicalizeWorkspaceEdit(edit, workingDir); err != nil {
+				return fantasy.NewTextErrorResponse(fmt.Sprintf("resolve rename targets: %s", err)), nil
+			}
+			affectedFiles := collectAffectedFiles(edit)
+			for _, path := range affectedFiles {
 				granted, err := permissions.Request(ctx, permission.CreatePermissionRequest{
 					SessionID:   sessionID,
+					ToolCallID:  call.ID,
 					ToolName:    RenameToolName,
-					Description: fmt.Sprintf("Rename '%s' to '%s'", params.Symbol, params.NewName),
+					Path:        path,
+					Action:      "rename",
+					Params:      map[string]any{"symbol": params.Symbol, "new_name": params.NewName, "paths": affectedFiles},
+					Description: fmt.Sprintf("Rename '%s' to '%s' in %s", params.Symbol, params.NewName, path),
 				})
 				if err != nil {
 					return fantasy.ToolResponse{}, fmt.Errorf("permission request failed: %w", err)
@@ -74,8 +95,6 @@ func NewRenameTool(
 					return NewPermissionDeniedResponse(), nil
 				}
 			}
-
-			affectedFiles := collectAffectedFiles(edit)
 
 			if files != nil && sessionID != "" {
 				for _, path := range affectedFiles {

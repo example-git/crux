@@ -211,12 +211,12 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 			execWorkingDir := cmp.Or(params.WorkingDir, workingDir)
 
 			isSafeReadOnly := false
-			cmdLower := strings.ToLower(params.Command)
+			command := strings.TrimSpace(params.Command)
 
 			if !containsCommandChaining(params.Command) {
 				for _, safe := range safeCommands {
-					if strings.HasPrefix(cmdLower, safe) {
-						if len(cmdLower) == len(safe) || cmdLower[len(safe)] == ' ' || cmdLower[len(safe)] == '-' {
+					if strings.HasPrefix(command, safe) {
+						if len(command) == len(safe) || command[len(safe)] == ' ' || command[len(safe)] == '\t' {
 							isSafeReadOnly = true
 							break
 						}

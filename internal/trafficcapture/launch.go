@@ -31,7 +31,7 @@ func Launch(ctx context.Context, request Request) (Metadata, error) {
 		if err := ensurePrivateDirectory(storageDirectory()); err != nil {
 			return Metadata{}, err
 		}
-		if err := ensurePrivateDirectory(filepath.Dir(request.CapturePath)); err != nil {
+		if err := ensurePrivateDirectory(CaptureDirectory()); err != nil {
 			return Metadata{}, err
 		}
 	} else if err := os.MkdirAll(filepath.Dir(request.CapturePath), 0o700); err != nil {

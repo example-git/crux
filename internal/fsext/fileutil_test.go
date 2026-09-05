@@ -22,6 +22,30 @@ func TestHasPrefixResolvesSymlinks(t *testing.T) {
 	require.True(t, HasPrefix(filepath.Join(root, "missing", "file.txt"), root))
 }
 
+func TestCanonicalPathResolvesDanglingSymlinks(t *testing.T) {
+	for _, relative := range []bool{false, true} {
+		t.Run(fmt.Sprint(relative), func(t *testing.T) {
+			root := t.TempDir()
+			outside, err := filepath.EvalSymlinks(t.TempDir())
+			require.NoError(t, err)
+			target := filepath.Join(outside, "missing")
+			linkTarget := target
+			if relative {
+				linkTarget, err = filepath.Rel(root, target)
+				require.NoError(t, err)
+			}
+			link := filepath.Join(root, "escape")
+			require.NoError(t, os.Symlink(linkTarget, link))
+			for _, suffix := range []string{"", "child.png"} {
+				resolved, err := CanonicalPath(filepath.Join(link, suffix))
+				require.NoError(t, err)
+				require.Equal(t, filepath.Join(target, suffix), resolved)
+				require.False(t, HasPrefix(filepath.Join(link, suffix), root))
+			}
+		})
+	}
+}
+
 func TestGlobWithDoubleStar(t *testing.T) {
 	t.Run("finds files matching pattern", func(t *testing.T) {
 		testDir := t.TempDir()

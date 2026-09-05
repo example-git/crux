@@ -1,10 +1,39 @@
 package tools
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWorkspaceEditCanonicalizesEveryAffectedTarget(t *testing.T) {
+	workspace := t.TempDir()
+	outside, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	target := filepath.Join(outside, "target.go")
+	link := filepath.Join(workspace, "link.go")
+	require.NoError(t, os.Symlink(target, link))
+	uri := func(path string) protocol.DocumentURI { return protocol.DocumentURI(protocol.URIFromPath(path)) }
+	created := filepath.Join(outside, "created.go")
+	deleted := filepath.Join(outside, "deleted.go")
+	edit := &protocol.WorkspaceEdit{
+		Changes: map[protocol.DocumentURI][]protocol.TextEdit{uri(link): {}},
+		DocumentChanges: []protocol.DocumentChange{{
+			CreateFile: &protocol.CreateFile{URI: uri(created)},
+			DeleteFile: &protocol.DeleteFile{URI: uri(deleted)},
+		}},
+	}
+	require.NoError(t, canonicalizeWorkspaceEdit(edit, workspace))
+	require.Contains(t, edit.Changes, uri(target))
+	require.NotContains(t, edit.Changes, uri(link))
+	require.ElementsMatch(t, []string{target, created, deleted}, collectAffectedFiles(edit))
+	require.NoFileExists(t, target)
+	collision := &protocol.WorkspaceEdit{Changes: map[protocol.DocumentURI][]protocol.TextEdit{uri(link): {}, uri(target): {}}}
+	require.ErrorContains(t, canonicalizeWorkspaceEdit(collision, workspace), "multiple rename paths")
+}
 
 func TestGetSymbolOffset(t *testing.T) {
 	t.Parallel()

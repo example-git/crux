@@ -103,6 +103,41 @@ func TestJobManagerRunsFourJobsAndQueuesRemainingFIFO(t *testing.T) {
 	require.Equal(t, int32(MaxConcurrentJobs), maximum.Load())
 }
 
+func TestNumberedOutputReservationsRemainExactAndRelease(t *testing.T) {
+	manager, err := NewJobManagerWithStore(t.TempDir(), nil, JobManagerOptions{Executor: func(ctx context.Context, request JobRequest) (*Response, error) {
+		return testImageResponse(request.Model), nil
+	}})
+	require.NoError(t, err)
+	t.Cleanup(func() { manager.StopAll(context.Background()) })
+	directory := filepath.Join(t.TempDir(), "outputs")
+	request := testJobRequest(filepath.Join(directory, "unused.png"), "reserved")
+	first, err := manager.ReserveNumberedOutputs(request, directory)
+	require.NoError(t, err)
+	defer first.Release()
+	second, err := manager.ReserveNumberedOutputs(request, directory)
+	require.NoError(t, err)
+	defer second.Release()
+	require.NotEqual(t, first.Paths(), second.Paths())
+	require.NoDirExists(t, directory)
+	require.Zero(t, manager.ActiveCount())
+	first.Release()
+	reused, err := manager.ReserveNumberedOutputs(request, directory)
+	require.NoError(t, err)
+	defer reused.Release()
+	require.Equal(t, first.Paths(), reused.Paths())
+	request.OutputPaths = second.Paths()
+	_, err = manager.EnqueueReserved(request, "mismatch", managedtask.Ownership{ParentSessionID: "parent"}, reused)
+	require.ErrorContains(t, err, "does not match")
+	request.OutputPaths = reused.Paths()
+	view, err := manager.EnqueueReserved(request, "reserved", managedtask.Ownership{ParentSessionID: "parent"}, reused)
+	require.NoError(t, err)
+	reused.Release()
+	result, err := manager.Output(t.Context(), view.ID, true, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, managedtask.StatusCompleted, result.Task.State.Status)
+	require.FileExists(t, request.OutputPaths[0])
+}
+
 func TestJobManagerExplicitOutputStillRejectsReservedFilePath(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
