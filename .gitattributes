@@ -1,3 +1,4 @@
+plugins/provider-presets/**/*.json text eol=lf
 *.golden linguist-generated=true -text
 internal/agent/testdata/**/*.yaml -diff linguist-generated=true
 internal/agent/tools/ripgrep/* -diff -text linguist-generated=true

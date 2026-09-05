@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -584,7 +585,7 @@ func TestBackgroundShell_ReadOutputWaitAndRanges(t *testing.T) {
 	store, err := task.NewOutputStore(filepath.Join(root, "output"), task.OutputStoreOptions{})
 	require.NoError(t, err)
 	manager := NewBackgroundShellManagerWithStore("workspace", store)
-	backgroundShell, err := manager.Start(t.Context(), root, nil, "printf first; sleep 0.2; printf second", "")
+	backgroundShell, err := manager.Start(t.Context(), root, nil, "printf first; while [ ! -f release ]; do sleep 0.01; done; printf second", "")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = manager.Kill(backgroundShell.ID) })
 
@@ -597,7 +598,8 @@ func TestBackgroundShell_ReadOutputWaitAndRanges(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, task.RetrievalTimeout, status)
 
-	result, status, err = backgroundShell.ReadOutput(t.Context(), task.ReadOptions{}, true, time.Second)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "release"), nil, 0o600))
+	result, status, err = backgroundShell.ReadOutput(t.Context(), task.ReadOptions{}, true, 10*time.Second)
 	require.NoError(t, err)
 	require.Equal(t, task.RetrievalReady, status)
 	require.Equal(t, "firstsecond", string(result.Output))

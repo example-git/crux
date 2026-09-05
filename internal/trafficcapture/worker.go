@@ -58,11 +58,14 @@ func WritePaneLog(path string, input io.Reader) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create traffic capture pane log directory: %w", err)
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return fmt.Errorf("open traffic capture pane log: %w", err)
 	}
 	defer file.Close()
+	if _, err := file.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("seek traffic capture pane log: %w", err)
+	}
 	buffer := make([]byte, 32*1024)
 	var size int64
 	if info, statErr := file.Stat(); statErr == nil {

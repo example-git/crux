@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -588,7 +589,10 @@ func TestFlowEditPersistsAndReusesVerifiedFlowUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if !info.Mode().IsRegular() {
+		t.Fatal("registry is not a regular file")
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("registry permissions = %o", info.Mode().Perm())
 	}
 }

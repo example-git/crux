@@ -643,10 +643,26 @@ func TestClientRequestTimeoutCancelsBlockedStream(t *testing.T) {
 	require.Less(t, time.Since(started), time.Second)
 }
 
+type boundedReadListener struct {
+	net.Listener
+}
+
+func (l boundedReadListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.(*net.TCPConn).SetReadBuffer(1024); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
 func TestClientWriteDeadlineBoundsUnresponsivePeer(t *testing.T) {
 	release := make(chan struct{})
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
@@ -657,15 +673,19 @@ func TestClientWriteDeadlineBoundsUnresponsivePeer(t *testing.T) {
 		}
 		<-release
 	}))
+	server.Listener = boundedReadListener{Listener: server.Listener}
+	server.Start()
 	defer server.Close()
 	defer close(release)
 
 	model := lifecycleModel(server, NewSessionStore(), func() string { return "token" })
 	model.client.writeTimeout = 25 * time.Millisecond
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
 	started := time.Now()
-	_, err := model.Generate(context.Background(), fantasy.Call{
+	_, err := model.Generate(ctx, fantasy.Call{
 		Headers: map[string]string{"x-session-id": "conversation", "x-request-purpose": "conversation"},
-		Prompt:  fantasy.Prompt{fantasy.NewUserMessage(strings.Repeat("x", 2<<20))},
+		Prompt:  fantasy.Prompt{fantasy.NewUserMessage(strings.Repeat("x", 8<<20))},
 	})
 	require.ErrorContains(t, err, "i/o timeout")
 	require.Less(t, time.Since(started), 2*time.Second)

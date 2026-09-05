@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/example-git/crux/internal/compatibility"
@@ -13,6 +14,16 @@ import (
 	validator "github.com/kaptinlin/jsonschema"
 	"github.com/stretchr/testify/require"
 )
+
+func TestMain(m *testing.M) {
+	if path := os.Getenv("CRUX_TEST_CAPTURE_ARGS"); path != "" {
+		if err := os.WriteFile(path, []byte(strings.Join(os.Args[1:], "\n")+"\n"), 0o600); err != nil {
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestCodexExecutionPoliciesMapWithoutApproximation(t *testing.T) {
 	tests := []struct {
@@ -175,15 +186,15 @@ func TestClaudeSessionIDResolvesNativeSessionAndShapesUnknownIDError(t *testing.
 
 func TestInteractiveCodexForkRunsForkedNativeSession(t *testing.T) {
 	workingDir := codexNativeAPIFixture(t)
-	executable := filepath.Join(workingDir, "capture-args")
+	executable, err := os.Executable()
+	require.NoError(t, err)
 	argsPath := filepath.Join(workingDir, "args")
-	require.NoError(t, os.WriteFile(executable, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CAPTURE_ARGS\"\n"), 0o700))
 	request := compatibility.Request{
 		Source: "codex", Style: compatibility.ExecutionInteractive, WorkingDir: workingDir,
 		Session: compatibility.Session{Mode: compatibility.SessionFork, ID: "thread-1", Persistent: true}, Prompt: compatibility.Prompt{Text: "continue"},
 	}
 	invocation := protocolInvocation(executable, workingDir, bytes.NewReader(nil), io.Discard)
-	invocation.Env = append(invocation.Env, "CAPTURE_ARGS="+argsPath)
+	invocation.Env = append(invocation.Env, "CRUX_TEST_CAPTURE_ARGS="+argsPath)
 	require.NoError(t, (nativeRuntime{}).Execute(t.Context(), invocation, request))
 	arguments, err := os.ReadFile(argsPath)
 	require.NoError(t, err)
