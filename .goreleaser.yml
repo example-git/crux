@@ -56,8 +56,12 @@ archives:
       - provider-plugin.schema.json
       - provider-preset-plugin.schema.json
       - image-provider-plugin.schema.json
+      - docs/provider-plugins/README.md
       - docs/provider-plugins/**/*
+      - docs/compatibility/README.md
       - docs/compatibility/**/*
+      - plugins/provider-presets/README.md
+      - plugins/provider-presets/LICENSE.catwalk
       - plugins/provider-presets/**/*
       - completions/*
       - manpages/*
