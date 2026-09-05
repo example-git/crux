@@ -62,6 +62,26 @@ func TestBashTool_DefaultAutoBackgroundThreshold(t *testing.T) {
 	require.Contains(t, meta.Output, "done")
 }
 
+func TestBashToolSubagentPolicy(t *testing.T) {
+	workingDir := t.TempDir()
+	tool, manager := newBashToolAndManagerForTest(workingDir)
+	ctx := context.WithValue(permission.WithSubagent(t.Context()), SessionIDContextKey, "child-session")
+
+	t.Run("foreground remains allowed", func(t *testing.T) {
+		response := runBashTool(t, tool, ctx, BashParams{Command: "echo allowed"})
+		require.False(t, response.IsError)
+		require.Contains(t, response.Content, "allowed")
+		require.Zero(t, manager.ActiveCount())
+	})
+
+	t.Run("background is rejected", func(t *testing.T) {
+		response := runBashTool(t, tool, ctx, BashParams{Command: "echo blocked", RunInBackground: true})
+		require.True(t, response.IsError)
+		require.Equal(t, permission.ErrSubagentBackgroundTask.Error(), response.Content)
+		require.Zero(t, manager.ActiveCount())
+	})
+}
+
 func TestBashTool_TimeoutKillsCommand(t *testing.T) {
 	workingDir := t.TempDir()
 	tool := newBashToolForTest(workingDir)
@@ -179,11 +199,13 @@ func TestBashTool_CtrlBDetachesAndNotifies(t *testing.T) {
 type recordingPermissionService struct {
 	*pubsub.Broker[permission.PermissionRequest]
 	requestCount int
+	lastRequest  permission.CreatePermissionRequest
 	allow        bool
 }
 
 func (m *recordingPermissionService) Request(ctx context.Context, req permission.CreatePermissionRequest) (bool, error) {
 	m.requestCount++
+	m.lastRequest = req
 	return m.allow, nil
 }
 

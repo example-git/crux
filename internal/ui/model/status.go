@@ -74,44 +74,61 @@ func (s *Status) Draw(scr uv.Screen, area uv.Rectangle) {
 		uv.NewStyledString(helpView).Draw(scr, area)
 	}
 
-	// Render notifications
-	if s.msg.IsEmpty() {
+	visibleArea := area.Intersect(scr.Bounds())
+	info := s.renderInfo(visibleArea.Dx())
+	if info == "" {
 		return
 	}
+	uv.NewStyledString(info).Draw(scr, visibleArea)
+}
 
-	var indStyle lipgloss.Style
-	var msgStyle lipgloss.Style
+func (s *Status) renderInfo(width int) string {
+	if width <= 0 || s.msg.IsEmpty() {
+		return ""
+	}
+
+	var indicatorStyle lipgloss.Style
+	var messageStyle lipgloss.Style
 	switch s.msg.Type {
 	case util.InfoTypeError:
-		indStyle = s.com.Styles.Status.ErrorIndicator
-		msgStyle = s.com.Styles.Status.ErrorMessage
+		indicatorStyle = s.com.Styles.Status.ErrorIndicator
+		messageStyle = s.com.Styles.Status.ErrorMessage
 	case util.InfoTypeWarn:
-		indStyle = s.com.Styles.Status.WarnIndicator
-		msgStyle = s.com.Styles.Status.WarnMessage
+		indicatorStyle = s.com.Styles.Status.WarnIndicator
+		messageStyle = s.com.Styles.Status.WarnMessage
 	case util.InfoTypeUpdate:
-		indStyle = s.com.Styles.Status.UpdateIndicator
-		msgStyle = s.com.Styles.Status.UpdateMessage
+		indicatorStyle = s.com.Styles.Status.UpdateIndicator
+		messageStyle = s.com.Styles.Status.UpdateMessage
 	case util.InfoTypeInfo:
-		indStyle = s.com.Styles.Status.InfoIndicator
-		msgStyle = s.com.Styles.Status.InfoMessage
+		indicatorStyle = s.com.Styles.Status.InfoIndicator
+		messageStyle = s.com.Styles.Status.InfoMessage
 	case util.InfoTypeSuccess:
-		indStyle = s.com.Styles.Status.SuccessIndicator
-		msgStyle = s.com.Styles.Status.SuccessMessage
+		indicatorStyle = s.com.Styles.Status.SuccessIndicator
+		messageStyle = s.com.Styles.Status.SuccessMessage
 	}
 
-	ind := indStyle.String()
-	indWidth := lipgloss.Width(ind)
-	msgPad := msgStyle.GetPaddingLeft() + msgStyle.GetPaddingRight()
-	avail := max(0, area.Dx()-indWidth-msgPad)
-	msg := strings.Join(strings.Split(s.msg.Msg, "\n"), " ")
-	msg = ansi.Truncate(msg, avail, "…")
-	if w := lipgloss.Width(msg); w < avail {
-		msg += strings.Repeat(" ", avail-w)
+	indicator := indicatorStyle.String()
+	indicatorWidth := lipgloss.Width(indicator)
+	if indicatorWidth >= width {
+		return ansi.Truncate(indicator, width, "")
 	}
-	info := msgStyle.Render(msg)
 
-	// Draw the info message over the help view
-	uv.NewStyledString(ind+info).Draw(scr, area)
+	remaining := width - indicatorWidth
+	messageFrame := messageStyle.GetHorizontalFrameSize()
+	if remaining <= messageFrame {
+		return indicator
+	}
+
+	messageWidth := remaining - messageFrame
+	message := strings.ReplaceAll(s.msg.Msg, "\n", " ")
+	message = ansi.Truncate(message, messageWidth, "…")
+	if message == "" {
+		return indicator
+	}
+	if width := lipgloss.Width(message); width < messageWidth {
+		message += strings.Repeat(" ", messageWidth-width)
+	}
+	return indicator + messageStyle.Render(message)
 }
 
 // clearInfoMsgCmd returns a command that clears the info message after the

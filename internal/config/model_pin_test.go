@@ -17,13 +17,17 @@ func twoProviderConfig(provider, model string) string {
 			"large": {"provider": "` + provider + `", "model": "` + model + `"}
 		},
 		"providers": {
-			"openai": {
+			"alpha": {
+				"type": "openai-compat",
+				"base_url": "https://alpha.example.test/v1",
 				"api_key": "test-key",
-				"models": [{"id": "gpt-4", "name": "GPT-4"}]
+				"models": [{"id": "alpha-model", "name": "Alpha"}]
 			},
-			"anthropic": {
+			"beta": {
+				"type": "openai-compat",
+				"base_url": "https://beta.example.test/v1",
 				"api_key": "test-key-2",
-				"models": [{"id": "claude-3", "name": "Claude 3"}]
+				"models": [{"id": "beta-model", "name": "Beta"}]
 			}
 		}
 	}`
@@ -43,29 +47,29 @@ func TestModelSelectionSurvivesPeerWrite(t *testing.T) {
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
-	require.NoError(t, os.WriteFile(configPath, []byte(twoProviderConfig("openai", "gpt-4")), 0o600))
+	require.NoError(t, os.WriteFile(configPath, []byte(twoProviderConfig("alpha", "alpha-model")), 0o600))
 
 	store, err := Load(dir, dir, false)
 	require.NoError(t, err)
 	store.globalDataPath = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
-	// The user picks Claude in this instance.
+	// The user picks Beta in this instance.
 	require.NoError(t, store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeLarge, SelectedModel{
-		Provider: "anthropic",
-		Model:    "claude-3",
+		Provider: "beta",
+		Model:    "beta-model",
 	}))
 
-	// A sibling instance then picks GPT-4 and writes it to the shared file.
-	require.NoError(t, os.WriteFile(configPath, []byte(twoProviderConfig("openai", "gpt-4")), 0o600))
+	// A sibling instance then picks Alpha and writes it to the shared file.
+	require.NoError(t, os.WriteFile(configPath, []byte(twoProviderConfig("alpha", "alpha-model")), 0o600))
 
 	// Any reload (here explicit; in practice triggered by an unrelated
 	// write such as an OAuth token refresh) must leave our choice alone.
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
 
 	large := store.Config().Models[SelectedModelTypeLarge]
-	require.Equal(t, "anthropic", large.Provider)
-	require.Equal(t, "claude-3", large.Model)
+	require.Equal(t, "beta", large.Provider)
+	require.Equal(t, "beta-model", large.Model)
 }
 
 // TestModelSelectionYieldsToDiskWhenUnchosen verifies the other half of the
@@ -80,17 +84,17 @@ func TestModelSelectionYieldsToDiskWhenUnchosen(t *testing.T) {
 	resetProviderState()
 	t.Cleanup(resetProviderState)
 
-	require.NoError(t, os.WriteFile(configPath, []byte(twoProviderConfig("openai", "gpt-4")), 0o600))
+	require.NoError(t, os.WriteFile(configPath, []byte(twoProviderConfig("alpha", "alpha-model")), 0o600))
 
 	store, err := Load(dir, dir, false)
 	require.NoError(t, err)
 	store.globalDataPath = configPath
 	store.CaptureStalenessSnapshot([]string{configPath})
 
-	require.NoError(t, os.WriteFile(configPath, []byte(twoProviderConfig("anthropic", "claude-3")), 0o600))
+	require.NoError(t, os.WriteFile(configPath, []byte(twoProviderConfig("beta", "beta-model")), 0o600))
 	require.NoError(t, store.ReloadFromDisk(context.Background()))
 
 	large := store.Config().Models[SelectedModelTypeLarge]
-	require.Equal(t, "anthropic", large.Provider)
-	require.Equal(t, "claude-3", large.Model)
+	require.Equal(t, "beta", large.Provider)
+	require.Equal(t, "beta-model", large.Model)
 }

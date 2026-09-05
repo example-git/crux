@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/message"
 )
 
@@ -138,9 +138,9 @@ type BinaryContent struct {
 }
 
 // String returns a base64-encoded string of the binary data.
-func (bc BinaryContent) String(p catwalk.InferenceProvider) string {
+func (bc BinaryContent) String(p catalog.ProviderID) string {
 	base64Encoded := base64.StdEncoding.EncodeToString(bc.Data)
-	if p == catwalk.InferenceProviderOpenAI {
+	if p == catalog.ProviderOpenAI {
 		return "data:" + bc.MIMEType + ";base64," + base64Encoded
 	}
 	return base64Encoded
@@ -185,6 +185,10 @@ type Finish struct {
 }
 
 func (Finish) isPart() {}
+
+type RetryingContent struct{}
+
+func (RetryingContent) isPart() {}
 
 // ShellCommand stores a bang-mode shell command and its output.
 type ShellCommand struct {
@@ -494,6 +498,7 @@ const (
 	finishType           partType = "finish"
 	shellCommandType     partType = "shell_command"
 	providerMetadataType partType = "provider_metadata"
+	retryingType         partType = "retrying"
 )
 
 type partWrapper struct {
@@ -527,6 +532,8 @@ func MarshalParts(parts []ContentPart) ([]byte, error) {
 			typ = shellCommandType
 		case ProviderMetadataContent:
 			typ = providerMetadataType
+		case RetryingContent:
+			typ = retryingType
 		default:
 			return nil, fmt.Errorf("unknown part type: %T", part)
 		}
@@ -610,6 +617,12 @@ func UnmarshalParts(data []byte) ([]ContentPart, error) {
 			parts = append(parts, part)
 		case providerMetadataType:
 			part := ProviderMetadataContent{}
+			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+		case retryingType:
+			part := RetryingContent{}
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
 			}

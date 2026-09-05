@@ -42,6 +42,7 @@ func TestStartProjectIndexingIsNonblockingAndDeduplicated(t *testing.T) {
 	storeDirectory := t.TempDir()
 	status := StartProjectIndexing(context.Background(), "/project", "/database", storeDirectory)
 	require.Equal(t, StoreStateIndexing, status.State)
+	require.False(t, status.Serving)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -61,6 +62,54 @@ func TestStartProjectIndexingIsNonblockingAndDeduplicated(t *testing.T) {
 	var unavailable *StoreUnavailableError
 	require.ErrorAs(t, err, &unavailable)
 	require.Equal(t, StoreStateIndexing, unavailable.State)
+	close(release)
+	require.Eventually(t, func() bool {
+		backgroundIndexes.RLock()
+		defer backgroundIndexes.RUnlock()
+		return backgroundIndexes.jobs[projectIndexKey("/project", storeDirectory)].status.State == StoreStateReady
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestOpenReadyProjectServesActiveGenerationDuringRefresh(t *testing.T) {
+	resetBackgroundIndexes(t)
+	path := createTestDatabase(t, []testChunk{{
+		projectRoot: "/project",
+		path:        "src/main.go",
+		embedding:   encodeEmbedding(1, 0),
+		model:       "model-a",
+	}})
+	storeDirectory := t.TempDir()
+	sourceReader, err := OpenWithANNDirectory(t.Context(), path, storeDirectory)
+	require.NoError(t, err)
+	_, _, err = sourceReader.prepareStore(t.Context(), "/project", "model-a")
+	require.NoError(t, err)
+	require.NoError(t, sourceReader.Close())
+	future := time.Now().Add(time.Second)
+	require.NoError(t, os.Chtimes(path, future, future))
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runProjectIndexing = func(context.Context, string, string, string, ProjectFilters, func(IndexProgress)) error {
+		close(started)
+		<-release
+		return nil
+	}
+	status := StartProjectIndexing(t.Context(), "/project", path, storeDirectory)
+	require.Equal(t, StoreStateIndexing, status.State)
+	require.True(t, status.Serving)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background refresh did not start")
+	}
+
+	reader, err := OpenReadyProject("/project", storeDirectory)
+	require.NoError(t, err)
+	results, err := reader.Search(t.Context(), &fakeQueryEmbedder{embedding: []float32{1, 0}}, "/project", "main", SearchOptions{Limit: 1, MinScore: -1})
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Equal(t, "src/main.go", results[0].Chunk.Path)
+	require.NoError(t, reader.Close())
 	close(release)
 	require.Eventually(t, func() bool {
 		backgroundIndexes.RLock()
@@ -173,7 +222,7 @@ func TestBackgroundIndexingProducesReadyStandaloneStore(t *testing.T) {
 	require.Equal(t, "src/main.go", results[0].Chunk.Path)
 }
 
-func TestOpenReadyProjectRejectsStaleSource(t *testing.T) {
+func TestOpenReadyProjectServesStaleSource(t *testing.T) {
 	path := createTestDatabase(t, []testChunk{{
 		projectRoot: "/project",
 		path:        "src/main.go",
@@ -189,11 +238,12 @@ func TestOpenReadyProjectRejectsStaleSource(t *testing.T) {
 
 	future := time.Now().Add(time.Second)
 	require.NoError(t, os.Chtimes(path, future, future))
+	status := ProjectIndexStatus("/project", storeDirectory)
+	require.Equal(t, StoreStateStale, status.State)
+	require.True(t, status.Serving)
 	ready, err := OpenReadyProject("/project", storeDirectory)
-	require.Nil(t, ready)
-	var unavailable *StoreUnavailableError
-	require.ErrorAs(t, err, &unavailable)
-	require.Equal(t, StoreStateStale, unavailable.State)
+	require.NoError(t, err)
+	require.NoError(t, ready.Close())
 }
 
 func TestReconcileProjectIndexingDisablesAndCancelsWorker(t *testing.T) {

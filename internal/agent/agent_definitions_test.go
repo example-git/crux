@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/stretchr/testify/require"
@@ -20,7 +20,7 @@ func testAgentDefinitionConfig() *config.Config {
 		Providers: csync.NewMapFrom(map[string]config.ProviderConfig{
 			"provider": {
 				ID: "provider",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{ID: "model"},
 					{ID: "org/model/version"},
 				},
@@ -28,7 +28,7 @@ func testAgentDefinitionConfig() *config.Config {
 			"disabled": {
 				ID:      "disabled",
 				Disable: true,
-				Models:  []catwalk.Model{{ID: "model"}},
+				Models:  []catalog.Model{{ID: "model"}},
 			},
 		}),
 	}
@@ -55,7 +55,7 @@ func TestAgentDefinitionDiscoveryScopesOverrideAndOrdering(t *testing.T) {
 	projectDir := filepath.Join(t.TempDir(), "project")
 	writeAgentDefinition(t, userDir, "zeta.md", "zeta", "provider/model", "User zeta", nil)
 	writeAgentDefinition(t, userDir, "reviewer.md", "reviewer", "provider/model", "User reviewer", []string{"view"})
-	writeAgentDefinition(t, projectDir, "reviewer.md", "reviewer", "provider/org/model/version", "Project reviewer", []string{"grep"})
+	writeAgentDefinition(t, projectDir, "reviewer.md", "reviewer", "provider/org/model/version", "Project reviewer", []string{"search"})
 	writeAgentDefinition(t, projectDir, "alpha.md", "alpha", "provider/model", "Project alpha", []string{"*"})
 	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "ignored.txt"), []byte("ignored"), 0o600))
 	require.NoError(t, os.Mkdir(filepath.Join(projectDir, "nested.md"), 0o755))
@@ -225,7 +225,7 @@ func TestCreateAgentDefinition(t *testing.T) {
 		Name:        "reviewer",
 		Description: "Review code",
 		Model:       "provider/model",
-		Tools:       []string{"view", "grep"},
+		Tools:       []string{"view", "search"},
 	})
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(workingDir, ".ai-cli", "agents", "reviewer.md"), path)
@@ -240,13 +240,13 @@ func TestCreateAgentDefinition(t *testing.T) {
 	require.Contains(t, string(content), "name: reviewer")
 	require.Contains(t, string(content), "description: Review code")
 	require.Contains(t, string(content), "model: provider/model")
-	require.Contains(t, string(content), "tools:\n    - view\n    - grep")
+	require.Contains(t, string(content), "tools:\n    - view\n    - search")
 	require.Contains(t, string(content), "# Instructions")
 
 	definition, err := parseAgentDefinition(path, agentDefinitionSourceProject, testAgentDefinitionConfig())
 	require.NoError(t, err)
 	require.Equal(t, "reviewer", definition.Name)
-	require.Equal(t, []string{"view", "grep"}, definition.Tools)
+	require.Equal(t, []string{"view", "search"}, definition.Tools)
 }
 
 func TestCreateAgentDefinitionWithScript(t *testing.T) {
@@ -354,6 +354,8 @@ func TestAgentDefinitionParserRejectsInvalidDefinitions(t *testing.T) {
 		{name: "disabled provider", content: "---\nname: reviewer\ndescription: Review\nmodel: disabled/model\n---\nbody", errorText: "provider \"disabled\" is disabled"},
 		{name: "missing exact model", content: "---\nname: reviewer\ndescription: Review\nmodel: provider/absent\n---\nbody", errorText: "model \"absent\" is not configured"},
 		{name: "unknown tool", content: "---\nname: reviewer\ndescription: Review\nmodel: provider/model\ntools: [missing]\n---\nbody", errorText: "unknown tool \"missing\""},
+		{name: "obsolete glob tool", content: "---\nname: reviewer\ndescription: Review\nmodel: provider/model\ntools: [glob]\n---\nbody", errorText: "unknown tool \"glob\""},
+		{name: "obsolete grep tool", content: "---\nname: reviewer\ndescription: Review\nmodel: provider/model\ntools: [grep]\n---\nbody", errorText: "unknown tool \"grep\""},
 		{name: "forbidden recursive tool", content: "---\nname: reviewer\ndescription: Review\nmodel: provider/model\ntools: [agent]\n---\nbody", errorText: "tool \"agent\" is not available"},
 		{name: "wildcard with named tool", content: "---\nname: reviewer\ndescription: Review\nmodel: provider/model\ntools: [\"*\", view]\n---\nbody", errorText: "wildcard tool"},
 		{name: "disabled tool", content: "---\nname: reviewer\ndescription: Review\nmodel: provider/model\ntools: [view]\n---\nbody", errorText: "tool \"view\" is globally disabled", configure: func(cfg *config.Config) { cfg.Options.DisabledTools = []string{"view"} }},

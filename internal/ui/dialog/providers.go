@@ -7,11 +7,13 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/util"
 )
 
 // ProvidersID is the identifier for the providers dialog.
@@ -28,6 +30,8 @@ type providerEntry struct {
 	id       string
 	name     string
 	disabled bool
+	owner    providerregistry.RegistrationOwner
+	ownerSet bool
 }
 
 // Providers is a dialog that lets the user enable or disable providers.
@@ -86,7 +90,7 @@ func (p *Providers) refresh() {
 	}
 }
 
-func providerEntries(cfg *config.Config, knownProviders []catwalk.Provider) []providerEntry {
+func providerEntries(cfg *config.Config, knownProviders []catalog.Provider) []providerEntry {
 	seen := make(map[string]bool)
 	var items []providerEntry
 
@@ -94,6 +98,7 @@ func providerEntries(cfg *config.Config, knownProviders []catwalk.Provider) []pr
 	// ordinary disabled providers so users can re-enable them, but omit
 	// plugin/OAuth integrations the active host profile cannot construct.
 	for id, pc := range cfg.Providers.Seq2() {
+		seen[id] = true
 		if !cfg.IsProviderIntegrationAvailable(id) {
 			continue
 		}
@@ -101,8 +106,8 @@ func providerEntries(cfg *config.Config, knownProviders []catwalk.Provider) []pr
 		if name == "" {
 			name = id
 		}
-		seen[id] = true
-		items = append(items, providerEntry{id: id, name: name, disabled: pc.Disable})
+		owner, ownerSet := cfg.ProviderOwner(id)
+		items = append(items, providerEntry{id: id, name: name, disabled: pc.Disable, owner: owner, ownerSet: ownerSet})
 	}
 
 	// Known but unconfigured providers remain visible so the user can
@@ -113,7 +118,8 @@ func providerEntries(cfg *config.Config, knownProviders []catwalk.Provider) []pr
 		if seen[id] {
 			continue
 		}
-		items = append(items, providerEntry{id: id, name: provider.Name})
+		owner, ownerSet := cfg.ProviderOwner(id)
+		items = append(items, providerEntry{id: id, name: provider.Name, owner: owner, ownerSet: ownerSet})
 	}
 
 	slices.SortFunc(items, func(a, b providerEntry) int {
@@ -145,11 +151,25 @@ func (p *Providers) HandleMsg(msg tea.Msg) Action {
 				break
 			}
 			item := p.items[p.cursor]
+			cfg := p.com.Config()
+			if cfg == nil {
+				return ActionCmd{util.ReportError(fmt.Errorf("configuration not found"))}
+			}
+			currentOwner, currentOwnerSet := cfg.ProviderOwner(item.id)
+			if !item.ownerSet {
+				p.refresh()
+				return ActionCmd{util.ReportError(fmt.Errorf("provider owner is missing for %s", item.id))}
+			}
+			if currentOwnerSet != item.ownerSet || currentOwnerSet && currentOwner != item.owner {
+				p.refresh()
+				return ActionCmd{util.ReportError(fmt.Errorf("provider owner changed before %s could be toggled", item.id))}
+			}
 			newDisabled := !item.disabled
 
-			// Persist first, then rebuild from fresh config.
-			field := fmt.Sprintf("providers.%s.disable", item.id)
-			_ = p.com.Workspace.SetConfigField(config.ScopeGlobal, field, newDisabled)
+			if err := p.com.Workspace.SetProviderDisabled(config.ScopeGlobal, item.owner, newDisabled); err != nil {
+				p.refresh()
+				return ActionCmd{util.ReportError(fmt.Errorf("failed to toggle provider %s: %w", item.id, err))}
+			}
 			p.refresh()
 
 			return ActionProviderToggled{

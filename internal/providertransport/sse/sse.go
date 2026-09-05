@@ -15,7 +15,10 @@ import (
 
 const DefaultMaxEventBytes = int64(1 << 20)
 
-var ErrMissingTerminal = errors.New("SSE stream ended without a terminal event")
+var (
+	ErrMissingTerminal = errors.New("SSE stream ended without a terminal event")
+	ErrTerminal        = errors.New("SSE terminal event")
+)
 
 type Options struct {
 	MaxEventBytes   int64
@@ -55,7 +58,7 @@ func Parse(ctx context.Context, reader io.Reader, options Options, yield func(js
 		data.Reset()
 		if string(payload) == doneMarker {
 			terminal = true
-			return nil
+			return ErrTerminal
 		}
 		if int64(len(payload)) > limit {
 			return fmt.Errorf("SSE event exceeds %d bytes", limit)
@@ -65,10 +68,14 @@ func Parse(ctx context.Context, reader io.Reader, options Options, yield func(js
 		}
 		raw := json.RawMessage(bytes.Clone(payload))
 		if err := yield(raw); err != nil {
+			if errors.Is(err, ErrTerminal) {
+				terminal = true
+			}
 			return err
 		}
 		if options.IsTerminal != nil && options.IsTerminal(raw) {
 			terminal = true
+			return ErrTerminal
 		}
 		return nil
 	}
@@ -80,6 +87,9 @@ func Parse(ctx context.Context, reader io.Reader, options Options, yield func(js
 		line := scanner.Text()
 		if line == "" {
 			if err := dispatch(); err != nil {
+				if errors.Is(err, ErrTerminal) {
+					return nil
+				}
 				return err
 			}
 			continue
@@ -106,6 +116,9 @@ func Parse(ctx context.Context, reader io.Reader, options Options, yield func(js
 		return fmt.Errorf("read SSE stream: %w", err)
 	}
 	if err := dispatch(); err != nil {
+		if errors.Is(err, ErrTerminal) {
+			return nil
+		}
 		return err
 	}
 	if options.RequireTerminal && !terminal {

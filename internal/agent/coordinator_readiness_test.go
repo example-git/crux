@@ -42,7 +42,7 @@ func TestBuildAgentReadinessSurvivesCallerCancellation(t *testing.T) {
 	// instantly if we let it — we arm the gate anyway to prove the readiness
 	// goroutines no longer block on it.
 	cruxJSON := `{
-  "options": {"disable_default_providers": true, "disable_provider_auto_update": true},
+  "options": {"disable_default_providers": true},
   "providers": {"mock": {"id": "mock", "name": "Mock", "type": "openai-compat",
     "base_url": "http://127.0.0.1:9/v1", "api_key": "test-key",
     "models": [{"id": "mock-model", "name": "Mock", "context_window": 8192, "default_max_tokens": 128}]}},

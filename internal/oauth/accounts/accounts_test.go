@@ -3,6 +3,8 @@ package accounts
 import (
 	"context"
 	"errors"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +16,313 @@ func setup(t *testing.T) context.Context {
 	t.Helper()
 	t.Setenv("AI_CLI_DIR", t.TempDir())
 	return context.Background()
+}
+
+func TestConcurrentProviderPublicationKeepsNamespaceAndRefresherTogether(t *testing.T) {
+	oldRefresh := func(context.Context, string) (*oauth.Token, error) {
+		return &oauth.Token{AccessToken: "old"}, nil
+	}
+	newRefresh := func(context.Context, string) (*oauth.Token, error) {
+		return &oauth.Token{AccessToken: "new"}, nil
+	}
+	oldGeneration := []ProviderRegistration{{ProviderID: "provider", Namespace: "old", Refresher: oldRefresh}}
+	newGeneration := []ProviderRegistration{{ProviderID: "provider", Namespace: "new", Refresher: newRefresh}}
+	PublishProviders(oldGeneration)
+	t.Cleanup(func() { PublishProviders(nil) })
+
+	var wait sync.WaitGroup
+	for range 8 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for index := range 500 {
+				if index%2 == 0 {
+					PublishProviders(oldGeneration)
+				} else {
+					PublishProviders(newGeneration)
+				}
+				namespace, refresher, ok := ProviderSnapshot("provider")
+				if !ok || refresher == nil {
+					t.Errorf("published provider snapshot missing")
+					return
+				}
+				token, err := refresher(t.Context(), "refresh")
+				if err != nil || token.AccessToken != namespace {
+					t.Errorf("torn provider snapshot: namespace=%q token=%v err=%v", namespace, token, err)
+					return
+				}
+			}
+		}()
+	}
+	wait.Wait()
+}
+
+func TestProviderPublicationBlocksReadersUntilCommitCompletes(t *testing.T) {
+	oldGeneration := []ProviderRegistration{{ProviderID: "provider", Namespace: "old"}}
+	newGeneration := []ProviderRegistration{{ProviderID: "provider", Namespace: "new"}}
+	PublishProviders(oldGeneration)
+	t.Cleanup(func() { PublishProviders(nil) })
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	published := make(chan struct{})
+	go func() {
+		PublishProvidersWith(newGeneration, func() {
+			close(entered)
+			<-release
+		})
+		close(published)
+	}()
+	<-entered
+	require.False(t, providerMu.TryRLock())
+
+	observed := make(chan string, 1)
+	go func() {
+		namespace, _, _ := ProviderSnapshot("provider")
+		observed <- namespace
+	}()
+	close(release)
+	<-published
+	require.Equal(t, "new", <-observed)
+}
+
+func TestFailedProviderPublicationRetainsPreviousGeneration(t *testing.T) {
+	oldRefresh := func(context.Context, string) (*oauth.Token, error) {
+		return &oauth.Token{AccessToken: "old"}, nil
+	}
+	newRefresh := func(context.Context, string) (*oauth.Token, error) {
+		return &oauth.Token{AccessToken: "new"}, nil
+	}
+	PublishProviders([]ProviderRegistration{{ProviderID: "provider", Namespace: "old", Refresher: oldRefresh}})
+	t.Cleanup(func() { PublishProviders(nil) })
+
+	err := PublishProvidersTransaction([]ProviderRegistration{{ProviderID: "provider", Namespace: "new", Refresher: newRefresh}}, func() error {
+		return errors.New("publish blocked")
+	})
+	require.EqualError(t, err, "publish blocked")
+	namespace, refresher, ok := ProviderSnapshot("provider")
+	require.True(t, ok)
+	require.Equal(t, "old", namespace)
+	token, err := refresher(t.Context(), "refresh")
+	require.NoError(t, err)
+	require.Equal(t, "old", token.AccessToken)
+}
+
+func TestProvidersForUsesExplicitGenerationOrder(t *testing.T) {
+	ctx := setup(t)
+	PublishProviders([]ProviderRegistration{
+		{ProviderID: "global-first", Namespace: "generation-first", Order: 10},
+		{ProviderID: "global-second", Namespace: "generation-second", Order: 20},
+	})
+	t.Cleanup(func() { PublishProviders(nil) })
+	for _, provider := range []string{"generation-first", "generation-second", "orphan-z", "orphan-a"} {
+		require.NoError(t, Save(ctx, provider, Entry{ID: provider, AccessToken: provider + "-token"}))
+	}
+
+	providers, err := ProvidersFor(ctx, []string{"generation-second", "", "generation-first", "generation-second"})
+	require.NoError(t, err)
+	require.Equal(t, []string{"generation-second", "generation-first", "orphan-a", "orphan-z"}, providers)
+
+	providers, err = Providers(ctx)
+	require.NoError(t, err)
+	require.Equal(t, []string{"generation-first", "generation-second", "orphan-a", "orphan-z"}, providers)
+}
+
+func TestEnsureFreshForOwnerRejectsReplacementAfterExchangeWithoutWriting(t *testing.T) {
+	ctx := setup(t)
+	entry := Entry{
+		ID: "account", AccessToken: "old-access", RefreshToken: "old-refresh",
+		ExpiresAt: time.Now().Add(-time.Hour).UnixMilli(),
+	}
+	require.NoError(t, Save(ctx, "owner-refresh", entry))
+	active := true
+	refresher := func(context.Context, string) (*oauth.Token, error) {
+		active = false
+		return &oauth.Token{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
+	}
+	validate := func() error {
+		if !active {
+			return errors.New("owner changed")
+		}
+		return nil
+	}
+
+	_, err := EnsureFreshForOwner(ctx, "owner-refresh", &entry, refresher, validate)
+	require.ErrorContains(t, err, "owner changed")
+	stored, err := Active(ctx, "owner-refresh")
+	require.NoError(t, err)
+	require.Equal(t, "old-access", stored.AccessToken)
+	require.Equal(t, "old-refresh", stored.RefreshToken)
+}
+
+func TestEnsureFreshForOwnerRejectsReplacementAtPersistenceBoundary(t *testing.T) {
+	ctx := setup(t)
+	entry := Entry{
+		ID: "account", AccessToken: "old-access", RefreshToken: "old-refresh",
+		ExpiresAt: time.Now().Add(-time.Hour).UnixMilli(),
+	}
+	require.NoError(t, Save(ctx, "owner-refresh-boundary", entry))
+	exchanged := false
+	afterExchange := 0
+	refresher := func(context.Context, string) (*oauth.Token, error) {
+		exchanged = true
+		return &oauth.Token{AccessToken: "new-access", RefreshToken: "new-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
+	}
+	validate := func() error {
+		if exchanged {
+			afterExchange++
+			if afterExchange == 6 {
+				return errors.New("owner changed")
+			}
+		}
+		return nil
+	}
+
+	_, err := EnsureFreshForOwner(ctx, "owner-refresh-boundary", &entry, refresher, validate)
+	require.ErrorContains(t, err, "owner changed")
+	require.Equal(t, 6, afterExchange)
+	stored, err := Active(ctx, "owner-refresh-boundary")
+	require.NoError(t, err)
+	require.Equal(t, "old-access", stored.AccessToken)
+	require.Equal(t, "old-refresh", stored.RefreshToken)
+}
+
+type ownerMutationTest struct {
+	name    string
+	prepare func(*testing.T)
+	mutate  func(Validator) error
+}
+
+func ownerMutationTests(ctx context.Context) []ownerMutationTest {
+	return []ownerMutationTest{
+		{
+			name: "save",
+			prepare: func(t *testing.T) {
+				require.NoError(t, Save(ctx, "owner-save", Entry{ID: "existing", AccessToken: "old"}))
+			},
+			mutate: func(validate Validator) error {
+				return SaveForOwner(ctx, "owner-save", Entry{ID: "new", AccessToken: "new"}, validate)
+			},
+		},
+		{
+			name: "save without activating",
+			prepare: func(t *testing.T) {
+				require.NoError(t, Save(ctx, "owner-save-inactive", Entry{ID: "existing", AccessToken: "old"}))
+			},
+			mutate: func(validate Validator) error {
+				return SaveWithoutActivatingForOwner(ctx, "owner-save-inactive", Entry{ID: "new", AccessToken: "new"}, validate)
+			},
+		},
+		{
+			name: "set active",
+			prepare: func(t *testing.T) {
+				require.NoError(t, Save(ctx, "owner-active", Entry{ID: "one", AccessToken: "one"}))
+				require.NoError(t, Save(ctx, "owner-active", Entry{ID: "two", AccessToken: "two"}))
+			},
+			mutate: func(validate Validator) error {
+				return SetActiveForOwner(ctx, "owner-active", "one", validate)
+			},
+		},
+		{
+			name: "remove",
+			prepare: func(t *testing.T) {
+				require.NoError(t, Save(ctx, "owner-remove", Entry{ID: "one", AccessToken: "one"}))
+				require.NoError(t, Save(ctx, "owner-remove", Entry{ID: "two", AccessToken: "two"}))
+			},
+			mutate: func(validate Validator) error {
+				return RemoveForOwner(ctx, "owner-remove", "one", validate)
+			},
+		},
+		{
+			name: "remove provider",
+			prepare: func(t *testing.T) {
+				require.NoError(t, Save(ctx, "owner-remove-provider", Entry{ID: "one", AccessToken: "one"}))
+			},
+			mutate: func(validate Validator) error {
+				return RemoveProviderForOwner(ctx, "owner-remove-provider", validate)
+			},
+		},
+	}
+}
+
+func accountStoreBytes(t *testing.T) []byte {
+	t.Helper()
+	path, err := dbPath()
+	require.NoError(t, err)
+	value, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return value
+}
+
+func TestOwnerBoundMutationsRevalidateAtLockedWriteBoundary(t *testing.T) {
+	for _, test := range ownerMutationTests(context.Background()) {
+		t.Run(test.name, func(t *testing.T) {
+			setup(t)
+			test.prepare(t)
+			before := accountStoreBytes(t)
+
+			err := test.mutate(nil)
+			require.ErrorContains(t, err, "owner validator is required")
+			require.Equal(t, before, accountStoreBytes(t))
+
+			checks := 0
+			err = test.mutate(func() error {
+				checks++
+				if checks == 4 {
+					return errors.New("owner changed before rename")
+				}
+				return nil
+			})
+			require.ErrorContains(t, err, "owner changed before rename")
+			require.Equal(t, 4, checks)
+			require.Equal(t, before, accountStoreBytes(t))
+			path, pathErr := dbPath()
+			require.NoError(t, pathErr)
+			_, statErr := os.Stat(path + ".tmp")
+			require.ErrorIs(t, statErr, os.ErrNotExist)
+
+			mu.Lock()
+			current := true
+			entered := make(chan struct{})
+			result := make(chan error, 1)
+			go func() {
+				first := true
+				result <- test.mutate(func() error {
+					if first {
+						first = false
+						if !current {
+							return errors.New("owner changed while waiting for lock")
+						}
+						close(entered)
+						return nil
+					}
+					if !current {
+						return errors.New("owner changed while waiting for lock")
+					}
+					return nil
+				})
+			}()
+			select {
+			case <-entered:
+				current = false
+				mu.Unlock()
+			case <-time.After(time.Second):
+				mu.Unlock()
+				t.Fatal("owner-bound mutation did not reach the account lock")
+			}
+			err = <-result
+			require.ErrorContains(t, err, "owner changed while waiting for lock")
+			require.Equal(t, before, accountStoreBytes(t))
+
+			checks = 0
+			require.NoError(t, test.mutate(func() error {
+				checks++
+				return nil
+			}))
+			require.Equal(t, 4, checks)
+			require.NotEqual(t, before, accountStoreBytes(t))
+		})
+	}
 }
 
 func TestSaveListActive(t *testing.T) {

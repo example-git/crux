@@ -11,7 +11,7 @@ import (
 )
 
 func (app *App) taskCoordinator() (agent.TaskCoordinator, error) {
-	coordinator, ok := app.AgentCoordinator.(agent.TaskCoordinator)
+	coordinator, ok := app.CurrentAgentCoordinator().(agent.TaskCoordinator)
 	if !ok {
 		return nil, fmt.Errorf("managed task service is unavailable")
 	}
@@ -63,6 +63,7 @@ func (app *App) startTaskNotificationDelivery() {
 		ctx := app.eventsCtx
 		shellNotifications := app.BackgroundShells.SubscribeNotifications(ctx)
 		agentNotifications := app.BackgroundAgents.SubscribeNotifications(ctx)
+		imageNotifications := app.BackgroundImages.SubscribeNotifications(ctx)
 		app.serviceEventsWG.Go(func() {
 			pending, err := app.TaskStore.ListNotifications(app.config.WorkingDir(), "", false, true)
 			if err != nil {
@@ -82,6 +83,12 @@ func (app *App) startTaskNotificationDelivery() {
 				case event, ok := <-agentNotifications:
 					if !ok {
 						agentNotifications = nil
+						continue
+					}
+					app.deliverTaskNotification(ctx, event.Payload)
+				case event, ok := <-imageNotifications:
+					if !ok {
+						imageNotifications = nil
 						continue
 					}
 					app.deliverTaskNotification(ctx, event.Payload)

@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,7 +55,7 @@ func TestDiscoverModels_ExistingModelsWin(t *testing.T) {
 		ID:      "test",
 		BaseURL: server.URL + "/v1",
 		APIKey:  "test-key",
-		ExistingModels: []catwalk.Model{
+		ExistingModels: []catalog.Model{
 			{ID: "model-a", Name: "My Custom Name", ContextWindow: 200000, CanReason: true},
 		},
 	}

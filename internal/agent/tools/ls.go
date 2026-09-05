@@ -154,7 +154,7 @@ func ListDirectoryTree(searchPath string, params LSParams, lsConfig config.ToolL
 
 	var output string
 	if truncated {
-		output = fmt.Sprintf("There are more than %d files in the directory. Use a more specific path or use the Glob tool to find specific files. The first %[1]d files and directories are included below.\n", maxFiles)
+		output = fmt.Sprintf("There are more than %d files in the directory. Use a more specific path or use Search in files mode to find specific files. The first %[1]d files and directories are included below.\n", maxFiles)
 	}
 	if depth > 0 {
 		output = fmt.Sprintf("The directory tree is shown up to a depth of %d. Use a higher depth and a specific path to see more levels.\n", cmp.Or(params.Depth, depth))

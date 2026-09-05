@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	fantasy "github.com/example-git/crux/foundation"
@@ -120,6 +121,33 @@ func TestAutomaticCodebaseContextRequest(t *testing.T) {
 	})
 }
 
+func TestRetrieveAutomaticCodebaseContextRequestsReconciliation(t *testing.T) {
+	workingDirectory := t.TempDir()
+	cfg := initTestConfig(t, workingDirectory)
+	enabled := true
+	cfg.Config().Tools.CodebaseSearch.Enabled = &enabled
+	cfg.Config().Tools.CodebaseSearch.StoreDirectory = t.TempDir()
+	started := make(chan struct{}, 1)
+	lifecycleCtx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	coordinator := &coordinator{
+		cfg:                       cfg,
+		codebaseIndexLifecycleCtx: lifecycleCtx,
+		reconcileCodebaseIndexFn: func(context.Context) (codebaseindex.StoreStatus, error) {
+			started <- struct{}{}
+			return codebaseindex.StoreStatus{}, nil
+		},
+	}
+
+	_, err := coordinator.retrieveAutomaticCodebaseContext(t.Context(), "find session loading")
+	require.Error(t, err)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("automatic codebase context did not request background reconciliation")
+	}
+}
+
 func TestFormatAutomaticCodebaseContext(t *testing.T) {
 	results := []codebaseindex.SearchResult{
 		{
@@ -182,10 +210,11 @@ func TestFormatAutomaticCodebaseContextLimitsResults(t *testing.T) {
 	require.NotContains(t, formatted, "6. src/file.go")
 }
 
-func TestAppendTurnInstructions(t *testing.T) {
-	require.Equal(t, "base", appendTurnInstructions("base", ""))
-	require.Equal(t, "turn", appendTurnInstructions("", " turn "))
-	require.Equal(t, "base\n\nturn", appendTurnInstructions("base", "turn"))
+func TestAppendRuntimeInstructions(t *testing.T) {
+	base := fantasy.NewInstructions(fantasy.StaticInstruction(fantasy.InstructionKindTooling, "base"))
+	require.Equal(t, "base", appendRuntimeInstructions(base, "", "", "", "", "").String())
+	require.Equal(t, "turn", appendRuntimeInstructions(fantasy.Instructions{}, "", "", "", "", " turn ").String())
+	require.Equal(t, "base\n\nturn", appendRuntimeInstructions(base, "", "", "", "", "turn").String())
 }
 
 func TestTurnInstructionsAreNotPersistedInUserMessage(t *testing.T) {
@@ -236,9 +265,11 @@ func TestSystemPromptBuilderRebuildsFromPersistedLifecycleState(t *testing.T) {
 	model := &captureCodebaseContextModel{finishStreamModel: finishStreamModel{text: "done"}}
 	agent := testSessionAgent(environment, model, model, "stale system prompt").(*sessionAgent)
 	builds := 0
-	agent.systemPromptBuilder = func(_ context.Context, current session.Session, _ Model) (string, error) {
+	agent.systemPromptBuilder = func(_ context.Context, current session.Session, _ Model) (fantasy.Instructions, error) {
 		builds++
-		return fmt.Sprintf("central lifecycle mode=%s plan=%s", current.Mode, current.Plan), nil
+		return fantasy.NewInstructions(
+			fantasy.DynamicInstruction(fantasy.InstructionKindLifecycle, fmt.Sprintf("central lifecycle mode=%s plan=%s", current.Mode, current.Plan)),
+		), nil
 	}
 	current, err := environment.sessions.Create(t.Context(), "test")
 	require.NoError(t, err)
@@ -282,6 +313,68 @@ func fantasyRoleText(messages []fantasy.Message, role fantasy.MessageRole) strin
 		}
 	}
 	return text
+}
+
+func TestRunKeepsCapturedRuntimeWhenLifecycleBuilderPublishesReplacement(t *testing.T) {
+	environment := testEnv(t)
+	oldModel := &captureCodebaseContextModel{finishStreamModel: finishStreamModel{text: "old response"}}
+	newModel := &captureCodebaseContextModel{finishStreamModel: finishStreamModel{text: "new response"}}
+	agent := testSessionAgent(environment, oldModel, oldModel, "initial").(*sessionAgent)
+	current, err := environment.sessions.Create(t.Context(), "test")
+	require.NoError(t, err)
+	newRuntime := InstalledRuntime{
+		LargeModel:   Model{Model: newModel},
+		SmallModel:   Model{Model: newModel},
+		Instructions: fantasy.NewInstructions(fantasy.StaticInstruction(fantasy.InstructionKindTooling, "new generation")),
+	}
+	agent.SetRuntime(InstalledRuntime{
+		LargeModel:   Model{Model: oldModel},
+		SmallModel:   Model{Model: oldModel},
+		Instructions: fantasy.NewInstructions(fantasy.StaticInstruction(fantasy.InstructionKindTooling, "old generation")),
+		SystemPromptBuilder: func(context.Context, session.Session, Model) (fantasy.Instructions, error) {
+			agent.SetRuntime(newRuntime)
+			return fantasy.NewInstructions(fantasy.DynamicInstruction(fantasy.InstructionKindLifecycle, "old lifecycle")), nil
+		},
+	})
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: current.ID, Prompt: "continue"})
+	require.NoError(t, err)
+	oldModel.callContaining(t, "old lifecycle")
+	newModel.mu.Lock()
+	require.Empty(t, newModel.calls)
+	newModel.mu.Unlock()
+	require.Same(t, newModel, agent.Runtime().LargeModel.Model)
+}
+
+func TestRunUsesAdmittedRuntimeAfterReplacementIsPublished(t *testing.T) {
+	environment := testEnv(t)
+	admittedModel := &captureCodebaseContextModel{finishStreamModel: finishStreamModel{text: "admitted response"}}
+	replacementModel := &captureCodebaseContextModel{finishStreamModel: finishStreamModel{text: "replacement response"}}
+	agent := testSessionAgent(environment, admittedModel, admittedModel, "initial").(*sessionAgent)
+	current, err := environment.sessions.Create(t.Context(), "test")
+	require.NoError(t, err)
+	admitted := InstalledRuntime{
+		LargeModel:   Model{Model: admittedModel},
+		SmallModel:   Model{Model: admittedModel},
+		Instructions: fantasy.NewInstructions(fantasy.StaticInstruction(fantasy.InstructionKindTooling, "admitted generation")),
+		SystemPromptBuilder: func(context.Context, session.Session, Model) (fantasy.Instructions, error) {
+			return fantasy.NewInstructions(fantasy.DynamicInstruction(fantasy.InstructionKindLifecycle, "admitted lifecycle")), nil
+		},
+	}
+	replacement := InstalledRuntime{
+		LargeModel:   Model{Model: replacementModel},
+		SmallModel:   Model{Model: replacementModel},
+		Instructions: fantasy.NewInstructions(fantasy.StaticInstruction(fantasy.InstructionKindTooling, "replacement generation")),
+	}
+	agent.SetRuntime(replacement)
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: current.ID, Prompt: "continue", runtime: &admitted})
+	require.NoError(t, err)
+	admittedModel.callContaining(t, "admitted lifecycle")
+	replacementModel.mu.Lock()
+	require.Empty(t, replacementModel.calls)
+	replacementModel.mu.Unlock()
+	require.Same(t, replacementModel, agent.Runtime().LargeModel.Model)
 }
 
 func TestTurnInstructionsReachSystemPrompt(t *testing.T) {

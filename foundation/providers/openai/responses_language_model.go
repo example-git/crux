@@ -771,12 +771,21 @@ func toResponsesTools(tools []fantasy.Tool, toolChoice *fantasy.ToolChoice, opti
 	return openaiTools, openaiToolChoice, warnings
 }
 
+func responsesRuntimeControlContext(ctx context.Context, options fantasy.ProviderOptions) context.Context {
+	openaiOptions, _ := options[Name].(*ResponsesProviderOptions)
+	if openaiOptions == nil {
+		return ctx
+	}
+	return fantasy.WithRuntimeControls(ctx, openaiOptions.RuntimeControls)
+}
+
 func (o responsesLanguageModel) Generate(ctx context.Context, call fantasy.Call) (*fantasy.Response, error) {
 	params, warnings, err := o.prepareParams(call)
 	if err != nil {
 		return nil, err
 	}
 
+	ctx = responsesRuntimeControlContext(ctx, call.ProviderOptions)
 	response, err := o.client.Responses.New(ctx, *params, append(callUARequestOptions(call), callHeadersRequestOptions(call)...)...)
 	if err != nil {
 		return nil, toProviderErr(err)
@@ -932,6 +941,7 @@ func (o responsesLanguageModel) Stream(ctx context.Context, call fantasy.Call) (
 		return nil, err
 	}
 
+	ctx = responsesRuntimeControlContext(ctx, call.ProviderOptions)
 	stream := o.client.Responses.NewStreaming(ctx, *params, append(callUARequestOptions(call), callHeadersRequestOptions(call)...)...)
 
 	finishReason := fantasy.FinishReasonUnknown
@@ -1419,6 +1429,7 @@ func (o responsesLanguageModel) generateObjectWithJSONMode(ctx context.Context, 
 	}
 
 	// Make request
+	ctx = responsesRuntimeControlContext(ctx, call.ProviderOptions)
 	response, err := o.client.Responses.New(ctx, *params, append(objectCallUARequestOptions(call), objectCallHeadersRequestOptions(call)...)...)
 	if err != nil {
 		return nil, toProviderErr(err)
@@ -1445,11 +1456,7 @@ func (o responsesLanguageModel) generateObjectWithJSONMode(ctx context.Context, 
 	}
 
 	if jsonText == "" {
-		usage := fantasy.Usage{
-			InputTokens:  response.Usage.InputTokens,
-			OutputTokens: response.Usage.OutputTokens,
-			TotalTokens:  response.Usage.InputTokens + response.Usage.OutputTokens,
-		}
+		usage := responsesUsage(*response)
 		finishReason := mapResponsesFinishReason(response.IncompleteDetails.Reason, false)
 		return nil, &fantasy.NoObjectGeneratedError{
 			RawText:      "",
@@ -1522,6 +1529,7 @@ func (o responsesLanguageModel) streamObjectWithJSONMode(ctx context.Context, ca
 		Format: responses.ResponseFormatTextConfigParamOfJSONSchema(schemaName, jsonSchemaMap),
 	}
 
+	ctx = responsesRuntimeControlContext(ctx, call.ProviderOptions)
 	stream := o.client.Responses.NewStreaming(ctx, *params, append(objectCallUARequestOptions(call), objectCallHeadersRequestOptions(call)...)...)
 
 	return func(yield func(fantasy.ObjectStreamPart) bool) {

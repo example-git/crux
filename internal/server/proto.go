@@ -860,6 +860,15 @@ func (c *controllerV1) handleGetWorkspaceAgent(w http.ResponseWriter, r *http.Re
 	jsonEncode(w, info)
 }
 
+func (c *controllerV1) handleGetWorkspaceAgentInstructions(w http.ResponseWriter, r *http.Request) {
+	snapshot, err := c.backend.GetAgentInstructions(r.Context(), r.PathValue("id"))
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, snapshot)
+}
+
 // handlePostWorkspaceAgent sends a message to the agent.
 //
 //	@Summary		Send message to agent
@@ -930,14 +939,29 @@ func (c *controllerV1) handlePostWorkspaceAgentInit(w http.ResponseWriter, r *ht
 //
 //	@Summary		Update agent
 //	@Tags			agent
-//	@Param			id	path	string	true	"Workspace ID"
+//	@Accept			json
+//	@Param			id		path	string					true	"Workspace ID"
+//	@Param			request	body	proto.AgentUpdateRequest	true	"Agent update request"
 //	@Success		200
+//	@Failure		400	{object}	proto.Error
 //	@Failure		404	{object}	proto.Error
 //	@Failure		500	{object}	proto.Error
 //	@Router			/workspaces/{id}/agent/update [post]
 func (c *controllerV1) handlePostWorkspaceAgentUpdate(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if err := c.backend.UpdateAgent(r.Context(), id); err != nil {
+	var req proto.AgentUpdateRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		c.server.logError(r, "Failed to decode agent update request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	if err := req.State.Validate(); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := c.backend.UpdateAgent(r.Context(), id, req.State); err != nil {
 		c.handleError(w, r, err)
 		return
 	}
@@ -1081,18 +1105,35 @@ func (c *controllerV1) handlePostWorkspaceSessionRewind(w http.ResponseWriter, r
 	id := r.PathValue("id")
 	sid := r.PathValue("sid")
 	var req struct {
-		MessageID string `json:"message_id"`
-		Summarize bool   `json:"summarize"`
+		MessageID    string `json:"message_id"`
+		Summarize    bool   `json:"summarize"`
+		RestoreFiles bool   `json:"restore_files"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		c.handleError(w, r, err)
 		return
 	}
-	if err := c.backend.RewindSession(r.Context(), id, sid, req.MessageID, req.Summarize); err != nil {
+	if err := c.backend.RewindSession(r.Context(), id, sid, req.MessageID, req.Summarize, req.RestoreFiles); err != nil {
 		c.handleError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handlePostWorkspaceSessionFork creates a persisted, independent copy of a session.
+func (c *controllerV1) handlePostWorkspaceSessionFork(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	forked, err := c.backend.ForkSession(r.Context(), id, sid)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	ws, _ := c.backend.GetWorkspace(id)
+	out := sessionToProto(forked)
+	out.IsBusy = isSessionBusy(ws, forked.ID)
+	out.AttachedClients = attachedClients(ws, forked.ID)
+	jsonEncode(w, out)
 }
 
 // handlePostWorkspaceAgentSessionSuggest predicts the next user message.

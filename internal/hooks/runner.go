@@ -34,9 +34,10 @@ type compiledHook struct {
 
 // Runner executes hook commands and aggregates their results.
 type Runner struct {
-	hooks      []compiledHook
-	cwd        string
-	projectDir string
+	hooks       []compiledHook
+	cwd         string
+	projectDir  string
+	environment []string
 }
 
 // NewRunner creates a Runner from the given hook configs. Each hook's
@@ -47,7 +48,7 @@ type Runner struct {
 // Hooks whose matcher fails to compile are skipped with a warning rather
 // than treated as match-everything. ValidateHooks is expected to have
 // caught syntax errors earlier, so this is defense in depth.
-func NewRunner(hooks []config.HookConfig, cwd, projectDir string) *Runner {
+func NewRunner(hooks []config.HookConfig, cwd, projectDir string, environments ...[]string) *Runner {
 	compiled := make([]compiledHook, 0, len(hooks))
 	for _, h := range hooks {
 		ch := compiledHook{cfg: h}
@@ -66,10 +67,15 @@ func NewRunner(hooks []config.HookConfig, cwd, projectDir string) *Runner {
 		}
 		compiled = append(compiled, ch)
 	}
+	var environment []string
+	if len(environments) > 0 {
+		environment = append([]string(nil), environments[0]...)
+	}
 	return &Runner{
-		hooks:      compiled,
-		cwd:        cwd,
-		projectDir: projectDir,
+		hooks:       compiled,
+		cwd:         cwd,
+		projectDir:  projectDir,
+		environment: environment,
 	}
 }
 
@@ -104,7 +110,12 @@ func (r *Runner) Run(ctx context.Context, eventName, sessionID, toolName, toolIn
 		deduped = append(deduped, h)
 	}
 
-	envVars := BuildEnv(eventName, toolName, sessionID, r.cwd, r.projectDir, toolInputJSON)
+	var envVars []string
+	if r.environment == nil {
+		envVars = BuildEnv(eventName, toolName, sessionID, r.cwd, r.projectDir, toolInputJSON)
+	} else {
+		envVars = BuildEnvFrom(r.environment, eventName, toolName, sessionID, r.cwd, r.projectDir, toolInputJSON)
+	}
 	payload := BuildPayload(eventName, sessionID, r.cwd, toolName, toolInputJSON)
 
 	results := make([]HookResult, len(deduped))

@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/ui/chat"
 )
 
 // promptHistoryLoadedMsg is sent when prompt history is loaded.
@@ -34,6 +35,9 @@ func (m *UI) loadPromptHistory() tea.Cmd {
 
 		texts := make([]string, 0, len(messages))
 		for _, msg := range messages {
+			if chat.IsTaskNotificationMessage(&msg) {
+				continue
+			}
 			if text := msg.Content().Text; text != "" {
 				texts = append(texts, text)
 			}

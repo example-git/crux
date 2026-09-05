@@ -71,6 +71,18 @@ func (m *mockHistoryService) ListLatestSessionFiles(ctx context.Context, session
 	return nil, nil
 }
 
+func (m *mockHistoryService) ListLatestCheckpointFiles(ctx context.Context, sessionID string) ([]history.File, error) {
+	return nil, nil
+}
+
+func (m *mockHistoryService) Checkpoint(ctx context.Context, sessionID, messageID, path, content string, exists bool, mode os.FileMode) error {
+	return nil
+}
+
+func (m *mockHistoryService) RewindCheckpoints(ctx context.Context, sessionID string, messageIDs []string, restore bool) error {
+	return nil
+}
+
 func (m *mockHistoryService) Delete(ctx context.Context, id string) error {
 	return nil
 }

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 )
 
 // litellmModelInfoResponse mirrors the response from LiteLLM's
@@ -40,7 +40,7 @@ func init() {
 // discovered models.
 type litellmEnricher struct{}
 
-func (e *litellmEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catwalk.Model) ([]catwalk.Model, error) {
+func (e *litellmEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catalog.Model) ([]catalog.Model, error) {
 	resp, err := doRequest(ctx, http.MethodGet, stripV1Suffix(cfg.BaseURL), "/model/info", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
 	if err != nil {
 		return models, nil

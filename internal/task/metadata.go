@@ -50,6 +50,26 @@ type AgentRecord struct {
 	NotificationEmitted bool       `json:"notification_emitted,omitempty"`
 }
 
+type ImageRecord struct {
+	PluginID            string   `json:"plugin_id,omitempty"`
+	PluginVersion       string   `json:"plugin_version,omitempty"`
+	PluginDigest        string   `json:"plugin_digest,omitempty"`
+	OutputExtension     string   `json:"output_extension,omitempty"`
+	Mode                string   `json:"mode"`
+	Backend             string   `json:"backend,omitempty"`
+	Prompt              string   `json:"prompt"`
+	Model               string   `json:"model,omitempty"`
+	Count               int      `json:"count"`
+	Quality             string   `json:"quality,omitempty"`
+	Size                string   `json:"size,omitempty"`
+	Background          string   `json:"background,omitempty"`
+	InputPaths          []string `json:"input_paths,omitempty"`
+	OutputPaths         []string `json:"output_paths"`
+	Force               bool     `json:"force,omitempty"`
+	FinalOutput         string   `json:"final_output,omitempty"`
+	NotificationEmitted bool     `json:"notification_emitted,omitempty"`
+}
+
 type Record struct {
 	Version      int           `json:"version"`
 	ID           string        `json:"id"`
@@ -62,6 +82,7 @@ type Record struct {
 	OutputRef    string        `json:"output_ref,omitempty"`
 	Shell        *ShellRecord  `json:"shell,omitempty"`
 	Agent        *AgentRecord  `json:"agent,omitempty"`
+	Image        *ImageRecord  `json:"image,omitempty"`
 	Notification *Notification `json:"notification,omitempty"`
 }
 
@@ -343,11 +364,11 @@ func validateRecord(record Record) error {
 	}
 	switch record.Type {
 	case TypeShell:
-		if record.Shell == nil || record.Agent != nil || record.OutputRef != "task-output:"+record.ID {
+		if record.Shell == nil || record.Agent != nil || record.Image != nil || record.OutputRef != "task-output:"+record.ID {
 			return fmt.Errorf("invalid shell task metadata for %s", record.ID)
 		}
 	case TypeAgent:
-		if record.Agent == nil || record.Shell != nil {
+		if record.Agent == nil || record.Shell != nil || record.Image != nil {
 			return fmt.Errorf("invalid agent task metadata for %s", record.ID)
 		}
 		if record.Agent.ChildSessionID != "" && record.OutputRef != "session:"+record.Agent.ChildSessionID {
@@ -358,6 +379,13 @@ func validateRecord(record Record) error {
 			if err != nil || continuationType != TypeAgent {
 				return fmt.Errorf("invalid agent continuation task ID %q", record.Agent.ContinuationOf)
 			}
+		}
+	case TypeImage:
+		if record.Image == nil || record.Shell != nil || record.Agent != nil || len(record.Image.OutputPaths) == 0 {
+			return fmt.Errorf("invalid image task metadata for %s", record.ID)
+		}
+		if record.OutputRef != "file:"+record.Image.OutputPaths[0] {
+			return fmt.Errorf("invalid image output reference for %s", record.ID)
 		}
 	}
 	return nil

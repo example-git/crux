@@ -4,11 +4,8 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
-	"strings"
 
 	fantasy "github.com/example-git/crux/foundation"
-	"github.com/example-git/crux/internal/imageattachment"
-	"github.com/example-git/crux/internal/message"
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
 )
 
@@ -32,18 +29,6 @@ func (t *codexBoundedTool) Run(ctx context.Context, call fantasy.ToolCall) (resp
 	}()
 	response, err = t.tool.Run(ctx, call)
 	response.Content = codexresponses.TruncateToolOutput(t.modelID, response.Content)
-	if len(response.Data) > 0 && strings.HasPrefix(response.MediaType, "image/") {
-		normalized, normalizeErr := imageattachment.NormalizeAll(codexresponses.Name, []message.Attachment{{
-			FileName: call.Name + ".image",
-			MimeType: response.MediaType,
-			Content:  response.Data,
-		}})
-		if normalizeErr != nil {
-			return fantasy.ToolResponse{}, normalizeErr
-		}
-		response.Data = normalized[0].Content
-		response.MediaType = normalized[0].MimeType
-	}
 	if err != nil {
 		err = boundedToolError{err: err, modelID: t.modelID}
 	}
@@ -72,7 +57,7 @@ func (e boundedToolError) Unwrap() error {
 }
 
 func codexBoundedTools(tools []fantasy.AgentTool, model Model) []fantasy.AgentTool {
-	if model.ModelCfg.Provider != codexresponses.Name {
+	if model.InstructionPolicy != fantasy.InstructionPolicyCodex {
 		return tools
 	}
 	bounded := make([]fantasy.AgentTool, len(tools))

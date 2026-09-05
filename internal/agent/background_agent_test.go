@@ -2,19 +2,34 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/imagegen"
+	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/shell"
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/stretchr/testify/require"
 )
+
+type countingMessageService struct {
+	message.Service
+	listCalls int
+}
+
+func (s *countingMessageService) List(ctx context.Context, sessionID string) ([]message.Message, error) {
+	s.listCalls++
+	return s.Service.List(ctx, sessionID)
+}
 
 func TestDeliverTaskNotificationQueuesStructuredParentMessage(t *testing.T) {
 	env := testEnv(t)
@@ -49,6 +64,68 @@ func TestDeliverTaskNotificationQueuesStructuredParentMessage(t *testing.T) {
 	parentAgent.publishCanceledQueueDrops(queued)
 	require.True(t, discarded)
 	require.False(t, persisted)
+}
+
+func TestCoordinatorManagesBackgroundImageTasks(t *testing.T) {
+	manager, err := imagegen.NewJobManagerWithStore(t.TempDir(), nil, imagegen.JobManagerOptions{
+		Executor: func(ctx context.Context, request imagegen.JobRequest) (*imagegen.Response, error) {
+			if request.Prompt == "stop" {
+				<-ctx.Done()
+				return nil, ctx.Err()
+			}
+			return &imagegen.Response{
+				Data:     []imagegen.ImageData{{B64JSON: base64.StdEncoding.EncodeToString([]byte("image"))}},
+				AuthMode: imagegen.AuthCodex,
+				Model:    "gpt-image-test",
+			}, nil
+		},
+		MaxConcurrent: 1,
+		MaxQueued:     2,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { manager.StopAll(context.Background()) })
+	coordinator := &coordinator{backgroundImages: manager}
+	outputDirectory := t.TempDir()
+	completed, err := manager.Enqueue(imagegen.JobRequest{
+		Mode:        imagegen.ModeGenerate,
+		Prompt:      "complete",
+		Count:       1,
+		OutputPaths: []string{filepath.Join(outputDirectory, "completed.png")},
+	}, "complete image", managedtask.Ownership{ParentSessionID: "parent"})
+	require.NoError(t, err)
+
+	output, err := coordinator.managedTaskOutput(t.Context(), completed.ID, true, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, managedtask.TypeImage, output.Task.Type)
+	require.Equal(t, managedtask.StatusCompleted, output.Task.State.Status)
+	require.Contains(t, output.Output, `"success":true`)
+	listed := coordinator.listManagedTasks()
+	listedTask := requireImageTask(t, listed, completed.ID)
+	require.Equal(t, managedtask.TypeImage, listedTask.Type)
+
+	stoppable, err := manager.Enqueue(imagegen.JobRequest{
+		Mode:        imagegen.ModeGenerate,
+		Prompt:      "stop",
+		Count:       1,
+		OutputPaths: []string{filepath.Join(outputDirectory, "stopped.png")},
+	}, "stop image", managedtask.Ownership{ParentSessionID: "parent"})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return manager.RunningCount() == 1 }, time.Second, 10*time.Millisecond)
+	stopped, err := coordinator.stopManagedTask(t.Context(), stoppable.ID)
+	require.NoError(t, err)
+	require.Equal(t, managedtask.TypeImage, stopped.Type)
+	require.Equal(t, managedtask.StatusKilled, stopped.State.Status)
+}
+
+func requireImageTask(t *testing.T, tasks []managedtask.View, id string) managedtask.View {
+	t.Helper()
+	for _, task := range tasks {
+		if task.ID == id {
+			return task
+		}
+	}
+	t.Fatalf("background image task %s was not listed", id)
+	return managedtask.View{}
 }
 
 func TestBackgroundAgentManagerLifecycle(t *testing.T) {
@@ -158,6 +235,130 @@ func TestBackgroundAgentManagerAdmissionCapacityIsAtomic(t *testing.T) {
 		manager.FailReservation(backgroundTask, errors.New("test cleanup"))
 	}
 	require.Equal(t, 0, manager.ActiveCount())
+}
+
+func TestBackgroundAgentManagerGlobalAdmissionIsSharedAcrossManagers(t *testing.T) {
+	directory := t.TempDir()
+	firstAdmission, err := newBackgroundAgentAdmission(directory, 2)
+	require.NoError(t, err)
+	secondAdmission, err := newBackgroundAgentAdmission(directory, 2)
+	require.NoError(t, err)
+	first, err := newBackgroundAgentManager("workspace-a", nil, nil, firstAdmission)
+	require.NoError(t, err)
+	second, err := newBackgroundAgentManager("workspace-b", nil, nil, secondAdmission)
+	require.NoError(t, err)
+	firstOwnership := managedtask.Ownership{ParentSessionID: "parent-a"}
+	secondOwnership := managedtask.Ownership{ParentSessionID: "parent-b"}
+
+	firstTask, err := first.Reserve("first", "task", "first", firstOwnership)
+	require.NoError(t, err)
+	secondTask, err := second.Reserve("second", "task", "second", secondOwnership)
+	require.NoError(t, err)
+	_, err = first.Reserve("denied", "task", "denied", firstOwnership)
+	require.ErrorContains(t, err, "global background agent capacity reached: 2")
+
+	require.NoError(t, first.Start(firstTask, "child", func(context.Context) backgroundAgentResult {
+		return backgroundAgentResult{Output: "completed"}
+	}))
+	_, _, err = first.Output(t.Context(), firstTask.ID, true, time.Second)
+	require.NoError(t, err)
+	replacement, err := second.Reserve("replacement", "task", "replacement", secondOwnership)
+	require.NoError(t, err)
+	second.FailReservation(secondTask, errors.New("test cleanup"))
+	second.FailReservation(replacement, errors.New("test cleanup"))
+}
+
+func TestBackgroundAgentManagerReleasesGlobalAdmissionOnPersistenceFailure(t *testing.T) {
+	directory := t.TempDir()
+	admission, err := newBackgroundAgentAdmission(directory, 1)
+	require.NoError(t, err)
+	recordStore, err := managedtask.NewStore(filepath.Join(t.TempDir(), "metadata"))
+	require.NoError(t, err)
+	manager, err := newBackgroundAgentManager("workspace", nil, recordStore, admission)
+	require.NoError(t, err)
+	require.NoError(t, recordStore.Close())
+
+	_, err = manager.Reserve("fails", "task", "fails", managedtask.Ownership{ParentSessionID: "parent"})
+	require.ErrorContains(t, err, "persisting background agent")
+
+	peerAdmission, err := newBackgroundAgentAdmission(directory, 1)
+	require.NoError(t, err)
+	peer, err := newBackgroundAgentManager("peer", nil, nil, peerAdmission)
+	require.NoError(t, err)
+	reserved, err := peer.Reserve("admitted", "task", "admitted", managedtask.Ownership{ParentSessionID: "parent"})
+	require.NoError(t, err)
+	peer.FailReservation(reserved, errors.New("test cleanup"))
+}
+
+func TestBackgroundAgentAdmissionRejectsInvalidTrackerState(t *testing.T) {
+	directory := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(directory, "admission.lock"), 0o700))
+	admission, err := newBackgroundAgentAdmission(directory, 1)
+	require.NoError(t, err)
+
+	_, err = admission.acquire(t.Context())
+	require.ErrorContains(t, err, "is not a regular file")
+}
+
+func TestSystemBackgroundAgentAdmissionUsesGlobalDataDirectory(t *testing.T) {
+	globalDataDirectory := t.TempDir()
+	t.Setenv("CRUX_GLOBAL_DATA", globalDataDirectory)
+
+	admission, err := newSystemBackgroundAgentAdmission(1)
+	require.NoError(t, err)
+	expectedDirectory, err := filepath.Abs(filepath.Join(globalDataDirectory, "locks", "background-agents"))
+	require.NoError(t, err)
+	require.Equal(t, expectedDirectory, admission.directory)
+}
+
+func TestBackgroundAgentAdmissionRecoversCapacityAfterProcessCrash(t *testing.T) {
+	directory := t.TempDir()
+	readyPath := filepath.Join(t.TempDir(), "ready")
+	command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestBackgroundAgentAdmissionHelperProcess$")
+	command.Env = append(os.Environ(),
+		"CRUX_TEST_BACKGROUND_AGENT_ADMISSION_HELPER=1",
+		"CRUX_TEST_BACKGROUND_AGENT_ADMISSION_DIR="+directory,
+		"CRUX_TEST_BACKGROUND_AGENT_ADMISSION_READY="+readyPath,
+	)
+	require.NoError(t, command.Start())
+	t.Cleanup(func() {
+		if command.Process != nil {
+			_ = command.Process.Kill()
+		}
+		_ = command.Wait()
+	})
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(readyPath)
+		return err == nil
+	}, 5*time.Second, 10*time.Millisecond)
+
+	admission, err := newBackgroundAgentAdmission(directory, 1)
+	require.NoError(t, err)
+	_, err = admission.acquire(t.Context())
+	require.ErrorContains(t, err, "global background agent capacity reached: 1")
+
+	require.NoError(t, command.Process.Kill())
+	_ = command.Wait()
+	var release func()
+	require.Eventually(t, func() bool {
+		release, err = admission.acquire(t.Context())
+		return err == nil
+	}, 5*time.Second, 10*time.Millisecond)
+	require.NotNil(t, release)
+	release()
+}
+
+func TestBackgroundAgentAdmissionHelperProcess(t *testing.T) {
+	if os.Getenv("CRUX_TEST_BACKGROUND_AGENT_ADMISSION_HELPER") != "1" {
+		return
+	}
+	admission, err := newBackgroundAgentAdmission(os.Getenv("CRUX_TEST_BACKGROUND_AGENT_ADMISSION_DIR"), 1)
+	require.NoError(t, err)
+	release, err := admission.acquire(t.Context())
+	require.NoError(t, err)
+	defer release()
+	require.NoError(t, os.WriteFile(os.Getenv("CRUX_TEST_BACKGROUND_AGENT_ADMISSION_READY"), []byte("ready"), 0o600))
+	select {}
 }
 
 func TestBackgroundAgentManagerMarksDetachedExecution(t *testing.T) {
@@ -387,14 +588,20 @@ func TestManagedTaskViewsReconstructAcrossSessionsAndManagers(t *testing.T) {
 		require.NoError(t, recordStore.Close())
 	})
 
-	first := (&coordinator{sessions: env.sessions, messages: env.messages, backgroundShells: firstShells, backgroundAgents: firstAgents}).listManagedTasks()
-	second := (&coordinator{sessions: env.sessions, messages: env.messages, backgroundShells: secondShells, backgroundAgents: secondAgents}).listManagedTasks()
+	firstMessages := &countingMessageService{Service: env.messages}
+	secondMessages := &countingMessageService{Service: env.messages}
+	first := (&coordinator{sessions: env.sessions, messages: firstMessages, backgroundShells: firstShells, backgroundAgents: firstAgents}).listManagedTasks()
+	second := (&coordinator{sessions: env.sessions, messages: secondMessages, backgroundShells: secondShells, backgroundAgents: secondAgents}).listManagedTasks()
+	require.Zero(t, firstMessages.listCalls)
+	require.Zero(t, secondMessages.listCalls)
 	require.Equal(t, first, second)
 	require.Len(t, first, 2)
-	require.Equal(t, []string{"a12345678", "b12345678"}, []string{first[0].ID, first[1].ID})
-	require.Equal(t, "parent-two", first[0].Ownership.ParentSessionID)
-	require.Equal(t, "parent-one", first[1].Ownership.ParentSessionID)
-	require.Equal(t, "printf persisted", first[1].Command)
+	require.ElementsMatch(t, []string{"a12345678", "b12345678"}, []string{first[0].ID, first[1].ID})
+	for _, task := range first {
+		require.Empty(t, task.Ownership)
+		require.Empty(t, task.Command)
+		require.Empty(t, task.OutputRef)
+	}
 	result, ok := secondShells.Get("b12345678")
 	require.True(t, ok)
 	stdout, stderr, done, err := result.GetOutput()
@@ -470,7 +677,7 @@ func TestStartBackgroundSubAgentPersistsAndReturnsImmediately(t *testing.T) {
 	require.NoError(t, err)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	mockAgent := newMockAgent(providerID, 4096, func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	mockAgent := newMockAgent(providerID, 4096, coord.cfg.RuntimeSnapshot(), func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 		close(started)
 		select {
 		case <-release:
@@ -529,7 +736,13 @@ func TestStartBackgroundSubAgentPersistsAndReturnsImmediately(t *testing.T) {
 	require.Equal(t, int64(12), output.Task.Usage.PromptTokens)
 	require.Equal(t, int64(5), output.Task.Usage.CompletionTokens)
 	require.InDelta(t, 0.1, output.Task.Usage.Cost, 1e-9)
-	require.Contains(t, coord.listManagedTasks(), output.Task)
+	listed := coord.listManagedTasks()
+	require.Len(t, listed, 1)
+	require.Equal(t, output.Task.ID, listed[0].ID)
+	require.Equal(t, output.Task.State.Status, listed[0].State.Status)
+	require.True(t, listed[0].State.StartedAt.IsZero())
+	require.Empty(t, listed[0].FinalOutput)
+	require.Empty(t, listed[0].ChildSessionID)
 }
 
 func TestStartBackgroundSubAgentsFromSameParentRunConcurrently(t *testing.T) {
@@ -541,7 +754,7 @@ func TestStartBackgroundSubAgentsFromSameParentRunConcurrently(t *testing.T) {
 	require.NoError(t, err)
 	started := make(chan string, 2)
 	release := make(chan struct{})
-	mockAgent := newMockAgent(providerID, 4096, func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	mockAgent := newMockAgent(providerID, 4096, coord.cfg.RuntimeSnapshot(), func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 		started <- call.SessionID
 		select {
 		case <-release:
@@ -626,7 +839,7 @@ func TestContinueBackgroundSubAgentAfterRestart(t *testing.T) {
 
 	requestingParent, err := env.sessions.Create(t.Context(), "Requesting parent")
 	require.NoError(t, err)
-	mockAgent := newMockAgent(providerID, 4096, func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	mockAgent := newMockAgent(providerID, 4096, coord.cfg.RuntimeSnapshot(), func(ctx context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
 		require.Equal(t, child.ID, call.SessionID)
 		persisted, getErr := env.sessions.Get(ctx, call.SessionID)
 		if getErr != nil {
@@ -708,6 +921,45 @@ func TestManagedTaskStopDispatchesAgent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, managedtask.TypeAgent, info.Type)
 	require.Equal(t, managedtask.StatusKilled, info.State.Status)
+}
+
+func TestBackgroundAgentRunApprovalDoesNotLeakToOtherTasks(t *testing.T) {
+	t.Parallel()
+
+	workingDir := t.TempDir()
+	manager := NewBackgroundAgentManager(workingDir)
+	service := permission.NewPermissionService(workingDir, false, nil)
+	ownership := managedtask.Ownership{ParentSessionID: "parent"}
+	request := permission.CreatePermissionRequest{
+		SessionID:  "child",
+		ToolCallID: "write-call",
+		ToolName:   "edit",
+		Action:     "write",
+		Path:       filepath.Join(workingDir, "file.txt"),
+	}
+
+	approvedTask, err := manager.Reserve("approved", "writer", "Approved", ownership)
+	require.NoError(t, err)
+	require.NoError(t, manager.StartApproved(approvedTask, "approved-child", func(ctx context.Context) backgroundAgentResult {
+		granted, requestErr := service.Request(ctx, request)
+		require.NoError(t, requestErr)
+		require.True(t, granted)
+		return backgroundAgentResult{Output: "approved"}
+	}))
+	approvedInfo, _, err := manager.Output(t.Context(), approvedTask.ID, true, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, managedtask.StatusCompleted, approvedInfo.State.Status)
+
+	deniedTask, err := manager.Reserve("denied", "writer", "Denied", ownership)
+	require.NoError(t, err)
+	require.NoError(t, manager.Start(deniedTask, "denied-child", func(ctx context.Context) backgroundAgentResult {
+		_, requestErr := service.Request(ctx, request)
+		return backgroundAgentResult{Err: requestErr}
+	}))
+	deniedInfo, _, err := manager.Output(t.Context(), deniedTask.ID, true, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, managedtask.StatusFailed, deniedInfo.State.Status)
+	require.ErrorContains(t, errors.New(deniedInfo.State.ErrorMessage), "detached agent cannot request interactive approval")
 }
 
 func TestBackgroundAgentRunFailure(t *testing.T) {

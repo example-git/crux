@@ -1,16 +1,16 @@
-Search and inspect Crux's bounded HTTP and WebSocket traffic database without loading full payloads into context.
+List Crux HTTP and WebSocket traffic records without loading request or response bodies into context.
 
 <usage>
-- Returns a timestamp-sorted list of matching HTTP requests/responses and WebSocket handshakes/frames
-- Summarizes JSON shape and extracts effective instructions, user messages, and assistant messages
+- Returns a compact timestamp-sorted index of matching requests, responses, handshakes, and frames
+- Each row includes a composite record ID such as http/request/17
 - Filters by substring, protocol, direction, phase, RFC3339 time range, and sort order
-- Defaults to 20 newest records and never returns more than 100
-- Set include_body only when a compact summary is insufficient; raw output is truncated
+- Defaults to 20 newest records and never returns more than 50
+- Never returns headers, body summaries, or raw bodies
 </usage>
 
 <tips>
-- Search for a provider hostname, model, request ID, error text, or message fragment
-- Use protocol=websocket and direction=outbound to inspect Codex request frames
-- Use sort=asc to reconstruct a request/response sequence chronologically
-- Credential-bearing headers and URL query values are redacted before storage
+- Use traffic_log_detail with a composite record ID for one bounded record
+- Use traffic_log_search with a composite record ID and query to search one body without loading it in full
+- Search can locate records by provider hostname, model, error text, or a body fragment while keeping list output compact
+- Credential-bearing values are redacted before storage, but traffic records remain private
 </tips>

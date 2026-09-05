@@ -34,6 +34,23 @@ func lockFile(ctx context.Context, f *os.File) (func(), error) {
 	}
 }
 
+func lockFileShared(ctx context.Context, f *os.File) (func(), error) {
+	for {
+		err := unix.Flock(int(f.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+		if err == nil {
+			return func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN) }, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) {
+			return nil, fmt.Errorf("flock: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("acquire lock: %w", ctx.Err())
+		case <-time.After(retrySleep):
+		}
+	}
+}
+
 func tryLockFile(f *os.File) (func(), error) {
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		if errors.Is(err, unix.EWOULDBLOCK) {

@@ -24,7 +24,7 @@ func newGateTestCoordinator(t *testing.T, interactive bool) *coordinator {
 	env := testEnv(t)
 
 	cruxJSON := `{
-  "options": {"disable_default_providers": true, "disable_provider_auto_update": true},
+  "options": {"disable_default_providers": true},
   "providers": {"mock": {"id": "mock", "name": "Mock", "type": "openai-compat",
     "base_url": "http://127.0.0.1:9/v1", "api_key": "test-key",
     "models": [{"id": "mock-model", "name": "Mock", "context_window": 8192, "default_max_tokens": 128}]}},
@@ -56,6 +56,7 @@ func newGateTestCoordinator(t *testing.T, interactive bool) *coordinator {
 	coord.currentAgent = agent
 	coord.systemPromptTemplate = p
 	coord.agents[config.AgentCoder] = agent
+	require.NoError(t, coord.readyWg.Wait())
 
 	return coord
 }

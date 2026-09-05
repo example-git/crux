@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/db"
@@ -81,14 +81,14 @@ func testEnv(t *testing.T) fakeEnv {
 func testSessionAgent(env fakeEnv, large, small fantasy.LanguageModel, systemPrompt string, tools ...fantasy.AgentTool) SessionAgent {
 	largeModel := Model{
 		Model: large,
-		CatwalkCfg: catwalk.Model{
+		CatalogModel: catalog.Model{
 			ContextWindow:    200000,
 			DefaultMaxTokens: 10000,
 		},
 	}
 	smallModel := Model{
 		Model: small,
-		CatwalkCfg: catwalk.Model{
+		CatalogModel: catalog.Model{
 			ContextWindow:    200000,
 			DefaultMaxTokens: 10000,
 		},

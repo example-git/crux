@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -208,5 +211,58 @@ func TestJQ_Success(t *testing.T) {
 	}
 	if got := stdout.String(); got != "1\n" {
 		t.Fatalf("stdout = %q, want %q", got, "1\n")
+	}
+}
+
+func TestJQShellOptionsMatchSharedEvaluator(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "input.json")
+	if err := os.WriteFile(filePath, []byte(`{"name":"crux"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		args    []string
+		options JQOptions
+		input   string
+	}{
+		{name: "default filter", args: []string{"jq"}, input: `{"name":"crux"}`},
+		{name: "raw output", args: []string{"jq", "-r", ".name"}, options: JQOptions{Filter: ".name", RawOutput: true}, input: `{"name":"crux"}`},
+		{name: "joined output", args: []string{"jq", "-j", ".[]"}, options: JQOptions{Filter: ".[]", RawOutput: true, JoinOutput: true}, input: `["a","b"]`},
+		{name: "compact output", args: []string{"jq", "-c", "."}, options: JQOptions{Filter: ".", CompactOutput: true}, input: `{"a":1}`},
+		{name: "slurp", args: []string{"jq", "-s", "map(.a)"}, options: JQOptions{Filter: "map(.a)", Slurp: true}, input: `{"a":1}{"a":2}`},
+		{
+			name: "null input with variables",
+			args: []string{"jq", "-n", "--arg", "host", "localhost", "--argjson", "port", "8080", "{host: $host, port: $port}"},
+			options: JQOptions{
+				Filter:    "{host: $host, port: $port}",
+				NullInput: true,
+				Variables: []JQVariable{{Name: "host", Value: "localhost"}, {Name: "port", Value: float64(8080)}},
+			},
+		},
+		{name: "raw input", args: []string{"jq", "-R", "-r", "ascii_upcase"}, options: JQOptions{Filter: "ascii_upcase", RawInput: true, RawOutput: true}, input: "one\ntwo"},
+		{name: "exit status", args: []string{"jq", "-e", "."}, options: JQOptions{Filter: ".", ExitStatus: true}, input: "false"},
+		{name: "file input", args: []string{"jq", ".name", filePath}, options: JQOptions{Filter: ".name", Files: []string{filePath}}},
+		{name: "runtime error", args: []string{"jq", ".foo"}, options: JQOptions{Filter: ".foo"}, input: "1"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var shellStdout, shellStderr bytes.Buffer
+			shellErr := handleJQ(t.Context(), test.args, strings.NewReader(test.input), &shellStdout, &shellStderr)
+
+			var sharedStdout, sharedStderr bytes.Buffer
+			sharedErr := RunJQ(t.Context(), test.options, strings.NewReader(test.input), &sharedStdout, &sharedStderr)
+
+			if shellStdout.String() != sharedStdout.String() {
+				t.Fatalf("stdout mismatch: shell %q, shared %q", shellStdout.String(), sharedStdout.String())
+			}
+			if shellStderr.String() != sharedStderr.String() {
+				t.Fatalf("stderr mismatch: shell %q, shared %q", shellStderr.String(), sharedStderr.String())
+			}
+			if fmt.Sprint(shellErr) != fmt.Sprint(sharedErr) {
+				t.Fatalf("error mismatch: shell %v, shared %v", shellErr, sharedErr)
+			}
+		})
 	}
 }

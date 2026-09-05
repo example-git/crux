@@ -47,6 +47,9 @@ func TestConnectionsCommandsRegistered(t *testing.T) {
 		{args: []string{"connections", "server-init"}, want: connectionsServerInitCmd},
 		{args: []string{"connections", "add"}, want: connectionsAddCmd},
 		{args: []string{"connections", "authorize"}, want: connectionsAuthorizeCmd},
+		{args: []string{"connections", "pair"}, want: connectionsPairCmd},
+		{args: []string{"connections", "authorized"}, want: connectionsAuthorizedCmd},
+		{args: []string{"connections", "revoke"}, want: connectionsRevokeCmd},
 	} {
 		command, _, err := rootCmd.Find(test.args)
 		require.NoError(t, err)

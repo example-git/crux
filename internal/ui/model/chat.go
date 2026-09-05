@@ -487,7 +487,7 @@ func (m *Chat) UpdateNestedToolIDs(containerID string) {
 // to visible items to save CPU. When items are not visible, their animation ID
 // is tracked so it can be restarted when they become visible again.
 func (m *Chat) Animate(msg anim.StepMsg) tea.Cmd {
-	idx, ok := m.idInxMap[msg.ID]
+	idx, ok := m.animationIndex(msg.ID)
 	if !ok {
 		return nil
 	}
@@ -513,6 +513,20 @@ func (m *Chat) Animate(msg anim.StepMsg) tea.Cmd {
 	return animatable.Animate(msg)
 }
 
+func (m *Chat) animationIndex(id string) (int, bool) {
+	if idx, ok := m.idInxMap[id]; ok {
+		return idx, true
+	}
+	// Retry spinners use an independent animation generation so stale provider
+	// ticks cannot advance them. Route that animation ID back to its owning
+	// assistant message without registering it as a separate chat item.
+	if parentID, ok := strings.CutSuffix(id, "-retry"); ok {
+		idx, found := m.idInxMap[parentID]
+		return idx, found
+	}
+	return 0, false
+}
+
 // RestartPausedVisibleAnimations restarts animations for items that were paused
 // due to being scrolled out of view but are now visible again.
 func (m *Chat) RestartPausedVisibleAnimations() tea.Cmd {
@@ -524,7 +538,7 @@ func (m *Chat) RestartPausedVisibleAnimations() tea.Cmd {
 	var cmds []tea.Cmd
 
 	for id := range m.pausedAnimations {
-		idx, ok := m.idInxMap[id]
+		idx, ok := m.animationIndex(id)
 		if !ok {
 			// Item no longer exists.
 			delete(m.pausedAnimations, id)

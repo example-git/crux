@@ -26,8 +26,11 @@ func TestSectionsLoad(t *testing.T) {
 	if !contains(full, "token engine") {
 		t.Fatal("missing token engine identity")
 	}
-	if !contains(full, "When codebase_search is available and its background index is ready") {
-		t.Fatal("missing codebase-search-first guidance")
+	if !contains(full, "The main agent must prefer codebase_search over search") {
+		t.Fatal("missing main-agent codebase-search preference")
+	}
+	if !contains(full, "the relevant files are indexed") {
+		t.Fatal("missing indexed-files condition")
 	}
 }
 

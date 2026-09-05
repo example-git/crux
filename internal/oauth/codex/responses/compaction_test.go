@@ -3,15 +3,16 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
@@ -57,12 +58,17 @@ func TestCompactUsesRemoteV2ResponsesRequestAndUsage(t *testing.T) {
 	defer server.Close()
 
 	model := testCompactionModel(server.URL, nil)
+	instructions := fantasy.NewInstructions(
+		fantasy.StaticInstruction(fantasy.InstructionKindTooling, "instructions"),
+		fantasy.StaticInstruction(fantasy.InstructionKindEnvironment, "<env>\nWorking directory: /workspace\nIs directory a git repo: no\nPlatform: linux\n</env>"),
+		fantasy.DynamicInstruction(fantasy.InstructionKindRuntime, "Today's date: 8/21/2026"),
+	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result, err := model.Compact(ctx, fantasy.Call{
 		Headers: map[string]string{"x-session-id": "conversation"},
 		Prompt: fantasy.Prompt{
-			fantasy.NewSystemMessage("instructions\n\n<env>\nWorking directory: /workspace\nIs directory a git repo: no\nPlatform: linux\nToday's date: 8/21/2026\n</env>"),
+			instructions.Message(fantasy.InstructionPolicyCodex),
 			fantasy.NewUserMessage("message"),
 		},
 		Tools: []fantasy.Tool{
@@ -86,7 +92,6 @@ func TestCompactUsesRemoteV2ResponsesRequestAndUsage(t *testing.T) {
 	}, result.Usage)
 	require.Equal(t, remoteCompactionSummary, result.Summary)
 	require.Equal(t, []inputItem{
-		testMessageItem("user", "message"),
 		{Type: "compaction", EncryptedContent: "opaque-v2"},
 	}, result.History.Items)
 	require.Positive(t, result.ActiveInputTokens)
@@ -281,7 +286,7 @@ func TestCompactRemoteV2ReusesConversationChainAndDefersReset(t *testing.T) {
 	require.Equal(t, int32(1), connections.Load())
 }
 
-func TestCompactRemoteV2RetriesPrematureStreamClosure(t *testing.T) {
+func TestCompactRemoteV2RetriesClosureBeforeFirstEvent(t *testing.T) {
 	requests := make(chan capturedCompactionRequest, 2)
 	var connections atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -296,10 +301,6 @@ func TestCompactRemoteV2RetriesPrematureStreamClosure(t *testing.T) {
 		require.NoError(t, json.Unmarshal(raw, &frame))
 		requests <- capturedCompactionRequest{connection: connection, frame: frame, raw: raw}
 		if connection == 1 {
-			require.NoError(t, conn.WriteJSON(map[string]any{
-				"type": "response.output_item.done",
-				"item": inputItem{Type: "compaction", EncryptedContent: "discarded"},
-			}))
 			return
 		}
 		writeRemoteV2CompactionResponse(t, conn, "accepted", "resp", nil)
@@ -325,49 +326,76 @@ func TestCompactRemoteV2RetriesPrematureStreamClosure(t *testing.T) {
 	require.Equal(t, first.frame.Input, second.frame.Input)
 }
 
-func TestBuildRemoteV2CompactedHistoryRetainsOnlyNewestClientMessages(t *testing.T) {
-	boundaryTail := "BOUNDARY-TAIL-🙂"
-	boundary := "BOUNDARY-HEAD" + strings.Repeat("boundary", remoteCompactionV2RetainedMessageTokens*compactionBytesPerToken) + boundaryTail
-	input := []inputItem{
-		testMessageItem("user", "too-old"),
-		testMessageItem("assistant", "assistant"),
-		{Type: "reasoning", EncryptedContent: "reasoning"},
-		{Type: "function_call", CallID: "call"},
-		{Type: "function_call_output", CallID: "call"},
-		{Type: "compaction", EncryptedContent: "old"},
-		{Type: "compaction_trigger"},
-		testMessageItem("developer", boundary),
-		testMessageItem("system", "system-new"),
-		testMessageItem("user", "user-new"),
-	}
-	compaction := inputItem{Type: "compaction", EncryptedContent: "new"}
-	history := buildRemoteV2CompactedHistory(input, compaction)
-	require.NotEmpty(t, history)
-	require.Equal(t, compaction, history[len(history)-1])
+func TestCompactRemoteV2DoesNotReplayAfterFirstEvent(t *testing.T) {
+	var connections atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connections.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		require.NoError(t, err)
+		defer conn.Close()
+		var frame requestFrame
+		require.NoError(t, conn.ReadJSON(&frame))
+		require.NoError(t, conn.WriteJSON(map[string]any{
+			"type": "response.output_item.done",
+			"item": inputItem{Type: "compaction", EncryptedContent: "uncommitted"},
+		}))
+	}))
+	defer server.Close()
 
-	var retainedText strings.Builder
-	for _, item := range history[:len(history)-1] {
-		require.Equal(t, "message", item.Type)
-		require.Contains(t, []string{"user", "developer", "system"}, item.Role)
-		for _, content := range item.Content {
-			retainedText.WriteString(content.Text)
+	store := NewSessionStore()
+	defer store.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	result, err := testCompactionModel(server.URL, store).Compact(ctx, fantasy.Call{
+		Headers: map[string]string{"x-session-id": "conversation"},
+		Prompt:  fantasy.Prompt{fantasy.NewUserMessage("message")},
+	})
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
+	require.Nil(t, result)
+	require.Equal(t, int32(1), connections.Load())
+}
+
+func TestRemoteCompactionRetriesMappedErrorBeforeOutput(t *testing.T) {
+	var connections atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		require.NoError(t, err)
+		defer conn.Close()
+		var frame requestFrame
+		require.NoError(t, conn.ReadJSON(&frame))
+		if connections.Add(1) == 1 {
+			require.NoError(t, conn.WriteJSON(map[string]any{
+				"type": "response.failed",
+				"response": map[string]any{"error": map[string]any{
+					"code":    "temporary_compaction",
+					"message": "retry compaction",
+				}},
+			}))
+			return
 		}
-	}
-	text := retainedText.String()
-	require.Contains(t, text, remoteCompactionV2TruncationTag)
-	require.Contains(t, text, "BOUNDARY-HEAD")
-	require.Contains(t, text, boundaryTail)
-	require.Contains(t, text, "system-new")
-	require.Contains(t, text, "user-new")
-	require.NotContains(t, text, "too-old")
-	require.NotContains(t, text, "assistant")
-	require.True(t, utf8.ValidString(text))
+		writeRemoteV2CompactionResponse(t, conn, "encrypted", "response", nil)
+	}))
+	defer server.Close()
 
-	tokens := 0
-	for _, item := range history[:len(history)-1] {
-		tokens += messageItemTextTokens(item)
-	}
-	require.LessOrEqual(t, tokens, remoteCompactionV2RetainedMessageTokens)
+	store := NewSessionStore()
+	defer store.Close()
+	model := testCompactionModel(server.URL, store)
+	model.client.compaction.errors = []manifest.ErrorMapping{{
+		Class:          "server",
+		Codes:          []string{"temporary_compaction"},
+		CodePointer:    "/response/error/code",
+		MessagePointer: "/response/error/message",
+		Retryable:      true,
+	}}
+	result, err := model.Compact(t.Context(), fantasy.Call{
+		Headers: map[string]string{"x-session-id": "conversation"},
+		Prompt:  fantasy.Prompt{fantasy.NewUserMessage("message")},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, int32(2), connections.Load())
 }
 
 func writeRemoteV2CompactionResponse(t *testing.T, conn *websocket.Conn, encryptedContent, responseID string, usage map[string]any) {
@@ -402,6 +430,13 @@ func testCompactionModel(serverURL string, store *SessionStore) *languageModel {
 			token:        func() string { return "token" },
 			accountID:    func() string { return "account" },
 			sessionStore: store,
+			compaction: executionProfile{retry: manifest.RetryPolicy{
+				MaxAttempts:       2,
+				TransportErrors:   true,
+				UnexpectedEOF:     true,
+				Authentication:    "never",
+				ReplayRequirement: "before-first-event",
+			}},
 		},
 	}
 }

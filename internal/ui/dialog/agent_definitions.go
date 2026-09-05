@@ -319,7 +319,12 @@ func (d *AgentDefinitions) save() Action {
 	return ActionCmd{Cmd: func() tea.Msg {
 		path, err := d.com.Workspace.CreateAgentDefinition(context.Background(), request)
 		if err == nil {
-			err = d.com.Workspace.UpdateAgentModel(context.Background())
+			cfg := d.com.Config()
+			if cfg == nil {
+				err = errors.New("configuration not found")
+			} else {
+				err = d.com.Workspace.UpdateAgentModel(context.Background(), cfg.AgentModelState())
+			}
 		}
 		return agentDefinitionResultMsg{path: path, err: err}
 	}}

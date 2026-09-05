@@ -34,6 +34,7 @@ func pluginSnapshotProto(snapshot providerplugin.Snapshot, profile string, enabl
 	for i, status := range snapshot.Plugins {
 		plugin := proto.PluginStatus{
 			BundleName:    status.BundleName,
+			PluginType:    status.PluginType,
 			ID:            status.ID,
 			ProviderID:    status.ProviderID,
 			Name:          status.Name,

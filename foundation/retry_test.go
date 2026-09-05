@@ -202,6 +202,136 @@ func TestRetryWithExponentialBackoff_ConnectionErrors(t *testing.T) {
 	})
 }
 
+func TestUnlimitedRetryClassificationRequiresTypedProviderError(t *testing.T) {
+	t.Parallel()
+
+	if IsServerOverloadError(errors.New(ServerOverloadMessage)) {
+		t.Fatal("plain prose must not be classified as a typed overload error")
+	}
+	if IsConnectionLimitError(errors.New(ConnectionLimitMessage)) {
+		t.Fatal("plain prose must not be classified as a typed connection-limit error")
+	}
+	if IsIndefinitelyRetryable(&ProviderError{Message: ServerOverloadMessage, TransientError: true}) {
+		t.Fatal("transient provider prose must not bypass the retry cap")
+	}
+}
+
+func TestRetryWithExponentialBackoff_ServerOverload(t *testing.T) {
+	t.Parallel()
+
+	t.Run("zero retries disables typed unlimited replay", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name string
+			err  error
+		}{
+			{name: "server overload", err: NewServerOverloadError()},
+			{name: "connection limit", err: NewConnectionLimitError()},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				attempts := 0
+				retryFn := RetryWithExponentialBackoffRespectingRetryHeaders[int](RetryOptions{
+					MaxRetries:     0,
+					InitialDelayIn: time.Millisecond,
+					BackoffFactor:  1,
+				})
+
+				_, err := retryFn(context.Background(), func() (int, error) {
+					attempts++
+					return 0, tt.err
+				})
+				if !errors.Is(err, tt.err) {
+					t.Fatalf("expected original error, got %v", err)
+				}
+				if attempts != 1 {
+					t.Fatalf("expected 1 attempt, got %d", attempts)
+				}
+			})
+		}
+	})
+
+	t.Run("retries beyond the configured limit until success", func(t *testing.T) {
+		t.Parallel()
+		attempts := 0
+		retryFn := RetryWithExponentialBackoffRespectingRetryHeaders[int](RetryOptions{
+			MaxRetries:     1,
+			InitialDelayIn: time.Millisecond,
+			BackoffFactor:  1,
+		})
+
+		result, err := retryFn(context.Background(), func() (int, error) {
+			attempts++
+			if attempts < 5 {
+				return 0, NewServerOverloadError()
+			}
+			return 42, nil
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if result != 42 {
+			t.Fatalf("expected result 42, got %d", result)
+		}
+		if attempts != 5 {
+			t.Fatalf("expected 5 attempts, got %d", attempts)
+		}
+	})
+
+	t.Run("retries the connection-limit frame beyond the configured limit", func(t *testing.T) {
+		t.Parallel()
+		attempts := 0
+		retryFn := RetryWithExponentialBackoffRespectingRetryHeaders[int](RetryOptions{
+			MaxRetries:     1,
+			InitialDelayIn: time.Millisecond,
+			BackoffFactor:  1,
+		})
+
+		result, err := retryFn(context.Background(), func() (int, error) {
+			attempts++
+			if attempts < 5 {
+				return 0, NewConnectionLimitError()
+			}
+			return 42, nil
+		})
+		if err != nil {
+			t.Fatalf("expected no error, got %v", err)
+		}
+		if result != 42 {
+			t.Fatalf("expected result 42, got %d", result)
+		}
+		if attempts != 5 {
+			t.Fatalf("expected 5 attempts, got %d", attempts)
+		}
+	})
+
+	t.Run("stops when the context is canceled", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithCancel(context.Background())
+		attempts := 0
+		retryFn := RetryWithExponentialBackoffRespectingRetryHeaders[int](RetryOptions{
+			MaxRetries:     1,
+			InitialDelayIn: time.Hour,
+			BackoffFactor:  1,
+			OnRetry: func(_ *ProviderError, _ time.Duration) {
+				cancel()
+			},
+		})
+
+		_, err := retryFn(ctx, func() (int, error) {
+			attempts++
+			return 0, NewServerOverloadError()
+		})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context cancellation, got %v", err)
+		}
+		if attempts != 1 {
+			t.Fatalf("expected 1 attempt, got %d", attempts)
+		}
+	})
+}
+
 func TestRetryWithAuthRefresh(t *testing.T) {
 	t.Parallel()
 

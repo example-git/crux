@@ -420,32 +420,10 @@ func TestDiscoverBuiltin(t *testing.T) {
 		}
 	}
 	require.True(t, found, "crux-config builtin skill not found")
-
-	var foundJQ bool
 	for _, s := range discovered {
-		if s.Name == "jq" {
-			foundJQ = true
-			require.Equal(t, "crux://skills/jq/SKILL.md", s.SkillFilePath)
-			require.Equal(t, "crux://skills/jq", s.Path)
-			require.NotEmpty(t, s.Description)
-			require.NotEmpty(t, s.Instructions)
-			require.True(t, s.Builtin)
-		}
+		require.NotEqual(t, "jq", s.Name)
+		require.NotEqual(t, "crux-hooks", s.Name)
 	}
-	require.True(t, foundJQ, "jq builtin skill not found")
-
-	var foundHooks bool
-	for _, s := range discovered {
-		if s.Name == "crux-hooks" {
-			foundHooks = true
-			require.Equal(t, "crux://skills/crux-hooks/SKILL.md", s.SkillFilePath)
-			require.Equal(t, "crux://skills/crux-hooks", s.Path)
-			require.NotEmpty(t, s.Description)
-			require.NotEmpty(t, s.Instructions)
-			require.True(t, s.Builtin)
-		}
-	}
-	require.True(t, foundHooks, "crux-hooks builtin skill not found")
 
 	var foundCustomAgents bool
 	for _, s := range discovered {
@@ -459,6 +437,19 @@ func TestDiscoverBuiltin(t *testing.T) {
 		}
 	}
 	require.True(t, foundCustomAgents, "custom-agents builtin skill not found")
+
+	var foundImagegen bool
+	for _, s := range discovered {
+		if s.Name == "imagegen" {
+			foundImagegen = true
+			require.Equal(t, "crux://skills/imagegen/SKILL.md", s.SkillFilePath)
+			require.Equal(t, "crux://skills/imagegen", s.Path)
+			require.NotEmpty(t, s.Description)
+			require.NotEmpty(t, s.Instructions)
+			require.True(t, s.Builtin)
+		}
+	}
+	require.True(t, foundImagegen, "imagegen builtin skill not found")
 }
 
 func TestDeduplicate(t *testing.T) {

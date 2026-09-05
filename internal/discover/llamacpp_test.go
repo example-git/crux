@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -35,7 +35,7 @@ func TestLlamacppEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-llamacpp", BaseURL: srv.URL}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "ggml-org/Qwen2.5-Coder-1.5B-Instruct-Q8_0-GGUF"},
 			{ID: "ggml-org/Llama-3.2-3B-Instruct-Q8_0-GGUF"},
 			{ID: "unknown-model"},
@@ -66,7 +66,7 @@ func TestLlamacppEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-llamacpp", BaseURL: srv.URL}
-		models := []catwalk.Model{{ID: "m1"}}
+		models := []catalog.Model{{ID: "m1"}}
 
 		e := &llamacppEnricher{}
 		result, err := e.EnrichModels(context.Background(), cfg, &mockResolver{}, models)
@@ -90,7 +90,7 @@ func TestLlamacppEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-llamacpp", BaseURL: srv.URL}
-		models := []catwalk.Model{{ID: "m1", ContextWindow: 65536}}
+		models := []catalog.Model{{ID: "m1", ContextWindow: 65536}}
 
 		e := &llamacppEnricher{}
 		result, err := e.EnrichModels(context.Background(), cfg, &mockResolver{}, models)
@@ -106,7 +106,7 @@ func TestLlamacppEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-llamacpp", BaseURL: srv.URL}
-		models := []catwalk.Model{{ID: "m1"}}
+		models := []catalog.Model{{ID: "m1"}}
 
 		e := &llamacppEnricher{}
 		result, err := e.EnrichModels(context.Background(), cfg, &mockResolver{}, models)
@@ -124,7 +124,7 @@ func TestLlamacppEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-llamacpp", BaseURL: srv.URL}
-		models := []catwalk.Model{{ID: "m1"}}
+		models := []catalog.Model{{ID: "m1"}}
 
 		e := &llamacppEnricher{}
 		result, err := e.EnrichModels(context.Background(), cfg, &mockResolver{}, models)

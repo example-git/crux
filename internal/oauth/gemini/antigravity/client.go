@@ -1,30 +1,24 @@
 package antigravity
 
-// Native HTTP client for the Antigravity Cloud Code endpoint. It builds the
-// request envelope itself, streams SSE responses, and applies the retry
-// policy observed to keep the endpoint stable:
-//
-//   - network errors: up to 3 retries with exponential backoff;
-//   - 429 RESOURCE_EXHAUSTED and 503: retried with capped backoff;
-//   - 429 MODEL_CAPACITY_EXHAUSTED: fails immediately (hard quota);
-//   - 401/403: token re-read once from the token source (picking up any
-//     refresh performed by the credential store), then fails.
-
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"log/slog"
 	"math/rand/v2"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providertransport"
 	"github.com/google/uuid"
 )
 
@@ -49,19 +43,86 @@ func nextNumericSessionID() string {
 	return fmt.Sprintf("%d", -(rand.Int64N(9_000_000_000_000_000) + 1_000_000_000_000_000))
 }
 
-const (
-	maxNetworkRetries  = 3
-	maxOverloadRetries = 6
-	maxBackoff         = 30 * time.Second
-)
+const defaultMaxEventBytes = int64(1 << 20)
 
 type client struct {
-	httpClient *http.Client
-	baseURL    string
-	token      TokenSource
-	project    ProjectLoader
-	userAgent  string
-	headers    map[string]string
+	httpClient    *http.Client
+	baseURL       string
+	token         TokenSource
+	project       ProjectLoader
+	userAgent     string
+	headers       map[string]string
+	maxEventBytes int64
+	retry         manifest.RetryPolicy
+	errors        []manifest.ErrorMapping
+}
+
+type retryBudget struct {
+	policy   manifest.RetryPolicy
+	attempts int
+}
+
+func defaultRetryPolicy() manifest.RetryPolicy {
+	return manifest.RetryPolicy{
+		MaxAttempts:       7,
+		InitialDelayMS:    2000,
+		MaxDelayMS:        30000,
+		Factor:            2,
+		Statuses:          []int{http.StatusTooManyRequests, http.StatusServiceUnavailable},
+		TransportErrors:   true,
+		UnexpectedEOF:     true,
+		Authentication:    "refresh-once",
+		ReplayRequirement: "before-first-event",
+	}
+}
+
+func (c *client) effectiveRetryPolicy() manifest.RetryPolicy {
+	if c.retry.MaxAttempts > 0 {
+		return c.retry
+	}
+	return defaultRetryPolicy()
+}
+
+func newRetryBudget(policy manifest.RetryPolicy) *retryBudget {
+	if policy.MaxAttempts < 1 {
+		policy.MaxAttempts = 1
+	}
+	return &retryBudget{policy: policy}
+}
+
+func (budget *retryBudget) start() bool {
+	if budget.attempts >= budget.policy.MaxAttempts {
+		return false
+	}
+	budget.attempts++
+	return true
+}
+
+func (budget *retryBudget) retry(ctx context.Context, retryable, emitted bool, retryAfter string) (bool, error) {
+	if !retryable || budget.attempts >= budget.policy.MaxAttempts || budget.policy.ReplayRequirement == "never" || budget.policy.ReplayRequirement == "before-first-event" && emitted {
+		return false, nil
+	}
+	if !budget.policy.RetryAfter {
+		retryAfter = ""
+	}
+	if err := providertransport.WaitForRetry(ctx, providertransport.RetryDelay(budget.policy, budget.attempts, retryAfter)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func retryBodyError(policy manifest.RetryPolicy, err error) bool {
+	if policy.UnexpectedEOF && errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	if !policy.TransportErrors {
+		return false
+	}
+	if errors.Is(err, providertransport.ErrStreamIdleTimeout) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError)
 }
 
 func (c *client) envelope(ctx context.Context, model string, req *wireRequest) *wireEnvelope {
@@ -112,7 +173,7 @@ func (c *client) newRequest(ctx context.Context, method string, stream bool, bod
 
 // do performs the request with the retry policy and returns a response whose
 // status is 2xx. Non-retryable failures are returned as *fantasy.ProviderError.
-func (c *client) do(ctx context.Context, method string, stream bool, env *wireEnvelope) (*http.Response, error) {
+func (c *client) do(ctx context.Context, method string, stream bool, env *wireEnvelope, budget *retryBudget) (*http.Response, error) {
 	body, err := json.Marshal(env)
 	if err != nil {
 		return nil, err
@@ -123,11 +184,12 @@ func (c *client) do(ctx context.Context, method string, stream bool, env *wireEn
 		httpClient = http.DefaultClient
 	}
 
-	var networkAttempt, overloadAttempt int
-	authRetried := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return nil, err
+		}
+		if !budget.start() {
+			return nil, fmt.Errorf("antigravity: retry budget exhausted")
 		}
 
 		req, err := c.newRequest(ctx, method, stream, body)
@@ -137,21 +199,30 @@ func (c *client) do(ctx context.Context, method string, stream bool, env *wireEn
 
 		resp, err := httpClient.Do(req)
 		if err != nil {
-			networkAttempt++
-			if networkAttempt <= maxNetworkRetries && ctx.Err() == nil {
-				if !sleepCtx(ctx, backoff(networkAttempt)) {
-					return nil, ctx.Err()
-				}
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if providertransport.IsOwnerValidationError(err) {
+				return nil, err
+			}
+			transportErr := fantasy.WrapTransportError(err)
+			retry, waitErr := budget.retry(ctx, budget.policy.TransportErrors, false, "")
+			if waitErr != nil {
+				return nil, waitErr
+			}
+			if retry {
 				continue
 			}
-			return nil, fantasy.WrapTransportError(err)
+			return nil, transportErr
 		}
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return resp, nil
 		}
 
+		retryAfter := resp.Header.Get("Retry-After")
 		perr := parseErrorResponse(resp)
+		providertransport.MapError(c.errors, perr)
 
 		slog.Debug("Antigravity request failed",
 			"status", resp.StatusCode,
@@ -162,51 +233,23 @@ func (c *client) do(ctx context.Context, method string, stream bool, env *wireEn
 			"request", string(body),
 		)
 
-		switch {
-		case (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && !authRetried:
-			// The token source may return a refreshed credential; retry once.
-			authRetried = true
-			continue
-		case isRetryableOverload(resp.StatusCode, perr):
-			overloadAttempt++
-			if overloadAttempt <= maxOverloadRetries && ctx.Err() == nil {
-				if !sleepCtx(ctx, backoff(overloadAttempt)) {
-					return nil, ctx.Err()
-				}
-				continue
-			}
-			return nil, perr
-		default:
-			return nil, perr
+		standardRetryable := providertransport.RetryOperationError(budget.policy, nil, perr, false) && !isHardCapacityExhaustion(resp.StatusCode, perr)
+		retryable := standardRetryable || providertransport.ErrorMappingRetryable(c.errors, perr)
+		retry, waitErr := budget.retry(ctx, retryable, false, retryAfter)
+		if waitErr != nil {
+			return nil, waitErr
 		}
-	}
-}
-
-func backoff(attempt int) time.Duration {
-	return min(time.Second<<attempt, maxBackoff)
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-t.C:
-		return true
+		if retry {
+			continue
+		}
+		return nil, perr
 	}
 }
 
 // isRetryableOverload reports whether the failure is transient capacity
 // pressure. Hard model-capacity exhaustion is not retryable.
-func isRetryableOverload(status int, perr *fantasy.ProviderError) bool {
-	if status == http.StatusServiceUnavailable {
-		return true
-	}
-	if status != http.StatusTooManyRequests {
-		return false
-	}
-	return !strings.Contains(string(perr.ResponseBody), "MODEL_CAPACITY_EXHAUSTED")
+func isHardCapacityExhaustion(status int, perr *fantasy.ProviderError) bool {
+	return status == http.StatusTooManyRequests && strings.Contains(string(perr.ResponseBody), "MODEL_CAPACITY_EXHAUSTED")
 }
 
 // parseErrorResponse drains a non-2xx response into a ProviderError.
@@ -231,10 +274,11 @@ func parseErrorResponse(resp *http.Response) *fantasy.ProviderError {
 	}
 
 	perr := &fantasy.ProviderError{
-		Title:        titleForStatus(resp.StatusCode),
-		Message:      message,
-		StatusCode:   resp.StatusCode,
-		ResponseBody: data,
+		Title:           titleForStatus(resp.StatusCode),
+		Message:         message,
+		StatusCode:      resp.StatusCode,
+		ResponseHeaders: responseHeaders(resp.Header),
+		ResponseBody:    data,
 	}
 	parseContextTooLargeError(message, perr)
 	return perr
@@ -247,62 +291,158 @@ func titleForStatus(status int) string {
 	return "provider request failed"
 }
 
+func responseHeaders(headers http.Header) map[string]string {
+	values := make(map[string]string, len(headers))
+	for name := range headers {
+		values[name] = headers.Get(name)
+	}
+	return values
+}
+
+func wireProviderError(value *wireError, body []byte) *fantasy.ProviderError {
+	perr := &fantasy.ProviderError{
+		Title:        titleForStatus(value.Code),
+		Message:      value.Message,
+		StatusCode:   value.Code,
+		ResponseBody: body,
+	}
+	parseContextTooLargeError(value.Message, perr)
+	return perr
+}
+
 // generateContent performs a non-streaming call.
 func (c *client) generateContent(ctx context.Context, model string, req *wireRequest) (*wireResponse, error) {
-	resp, err := c.do(ctx, "generateContent", false, c.envelope(ctx, model, req))
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fantasy.WrapTransportError(err)
-	}
-	out := new(wireResponse)
-	if err := json.Unmarshal(unwrapPayload(data), out); err != nil {
-		return nil, fmt.Errorf("antigravity: decode response: %w", err)
-	}
-	if out.Error != nil {
-		return nil, &fantasy.ProviderError{
-			Title:      titleForStatus(out.Error.Code),
-			Message:    out.Error.Message,
-			StatusCode: out.Error.Code,
+	env := c.envelope(ctx, model, req)
+	budget := newRetryBudget(c.effectiveRetryPolicy())
+	for {
+		resp, err := c.do(ctx, "generateContent", false, env, budget)
+		if err != nil {
+			return nil, err
 		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			retry, waitErr := budget.retry(ctx, retryBodyError(budget.policy, readErr), false, "")
+			if waitErr != nil {
+				return nil, waitErr
+			}
+			if retry {
+				continue
+			}
+			return nil, fantasy.WrapTransportError(readErr)
+		}
+		out := new(wireResponse)
+		if err := json.Unmarshal(unwrapPayload(data), out); err != nil {
+			return nil, fmt.Errorf("antigravity: decode response: %w", err)
+		}
+		if out.Error != nil {
+			perr := wireProviderError(out.Error, unwrapPayload(data))
+			providertransport.MapError(c.errors, perr)
+			retry, waitErr := budget.retry(ctx, providertransport.RetryOperationError(budget.policy, c.errors, perr, false), false, providertransport.RetryAfterHeader(perr))
+			if waitErr != nil {
+				return nil, waitErr
+			}
+			if retry {
+				continue
+			}
+			return nil, perr
+		}
+		return out, nil
 	}
-	return out, nil
 }
 
 // streamGenerateContent performs a streaming call, yielding decoded chunks.
 func (c *client) streamGenerateContent(ctx context.Context, model string, req *wireRequest) (iter.Seq2[*wireResponse, error], error) {
-	// The returned iterator owns and closes the streaming response body when
-	// consumed; closing it here would invalidate the stream before iteration.
-	resp, err := c.do(ctx, "streamGenerateContent", true, c.envelope(ctx, model, req)) //nolint:bodyclose
+	env := c.envelope(ctx, model, req)
+	budget := newRetryBudget(c.effectiveRetryPolicy())
+	resp, err := c.do(ctx, "streamGenerateContent", true, env, budget) //nolint:bodyclose
 	if err != nil {
 		return nil, err
 	}
 	return func(yield func(*wireResponse, error) bool) {
-		defer resp.Body.Close()
-		for payload, err := range sseEvents(resp.Body) {
-			if err != nil {
-				yield(nil, fantasy.WrapTransportError(err))
+		current := resp
+		emitted := false
+		for {
+			sawPayload := false
+			replay := false
+			for payload, readErr := range sseEvents(current.Body, c.maxEventBytes) {
+				if readErr != nil {
+					_ = current.Body.Close()
+					retry, waitErr := budget.retry(ctx, retryBodyError(budget.policy, readErr), emitted, "")
+					if waitErr != nil {
+						yield(nil, waitErr)
+						return
+					}
+					if retry {
+						next, openErr := c.do(ctx, "streamGenerateContent", true, env, budget) //nolint:bodyclose
+						if openErr != nil {
+							yield(nil, openErr)
+							return
+						}
+						current = next
+						replay = true
+						break
+					}
+					yield(nil, fantasy.WrapTransportError(readErr))
+					return
+				}
+				sawPayload = true
+				chunk := new(wireResponse)
+				if err := json.Unmarshal(unwrapPayload(payload), chunk); err != nil {
+					_ = current.Body.Close()
+					yield(nil, fmt.Errorf("antigravity: decode chunk: %w", err))
+					return
+				}
+				if chunk.Error != nil {
+					_ = current.Body.Close()
+					perr := wireProviderError(chunk.Error, unwrapPayload(payload))
+					providertransport.MapError(c.errors, perr)
+					retry, waitErr := budget.retry(ctx, providertransport.RetryOperationError(budget.policy, c.errors, perr, emitted), emitted, providertransport.RetryAfterHeader(perr))
+					if waitErr != nil {
+						yield(nil, waitErr)
+						return
+					}
+					if retry {
+						next, openErr := c.do(ctx, "streamGenerateContent", true, env, budget) //nolint:bodyclose
+						if openErr != nil {
+							yield(nil, openErr)
+							return
+						}
+						current = next
+						replay = true
+						break
+					}
+					yield(nil, perr)
+					return
+				}
+				if !yield(chunk, nil) {
+					_ = current.Body.Close()
+					return
+				}
+				emitted = true
+			}
+			if replay {
+				continue
+			}
+			_ = current.Body.Close()
+			if sawPayload || emitted || !budget.policy.UnexpectedEOF {
 				return
 			}
-			chunk := new(wireResponse)
-			if err := json.Unmarshal(unwrapPayload(payload), chunk); err != nil {
-				yield(nil, fmt.Errorf("antigravity: decode chunk: %w", err))
+			retry, waitErr := budget.retry(ctx, true, false, "")
+			if waitErr != nil {
+				yield(nil, waitErr)
 				return
 			}
-			if chunk.Error != nil {
-				yield(nil, &fantasy.ProviderError{
-					Title:      titleForStatus(chunk.Error.Code),
-					Message:    chunk.Error.Message,
-					StatusCode: chunk.Error.Code,
-				})
+			if !retry {
+				yield(nil, fantasy.WrapTransportError(io.ErrUnexpectedEOF))
 				return
 			}
-			if !yield(chunk, nil) {
+			next, openErr := c.do(ctx, "streamGenerateContent", true, env, budget)
+			if openErr != nil {
+				yield(nil, openErr)
 				return
 			}
+			current = next
 		}
 	}, nil
 }
@@ -328,36 +468,54 @@ func unwrapPayload(data []byte) []byte {
 // sometimes emits consecutive events with no separator at all
 // ("...}data: {..."), which a line-based reader would treat as one
 // malformed payload.
-func sseEvents(body io.Reader) iter.Seq2[[]byte, error] {
+func sseEvents(body io.Reader, maxEventBytes int64) iter.Seq2[[]byte, error] {
 	return func(yield func([]byte, error) bool) {
+		if maxEventBytes <= 0 {
+			maxEventBytes = defaultMaxEventBytes
+		}
+		marker := []byte("data:")
 		var buf []byte
 		chunk := make([]byte, 4096)
 
-		// drain consumes every complete event in buf. When atEOF is false it
-		// leaves a trailing partial event in place for the next read.
-		drain := func(atEOF bool) bool {
+		drain := func(terminalErr error) bool {
 			for {
-				i := bytes.Index(buf, []byte("data:"))
+				i := bytes.Index(buf, marker)
 				if i < 0 {
-					if atEOF {
+					if terminalErr != nil {
 						buf = nil
+						return true
 					}
+					keep := min(len(buf), len(marker)-1)
+					for keep > 0 && !bytes.HasPrefix(marker, buf[len(buf)-keep:]) {
+						keep--
+					}
+					buf = append(buf[:0], buf[len(buf)-keep:]...)
 					return true
 				}
-				rest := bytes.TrimLeft(buf[i+len("data:"):], " \t")
+				raw := buf[i+len(marker):]
+				rest := bytes.TrimLeft(raw, " \t")
+				if int64(len(raw)-len(rest)) > maxEventBytes {
+					yield(nil, fmt.Errorf("SSE event exceeds %d bytes", maxEventBytes))
+					return false
+				}
 
-				// Terminator events carry no JSON.
 				if after, ok := bytes.CutPrefix(rest, []byte("[DONE]")); ok {
 					buf = after
 					continue
 				}
 
 				end, complete := jsonValueEnd(rest)
+				if int64(end) > maxEventBytes {
+					yield(nil, fmt.Errorf("SSE event exceeds %d bytes", maxEventBytes))
+					return false
+				}
 				if !complete {
-					if atEOF {
-						// Truncated tail: surface what we have so the caller
-						// reports a parse error rather than hanging.
-						if end > 0 && !yield(rest[:end], nil) {
+					if terminalErr != nil {
+						if end > 0 {
+							if errors.Is(terminalErr, io.EOF) {
+								terminalErr = io.ErrUnexpectedEOF
+							}
+							yield(nil, terminalErr)
 							return false
 						}
 						buf = nil
@@ -378,12 +536,14 @@ func sseEvents(body io.Reader) iter.Seq2[[]byte, error] {
 			n, err := body.Read(chunk)
 			if n > 0 {
 				buf = append(buf, chunk[:n]...)
-				if !drain(false) {
+				if !drain(nil) {
 					return
 				}
 			}
 			if err != nil {
-				_ = drain(true)
+				if !drain(err) {
+					return
+				}
 				if err != io.EOF {
 					yield(nil, err)
 				}

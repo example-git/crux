@@ -8,6 +8,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 
 	"github.com/example-git/crux/internal/home"
 	"github.com/example-git/crux/internal/ui/common"
@@ -47,12 +48,23 @@ func (m *UI) updateInitializeView(msg tea.KeyPressMsg) (cmds []tea.Cmd) {
 	return cmds
 }
 
-// initializeProject starts project initialization and transitions to the landing view.
+// initializeProject starts project initialization and transitions to normal
+// chat. During startup it deliberately keeps the pending prompt's session:
+// the initialization message is processed first and the pending prompt is then
+// submitted to that same session by tea.Sequence.
 func (m *UI) initializeProject() tea.Cmd {
-	// clear the session
+	startup := m.state == uiInitialize
 	var cmds []tea.Cmd
-	if cmd := m.newSession(); cmd != nil {
-		cmds = append(cmds, cmd)
+	if !startup {
+		if cmd := m.newSession(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	m.setState(uiLanding, uiFocusEditor)
+	if startup {
+		if cmd := m.loadInitialSession(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	}
 	initialize := func() tea.Msg {
 		initPrompt, err := m.com.Workspace.InitializePrompt()
@@ -64,18 +76,28 @@ func (m *UI) initializeProject() tea.Cmd {
 		}
 		return sendMessageMsg{Content: initPrompt}
 	}
-	// Mark the project as initialized
-	cmds = append(cmds, initialize, m.markProjectInitializedCmd())
-
+	cmds = append(cmds, m.markProjectInitializedCmd(), initialize)
+	if cmd := m.sendInitialPrompt(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
 	return tea.Sequence(cmds...)
 }
 
 // skipInitializeProject skips project initialization and transitions to the landing view.
 func (m *UI) skipInitializeProject() tea.Cmd {
-	// TODO: initialize the project
+	startup := m.state == uiInitialize
 	m.setState(uiLanding, uiFocusEditor)
-	// mark the project as initialized
-	return m.markProjectInitializedCmd()
+	var cmds []tea.Cmd
+	if startup {
+		if cmd := m.loadInitialSession(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	}
+	cmds = append(cmds, m.markProjectInitializedCmd())
+	if cmd := m.sendInitialPrompt(); cmd != nil {
+		cmds = append(cmds, cmd)
+	}
+	return tea.Sequence(cmds...)
 }
 
 // initializeView renders the project initialization prompt with Yes/No buttons.
@@ -90,15 +112,16 @@ func (m *UI) initializeView() string {
 	hint := s.Content.Render("You can also initialize anytime via ") + s.Accent.Render("ctrl+p") + s.Content.Render(".")
 	prompt := s.Content.Render("Would you like to initialize now?")
 
-	buttons := common.ButtonGroup(m.com.Styles, []common.ButtonOpts{
-		{Text: "Yep!", Selected: m.onboarding.yesInitializeSelected},
-		{Text: "Nope", Selected: !m.onboarding.yesInitializeSelected},
-	}, " ")
+	buttonOpts := []common.ButtonOpts{
+		{Text: "Yep!", Selected: m.onboarding.yesInitializeSelected, Hovered: m.onboarding.hoveredInitializeButton == 1},
+		{Text: "Nope", Selected: !m.onboarding.yesInitializeSelected, Hovered: m.onboarding.hoveredInitializeButton == 2},
+	}
+	buttons := common.ButtonGroup(m.com.Styles, buttonOpts, " ")
 
 	// max width 60 so the text is compact
 	width := min(m.layout.main.Dx(), 60)
 
-	return lipgloss.NewStyle().
+	view := lipgloss.NewStyle().
 		Width(width).
 		Height(m.layout.main.Dy()).
 		PaddingBottom(1).
@@ -114,4 +137,29 @@ func (m *UI) initializeView() string {
 			},
 			"\n\n",
 		))
+	m.onboarding.buttonCompositor = common.ButtonHitCompositorForView(m.com.Styles, buttonOpts, view, m.layout.main.Min.X, m.layout.main.Min.Y)
+	return view
+}
+
+func (m *UI) handleInitializeHover(msg tea.MouseMotionMsg) bool {
+	if m.state != uiInitialize {
+		return false
+	}
+	m.onboarding.hoveredInitializeButton = common.HitButtonIndex(m.onboarding.buttonCompositor, msg.X, msg.Y) + 1
+	return true
+}
+
+func (m *UI) handleInitializeClick(msg tea.MouseClickMsg) (tea.Cmd, bool) {
+	if m.state != uiInitialize || msg.Button != uv.MouseLeft {
+		return nil, false
+	}
+	index := common.HitButtonIndex(m.onboarding.buttonCompositor, msg.X, msg.Y)
+	if index < 0 || index > 1 {
+		return nil, false
+	}
+	m.onboarding.yesInitializeSelected = index == 0
+	if m.onboarding.yesInitializeSelected {
+		return m.initializeProject(), true
+	}
+	return m.skipInitializeProject(), true
 }

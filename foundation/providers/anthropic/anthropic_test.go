@@ -25,6 +25,35 @@ var noopComputerRun = func(_ context.Context, _ fantasy.ToolCall) (fantasy.ToolR
 	return fantasy.ToolResponse{}, nil
 }
 
+func TestToPromptTranslatesInstructionCacheBoundary(t *testing.T) {
+	instructions := fantasy.NewInstructions(
+		fantasy.StaticInstruction(fantasy.InstructionKindProviderPrefix, "provider prefix"),
+		fantasy.StaticInstruction(fantasy.InstructionKindTooling, "stable tooling"),
+		fantasy.DynamicInstruction(fantasy.InstructionKindProviderContext, "provider context"),
+		fantasy.DynamicInstruction(fantasy.InstructionKindMemory, "memory"),
+	)
+	blocks, messages, warnings := toPrompt(fantasy.Prompt{
+		instructions.Message(fantasy.InstructionPolicyAnthropic),
+		fantasy.NewUserMessage("inspect"),
+	}, true)
+
+	require.Empty(t, warnings)
+	require.Len(t, messages, 1)
+	require.Len(t, blocks, 4)
+	encoded, err := json.Marshal(blocks)
+	require.NoError(t, err)
+	var decoded []map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	require.Equal(t, "provider prefix", decoded[0]["text"])
+	require.NotContains(t, decoded[0], "cache_control")
+	require.Equal(t, "stable tooling", decoded[1]["text"])
+	require.Equal(t, map[string]any{"type": "ephemeral"}, decoded[1]["cache_control"])
+	require.Equal(t, "provider context", decoded[2]["text"])
+	require.NotContains(t, decoded[2], "cache_control")
+	require.Equal(t, "memory", decoded[3]["text"])
+	require.NotContains(t, decoded[3], "cache_control")
+}
+
 func TestToPrompt_DropsEmptyMessages(t *testing.T) {
 	t.Parallel()
 
@@ -1139,6 +1168,17 @@ func requireWebSearchResultMetadata(t *testing.T, metadata fantasy.ProviderMetad
 	return result
 }
 
+func requireToolSearchResultMetadata(t *testing.T, metadata fantasy.ProviderMetadata) *ToolSearchResultMetadata {
+	t.Helper()
+
+	providerOption, ok := fantasy.ProviderOptions(metadata)[Name]
+	require.True(t, ok, "provider metadata should contain anthropic key")
+	result, ok := providerOption.(*ToolSearchResultMetadata)
+	require.True(t, ok, "provider metadata should be *ToolSearchResultMetadata")
+	require.NotNil(t, result)
+	return result
+}
+
 func assertNoAnthropicCall(t *testing.T, calls <-chan anthropicCall) {
 	t.Helper()
 
@@ -1296,6 +1336,158 @@ func mockAnthropicWebSearchErrorResponse() map[string]any {
 			},
 		},
 	}
+}
+
+func mockAnthropicToolSearchResponse() map[string]any {
+	return map[string]any{
+		"id":    "msg_01ToolSearch",
+		"type":  "message",
+		"role":  "assistant",
+		"model": "claude-sonnet-4-20250514",
+		"content": []any{
+			map[string]any{
+				"type":  "server_tool_use",
+				"id":    "srvtoolu_search",
+				"name":  "tool_search_tool_regex",
+				"input": map[string]any{"query": "list tabs"},
+			},
+			map[string]any{
+				"type":        "tool_search_tool_result",
+				"tool_use_id": "srvtoolu_search",
+				"content": map[string]any{
+					"type": "tool_search_tool_search_result",
+					"tool_references": []any{
+						map[string]any{"type": "tool_reference", "tool_name": "mcp__official__list_tabs"},
+					},
+				},
+			},
+		},
+		"stop_reason": "tool_use",
+		"usage": map[string]any{
+			"input_tokens": 10, "output_tokens": 5,
+		},
+	}
+}
+
+func TestToPrompt_ToolSearchProviderExecutedToolResults(t *testing.T) {
+	t.Parallel()
+
+	prompt := fantasy.Prompt{
+		{
+			Role: fantasy.MessageRoleUser,
+			Content: []fantasy.MessagePart{
+				fantasy.TextPart{Text: "List tabs"},
+			},
+		},
+		{
+			Role: fantasy.MessageRoleAssistant,
+			Content: []fantasy.MessagePart{
+				fantasy.ToolCallPart{
+					ToolCallID:       "srvtoolu_search",
+					ToolName:         "tool_search_tool_regex",
+					Input:            `{"query":"list tabs"}`,
+					ProviderExecuted: true,
+				},
+				fantasy.ToolResultPart{
+					ToolCallID:       "srvtoolu_search",
+					ProviderExecuted: true,
+					ProviderOptions: fantasy.ProviderOptions{
+						Name: &ToolSearchResultMetadata{ToolNames: []string{"mcp__official__list_tabs"}},
+					},
+				},
+			},
+		},
+	}
+
+	_, messages, warnings := toPrompt(prompt, true)
+	require.Empty(t, warnings)
+	require.Len(t, messages, 2)
+	require.Len(t, messages[1].Content, 2)
+	require.Equal(t, anthropic.ServerToolUseBlockParamName("tool_search_tool_regex"), messages[1].Content[0].OfServerToolUse.Name)
+	result := messages[1].Content[1].OfToolSearchToolResult
+	require.NotNil(t, result)
+	require.Equal(t, "srvtoolu_search", result.ToolUseID)
+	references := result.Content.OfRequestToolSearchToolSearchResultBlock.ToolReferences
+	require.Len(t, references, 1)
+	require.Equal(t, "mcp__official__list_tabs", references[0].ToolName)
+}
+
+func TestToPrompt_ToolSearchProviderExecutedError(t *testing.T) {
+	t.Parallel()
+
+	prompt := fantasy.Prompt{
+		{
+			Role: fantasy.MessageRoleUser,
+			Content: []fantasy.MessagePart{
+				fantasy.TextPart{Text: "List tabs"},
+			},
+		},
+		{
+			Role: fantasy.MessageRoleAssistant,
+			Content: []fantasy.MessagePart{
+				fantasy.ToolCallPart{
+					ToolCallID:       "srvtoolu_search",
+					ToolName:         "tool_search_tool_regex",
+					Input:            `{"query":"list tabs"}`,
+					ProviderExecuted: true,
+				},
+				fantasy.ToolResultPart{
+					ToolCallID:       "srvtoolu_search",
+					ProviderExecuted: true,
+					ProviderOptions: fantasy.ProviderOptions{
+						Name: &ToolSearchResultMetadata{
+							ErrorCode: "unavailable", ErrorMessage: "temporarily unavailable",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, messages, warnings := toPrompt(prompt, true)
+	require.Empty(t, warnings)
+	result := messages[1].Content[1].OfToolSearchToolResult
+	require.NotNil(t, result)
+	errorResult := result.Content.OfRequestToolSearchToolResultError
+	require.NotNil(t, errorResult)
+	require.Equal(t, anthropic.ToolSearchToolResultErrorCodeUnavailable, errorResult.ErrorCode)
+	require.True(t, errorResult.ErrorMessage.Valid())
+	require.Equal(t, "temporarily unavailable", errorResult.ErrorMessage.Value)
+}
+
+func TestGenerate_ToolSearchResponse(t *testing.T) {
+	t.Parallel()
+
+	server, calls := newAnthropicJSONServer(mockAnthropicToolSearchResponse())
+	defer server.Close()
+
+	provider, err := New(WithAPIKey("test-api-key"), WithBaseURL(server.URL))
+	require.NoError(t, err)
+	model, err := provider.LanguageModel(context.Background(), "claude-sonnet-4-20250514")
+	require.NoError(t, err)
+
+	response, err := model.Generate(context.Background(), fantasy.Call{Prompt: testPrompt()})
+	require.NoError(t, err)
+	_ = awaitAnthropicCall(t, calls)
+
+	var toolCall fantasy.ToolCallContent
+	var toolResult fantasy.ToolResultContent
+	for _, content := range response.Content {
+		switch value := content.(type) {
+		case fantasy.ToolCallContent:
+			toolCall = value
+		case fantasy.ToolResultContent:
+			toolResult = value
+		}
+	}
+	require.Equal(t, "srvtoolu_search", toolCall.ToolCallID)
+	require.Equal(t, "tool_search_tool_regex", toolCall.ToolName)
+	require.True(t, toolCall.ProviderExecuted)
+	require.Equal(t, "srvtoolu_search", toolResult.ToolCallID)
+	require.Equal(t, "tool_search_tool_regex", toolResult.ToolName)
+	require.True(t, toolResult.ProviderExecuted)
+	metadata := requireToolSearchResultMetadata(t, toolResult.ProviderMetadata)
+	require.Equal(t, []string{"mcp__official__list_tabs"}, metadata.ToolNames)
 }
 
 func TestToPrompt_WebSearchProviderExecutedErrorRoundTrip(t *testing.T) {
@@ -2132,6 +2324,56 @@ func TestStream_WebSearchErrorPreservesErrorCode(t *testing.T) {
 	webMeta := requireWebSearchResultMetadata(t, toolResults[0].ProviderMetadata)
 	require.Equal(t, "max_uses_exceeded", webMeta.ErrorCode)
 	require.Empty(t, webMeta.Results)
+}
+
+func TestStream_ToolSearchResponse(t *testing.T) {
+	t.Parallel()
+
+	chunks := []string{
+		"event: message_start\n",
+		`data: {"type":"message_start","message":{"id":"msg_01ToolSearch","type":"message","role":"assistant","model":"claude-sonnet-4-20250514","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}` + "\n\n",
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srvtoolu_search","name":"tool_search_tool_regex","input":{"query":"list tabs"}}}` + "\n\n",
+		"event: content_block_stop\n",
+		`data: {"type":"content_block_stop","index":0}` + "\n\n",
+		"event: content_block_start\n",
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_search","content":{"type":"tool_search_tool_search_result","tool_references":[{"type":"tool_reference","tool_name":"mcp__official__list_tabs"}]}}}` + "\n\n",
+		"event: content_block_stop\n",
+		`data: {"type":"content_block_stop","index":1}` + "\n\n",
+		"event: message_delta\n",
+		`data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":5}}` + "\n\n",
+		"event: message_stop\n",
+		`data: {"type":"message_stop"}` + "\n\n",
+	}
+
+	server, calls := newAnthropicStreamingServer(chunks)
+	defer server.Close()
+	provider, err := New(WithAPIKey("test-api-key"), WithBaseURL(server.URL))
+	require.NoError(t, err)
+	model, err := provider.LanguageModel(context.Background(), "claude-sonnet-4-20250514")
+	require.NoError(t, err)
+	stream, err := model.Stream(context.Background(), fantasy.Call{Prompt: testPrompt()})
+	require.NoError(t, err)
+
+	var parts []fantasy.StreamPart
+	stream(func(part fantasy.StreamPart) bool {
+		parts = append(parts, part)
+		return true
+	})
+	_ = awaitAnthropicCall(t, calls)
+
+	var toolResults []fantasy.StreamPart
+	for _, part := range parts {
+		if part.Type == fantasy.StreamPartTypeToolResult {
+			toolResults = append(toolResults, part)
+		}
+	}
+	require.Len(t, toolResults, 1)
+	require.Equal(t, "srvtoolu_search", toolResults[0].ID)
+	require.Equal(t, "tool_search_tool_regex", toolResults[0].ToolCallName)
+	require.True(t, toolResults[0].ProviderExecuted)
+	metadata := requireToolSearchResultMetadata(t, toolResults[0].ProviderMetadata)
+	require.Equal(t, []string{"mcp__official__list_tabs"}, metadata.ToolNames)
 }
 
 func TestGenerate_ToolChoiceNone(t *testing.T) {

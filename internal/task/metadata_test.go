@@ -42,17 +42,37 @@ func TestStoreRoundTripAndOrdering(t *testing.T) {
 			Usage:          AgentUsage{PromptTokens: 3, CompletionTokens: 2, Cost: 0.1, ToolUseCount: 1},
 		},
 	}
+	image := Record{
+		ID:          "i12345678",
+		Type:        TypeImage,
+		Description: "image",
+		Ownership:   Ownership{WorkspaceID: "workspace", ParentSessionID: "parent", OriginToolCallID: "image-call"},
+		State:       StateToRecord(State{Status: StatusCompleted, EndedAt: endedAt}),
+		OutputRef:   "file:/workspace/image.png",
+		Image: &ImageRecord{
+			Mode:        "generate",
+			Backend:     "flow",
+			Prompt:      "draw a fox",
+			Count:       1,
+			OutputPaths: []string{"/workspace/image.png"},
+			FinalOutput: `{"success":true}`,
+		},
+	}
 	require.NoError(t, store.Put(shell))
 	require.NoError(t, store.Put(agent))
+	require.NoError(t, store.Put(image))
 
 	recovered, err := store.Get(shell.ID)
 	require.NoError(t, err)
 	require.Equal(t, shell.ID, recovered.ID)
 	require.Equal(t, shell.Shell, recovered.Shell)
 	require.Equal(t, StateFromRecord(shell.State), StateFromRecord(recovered.State))
+	recoveredImage, err := store.Get(image.ID)
+	require.NoError(t, err)
+	require.Equal(t, "flow", recoveredImage.Image.Backend)
 	records, err := store.List()
 	require.NoError(t, err)
-	require.Equal(t, []string{agent.ID, shell.ID}, []string{records[0].ID, records[1].ID})
+	require.Equal(t, []string{agent.ID, shell.ID, image.ID}, []string{records[0].ID, records[1].ID, records[2].ID})
 }
 
 func TestStoreReplacesAtomicallyAndRejectsInvalidRecords(t *testing.T) {

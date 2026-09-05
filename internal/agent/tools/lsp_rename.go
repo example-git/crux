@@ -81,8 +81,14 @@ func NewRenameTool(
 				for _, path := range affectedFiles {
 					content, err := os.ReadFile(path)
 					if err != nil {
-						slog.Warn("Failed to read file for version tracking", "path", path, "error", err)
-						continue
+						return fantasy.ToolResponse{}, fmt.Errorf("read file before checkpoint: %w", err)
+					}
+					info, err := os.Stat(path)
+					if err != nil {
+						return fantasy.ToolResponse{}, fmt.Errorf("inspect file before checkpoint: %w", err)
+					}
+					if err := checkpointFile(ctx, files, permissions, sessionID, call.ID, path, string(content), true, info.Mode()); err != nil {
+						return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
 					}
 					if _, err := files.CreateVersion(ctx, sessionID, path, string(content)); err != nil {
 						slog.Warn("Failed to create file version", "path", path, "error", err)

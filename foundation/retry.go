@@ -122,52 +122,62 @@ func DefaultRetryOptions() RetryOptions {
 // retryWithExponentialBackoff implements the retry logic with exponential backoff.
 func retryWithExponentialBackoff[T any](ctx context.Context, fn RetryFn[T], options RetryOptions, allErrors []error) (T, error) {
 	var zero T
-	result, err := fn()
-	if err == nil {
-		return result, nil
-	}
-
-	if isAbortError(err) {
-		return zero, err // don't retry when the request was aborted
-	}
-
-	if options.MaxRetries == 0 {
-		return zero, err // don't wrap the error when retries are disabled
-	}
-
-	newErrors := append(allErrors, err)
-	tryNumber := len(newErrors)
-
-	if tryNumber > options.MaxRetries {
-		return zero, &RetryError{newErrors}
-	}
-
-	var providerErr *ProviderError
-	if isRetryableError(err) && tryNumber <= options.MaxRetries {
-		delay := getRetryDelayInMs(err, options.InitialDelayIn)
-		if options.OnRetry != nil {
-			errors.As(err, &providerErr)
-			options.OnRetry(providerErr, delay)
+	errorsSeen := append([]error(nil), allErrors...)
+	delay := options.InitialDelayIn
+	for {
+		result, err := fn()
+		if err == nil {
+			return result, nil
+		}
+		if isAbortError(err) {
+			return zero, err
 		}
 
-		select {
-		case <-time.After(delay):
-			// Continue with retry
-		case <-ctx.Done():
-			return zero, ctx.Err()
+		indefinite := IsIndefinitelyRetryable(err)
+		if options.MaxRetries == 0 {
+			return zero, err
 		}
 
-		newOptions := options
-		newOptions.InitialDelayIn = time.Duration(float64(options.InitialDelayIn) * options.BackoffFactor)
+		errorsSeen = append(errorsSeen, err)
+		tryNumber := len(errorsSeen)
+		if !indefinite && tryNumber > options.MaxRetries {
+			return zero, &RetryError{errorsSeen}
+		}
 
-		return retryWithExponentialBackoff(ctx, fn, newOptions, newErrors)
+		if indefinite || isRetryableError(err) {
+			retryDelay := getRetryDelayInMs(err, delay)
+			var providerErr *ProviderError
+			if options.OnRetry != nil {
+				errors.As(err, &providerErr)
+				options.OnRetry(providerErr, retryDelay)
+			}
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				return zero, ctx.Err()
+			}
+			delay = time.Duration(float64(delay) * options.BackoffFactor)
+			if indefinite {
+				if delay > 30*time.Second {
+					delay = 30 * time.Second
+				}
+				errorsSeen = nil
+			}
+			continue
+		}
+
+		if tryNumber == 1 {
+			return zero, err
+		}
+		return zero, &RetryError{errorsSeen}
 	}
-
-	if tryNumber == 1 {
-		return zero, err // don't wrap the error when a non-retryable error occurs on the first try
-	}
-
-	return zero, &RetryError{newErrors}
 }
 
 // isAuthError reports whether the error is an authentication failure that a

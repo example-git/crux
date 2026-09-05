@@ -61,18 +61,20 @@ func TestEnableDockerMCP(t *testing.T) {
 
 		// Create a temporary directory for config.
 		tmpDir := t.TempDir()
-		configPath := filepath.Join(tmpDir, "crux.json")
+		configDir := filepath.Join(tmpDir, "config")
+		dataDir := filepath.Join(tmpDir, "data")
+		require.NoError(t, os.MkdirAll(configDir, 0o755))
+		require.NoError(t, os.MkdirAll(dataDir, 0o755))
+		t.Setenv("CRUX_GLOBAL_CONFIG", configDir)
+		t.Setenv("CRUX_GLOBAL_DATA", dataDir)
+		resetProviderState()
+		t.Cleanup(resetProviderState)
+		configPath := filepath.Join(dataDir, "crux.json")
+		require.NoError(t, os.WriteFile(configPath, []byte("{}"), 0o600))
+		store, err := Load(tmpDir, tmpDir, false)
+		require.NoError(t, err)
 
-		cfg := &Config{
-			MCP: make(map[string]MCPConfig),
-		}
-		store := &ConfigStore{
-			config:         cfg,
-			globalDataPath: configPath,
-			resolver:       NewShellVariableResolver(env.New()),
-		}
-
-		err := store.EnableDockerMCP()
+		err = store.EnableDockerMCP()
 		require.NoError(t, err)
 
 		// Check in-memory config via the store (copy-on-write publishes

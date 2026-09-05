@@ -11,14 +11,8 @@ import (
 )
 
 // providerArg resolves a provider ID, alias, or registered account namespace.
-func providerArg(name string) (providerregistry.Registration, bool) {
-	registry := config.ProviderCapabilities()
-	if registration, ok := registry.Lookup(name); ok && registration.AccountNamespace != "" {
-		return registration, true
-	}
-	providerID := accounts.ProviderID(name)
-	registration, ok := registry.Lookup(providerID)
-	return registration, ok && registration.AccountNamespace != ""
+func providerArg(cfg *config.Config, name string) (providerregistry.Registration, bool) {
+	return cfg.ProviderRegistrationForAccount(name)
 }
 
 var accountsCmd = &cobra.Command{
@@ -42,14 +36,19 @@ var accountsListCmd = &cobra.Command{
 
 func runAccountsList(cmd *cobra.Command) error {
 	ctx := cmd.Context()
-	providers, err := accounts.Providers(ctx)
+	ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
 	if err != nil {
 		return err
 	}
-	registry := config.ProviderCapabilities()
+	defer cleanup()
+	cfg := ws.Config()
+	providers, err := accounts.ProvidersFor(ctx, cfg.ProviderAccountNamespaces())
+	if err != nil {
+		return err
+	}
 	activeProviders := providers[:0]
 	for _, provider := range providers {
-		if registry.HasAccountNamespace(provider) {
+		if _, ok := cfg.ProviderRegistrationForAccount(provider); ok {
 			activeProviders = append(activeProviders, provider)
 		}
 	}
@@ -94,31 +93,60 @@ var accountsSwitchCmd = &cobra.Command{
 	Short: "Set the active account for a provider",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		registration, ok := providerArg(args[0])
-		if !ok {
-			return fmt.Errorf("unknown provider: %s", args[0])
-		}
 		ctx := cmd.Context()
 		ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
-		if err := accounts.SetActive(ctx, registration.AccountNamespace, args[1]); err != nil {
+		registration, ok := providerArg(ws.Config(), args[0])
+		if !ok {
+			return fmt.Errorf("unknown provider: %s", args[0])
+		}
+		entries, err := accounts.List(ctx, registration.AccountNamespace)
+		if err != nil {
 			return err
 		}
-		entry, err := accounts.Active(ctx, registration.AccountNamespace)
-		if err != nil {
-			return fmt.Errorf("load active account after switch: %w", err)
+		var entry *accounts.Entry
+		for index := range entries {
+			if entries[index].ID == args[1] {
+				entry = &entries[index]
+				break
+			}
 		}
 		if entry == nil {
-			return fmt.Errorf("active account unavailable after switch")
+			return fmt.Errorf("account %q not found for provider %q", args[1], registration.AccountNamespace)
 		}
-		fresh, err := accounts.EnsureFresh(ctx, registration.AccountNamespace, entry)
+		owner := registration.Owner()
+		validate := func() error {
+			current, ok := ws.Config().ProviderOwner(registration.ProviderID)
+			if !ok || current != owner {
+				return fmt.Errorf("provider account owner %s changed", args[0])
+			}
+			return nil
+		}
+		if err := validate(); err != nil {
+			return err
+		}
+		var refresher accounts.Refresher
+		if registration.OAuth != nil {
+			refresher = registration.OAuth.Refresh
+		}
+		fresh, err := accounts.EnsureFreshForOwner(ctx, registration.AccountNamespace, entry, refresher, validate)
 		if err != nil {
 			return err
 		}
-		if err := ws.SetProviderAPIKey(config.ScopeGlobal, registration.ProviderID, fresh.Token()); err != nil {
+		if err := validate(); err != nil {
+			return err
+		}
+		credential := config.ProviderOAuthCredential{Owner: owner, Token: fresh.Token()}
+		if err := ws.SetProviderAPIKey(config.ScopeGlobal, registration.ProviderID, credential); err != nil {
+			return err
+		}
+		if err := validate(); err != nil {
+			return err
+		}
+		if err := accounts.SetActiveForOwner(ctx, registration.AccountNamespace, args[1], validate); err != nil {
 			return err
 		}
 		fmt.Printf("Active %s account is now %s.\n", registration.Name, args[1])
@@ -131,11 +159,24 @@ var accountsRemoveCmd = &cobra.Command{
 	Short: "Remove a stored account",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		registration, ok := providerArg(args[0])
+		ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		registration, ok := providerArg(ws.Config(), args[0])
 		if !ok {
 			return fmt.Errorf("unknown provider: %s", args[0])
 		}
-		if err := accounts.Remove(cmd.Context(), registration.AccountNamespace, args[1]); err != nil {
+		owner := registration.Owner()
+		validate := func() error {
+			current, active := ws.Config().ProviderOwner(registration.ProviderID)
+			if !active || current != owner {
+				return fmt.Errorf("provider account owner %s changed before account removal", args[0])
+			}
+			return nil
+		}
+		if err := accounts.RemoveForOwner(cmd.Context(), registration.AccountNamespace, args[1], validate); err != nil {
 			return err
 		}
 		fmt.Printf("Removed %s account %s.\n", registration.Name, args[1])

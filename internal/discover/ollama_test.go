@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,7 +46,7 @@ func TestOllamaEnricher(t *testing.T) {
 		// Base URL includes /v1 (as Crux configures it); the enricher
 		// strips it so /api/show resolves at the server root.
 		cfg := Config{ID: "test-ollama", BaseURL: srv.URL + "/v1"}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "llama3:latest", Name: "llama3:latest"},
 			{ID: "qwen2:latest", Name: "qwen2:latest"},
 			{ID: "unknown:latest", Name: "unknown:latest"},
@@ -74,7 +74,7 @@ func TestOllamaEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-ollama", BaseURL: srv.URL}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "llama3:latest", ContextWindow: 16384},
 		}
 
@@ -95,7 +95,7 @@ func TestOllamaEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-ollama", BaseURL: srv.URL}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "m1", ContextWindow: 4096},
 			{ID: "m2", ContextWindow: 8192},
 		}

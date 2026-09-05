@@ -63,9 +63,12 @@ func activityStatusLabel(status proto.CodebaseIndexStatus) string {
 	switch status.State {
 	case "indexing":
 		label := "indexing"
+		if status.Serving {
+			label = "index ready, refreshing"
+		}
 		switch {
 		case status.FilesTotal > 0:
-			label = fmt.Sprintf("indexing %d/%d", status.FilesProcessed, status.FilesTotal)
+			label = fmt.Sprintf("%s %d/%d", label, status.FilesProcessed, status.FilesTotal)
 		case status.Stage != "":
 			label += " " + status.Stage
 		}

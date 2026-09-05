@@ -157,11 +157,13 @@ tasks:
       - go run main.go schema > schema.json
       - go run main.go schema provider-plugin > provider-plugin.schema.json
       - go run main.go schema provider-preset-plugin > provider-preset-plugin.schema.json
-      - echo "Generated schema.json, provider-plugin.schema.json, and provider-preset-plugin.schema.json"
+      - go run main.go schema image-provider-plugin > image-provider-plugin.schema.json
+      - echo "Generated schema.json, provider-plugin.schema.json, provider-preset-plugin.schema.json, and image-provider-plugin.schema.json"
     generates:
       - schema.json
       - provider-plugin.schema.json
       - provider-preset-plugin.schema.json
+      - image-provider-plugin.schema.json
 
   release:
     desc: Create and push an annotated semantic-version tag

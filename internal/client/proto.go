@@ -56,6 +56,11 @@ func (c *Client) ListWorkspaces(ctx context.Context) ([]proto.Workspace, error) 
 	if err := json.NewDecoder(rsp.Body).Decode(&workspaces); err != nil {
 		return nil, fmt.Errorf("failed to decode workspaces: %w", err)
 	}
+	for i := range workspaces {
+		if err := bindWorkspaceProviderOwners(&workspaces[i]); err != nil {
+			return nil, fmt.Errorf("failed to bind workspace provider owners: %w", err)
+		}
+	}
 	return workspaces, nil
 }
 
@@ -82,6 +87,9 @@ func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*prot
 	if err := json.NewDecoder(rsp.Body).Decode(&created); err != nil {
 		return nil, fmt.Errorf("failed to decode workspace: %w", err)
 	}
+	if err := bindWorkspaceProviderOwners(&created); err != nil {
+		return nil, fmt.Errorf("failed to bind workspace provider owners: %w", err)
+	}
 	return &created, nil
 }
 
@@ -99,7 +107,17 @@ func (c *Client) GetWorkspace(ctx context.Context, id string) (*proto.Workspace,
 	if err := json.NewDecoder(rsp.Body).Decode(&ws); err != nil {
 		return nil, fmt.Errorf("failed to decode workspace: %w", err)
 	}
+	if err := bindWorkspaceProviderOwners(&ws); err != nil {
+		return nil, fmt.Errorf("failed to bind workspace provider owners: %w", err)
+	}
 	return &ws, nil
+}
+
+func bindWorkspaceProviderOwners(workspace *proto.Workspace) error {
+	if workspace == nil || workspace.Config == nil {
+		return nil
+	}
+	return workspace.Config.BindProviderSurfaceOwners(workspace.ProviderSurfaces)
 }
 
 func (c *Client) OpenWorkspace(ctx context.Context, id string) (*proto.Workspace, error) {
@@ -519,9 +537,30 @@ func (c *Client) GetAgentInfo(ctx context.Context, id string) (*proto.AgentInfo,
 	return &info, nil
 }
 
+func (c *Client) GetAgentInstructions(ctx context.Context, id string) (agent.InstructionSnapshot, error) {
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/agent/instructions", id), nil, nil)
+	if err != nil {
+		return agent.InstructionSnapshot{}, fmt.Errorf("failed to get agent instructions: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return agent.InstructionSnapshot{}, fmt.Errorf("failed to get agent instructions: %w", err)
+	}
+	var snapshot agent.InstructionSnapshot
+	if err := json.NewDecoder(rsp.Body).Decode(&snapshot); err != nil {
+		return agent.InstructionSnapshot{}, fmt.Errorf("failed to decode agent instructions: %w", err)
+	}
+	return snapshot, nil
+}
+
 // UpdateAgent triggers an agent model update on the server.
-func (c *Client) UpdateAgent(ctx context.Context, id string) error {
-	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent/update", id), nil, nil, nil)
+func (c *Client) UpdateAgent(ctx context.Context, id string, expected config.AgentModelState) error {
+	if err := expected.Validate(); err != nil {
+		return fmt.Errorf("failed to update agent: %w", err)
+	}
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent/update", id), nil, jsonBody(proto.AgentUpdateRequest{
+		State: expected,
+	}), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
 		return fmt.Errorf("failed to update agent: %w", err)
 	}
@@ -556,12 +595,17 @@ func (c *Client) CreateAgentDefinition(ctx context.Context, id string, request p
 // to distinguish its own turn's terminal event from any concurrent
 // turn on the same session (e.g. interactive TUI usage).
 func (c *Client) SendMessage(ctx context.Context, id string, sessionID, runID, prompt string, attachments ...message.Attachment) error {
+	return c.SendMessageWithPermissionMode(ctx, id, sessionID, runID, prompt, proto.AgentPermissionInteractive, attachments...)
+}
+
+func (c *Client) SendMessageWithPermissionMode(ctx context.Context, id string, sessionID, runID, prompt string, permissionMode proto.AgentPermissionMode, attachments ...message.Attachment) error {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent", id), nil, jsonBody(proto.AgentMessage{
-		SessionID:    sessionID,
-		SubmissionID: agent.SubmissionIDFromContext(ctx),
-		RunID:        runID,
-		Prompt:       prompt,
-		Attachments:  proto.AttachmentsFromMessage(attachments),
+		SessionID:      sessionID,
+		SubmissionID:   agent.SubmissionIDFromContext(ctx),
+		RunID:          runID,
+		Prompt:         prompt,
+		Attachments:    proto.AttachmentsFromMessage(attachments),
+		PermissionMode: permissionMode,
 	}), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
 		return fmt.Errorf("failed to send message to agent: %w", err)
@@ -640,9 +684,9 @@ func (c *Client) AgentSummarizeSession(ctx context.Context, id string, sessionID
 }
 
 // SessionRewind rewinds a session to a given message, optionally
-// summarizing the conversation first.
-func (c *Client) SessionRewind(ctx context.Context, id, sessionID, messageID string, summarize bool) error {
-	body := jsonBody(map[string]any{"message_id": messageID, "summarize": summarize})
+// summarizing first and restoring file snapshots.
+func (c *Client) SessionRewind(ctx context.Context, id, sessionID, messageID string, summarize, restoreFiles bool) error {
+	body := jsonBody(map[string]any{"message_id": messageID, "summarize": summarize, "restore_files": restoreFiles})
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/rewind", id, sessionID), nil, body, http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
 		return fmt.Errorf("failed to rewind session: %w", err)
@@ -771,6 +815,23 @@ func (c *Client) CreateSession(ctx context.Context, id string, title string) (*p
 	var sess proto.Session
 	if err := json.NewDecoder(rsp.Body).Decode(&sess); err != nil {
 		return nil, fmt.Errorf("failed to decode session: %w", err)
+	}
+	return &sess, nil
+}
+
+// ForkSession creates a persisted copy of a session and its messages.
+func (c *Client) ForkSession(ctx context.Context, id, sessionID string) (*proto.Session, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/fork", id, sessionID), nil, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fork session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to fork session: status code %d", rsp.StatusCode)
+	}
+	var sess proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&sess); err != nil {
+		return nil, fmt.Errorf("failed to decode forked session: %w", err)
 	}
 	return &sess, nil
 }

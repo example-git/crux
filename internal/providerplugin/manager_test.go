@@ -54,6 +54,37 @@ func TestManagerInstallTrustAndDigestChange(t *testing.T) {
 	require.NotEqual(t, status.Digest, snapshot.Plugins[0].Digest)
 }
 
+func TestManagerExplicitlyTrustedModifiedMigratedPresetRemainsQuarantined(t *testing.T) {
+	manager := newTestManager(t)
+	data, err := os.ReadFile(filepath.Join(generatedPresetRoot(t), "deepseek.plugin", manifestFilename))
+	require.NoError(t, err)
+	var value map[string]any
+	require.NoError(t, json.Unmarshal(data, &value))
+	value["description"] = "Locally modified canonical preset"
+	data, err = json.MarshalIndent(value, "", "  ")
+	require.NoError(t, err)
+	source := filepath.Join(t.TempDir(), "deepseek.plugin")
+	require.NoError(t, os.MkdirAll(source, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(source, manifestFilename), append(data, '\n'), 0o600))
+
+	snapshot, err := manager.Install(t.Context(), InstallRequest{
+		Source: source, Trust: true, ExpectedRevision: manager.Snapshot().Revision,
+	})
+	require.NoError(t, err)
+	require.Len(t, snapshot.Plugins, 1)
+	require.Equal(t, TrustTrusted, snapshot.Plugins[0].Trust)
+	require.Equal(t, StateQuarantined, snapshot.Plugins[0].State)
+	require.Contains(t, diagnosticCodes(snapshot.Plugins[0]), "migrated-preset-canonical-mismatch")
+	require.Empty(t, manager.RegisteredPresetBundles())
+	require.Empty(t, manager.CatalogPresets())
+
+	snapshot, err = manager.Rescan(t.Context(), snapshot.Revision)
+	require.NoError(t, err)
+	require.Equal(t, TrustTrusted, snapshot.Plugins[0].Trust)
+	require.Equal(t, StateQuarantined, snapshot.Plugins[0].State)
+	require.Contains(t, diagnosticCodes(snapshot.Plugins[0]), "migrated-preset-canonical-mismatch")
+}
+
 func TestManagerExplicitInstallTrustsOnlyCommittedDigest(t *testing.T) {
 	manager := newTestManager(t)
 	source := filepath.Join(t.TempDir(), "minimal.plugin")
@@ -143,6 +174,46 @@ func TestManagerQuarantinesDuplicateProviderClaims(t *testing.T) {
 		require.Equal(t, StateQuarantined, status.State)
 		require.Contains(t, diagnosticCodes(status), "duplicate-provider-id")
 	}
+}
+
+func TestManagerProtectsCanonicalMigratedPresetFromDuplicateProviderClaims(t *testing.T) {
+	manager := newTestManager(t)
+	snapshot, err := manager.Install(t.Context(), InstallRequest{
+		Source:           filepath.Join(generatedPresetRoot(t), "deepseek.plugin"),
+		Trust:            true,
+		ExpectedRevision: manager.Snapshot().Revision,
+	})
+	require.NoError(t, err)
+
+	claim := readExampleManifest(t)
+	claim.ID = "full-deepseek"
+	claim.Name = "Full DeepSeek Claim"
+	claim.Provider.ID = "deepseek"
+	claim.Provider.Name = "Full DeepSeek Claim"
+	source := filepath.Join(t.TempDir(), claim.ID+bundleSuffix)
+	writeBundleManifest(t, source, claim)
+	snapshot, err = manager.Install(t.Context(), InstallRequest{
+		Source:           source,
+		Trust:            true,
+		ExpectedRevision: snapshot.Revision,
+	})
+	require.NoError(t, err)
+	require.Len(t, snapshot.Plugins, 2)
+
+	for _, status := range snapshot.Plugins {
+		switch status.ID {
+		case "crux.catwalk.deepseek":
+			require.Equal(t, StateRegistered, status.State)
+			require.NotContains(t, diagnosticCodes(status), "duplicate-provider-id")
+		case claim.ID:
+			require.Equal(t, StateQuarantined, status.State)
+			require.Contains(t, diagnosticCodes(status), "migrated-provider-plugin-conflict")
+		default:
+			t.Fatalf("unexpected plugin status %q", status.ID)
+		}
+	}
+	require.Len(t, manager.RegisteredPresetBundles(), 1)
+	require.Empty(t, manager.RegisteredBundles())
 }
 
 func TestManagerQuarantinesDuplicatePluginIDs(t *testing.T) {

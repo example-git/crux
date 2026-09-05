@@ -138,6 +138,15 @@ func NewWriteTool(
 				return resp, nil
 			}
 
+			exists := fileInfo != nil && !fileInfo.IsDir()
+			mode := os.FileMode(0)
+			if exists {
+				mode = fileInfo.Mode()
+			}
+			if err := checkpointFile(ctx, files, permissions, sessionID, call.ID, filePath, oldContent, exists, mode); err != nil {
+				return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
+			}
+
 			if err = os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error creating directory: %w", err)
 			}

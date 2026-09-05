@@ -43,9 +43,11 @@ import (
 type ClientWorkspace struct {
 	client *client.Client
 
-	mu     sync.RWMutex
-	ws     proto.Workspace
-	skills *skills.Manager
+	mu              sync.RWMutex
+	refreshSequence atomic.Uint64
+	appliedRefresh  uint64
+	ws              proto.Workspace
+	skills          *skills.Manager
 	// lastSession is the most recent session ID reported via
 	// SetCurrentSession. The subscription loop re-asserts it after a
 	// reconnect, because the server's per-client presence entry (or the
@@ -106,7 +108,9 @@ func NewClientWorkspace(c *client.Client, ws proto.Workspace) *ClientWorkspace {
 // refreshWorkspace re-fetches the workspace from the server, updating
 // the cached snapshot. Called after config-mutating operations.
 func (w *ClientWorkspace) refreshWorkspace() {
-	updated, err := w.client.GetWorkspace(context.Background(), w.workspaceID())
+	workspaceID := w.workspaceID()
+	sequence := w.refreshSequence.Add(1)
+	updated, err := w.client.GetWorkspace(context.Background(), workspaceID)
 	if err != nil {
 		slog.Error("Failed to refresh workspace", "error", err)
 		return
@@ -115,7 +119,10 @@ func (w *ClientWorkspace) refreshWorkspace() {
 		updated.Config.SetupAgents()
 	}
 	w.mu.Lock()
-	w.ws = *updated
+	if w.ws.ID == workspaceID && sequence >= w.appliedRefresh {
+		w.appliedRefresh = sequence
+		w.ws = *updated
+	}
 	w.mu.Unlock()
 }
 
@@ -271,9 +278,13 @@ func (w *ClientWorkspace) AgentModel() AgentModel {
 		return AgentModel{}
 	}
 	return AgentModel{
-		CatwalkCfg: info.Model,
-		ModelCfg:   info.ModelCfg,
+		CatalogModel: info.Model,
+		ModelCfg:     info.ModelCfg,
 	}
+}
+
+func (w *ClientWorkspace) AgentInstructionSnapshot(ctx context.Context) (agent.InstructionSnapshot, error) {
+	return w.client.GetAgentInstructions(ctx, w.workspaceID())
 }
 
 func (w *ClientWorkspace) AgentIsReady() bool {
@@ -336,16 +347,16 @@ func (w *ClientWorkspace) AgentSummarize(ctx context.Context, sessionID string) 
 	return w.client.AgentSummarizeSession(ctx, w.workspaceID(), sessionID)
 }
 
-func (w *ClientWorkspace) SessionRewind(ctx context.Context, sessionID, messageID string, summarize bool) error {
-	return w.client.SessionRewind(ctx, w.workspaceID(), sessionID, messageID, summarize)
+func (w *ClientWorkspace) SessionRewind(ctx context.Context, sessionID, messageID string, summarize, restoreFiles bool) error {
+	return w.client.SessionRewind(ctx, w.workspaceID(), sessionID, messageID, summarize, restoreFiles)
 }
 
 func (w *ClientWorkspace) AgentSuggestPrompt(ctx context.Context, sessionID string) (string, error) {
 	return w.client.AgentSuggestPrompt(ctx, w.workspaceID(), sessionID)
 }
 
-func (w *ClientWorkspace) UpdateAgentModel(ctx context.Context) error {
-	return w.client.UpdateAgent(ctx, w.workspaceID())
+func (w *ClientWorkspace) UpdateAgentModel(ctx context.Context, expected config.AgentModelState) error {
+	return w.client.UpdateAgent(ctx, w.workspaceID(), expected)
 }
 
 func (w *ClientWorkspace) CreateAgentDefinition(ctx context.Context, request proto.CreateAgentDefinitionRequest) (string, error) {
@@ -360,12 +371,12 @@ func (w *ClientWorkspace) InitCoderAgentNonInteractive(ctx context.Context) erro
 	return w.client.InitiateAgentProcessing(ctx, w.workspaceID(), false)
 }
 
-func (w *ClientWorkspace) GetDefaultSmallModel(providerID string) config.SelectedModel {
+func (w *ClientWorkspace) GetDefaultSmallModel(providerID string) (config.SelectedModel, error) {
 	model, err := w.client.GetDefaultSmallModel(context.Background(), w.workspaceID(), providerID)
 	if err != nil {
-		return config.SelectedModel{}
+		return config.SelectedModel{}, err
 	}
-	return *model
+	return *model, nil
 }
 
 // -- Tasks --
@@ -596,8 +607,16 @@ func (w *ClientWorkspace) Resolver() config.VariableResolver {
 
 // -- Config mutations --
 
-func (w *ClientWorkspace) UpdatePreferredModel(scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel) error {
-	err := w.client.UpdatePreferredModel(context.Background(), w.workspaceID(), scope, modelType, model)
+func (w *ClientWorkspace) UpdatePreferredModel(scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel, owner providerregistry.RegistrationOwner) (config.AgentModelState, error) {
+	state, err := w.client.UpdatePreferredModel(context.Background(), w.workspaceID(), scope, modelType, model, owner)
+	if err == nil {
+		w.refreshWorkspace()
+	}
+	return state, err
+}
+
+func (w *ClientWorkspace) SetProviderDisabled(scope config.Scope, owner providerregistry.RegistrationOwner, disabled bool) error {
+	err := w.client.SetProviderDisabled(context.Background(), w.workspaceID(), scope, owner, disabled)
 	if err == nil {
 		w.refreshWorkspace()
 	}
@@ -614,6 +633,14 @@ func (w *ClientWorkspace) SetCompactMode(scope config.Scope, enabled bool) error
 
 func (w *ClientWorkspace) SetProviderAPIKey(scope config.Scope, providerID string, apiKey any) error {
 	err := w.client.SetProviderAPIKey(context.Background(), w.workspaceID(), scope, providerID, apiKey)
+	if err == nil {
+		w.refreshWorkspace()
+	}
+	return err
+}
+
+func (w *ClientWorkspace) RemoveProviderCredentials(scope config.Scope, owner providerregistry.RegistrationOwner) error {
+	err := w.client.RemoveProviderCredentials(context.Background(), w.workspaceID(), scope, owner)
 	if err == nil {
 		w.refreshWorkspace()
 	}
@@ -647,8 +674,8 @@ func (w *ClientWorkspace) ImportCopilot() (*oauth.Token, bool) {
 	return token, ok
 }
 
-func (w *ClientWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Scope, providerID string) error {
-	err := w.client.RefreshOAuthToken(ctx, w.workspaceID(), scope, providerID)
+func (w *ClientWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Scope, owner providerregistry.RegistrationOwner) error {
+	err := w.client.RefreshOAuthToken(ctx, w.workspaceID(), scope, owner)
 	if err == nil {
 		w.refreshWorkspace()
 	}
@@ -1012,8 +1039,10 @@ func (w *ClientWorkspace) recoverWorkspace() error {
 	if created.Config != nil {
 		created.Config.SetupAgents()
 	}
+	sequence := w.refreshSequence.Add(1)
 	w.mu.Lock()
 	oldID := w.ws.ID
+	w.appliedRefresh = sequence
 	w.ws = *created
 	w.mu.Unlock()
 	slog.Info("Re-registered workspace after server-side loss",
@@ -1247,6 +1276,10 @@ func (w *ClientWorkspace) translateEvent(ev any) tea.Msg {
 			SessionTitle: e.Payload.SessionTitle,
 			RunID:        e.Payload.RunID,
 			Type:         notify.Type(e.Payload.Type),
+			ProviderID:   e.Payload.ProviderID,
+		}
+		if e.Payload.Owner != nil {
+			n.Owner = *e.Payload.Owner
 		}
 		if e.Payload.Error != nil {
 			n.Message = e.Payload.Error.Error()
@@ -1321,6 +1354,7 @@ func protoToSession(s proto.Session) session.Session {
 		MessageCount:     s.MessageCount,
 		PromptTokens:     s.PromptTokens,
 		CompletionTokens: s.CompletionTokens,
+		EstimatedUsage:   s.EstimatedUsage,
 		Cost:             s.Cost,
 		Todos:            protoToTodos(s.Todos),
 		Mode:             session.Mode(s.Mode),
@@ -1351,6 +1385,7 @@ func protoToFile(f proto.File) history.File {
 		SessionID: f.SessionID,
 		Path:      f.Path,
 		Content:   f.Content,
+		Exists:    f.Exists,
 		Version:   f.Version,
 		CreatedAt: f.CreatedAt,
 		UpdatedAt: f.UpdatedAt,
@@ -1425,6 +1460,8 @@ func protoToMessage(m proto.Message) message.Message {
 			msg.Parts = append(msg.Parts, message.ProviderMetadataContent{
 				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
+		case proto.RetryingContent:
+			msg.Parts = append(msg.Parts, message.RetryingContent{})
 		}
 	}
 
@@ -1456,6 +1493,7 @@ func sessionToProto(s session.Session) proto.Session {
 		MessageCount:     s.MessageCount,
 		PromptTokens:     s.PromptTokens,
 		CompletionTokens: s.CompletionTokens,
+		EstimatedUsage:   s.EstimatedUsage,
 		Cost:             s.Cost,
 		Todos:            todosToProto(s.Todos),
 		Mode:             string(s.Mode),

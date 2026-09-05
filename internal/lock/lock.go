@@ -53,6 +53,24 @@ func File(ctx context.Context, path string) (func(), error) {
 	}, nil
 }
 
+func SharedFile(ctx context.Context, path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open lock file %q: %w", path, err)
+	}
+
+	release, err := lockFileShared(ctx, f)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+
+	return func() {
+		release()
+		f.Close()
+	}, nil
+}
+
 // TryFile is like File but returns ErrContended immediately if the lock
 // is already held by another process. Use this when you want to fail
 // fast rather than wait.

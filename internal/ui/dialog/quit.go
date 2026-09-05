@@ -13,9 +13,11 @@ const QuitID = "quit"
 
 // Quit represents a confirmation dialog for quitting the application.
 type Quit struct {
-	com        *common.Common
-	selectedNo bool // true if "No" button is selected
-	keyMap     struct {
+	com              *common.Common
+	selectedNo       bool // true if "No" button is selected
+	hoveredButton    int
+	buttonCompositor *lipgloss.Compositor
+	keyMap           struct {
 		LeftRight,
 		EnterSpace,
 		Yes,
@@ -81,6 +83,20 @@ func (q *Quit) HandleMsg(msg tea.Msg) Action {
 		case key.Matches(msg, q.keyMap.No, q.keyMap.Close):
 			return ActionClose{}
 		}
+	case tea.MouseClickMsg:
+		if msg.Button != uv.MouseLeft {
+			return nil
+		}
+		switch common.HitButtonIndex(q.buttonCompositor, msg.X, msg.Y) {
+		case 0:
+			q.selectedNo = false
+			return ActionQuit{}
+		case 1:
+			q.selectedNo = true
+			return ActionClose{}
+		}
+	case tea.MouseMotionMsg:
+		q.hoveredButton = common.HitButtonIndex(q.buttonCompositor, msg.X, msg.Y) + 1
 	}
 
 	return nil
@@ -98,8 +114,8 @@ func (q *Quit) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		hintStyle = q.com.Styles.Dialog.Quit.Hint
 	)
 	buttonOpts := []common.ButtonOpts{
-		{Text: "Yep!", Selected: !q.selectedNo, Padding: 3},
-		{Text: "Nope", Selected: q.selectedNo, Padding: 3},
+		{Text: "Yep!", Selected: !q.selectedNo, Hovered: q.hoveredButton == 1, Padding: 3},
+		{Text: "Nope", Selected: q.selectedNo, Hovered: q.hoveredButton == 2, Padding: 3},
 	}
 	buttons := common.ButtonGroup(q.com.Styles, buttonOpts, " ")
 	content := baseStyle.Render(
@@ -120,6 +136,9 @@ func (q *Quit) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		frameStyle = frameStyle.Padding(1, 0)
 	}
 	view := frameStyle.Render(content)
+	viewWidth, viewHeight := lipgloss.Size(view)
+	center := common.CenterRect(area, min(viewWidth, area.Dx()), min(viewHeight, area.Dy()))
+	q.buttonCompositor = common.ButtonHitCompositorForView(q.com.Styles, buttonOpts, view, center.Min.X, center.Min.Y)
 	DrawCenter(scr, area, view)
 	return nil
 }

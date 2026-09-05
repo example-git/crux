@@ -118,6 +118,14 @@ func TestRemoteWorkspacePathsAreRejectedBeforeBackendAccess(t *testing.T) {
 	require.Empty(t, server.backend.ListWorkspaces())
 }
 
+func TestHTTPServerUsesBoundedHeaderAndIdleTimeouts(t *testing.T) {
+	server := NewServer(nil, "tcp", "127.0.0.1:9090")
+	require.Positive(t, server.h.ReadHeaderTimeout)
+	require.Positive(t, server.h.IdleTimeout)
+	require.Positive(t, server.h.MaxHeaderBytes)
+	require.Zero(t, server.h.WriteTimeout)
+}
+
 func TestRemoteManagementRequiresAuthenticatedTLS(t *testing.T) {
 	server := NewServer(nil, "tcp", "0.0.0.0:9090")
 	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/browser", nil)

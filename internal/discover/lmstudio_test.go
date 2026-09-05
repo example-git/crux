@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -41,7 +41,7 @@ func TestLmstudioEnricher(t *testing.T) {
 		// Base URL includes /v1 (as Crux configures it); the enricher
 		// strips it so the native endpoint resolves at the server root.
 		cfg := Config{ID: "test-lmstudio", BaseURL: srv.URL + "/v1"}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "qwen2.5-7b-instruct", Name: "qwen2.5-7b-instruct"},
 			{ID: "llama-3.1-8b", Name: "llama-3.1-8b"},
 			{ID: "unknown-model", Name: "unknown-model"},
@@ -78,7 +78,7 @@ func TestLmstudioEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-lmstudio", BaseURL: srv.URL}
-		models := []catwalk.Model{{ID: "m1", Name: "m1"}}
+		models := []catalog.Model{{ID: "m1", Name: "m1"}}
 
 		e := &lmstudioEnricher{}
 		result, err := e.EnrichModels(context.Background(), cfg, &mockResolver{}, models)
@@ -103,7 +103,7 @@ func TestLmstudioEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-lmstudio", BaseURL: srv.URL}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "m1", Name: "My Custom Name", ContextWindow: 65536},
 		}
 
@@ -122,7 +122,7 @@ func TestLmstudioEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-lmstudio", BaseURL: srv.URL}
-		models := []catwalk.Model{{ID: "m1"}}
+		models := []catalog.Model{{ID: "m1"}}
 
 		e := &lmstudioEnricher{}
 		result, err := e.EnrichModels(context.Background(), cfg, &mockResolver{}, models)
@@ -144,7 +144,7 @@ func TestLmstudioEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-lmstudio", BaseURL: srv.URL}
-		models := []catwalk.Model{{ID: "m1", Name: "User Name"}}
+		models := []catalog.Model{{ID: "m1", Name: "User Name"}}
 
 		e := &lmstudioEnricher{}
 		result, err := e.EnrichModels(context.Background(), cfg, &mockResolver{}, models)
@@ -181,7 +181,7 @@ func TestLmstudioEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-lmstudio", BaseURL: srv.URL}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "vision-model", Name: "vision-model"},
 			{ID: "text-only-model", Name: "text-only-model"},
 			{ID: "no-capabilities", Name: "no-capabilities"},

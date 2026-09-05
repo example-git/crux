@@ -1,48 +1,56 @@
-Summarize this conversation to preserve context for continuing work later.
+CRITICAL: Respond with text only. Do not call tools.
 
-**Critical**: This summary will be the ONLY context available when the conversation resumes. Assume all previous messages will be lost. Be thorough.
+Create a precise, detailed continuation summary of the conversation. Preserve the information needed to continue the work without rereading earlier messages.
 
-**Required sections**:
+Before the final summary, use an <analysis> block as a private drafting area to check chronology, completeness, and technical accuracy. Then put the final handoff in a <summary> block. The drafting block will be removed before the summary is saved.
 
-## Current State
+While preparing the summary:
 
-- What task is being worked on (exact user request)
-- Current progress and what's been completed
-- What's being worked on right now (incomplete work)
-- What remains to be done (specific next steps, not vague)
+1. Analyze the conversation chronologically.
+2. Identify every explicit user request and every correction or change of direction.
+3. Treat the newest explicit user direction as authoritative when it conflicts with older work.
+4. Do not reactivate completed, superseded, or interrupted tasks as the current objective.
+5. Distinguish completed work, unfinished work, hypotheses, and directly verified evidence.
+6. Preserve exact file paths, symbols, commands, errors, validation results, and important code snippets when they are needed to continue.
+7. Pay special attention to the most recent user and assistant messages and the exact point where work stopped.
 
-## Files & Changes
+The <summary> block must contain these sections:
 
-- Files that were modified (with brief description of changes)
-- Files that were read/analyzed (why they're relevant)
-- Key files not yet touched but will need changes
-- File paths and line numbers for important code locations
+1. Primary Request and Intent
+   - State the user's current request and intended observable outcome.
+   - Include direct quotes from the newest messages that establish the current task.
 
-## Technical Context
+2. Key Technical Concepts
+   - List the important technologies, components, APIs, and constraints.
 
-- Architecture decisions made and why
-- Patterns being followed (with examples)
-- Libraries/frameworks being used
-- Commands that worked (exact commands with context)
-- Commands that failed (what was tried and why it didn't work)
-- Environment details (language versions, dependencies, etc.)
+3. Files and Code Sections
+   - List files examined, changed, or still needing work.
+   - Explain why each file matters and include essential code details.
 
-## Strategy & Approach
+4. Errors and Fixes
+   - Record errors, failed approaches, user corrections, and how they were addressed.
 
-- Overall approach being taken
-- Why this approach was chosen over alternatives
-- Key insights or gotchas discovered
-- Assumptions made
-- Any blockers or risks identified
+5. Problem Solving and Evidence
+   - Separate confirmed findings from unresolved hypotheses.
+   - Record the evidence that supports each important conclusion.
 
-## Exact Next Steps
+6. All User Messages
+   - List every user message that is not a tool result.
+   - Preserve wording when it communicates feedback, urgency, or changed intent.
 
-Be specific. Don't write "implement authentication" - write:
+7. Completed Work
+   - State what is actually complete and how it was verified.
 
-1. Add JWT middleware to src/middleware/auth.js:15
-2. Update login handler in src/routes/user.js:45 to return token
-3. Test with: npm test -- auth.test.js
+8. Pending Tasks
+   - List only unfinished tasks that still follow from the newest user direction.
+   - Mark older tasks as superseded instead of presenting them as current work.
 
-**Tone**: Write as a handoff document for the next session. Include everything needed to continue without re-reading the original conversation. No emojis ever.
+9. Current Work and Exact Cutoff
+   - Describe precisely what was being done immediately before compaction.
+   - Identify the last completed action and the next uncompleted action.
 
-**Length**: No limit. Err on the side of too much detail rather than too little. Critical context is worth the tokens.
+10. Next Step
+    - Give the single next action that directly continues the newest request.
+    - Include direct quotes from the latest conversation that prevent intent drift.
+
+Return exactly one <analysis> block followed by exactly one <summary> block. Do not call tools. Do not add text outside those blocks.

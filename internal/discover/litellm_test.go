@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,7 +48,7 @@ func TestLitellmEnricher(t *testing.T) {
 			BaseURL: srv.URL + "/v1",
 			APIKey:  "test-key",
 		}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "gpt-4o", Name: "gpt-4o"},
 			{ID: "claude-3-opus", Name: "claude-3-opus"},
 			{ID: "unknown-model", Name: "unknown-model"},
@@ -93,7 +93,7 @@ func TestLitellmEnricher(t *testing.T) {
 			ID:      "test-litellm",
 			BaseURL: srv.URL,
 		}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "gpt-4o", Name: "GPT-4o Custom", ContextWindow: 200000, DefaultMaxTokens: 32768},
 		}
 
@@ -118,7 +118,7 @@ func TestLitellmEnricher(t *testing.T) {
 			ID:      "test-litellm",
 			BaseURL: srv.URL,
 		}
-		models := []catwalk.Model{{ID: "m1"}}
+		models := []catalog.Model{{ID: "m1"}}
 
 		e := &litellmEnricher{}
 		result, err := e.EnrichModels(context.Background(), cfg, &mockResolver{}, models)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/stretchr/testify/require"
 )
 
@@ -59,14 +60,33 @@ func newRefreshTestStore(t *testing.T, configPath string, exchange func(ctx cont
 		Name:       "Codex",
 		APIKey:     expired.AccessToken,
 		OAuthToken: expired,
+		Owner: &ProviderOwnerReference{
+			Type:         ProviderOwnerCore,
+			Construction: providerregistry.ConstructionCodex,
+		},
 	})
 
+	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	require.NoError(t, err)
 	return &ConfigStore{
-		config:         &Config{Providers: providers},
-		globalDataPath: configPath,
-		workingDir:     filepath.Dir(configPath),
-		exchangeToken:  exchange,
+		config:           &Config{Providers: providers},
+		globalDataPath:   configPath,
+		workingDir:       filepath.Dir(configPath),
+		exchangeToken:    exchange,
+		providerRegistry: registry,
 	}
+}
+
+func refreshTestOwner(t *testing.T, store *ConfigStore) providerregistry.RegistrationOwner {
+	t.Helper()
+	registration, ok := store.providerRegistry.Lookup("codex")
+	require.True(t, ok)
+	return registration.Owner()
+}
+
+func refreshOAuthTokenForTest(ctx context.Context, store *ConfigStore, scope Scope, owner providerregistry.RegistrationOwner) error {
+	_, err := store.RefreshOAuthTokenForOwner(ctx, scope, owner)
+	return err
 }
 
 // TestRefreshOAuthToken_InProcessSingleFlight verifies that a storm of
@@ -88,6 +108,7 @@ func TestRefreshOAuthToken_InProcessSingleFlight(t *testing.T) {
 			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 		}, nil
 	})
+	owner := refreshTestOwner(t, store)
 
 	const goroutines = 20
 	var wg sync.WaitGroup
@@ -96,7 +117,7 @@ func TestRefreshOAuthToken_InProcessSingleFlight(t *testing.T) {
 	for range goroutines {
 		wg.Go(func() {
 			<-start
-			errs <- store.RefreshOAuthToken(context.Background(), ScopeGlobal, "codex")
+			errs <- refreshOAuthTokenForTest(context.Background(), store, ScopeGlobal, owner)
 		})
 	}
 	close(start)
@@ -153,6 +174,7 @@ func TestRefreshOAuthToken_CrossProcessAdopt(t *testing.T) {
 	// "processes".
 	a := newRefreshTestStore(t, configPath, exchange)
 	b := newRefreshTestStore(t, configPath, exchange)
+	owner := refreshTestOwner(t, a)
 
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -160,7 +182,7 @@ func TestRefreshOAuthToken_CrossProcessAdopt(t *testing.T) {
 	for _, s := range []*ConfigStore{a, b} {
 		wg.Go(func() {
 			<-start
-			errs <- s.RefreshOAuthToken(context.Background(), ScopeGlobal, "codex")
+			errs <- refreshOAuthTokenForTest(context.Background(), s, ScopeGlobal, owner)
 		})
 	}
 	close(start)
@@ -227,6 +249,7 @@ func TestRefreshOAuthToken_StalePeerBorrowsRotatedRefreshToken(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "crux.json")
 	exchange, exchanges, reuse := rotatingExchange("rt3", 4)
 	store := newRefreshTestStore(t, configPath, exchange)
+	owner := refreshTestOwner(t, store)
 
 	// Disk holds the peer's third rotation, whose access token has also
 	// expired. In memory we are still back on the original credential.
@@ -237,7 +260,7 @@ func TestRefreshOAuthToken_StalePeerBorrowsRotatedRefreshToken(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
 	})
 
-	require.NoError(t, store.RefreshOAuthToken(context.Background(), ScopeGlobal, "codex"))
+	require.NoError(t, refreshOAuthTokenForTest(context.Background(), store, ScopeGlobal, owner))
 	require.Equal(t, int64(1), exchanges.Load())
 	require.Equal(t, int64(0), reuse.Load(), "must not present its own revoked refresh token")
 
@@ -257,6 +280,7 @@ func TestRefreshOAuthToken_AdoptsFresherDiskToken(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "crux.json")
 	exchange, exchanges, _ := rotatingExchange("rt9", 10)
 	store := newRefreshTestStore(t, configPath, exchange)
+	owner := refreshTestOwner(t, store)
 
 	writeTokenToDisk(t, configPath, &oauth.Token{
 		AccessToken:  "at9",
@@ -265,7 +289,7 @@ func TestRefreshOAuthToken_AdoptsFresherDiskToken(t *testing.T) {
 		ExpiresAt:    time.Now().Add(time.Hour).Unix(),
 	})
 
-	require.NoError(t, store.RefreshOAuthToken(context.Background(), ScopeGlobal, "codex"))
+	require.NoError(t, refreshOAuthTokenForTest(context.Background(), store, ScopeGlobal, owner))
 	require.Equal(t, int64(0), exchanges.Load(), "a usable peer token needs no exchange")
 
 	pc, ok := store.config.Providers.Get("codex")
@@ -283,6 +307,7 @@ func TestRefreshOAuthToken_IgnoresOlderDiskToken(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "crux.json")
 	exchange, exchanges, reuse := rotatingExchange("rt0", 1)
 	store := newRefreshTestStore(t, configPath, exchange)
+	owner := refreshTestOwner(t, store)
 
 	writeTokenToDisk(t, configPath, &oauth.Token{
 		AccessToken:  "ancient",
@@ -291,11 +316,151 @@ func TestRefreshOAuthToken_IgnoresOlderDiskToken(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-24 * time.Hour).Unix(),
 	})
 
-	require.NoError(t, store.RefreshOAuthToken(context.Background(), ScopeGlobal, "codex"))
+	require.NoError(t, refreshOAuthTokenForTest(context.Background(), store, ScopeGlobal, owner))
 	require.Equal(t, int64(1), exchanges.Load())
 	require.Equal(t, int64(0), reuse.Load())
 
 	pc, ok := store.config.Providers.Get("codex")
 	require.True(t, ok)
 	require.Equal(t, "rt1", pc.OAuthToken.RefreshToken)
+}
+
+func TestRefreshOAuthTokenRejectsMaskedOwnersBeforeDiskAdoption(t *testing.T) {
+	tests := map[string]func(ProviderConfig) ProviderConfig{
+		"preset": func(provider ProviderConfig) ProviderConfig {
+			provider.Preset = &ProviderPresetReference{ID: "preset.owner", Version: "1.0.0"}
+			return provider
+		},
+		"plugin": func(provider ProviderConfig) ProviderConfig {
+			provider.Plugin = &ProviderPluginReference{ID: "plugin.owner", Version: "1.0.0"}
+			return provider
+		},
+	}
+	for name, mask := range tests {
+		t.Run(name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "crux.json")
+			var exchanges atomic.Int64
+			store := newRefreshTestStore(t, configPath, func(context.Context, string, string) (*oauth.Token, error) {
+				exchanges.Add(1)
+				return &oauth.Token{AccessToken: "exchanged", RefreshToken: "exchanged-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
+			})
+			owner := refreshTestOwner(t, store)
+			provider, ok := store.Config().Providers.Get("codex")
+			require.True(t, ok)
+			provider = mask(provider)
+			store.Config().Providers.Set("codex", provider)
+			writeTokenToDisk(t, configPath, &oauth.Token{
+				AccessToken:  "peer-access",
+				RefreshToken: "peer-refresh",
+				ExpiresIn:    3600,
+				ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+			})
+			beforeDisk, err := os.ReadFile(configPath)
+			require.NoError(t, err)
+
+			err = refreshOAuthTokenForTest(context.Background(), store, ScopeGlobal, owner)
+			require.ErrorContains(t, err, "registration owner for provider codex changed")
+			require.Equal(t, int64(0), exchanges.Load())
+			unchanged, ok := store.Config().Providers.Get("codex")
+			require.True(t, ok)
+			require.Equal(t, "at0", unchanged.OAuthToken.AccessToken)
+			afterDisk, err := os.ReadFile(configPath)
+			require.NoError(t, err)
+			require.Equal(t, beforeDisk, afterDisk)
+		})
+	}
+}
+
+func TestRefreshOAuthTokenRejectsOwnerChangeBeforeCommit(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "crux.json")
+	var (
+		store     *ConfigStore
+		exchanges atomic.Int64
+	)
+	store = newRefreshTestStore(t, configPath, func(context.Context, string, string) (*oauth.Token, error) {
+		exchanges.Add(1)
+		next := store.Config().cloneForWrite()
+		provider, ok := next.Providers.Get("codex")
+		require.True(t, ok)
+		provider.Preset = &ProviderPresetReference{ID: "replacement.owner", Version: "1.0.0"}
+		next.Providers.Set("codex", provider)
+		store.setConfig(next)
+		return &oauth.Token{
+			AccessToken:  "new-access",
+			RefreshToken: "new-refresh",
+			ExpiresIn:    3600,
+			ExpiresAt:    time.Now().Add(time.Hour).Unix(),
+		}, nil
+	})
+	owner := refreshTestOwner(t, store)
+	beforeDisk, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+
+	err = refreshOAuthTokenForTest(context.Background(), store, ScopeGlobal, owner)
+	require.ErrorContains(t, err, "OAuth owner for provider codex is not active")
+	require.Equal(t, int64(1), exchanges.Load())
+	provider, ok := store.Config().Providers.Get("codex")
+	require.True(t, ok)
+	require.Equal(t, "at0", provider.OAuthToken.AccessToken)
+	require.Equal(t, "replacement.owner", provider.Preset.ID)
+	afterDisk, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.Equal(t, beforeDisk, afterDisk)
+}
+
+func TestRefreshOAuthTokenRejectsOwnerChangeDuringRotatedTokenRetry(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "crux.json")
+	current := &oauth.Token{AccessToken: "current-access", RefreshToken: "current-refresh", ExpiresAt: time.Now().Add(2 * time.Hour).Unix()}
+	var store *ConfigStore
+	var replacementConfig *Config
+	var peerDisk []byte
+	var refreshTokens []string
+	store = newRefreshTestStore(t, configPath, func(_ context.Context, _ string, refreshToken string) (*oauth.Token, error) {
+		refreshTokens = append(refreshTokens, refreshToken)
+		if len(refreshTokens) == 1 {
+			writeTokenToDisk(t, configPath, &oauth.Token{
+				AccessToken:  "peer-access",
+				RefreshToken: "peer-refresh",
+				ExpiresIn:    3600,
+				ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
+			})
+			var err error
+			peerDisk, err = os.ReadFile(configPath)
+			require.NoError(t, err)
+			return nil, fmt.Errorf("initial exchange failed")
+		}
+
+		registration, ok := store.providerRegistry.Lookup("codex")
+		require.True(t, ok)
+		replacement := registration.Clone()
+		replacement.OAuth.FlowID = "codex-replacement"
+		registry, err := providerregistry.New(replacement)
+		require.NoError(t, err)
+		next := store.Config().cloneForWrite()
+		provider, ok := next.Providers.Get("codex")
+		require.True(t, ok)
+		provider.APIKey = current.AccessToken
+		provider.OAuthToken = current
+		next.Providers.Set("codex", provider)
+		next.bindProviderScan(ProviderScan{Registry: registry})
+		store.writeMu.Lock()
+		store.providerRegistry = registry
+		store.setConfig(next)
+		replacementConfig = next
+		store.writeMu.Unlock()
+		return &oauth.Token{AccessToken: "stale-access", RefreshToken: "stale-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil
+	})
+	owner := refreshTestOwner(t, store)
+
+	err := refreshOAuthTokenForTest(context.Background(), store, ScopeGlobal, owner)
+	require.ErrorContains(t, err, "changed")
+	require.Equal(t, []string{"rt0", "peer-refresh"}, refreshTokens)
+	require.Same(t, replacementConfig, store.Config())
+	provider, ok := store.Config().Providers.Get("codex")
+	require.True(t, ok)
+	require.Equal(t, current.AccessToken, provider.APIKey)
+	require.Equal(t, current, provider.OAuthToken)
+	afterDisk, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.Equal(t, peerDisk, afterDisk)
 }

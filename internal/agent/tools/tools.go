@@ -3,11 +3,17 @@ package tools
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"html/template"
+	"io/fs"
+	"os"
 	"os/exec"
 	"testing"
 
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/permission"
 )
 
 type (
@@ -49,6 +55,50 @@ func GetSessionFromContext(ctx context.Context) string {
 // GetMessageFromContext retrieves the message ID from the context.
 func GetMessageFromContext(ctx context.Context) string {
 	return getContextValue(ctx, MessageIDContextKey, "")
+}
+
+func checkpointFile(ctx context.Context, files history.Service, permissions permission.Service, sessionID, toolCallID, path, content string, exists bool, mode fs.FileMode) error {
+	if files == nil {
+		return nil
+	}
+	if exists {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		content = string(data)
+		mode = info.Mode()
+	}
+	messageID := GetMessageFromContext(ctx)
+	err := files.Checkpoint(ctx, sessionID, messageID, path, content, exists, mode)
+	if !errors.Is(err, history.ErrSnapshotOutsideWorkspace) {
+		return err
+	}
+	if permissions == nil {
+		return fmt.Errorf("request external snapshot permission: permission service is unavailable")
+	}
+	granted, err := permissions.Request(ctx, permission.CreatePermissionRequest{
+		SessionID:               sessionID,
+		ToolCallID:              toolCallID,
+		ToolName:                "snapshot",
+		Action:                  "include",
+		Description:             fmt.Sprintf("Include file outside the working directory in workspace snapshots: %s", path),
+		Path:                    path,
+		Params:                  map[string]any{"path": path},
+		RequireExplicitApproval: true,
+		AllowDetachedPrompt:     true,
+	})
+	if err != nil {
+		return fmt.Errorf("request external snapshot permission: %w", err)
+	}
+	if !granted {
+		return nil
+	}
+	return files.Checkpoint(history.WithExternalSnapshotApproval(ctx), sessionID, messageID, path, content, exists, mode)
 }
 
 // GetSupportsImagesFromContext retrieves whether the model supports images from the context.

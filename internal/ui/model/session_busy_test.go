@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"image"
 	"testing"
 	"time"
 
@@ -13,9 +14,11 @@ import (
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/history"
 	"github.com/example-git/crux/internal/imageattachment"
 	"github.com/example-git/crux/internal/lsp"
 	"github.com/example-git/crux/internal/message"
+	oauthusage "github.com/example-git/crux/internal/oauth/usage"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/question"
@@ -25,6 +28,7 @@ import (
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/completions"
 	"github.com/example-git/crux/internal/ui/dialog"
+	"github.com/example-git/crux/internal/ui/notification"
 	"github.com/example-git/crux/internal/workspace"
 )
 
@@ -131,7 +135,9 @@ func (w *countingWorkspace) WorkingDir() string { return "" }
 
 func (w *countingWorkspace) LSPStart(context.Context, string) {}
 
-func (w *countingWorkspace) Config() *config.Config { return nil }
+func (w *countingWorkspace) Config() *config.Config {
+	return &config.Config{Options: &config.Options{}}
+}
 
 func (w *countingWorkspace) ProviderSurfaces() []providerregistry.Surface { return nil }
 
@@ -221,6 +227,15 @@ func runCmds(m *UI, cmd tea.Cmd) {
 // plainMsg is an arbitrary tea.Msg standing in for keystroke/mouse/tick
 // traffic through Update.
 type plainMsg struct{}
+
+type recordingNotificationBackend struct {
+	notifications []notification.Notification
+}
+
+func (b *recordingNotificationBackend) Send(value notification.Notification) tea.Cmd {
+	b.notifications = append(b.notifications, value)
+	return nil
+}
 
 func TestControlArrowDownFromPopulatedEditorOpensTasksWhenPresent(t *testing.T) {
 	workspace := &countingWorkspace{
@@ -522,6 +537,73 @@ func TestAgentTerminalNotificationsRefreshBusy(t *testing.T) {
 	}
 }
 
+func TestRecoveredTaskNotificationsStayWithOwningSession(t *testing.T) {
+	backend := &recordingNotificationBackend{}
+	model := newBusyUI(&countingWorkspace{ready: true})
+	model.caps.ReportFocusEvents = true
+	model.notifyWindowFocused = false
+	model.notifyBackend = backend
+
+	model.Update(pubsub.Event[managedtask.Notification]{
+		Type: pubsub.CreatedEvent,
+		Payload: managedtask.Notification{
+			ParentSessionID: "other-session",
+			Summary:         "foreign recovered task",
+		},
+	})
+	require.Empty(t, backend.notifications)
+
+	model.Update(pubsub.Event[managedtask.Notification]{
+		Type: pubsub.CreatedEvent,
+		Payload: managedtask.Notification{
+			ParentSessionID: "s1",
+			Summary:         "own recovered task",
+		},
+	})
+	require.Equal(t, []notification.Notification{{
+		Title:   "Background task finished",
+		Message: "own recovered task",
+	}}, backend.notifications)
+}
+
+func TestAgentNotificationsStayWithOwningSession(t *testing.T) {
+	pinTTLs(t)
+
+	backend := &recordingNotificationBackend{}
+	model := newBusyUI(&countingWorkspace{ready: true})
+	warmCaches(model, true)
+	model.caps.ReportFocusEvents = true
+	model.notifyWindowFocused = false
+	model.notifyBackend = backend
+
+	model.Update(pubsub.Event[notify.Notification]{
+		Type: pubsub.CreatedEvent,
+		Payload: notify.Notification{
+			SessionID:    "other-session",
+			SessionTitle: "Other session",
+			Type:         notify.TypeAgentFinished,
+		},
+	})
+	require.Empty(t, backend.notifications)
+	require.False(t, model.busyFetchInFlight)
+	require.False(t, model.promptQueueInFlight)
+
+	model.Update(pubsub.Event[notify.Notification]{
+		Type: pubsub.CreatedEvent,
+		Payload: notify.Notification{
+			SessionID:    "s1",
+			SessionTitle: "Current session",
+			Type:         notify.TypeAgentFinished,
+		},
+	})
+	require.Equal(t, []notification.Notification{{
+		Title:   "Crux is waiting...",
+		Message: "Agent's turn completed in \"Current session\"",
+	}}, backend.notifications)
+	require.True(t, model.busyFetchInFlight)
+	require.True(t, model.promptQueueInFlight)
+}
+
 // TestSessionSwitchRefreshesQueueAndBusy: switching sessions must drop the
 // previous session's queue pill and memoized busy state and fetch the new
 // session's, so esc never offers to clear the wrong queue.
@@ -611,10 +693,42 @@ func TestSendMessageSetsOptimisticBusy(t *testing.T) {
 	warmCaches(m, false)
 
 	require.False(t, m.isAgentBusy())
+	m.sessionFilesFetchGen = 4
+	m.sessionFiles = []SessionFile{{
+		FirstVersion:  history.File{Path: "/workspace/current.go"},
+		LatestVersion: history.File{Path: "/workspace/current.go"},
+		Additions:     1,
+	}}
 	cmd := m.sendMessage("hello") // returned cmds (AgentRun etc.) deliberately not run
 	require.NotNil(t, cmd)
 	require.True(t, m.isAgentBusy(),
 		"sendMessage must optimistically mark the agent busy")
+	require.Len(t, m.sessionFiles, 1, "submission alone must not start a new agent-turn file scope")
+	require.EqualValues(t, 4, m.sessionFilesFetchGen)
+
+	for _, role := range []message.MessageRole{message.Assistant, message.Tool} {
+		_, _ = m.Update(pubsub.Event[message.Message]{
+			Type: pubsub.CreatedEvent,
+			Payload: message.Message{
+				ID:        string(role),
+				SessionID: "s1",
+				Role:      role,
+			},
+		})
+		require.Len(t, m.sessionFiles, 1, "internal agent messages must keep the current file scope")
+		require.EqualValues(t, 4, m.sessionFilesFetchGen)
+	}
+
+	_, _ = m.Update(pubsub.Event[message.Message]{
+		Type: pubsub.CreatedEvent,
+		Payload: message.Message{
+			ID:        "next-user-turn",
+			SessionID: "s1",
+			Role:      message.User,
+		},
+	})
+	require.Empty(t, m.sessionFiles, "the next top-level agent run must start a fresh file scope")
+	require.EqualValues(t, 5, m.sessionFilesFetchGen)
 
 	// esc right after enter: isAgentBusy gates cancelAgent, a single
 	// press cancels immediately.
@@ -661,13 +775,17 @@ func TestCancelAgentRestoresAndClearsQueueFromCachedItems(t *testing.T) {
 }
 
 func TestValidateQueuedPromptAttachmentsEnforcesBounds(t *testing.T) {
-	require.NoError(t, validateQueuedPromptAttachments([]message.Attachment{{Content: make([]byte, imageattachment.MaxSourceBytes)}}))
-	require.Error(t, validateQueuedPromptAttachments(make([]message.Attachment, queuedPromptMaxAttachments+1)))
-	require.Error(t, validateQueuedPromptAttachments([]message.Attachment{{FileName: "large.png", Content: make([]byte, imageattachment.MaxSourceBytes+1)}}))
+	declaredImageLimit := int64(imageattachment.MaxSourceBytes + 1)
+	largeContent := make([]byte, declaredImageLimit)
+
+	require.NoError(t, validateQueuedPromptAttachments([]message.Attachment{{MimeType: "IMAGE/PNG", Content: largeContent}}, declaredImageLimit))
+	require.ErrorContains(t, validateQueuedPromptAttachments([]message.Attachment{{MimeType: "image/png", Content: make([]byte, 1025)}}, 1024), "1024-byte")
+	require.Error(t, validateQueuedPromptAttachments([]message.Attachment{{MimeType: "application/octet-stream", Content: largeContent}}, declaredImageLimit))
+	require.Error(t, validateQueuedPromptAttachments(make([]message.Attachment, queuedPromptMaxAttachments+1), declaredImageLimit))
 	require.Error(t, validateQueuedPromptAttachments([]message.Attachment{
 		{Content: make([]byte, queuedPromptMaxBytes/2+1)},
 		{Content: make([]byte, queuedPromptMaxBytes/2+1)},
-	}))
+	}, declaredImageLimit))
 }
 
 func TestApplyPromptQueueRetainsDraftsBySubmissionID(t *testing.T) {
@@ -1069,6 +1187,79 @@ func TestLSPEventRefreshIsOffThreadAndDeduped(t *testing.T) {
 	require.Equal(t, 2, m.lspDiagnostics["gopls"].Error, "fetched severity counts must land in the cache")
 	require.Equal(t, 3, m.lspErrorCount())
 	require.Equal(t, 2, ws.lspStateCalls, "one fetch plus the queued re-fetch")
+}
+
+func TestLSPStateRefreshRebuildsSidebarCache(t *testing.T) {
+	pinTTLs(t)
+
+	m := newBusyUI(&countingWorkspace{ready: true})
+	m.layout.sidebar = image.Rect(0, 0, 42, 45)
+	m.updateSidebarScrollState()
+	require.NotContains(t, ansi.Strip(m.sidebarContent), "gopls")
+
+	m.lspFetchInFlight = true
+	m.applyLSPStates(lspStatesMsg{
+		states: map[string]workspace.LSPClientInfo{
+			"gopls": {Name: "gopls", State: lsp.StateReady},
+		},
+		diagnostics: map[string]lsp.DiagnosticCounts{"gopls": {}},
+	})
+	require.Contains(t, ansi.Strip(m.sidebarContent), "gopls")
+}
+
+func TestProviderUsageRefreshRebuildsSidebarCacheAndRejectsStaleResults(t *testing.T) {
+	pinTTLs(t)
+
+	m := newBusyUI(&countingWorkspace{ready: true})
+	m.layout.sidebar = image.Rect(0, 0, 42, 45)
+	m.sidebarLogo = "logo"
+	m.usageFetchGen = 2
+	m.updateSidebarScrollState()
+	require.NotContains(t, ansi.Strip(m.sidebarDrawLogo), "5h")
+
+	current := &oauthusage.Usage{ProviderID: "codex", Windows: []oauthusage.Window{{Name: "5h", Percent: 75}}}
+	_, _ = m.Update(usageUpdatedMsg{gen: 2, usage: current})
+	require.Same(t, current, m.providerUsage)
+	require.Contains(t, ansi.Strip(m.sidebarDrawLogo), "5h")
+	require.Contains(t, ansi.Strip(m.sidebarDrawLogo), "█████")
+
+	stale := &oauthusage.Usage{ProviderID: "codex", Windows: []oauthusage.Window{{Name: "stale", Percent: 10}}}
+	_, _ = m.Update(usageUpdatedMsg{gen: 1, usage: stale})
+	require.Same(t, current, m.providerUsage)
+	require.NotContains(t, ansi.Strip(m.sidebarDrawLogo), "stale")
+}
+
+func TestSessionFileRefreshRebuildsSidebarCacheAndRejectsStaleResults(t *testing.T) {
+	pinTTLs(t)
+
+	m := newBusyUI(&countingWorkspace{ready: true})
+	m.layout.sidebar = image.Rect(0, 0, 42, 45)
+	m.updateSidebarScrollState()
+	m.sessionFilesFetchGen = 2
+
+	_, _ = m.Update(sessionFilesUpdatesMsg{
+		sessionID:  "s1",
+		generation: 2,
+		sessionFiles: []SessionFile{{
+			FirstVersion:  history.File{Path: "/workspace/current.go"},
+			LatestVersion: history.File{Path: "/workspace/current.go"},
+			Additions:     3,
+		}},
+	})
+	require.Contains(t, ansi.Strip(m.sidebarContent), "current.go")
+
+	_, _ = m.Update(sessionFilesUpdatesMsg{
+		sessionID:  "s1",
+		generation: 1,
+		sessionFiles: []SessionFile{{
+			FirstVersion:  history.File{Path: "/workspace/stale.go"},
+			LatestVersion: history.File{Path: "/workspace/stale.go"},
+			Additions:     1,
+		}},
+	})
+	sidebar := ansi.Strip(m.sidebarContent)
+	require.Contains(t, sidebar, "current.go")
+	require.NotContains(t, sidebar, "stale.go")
 }
 
 // TestRemoteYoloToggleUpdatesEditorPrompt pins the second fix: when an

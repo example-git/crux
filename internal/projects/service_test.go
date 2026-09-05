@@ -164,3 +164,16 @@ func TestServiceRejectsMalformedProjectFiles(t *testing.T) {
 	_, err = service.List()
 	require.ErrorContains(t, err, "no YAML frontmatter")
 }
+
+func TestServiceListIgnoresNoncanonicalMarkdownFilenames(t *testing.T) {
+	directory := t.TempDir()
+	service := NewServiceAt(directory)
+	_, err := service.Create(testDefinition("valid-project"), t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "valid-project.handoff.md"), []byte("# no frontmatter\n"), 0o600))
+
+	documents, err := service.List()
+	require.NoError(t, err)
+	require.Len(t, documents, 1)
+	require.Equal(t, "valid-project", documents[0].Metadata.Slug)
+}

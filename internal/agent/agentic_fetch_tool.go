@@ -131,7 +131,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 					}
 					tempFile.Close()
 
-					fullPrompt = fmt.Sprintf("%s\n\nThe web page from %s has been saved to: %s\n\nUse the view and grep tools to analyze this file and extract the requested information.", params.Prompt, params.URL, tempFilePath)
+					fullPrompt = fmt.Sprintf("%s\n\nThe web page from %s has been saved to: %s\n\nUse view and Search in content mode to analyze this file and extract the requested information.", params.Prompt, params.URL, tempFilePath)
 				} else {
 					fullPrompt = fmt.Sprintf("%s\n\nWeb page URL: %s\n\n<webpage_content>\n%s\n</webpage_content>", params.Prompt, params.URL, content)
 				}
@@ -149,17 +149,28 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				return fantasy.ToolResponse{}, fmt.Errorf("error creating prompt: %s", err)
 			}
 
-			_, small, err := c.buildAgentModels(ctx, config.Agent{Model: config.SelectedModelTypeLarge}, true)
+			runtimeSnapshot := c.cfg.RuntimeSnapshot()
+			cfg := runtimeSnapshot.Config()
+			_, small, err := c.buildAgentModelsWithSnapshot(ctx, config.Agent{Model: config.SelectedModelTypeLarge}, true, runtimeSnapshot)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error building models: %s", err)
 			}
 
-			systemPrompt, err := promptTemplate.Build(ctx, small.ModelCfg.Provider, small.Model.Model(), c.cfg)
+			roleInstructions, err := promptTemplate.BuildInstructionsWithSnapshot(ctx, small.ModelCfg.Provider, small.Model.Model(), c.cfg, runtimeSnapshot)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error building system prompt: %s", err)
 			}
+			mainPromptTemplate, err := c.currentSubagentPromptTemplate()
+			if err != nil {
+				return fantasy.ToolResponse{}, fmt.Errorf("error building main prompt: %s", err)
+			}
+			mainInstructions, err := mainPromptTemplate.BuildInstructionsWithSnapshot(ctx, small.ModelCfg.Provider, small.Model.Model(), c.cfg, runtimeSnapshot)
+			if err != nil {
+				return fantasy.ToolResponse{}, fmt.Errorf("error building main instructions: %s", err)
+			}
+			instructions := applySubagentInstructions(mainInstructions, true, roleInstructions.String())
 
-			smallProviderCfg, ok := c.cfg.Config().Providers.Get(small.ModelCfg.Provider)
+			smallProviderCfg, ok := cfg.Providers.Get(small.ModelCfg.Provider)
 			if !ok {
 				return fantasy.ToolResponse{}, errors.New("small model provider not configured")
 			}
@@ -169,8 +180,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			fetchTools := []fantasy.AgentTool{
 				webFetchTool,
 				webSearchTool,
-				tools.NewGlobTool(nil, tmpDir, c.cfg.Config().Tools.Glob),
-				tools.NewGrepTool(nil, tmpDir, c.cfg.Config().Tools.Grep),
+				tools.NewSearchTool(nil, tmpDir, c.cfg.Config().Tools.Search),
 				tools.NewSourcegraphTool(client),
 				tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, nil, tmpDir),
 			}
@@ -184,8 +194,10 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				LargeModel:           small, // Use small model for both (fetch doesn't need large)
 				SmallModel:           small,
 				SystemPromptPrefix:   smallProviderCfg.SystemPromptPrefix,
-				SystemPrompt:         systemPrompt,
-				DisableAutoSummarize: c.cfg.Config().Options.DisableAutoSummarize,
+				Instructions:         instructions,
+				RuntimeSnapshot:      runtimeSnapshot,
+				IsSubAgent:           true,
+				DisableAutoSummarize: cfg.Options.DisableAutoSummarize,
 				IsYolo:               c.permissions.SkipRequests(),
 				Sessions:             c.sessions,
 				Messages:             c.messages,

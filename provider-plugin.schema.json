@@ -3,6 +3,50 @@
   "$id": "https://raw.githubusercontent.com/example-git/crux/main/provider-plugin.schema.json",
   "$ref": "#/$defs/Manifest",
   "$defs": {
+    "AnthropicCacheControl": {
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "ephemeral"
+          ]
+        },
+        "ttl": {
+          "type": "string",
+          "enum": [
+            "5m",
+            "1h"
+          ]
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "global"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type"
+      ]
+    },
+    "AnthropicInstructionBlock": {
+      "properties": {
+        "profile": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "cache_control": {
+          "$ref": "#/$defs/AnthropicCacheControl"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "profile"
+      ]
+    },
     "AnthropicPolicy": {
       "properties": {
         "client_identity": {
@@ -55,6 +99,16 @@
           "type": "array",
           "maxItems": 16
         },
+        "system_blocks": {
+          "items": {
+            "$ref": "#/$defs/AnthropicSystemBlock"
+          },
+          "type": "array",
+          "maxItems": 16
+        },
+        "instruction_block": {
+          "$ref": "#/$defs/AnthropicInstructionBlock"
+        },
         "metadata_user_id": {
           "type": "boolean"
         },
@@ -75,6 +129,23 @@
       "required": [
         "max_request_bytes",
         "transform_failure"
+      ]
+    },
+    "AnthropicSystemBlock": {
+      "properties": {
+        "text": {
+          "type": "string",
+          "maxLength": 65536,
+          "minLength": 1
+        },
+        "cache_control": {
+          "$ref": "#/$defs/AnthropicCacheControl"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "text"
       ]
     },
     "BillingAttribution": {
@@ -172,6 +243,12 @@
           },
           "type": "array",
           "maxItems": 16
+        },
+        "client_identities": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ResolvedClientIdentity"
+          },
+          "type": "object"
         },
         "endpoints": {
           "items": {
@@ -539,6 +616,84 @@
         "kind"
       ]
     },
+    "DeviceCodeFlow": {
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "request": {
+          "items": {
+            "$ref": "#/$defs/FieldRule"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "minItems": 1
+        },
+        "headers": {
+          "items": {
+            "$ref": "#/$defs/HeaderRule"
+          },
+          "type": "array",
+          "maxItems": 32
+        },
+        "device_code_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "user_code_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "verification_url_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "expires_in_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "interval_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "default_interval_seconds": {
+          "type": "integer",
+          "maximum": 60,
+          "minimum": 1
+        },
+        "poll": {
+          "items": {
+            "$ref": "#/$defs/FieldRule"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "minItems": 1
+        },
+        "error_pointer": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "max_body_bytes": {
+          "type": "integer",
+          "maximum": 10485760,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "endpoint",
+        "request",
+        "device_code_pointer",
+        "user_code_pointer",
+        "verification_url_pointer",
+        "default_interval_seconds",
+        "poll",
+        "error_pointer",
+        "max_body_bytes"
+      ]
+    },
     "Endpoint": {
       "properties": {
         "id": {
@@ -617,7 +772,9 @@
         },
         "statuses": {
           "items": {
-            "type": "integer"
+            "type": "integer",
+            "maximum": 599,
+            "minimum": 100
           },
           "type": "array",
           "maxItems": 64,
@@ -625,7 +782,9 @@
         },
         "codes": {
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1
           },
           "type": "array",
           "maxItems": 128,
@@ -633,10 +792,12 @@
         },
         "code_pointer": {
           "type": "string",
+          "maxLength": 1024,
           "pattern": "^/"
         },
         "message_pointer": {
           "type": "string",
+          "maxLength": 1024,
           "pattern": "^/"
         },
         "title": {
@@ -795,7 +956,8 @@
         },
         "per_image_targets": {
           "items": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 1
           },
           "type": "array",
           "maxItems": 16,
@@ -893,6 +1055,21 @@
         "default": {
           "type": "string",
           "maxLength": 64
+        },
+        "selection_default": {
+          "type": "string",
+          "enum": [
+            "crux",
+            "native"
+          ]
+        },
+        "hidden_skills": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true
         }
       },
       "additionalProperties": false,
@@ -1276,6 +1453,9 @@
         "token_response": {
           "$ref": "#/$defs/TokenResponse"
         },
+        "device_code": {
+          "$ref": "#/$defs/DeviceCodeFlow"
+        },
         "timeout_seconds": {
           "type": "integer",
           "maximum": 600,
@@ -1388,6 +1568,10 @@
           "type": "string",
           "maxLength": 1024,
           "pattern": "^/"
+        },
+        "client_identity": {
+          "type": "string",
+          "maxLength": 64
         },
         "headers": {
           "items": {
@@ -1709,8 +1893,12 @@
         },
         "latest_url": {
           "type": "string",
-          "maxLength": 2048,
-          "format": "uri"
+          "maxLength": 2048
+        },
+        "version_pointer": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^/"
         },
         "cache_key": {
           "type": "string",
@@ -2166,8 +2354,14 @@
             "$ref": "#/$defs/ToolAlias"
           },
           "type": "array",
-          "maxItems": 512,
-          "minItems": 1
+          "maxItems": 512
+        },
+        "prefix_aliases": {
+          "items": {
+            "$ref": "#/$defs/ToolPrefixAlias"
+          },
+          "type": "array",
+          "maxItems": 64
         },
         "parameters": {
           "items": {
@@ -2193,13 +2387,65 @@
         },
         "case_fold_inbound": {
           "type": "boolean"
+        },
+        "tool_search": {
+          "type": "string",
+          "enum": [
+            "regex",
+            "bm25"
+          ]
         }
       },
       "additionalProperties": false,
       "type": "object",
       "required": [
-        "aliases",
         "surfaces"
+      ]
+    },
+    "ToolPrefixAlias": {
+      "properties": {
+        "host_prefix": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "provider_prefix": {
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        },
+        "defer_loading": {
+          "type": "boolean"
+        },
+        "omit_empty_required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host_prefix",
+        "provider_prefix"
+      ]
+    },
+    "UsageContextExtraction": {
+      "properties": {
+        "context": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9_.-]*$"
+        },
+        "pointer": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^/"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "context",
+        "pointer"
       ]
     },
     "UsageMapping": {
@@ -2238,6 +2484,13 @@
     },
     "UsagePolicy": {
       "properties": {
+        "setup": {
+          "items": {
+            "$ref": "#/$defs/UsageSetup"
+          },
+          "type": "array",
+          "maxItems": 8
+        },
         "operation": {
           "type": "string",
           "maxLength": 64
@@ -2264,6 +2517,15 @@
           "type": "array",
           "maxItems": 32
         },
+        "plan_pointers": {
+          "items": {
+            "type": "string",
+            "maxLength": 1024,
+            "pattern": "^/"
+          },
+          "type": "array",
+          "maxItems": 8
+        },
         "fallback": {
           "type": "string",
           "enum": [
@@ -2278,6 +2540,35 @@
       "required": [
         "source",
         "fallback"
+      ]
+    },
+    "UsageSetup": {
+      "properties": {
+        "operation": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "extract": {
+          "items": {
+            "$ref": "#/$defs/UsageContextExtraction"
+          },
+          "type": "array",
+          "maxItems": 16
+        },
+        "plan_pointers": {
+          "items": {
+            "type": "string",
+            "maxLength": 1024,
+            "pattern": "^/"
+          },
+          "type": "array",
+          "maxItems": 8
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "operation"
       ]
     },
     "VersionBounds": {
@@ -2302,22 +2593,32 @@
       "properties": {
         "id": {
           "type": "string",
-          "maxLength": 64
+          "maxLength": 64,
+          "minLength": 1
         },
         "used_pointer": {
           "type": "string",
+          "maxLength": 1024,
           "pattern": "^/"
         },
         "limit_pointer": {
           "type": "string",
+          "maxLength": 1024,
           "pattern": "^/"
         },
         "remaining_pointer": {
           "type": "string",
+          "maxLength": 1024,
+          "pattern": "^/"
+        },
+        "remaining_fraction_pointer": {
+          "type": "string",
+          "maxLength": 1024,
           "pattern": "^/"
         },
         "reset_pointer": {
           "type": "string",
+          "maxLength": 1024,
           "pattern": "^/"
         },
         "reset_format": {

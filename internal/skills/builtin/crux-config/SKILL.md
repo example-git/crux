@@ -47,7 +47,7 @@ model large anthropic/claude-sonnet-4-20250514 --max-tokens 16384
 model small anthropic/claude-haiku-4-20250514
 
 option skill-path ./skills
-permissions allow view ls grep edit
+permissions allow view ls search edit
 ```
 
 Values are ordinary Bash — quote and expand normally (`"$VAR"`, `$(cmd)`,
@@ -79,12 +79,18 @@ type like `ollama`, `lmstudio`, `llamacpp`), `--api-key`, `--base-url`,
 `--extra-header KEY VALUE` (repeatable), `--extra-body JSON`,
 `--provider-options JSON`.
 
+Migrated providers such as DeepSeek are owned by optional provider presets. From
+a Crux repository checkout, install the preset, restart Crux, and provide the
+environment variable named by the preset:
+
 ```bash
-provider add deepseek \
-  --type openai-compat \
-  --base-url "https://api.deepseek.com/v1" \
-  --api-key "${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}"
+crux plugins install ./plugins/provider-presets/deepseek.plugin
+export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}"
 ```
+
+Do not recreate a preset-owned provider with `provider add`. Without the exact
+trusted preset, Crux retains its configuration and selected models as
+unavailable rather than treating it as a generic endpoint.
 
 `--tooling-instructions` defaults to `crux`. The `native` profile selects
 provider-compatible tooling instructions when the registered provider declares
@@ -196,9 +202,9 @@ option reset <list-key>    # clear a list option back to empty
 ```
 
 - **Boolean keys** (value optional, defaults `true`): `debug`, `debug-lsp`,
-  `auto-lsp`, `progress`, `system-prompt-override`.
+  `auto-lsp`, `progress`.
 - **Boolean keys phrased positively** (stored as the negated field):
-  `auto-summarize`, `provider-auto-update`, `default-providers`.
+  `auto-summarize`, `default-providers`.
 - **String keys**: `data-directory`, `initialize-as`, `notifications`,
   `response-verbosity` (`low|medium|high`), and `analysis-effort`
   (`none|low|medium|high|xhigh|max`). The final two are sent only for GPT-5.6
@@ -220,15 +226,23 @@ option ui compact true
 option ui diff unified
 ```
 
-The Instructions menu is the primary interface for these prompt controls. It
-can enable and edit the provider override and set or clear both GPT-5.6 Codex
-runtime values. They serialize as `text.verbosity` and `reasoning.effort`; the
-API does not accept the runtime header's displayed numeric values. Enabling the override creates
-`~/.ai-cli/instructions/<provider-id>.txt` from the current generated coder
-prompt when it is missing. The file then fully replaces the primary coder
-prompt; the current persistent-memory layer is appended separately so its index
-does not become frozen in the override. Unreadable files fail clearly; task and
-agentic-fetch subagent prompts are unchanged. The `option` keys remain available for scripted configuration.
+The Instructions menu controls tooling and project-context selection, Crux
+tooling sections, provider runtime values, and an optional plugin-native tooling
+toggle. The native toggle appears only when the selected provider declares
+nonblank native instructions. It replaces the static Crux tooling sections;
+dynamic runtime, memory, MCP, and provider context remain independent additions.
+
+`~/.ai-cli/instructions/<provider-id>.txt` is optional raw user-authored provider
+context. When present, its text is appended as a dynamic, uncached instruction
+section. Prompt construction never creates the file, never uses it as the native
+toggle, and never lets it replace generated or plugin-native instructions. The
+menu's explicit edit action may create the file for the user. The effective
+preview shows the final typed sections and separates cached from uncached
+content for Anthropic-compatible requests.
+
+The GPT-5.6 Codex runtime values serialize as `text.verbosity` and
+`reasoning.effort`; the API does not accept the runtime header's displayed
+numeric values. Their `option` keys remain available for scripted configuration.
 
 > [!IMPORTANT] These skill paths are loaded by default and do NOT need
 > `skill-path`: `.agents/skills`, `.crux/skills`, `.claude/skills`,

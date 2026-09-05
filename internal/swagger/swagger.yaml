@@ -18,7 +18,7 @@ definitions:
       refreshToken:
         type: string
     type: object
-  catwalk.Model:
+  catalog.Model:
     properties:
       can_reason:
         type: boolean
@@ -41,7 +41,7 @@ definitions:
       name:
         type: string
       options:
-        $ref: '#/definitions/catwalk.ModelOptions'
+        $ref: '#/definitions/catalog.ModelOptions'
       reasoning_levels:
         items:
           type: string
@@ -49,7 +49,7 @@ definitions:
       supports_attachments:
         type: boolean
     type: object
-  catwalk.ModelOptions:
+  catalog.ModelOptions:
     properties:
       frequency_penalty:
         type: number
@@ -65,7 +65,7 @@ definitions:
       top_p:
         type: number
     type: object
-  catwalk.Type:
+  catalog.Type:
     enum:
     - openai
     - openai-compat
@@ -87,12 +87,26 @@ definitions:
     - TypeAzure
     - TypeBedrock
     - TypeVertexAI
+  config.AgentModelState:
+    properties:
+      large:
+        $ref: '#/definitions/config.OwnedSelectedModel'
+      small:
+        $ref: '#/definitions/config.OwnedSelectedModel'
+    type: object
   config.Completions:
     properties:
       max_depth:
         type: integer
       max_items:
         type: integer
+    type: object
+  config.ForwardedAccount:
+    properties:
+      entry:
+        $ref: '#/definitions/accounts.Entry'
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
     type: object
   config.HookConfig:
     properties:
@@ -110,6 +124,33 @@ definitions:
       timeout:
         description: Timeout in seconds. Default 30.
         type: integer
+    type: object
+  config.ImageConfiguration:
+    properties:
+      preferred:
+        items:
+          $ref: '#/definitions/providerplugin.ImageOwner'
+        type: array
+      providers:
+        additionalProperties:
+          $ref: '#/definitions/config.ImageProviderConfiguration'
+        type: object
+    type: object
+  config.ImageProviderConfiguration:
+    properties:
+      browser_profiles:
+        additionalProperties:
+          type: string
+        type: object
+      configuration:
+        additionalProperties: {}
+        type: object
+      credentials:
+        additionalProperties:
+          $ref: '#/definitions/providerregistry.RegistrationOwner'
+        type: object
+      owner:
+        $ref: '#/definitions/providerplugin.ImageOwner'
     type: object
   config.LSPConfig:
     properties:
@@ -234,6 +275,13 @@ definitions:
     additionalProperties:
       $ref: '#/definitions/config.MCPConfig'
     type: object
+  config.OwnedSelectedModel:
+    properties:
+      model:
+        $ref: '#/definitions/config.SelectedModel'
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
+    type: object
   config.Permissions:
     properties:
       allowed_tools:
@@ -300,7 +348,7 @@ definitions:
       models:
         description: The provider models
         items:
-          $ref: '#/definitions/catwalk.Model'
+          $ref: '#/definitions/catalog.Model'
         type: array
       name:
         description: The provider's name, used for display purposes.
@@ -309,13 +357,17 @@ definitions:
         allOf:
         - $ref: '#/definitions/oauth.Token'
         description: OAuthToken for providers that use OAuth2 authentication.
-      plugin:
+      owner:
         allOf:
-        - $ref: '#/definitions/config.ProviderPluginReference'
+        - $ref: '#/definitions/config.ProviderOwnerReference'
         description: |-
           Plugin records durable ownership so configuration and selections remain
           unavailable rather than falling through to a generic provider when the
           bundle is missing, disabled, invalid, incompatible, or untrusted.
+      plugin:
+        $ref: '#/definitions/config.ProviderPluginReference'
+      preset:
+        $ref: '#/definitions/config.ProviderPresetReference'
       provider_options:
         additionalProperties: {}
         type: object
@@ -327,13 +379,43 @@ definitions:
         type: string
       type:
         allOf:
-        - $ref: '#/definitions/catwalk.Type'
+        - $ref: '#/definitions/catalog.Type'
         description: |-
           The provider type. Empty custom-provider types default to openai-compat;
           registered local aliases use the same protocol.
     type: object
+  config.ProviderOwnerReference:
+    properties:
+      compatibility_adapter:
+        $ref: '#/definitions/providerregistry.Construction'
+      construction:
+        $ref: '#/definitions/providerregistry.Construction'
+      type:
+        $ref: '#/definitions/config.ProviderOwnerType'
+    type: object
+  config.ProviderOwnerType:
+    enum:
+    - core
+    - custom
+    - plugin
+    - preset
+    type: string
+    x-enum-varnames:
+    - ProviderOwnerCore
+    - ProviderOwnerCustom
+    - ProviderOwnerPlugin
+    - ProviderOwnerPreset
   config.ProviderPluginReference:
     properties:
+      id:
+        type: string
+      version:
+        type: string
+    type: object
+  config.ProviderPresetReference:
+    properties:
+      digest:
+        type: string
       id:
         type: string
       version:
@@ -417,16 +499,6 @@ definitions:
       store_directory:
         type: string
     type: object
-  config.ToolGlob:
-    properties:
-      timeout:
-        $ref: '#/definitions/time.Duration'
-    type: object
-  config.ToolGrep:
-    properties:
-      timeout:
-        $ref: '#/definitions/time.Duration'
-    type: object
   config.ToolLs:
     properties:
       max_depth:
@@ -434,16 +506,21 @@ definitions:
       max_items:
         type: integer
     type: object
+  config.ToolSearch:
+    properties:
+      content_timeout:
+        $ref: '#/definitions/time.Duration'
+      files_timeout:
+        $ref: '#/definitions/time.Duration'
+    type: object
   config.Tools:
     properties:
       codebase_search:
         $ref: '#/definitions/config.ToolCodebaseSearch'
-      glob:
-        $ref: '#/definitions/config.ToolGlob'
-      grep:
-        $ref: '#/definitions/config.ToolGrep'
       ls:
         $ref: '#/definitions/config.ToolLs'
+      search:
+        $ref: '#/definitions/config.ToolSearch'
     type: object
   csync.Map-string-config_ProviderConfig:
     type: object
@@ -462,6 +539,8 @@ definitions:
             $ref: '#/definitions/config.HookConfig'
           type: array
         type: object
+      images:
+        $ref: '#/definitions/config.ImageConfiguration'
       lsp:
         $ref: '#/definitions/config.LSPs'
       mcp:
@@ -514,11 +593,9 @@ definitions:
         type: boolean
       disable_default_providers:
         type: boolean
-      disable_provider_auto_update:
-        type: boolean
       disabled_instruction_sections:
         description: |-
-          DisabledInstructionSections lists native instruction section IDs to
+          DisabledInstructionSections lists Crux tooling instruction section IDs to
           skip when building the system prompt. Section IDs match the file
           names in internal/agent/templates/sections/ without the .md extension.
         items:
@@ -540,10 +617,11 @@ definitions:
         type: string
       instruction_mode:
         description: |-
-          InstructionMode controls which instruction sources are active:
-            "all"     — native sections + project context (default)
-            "project" — project context files only (skip native instruction sections)
-            "native"  — native instruction sections only (skip project context files)
+          InstructionMode controls which optional instruction sources are active:
+            "all"     - tooling and project context (default)
+            "project" - project context without tooling
+            "native"  - tooling without project context
+          Dynamic runtime, memory, MCP, and provider context remain independent.
         type: string
       notifications:
         type: string
@@ -555,8 +633,6 @@ definitions:
         items:
           type: string
         type: array
-      system_prompt_override:
-        type: boolean
       tui:
         $ref: '#/definitions/config.TUIOptions'
     type: object
@@ -669,10 +745,12 @@ definitions:
     enum:
     - string
     - oauth
+    - remove
     type: string
     x-enum-varnames:
     - APIKeyKindString
     - APIKeyKindOAuth
+    - APIKeyKindRemove
   proto.AgentInfo:
     properties:
       is_busy:
@@ -680,7 +758,7 @@ definitions:
       is_ready:
         type: boolean
       model:
-        $ref: '#/definitions/catwalk.Model'
+        $ref: '#/definitions/catalog.Model'
       model_cfg:
         $ref: '#/definitions/config.SelectedModel'
     type: object
@@ -690,6 +768,8 @@ definitions:
         items:
           $ref: '#/definitions/proto.Attachment'
         type: array
+      permission_mode:
+        $ref: '#/definitions/proto.AgentPermissionMode'
       prompt:
         type: string
       run_id:
@@ -699,6 +779,16 @@ definitions:
       submission_id:
         type: string
     type: object
+  proto.AgentPermissionMode:
+    enum:
+    - ""
+    - deny
+    - bypass
+    type: string
+    x-enum-varnames:
+    - AgentPermissionInteractive
+    - AgentPermissionDeny
+    - AgentPermissionBypass
   proto.AgentSession:
     properties:
       attached_clients:
@@ -709,6 +799,8 @@ definitions:
         type: number
       created_at:
         type: integer
+      estimated_usage:
+        type: boolean
       id:
         type: string
       is_busy:
@@ -733,6 +825,11 @@ definitions:
         type: array
       updated_at:
         type: integer
+    type: object
+  proto.AgentUpdateRequest:
+    properties:
+      state:
+        $ref: '#/definitions/config.AgentModelState'
     type: object
   proto.Attachment:
     properties:
@@ -760,6 +857,8 @@ definitions:
         $ref: '#/definitions/config.SelectedModel'
       model_type:
         $ref: '#/definitions/config.SelectedModelType'
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
       scope:
         $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
     type: object
@@ -771,6 +870,8 @@ definitions:
         type: array
       kind:
         $ref: '#/definitions/proto.APIKeyKind'
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
       provider_id:
         type: string
       scope:
@@ -778,8 +879,8 @@ definitions:
     type: object
   proto.ConfigRefreshOAuthRequest:
     properties:
-      provider_id:
-        type: string
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
       scope:
         $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
     type: object
@@ -794,6 +895,8 @@ definitions:
     properties:
       key:
         type: string
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
       scope:
         $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
       value: {}
@@ -814,6 +917,8 @@ definitions:
         type: string
       created_at:
         type: integer
+      exists:
+        type: boolean
       id:
         type: string
       path:
@@ -1035,6 +1140,69 @@ definitions:
       skip:
         type: boolean
     type: object
+  proto.PluginDiagnostic:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  proto.PluginSnapshot:
+    properties:
+      enabled_providers:
+        items:
+          type: string
+        type: array
+      plugins:
+        items:
+          $ref: '#/definitions/proto.PluginStatus'
+        type: array
+      profile:
+        type: string
+      revision:
+        type: integer
+      scanned_at:
+        type: string
+    type: object
+  proto.PluginStatus:
+    properties:
+      bundle_name:
+        type: string
+      capabilities:
+        items:
+          type: string
+        type: array
+      compatibility:
+        type: string
+      diagnostics:
+        items:
+          $ref: '#/definitions/proto.PluginDiagnostic'
+        type: array
+      digest:
+        type: string
+      id:
+        type: string
+      installed_at:
+        type: string
+      name:
+        type: string
+      plugin_type:
+        type: string
+      provider_id:
+        type: string
+      publisher_id:
+        type: string
+      source_commit:
+        type: string
+      source_kind:
+        type: string
+      state:
+        type: string
+      trust:
+        type: string
+      version:
+        type: string
+    type: object
   proto.ProjectInitPromptResponse:
     properties:
       prompt:
@@ -1082,12 +1250,14 @@ definitions:
         $ref: '#/definitions/providerregistry.InstructionSurface'
       models:
         items:
-          $ref: '#/definitions/catwalk.Model'
+          $ref: '#/definitions/catalog.Model'
         type: array
       name:
         type: string
       order:
         type: integer
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
       runtime_controls:
         items:
           $ref: '#/definitions/providerregistry.RuntimeControlSurface'
@@ -1162,6 +1332,8 @@ definitions:
         type: number
       created_at:
         type: integer
+      estimated_usage:
+        type: boolean
       id:
         type: string
       is_busy:
@@ -1295,7 +1467,7 @@ definitions:
         type: array
       forwarded_accounts:
         additionalProperties:
-          $ref: '#/definitions/accounts.Entry'
+          $ref: '#/definitions/config.ForwardedAccount'
         type: object
       forwarded_providers:
         additionalProperties:
@@ -1325,6 +1497,17 @@ definitions:
       yolo:
         type: boolean
     type: object
+  providerplugin.ImageOwner:
+    properties:
+      backend:
+        type: string
+      digest:
+        type: string
+      plugin_id:
+        type: string
+      version:
+        type: string
+    type: object
   providerregistry.Authentication:
     properties:
       adapter:
@@ -1351,14 +1534,42 @@ definitions:
       short_name:
         type: string
     type: object
+  providerregistry.Construction:
+    enum:
+    - integrated-codex
+    - integrated-gemini-antigravity
+    - integrated-copilot
+    - anthropic-messages
+    - openai-responses
+    - gemini-generate-content
+    - gemini-interactions
+    - generic-json
+    - openai-compat
+    type: string
+    x-enum-varnames:
+    - ConstructionCodex
+    - ConstructionGeminiAntigravity
+    - ConstructionCopilot
+    - ConstructionAnthropicMessages
+    - ConstructionOpenAIResponses
+    - ConstructionGeminiContent
+    - ConstructionGeminiInteraction
+    - ConstructionGenericJSON
+    - ConstructionOpenAICompat
   providerregistry.InstructionSurface:
     properties:
       default:
         type: string
+      hidden_skills:
+        items:
+          type: string
+        type: array
       profiles:
         additionalProperties:
           type: string
         type: object
+      selection_default:
+        type: string
     type: object
   providerregistry.LoginAdapter:
     enum:
@@ -1370,6 +1581,37 @@ definitions:
     - LoginBrowser
     - LoginHostedPaste
     - LoginDeviceCode
+  providerregistry.RegistrationOwner:
+    properties:
+      account_namespace:
+        type: string
+      compatibility_adapter:
+        $ref: '#/definitions/providerregistry.Construction'
+      construction:
+        $ref: '#/definitions/providerregistry.Construction'
+      has_manifest:
+        type: boolean
+      has_oauth:
+        type: boolean
+      has_preset:
+        type: boolean
+      manifest_id:
+        type: string
+      manifest_version:
+        type: string
+      oauth_adapter:
+        $ref: '#/definitions/providerregistry.LoginAdapter'
+      oauth_flow_id:
+        type: string
+      preset_digest:
+        type: string
+      preset_id:
+        type: string
+      preset_version:
+        type: string
+      provider_id:
+        type: string
+    type: object
   providerregistry.RuntimeControlSurface:
     properties:
       available:
@@ -1487,6 +1729,22 @@ paths:
         "200":
           description: OK
       summary: Health check
+      tags:
+      - system
+  /plugins:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.PluginSnapshot'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Get provider plugins
       tags:
       - system
   /version:
@@ -1971,15 +2229,27 @@ paths:
       - agent
   /workspaces/{id}/agent/update:
     post:
+      consumes:
+      - application/json
       parameters:
       - description: Workspace ID
         in: path
         name: id
         required: true
         type: string
+      - description: Agent update request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.AgentUpdateRequest'
       responses:
         "200":
           description: OK
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
         "404":
           description: Not Found
           schema:
@@ -2096,6 +2366,8 @@ paths:
       responses:
         "200":
           description: OK
+          schema:
+            $ref: '#/definitions/config.AgentModelState'
         "400":
           description: Bad Request
           schema:

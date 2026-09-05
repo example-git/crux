@@ -80,6 +80,9 @@ func (m *UI) applyLSPStates(msg lspStatesMsg) tea.Cmd {
 	m.lspCheckedAt = time.Now()
 	m.lspStates = msg.states
 	m.lspDiagnostics = msg.diagnostics
+	if m.sidebarContent != "" {
+		m.updateSidebarScrollState()
+	}
 	if m.lspRefreshQueued {
 		m.lspRefreshQueued = false
 		return m.dispatchLSPRefresh()

@@ -24,12 +24,14 @@ type SessionStore struct {
 type sessionState struct {
 	mu sync.Mutex
 
-	conn      *websocket.Conn
-	traceID   string
-	token     string
-	accountID string
-	lastUsed  time.Time
-	chain     *responseChain
+	conn       *websocket.Conn
+	readEvents <-chan websocketReadResult
+	readStop   chan struct{}
+	traceID    string
+	token      string
+	accountID  string
+	lastUsed   time.Time
+	chain      *responseChain
 }
 
 type responseChain struct {
@@ -145,10 +147,15 @@ func (s *SessionStore) resetConversation(endpoint, provider, account, conversati
 }
 
 func (s *sessionState) closeLocked() {
+	if s.readStop != nil {
+		close(s.readStop)
+	}
 	if s.conn != nil {
 		_ = s.conn.Close()
 	}
 	s.conn = nil
+	s.readEvents = nil
+	s.readStop = nil
 	s.traceID = ""
 	s.token = ""
 	s.accountID = ""
@@ -210,9 +217,21 @@ func (s *sessionState) commitLocked(logical *requestFrame, response *wireRespons
 		s.clearChainLocked()
 		return false
 	}
-	sourceRepresented := make([]inputItem, 0, len(logical.Input)+len(output))
-	sourceRepresented = append(sourceRepresented, cloneInputItems(logical.Input)...)
-	sourceRepresented = append(sourceRepresented, output...)
+	representedInput := logical.Input
+	includeOutput := true
+	if logical.RequestKind == "compaction" {
+		if len(representedInput) == 0 || representedInput[len(representedInput)-1].Type != "compaction_trigger" {
+			s.clearChainLocked()
+			return false
+		}
+		representedInput = representedInput[:len(representedInput)-1]
+		includeOutput = false
+	}
+	sourceRepresented := make([]inputItem, 0, len(representedInput)+len(output))
+	sourceRepresented = append(sourceRepresented, cloneInputItems(representedInput)...)
+	if includeOutput {
+		sourceRepresented = append(sourceRepresented, output...)
+	}
 	s.chain = &responseChain{
 		properties:        propertiesOf(logical),
 		sourceRepresented: sourceRepresented,

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 )
 
 func init() {
@@ -40,7 +40,7 @@ type llamacppMeta struct {
 // falls back to n_ctx_train (the model's trained maximum).
 type llamacppEnricher struct{}
 
-func (e *llamacppEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catwalk.Model) ([]catwalk.Model, error) {
+func (e *llamacppEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catalog.Model) ([]catalog.Model, error) {
 	resp, err := doRequest(ctx, http.MethodGet, cfg.BaseURL, "/v1/models", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
 	if err != nil {
 		return models, nil

@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -44,6 +45,9 @@ func (c *gatedCoordinator) RunAccepted(ctx context.Context, accept *agent.Accept
 // before any model call, so no network I/O happens.
 func newRealCoordinator(t *testing.T) (*gatedCoordinator, session.Service, message.Service) {
 	t.Helper()
+	providerRoot := t.TempDir()
+	t.Setenv("CRUX_GLOBAL_DATA", filepath.Join(providerRoot, "data"))
+	t.Setenv("CRUX_CACHE_DIR", filepath.Join(providerRoot, "cache"))
 	conn, err := db.Connect(t.Context(), t.TempDir())
 	require.NoError(t, err)
 	t.Cleanup(func() { conn.Close() })
@@ -78,7 +82,6 @@ func newRealCoordinator(t *testing.T) (*gatedCoordinator, session.Service, messa
 // to stream the model). In either case no FinishReasonCanceled turn
 // would be persisted.
 func TestSendMessage_AcceptedCancelRace_RealMachinery(t *testing.T) {
-	t.Parallel()
 	b, _ := newTestBackend(t)
 
 	coord, sessions, messages := newRealCoordinator(t)

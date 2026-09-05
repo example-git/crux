@@ -88,10 +88,10 @@ func TestClientServerSpawnRace(t *testing.T) {
 		"XDG_CACHE_HOME="+cacheHome,
 		"XDG_DATA_HOME="+dataHome,
 		"XDG_CONFIG_HOME="+configHome,
+		"CRUX_GLOBAL_CONFIG="+configHome,
+		"CRUX_GLOBAL_DATA="+dataHome,
+		"CRUX_CACHE_DIR="+cacheHome,
 		"HOME="+homeDir,
-		// Belt-and-suspenders: if anything tries to talk to a real
-		// provider, fail loudly rather than make a network call.
-		"CRUX_DISABLE_PROVIDER_AUTO_UPDATE=1",
 	)
 
 	// Make sure no server is up before we start.

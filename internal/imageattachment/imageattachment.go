@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/imageutil"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providerregistry"
 	_ "golang.org/x/image/webp"
 )
 
@@ -38,7 +38,7 @@ type Policy struct {
 	ResizePercent   int
 }
 
-func policyFromDeclaration(value *manifest.ImagePolicy) (Policy, bool) {
+func PolicyFromDeclaration(value *manifest.ImagePolicy) (Policy, bool) {
 	if value == nil {
 		return Policy{}, false
 	}
@@ -62,40 +62,55 @@ func policyFromDeclaration(value *manifest.ImagePolicy) (Policy, bool) {
 	return policy, true
 }
 
-func imagePolicyFor(providerID string) *manifest.ImagePolicy {
-	registration, ok := config.ProviderBehaviorCapabilities(providerID)
-	if !ok {
-		return nil
-	}
-	return registration.Images
+func PolicyFor(registration providerregistry.Registration) (Policy, bool) {
+	return PolicyFromDeclaration(registration.Images)
 }
 
-func PolicyFor(providerID string) (Policy, bool) {
-	return policyFromDeclaration(imagePolicyFor(providerID))
-}
-
-func SourceLimitFor(providerID string) int64 {
-	if policy := imagePolicyFor(providerID); policy != nil {
+func SourceLimitForPolicy(policy *Policy) int64 {
+	if policy != nil {
 		return policy.MaxSourceBytes
 	}
 	return DefaultMaxSourceBytes
 }
 
-func ExtensionsFor(providerID string) []string {
-	if policy, ok := PolicyFor(providerID); ok {
+func SourceLimitFor(registration providerregistry.Registration) int64 {
+	policy, ok := PolicyFor(registration)
+	if !ok {
+		return SourceLimitForPolicy(nil)
+	}
+	return SourceLimitForPolicy(&policy)
+}
+
+func ExtensionsForPolicy(policy *Policy) []string {
+	if policy != nil {
 		return append([]string(nil), policy.Extensions...)
 	}
 	return []string{".jpeg", ".jpg", ".png"}
 }
 
-func NormalizeAll(providerID string, attachments []message.Attachment) ([]message.Attachment, error) {
-	policy, ok := PolicyFor(providerID)
+func ExtensionsFor(registration providerregistry.Registration) []string {
+	policy, ok := PolicyFor(registration)
 	if !ok {
+		return ExtensionsForPolicy(nil)
+	}
+	return ExtensionsForPolicy(&policy)
+}
+
+func NormalizeAll(registration providerregistry.Registration, attachments []message.Attachment) ([]message.Attachment, error) {
+	policy, ok := PolicyFor(registration)
+	if !ok {
+		return attachments, nil
+	}
+	return NormalizeAllWithPolicy(&policy, attachments)
+}
+
+func NormalizeAllWithPolicy(policy *Policy, attachments []message.Attachment) ([]message.Attachment, error) {
+	if policy == nil {
 		return attachments, nil
 	}
 	result := make([]message.Attachment, len(attachments))
 	for index, attachment := range attachments {
-		normalized, err := Normalize(policy, attachment)
+		normalized, err := Normalize(*policy, attachment)
 		if err != nil {
 			return nil, fmt.Errorf("prepare image %q: %w", attachment.FileName, err)
 		}
@@ -109,7 +124,7 @@ func Normalize(policy Policy, attachment message.Attachment) (message.Attachment
 		return attachment, nil
 	}
 	if int64(len(attachment.Content)) > policy.MaxSourceBytes {
-		return message.Attachment{}, fmt.Errorf("image exceeds the %d MiB source limit", policy.MaxSourceBytes/(1024*1024))
+		return message.Attachment{}, fmt.Errorf("image exceeds the declared source limit of %d bytes", policy.MaxSourceBytes)
 	}
 	config, format, err := image.DecodeConfig(bytes.NewReader(attachment.Content))
 	if err != nil {
@@ -124,7 +139,8 @@ func Normalize(policy Policy, attachment message.Attachment) (message.Attachment
 	needsPatchResize := policy.MaxPatches > 0 && patchCount(config.Width, config.Height) > policy.MaxPatches
 	needsCompression := policy.MaxRawBytes > 0 && len(attachment.Content) > policy.MaxRawBytes
 	needsConversion := policy.OutputMediaType != "" && mimeType != policy.OutputMediaType
-	if !needsResize && !needsPatchResize && !needsCompression && !needsConversion {
+	needsAlphaFlatten := policy.FlattenAlpha != "" && policy.FlattenAlpha != "none"
+	if !needsResize && !needsPatchResize && !needsCompression && !needsConversion && !needsAlphaFlatten {
 		attachment.MimeType = mimeType
 		return attachment, nil
 	}
@@ -168,8 +184,11 @@ func encodeWithinPolicy(attachment message.Attachment, value image.Image, policy
 	if policy.FlattenAlpha != "" && policy.FlattenAlpha != "none" {
 		value = flattenAlpha(value, policy.FlattenAlpha)
 	}
-	encodeJPEG := policy.OutputMediaType == "image/jpeg" || (policy.OutputMediaType == "" && isOpaque(value))
-	if encodeJPEG {
+	outputMediaType, err := encodableOutputMediaType(value, policy)
+	if err != nil {
+		return message.Attachment{}, err
+	}
+	if outputMediaType == "image/jpeg" {
 		current := value
 		for {
 			for _, quality := range policy.QualitySteps {
@@ -211,6 +230,30 @@ func encodeWithinPolicy(attachment message.Attachment, value image.Image, policy
 		}
 	}
 	return message.Attachment{}, fmt.Errorf("image cannot be reduced below the provider payload limit")
+}
+
+func encodableOutputMediaType(value image.Image, policy Policy) (string, error) {
+	if policy.OutputMediaType != "" {
+		if !policy.MIMETypes[policy.OutputMediaType] {
+			return "", fmt.Errorf("image output media type %q is not accepted by this provider", policy.OutputMediaType)
+		}
+		switch policy.OutputMediaType {
+		case "image/jpeg", "image/png":
+			return policy.OutputMediaType, nil
+		default:
+			return "", fmt.Errorf("image output media type %q is not encodable", policy.OutputMediaType)
+		}
+	}
+	if isOpaque(value) && policy.MIMETypes["image/jpeg"] {
+		return "image/jpeg", nil
+	}
+	if policy.MIMETypes["image/png"] {
+		return "image/png", nil
+	}
+	if policy.MIMETypes["image/jpeg"] {
+		return "image/jpeg", nil
+	}
+	return "", fmt.Errorf("image policy has no accepted output media type supported by the core encoder")
 }
 
 func mimeForFormat(format string) string {

@@ -18,6 +18,7 @@ func TestPluginSnapshot(t *testing.T) {
 		ScannedAt: time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC),
 		Plugins: []proto.PluginStatus{{
 			BundleName:    "example.echo.plugin",
+			PluginType:    "provider",
 			ID:            "example.echo",
 			ProviderID:    "example-echo",
 			Version:       "1.0.0",

@@ -13,9 +13,13 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/agent/prompt"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/home"
@@ -53,6 +57,7 @@ type instrItem struct {
 	value       string
 	disabled    bool
 	unavailable bool
+	replaced    bool
 	kind        instrItemKind
 	control     *providerregistry.RuntimeControlSurface
 }
@@ -62,10 +67,9 @@ type instrItemKind int
 const (
 	instrHeader instrItemKind = iota
 	instrMode                 // instruction mode radio
-	instrToolingProfile
+	instrNativeToggle
 	instrSection
-	instrOverrideToggle
-	instrOverrideEdit
+	instrProviderContextEdit
 	instrMetadataValue
 	instrPreview
 	instrAction
@@ -73,16 +77,18 @@ const (
 
 // Instructions is a dialog for managing instruction sections and modes.
 type Instructions struct {
-	com              *common.Common
-	items            []instrItem
-	cursor           int
-	keyMap           instrKeyMap
-	maxWidth         int
-	projectInstrPath string
-	overridePath     string
-	providerID       string
-	metadataInput    textinput.Model
-	editingMetadata  bool
+	com                 *common.Common
+	items               []instrItem
+	cursor              int
+	keyMap              instrKeyMap
+	maxWidth            int
+	projectInstrPath    string
+	providerContextPath string
+	providerID          string
+	metadataInput       textinput.Model
+	editingMetadata     bool
+	viewport            viewport.Model
+	followCursor        bool
 }
 
 type instrKeyMap struct {
@@ -108,15 +114,19 @@ func NewInstructions(com *common.Common) *Instructions {
 	}
 	selectedModel := cfg.Models[config.SelectedModelTypeLarge]
 	providerID := selectedModel.Provider
+	surfaces := com.Workspace.ProviderSurfaces()
+	surface, _ := providerregistry.LookupSurface(surfaces, providerID)
+	nativeLabel, nativeText := providerNativeInstructions(surfaces, providerID)
+	nativeAvailable := strings.TrimSpace(nativeText) != ""
 	toolingProfile := config.ToolingInstructionsCrux
+	if nativeAvailable && surface.Instructions.SelectionDefault != "" {
+		toolingProfile = surface.Instructions.SelectionDefault
+	}
 	if cfg.Providers != nil {
 		if providerCfg, ok := cfg.Providers.Get(providerID); ok && providerCfg.ToolingInstructions != "" {
 			toolingProfile = providerCfg.ToolingInstructions
 		}
 	}
-	surfaces := com.Workspace.ProviderSurfaces()
-	surface, registered := providerregistry.LookupSurface(surfaces, providerID)
-	nativeAvailable := registered && surface.Instructions != nil
 	toolingHeader := "Tooling Profile"
 	if providerID != "" {
 		toolingHeader += " (" + providerID + ")"
@@ -127,9 +137,9 @@ func NewInstructions(com *common.Common) *Instructions {
 	// Mode selector.
 	items = append(items, instrItem{kind: instrHeader, label: "Instruction Mode"})
 	for _, m := range []struct{ id, label string }{
-		{"all", "All (native + project)"},
-		{"project", "Project instructions only"},
-		{"native", "Native instructions only"},
+		{"all", "Tooling + project context"},
+		{"project", "Project context without tooling"},
+		{"native", "Tooling without project context"},
 	} {
 		items = append(items, instrItem{
 			kind:     instrMode,
@@ -139,44 +149,33 @@ func NewInstructions(com *common.Common) *Instructions {
 		})
 	}
 
-	items = append(items, instrItem{kind: instrHeader, label: toolingHeader})
-	items = append(items,
-		instrItem{
-			kind:     instrToolingProfile,
-			id:       config.ToolingInstructionsCrux,
-			label:    "Crux instructions",
-			disabled: toolingProfile != config.ToolingInstructionsCrux,
-		},
-		instrItem{
-			kind:        instrToolingProfile,
-			id:          config.ToolingInstructionsNative,
-			label:       "Provider native instructions",
-			disabled:    toolingProfile != config.ToolingInstructionsNative,
-			unavailable: !nativeAvailable,
-		},
-	)
-
-	overrideAvailable := validSystemPromptOverrideProvider(providerID)
-	overrideHeader := "System Prompt Override"
-	if providerID != "" {
-		overrideHeader += " (" + providerID + ")"
+	if nativeAvailable {
+		label := "Use " + nativeLabel
+		if surface.Instructions != nil && surface.Instructions.SelectionDefault == config.ToolingInstructionsNative {
+			label += " (default)"
+		}
+		items = append(items, instrItem{kind: instrHeader, label: toolingHeader})
+		items = append(items, instrItem{
+			kind:     instrNativeToggle,
+			id:       config.ToolingInstructionsNative,
+			label:    label,
+			disabled: toolingProfile != config.ToolingInstructionsNative,
+		})
 	}
-	items = append(items, instrItem{kind: instrHeader, label: overrideHeader})
-	items = append(items,
-		instrItem{
-			kind:        instrOverrideToggle,
-			id:          "system-prompt-override",
-			label:       "Use provider override",
-			disabled:    !cfg.Options.SystemPromptOverride,
-			unavailable: !overrideAvailable,
-		},
-		instrItem{
-			kind:        instrOverrideEdit,
-			id:          "edit-system-prompt-override",
-			label:       "Edit ~/.ai-cli/instructions/" + providerID + ".txt",
-			unavailable: !overrideAvailable,
-		},
-	)
+
+	providerContextAvailable := validProviderInstructionsID(providerID)
+	if providerContextAvailable {
+		providerContextHeader := "Provider Context"
+		if providerID != "" {
+			providerContextHeader += " (" + providerID + ")"
+		}
+		items = append(items, instrItem{kind: instrHeader, label: providerContextHeader})
+		items = append(items, instrItem{
+			kind:  instrProviderContextEdit,
+			id:    "edit-provider-context",
+			label: "Edit ~/.ai-cli/instructions/" + providerID + ".txt",
+		})
+	}
 
 	runtimeHeader := "Provider Runtime Controls"
 	if surface.Name != "" {
@@ -223,9 +222,9 @@ func NewInstructions(com *common.Common) *Instructions {
 		label: "Edit project instructions in $EDITOR",
 	})
 
-	overridePath := ""
-	if overrideAvailable {
-		overridePath = filepath.Join(home.Dir(), ".ai-cli", "instructions", providerID+".txt")
+	providerContextPath := ""
+	if providerContextAvailable {
+		providerContextPath = filepath.Join(home.Dir(), ".ai-cli", "instructions", providerID+".txt")
 	}
 	metadataInput := textinput.New()
 	metadataInput.SetVirtualCursor(true)
@@ -233,13 +232,15 @@ func NewInstructions(com *common.Common) *Instructions {
 	metadataInput.SetStyles(com.Styles.TextInput)
 
 	d := &Instructions{
-		com:              com,
-		items:            items,
-		maxWidth:         72,
-		projectInstrPath: projPath,
-		overridePath:     overridePath,
-		providerID:       providerID,
-		metadataInput:    metadataInput,
+		com:                 com,
+		items:               items,
+		maxWidth:            72,
+		projectInstrPath:    projPath,
+		providerContextPath: providerContextPath,
+		providerID:          providerID,
+		metadataInput:       metadataInput,
+		viewport:            viewport.New(),
+		followCursor:        true,
 		keyMap: instrKeyMap{
 			Up:     key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
 			Down:   key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
@@ -249,8 +250,9 @@ func NewInstructions(com *common.Common) *Instructions {
 		},
 	}
 	// Start cursor on first non-header item.
+	d.updateReplacedSections()
 	for i, item := range d.items {
-		if item.kind != instrHeader {
+		if d.selectable(item) {
 			d.cursor = i
 			break
 		}
@@ -285,29 +287,36 @@ func (d *Instructions) HandleMsg(msg tea.Msg) Action {
 		case key.Matches(msg, d.keyMap.Down):
 			d.moveCursor(1)
 		case key.Matches(msg, d.keyMap.Edit):
-			if d.items[d.cursor].kind == instrOverrideEdit {
-				return d.editOverrideFile()
+			if d.items[d.cursor].kind == instrProviderContextEdit {
+				return d.editProviderContextFile()
 			}
 			return d.editProjectFile()
 		case key.Matches(msg, d.keyMap.Toggle):
 			return d.toggle()
 		}
+	case common.CoalescedWheelMsg:
+		d.followCursor = false
+		d.viewport, _ = d.viewport.Update(tea.MouseWheelMsg(msg.Mouse))
 	}
 	return nil
 }
 
+func (d *Instructions) selectable(item instrItem) bool {
+	return item.kind != instrHeader && !item.unavailable && !item.replaced
+}
+
 func (d *Instructions) moveCursor(dir int) {
-	for {
-		d.cursor += dir
-		if d.cursor < 0 {
-			d.cursor = 0
-			return
+	if len(d.items) == 0 {
+		return
+	}
+	for step := 1; step <= len(d.items); step++ {
+		index := (d.cursor + dir*step) % len(d.items)
+		if index < 0 {
+			index += len(d.items)
 		}
-		if d.cursor >= len(d.items) {
-			d.cursor = len(d.items) - 1
-			return
-		}
-		if d.items[d.cursor].kind != instrHeader && !d.items[d.cursor].unavailable {
+		if d.selectable(d.items[index]) {
+			d.cursor = index
+			d.followCursor = true
 			return
 		}
 	}
@@ -330,41 +339,34 @@ func (d *Instructions) toggle() Action {
 		_ = d.com.Workspace.SetConfigField(config.ScopeGlobal, "options.instruction_mode", item.id)
 		return ActionInstructionsChanged{}
 
-	case instrToolingProfile:
+	case instrNativeToggle:
 		if item.unavailable || d.providerID == "" {
 			return nil
+		}
+		profile := config.ToolingInstructionsNative
+		if !item.disabled {
+			profile = config.ToolingInstructionsCrux
 		}
 		if err := d.com.Workspace.SetConfigField(
 			config.ScopeGlobal,
 			"providers."+d.providerID+".tooling_instructions",
-			item.id,
+			profile,
 		); err != nil {
 			return ActionCmd{Cmd: util.ReportError(err)}
 		}
-		for i := range d.items {
-			if d.items[i].kind == instrToolingProfile {
-				d.items[i].disabled = d.items[i].id != item.id
-			}
-		}
+		item.disabled = !item.disabled
+		d.updateReplacedSections()
 		return ActionInstructionsChanged{}
 
 	case instrSection:
+		if item.replaced {
+			return nil
+		}
 		d.SetSectionDisabled(item.id, !item.disabled)
 		return ActionInstructionsChanged{}
 
-	case instrOverrideToggle:
-		if item.unavailable {
-			return nil
-		}
-		enabled := item.disabled
-		if err := d.com.Workspace.SetConfigField(config.ScopeGlobal, "options.system_prompt_override", enabled); err != nil {
-			return ActionCmd{Cmd: util.ReportError(err)}
-		}
-		item.disabled = !enabled
-		return ActionInstructionsChanged{}
-
-	case instrOverrideEdit:
-		return d.editOverrideFile()
+	case instrProviderContextEdit:
+		return d.editProviderContextFile()
 
 	case instrMetadataValue:
 		if item.unavailable {
@@ -377,7 +379,7 @@ func (d *Instructions) toggle() Action {
 		return nil
 
 	case instrPreview:
-		return ActionPreviewInstructions{Sections: d.activeInstructionSections()}
+		return ActionCmd{Cmd: d.previewInstructionsCmd()}
 	case instrAction:
 		return d.editProjectFile()
 	}
@@ -407,6 +409,21 @@ func (d *Instructions) saveMetadataValue() Action {
 	return ActionInstructionsChanged{}
 }
 
+func (d *Instructions) updateReplacedSections() {
+	nativeSelected := false
+	for _, item := range d.items {
+		if item.kind == instrNativeToggle && !item.disabled {
+			nativeSelected = true
+			break
+		}
+	}
+	for index := range d.items {
+		if d.items[index].kind == instrSection {
+			d.items[index].replaced = nativeSelected
+		}
+	}
+}
+
 func (d *Instructions) SetSectionDisabled(id string, disabled bool) {
 	for index := range d.items {
 		if d.items[index].kind == instrSection && d.items[index].id == id {
@@ -423,81 +440,40 @@ func (d *Instructions) SetSectionDisabled(id string, disabled bool) {
 	_ = d.com.Workspace.SetConfigField(config.ScopeGlobal, "options.disabled_instruction_sections", disabledSections)
 }
 
-func (d *Instructions) activeInstructions() string {
-	sections := d.activeInstructionSections()
-	var parts []string
-	for _, section := range sections {
-		if !section.Disabled {
-			parts = append(parts, section.Content)
+func (d *Instructions) previewInstructionsCmd() tea.Cmd {
+	workspace := d.com.Workspace
+	return func() tea.Msg {
+		snapshot, err := workspace.AgentInstructionSnapshot(context.Background())
+		if err != nil {
+			return util.ReportError(fmt.Errorf("failed to preview effective instructions: %w", err))()
 		}
+		return ActionPreviewInstructions{Sections: instructionPreviewSections(snapshot)}
 	}
-	return strings.Join(parts, "\n\n")
 }
 
-func (d *Instructions) activeInstructionSections() []InstructionPreviewSection {
-	for _, item := range d.items {
-		if item.kind == instrOverrideToggle && !item.disabled {
-			content, err := os.ReadFile(d.overridePath)
-			if err == nil {
-				return []InstructionPreviewSection{{Label: "Provider system prompt override", Content: string(content)}}
-			}
-			break
+func instructionPreviewSections(snapshot agent.InstructionSnapshot) []InstructionPreviewSection {
+	sections := make([]InstructionPreviewSection, 0, len(snapshot.Sections))
+	for index, section := range snapshot.Sections {
+		group := "Dynamic"
+		if section.Stability == fantasy.InstructionStabilityStatic {
+			group = "Static"
 		}
-	}
-
-	mode := "all"
-	toolingProfile := config.ToolingInstructionsCrux
-	disabled := make(map[string]bool)
-	labels := make(map[string]string)
-	for _, item := range d.items {
-		switch item.kind {
-		case instrMode:
-			if !item.disabled {
-				mode = item.id
-			}
-		case instrToolingProfile:
-			if !item.disabled {
-				toolingProfile = item.id
-			}
-		case instrSection:
-			disabled[item.id] = item.disabled
-			labels[item.id] = item.label
-		}
-	}
-
-	var sections []InstructionPreviewSection
-	if mode != "project" {
-		if toolingProfile == config.ToolingInstructionsNative {
-			if label, content := providerNativeInstructions(d.com.Workspace.ProviderSurfaces(), d.providerID); content != "" {
-				sections = append(sections, InstructionPreviewSection{
-					Label:   label,
-					Content: content,
-				})
-			}
-		} else {
-			for _, section := range prompt.AllSections() {
-				label := labels[section.ID]
-				if label == "" {
-					label = sectionDisplayName(section.ID)
-				}
-				sections = append(sections, InstructionPreviewSection{
-					ID:         section.ID,
-					Label:      label,
-					Content:    strings.TrimSpace(section.Content),
-					Disabled:   disabled[section.ID],
-					Toggleable: true,
-				})
+		if snapshot.Policy == fantasy.InstructionPolicyAnthropic {
+			group = "Uncached"
+			if section.Stability == fantasy.InstructionStabilityStatic {
+				group = "Cached"
 			}
 		}
-	}
-	if mode != "native" {
-		project, err := os.ReadFile(d.projectInstrPath)
-		if err == nil && strings.TrimSpace(string(project)) != "" {
-			sections = append(sections, InstructionPreviewSection{
-				Label:   "Project instructions",
-				Content: string(project),
-			})
+		kind := sectionDisplayName(strings.ReplaceAll(string(section.Kind), "-", "_"))
+		label := group + " · " + kind
+		if section.CacheBoundary {
+			label += " · boundary"
 		}
+		sections = append(sections, InstructionPreviewSection{
+			ID:      fmt.Sprintf("%s-%d", section.Kind, index),
+			Label:   label,
+			Content: section.Text,
+		})
 	}
 	return sections
 }
@@ -506,8 +482,8 @@ func (d *Instructions) editProjectFile() Action {
 	return d.editFile(d.projectInstrPath, "# Project Instructions\n\nAdd project-specific instructions here.\n")
 }
 
-func (d *Instructions) editOverrideFile() Action {
-	return d.editFile(d.overridePath, d.activeInstructions())
+func (d *Instructions) editProviderContextFile() Action {
+	return d.editFile(d.providerContextPath, "")
 }
 
 func (d *Instructions) editFile(path, initialContent string) Action {
@@ -537,73 +513,127 @@ func (d *Instructions) editFile(path, initialContent string) Action {
 
 func (d *Instructions) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	t := d.com.Styles
-	titleStyle := t.Dialog.TitleText
+	frameStyle := t.Dialog.View
+	dialogWidth := max(min(d.maxWidth, area.Dx()), 1)
+	innerWidth := max(dialogWidth-frameStyle.GetHorizontalFrameSize(), 1)
 
-	var rows []string
-	for i, item := range d.items {
+	rowCount := 0
+	for _, item := range d.items {
+		if item.kind == instrHeader {
+			rowCount += 2
+		} else {
+			rowCount++
+		}
+	}
+	title := t.Dialog.TitleText.Render("Instructions")
+	dialogHeight := max(area.Dy()-2, 1)
+	availableHeight := max(dialogHeight-frameStyle.GetVerticalFrameSize()-lipgloss.Height(title), 0)
+	showHint := availableHeight >= 3
+	if showHint {
+		availableHeight -= 2
+	}
+	bodyHeight := min(rowCount, availableHeight)
+	viewportWidth := innerWidth
+	if rowCount > bodyHeight && bodyHeight > 0 {
+		viewportWidth = max(viewportWidth-1, 1)
+	}
+
+	rows := make([]string, 0, rowCount)
+	itemRows := make(map[int]int, len(d.items))
+	for index, item := range d.items {
 		switch item.kind {
 		case instrHeader:
 			rows = append(rows, "")
-			rows = append(rows, t.Dialog.PrimaryText.Bold(true).Render("  "+item.label))
-		case instrMode, instrToolingProfile:
+			label := ansi.Truncate("  "+item.label, viewportWidth, "…")
+			rows = append(rows, t.Dialog.PrimaryText.Bold(true).Render(label))
+		case instrMode:
+			itemRows[index] = len(rows)
 			radio := "○"
-			if !item.disabled { // not-disabled = selected
+			if !item.disabled {
 				radio = "●"
 			}
-			label := fmt.Sprintf("  %s %s", radio, item.label)
+			label := ansi.Truncate(fmt.Sprintf("  %s %s", radio, item.label), viewportWidth, "…")
 			if item.unavailable {
 				rows = append(rows, t.Dialog.SecondaryText.Render(label))
 			} else {
-				rows = append(rows, d.styledRow(t, i, label))
+				rows = append(rows, d.styledRow(t, index, label))
 			}
-		case instrSection, instrOverrideToggle:
+		case instrNativeToggle, instrSection:
+			itemRows[index] = len(rows)
 			check := "✓"
 			if item.disabled {
 				check = " "
 			}
 			label := fmt.Sprintf("  [%s] %s", check, item.label)
-			if item.unavailable {
+			if item.replaced {
+				label = "  [-] " + item.label + " (replaced by native)"
+			}
+			label = ansi.Truncate(label, viewportWidth, "…")
+			if item.unavailable || item.replaced {
 				rows = append(rows, t.Dialog.SecondaryText.Render(label))
 			} else {
-				rows = append(rows, d.styledRow(t, i, label))
+				rows = append(rows, d.styledRow(t, index, label))
 			}
 		case instrMetadataValue:
+			itemRows[index] = len(rows)
 			value := item.value
 			if value == "" {
 				value = "unset"
 			}
 			label := fmt.Sprintf("  ▸ %s: %s", item.label, value)
-			if d.editingMetadata && i == d.cursor {
+			if d.editingMetadata && index == d.cursor {
 				label = "  ▸ " + item.label + ": " + d.metadataInput.View()
 			}
-			if item.unavailable {
-				rows = append(rows, t.Dialog.SecondaryText.Render(label+" (unavailable for this model)"))
-			} else {
-				rows = append(rows, d.styledRow(t, i, label))
-			}
-		case instrOverrideEdit, instrPreview, instrAction:
-			label := "  ▸ " + item.label
+			label = ansi.Truncate(label, viewportWidth, "…")
 			if item.unavailable {
 				rows = append(rows, t.Dialog.SecondaryText.Render(label))
 			} else {
-				rows = append(rows, d.styledRow(t, i, label))
+				rows = append(rows, d.styledRow(t, index, label))
+			}
+		case instrProviderContextEdit, instrPreview, instrAction:
+			itemRows[index] = len(rows)
+			label := ansi.Truncate("  ▸ "+item.label, viewportWidth, "…")
+			if item.unavailable {
+				rows = append(rows, t.Dialog.SecondaryText.Render(label))
+			} else {
+				rows = append(rows, d.styledRow(t, index, label))
 			}
 		}
 	}
 
-	hint := t.Dialog.SecondaryText.Render("  space: select · e: edit file · esc: close")
-	body := lipgloss.JoinVertical(lipgloss.Left, rows...)
-	content := lipgloss.JoinVertical(
-		lipgloss.Left,
-		titleStyle.Render("Instructions"),
-		body,
-		"",
-		hint,
-	)
+	var body string
+	if bodyHeight > 0 {
+		d.viewport.SetWidth(viewportWidth)
+		d.viewport.SetHeight(bodyHeight)
+		d.viewport.SetContentLines(rows)
+		if d.followCursor {
+			if row, ok := itemRows[d.cursor]; ok {
+				offset := d.viewport.YOffset()
+				switch {
+				case row < offset:
+					d.viewport.SetYOffset(row)
+				case row >= offset+bodyHeight:
+					d.viewport.SetYOffset(row - bodyHeight + 1)
+				}
+			}
+			d.followCursor = false
+		}
+		body = d.viewport.View()
+		if rowCount > bodyHeight {
+			body = joinScrollbar(t, body, bodyHeight, rowCount, bodyHeight, d.viewport.YOffset())
+		}
+	}
 
-	frameStyle := t.Dialog.View
-	view := frameStyle.MaxWidth(d.maxWidth).Render(content)
-	DrawCenter(scr, area, view)
+	parts := []string{title}
+	if body != "" {
+		parts = append(parts, body)
+	}
+	if showHint {
+		hint := ansi.Truncate("  space: select · e: edit file · esc: close", innerWidth, "…")
+		parts = append(parts, "", t.Dialog.SecondaryText.Render(hint))
+	}
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	DrawCenter(scr, area, frameStyle.Width(dialogWidth).Render(content))
 	return nil
 }
 
@@ -629,7 +659,7 @@ func providerNativeInstructions(surfaces []providerregistry.Surface, providerID 
 	return surface.Name + " native tooling instructions", text
 }
 
-func validSystemPromptOverrideProvider(provider string) bool {
+func validProviderInstructionsID(provider string) bool {
 	return provider != "" && provider != "." && provider != ".." && !strings.ContainsAny(provider, `/\\`)
 }
 

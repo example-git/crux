@@ -45,6 +45,10 @@
           "description": "User-defined shell commands that fire on hook events (e.g. PreToolUse)",
           "type": "object"
         },
+        "images": {
+          "$ref": "#/$defs/ImageConfiguration",
+          "description": "Installed image provider selection and execution-host configuration"
+        },
         "lsp": {
           "$ref": "#/$defs/LSPs",
           "description": "Language Server Protocol configurations"
@@ -106,6 +110,77 @@
       },
       "required": [
         "command"
+      ],
+      "type": "object"
+    },
+    "ImageConfiguration": {
+      "additionalProperties": false,
+      "properties": {
+        "preferred": {
+          "description": "Ordered exact image owners for automatic selection",
+          "items": {
+            "$ref": "#/$defs/ImageOwner"
+          },
+          "type": "array"
+        },
+        "providers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ImageProviderConfiguration"
+          },
+          "description": "Execution-host image plugin configuration keyed by backend",
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "ImageOwner": {
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "plugin_id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "backend",
+        "plugin_id",
+        "version",
+        "digest"
+      ],
+      "type": "object"
+    },
+    "ImageProviderConfiguration": {
+      "additionalProperties": false,
+      "properties": {
+        "browser_profiles": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "configuration": {
+          "type": "object"
+        },
+        "credentials": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RegistrationOwner"
+          },
+          "type": "object"
+        },
+        "owner": {
+          "$ref": "#/$defs/ImageOwner"
+        }
+      },
+      "required": [
+        "owner"
       ],
       "type": "object"
     },
@@ -465,16 +540,11 @@
         },
         "disable_default_providers": {
           "default": false,
-          "description": "Ignore all default/embedded providers. When enabled, providers must be fully specified in the config file with base_url, models, and api_key - no merging with defaults occurs",
-          "type": "boolean"
-        },
-        "disable_provider_auto_update": {
-          "default": false,
-          "description": "Disable providers auto-update",
+          "description": "Ignore core and installed provider catalogs. When enabled, providers must be fully specified in the config file with base_url, models, and api_key - no merging with defaults occurs",
           "type": "boolean"
         },
         "disabled_instruction_sections": {
-          "description": "List of native instruction section IDs to disable",
+          "description": "List of Crux tooling instruction section IDs to disable",
           "items": {
             "examples": [
               "whitespace",
@@ -528,7 +598,7 @@
         },
         "instruction_mode": {
           "default": "all",
-          "description": "Which instruction sources are active: all (default), project, or native",
+          "description": "Which optional instruction sources are active: all (default), project without tooling, or native for tooling without project context. Dynamic runtime, memory, MCP, and provider context remain active.",
           "enum": [
             "all",
             "project",
@@ -572,11 +642,6 @@
             "type": "string"
           },
           "type": "array"
-        },
-        "system_prompt_override": {
-          "default": false,
-          "description": "Replace the generated coder system prompt with ~/.ai-cli/instructions/\u003cprovider-id\u003e.txt and initialize a missing file from the generated prompt",
-          "type": "boolean"
         },
         "tui": {
           "$ref": "#/$defs/TUIOptions",
@@ -674,9 +739,17 @@
           "$ref": "#/$defs/Token",
           "description": "OAuth2 token for authentication with the provider"
         },
+        "owner": {
+          "$ref": "#/$defs/ProviderOwnerReference",
+          "description": "Exact provider ownership and construction reference"
+        },
         "plugin": {
           "$ref": "#/$defs/ProviderPluginReference",
           "description": "Provider-plugin ownership reference"
+        },
+        "preset": {
+          "$ref": "#/$defs/ProviderPresetReference",
+          "description": "Provider-preset catalog ownership reference"
         },
         "provider_options": {
           "description": "Additional provider-specific options for this provider",
@@ -711,6 +784,34 @@
       },
       "type": "object"
     },
+    "ProviderOwnerReference": {
+      "additionalProperties": false,
+      "properties": {
+        "compatibility_adapter": {
+          "description": "Exact compatibility adapter delegated by a plugin owner",
+          "type": "string"
+        },
+        "construction": {
+          "description": "Exact host construction selected for this provider owner",
+          "type": "string"
+        },
+        "type": {
+          "description": "Provider owner class",
+          "enum": [
+            "core",
+            "custom",
+            "plugin",
+            "preset"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "construction"
+      ],
+      "type": "object"
+    },
     "ProviderPluginReference": {
       "additionalProperties": false,
       "properties": {
@@ -725,6 +826,78 @@
       },
       "required": [
         "id"
+      ],
+      "type": "object"
+    },
+    "ProviderPresetReference": {
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "description": "Canonical digest of the provider-preset bundle",
+          "type": "string"
+        },
+        "id": {
+          "description": "Stable provider-preset identity",
+          "type": "string"
+        },
+        "version": {
+          "description": "Preset version that last supplied this provider catalog",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "RegistrationOwner": {
+      "additionalProperties": false,
+      "properties": {
+        "account_namespace": {
+          "type": "string"
+        },
+        "compatibility_adapter": {
+          "type": "string"
+        },
+        "construction": {
+          "type": "string"
+        },
+        "has_manifest": {
+          "type": "boolean"
+        },
+        "has_oauth": {
+          "type": "boolean"
+        },
+        "has_preset": {
+          "type": "boolean"
+        },
+        "manifest_id": {
+          "type": "string"
+        },
+        "manifest_version": {
+          "type": "string"
+        },
+        "oauth_adapter": {
+          "type": "string"
+        },
+        "oauth_flow_id": {
+          "type": "string"
+        },
+        "preset_digest": {
+          "type": "string"
+        },
+        "preset_id": {
+          "type": "string"
+        },
+        "preset_version": {
+          "type": "string"
+        },
+        "provider_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider_id"
       ],
       "type": "object"
     },
@@ -908,26 +1081,6 @@
       },
       "type": "object"
     },
-    "ToolGlob": {
-      "additionalProperties": false,
-      "properties": {
-        "timeout": {
-          "description": "Timeout for the glob tool call",
-          "type": "integer"
-        }
-      },
-      "type": "object"
-    },
-    "ToolGrep": {
-      "additionalProperties": false,
-      "properties": {
-        "timeout": {
-          "description": "Timeout for the grep tool call",
-          "type": "integer"
-        }
-      },
-      "type": "object"
-    },
     "ToolLs": {
       "additionalProperties": false,
       "properties": {
@@ -950,20 +1103,31 @@
       },
       "type": "object"
     },
+    "ToolSearch": {
+      "additionalProperties": false,
+      "properties": {
+        "content_timeout": {
+          "description": "Timeout for file content search calls",
+          "type": "integer"
+        },
+        "files_timeout": {
+          "description": "Timeout for file path search calls",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
     "Tools": {
       "additionalProperties": false,
       "properties": {
         "codebase_search": {
           "$ref": "#/$defs/ToolCodebaseSearch"
         },
-        "glob": {
-          "$ref": "#/$defs/ToolGlob"
-        },
-        "grep": {
-          "$ref": "#/$defs/ToolGrep"
-        },
         "ls": {
           "$ref": "#/$defs/ToolLs"
+        },
+        "search": {
+          "$ref": "#/$defs/ToolSearch"
         }
       },
       "type": "object"

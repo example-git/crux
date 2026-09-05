@@ -46,6 +46,26 @@ func TestTryFile_ReacquireAfterRelease(t *testing.T) {
 	t.Cleanup(release2)
 }
 
+func TestSharedFile_AllowsReadersAndBlocksExclusiveLock(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "test.lock")
+
+	releaseFirst, err := SharedFile(t.Context(), path)
+	require.NoError(t, err)
+	releaseSecond, err := SharedFile(t.Context(), path)
+	require.NoError(t, err)
+
+	_, err = TryFile(path)
+	require.ErrorIs(t, err, ErrContended)
+	releaseFirst()
+	_, err = TryFile(path)
+	require.ErrorIs(t, err, ErrContended)
+	releaseSecond()
+	releaseExclusive, err := TryFile(path)
+	require.NoError(t, err)
+	releaseExclusive()
+}
+
 func TestFile_AcquiresWhenFree(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "test.lock")

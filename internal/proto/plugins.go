@@ -17,6 +17,7 @@ type PluginSnapshot struct {
 // direct-child provider plugin bundle.
 type PluginStatus struct {
 	BundleName    string             `json:"bundle_name"`
+	PluginType    string             `json:"plugin_type,omitempty"`
 	ID            string             `json:"id,omitempty"`
 	ProviderID    string             `json:"provider_id,omitempty"`
 	Name          string             `json:"name,omitempty"`

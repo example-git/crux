@@ -67,7 +67,7 @@ func TestCodexBoundedToolTruncatesContentAndPreservesResponseFields(t *testing.T
 	require.Equal(t, inner.response.StopTurn, response.StopTurn)
 }
 
-func TestCodexBoundedToolNormalizesImageResponsesOnce(t *testing.T) {
+func TestCodexBoundedToolPreservesOriginalImageResponse(t *testing.T) {
 	pixels := image.NewNRGBA(image.Rect(0, 0, 2400, 1200))
 	var encoded bytes.Buffer
 	require.NoError(t, png.Encode(&encoded, pixels))
@@ -80,13 +80,13 @@ func TestCodexBoundedToolNormalizesImageResponsesOnce(t *testing.T) {
 
 	response, err := tool.Run(t.Context(), fantasy.ToolCall{Name: "view"})
 	require.NoError(t, err)
-	require.Equal(t, "image/jpeg", response.MediaType)
-	require.LessOrEqual(t, len(response.Data), 512*1024)
+	require.Equal(t, "image/png", response.MediaType)
+	require.Equal(t, encoded.Bytes(), response.Data)
 	config, format, err := image.DecodeConfig(bytes.NewReader(response.Data))
 	require.NoError(t, err)
-	require.Equal(t, "jpeg", format)
-	require.LessOrEqual(t, max(config.Width, config.Height), 1920)
-	require.InDelta(t, 2, float64(config.Width)/float64(config.Height), 0.01)
+	require.Equal(t, "png", format)
+	require.Equal(t, 2400, config.Width)
+	require.Equal(t, 1200, config.Height)
 }
 
 func TestCodexBoundedToolTruncatesReturnedErrorsAndPreservesUnwrap(t *testing.T) {
@@ -113,17 +113,43 @@ func TestCodexBoundedToolRecoversAndBoundsPanics(t *testing.T) {
 	require.LessOrEqual(t, len(response.Content), 12_000)
 }
 
+func TestToolResultContentUsesStoredCodexPolicy(t *testing.T) {
+	content := strings.Repeat("tool output", 4_000)
+	codexModel := Model{
+		ModelCfg:          config.SelectedModel{Provider: codexresponses.Name, Model: "gpt-5.6-sol"},
+		InstructionPolicy: fantasy.InstructionPolicyCodex,
+	}
+	presetModel := Model{
+		ModelCfg:          config.SelectedModel{Provider: codexresponses.Name, Model: "gpt-5.6-sol"},
+		InstructionPolicy: fantasy.InstructionPolicyGeneric,
+	}
+
+	require.Equal(t, codexresponses.TruncateToolOutput(codexModel.ModelCfg.Model, content), toolResultContentForModel(codexModel, content))
+	require.Equal(t, content, toolResultContentForModel(presetModel, content))
+}
+
 func TestCodexBoundedToolsOnlyWrapsCanonicalCodex(t *testing.T) {
 	inner := &codexTestTool{}
 	tools := []fantasy.AgentTool{inner}
 
-	codexTools := codexBoundedTools(tools, Model{ModelCfg: config.SelectedModel{Provider: codexresponses.Name, Model: "gpt-5.6-sol"}})
+	codexTools := codexBoundedTools(tools, Model{
+		ModelCfg:          config.SelectedModel{Provider: codexresponses.Name, Model: "gpt-5.6-sol"},
+		InstructionPolicy: fantasy.InstructionPolicyCodex,
+	})
 	require.Len(t, codexTools, 1)
 	require.IsType(t, &codexBoundedTool{}, codexTools[0])
 	require.Equal(t, "gpt-5.6-sol", codexTools[0].(*codexBoundedTool).modelID)
 	require.NotSame(t, tools[0], codexTools[0])
-	require.Same(t, codexTools[0], codexBoundedTools(codexTools, Model{ModelCfg: config.SelectedModel{Provider: codexresponses.Name}})[0])
+	require.Same(t, codexTools[0], codexBoundedTools(codexTools, Model{
+		ModelCfg:          config.SelectedModel{Provider: codexresponses.Name},
+		InstructionPolicy: fantasy.InstructionPolicyCodex,
+	})[0])
 
-	nonCodexTools := codexBoundedTools(tools, Model{ModelCfg: config.SelectedModel{Provider: "openai"}})
-	require.Same(t, tools[0], nonCodexTools[0])
+	for _, model := range []Model{
+		{ModelCfg: config.SelectedModel{Provider: "openai"}},
+		{ModelCfg: config.SelectedModel{Provider: codexresponses.Name}, InstructionPolicy: fantasy.InstructionPolicyGeneric},
+	} {
+		nonCodexTools := codexBoundedTools(tools, model)
+		require.Same(t, tools[0], nonCodexTools[0])
+	}
 }

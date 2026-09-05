@@ -73,7 +73,11 @@ func (w *AppWorkspace) SetSessionMode(ctx context.Context, sessionID string, mod
 }
 
 func (w *AppWorkspace) DeleteSession(ctx context.Context, sessionID string) error {
-	return w.app.Sessions.Delete(ctx, sessionID)
+	if err := w.app.Sessions.Delete(ctx, sessionID); err != nil {
+		return err
+	}
+	w.app.ResetAgentSession(sessionID)
+	return nil
 }
 
 func (w *AppWorkspace) CreateAgentToolSessionID(messageID, toolCallID string) string {
@@ -116,10 +120,11 @@ func (w *AppWorkspace) ListAllUserMessages(ctx context.Context) ([]message.Messa
 // -- Agent --
 
 func (w *AppWorkspace) AgentRun(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) error {
-	if w.app.AgentCoordinator == nil {
+	coordinator := w.app.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return errors.New("agent coordinator not initialized")
 	}
-	_, err := w.app.AgentCoordinator.Run(ctx, sessionID, prompt, attachments...)
+	_, err := coordinator.Run(ctx, sessionID, prompt, attachments...)
 	return err
 }
 
@@ -158,9 +163,9 @@ func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, comm
 	}
 
 	// Generate a title from the shell command if it was the first message.
-	if isFirstMessage && w.app.AgentCoordinator != nil {
+	if coordinator := w.app.CurrentAgentCoordinator(); isFirstMessage && coordinator != nil {
 		titleCtx := context.WithoutCancel(ctx)
-		w.app.AgentCoordinator.GenerateTitle(titleCtx, sessionID, "$ "+command)
+		coordinator.GenerateTitle(titleCtx, sessionID, "$ "+command)
 	}
 
 	return proto.ShellCommandResponse{
@@ -170,64 +175,77 @@ func (w *AppWorkspace) AgentRunShellCommand(ctx context.Context, sessionID, comm
 }
 
 func (w *AppWorkspace) AgentCancel(sessionID string) {
-	if w.app.AgentCoordinator != nil {
-		w.app.AgentCoordinator.Cancel(sessionID)
+	if coordinator := w.app.CurrentAgentCoordinator(); coordinator != nil {
+		coordinator.Cancel(sessionID)
 	}
 }
 
 func (w *AppWorkspace) AgentIsBusy() bool {
-	if w.app.AgentCoordinator == nil {
+	coordinator := w.app.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return false
 	}
-	return w.app.AgentCoordinator.IsBusy()
+	return coordinator.IsBusy()
 }
 
 func (w *AppWorkspace) AgentIsSessionBusy(sessionID string) bool {
-	if w.app.AgentCoordinator == nil {
+	coordinator := w.app.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return false
 	}
-	return w.app.AgentCoordinator.IsSessionBusy(sessionID)
+	return coordinator.IsSessionBusy(sessionID)
 }
 
 func (w *AppWorkspace) AgentModel() AgentModel {
-	if w.app.AgentCoordinator == nil {
+	coordinator := w.app.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return AgentModel{}
 	}
-	m := w.app.AgentCoordinator.Model()
+	m := coordinator.Model()
 	return AgentModel{
-		CatwalkCfg: m.CatwalkCfg,
-		ModelCfg:   m.ModelCfg,
+		CatalogModel: m.CatalogModel,
+		ModelCfg:     m.ModelCfg,
 	}
+}
+
+func (w *AppWorkspace) AgentInstructionSnapshot(ctx context.Context) (agent.InstructionSnapshot, error) {
+	coordinator := w.app.CurrentAgentCoordinator()
+	if coordinator == nil {
+		return agent.InstructionSnapshot{}, ErrAgentNotInitialized
+	}
+	return agent.CurrentInstructionSnapshot(ctx, coordinator)
 }
 
 func (w *AppWorkspace) AgentIsReady() bool {
-	return w.app.AgentCoordinator != nil
+	return w.app.CurrentAgentCoordinator() != nil
 }
 
 func (w *AppWorkspace) AgentReadyErr() error {
-	if w.app.AgentCoordinator == nil {
+	if w.app.CurrentAgentCoordinator() == nil {
 		return ErrAgentNotInitialized
 	}
 	return nil
 }
 
 func (w *AppWorkspace) AgentQueuedPrompts(sessionID string) int {
-	if w.app.AgentCoordinator == nil {
+	coordinator := w.app.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return 0
 	}
-	return w.app.AgentCoordinator.QueuedPrompts(sessionID)
+	return coordinator.QueuedPrompts(sessionID)
 }
 
 func (w *AppWorkspace) AgentQueuedPromptsList(sessionID string) []agent.QueuedPrompt {
-	if w.app.AgentCoordinator == nil {
+	coordinator := w.app.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return nil
 	}
-	return w.app.AgentCoordinator.QueuedPromptsList(sessionID)
+	return coordinator.QueuedPromptsList(sessionID)
 }
 
 func (w *AppWorkspace) AgentClearQueue(sessionID string) {
-	if w.app.AgentCoordinator != nil {
-		w.app.AgentCoordinator.ClearQueue(sessionID)
+	if coordinator := w.app.CurrentAgentCoordinator(); coordinator != nil {
+		coordinator.ClearQueue(sessionID)
 	}
 }
 
@@ -236,25 +254,27 @@ func (w *AppWorkspace) AgentDetachForegroundJobs() int {
 }
 
 func (w *AppWorkspace) AgentSummarize(ctx context.Context, sessionID string) error {
-	if w.app.AgentCoordinator == nil {
+	coordinator := w.app.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return errors.New("agent coordinator not initialized")
 	}
-	return w.app.AgentCoordinator.Summarize(ctx, sessionID)
+	return coordinator.Summarize(ctx, sessionID)
 }
 
-func (w *AppWorkspace) SessionRewind(ctx context.Context, sessionID, messageID string, summarize bool) error {
-	return w.app.RewindSession(ctx, sessionID, messageID, summarize)
+func (w *AppWorkspace) SessionRewind(ctx context.Context, sessionID, messageID string, summarize, restoreFiles bool) error {
+	return w.app.RewindSession(ctx, sessionID, messageID, summarize, restoreFiles)
 }
 
 func (w *AppWorkspace) AgentSuggestPrompt(ctx context.Context, sessionID string) (string, error) {
-	if w.app.AgentCoordinator == nil {
+	coordinator := w.app.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return "", errors.New("agent coordinator not initialized")
 	}
-	return w.app.AgentCoordinator.SuggestPrompt(ctx, sessionID)
+	return coordinator.SuggestPrompt(ctx, sessionID)
 }
 
-func (w *AppWorkspace) UpdateAgentModel(ctx context.Context) error {
-	return w.app.UpdateAgentModel(ctx)
+func (w *AppWorkspace) UpdateAgentModel(ctx context.Context, expected config.AgentModelState) error {
+	return w.app.UpdateAgentModel(ctx, expected)
 }
 
 func (w *AppWorkspace) CreateAgentDefinition(_ context.Context, request proto.CreateAgentDefinitionRequest) (string, error) {
@@ -296,7 +316,7 @@ func (w *AppWorkspace) InitCoderAgentNonInteractive(ctx context.Context) error {
 	return w.app.InitCoderAgentNonInteractive(ctx)
 }
 
-func (w *AppWorkspace) GetDefaultSmallModel(providerID string) config.SelectedModel {
+func (w *AppWorkspace) GetDefaultSmallModel(providerID string) (config.SelectedModel, error) {
 	return w.app.GetDefaultSmallModel(providerID)
 }
 
@@ -375,7 +395,7 @@ func (w *AppWorkspace) FileTrackerListReadFiles(ctx context.Context, sessionID s
 // -- History --
 
 func (w *AppWorkspace) ListSessionHistory(ctx context.Context, sessionID string) ([]history.File, error) {
-	return w.app.History.ListBySession(ctx, sessionID)
+	return w.app.History.ListLatestCheckpointFiles(ctx, sessionID)
 }
 
 // -- LSP --
@@ -435,8 +455,16 @@ func (w *AppWorkspace) Resolver() config.VariableResolver {
 
 // -- Config mutations --
 
-func (w *AppWorkspace) UpdatePreferredModel(scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel) error {
-	return w.store.UpdatePreferredModel(scope, modelType, model)
+func (w *AppWorkspace) UpdatePreferredModel(scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel, owner providerregistry.RegistrationOwner) (config.AgentModelState, error) {
+	return w.store.UpdatePreferredModelForOwner(scope, modelType, model, owner)
+}
+
+func (w *AppWorkspace) SetProviderDisabled(scope config.Scope, owner providerregistry.RegistrationOwner, disabled bool) error {
+	if err := w.store.SetProviderDisabled(scope, owner, disabled); err != nil {
+		return err
+	}
+	go mcptools.Reinitialize(context.Background(), w.store)
+	return nil
 }
 
 func (w *AppWorkspace) SetCompactMode(scope config.Scope, enabled bool) error {
@@ -444,16 +472,29 @@ func (w *AppWorkspace) SetCompactMode(scope config.Scope, enabled bool) error {
 }
 
 func (w *AppWorkspace) SetProviderAPIKey(scope config.Scope, providerID string, apiKey any) error {
+	owner, err := config.ProviderCredentialOwner(providerID, apiKey)
+	if err != nil {
+		return err
+	}
 	if err := w.store.SetProviderAPIKey(scope, providerID, apiKey); err != nil {
 		return err
 	}
-	w.store.SignalAuthComplete(providerID)
+	w.store.SignalAuthComplete(owner)
 	return nil
+}
+
+func (w *AppWorkspace) RemoveProviderCredentials(scope config.Scope, owner providerregistry.RegistrationOwner) error {
+	return w.store.RemoveProviderCredentials(scope, owner)
 }
 
 func (w *AppWorkspace) SetConfigField(scope config.Scope, key string, value any) error {
 	if err := w.store.SetConfigField(scope, key, value); err != nil {
 		return err
+	}
+	if coordinator := w.app.CurrentAgentCoordinator(); skills.ConfigKeyAffectsDiscovery(key) && coordinator != nil {
+		if err := coordinator.UpdateModels(context.Background()); err != nil {
+			return fmt.Errorf("refresh agent after skill configuration change: %w", err)
+		}
 	}
 	go mcptools.Reinitialize(context.Background(), w.store)
 	return nil
@@ -463,6 +504,11 @@ func (w *AppWorkspace) RemoveConfigField(scope config.Scope, key string) error {
 	if err := w.store.RemoveConfigField(scope, key); err != nil {
 		return err
 	}
+	if coordinator := w.app.CurrentAgentCoordinator(); skills.ConfigKeyAffectsDiscovery(key) && coordinator != nil {
+		if err := coordinator.UpdateModels(context.Background()); err != nil {
+			return fmt.Errorf("refresh agent after skill configuration change: %w", err)
+		}
+	}
 	go mcptools.Reinitialize(context.Background(), w.store)
 	return nil
 }
@@ -471,17 +517,19 @@ func (w *AppWorkspace) ImportCopilot() (*oauth.Token, bool) {
 	return w.store.ImportCopilot()
 }
 
-func (w *AppWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Scope, providerID string) error {
-	return w.store.RefreshOAuthToken(ctx, scope, providerID)
+func (w *AppWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Scope, owner providerregistry.RegistrationOwner) error {
+	_, err := w.store.RefreshOAuthTokenForOwner(ctx, scope, owner)
+	return err
 }
 
 func (w *AppWorkspace) CodebaseIndexStatus(ctx context.Context) (proto.CodebaseIndexStatus, error) {
-	status, err := agent.CodebaseIndexStatus(ctx, w.app.AgentCoordinator)
+	coordinator := w.app.CurrentAgentCoordinator()
+	status, err := agent.CodebaseIndexStatus(ctx, coordinator)
 	if err != nil {
 		return proto.CodebaseIndexStatus{}, err
 	}
 	result := codebaseIndexStatusProto(w.store.Config().Tools.CodebaseSearch, status)
-	result.MemoryActivity = agent.AutoMemoryActivity(w.app.AgentCoordinator)
+	result.MemoryActivity = agent.AutoMemoryActivity(coordinator)
 	return result, nil
 }
 
@@ -499,16 +547,20 @@ func (w *AppWorkspace) UpdateCodebaseIndex(ctx context.Context, update proto.Cod
 	}); err != nil {
 		return proto.CodebaseIndexStatus{}, err
 	}
-	if err := w.app.AgentCoordinator.UpdateModels(ctx); err != nil {
+	coordinator := w.app.CurrentAgentCoordinator()
+	if coordinator == nil {
+		return proto.CodebaseIndexStatus{}, ErrAgentNotInitialized
+	}
+	if err := coordinator.UpdateModels(ctx); err != nil {
 		return proto.CodebaseIndexStatus{}, err
 	}
 	if update.Reindex {
-		status, err := agent.ReconcileCodebaseIndex(ctx, w.app.AgentCoordinator)
+		status, err := agent.ReconcileCodebaseIndex(ctx, coordinator)
 		if err != nil {
 			return proto.CodebaseIndexStatus{}, err
 		}
 		result := codebaseIndexStatusProto(w.store.Config().Tools.CodebaseSearch, status)
-		result.MemoryActivity = agent.AutoMemoryActivity(w.app.AgentCoordinator)
+		result.MemoryActivity = agent.AutoMemoryActivity(coordinator)
 		return result, nil
 	}
 	return w.CodebaseIndexStatus(ctx)
@@ -518,6 +570,7 @@ func codebaseIndexStatusProto(settings config.ToolCodebaseSearch, status codebas
 	result := proto.CodebaseIndexStatus{
 		Enabled:          settings.IsEnabled(),
 		State:            string(status.State),
+		Serving:          status.Serving,
 		ProjectRoot:      status.ProjectRoot,
 		DatabasePath:     status.DatabasePath,
 		StoreDirectory:   status.StoreDirectory,

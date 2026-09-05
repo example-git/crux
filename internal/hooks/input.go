@@ -51,7 +51,11 @@ func BuildPayload(eventName, sessionID, cwd, toolName, toolInputJSON string) []b
 // BuildEnv constructs the environment variable slice for a hook command.
 // It includes all current process env vars plus hook-specific ones.
 func BuildEnv(eventName, toolName, sessionID, cwd, projectDir, toolInputJSON string) []string {
-	env := os.Environ()
+	return BuildEnvFrom(os.Environ(), eventName, toolName, sessionID, cwd, projectDir, toolInputJSON)
+}
+
+func BuildEnvFrom(base []string, eventName, toolName, sessionID, cwd, projectDir, toolInputJSON string) []string {
+	env := append([]string(nil), base...)
 	env = append(env, shell.CruxEnvMarkers()...)
 	env = append(
 		env,

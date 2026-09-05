@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -372,6 +373,97 @@ func TestClientReusesSocketAndChainsOnlyWithinPurpose(t *testing.T) {
 	require.Equal(t, int32(3), connections.Load())
 }
 
+func TestClientRejectsOwnerReplacementBeforeReusedSocketWrite(t *testing.T) {
+	received := make(chan struct{}, 2)
+	var connections atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		conn, err := upgrader.Upgrade(writer, request, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		connections.Add(1)
+		for {
+			var frame requestFrame
+			if err := conn.ReadJSON(&frame); err != nil {
+				return
+			}
+			received <- struct{}{}
+			if err := conn.WriteJSON(map[string]any{"type": "response.output_text.delta", "delta": "answer"}); err != nil {
+				return
+			}
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": "resp_1",
+					"output": []map[string]any{{
+						"type":    "message",
+						"role":    "assistant",
+						"content": []map[string]any{{"type": "output_text", "text": "answer"}},
+					}},
+				},
+			}); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var ownerCurrent atomic.Bool
+	ownerCurrent.Store(true)
+	store := NewSessionStore()
+	t.Cleanup(store.Close)
+	model := &languageModel{
+		modelID:  "gpt-test",
+		provider: Name,
+		client: &client{
+			url:          strings.Replace(server.URL, "http://", "ws://", 1),
+			token:        func() string { return "token" },
+			accountID:    func() string { return "account" },
+			sessionStore: store,
+			ownerValidator: func() error {
+				if !ownerCurrent.Load() {
+					return errors.New("owner changed")
+				}
+				return nil
+			},
+		},
+	}
+	headers := map[string]string{"x-session-id": "conversation-a", "x-request-purpose": "conversation"}
+	first, err := model.Generate(t.Context(), fantasy.Call{
+		Headers: headers,
+		Prompt:  fantasy.Prompt{fantasy.NewUserMessage("first")},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "answer", first.Content[0].(fantasy.TextContent).Text)
+	select {
+	case <-received:
+	case <-time.After(time.Second):
+		t.Fatal("first WebSocket frame was not received")
+	}
+
+	ownerCurrent.Store(false)
+	_, err = model.Generate(t.Context(), fantasy.Call{
+		Headers: headers,
+		Prompt: fantasy.Prompt{
+			fantasy.NewUserMessage("first"),
+			{
+				Role:    fantasy.MessageRoleAssistant,
+				Content: []fantasy.MessagePart{fantasy.TextPart{Text: "answer"}},
+			},
+			fantasy.NewUserMessage("second"),
+		},
+	})
+	require.ErrorContains(t, err, "owner changed before WebSocket write")
+	require.EqualValues(t, 1, connections.Load())
+	select {
+	case <-received:
+		t.Fatal("stale owner wrote a second frame")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestClientReconnectForcesFullReplay(t *testing.T) {
 	type receivedRequest struct {
 		connection int32
@@ -423,10 +515,7 @@ func TestClientReconnectForcesFullReplay(t *testing.T) {
 		state := store.state(newTransportStateKey(model.client.url, model.provider, account, model.modelID, "conversation", "conversation", model.client.transportIdentity()))
 		state.mu.Lock()
 		defer state.mu.Unlock()
-		if state.conn == nil {
-			return false
-		}
-		return state.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Millisecond)) != nil
+		return state.conn != nil && len(state.readEvents) > 0
 	}, time.Second, 10*time.Millisecond)
 
 	_, err = model.Generate(context.Background(), fantasy.Call{

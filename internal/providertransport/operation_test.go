@@ -1,6 +1,8 @@
 package providertransport
 
 import (
+	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -26,10 +28,13 @@ func TestCompileResolvesOperationPolicyAndDefaults(t *testing.T) {
 		ToolCodecs: map[string]manifest.ToolCodec{
 			"tools": {Aliases: []manifest.ToolAlias{{Host: "view", Provider: "read"}}, Surfaces: []string{"definitions"}},
 		},
+		ClientIdentities: map[string]manifest.ResolvedClientIdentity{
+			"synthetic": {CacheKey: "synthetic", FallbackVersion: "1.2.3", VersionPattern: `^\d+\.\d+\.\d+$`, UserAgentFormat: "synthetic/{version}"},
+		},
 	}}
 	operation := manifest.Operation{
 		ID: "inference", Kind: "inference", Protocol: "openai-responses", Transport: "sse",
-		Endpoint: "api", Method: "POST", Path: "/v1/responses",
+		Endpoint: "api", Method: "POST", Path: "/v1/responses", ClientIdentity: "synthetic",
 		RequestTransform: "request", PromptTransform: "prompt", RoleMap: "roles", ToolCodec: "tools",
 	}
 	compiled, err := Compile(value, operation)
@@ -45,12 +50,46 @@ func TestCompileResolvesOperationPolicyAndDefaults(t *testing.T) {
 	require.Equal(t, "remove-lines-with-prefix", compiled.PromptTransform.Operations[0].Operation)
 	require.Equal(t, "system", compiled.RoleMap.System)
 	require.Equal(t, "read", compiled.ToolCodec.Aliases[0].Provider)
+	require.Equal(t, "synthetic/{version}", compiled.ClientIdentity.UserAgentFormat)
 
 	compiled.Endpoint.AllowedHosts[0] = "mutated"
 	clone := compiled.Clone()
 	clone.ToolCodec.Aliases[0].Provider = "changed"
+	clone.ClientIdentity.UserAgentFormat = "changed"
 	require.Equal(t, "mutated", compiled.Endpoint.AllowedHosts[0])
 	require.Equal(t, "read", compiled.ToolCodec.Aliases[0].Provider)
+	require.Equal(t, "synthetic/{version}", compiled.ClientIdentity.UserAgentFormat)
+}
+
+func TestCompileScopesErrorMappingsToModelOperations(t *testing.T) {
+	mappings := []manifest.ErrorMapping{{Class: "capacity", Statuses: []int{http.StatusServiceUnavailable}, Retryable: true}}
+	value := manifest.Manifest{Capabilities: manifest.Capabilities{
+		Endpoints: []manifest.Endpoint{{ID: "api", BaseURL: "https://example.invalid"}},
+		Errors:    mappings,
+	}}
+	for _, test := range []struct {
+		kind string
+		want bool
+	}{
+		{kind: "inference", want: true},
+		{kind: "compaction", want: true},
+		{kind: "account"},
+		{kind: "usage"},
+		{kind: "model-catalog"},
+		{kind: "custom"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			compiled, err := Compile(value, manifest.Operation{ID: test.kind, Kind: test.kind, Endpoint: "api", Path: "/operation"})
+			require.NoError(t, err)
+			if !test.want {
+				require.Empty(t, compiled.Errors)
+				return
+			}
+			require.Equal(t, mappings, compiled.Errors)
+			compiled.Errors[0].Title = "changed"
+			require.Empty(t, mappings[0].Title)
+		})
+	}
 }
 
 func TestOperationEnforcesEndpointAndOrderedHeaders(t *testing.T) {
@@ -94,6 +133,21 @@ func TestOperationSameOriginEndpointPolicy(t *testing.T) {
 	require.ErrorContains(t, err, "origin allowlist")
 }
 
+func TestOperationHTTPClientExecutesTimeoutAndRedirectPolicy(t *testing.T) {
+	preserved := errors.New("preserved redirect policy")
+	base := &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return preserved }}
+	operation := &Operation{RequestTimeout: 2 * time.Second, Endpoint: manifest.Endpoint{FollowRedirects: false}}
+	client := operation.HTTPClient(base)
+	require.NotSame(t, base, client)
+	require.Equal(t, time.Second, base.Timeout)
+	require.Equal(t, 2*time.Second, client.Timeout)
+	require.ErrorIs(t, client.CheckRedirect(nil, nil), http.ErrUseLastResponse)
+
+	operation.Endpoint.FollowRedirects = true
+	client = operation.HTTPClient(base)
+	require.ErrorIs(t, client.CheckRedirect(nil, nil), preserved)
+}
+
 func TestOperationValidateSelection(t *testing.T) {
 	operation := &Operation{ID: "inference", Key: Key{Protocol: "openai-responses", Transport: "sse"}}
 	require.NoError(t, operation.ValidateSelection("openai-responses", "sse"))
@@ -114,6 +168,8 @@ func TestCompileUsesExplicitTimeoutsAndRetry(t *testing.T) {
 	compiled, err := Compile(value, operation)
 	require.NoError(t, err)
 	require.Equal(t, 3, compiled.Retry.MaxAttempts)
+	require.Equal(t, operation.Timeouts, compiled.Timeouts)
+	require.NotSame(t, operation.Timeouts, compiled.Timeouts)
 	require.Equal(t, 5*time.Second, compiled.ConnectTimeout)
 	require.Equal(t, 40*time.Second, compiled.RequestTimeout)
 	require.Equal(t, 12*time.Second, compiled.StreamIdleTimeout)

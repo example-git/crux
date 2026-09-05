@@ -38,10 +38,11 @@ const (
 
 // Global type identifiers for Anthropic-specific provider data.
 const (
-	TypeProviderOptions         = Name + ".options"
-	TypeReasoningOptionMetadata = Name + ".reasoning_metadata"
-	TypeProviderCacheControl    = Name + ".cache_control_options"
-	TypeWebSearchResultMetadata = Name + ".web_search_result_metadata"
+	TypeProviderOptions          = Name + ".options"
+	TypeReasoningOptionMetadata  = Name + ".reasoning_metadata"
+	TypeProviderCacheControl     = Name + ".cache_control_options"
+	TypeWebSearchResultMetadata  = Name + ".web_search_result_metadata"
+	TypeToolSearchResultMetadata = Name + ".tool_search_result_metadata"
 )
 
 // Register Anthropic provider-specific types with the global registry.
@@ -69,6 +70,13 @@ func init() {
 	})
 	fantasy.RegisterProviderType(TypeWebSearchResultMetadata, func(data []byte) (fantasy.ProviderOptionsData, error) {
 		var v WebSearchResultMetadata
+		if err := json.Unmarshal(data, &v); err != nil {
+			return nil, err
+		}
+		return &v, nil
+	})
+	fantasy.RegisterProviderType(TypeToolSearchResultMetadata, func(data []byte) (fantasy.ProviderOptionsData, error) {
+		var v ToolSearchResultMetadata
 		if err := json.Unmarshal(data, &v); err != nil {
 			return nil, err
 		}
@@ -199,6 +207,29 @@ func (m *WebSearchResultMetadata) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*m = WebSearchResultMetadata(p)
+	return nil
+}
+
+type ToolSearchResultMetadata struct {
+	ToolNames    []string `json:"tool_names,omitempty"`
+	ErrorCode    string   `json:"error_code,omitempty"`
+	ErrorMessage string   `json:"error_message,omitempty"`
+}
+
+func (*ToolSearchResultMetadata) Options() {}
+
+func (m ToolSearchResultMetadata) MarshalJSON() ([]byte, error) {
+	type plain ToolSearchResultMetadata
+	return fantasy.MarshalProviderType(TypeToolSearchResultMetadata, plain(m))
+}
+
+func (m *ToolSearchResultMetadata) UnmarshalJSON(data []byte) error {
+	type plain ToolSearchResultMetadata
+	var p plain
+	if err := fantasy.UnmarshalProviderType(data, &p); err != nil {
+		return err
+	}
+	*m = ToolSearchResultMetadata(p)
 	return nil
 }
 

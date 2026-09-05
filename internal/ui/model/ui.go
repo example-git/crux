@@ -25,7 +25,6 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/ultraviolet/layout"
@@ -50,12 +49,14 @@ import (
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/question"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/skills"
 	"github.com/example-git/crux/internal/stringext"
 	managedtask "github.com/example-git/crux/internal/task"
+	"github.com/example-git/crux/internal/tmuxsession"
 	"github.com/example-git/crux/internal/ui/anim"
 	"github.com/example-git/crux/internal/ui/attachments"
 	"github.com/example-git/crux/internal/ui/chat"
@@ -120,6 +121,19 @@ const (
 
 type openEditorMsg struct {
 	Text string
+}
+
+type initialSessionUnavailableMsg struct{}
+
+type modelSelectionAppliedMsg struct {
+	providerID string
+	modelType  config.SelectedModelType
+	modelName  string
+}
+
+type tmuxAttachPreparedMsg struct {
+	lease *tmuxsession.Lease
+	err   error
 }
 
 type shellResultMsg struct {
@@ -197,6 +211,8 @@ type (
 
 	// sessionFilesUpdatesMsg is sent when the files for this session have been updated
 	sessionFilesUpdatesMsg struct {
+		sessionID    string
+		generation   uint64
 		sessionFiles []SessionFile
 	} // usageUpdatedMsg is sent when provider quota usage (rate-limit
 	// windows) has been fetched for the current provider.
@@ -208,9 +224,10 @@ type (
 
 // UI represents the main user interface model.
 type UI struct {
-	com          *common.Common
-	session      *session.Session
-	sessionFiles []SessionFile
+	com                  *common.Common
+	session              *session.Session
+	sessionFiles         []SessionFile
+	sessionFilesFetchGen uint64
 
 	// keeps track of read files while we don't have a session id
 	sessionFileReads []string
@@ -219,6 +236,7 @@ type UI struct {
 	initialSessionID string
 	// continueLastSession is set to continue the most recent session on startup.
 	continueLastSession bool
+	initialPrompt       string
 
 	lastUserMessageTime int64
 
@@ -316,7 +334,9 @@ type UI struct {
 
 	// onboarding state
 	onboarding struct {
-		yesInitializeSelected bool
+		yesInitializeSelected   bool
+		hoveredInitializeButton int
+		buttonCompositor        *lipgloss.Compositor
 	}
 
 	// lspStates / lspDiagnostics memoize the workspace LSP state and
@@ -441,8 +461,18 @@ type UI struct {
 	}
 }
 
+func initialUIState(ws workspace.Workspace) uiState {
+	if !ws.AgentIsReady() {
+		return uiOnboarding
+	}
+	if needsInitialization, _ := ws.ProjectNeedsInitialization(); needsInitialization {
+		return uiInitialize
+	}
+	return uiLanding
+}
+
 // New creates a new instance of the [UI] model.
-func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
+func New(com *common.Common, initialSessionID string, continueLast bool, initialPrompt string) *UI {
 	// Editor components
 	ta := textarea.New()
 	ta.SetStyles(com.Styles.Editor.Textarea)
@@ -509,6 +539,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		notifyWindowFocused: true,
 		initialSessionID:    initialSessionID,
 		continueLastSession: continueLast,
+		initialPrompt:       initialPrompt,
 		skillStates:         skills.GetLatestStates(),
 	}
 
@@ -549,11 +580,8 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 	// set onboarding state defaults
 	ui.onboarding.yesInitializeSelected = true
 
-	desiredState := uiLanding
+	desiredState := initialUIState(com.Workspace)
 	desiredFocus := uiFocusEditor
-	if n, _ := com.Workspace.ProjectNeedsInitialization(); n {
-		desiredState = uiInitialize
-	}
 
 	// set initial state
 	ui.setState(desiredState, desiredFocus)
@@ -587,6 +615,8 @@ func (m *UI) Init() tea.Cmd {
 	// load initial session if specified
 	if cmd := m.loadInitialSession(); cmd != nil {
 		cmds = append(cmds, cmd)
+	} else if cmd := m.sendInitialPrompt(); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
 	// Prime the memoized busy/permission state off-thread.
 	if cmd := m.dispatchBusyRefresh(); cmd != nil {
@@ -609,18 +639,31 @@ func (m *UI) loadInitialSession() tea.Cmd {
 		// Only load if we're in landing state (i.e., fully configured)
 		return nil
 	case m.initialSessionID != "":
-		return m.loadSession(m.initialSessionID)
+		sessionID := m.initialSessionID
+		m.initialSessionID = ""
+		return m.loadSession(sessionID)
 	case m.continueLastSession:
+		m.continueLastSession = false
 		return func() tea.Msg {
 			sessions, err := m.com.Workspace.ListSessions(context.Background())
-			if err != nil || len(sessions) == 0 {
-				return nil
+			if err != nil {
+				return util.ReportError(err)
+			}
+			if len(sessions) == 0 {
+				return initialSessionUnavailableMsg{}
 			}
 			return m.loadSession(sessions[0].ID)()
 		}
 	default:
 		return nil
 	}
+}
+
+func (m *UI) continueStartup() tea.Cmd {
+	if cmd := m.loadInitialSession(); cmd != nil {
+		return cmd
+	}
+	return m.sendInitialPrompt()
 }
 
 // sendNotification returns a command that sends a notification if allowed by policy.
@@ -772,6 +815,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BlurMsg:
 		m.notifyWindowFocused = false
 	case pubsub.Event[notify.Notification]:
+		if msg.Payload.SessionID != "" && (m.session == nil || msg.Payload.SessionID != m.session.ID) {
+			break
+		}
 		if cmd := m.handleAgentNotification(msg.Payload); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -814,6 +860,19 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.dispatchBusyRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case modelSelectionAppliedMsg:
+		m.invalidateBusyCaches()
+		if cmd := m.dispatchBusyRefresh(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		cmds = append(cmds, util.ReportInfo(fmt.Sprintf("%s model changed to %s", stringext.Capitalize(string(msg.modelType)), msg.modelName)))
+		if msg.modelType == config.SelectedModelTypeLarge {
+			cmds = append(cmds, m.fetchProviderUsageFor(msg.providerID))
+		}
+	case initialSessionUnavailableMsg:
+		if cmd := m.sendInitialPrompt(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case agentRunSubmittedMsg:
 		// A prompt was just accepted (run started or enqueued): fetch the
 		// authoritative busy/queue state to confirm the optimistic values
@@ -840,6 +899,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session = msg.session
 		m.setEditorPrompt(m.yoloModeCached())
 		m.sidebarOffset = 0
+		m.sessionFilesFetchGen++
 		m.sessionFiles = msg.files
 		// Session switch: the memoized busy state and queued prompts
 		// belong to the previous session. Drop them and re-fetch
@@ -866,8 +926,15 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.setSessionMessages(msgs); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-		if cmd := m.restoreModelFromSession(msgs); cmd != nil {
-			cmds = append(cmds, cmd)
+		restoreModel := m.restoreModelFromSession(msgs)
+		initialPrompt := m.sendInitialPrompt()
+		switch {
+		case restoreModel != nil && initialPrompt != nil:
+			cmds = append(cmds, tea.Sequence(restoreModel, initialPrompt))
+		case restoreModel != nil:
+			cmds = append(cmds, restoreModel)
+		case initialPrompt != nil:
+			cmds = append(cmds, initialPrompt)
 		}
 		if cmd := m.autoExpandPillsIfReasonable(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -892,7 +959,13 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateLayoutAndSize()
 
 	case sessionFilesUpdatesMsg:
+		if m.session == nil || msg.sessionID != m.session.ID || msg.generation != m.sessionFilesFetchGen {
+			break
+		}
 		m.sessionFiles = msg.sessionFiles
+		if m.sidebarContent != "" {
+			m.updateSidebarScrollState()
+		}
 		var paths []string
 		for _, f := range msg.sessionFiles {
 			paths = append(paths, f.LatestVersion.Path)
@@ -951,6 +1024,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dialog.CloseFrontDialog()
 
 	case pubsub.Event[managedtask.Notification]:
+		if m.session == nil || msg.Payload.ParentSessionID != m.session.ID {
+			break
+		}
 		message := msg.Payload.Summary
 		if msg.Payload.OutputRef != "" {
 			message += "\nOutput: " + msg.Payload.OutputRef
@@ -1011,6 +1087,13 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.Type {
 		case pubsub.CreatedEvent:
+			if msg.Payload.Role == message.User {
+				m.sessionFilesFetchGen++
+				m.sessionFiles = nil
+				if m.sidebarContent != "" {
+					m.updateSidebarScrollState()
+				}
+			}
 			cmds = append(cmds, m.appendSessionMessage(msg.Payload))
 			// A new message is a run boundary — a user prompt starting
 			// a turn or the agent replying/dequeueing. Drop the
@@ -1159,6 +1242,11 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.chat.BeginResize())
 		}
 		m.updateLayoutAndSize()
+		if front := m.dialog.DialogLast(); front != nil && front.ID() == dialog.InstructionsPreviewID {
+			if cmd := m.handleDialogMsg(msg); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 		if m.state == uiChat && m.chat.Follow() {
 			if cmd := m.chat.ScrollToBottomAndAnimate(); cmd != nil {
 				cmds = append(cmds, cmd)
@@ -1180,7 +1268,15 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseClickMsg:
 		// Pass mouse events to dialogs first if any are open.
 		if m.dialog.HasDialogs() {
-			m.dialog.Update(msg)
+			if cmd := m.handleDialogMsg(msg); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return m, tea.Batch(cmds...)
+		}
+		if cmd, handled := m.handleInitializeClick(msg); handled {
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 			return m, tea.Batch(cmds...)
 		}
 
@@ -1239,6 +1335,9 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Pass mouse events to dialogs first if any are open.
 		if m.dialog.HasDialogs() {
 			m.dialog.Update(msg)
+			return m, tea.Batch(cmds...)
+		}
+		if m.handleInitializeHover(msg) {
 			return m, tea.Batch(cmds...)
 		}
 
@@ -1490,7 +1589,26 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case usageUpdatedMsg:
 		if msg.gen == m.usageFetchGen {
 			m.providerUsage = msg.usage
+			m.updateSidebarScrollState()
 		}
+	case tmuxAttachPreparedMsg:
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+			break
+		}
+		command, err := msg.lease.AttachCommand()
+		if err != nil {
+			restoreErr := msg.lease.Restore(context.Background())
+			cmds = append(cmds, util.ReportError(errors.Join(err, restoreErr)))
+			break
+		}
+		cmds = append(cmds, tea.ExecProcess(command, func(attachErr error) tea.Msg {
+			restoreErr := msg.lease.Restore(context.Background())
+			if err := errors.Join(attachErr, restoreErr); err != nil {
+				return util.ReportError(err)()
+			}
+			return util.NewInfoMsg("Returned to Crux")
+		}))
 	case util.InfoMsg:
 		if msg.Type == util.InfoTypeError {
 			slog.Error("Error reported", "error", msg.Msg)
@@ -1523,6 +1641,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
+	case dialog.ActionPreviewInstructions:
+		cmds = append(cmds, m.handleDialogAction(msg))
 	default:
 		if m.dialog.HasDialogs() {
 			if cmd := m.handleDialogMsg(msg); cmd != nil {
@@ -2074,7 +2194,11 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 	// Instructions config changed — dialog stays open for more changes.
 	case dialog.ActionInstructionsChanged:
 		cmds = append(cmds, func() tea.Msg {
-			if err := m.com.Workspace.UpdateAgentModel(context.TODO()); err != nil {
+			cfg := m.com.Config()
+			if cfg == nil {
+				return util.ReportError(errors.New("configuration not found"))()
+			}
+			if err := m.com.Workspace.UpdateAgentModel(context.TODO(), cfg.AgentModelState()); err != nil {
 				return util.ReportError(err)()
 			}
 			return nil
@@ -2095,6 +2219,12 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 	case dialog.ActionSelectSession:
 		m.dialog.CloseDialog(dialog.SessionsID)
 		cmds = append(cmds, m.loadSession(msg.Session.ID))
+	case dialog.ActionAttachTmuxSession:
+		m.dialog.CloseDialog(dialog.TmuxSessionsID)
+		cmds = append(cmds, func() tea.Msg {
+			lease, err := tmuxsession.Prepare(context.Background(), msg.Session)
+			return tmuxAttachPreparedMsg{lease: lease, err: err}
+		})
 
 	// Open dialog message.
 	case dialog.ActionOpenDialog:
@@ -2200,7 +2330,7 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		m.syncBangModeFromTextarea()
 		cmds = append(cmds, m.updateTextareaWithPrevHeight(nil, prevHeight))
 		cmds = append(cmds, func() tea.Msg {
-			if err := m.com.Workspace.SessionRewind(context.Background(), msg.SessionID, msg.MessageID, msg.Summarize); err != nil {
+			if err := m.com.Workspace.SessionRewind(context.Background(), msg.SessionID, msg.MessageID, msg.Summarize, msg.RestoreFiles); err != nil {
 				return util.ReportError(err)()
 			}
 			return nil
@@ -2241,10 +2371,17 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 
 			currentModel := cfg.Models[agentCfg.Model]
 			currentModel.Think = !currentModel.Think
-			if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel); err != nil {
+			owner, err := selectedModelOwner(cfg, currentModel)
+			if err != nil {
 				return util.ReportError(err)()
 			}
-			m.com.Workspace.UpdateAgentModel(context.TODO())
+			state, err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel, owner)
+			if err != nil {
+				return util.ReportError(err)()
+			}
+			if err := m.com.Workspace.UpdateAgentModel(context.TODO(), state); err != nil {
+				return util.ReportError(err)()
+			}
 			status := "disabled"
 			if currentModel.Think {
 				status = "enabled"
@@ -2313,13 +2450,21 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 
 		currentModel := cfg.Models[agentCfg.Model]
 		currentModel.ReasoningEffort = msg.Effort
-		if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel); err != nil {
+		owner, err := selectedModelOwner(cfg, currentModel)
+		if err != nil {
+			cmds = append(cmds, util.ReportError(err))
+			break
+		}
+		state, err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel, owner)
+		if err != nil {
 			cmds = append(cmds, util.ReportError(err))
 			break
 		}
 
 		cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-			m.com.Workspace.UpdateAgentModel(context.TODO())
+			if err := m.com.Workspace.UpdateAgentModel(context.TODO(), state); err != nil {
+				return util.ReportError(err)()
+			}
 			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
 		}))
 		m.dialog.CloseDialog(dialog.ReasoningID)
@@ -2421,23 +2566,74 @@ func (m *UI) fetchProviderUsage() tea.Cmd {
 	return m.fetchProviderUsageFor(providerID)
 }
 
+func providerUsageToken(provider config.ProviderConfig, credential providerregistry.QuotaCredential) (string, bool) {
+	if provider.OAuthToken == nil {
+		return "", false
+	}
+	switch credential {
+	case "", providerregistry.QuotaCredentialAccessToken:
+		return provider.OAuthToken.AccessToken, true
+	case providerregistry.QuotaCredentialRefreshToken:
+		return provider.OAuthToken.RefreshToken, true
+	default:
+		return "", false
+	}
+}
+
 func (m *UI) fetchProviderUsageFor(providerID string) tea.Cmd {
 	m.usageFetchGen++
 	gen := m.usageFetchGen
-	registration, ok := config.ProviderCapabilities().Lookup(providerID)
-	if providerID == "" || !ok || registration.ProviderID != providerID || registration.Quota == nil {
+	cfg := m.com.Config()
+	if cfg == nil || providerID == "" {
 		return func() tea.Msg { return usageUpdatedMsg{gen: gen} }
 	}
+	registration, registered := cfg.ProviderRegistration(providerID)
+	provider, configured := cfg.Providers.Get(providerID)
+	if !registered || registration.Quota == nil || !configured {
+		return func() tea.Msg { return usageUpdatedMsg{gen: gen} }
+	}
+	token, tokenAvailable := providerUsageToken(provider, registration.QuotaCredential)
+	if !tokenAvailable || token == "" {
+		return func() tea.Msg { return usageUpdatedMsg{gen: gen} }
+	}
+	owner := registration.Owner()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		u, err := oauthusage.Fetch(ctx, providerID, registration.AccountNamespace, registration.Quota)
+		validate := func() error {
+			currentConfig := m.com.Config()
+			if currentConfig == nil {
+				return fmt.Errorf("provider account owner %s changed", providerID)
+			}
+			currentRegistration, active := currentConfig.ProviderRegistration(providerID)
+			if !active || currentRegistration.Owner() != owner || currentRegistration.QuotaCredential != registration.QuotaCredential {
+				return fmt.Errorf("provider account owner %s changed", providerID)
+			}
+			currentProvider, configured := currentConfig.Providers.Get(providerID)
+			currentToken, tokenAvailable := providerUsageToken(currentProvider, currentRegistration.QuotaCredential)
+			if !configured || !tokenAvailable || currentToken != token {
+				return fmt.Errorf("provider account credential %s changed", providerID)
+			}
+			return nil
+		}
+		u, err := oauthusage.FetchWithTokenForOwner(ctx, providerID, token, registration.Quota, validate)
 		if err != nil {
 			slog.Warn("Failed to fetch provider usage", "provider", providerID, "error", err)
 			return usageUpdatedMsg{gen: gen}
 		}
 		return usageUpdatedMsg{gen: gen, usage: u}
 	}
+}
+
+func selectedModelOwner(cfg *config.Config, model config.SelectedModel) (providerregistry.RegistrationOwner, error) {
+	if cfg == nil {
+		return providerregistry.RegistrationOwner{}, errors.New("configuration not found")
+	}
+	owner, ok := cfg.ProviderOwner(model.Provider)
+	if !ok {
+		return providerregistry.RegistrationOwner{}, fmt.Errorf("provider owner is unavailable for %s", model.Provider)
+	}
+	return owner, nil
 }
 
 // restoreModelFromSession checks the last assistant message in the
@@ -2478,7 +2674,13 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 		Provider: lastAssistant.Provider,
 		Model:    lastAssistant.Model,
 	}
-	if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeLarge, selectedModel); err != nil {
+	owner, err := selectedModelOwner(cfg, selectedModel)
+	if err != nil {
+		slog.Error("Failed to restore model from session", "error", err)
+		return nil
+	}
+	state, err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeLarge, selectedModel, owner)
+	if err != nil {
 		slog.Error("Failed to restore model from session", "error", err)
 		return nil
 	}
@@ -2486,14 +2688,23 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 	m.applyThemeForProvider(lastAssistant.Provider)
 
 	if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
-		smallModel := m.com.Workspace.GetDefaultSmallModel(lastAssistant.Provider)
-		if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeSmall, smallModel); err != nil {
+		smallModel, err := m.com.Workspace.GetDefaultSmallModel(lastAssistant.Provider)
+		if err != nil {
+			return util.ReportError(err)
+		}
+		smallOwner, ownerErr := selectedModelOwner(cfg, smallModel)
+		if ownerErr != nil {
+			return util.ReportError(ownerErr)
+		}
+		state, err = m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeSmall, smallModel, smallOwner)
+		if err != nil {
 			slog.Error("Failed to set small model during session restore", "error", err)
+			return util.ReportError(err)
 		}
 	}
 
 	return m.updateAgentModelCmd(func() tea.Msg {
-		if err := m.com.Workspace.UpdateAgentModel(context.TODO()); err != nil {
+		if err := m.com.Workspace.UpdateAgentModel(context.TODO(), state); err != nil {
 			return util.ReportError(err)
 		}
 		slog.Info("Restored model from session",
@@ -2517,9 +2728,13 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		return util.ReportError(errors.New("configuration not found"))
 	}
 
+	providerID := msg.Model.Provider
+	if err := msg.ValidateProviderOwner(cfg); err != nil {
+		return util.ReportError(err)
+	}
+	registration, registered := cfg.ProviderRegistration(providerID)
 	var (
-		providerID   = msg.Model.Provider
-		isCopilot    = providerID == string(catwalk.InferenceProviderCopilot)
+		isCopilot    = registered && registration.Construction == providerregistry.ConstructionCopilot
 		isConfigured = func() bool { _, ok := cfg.Providers.Get(providerID); return ok }
 		isOnboarding = m.state == uiOnboarding
 	)
@@ -2531,15 +2746,17 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 
 	if !isConfigured() || msg.ReAuthenticate {
 		m.dialog.CloseDialog(dialog.ModelsID)
-		if cmd := m.openAuthenticationDialog(msg.Provider, msg.Model, msg.ModelType); cmd != nil {
+		if cmd := m.openAuthenticationDialog(msg); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 		return tea.Batch(cmds...)
 	}
 
-	if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, msg.ModelType, msg.Model); err != nil {
+	state, err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, msg.ModelType, msg.Model, msg.ProviderOwner)
+	if err != nil {
 		cmds = append(cmds, util.ReportError(err))
 	} else {
+		updateAgent := true
 		if msg.ModelType == config.SelectedModelTypeLarge {
 			// Swap the theme live based on the newly selected large
 			// model's provider. Skipped when the provider resolves to
@@ -2549,56 +2766,73 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 		}
 		if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
 			// Ensure small model is set is unset.
-			smallModel := m.com.Workspace.GetDefaultSmallModel(providerID)
-			if err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeSmall, smallModel); err != nil {
+			smallModel, err := m.com.Workspace.GetDefaultSmallModel(providerID)
+			if err != nil {
 				cmds = append(cmds, util.ReportError(err))
+				updateAgent = false
+			} else if smallOwner, ownerErr := selectedModelOwner(cfg, smallModel); ownerErr != nil {
+				cmds = append(cmds, util.ReportError(ownerErr))
+				updateAgent = false
+			} else {
+				nextState, updateErr := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeSmall, smallModel, smallOwner)
+				if updateErr != nil {
+					cmds = append(cmds, util.ReportError(updateErr))
+					updateAgent = false
+				} else {
+					state = nextState
+				}
+			}
+		}
+		if updateAgent {
+			if isOnboarding {
+				m.com.SetupAgents()
+				if err := m.com.Workspace.InitCoderAgent(context.TODO()); err != nil {
+					cmds = append(cmds, util.ReportError(err))
+				} else {
+					if needsInitialization, _ := m.com.Workspace.ProjectNeedsInitialization(); needsInitialization {
+						m.setState(uiInitialize, uiFocusEditor)
+					} else {
+						m.setState(uiLanding, uiFocusEditor)
+					}
+					m.invalidateBusyCaches()
+					if cmd := m.dispatchBusyRefresh(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+					if cmd := m.continueStartup(); cmd != nil {
+						cmds = append(cmds, cmd)
+					}
+					if msg.ModelType == config.SelectedModelTypeLarge {
+						cmds = append(cmds, m.fetchProviderUsageFor(providerID))
+					}
+				}
+			} else {
+				cmds = append(cmds, func() tea.Msg {
+					if err := m.com.Workspace.UpdateAgentModel(context.TODO(), state); err != nil {
+						return util.ReportError(err)()
+					}
+
+					modelName := msg.Model.Model
+					if catalogModel := cfg.GetModel(msg.Model.Provider, msg.Model.Model); catalogModel != nil && catalogModel.Name != "" {
+						modelName = catalogModel.Name
+					}
+					return modelSelectionAppliedMsg{
+						providerID: providerID,
+						modelType:  msg.ModelType,
+						modelName:  modelName,
+					}
+				})
 			}
 		}
 	}
-
-	cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-		if err := m.com.Workspace.UpdateAgentModel(context.TODO()); err != nil {
-			return util.ReportError(err)
-		}
-
-		var (
-			modelType = stringext.Capitalize(string(msg.ModelType))
-			modelName = msg.Model.Model
-		)
-		if catwalkModel := cfg.GetModel(msg.Model.Provider, msg.Model.Model); catwalkModel != nil && catwalkModel.Name != "" {
-			modelName = catwalkModel.Name
-		}
-		modelMsg := fmt.Sprintf("%s model changed to %s", modelType, modelName)
-
-		return util.NewInfoMsg(modelMsg)
-	}))
 
 	m.dialog.CloseDialog(dialog.APIKeyInputID)
 	m.dialog.CloseDialog(dialog.LoginID)
 	m.dialog.CloseDialog(dialog.ModelsID)
 
-	if isOnboarding {
-		m.setState(uiLanding, uiFocusEditor)
-		m.com.Config().SetupAgents()
-		if err := m.com.Workspace.InitCoderAgent(context.TODO()); err != nil {
-			cmds = append(cmds, util.ReportError(err))
-		}
-		// The agent just came up: re-fetch the memoized ready/model state
-		// so the landing view shows the selected model without waiting for
-		// the TTL backstop.
-		m.invalidateBusyCaches()
-		if cmd := m.dispatchBusyRefresh(); cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-	}
-	if msg.ModelType == config.SelectedModelTypeLarge {
-		cmds = append(cmds, m.fetchProviderUsageFor(providerID))
-	}
-
 	return tea.Batch(cmds...)
 }
 
-func (m *UI) openAuthenticationDialog(provider catwalk.Provider, model config.SelectedModel, modelType config.SelectedModelType) tea.Cmd {
+func (m *UI) openAuthenticationDialog(selection dialog.ActionSelectModel) tea.Cmd {
 	var (
 		dlg dialog.Dialog
 		cmd tea.Cmd
@@ -2606,16 +2840,14 @@ func (m *UI) openAuthenticationDialog(provider catwalk.Provider, model config.Se
 		isOnboarding = m.state == uiOnboarding
 	)
 
-	if registration, ok := config.ProviderCapabilities().Lookup(string(provider.ID)); ok && registration.OAuth != nil {
-		login, loginCmd, err := dialog.NewLoginForModel(m.com, dialog.ActionSelectModel{
-			Provider: provider, Model: model, ModelType: modelType,
-		})
+	if registration, ok := m.com.Config().ProviderRegistration(string(selection.Provider.ID)); ok && registration.OAuth != nil {
+		login, loginCmd, err := dialog.NewLoginForModel(m.com, selection)
 		if err != nil {
 			return util.ReportError(err)
 		}
 		dlg, cmd = login, loginCmd
 	} else {
-		dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, provider, model, modelType)
+		dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, selection)
 	}
 
 	if m.dialog.ContainsDialog(dlg.ID()) {
@@ -2880,7 +3112,7 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 				}
 
 				// Otherwise, send the message
-				if err := validateQueuedPromptAttachments(m.attachments.List()); err != nil {
+				if err := validateQueuedPromptAttachments(m.attachments.List(), m.currentImageSourceLimit()); err != nil {
 					return util.ReportError(err)
 				}
 				m.textarea.Reset()
@@ -3688,24 +3920,42 @@ func (m *UI) currentModelSupportsImages() bool {
 	return model != nil && model.SupportsImages
 }
 
-func (m *UI) currentImageProviderID() string {
+func (m *UI) currentImagePolicy() *imageattachment.Policy {
 	cfg := m.com.Config()
 	if cfg == nil {
-		return ""
+		return nil
 	}
 	agentCfg, ok := cfg.Agents[config.AgentCoder]
 	if !ok {
-		return ""
+		return nil
 	}
-	return cfg.Models[agentCfg.Model].Provider
+	modelCfg, ok := cfg.Models[agentCfg.Model]
+	if !ok || modelCfg.Provider == "" {
+		return nil
+	}
+	if cfg.Providers == nil {
+		return nil
+	}
+	if _, ok := cfg.Providers.Get(modelCfg.Provider); !ok {
+		return nil
+	}
+	registration, ok := cfg.ProviderBehaviorRegistration(modelCfg.Provider)
+	if !ok {
+		return nil
+	}
+	policy, ok := imageattachment.PolicyFromDeclaration(registration.Images)
+	if !ok {
+		return nil
+	}
+	return &policy
 }
 
 func (m *UI) currentImageExtensions() []string {
-	return imageattachment.ExtensionsFor(m.currentImageProviderID())
+	return imageattachment.ExtensionsForPolicy(m.currentImagePolicy())
 }
 
 func (m *UI) currentImageSourceLimit() int64 {
-	return imageattachment.SourceLimitFor(m.currentImageProviderID())
+	return imageattachment.SourceLimitForPolicy(m.currentImagePolicy())
 }
 
 // togglePlanMode toggles plan mode for the active session.
@@ -4543,11 +4793,23 @@ func (m *UI) attachSkill(skillID, name string) tea.Cmd {
 }
 
 // sendMessage sends a message with the given content and attachments.
+func (m *UI) sendInitialPrompt() tea.Cmd {
+	if m.initialPrompt == "" || m.state == uiOnboarding || m.state == uiInitialize {
+		return nil
+	}
+	prompt := m.initialPrompt
+	m.initialPrompt = ""
+	// Route through Update instead of calling sendMessage while commands are
+	// being assembled. This keeps session creation ordered with initialization
+	// and session-load commands in tea.Sequence.
+	return func() tea.Msg { return sendMessageMsg{Content: prompt} }
+}
+
 func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.Cmd {
 	if err := m.com.Workspace.AgentReadyErr(); err != nil {
 		return util.ReportError(err)
 	}
-	if err := validateQueuedPromptAttachments(attachments); err != nil {
+	if err := validateQueuedPromptAttachments(attachments, m.currentImageSourceLimit()); err != nil {
 		return util.ReportError(err)
 	}
 
@@ -4804,14 +5066,18 @@ func (m *UI) openRewindDialog() tea.Cmd {
 	return nil
 }
 
-func validateQueuedPromptAttachments(items []message.Attachment) error {
+func validateQueuedPromptAttachments(items []message.Attachment, maxImageSourceBytes int64) error {
 	if len(items) > queuedPromptMaxAttachments {
 		return fmt.Errorf("queued prompts support at most %d attachments", queuedPromptMaxAttachments)
 	}
 	total := 0
 	for _, item := range items {
-		if len(item.Content) > int(imageattachment.MaxSourceBytes) {
-			return fmt.Errorf("attachment %q exceeds the %d MiB queued-prompt limit", item.FileName, imageattachment.MaxSourceBytes/(1024*1024))
+		limit := imageattachment.MaxSourceBytes
+		if strings.HasPrefix(strings.ToLower(item.MimeType), "image/") {
+			limit = maxImageSourceBytes
+		}
+		if int64(len(item.Content)) > limit {
+			return fmt.Errorf("attachment %q exceeds the %d-byte queued-prompt limit", item.FileName, limit)
 		}
 		total += len(item.Content)
 		if total > queuedPromptMaxBytes {
@@ -4957,6 +5223,10 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		}
 	case dialog.ProjectsID:
 		if cmd := m.openProjectsDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case dialog.TmuxSessionsID:
+		if cmd := m.openTmuxSessionsDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 	case dialog.TasksID:
@@ -5118,6 +5388,16 @@ func (m *UI) openProjectsDialog() tea.Cmd {
 	projectsDialog := dialog.NewProjects(m.com)
 	m.dialog.OpenDialog(projectsDialog)
 	return projectsDialog.InitialCmd()
+}
+
+func (m *UI) openTmuxSessionsDialog() tea.Cmd {
+	if m.dialog.ContainsDialog(dialog.TmuxSessionsID) {
+		m.dialog.BringToFront(dialog.TmuxSessionsID)
+		return nil
+	}
+	sessionsDialog := dialog.NewTmuxSessions(m.com)
+	m.dialog.OpenDialog(sessionsDialog)
+	return sessionsDialog.InitialCmd()
 }
 
 func (m *UI) openTasksIfPresent() tea.Cmd {
@@ -5318,7 +5598,7 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 		// Terminal edge like TypeAgentFinished; fall through to the
 		// busy/queue refresh below.
 	case notify.TypeReAuthenticate:
-		return m.handleReAuthenticate(n.ProviderID)
+		return m.handleReAuthenticate(n.ProviderID, n.Owner)
 	default:
 		return nil
 	}
@@ -5337,15 +5617,19 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-func (m *UI) handleReAuthenticate(providerID string) tea.Cmd {
+func (m *UI) handleReAuthenticate(providerID string, expected providerregistry.RegistrationOwner) tea.Cmd {
 	cfg := m.com.Config()
-	if cfg == nil {
+	if cfg == nil || expected.ProviderID == "" || expected.ProviderID != providerID {
+		return nil
+	}
+	owner, ok := cfg.ProviderOwner(providerID)
+	if !ok || owner != expected {
 		return nil
 	}
 	if _, ok := cfg.Providers.Get(providerID); !ok {
 		return nil
 	}
-	if registration, ok := config.ProviderCapabilities().Lookup(providerID); ok && registration.OAuth != nil {
+	if registration, ok := cfg.ProviderRegistration(providerID); ok && registration.OAuth != nil {
 		login, cmd, err := dialog.NewLoginForProvider(m.com, registration.ProviderID)
 		if err != nil {
 			return util.ReportError(err)
@@ -5362,7 +5646,13 @@ func (m *UI) handleReAuthenticate(providerID string) tea.Cmd {
 		return nil
 	}
 	providerCfg, _ := cfg.Providers.Get(providerID)
-	return m.openAuthenticationDialog(providerCfg.ToProvider(), cfg.Models[agentCfg.Model], agentCfg.Model)
+	return m.openAuthenticationDialog(dialog.ActionSelectModel{
+		Provider:         providerCfg.ToProvider(),
+		Model:            cfg.Models[agentCfg.Model],
+		ModelType:        agentCfg.Model,
+		ProviderOwner:    expected,
+		ProviderOwnerSet: true,
+	})
 }
 
 // newSession clears the current session state and prepares for a new session.
@@ -5376,6 +5666,7 @@ func (m *UI) newSession() tea.Cmd {
 	m.session = nil
 	m.setEditorPrompt(m.yoloModeCached())
 	m.sidebarOffset = 0
+	m.sessionFilesFetchGen++
 	m.sessionFiles = nil
 	m.sessionFileReads = nil
 	m.setState(uiLanding, uiFocusEditor)
@@ -5711,7 +6002,13 @@ func (m *UI) runMCPPrompt(clientID, promptID string, arguments map[string]string
 
 func (m *UI) handleStateChanged() tea.Cmd {
 	return m.updateAgentModelCmd(func() tea.Msg {
-		m.com.Workspace.UpdateAgentModel(context.Background())
+		cfg := m.com.Config()
+		if cfg == nil {
+			return util.ReportError(errors.New("configuration not found"))()
+		}
+		if err := m.com.Workspace.UpdateAgentModel(context.Background(), cfg.AgentModelState()); err != nil {
+			return util.ReportError(err)()
+		}
 		return mcpStateChangedMsg{
 			states: m.com.Workspace.MCPGetStates(),
 		}

@@ -8,12 +8,13 @@ package agenttest
 import (
 	"context"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/foundation/providers/openaicompat"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/shell"
 )
@@ -51,13 +52,18 @@ func NewCoordinator(
 		ID:      providerID,
 		Name:    "Test",
 		Type:    openaicompat.Name,
+		Owner:   &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat},
 		BaseURL: "http://127.0.0.1:0/v1",
 		APIKey:  "test",
-		Models:  []catwalk.Model{{ID: modelID, DefaultMaxTokens: 4096}},
+		Models:  []catalog.Model{{ID: modelID, DefaultMaxTokens: 4096}},
 	})
 	selected := config.SelectedModel{Provider: providerID, Model: modelID}
-	cfg.OverridePreferredModel(config.SelectedModelTypeLarge, selected)
-	cfg.OverridePreferredModel(config.SelectedModelTypeSmall, selected)
+	if err := cfg.OverridePreferredModel(config.SelectedModelTypeLarge, selected); err != nil {
+		return nil, err
+	}
+	if err := cfg.OverridePreferredModel(config.SelectedModelTypeSmall, selected); err != nil {
+		return nil, err
+	}
 	cfg.SetupAgents()
 
 	// Keep buildTools light: no sub-agent or agentic-fetch construction.

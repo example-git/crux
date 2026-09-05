@@ -5,6 +5,8 @@ import "time"
 type Status string
 
 const (
+	RecentTerminalLimit = 15
+
 	StatusPending   Status = "pending"
 	StatusRunning   Status = "running"
 	StatusCompleted Status = "completed"

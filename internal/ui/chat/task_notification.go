@@ -28,13 +28,41 @@ type taskNotificationMessageItem struct {
 	sty          *styles.Styles
 }
 
-func newTaskNotificationMessageItem(sty *styles.Styles, msg *message.Message) (MessageItem, bool) {
+func parseTaskNotificationMessage(msg *message.Message) (taskNotificationContent, bool) {
+	if msg == nil {
+		return taskNotificationContent{}, false
+	}
 	content := strings.TrimSpace(msg.Content().Text)
 	if !strings.HasPrefix(content, "<task-notification>") {
-		return nil, false
+		return taskNotificationContent{}, false
 	}
 	var notification taskNotificationContent
 	if xml.Unmarshal([]byte(content), &notification) != nil || notification.XMLName.Local != "task-notification" || notification.TaskID == "" {
+		return taskNotificationContent{}, false
+	}
+	return notification, true
+}
+
+func IsTaskNotificationMessage(msg *message.Message) bool {
+	_, ok := parseTaskNotificationMessage(msg)
+	return ok
+}
+
+func TaskNotificationTitle(msg *message.Message) (string, bool) {
+	notification, ok := parseTaskNotificationMessage(msg)
+	if !ok {
+		return "", false
+	}
+	name := taskNotificationName(notification.TaskType)
+	if notification.Status == "" {
+		return name, true
+	}
+	return name + " · " + string(notification.Status), true
+}
+
+func newTaskNotificationMessageItem(sty *styles.Styles, msg *message.Message) (MessageItem, bool) {
+	notification, ok := parseTaskNotificationMessage(msg)
+	if !ok {
 		return nil, false
 	}
 	return &taskNotificationMessageItem{
@@ -61,16 +89,15 @@ func (t *taskNotificationMessageItem) RawRender(width int) string {
 	case managedtask.StatusKilled:
 		status = ToolStatusCanceled
 	}
-	name := "Background Task"
-	switch t.notification.TaskType {
-	case managedtask.TypeAgent:
-		name = "Background Agent"
-	case managedtask.TypeShell:
-		name = "Background Shell"
-	}
+	name := taskNotificationName(t.notification.TaskType)
 	contentWidth := cappedMessageWidth(width)
 	header := toolHeader(t.sty, status, name, contentWidth, &ToolRenderOpts{Status: status}, t.notification.TaskID, "status", string(t.notification.Status))
 	result := strings.TrimSpace(t.notification.Result)
+	if t.notification.TaskType == managedtask.TypeImage {
+		if formatted, ok := FormatImagegenResult(result); ok {
+			result = formatted
+		}
+	}
 	if result == "" {
 		result = strings.TrimSpace(t.notification.ErrorMessage)
 	}
@@ -89,4 +116,17 @@ func (t *taskNotificationMessageItem) RawRender(width int) string {
 
 func (t *taskNotificationMessageItem) Render(width int) string {
 	return t.sty.Messages.ToolCallBlurred.Render(t.RawRender(width))
+}
+
+func taskNotificationName(taskType managedtask.Type) string {
+	switch taskType {
+	case managedtask.TypeAgent:
+		return "Background Agent"
+	case managedtask.TypeShell:
+		return "Background Shell"
+	case managedtask.TypeImage:
+		return "Background Image"
+	default:
+		return "Background Task"
+	}
 }

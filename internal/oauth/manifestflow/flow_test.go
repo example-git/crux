@@ -2,17 +2,21 @@ package manifestflow
 
 import (
 	"context"
+	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providertransport"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,6 +47,24 @@ func examplePluginFlow(t *testing.T, server *httptest.Server) (*Executor, manife
 	require.NoError(t, err)
 	executor.client = server.Client()
 	return executor, value
+}
+
+func TestDeclarativeRequestsRejectOwnerReplacementBeforeDispatch(t *testing.T) {
+	var dispatched atomic.Int64
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		dispatched.Add(1)
+	}))
+	defer server.Close()
+	executor, _ := examplePluginFlow(t, server)
+	ctx := providertransport.ContextWithOwnerValidator(t.Context(), func() error {
+		return errors.New("owner changed")
+	})
+
+	_, err := executor.Refresh(ctx, "refresh-token")
+	require.ErrorContains(t, err, "owner changed")
+	_, err = executor.deviceRequest(ctx, "token", nil, nil, map[string]string{}, 1024)
+	require.ErrorContains(t, err, "owner changed")
+	require.Zero(t, dispatched.Load())
 }
 
 func TestDeclarativeRefreshPreservesToken(t *testing.T) {
@@ -86,6 +108,27 @@ func TestDeclarativeAuthorizationURLUsesScopesPKCEAndState(t *testing.T) {
 	require.Equal(t, strings.Join(value.Capabilities.OAuth[0].Scopes, " "), query.Get("scope"))
 }
 
+func TestDeclarativeOAuthTemplatesUseBoundConfigurationAndCredentials(t *testing.T) {
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	defer server.Close()
+	_, value := examplePluginFlow(t, server)
+	value.Capabilities.OAuth[0].ClientID = manifest.Template{Kind: "config", Ref: "oauth_client_id"}
+	executor, err := New(value, value.Capabilities.OAuth[0], Bindings{
+		Configuration: map[string]any{"oauth_client_id": "configured-client"},
+		Credentials:   map[string]string{"client_secret": "configured-secret"},
+	})
+	require.NoError(t, err)
+
+	raw, err := executor.authorizationURL("http://localhost:4321/callback", "challenge", "state")
+	require.NoError(t, err)
+	parsed, err := url.Parse(raw)
+	require.NoError(t, err)
+	require.Equal(t, "configured-client", parsed.Query().Get("client_id"))
+	secret, err := executor.eval(manifest.Template{Kind: "credential", Ref: "client_secret"}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "configured-secret", secret)
+}
+
 func TestDeclarativeDynamicLoopbackCompletesCodeExchange(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		require.Equal(t, "/token", request.URL.Path)
@@ -111,6 +154,9 @@ func TestDeclarativeDynamicLoopbackCompletesCodeExchange(t *testing.T) {
 		if parseErr != nil {
 			return parseErr
 		}
+		require.Equal(t, "localhost", callback.Hostname())
+		require.NotEmpty(t, callback.Port())
+		require.NotEqual(t, "0", callback.Port())
 		query := callback.Query()
 		query.Set("code", "callback-code")
 		query.Set("state", authorization.Query().Get("state"))
@@ -133,6 +179,133 @@ func TestDeclarativeDynamicLoopbackCompletesCodeExchange(t *testing.T) {
 	require.NoError(t, <-callbackResult)
 	require.Equal(t, "callback-access", token.AccessToken)
 	require.Equal(t, "callback-refresh", token.RefreshToken)
+}
+
+func TestDeclarativeDeviceCodeFlowRequestsAndPolls(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/device":
+			_, _ = io.WriteString(response, `{"device_code":"device-secret","user_code":"ABCD-EFGH","verification_uri":"https://example.invalid/device","expires_in":120,"interval":1}`)
+		case "/token":
+			body, err := io.ReadAll(request.Body)
+			require.NoError(t, err)
+			fields, err := url.ParseQuery(string(body))
+			require.NoError(t, err)
+			require.Equal(t, "device-secret", fields.Get("device_code"))
+			_, _ = io.WriteString(response, `{"access_token":"device-access","refresh_token":"device-refresh","expires_in":120}`)
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+	_, value := examplePluginFlow(t, server)
+	target, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	value.Capabilities.Endpoints = append(value.Capabilities.Endpoints, manifest.Endpoint{
+		ID: "device", BaseURL: server.URL + "/device",
+		AllowedSchemes: []string{target.Scheme}, AllowedHosts: []string{target.Hostname()}, Override: "forbidden",
+	})
+	flow := &value.Capabilities.OAuth[0]
+	flow.Redirect = manifest.OAuthRedirect{Mode: "device-code"}
+	flow.PKCE = "disabled"
+	flow.DeviceCode = &manifest.DeviceCodeFlow{
+		Endpoint: "device",
+		Request: []manifest.FieldRule{
+			{Name: "client_id", Value: manifest.Template{Kind: "context", Ref: "oauth.client_id"}},
+		},
+		DeviceCodePointer: "/device_code", UserCodePointer: "/user_code", VerificationURLPointer: "/verification_uri",
+		ExpiresInPointer: "/expires_in", IntervalPointer: "/interval", DefaultIntervalSeconds: 1,
+		Poll: []manifest.FieldRule{
+			{Name: "device_code", Value: manifest.Template{Kind: "context", Ref: "oauth.device_code"}},
+		},
+		ErrorPointer: "/error", MaxBodyBytes: 1024,
+	}
+	executor, err := New(value, *flow)
+	require.NoError(t, err)
+	executor.client = server.Client()
+
+	authorization, err := executor.RequestDeviceCode(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, "ABCD-EFGH", authorization.UserCode)
+	require.Equal(t, "https://example.invalid/device", authorization.VerificationURL)
+	authorization.state.interval = 0
+	token, err := executor.PollDeviceCode(t.Context(), authorization)
+	require.NoError(t, err)
+	require.Equal(t, "device-access", token.AccessToken)
+	require.Equal(t, "device-refresh", token.RefreshToken)
+}
+
+func TestDeclarativeTokenAuthenticationStyles(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		authStyle string
+		basic     bool
+	}{
+		{name: "parameters", authStyle: "params"},
+		{name: "HTTP basic", authStyle: "basic", basic: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				require.NoError(t, request.ParseForm())
+				if test.basic {
+					clientID, clientSecret, ok := request.BasicAuth()
+					require.True(t, ok)
+					require.Equal(t, "example-client", clientID)
+					require.Equal(t, "example-secret", clientSecret)
+					require.Empty(t, request.Form.Get("client_id"))
+					require.Empty(t, request.Form.Get("client_secret"))
+				} else {
+					require.Equal(t, "example-client", request.Form.Get("client_id"))
+					require.Equal(t, "example-secret", request.Form.Get("client_secret"))
+					require.Empty(t, request.Header.Get("Authorization"))
+				}
+				_, _ = io.WriteString(response, `{"access_token":"access","refresh_token":"refresh","expires_in":120}`)
+			}))
+			defer server.Close()
+			executor, _ := examplePluginFlow(t, server)
+			executor.flow.ClientSecret = &manifest.Template{Kind: "literal", Value: "example-secret"}
+			executor.flow.TokenRequest.AuthStyle = test.authStyle
+
+			token, err := executor.Refresh(t.Context(), "old-refresh")
+			require.NoError(t, err)
+			require.Equal(t, "access", token.AccessToken)
+		})
+	}
+}
+
+func TestDeclarativeRefreshUsesDeclaredScopes(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		require.NoError(t, request.ParseForm())
+		require.Equal(t, "refresh-one refresh-two", request.Form.Get("scope"))
+		_, _ = io.WriteString(response, `{"access_token":"access","refresh_token":"refresh","expires_in":120}`)
+	}))
+	defer server.Close()
+	executor, _ := examplePluginFlow(t, server)
+	executor.flow.RefreshScopes = []string{"refresh-one", "refresh-two"}
+	executor.flow.TokenRequest.Refresh = append(executor.flow.TokenRequest.Refresh, manifest.FieldRule{
+		Name: "scope", Value: manifest.Template{Kind: "context", Ref: "oauth.scopes"},
+	})
+
+	_, err := executor.Refresh(t.Context(), "old-refresh")
+	require.NoError(t, err)
+}
+
+func TestDeclarativeGeneratedTemplates(t *testing.T) {
+	executor := &Executor{}
+	generatedUUID, err := executor.eval(manifest.Template{Kind: "uuid"}, nil)
+	require.NoError(t, err)
+	require.Len(t, generatedUUID, 36)
+
+	unixTime, err := executor.eval(manifest.Template{Kind: "unix-time"}, nil)
+	require.NoError(t, err)
+	_, err = strconv.ParseInt(unixTime, 10, 64)
+	require.NoError(t, err)
+
+	randomHex, err := executor.eval(manifest.Template{Kind: "random-hex", Bytes: 16}, nil)
+	require.NoError(t, err)
+	decoded, err := hex.DecodeString(randomHex)
+	require.NoError(t, err)
+	require.Len(t, decoded, 16)
 }
 
 func TestParseHostedCallback(t *testing.T) {

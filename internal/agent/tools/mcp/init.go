@@ -1016,7 +1016,11 @@ func createTransport(ctx context.Context, cfg *config.ConfigStore, name string, 
 			return nil, nil, err
 		}
 		cmd := exec.CommandContext(ctx, home.Long(command), args...)
-		cmd.Env = append(os.Environ(), envs...)
+		environment := os.Environ()
+		if cfg != nil {
+			environment = cfg.Environment()
+		}
+		cmd.Env = append(environment, envs...)
 		// Run the child in its own process group and kill the whole group when
 		// the session context is cancelled. A stdio server often spawns its own
 		// children (signal-mcp launches signal-cli); os/exec's default

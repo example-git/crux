@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 )
 
 // httpClient is shared across all discovery and enrichment calls. It
@@ -82,7 +82,7 @@ type Config struct {
 	ExtraHeaders map[string]string
 	// Existing models from config — IDs present in this list are skipped
 	// during discovery (user-specified models win).
-	ExistingModels []catwalk.Model
+	ExistingModels []catalog.Model
 }
 
 // Resolver resolves variable references (e.g. $ENV_VAR) in config values.
@@ -104,7 +104,7 @@ type modelsResponse struct {
 // a deadline (e.g. context.WithTimeout) to avoid blocking indefinitely.
 // Models whose IDs already appear in cfg.ExistingModels are skipped —
 // user-specified models take precedence.
-func DiscoverModels(ctx context.Context, cfg Config, resolver Resolver) ([]catwalk.Model, error) {
+func DiscoverModels(ctx context.Context, cfg Config, resolver Resolver) ([]catalog.Model, error) {
 	resp, err := doRequest(ctx, http.MethodGet, cfg.BaseURL, "/models", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
 	if err != nil {
 		return nil, fmt.Errorf("discover models for provider %s: %w", cfg.ID, err)
@@ -127,7 +127,7 @@ func DiscoverModels(ctx context.Context, cfg Config, resolver Resolver) ([]catwa
 	}
 
 	// Start with user-specified models.
-	result := make([]catwalk.Model, len(cfg.ExistingModels))
+	result := make([]catalog.Model, len(cfg.ExistingModels))
 	copy(result, cfg.ExistingModels)
 
 	// Append discovered models not already in the list.
@@ -135,7 +135,7 @@ func DiscoverModels(ctx context.Context, cfg Config, resolver Resolver) ([]catwa
 		if _, ok := existing[e.ID]; ok {
 			continue
 		}
-		result = append(result, catwalk.Model{
+		result = append(result, catalog.Model{
 			ID:   e.ID,
 			Name: e.ID,
 		})

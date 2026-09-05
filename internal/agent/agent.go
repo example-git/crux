@@ -23,11 +23,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/agent/tools"
 	"github.com/example-git/crux/internal/agent/tools/mcp"
@@ -36,6 +36,8 @@ import (
 	"github.com/example-git/crux/internal/imageattachment"
 	"github.com/example-git/crux/internal/message"
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
+	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/stringext"
@@ -49,6 +51,8 @@ const (
 	largeContextWindowThreshold = 200_000
 	largeContextWindowBuffer    = 20_000
 	smallContextWindowRatio     = 0.2
+	retainedImageHistoryTurns   = 3
+	omittedImageHistoryMessage  = "[Earlier image omitted from model history]"
 )
 
 var userAgent = fmt.Sprintf("Crux/%s (https://github.com/example-git/crux)", version.Version)
@@ -64,8 +68,10 @@ var suggestPromptTemplate []byte
 
 // Used to remove <think> tags from generated titles.
 var (
-	thinkTagRegex       = regexp.MustCompile(`(?s)<think>.*?</think>`)
-	orphanThinkTagRegex = regexp.MustCompile(`</?think>`)
+	thinkTagRegex        = regexp.MustCompile(`(?s)<think>.*?</think>`)
+	orphanThinkTagRegex  = regexp.MustCompile(`</?think>`)
+	summaryAnalysisRegex = regexp.MustCompile(`(?s)<analysis>.*?</analysis>`)
+	summaryBlockRegex    = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
 )
 
 type QueuedPrompt struct {
@@ -84,18 +90,20 @@ type SessionAgentCall struct {
 	// reliable completion contract (e.g. `crux run` against a
 	// session that may be busy) MUST set it; SessionID alone is
 	// ambiguous when concurrent turns share the same session.
-	RunID            string
-	Prompt           string
-	TurnInstructions string
-	ProviderOptions  fantasy.ProviderOptions
-	Attachments      []message.Attachment
-	MaxOutputTokens  int64
-	Temperature      *float64
-	TopP             *float64
-	TopK             *int64
-	FrequencyPenalty *float64
-	PresencePenalty  *float64
-	NonInteractive   bool
+	RunID                string
+	Prompt               string
+	CodebaseInstructions string
+	MemoryInstructions   string
+	TurnInstructions     string
+	ProviderOptions      fantasy.ProviderOptions
+	Attachments          []message.Attachment
+	MaxOutputTokens      int64
+	Temperature          *float64
+	TopP                 *float64
+	TopK                 *int64
+	FrequencyPenalty     *float64
+	PresencePenalty      *float64
+	NonInteractive       bool
 	// OnComplete, when non-nil, replaces the default RunComplete
 	// publish path: the inner Run hands the terminal payload to this
 	// callback instead of emitting it on the RunComplete broker. The
@@ -129,6 +137,7 @@ type SessionAgentCall struct {
 	// paths treat as covered by any present mark, preserving the
 	// pre-sequence behavior.
 	acceptSeq uint64
+	runtime   *InstalledRuntime
 	// OnAuthRefresh, when non-nil, is called by fantasy when a stream
 	// fails with an authentication error (HTTP 401). The callback should
 	// refresh credentials and return nil on success, in which case
@@ -142,7 +151,10 @@ type SessionAgent interface {
 	BeginAccepted(sessionID string) *AcceptedRun
 	SetModels(large Model, small Model)
 	SetTools(tools, planModeTools []fantasy.AgentTool)
+	SetInstructions(instructions fantasy.Instructions)
 	SetSystemPrompt(systemPrompt string)
+	SetRuntime(runtime InstalledRuntime)
+	Runtime() InstalledRuntime
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -151,6 +163,7 @@ type SessionAgent interface {
 	QueuedPromptsList(sessionID string) []QueuedPrompt
 	ClearQueue(sessionID string)
 	Summarize(context.Context, string, fantasy.ProviderOptions, func(context.Context, *fantasy.ProviderError) error) error
+	SummarizeWithRuntime(context.Context, string, fantasy.ProviderOptions, func(context.Context, *fantasy.ProviderError) error, InstalledRuntime) error
 	Model() Model
 	GenerateTitle(ctx context.Context, sessionID, userPrompt string)
 	SuggestPrompt(ctx context.Context, sessionID string) (string, error)
@@ -159,11 +172,18 @@ type SessionAgent interface {
 
 type Model struct {
 	Model              fantasy.LanguageModel
-	CatwalkCfg         catwalk.Model
+	CatalogModel       catalog.Model
 	ModelCfg           config.SelectedModel
 	FlatRate           bool
 	ProviderOptions    fantasy.ProviderOptions
 	SystemPromptPrefix string
+	InstructionPolicy  fantasy.InstructionPolicy
+	ImagePolicy        *imageattachment.Policy
+	Compaction         *manifest.CompactionPolicy
+	Compactor          RemoteCompactor
+	CompactionRetry    *manifest.RetryPolicy
+	Retry              *manifest.RetryPolicy
+	Metadata           []manifest.MetadataContract
 	OnAuthRefresh      func(context.Context, *fantasy.ProviderError) error
 }
 
@@ -176,16 +196,29 @@ type activeCancel struct {
 	cancel context.CancelFunc
 }
 
-type SystemPromptBuilder func(context.Context, session.Session, Model) (string, error)
+type SystemPromptBuilder func(context.Context, session.Session, Model) (fantasy.Instructions, error)
+
+type InstalledRuntime struct {
+	LargeModel           Model
+	SmallModel           Model
+	Instructions         fantasy.Instructions
+	Tools                []fantasy.AgentTool
+	PlanModeTools        []fantasy.AgentTool
+	DisableAutoSummarize bool
+	SystemPromptBuilder  SystemPromptBuilder
+	Snapshot             config.RuntimeSnapshot
+}
 
 type sessionAgent struct {
 	largeModel          *csync.Value[Model]
 	smallModel          *csync.Value[Model]
 	systemPromptPrefix  *csync.Value[string]
-	systemPrompt        *csync.Value[string]
+	systemInstructions  *csync.Value[fantasy.Instructions]
 	systemPromptBuilder SystemPromptBuilder
+	runtimeSnapshot     config.RuntimeSnapshot
 	tools               *csync.Slice[fantasy.AgentTool]
 	planModeTools       *csync.Slice[fantasy.AgentTool]
+	runtimeMu           sync.RWMutex
 
 	isSubAgent           bool
 	sessions             session.Service
@@ -242,8 +275,10 @@ type SessionAgentOptions struct {
 	LargeModel           Model
 	SmallModel           Model
 	SystemPromptPrefix   string
+	Instructions         fantasy.Instructions
 	SystemPrompt         string
 	SystemPromptBuilder  SystemPromptBuilder
+	RuntimeSnapshot      config.RuntimeSnapshot
 	IsSubAgent           bool
 	DisableAutoSummarize bool
 	IsYolo               bool
@@ -258,12 +293,19 @@ type SessionAgentOptions struct {
 func NewSessionAgent(
 	opts SessionAgentOptions,
 ) SessionAgent {
+	instructions := opts.Instructions
+	if instructions.Empty() && opts.SystemPrompt != "" {
+		instructions = fantasy.NewInstructions(
+			fantasy.StaticInstruction(fantasy.InstructionKindTooling, opts.SystemPrompt),
+		)
+	}
 	return &sessionAgent{
 		largeModel:           csync.NewValue(opts.LargeModel),
 		smallModel:           csync.NewValue(opts.SmallModel),
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
-		systemPrompt:         csync.NewValue(opts.SystemPrompt),
+		systemInstructions:   csync.NewValue(instructions),
 		systemPromptBuilder:  opts.SystemPromptBuilder,
+		runtimeSnapshot:      opts.RuntimeSnapshot,
 		isSubAgent:           opts.IsSubAgent,
 		sessions:             opts.Sessions,
 		messages:             opts.Messages,
@@ -517,6 +559,10 @@ func (a *sessionAgent) canceledBySeq(sessionID string, seq uint64) bool {
 // context.WithoutCancel(ctx) so workspace shutdown (which cancels the run
 // context) can't drop them.
 func (a *sessionAgent) persistCanceledTurn(ctx context.Context, call SessionAgentCall, userMsgCreated bool) error {
+	return a.persistCanceledTurnWithModel(ctx, call, userMsgCreated, a.Runtime().LargeModel)
+}
+
+func (a *sessionAgent) persistCanceledTurnWithModel(ctx context.Context, call SessionAgentCall, userMsgCreated bool, largeModel Model) error {
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if !userMsgCreated {
@@ -524,7 +570,6 @@ func (a *sessionAgent) persistCanceledTurn(ctx context.Context, call SessionAgen
 			return err
 		}
 	}
-	largeModel := a.largeModel.Get()
 	assistant, err := a.messages.Create(writeCtx, call.SessionID, message.CreateMessageParams{
 		Role:     message.Assistant,
 		Parts:    []message.ContentPart{},
@@ -574,29 +619,39 @@ func ValidateCall(call SessionAgentCall) error {
 	return nil
 }
 
-func replaceSystemPrompt(messages []fantasy.Message, systemPrompt string) []fantasy.Message {
+func replaceSystemInstructions(messages []fantasy.Message, instructions fantasy.Instructions, policy fantasy.InstructionPolicy) []fantasy.Message {
+	message := instructions.Message(policy)
 	result := make([]fantasy.Message, 0, len(messages)+1)
-	result = append(result, fantasy.NewSystemMessage(systemPrompt))
-	for _, message := range messages {
-		if message.Role != fantasy.MessageRoleSystem {
-			result = append(result, message)
+	if len(message.Content) > 0 {
+		result = append(result, message)
+	}
+	for _, item := range messages {
+		if item.Role != fantasy.MessageRoleSystem {
+			result = append(result, item)
 		}
 	}
 	return result
 }
 
-func appendTurnInstructions(base, turn string) string {
-	turn = strings.TrimSpace(turn)
-	if turn == "" {
-		return base
-	}
-	if base == "" {
-		return turn
-	}
-	return base + "\n\n" + turn
+func appendRuntimeInstructions(base fantasy.Instructions, prefix, mcpInstructions, codebaseInstructions, memoryInstructions, turnInstructions string) fantasy.Instructions {
+	return base.Prepend(
+		fantasy.StaticInstruction(fantasy.InstructionKindProviderPrefix, prefix),
+	).Append(
+		fantasy.DynamicInstruction(fantasy.InstructionKindMCP, strings.TrimSpace(mcpInstructions)),
+		fantasy.DynamicInstruction(fantasy.InstructionKindRetrieval, strings.TrimSpace(codebaseInstructions)),
+		fantasy.DynamicInstruction(fantasy.InstructionKindMemory, strings.TrimSpace(memoryInstructions)),
+		fantasy.DynamicInstruction(fantasy.InstructionKindRetrieval, strings.TrimSpace(turnInstructions)),
+	)
 }
 
-func (a *sessionAgent) systemPromptWithMCPInstructions(base string) string {
+func (a *sessionAgent) runtimeMCPInstructions() string {
+	if a.isSubAgent {
+		return ""
+	}
+	return connectedMCPInstructions()
+}
+
+func connectedMCPInstructions() string {
 	states := mcp.GetStates()
 	names := make([]string, 0, len(states))
 	for name := range states {
@@ -614,15 +669,23 @@ func (a *sessionAgent) systemPromptWithMCPInstructions(base string) string {
 			instructions.WriteString("\n\n")
 		}
 	}
-	if value := instructions.String(); value != "" {
-		return base + "\n\n<mcp-instructions>\n" + value + "\n</mcp-instructions>"
+	value := strings.TrimSpace(instructions.String())
+	if value == "" {
+		return ""
 	}
-	return base
+	return "<mcp-instructions>\n" + value + "\n</mcp-instructions>"
 }
 
 func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *fantasy.AgentResult, retErr error) {
+	if a.isSubAgent {
+		ctx = permission.WithSubagent(ctx)
+	}
 	if err := ValidateCall(call); err != nil {
 		return nil, err
+	}
+	runtime := a.Runtime()
+	if call.runtime != nil {
+		runtime = *call.runtime
 	}
 
 	// genCtx/cancel are the run context and its cancel func, created under
@@ -665,7 +728,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			RunID:     call.RunID,
 			Cancelled: true,
 		}
-		if err := a.persistCanceledTurn(ctx, call, false); err != nil {
+		if err := a.persistCanceledTurnWithModel(ctx, call, false, runtime.LargeModel); err != nil {
 			complete.Error = err.Error()
 			a.publishRunComplete(ctx, call, complete)
 			return nil, err
@@ -713,17 +776,26 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// the new run's cancel and breaking cancellation.
 	defer a.activeRequests.CompareAndDelete(call.SessionID, ac)
 
-	// Copy mutable fields under lock to avoid races with SetTools/SetModels.
-	agentTools := a.tools.Copy()
-	largeModel := a.largeModel.Get()
+	// Capture one runtime generation so prompt and callable tools always agree
+	// for the full turn, even when configuration reloads concurrently.
+	agentTools := runtime.Tools
+	planModeTools := runtime.PlanModeTools
+	largeModel := runtime.LargeModel
+	baseInstructions := runtime.Instructions
+	promptPrefix := largeModel.SystemPromptPrefix
+	disableAutoSummarize := runtime.DisableAutoSummarize
 	agentTools = codexBoundedTools(agentTools, largeModel)
-	systemPrompt := a.systemPromptWithMCPInstructions(a.systemPrompt.Get())
-	promptPrefix := a.systemPromptPrefix.Get()
-	systemPrompt = appendTurnInstructions(systemPrompt, call.TurnInstructions)
-
+	systemInstructions := appendRuntimeInstructions(
+		baseInstructions,
+		promptPrefix,
+		a.runtimeMCPInstructions(),
+		call.CodebaseInstructions,
+		call.MemoryInstructions,
+		call.TurnInstructions,
+	)
 	agent := fantasy.NewAgent(
 		largeModel.Model,
-		fantasy.WithSystemPrompt(systemPrompt),
+		fantasy.WithInstructions(systemInstructions, largeModel.InstructionPolicy),
 		fantasy.WithTools(agentTools...),
 		fantasy.WithUserAgent(userAgent),
 	)
@@ -743,9 +815,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// can take tens of seconds. Blocking Run on it delays the
 	// response to the caller. Use a detached context so the title
 	// goroutine survives Run's cancel.
-	if !hasUserTextMessage(msgs) {
+	if !a.isSubAgent && !hasUserTextMessage(msgs) {
 		titleCtx := context.WithoutCancel(ctx)
-		go a.GenerateTitle(titleCtx, call.SessionID, call.Prompt)
+		go a.generateTitleWithRuntime(titleCtx, call.SessionID, call.Prompt, runtime)
 	}
 
 	// Add the user message to the session.
@@ -820,7 +892,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	}()
 
 	history, files := a.preparePrompt(msgs, preparePromptOptions{
-		SupportsImages:      largeModel.CatwalkCfg.SupportsImages,
+		SupportsImages:      largeModel.CatalogModel.SupportsImages,
 		IncludeTodoReminder: a.shouldIncludeTodoReminder(call.SessionID, len(currentSession.Todos) == 0),
 		Attachments:         call.Attachments,
 	})
@@ -840,6 +912,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		Messages:         history,
 		Headers:          sessionHeaders(call.SessionID, "conversation"),
 		ProviderOptions:  call.ProviderOptions,
+		MaxRetries:       modelMaxRetries(largeModel),
 		MaxOutputTokens:  maxOutputTokens,
 		TopP:             call.TopP,
 		Temperature:      call.Temperature,
@@ -856,7 +929,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			if getSessionErr != nil {
 				return callContext, prepared, fmt.Errorf("failed to refresh session mode: %w", getSessionErr)
 			}
-			stepTools := toolsForSessionMode(currentSession.Mode, a.tools.Copy(), a.planModeTools.Copy())
+			stepTools := toolsForSessionMode(currentSession.Mode, agentTools, planModeTools)
 			prepared.Tools = codexBoundedTools(stepTools, largeModel)
 
 			// Drain queued follow-up prompts for this step. Calls covered
@@ -885,20 +958,23 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				return callContext, prepared, err
 			}
 
-			stepPromptPrefix := promptPrefix
-			if a.systemPromptBuilder != nil {
-				stepSystemPrompt, buildErr := a.systemPromptBuilder(callContext, currentSession, largeModel)
+			stepInstructions := baseInstructions
+			if runtime.SystemPromptBuilder != nil {
+				var buildErr error
+				stepInstructions, buildErr = runtime.SystemPromptBuilder(callContext, currentSession, largeModel)
 				if buildErr != nil {
 					return callContext, prepared, fmt.Errorf("failed to rebuild system prompt: %w", buildErr)
 				}
-				stepSystemPrompt = a.systemPromptWithMCPInstructions(stepSystemPrompt)
-				stepSystemPrompt = appendTurnInstructions(stepSystemPrompt, call.TurnInstructions)
-				prepared.Messages = replaceSystemPrompt(prepared.Messages, stepSystemPrompt)
 			}
-
-			if stepPromptPrefix != "" {
-				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(stepPromptPrefix)}, prepared.Messages...)
-			}
+			stepInstructions = appendRuntimeInstructions(
+				stepInstructions,
+				promptPrefix,
+				a.runtimeMCPInstructions(),
+				call.CodebaseInstructions,
+				call.MemoryInstructions,
+				call.TurnInstructions,
+			)
+			prepared.Messages = replaceSystemInstructions(prepared.Messages, stepInstructions, largeModel.InstructionPolicy)
 
 			sessionLock.Lock()
 			stepMessages = cloneFantasyMessages(prepared.Messages)
@@ -915,8 +991,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				return callContext, prepared, err
 			}
 			callContext = context.WithValue(callContext, tools.MessageIDContextKey, assistantMsg.ID)
-			callContext = context.WithValue(callContext, tools.SupportsImagesContextKey, largeModel.CatwalkCfg.SupportsImages)
-			callContext = context.WithValue(callContext, tools.ModelNameContextKey, largeModel.CatwalkCfg.Name)
+			callContext = context.WithValue(callContext, tools.SupportsImagesContextKey, largeModel.CatalogModel.SupportsImages)
+			callContext = context.WithValue(callContext, tools.ModelNameContextKey, largeModel.CatalogModel.Name)
 			currentAssistant = &assistantMsg
 			return callContext, prepared, err
 		},
@@ -968,22 +1044,26 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// On the final attempt (no more retries), any partial content
 			// stays in the message as useful context beneath the error.
 			currentAssistant.ResetStreamedContent()
+			currentAssistant.SetRetrying()
 			if updateErr := a.messages.Update(genCtx, *currentAssistant); updateErr != nil {
 				slog.Error("Failed to reset message on retry", "error", updateErr)
 			}
 		},
-		OnAuthRefresh: call.OnAuthRefresh,
+		OnAuthRefresh: modelAuthRefresh(largeModel, refreshAdmittedModel(&largeModel, func() Model { return a.Runtime().LargeModel }, call.OnAuthRefresh)),
 		ModelProvider: func() fantasy.LanguageModel {
-			m := a.largeModel.Get()
 			slog.Info("ModelProvider called",
-				"provider", m.ModelCfg.Provider,
-				"model", m.ModelCfg.Model)
-			return m.Model
+				"provider", largeModel.ModelCfg.Provider,
+				"model", largeModel.ModelCfg.Model)
+			return largeModel.Model
 		},
 		OnToolCall: func(tc fantasy.ToolCallContent) error {
-			input, wasSanitized := sanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input)
-			if wasSanitized {
-				sanitizedToolCalls[tc.ToolCallID] = true
+			input := tc.Input
+			if !tc.ProviderExecuted {
+				var wasSanitized bool
+				input, wasSanitized = sanitizeToolInput(tc.ToolName, tc.ToolCallID, tc.Input)
+				if wasSanitized {
+					sanitizedToolCalls[tc.ToolCallID] = true
+				}
 			}
 			opaqueMetadata, metadataErr := message.MetadataFromFantasyMetadata(message.ProviderMetadataScopeToolCall, tc.ProviderMetadata)
 			if metadataErr != nil {
@@ -994,7 +1074,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				ID:               tc.ToolCallID,
 				Name:             tc.ToolName,
 				Input:            input,
-				ProviderExecuted: false,
+				ProviderExecuted: tc.ProviderExecuted,
 				Finished:         true,
 				ProviderMetadata: opaqueMetadata,
 			}
@@ -1005,12 +1085,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		},
 		OnToolResult: func(result fantasy.ToolResultContent) error {
 			toolResult := a.convertToToolResult(result)
-			if largeModel.ModelCfg.Provider == codexresponses.Name {
-				toolResult.Content = codexresponses.TruncateToolOutput(largeModel.ModelCfg.Model, toolResult.Content)
-			}
-			if sanitizedToolCalls[result.ToolCallID] {
+			toolResult.Content = toolResultContentForModel(largeModel, toolResult.Content)
+			if !result.ProviderExecuted && sanitizedToolCalls[result.ToolCallID] {
 				toolResult.Content = "Tool call failed: arguments were not valid JSON. Please check your tool call format and try again."
 				toolResult.IsError = true
+			}
+			if result.ProviderExecuted {
+				currentAssistant.AddToolResult(toolResult)
+				return a.messages.Update(ctx, *currentAssistant)
 			}
 			// Use parent ctx instead of genCtx to ensure the message is created
 			// even if the request is canceled mid-stream
@@ -1061,7 +1143,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 					}
 				}
 			}
-			responseMetadata, metadataErr := message.MetadataFromFantasyMetadata(message.ProviderMetadataScopeMessage, stepResult.ProviderMetadata)
+			responseMetadata, metadataErr := stepProviderMetadata(largeModel.Metadata, stepResult.ProviderMetadata)
 			if metadataErr != nil {
 				return metadataErr
 			}
@@ -1086,13 +1168,24 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		},
 		StopWhen: []fantasy.StopCondition{
 			func(_ []fantasy.StepResult) bool {
-				cw := int64(largeModel.CatwalkCfg.ContextWindow)
+				cw := int64(largeModel.CatalogModel.ContextWindow)
+				retainedTokenBudget := int64(0)
+				compactionDisabled := disableAutoSummarize
+				if largeModel.Compaction != nil {
+					switch largeModel.Compaction.Mode {
+					case "local-summary", "remote-operation":
+						retainedTokenBudget = largeModel.Compaction.RetainedTokenBudget
+					case "none":
+						compactionDisabled = true
+					}
+				}
 				triggered, threshold := shouldAutoCompact(
 					cw,
 					currentSession.PromptTokens,
 					currentSession.CompletionTokens,
 					unseenLocalTokens,
-					a.disableAutoSummarize,
+					retainedTokenBudget,
+					compactionDisabled,
 				)
 				slog.Debug("Context occupancy checked",
 					"provider", largeModel.ModelCfg.Provider,
@@ -1130,7 +1223,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			// above, so persistCanceledTurn only writes the assistant
 			// record.
 			if isCancelErr {
-				if persistErr := a.persistCanceledTurn(ctx, call, userMsgCreated); persistErr != nil {
+				if persistErr := a.persistCanceledTurnWithModel(ctx, call, userMsgCreated, runtime.LargeModel); persistErr != nil {
 					return nil, persistErr
 				}
 			}
@@ -1214,7 +1307,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				currentAssistant.AddFinish(
 					message.FinishReasonError,
 					"Copilot model not enabled",
-					fmt.Sprintf("%q is not enabled in Copilot. Go to the following page to enable it. Then, wait 5 minutes before trying again. %s", largeModel.CatwalkCfg.Name, link),
+					fmt.Sprintf("%q is not enabled in Copilot. Go to the following page to enable it. Then, wait 5 minutes before trying again. %s", largeModel.CatalogModel.Name, link),
 				)
 			} else {
 				currentAssistant.AddFinish(message.FinishReasonError, cmp.Or(stringext.Capitalize(providerErr.Title), defaultTitle), providerErr.Message)
@@ -1237,19 +1330,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	}
 
 	if shouldSummarize {
-		a.activeRequests.Del(call.SessionID)
-		if summarizeErr := a.summarize(genCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh, systemPrompt); summarizeErr != nil {
+		if summarizeErr := a.summarizeWithRuntime(genCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh, systemInstructions, ac, runtime); summarizeErr != nil {
 			return nil, summarizeErr
 		}
-		// If the agent wasn't done...
-		if len(currentAssistant.ToolCalls()) > 0 {
-			existing, ok := a.messageQueue.Get(call.SessionID)
-			if !ok {
-				existing = []SessionAgentCall{}
-			}
-			call.Prompt = fmt.Sprintf("The previous session was interrupted because it got too long, the initial user request was: `%s`", call.Prompt)
-			existing = append(existing, call)
-			a.messageQueue.Set(call.SessionID, existing)
+		if len(currentAssistant.ToolCalls()) > 0 && a.QueuedPrompts(call.SessionID) == 0 {
+			a.enqueueCall(compactionContinuationCall(call))
 		}
 	}
 
@@ -1372,19 +1457,87 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 }
 
 func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error) error {
-	return a.summarize(ctx, sessionID, opts, onAuthRefresh, "")
+	return a.SummarizeWithRuntime(ctx, sessionID, opts, onAuthRefresh, a.Runtime())
 }
 
-func (a *sessionAgent) summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, systemPrompt string) error {
-	if a.IsSessionBusy(sessionID) {
+func (a *sessionAgent) SummarizeWithRuntime(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, runtime InstalledRuntime) error {
+	if err := a.summarizeWithRuntime(ctx, sessionID, opts, onAuthRefresh, fantasy.Instructions{}, nil, runtime); err != nil {
+		return err
+	}
+	queuedMessages, ok := a.messageQueue.Get(sessionID)
+	if !ok || len(queuedMessages) == 0 {
+		return nil
+	}
+	firstQueuedMessage := queuedMessages[0]
+	a.messageQueue.Set(sessionID, queuedMessages[1:])
+	_, err := a.Run(ctx, firstQueuedMessage)
+	return err
+}
+
+func (a *sessionAgent) summarize(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, instructions fantasy.Instructions, replace *activeCancel) error {
+	return a.summarizeWithRuntime(ctx, sessionID, opts, onAuthRefresh, instructions, replace, a.Runtime())
+}
+
+func (a *sessionAgent) summarizeWithRuntime(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, instructions fantasy.Instructions, replace *activeCancel, runtime InstalledRuntime) error {
+	genCtx, cancel := context.WithCancel(ctx)
+	ac := &activeCancel{cancel: cancel}
+	dispatchLock := a.sessionMu(sessionID)
+	dispatchLock.Lock()
+	active, busy := a.activeRequests.Get(sessionID)
+	if (replace == nil && busy) || (replace != nil && active != replace) {
+		dispatchLock.Unlock()
+		cancel()
 		return ErrSessionBusy
 	}
+	a.activeRequests.Set(sessionID, ac)
+	dispatchLock.Unlock()
+	defer a.activeRequests.CompareAndDelete(sessionID, ac)
+	defer cancel()
+	defer func() {
+		if flushErr := a.messages.FlushAll(ctx); flushErr != nil {
+			slog.Error("Failed to flush pending message updates after summarize", "error", flushErr)
+		}
+	}()
 
-	// Copy mutable fields under lock to avoid races with SetModels.
-	largeModel := a.largeModel.Get()
-	systemPromptPrefix := a.systemPromptPrefix.Get()
-	if systemPrompt == "" {
-		systemPrompt = a.systemPromptWithMCPInstructions(a.systemPrompt.Get())
+	largeModel := runtime.LargeModel
+	compactionMode := "local-summary"
+	var initialCompaction manifest.CompactionPolicy
+	var initialCompactionRetry manifest.RetryPolicy
+	var initialCompactionMetadata manifest.MetadataContract
+	if largeModel.Compaction != nil {
+		initialCompaction = *largeModel.Compaction
+		compactionMode = initialCompaction.Mode
+	}
+	switch compactionMode {
+	case "none":
+		return fmt.Errorf("session compaction is disabled by the selected provider")
+	case "local-summary":
+	case "remote-operation":
+		if largeModel.Compactor == nil {
+			return fmt.Errorf("remote compaction executor is unavailable")
+		}
+		if largeModel.CompactionRetry == nil {
+			return fmt.Errorf("remote compaction retry policy is unavailable")
+		}
+		initialCompactionRetry = cloneRetryPolicy(*largeModel.CompactionRetry)
+		var err error
+		initialCompactionMetadata, err = compactionMetadataContract(largeModel.Metadata, initialCompaction.MetadataNamespace)
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("session compaction mode %q is unsupported", compactionMode)
+	}
+
+	if instructions.Empty() {
+		instructions = appendRuntimeInstructions(
+			runtime.Instructions,
+			largeModel.SystemPromptPrefix,
+			a.runtimeMCPInstructions(),
+			"",
+			"",
+			"",
+		)
 	}
 
 	currentSession, err := a.sessions.Get(ctx, sessionID)
@@ -1399,80 +1552,75 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, opts fan
 		return err
 	}
 	if len(msgs) == 0 {
-		// Nothing to summarize.
 		return nil
 	}
 
 	aiMsgs, _ := a.preparePrompt(msgs, preparePromptOptions{
-		SupportsImages: largeModel.CatwalkCfg.SupportsImages,
+		SupportsImages: largeModel.CatalogModel.SupportsImages,
 	})
-
-	genCtx, cancel := context.WithCancel(ctx)
-	ac := &activeCancel{cancel: cancel}
-	a.activeRequests.Set(sessionID, ac)
-	defer a.activeRequests.CompareAndDelete(sessionID, ac)
-	defer cancel()
+	placeholder, err := a.messages.Create(genCtx, sessionID, message.CreateMessageParams{
+		Role:             message.Assistant,
+		Model:            largeModel.ModelCfg.Model,
+		Provider:         largeModel.ModelCfg.Provider,
+		IsSummaryMessage: true,
+	})
+	if err != nil {
+		return fmt.Errorf("creating compaction placeholder: %w", err)
+	}
+	placeholderCommitted := false
 	defer func() {
-		if flushErr := a.messages.FlushAll(ctx); flushErr != nil {
-			slog.Error("Failed to flush pending message updates after summarize", "error", flushErr)
+		if placeholderCommitted {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cleanupCancel()
+		if deleteErr := a.messages.Delete(cleanupCtx, placeholder.ID); deleteErr != nil {
+			slog.Error("Failed to remove compaction placeholder", "error", deleteErr, "message_id", placeholder.ID, "session_id", sessionID)
 		}
 	}()
 
-	if compactable, ok := largeModel.Model.(interface {
-		Compact(context.Context, fantasy.Call) (*codexresponses.CompactionResult, error)
-	}); ok {
-		prompt := make(fantasy.Prompt, 0, len(aiMsgs)+2)
-		if systemPromptPrefix != "" {
-			prompt = append(prompt, fantasy.NewSystemMessage(systemPromptPrefix))
-		}
-		if systemPrompt != "" {
-			prompt = append(prompt, fantasy.NewSystemMessage(systemPrompt))
-		}
-		prompt = append(prompt, aiMsgs...)
-		boundedTools := codexBoundedTools(a.tools.Copy(), largeModel)
-		compactTools := make([]fantasy.Tool, 0, len(boundedTools))
-		for _, tool := range boundedTools {
-			info := tool.Info()
-			compactTools = append(compactTools, fantasy.FunctionTool{
-				Name:        info.Name,
-				Description: info.Description,
-				InputSchema: map[string]any{
-					"type":       "object",
-					"properties": info.Parameters,
-					"required":   info.Required,
-				},
-				ProviderOptions: tool.ProviderOptions(),
-			})
-		}
-		result, err := compactable.Compact(genCtx, fantasy.Call{
-			Prompt:          prompt,
-			Tools:           compactTools,
-			Headers:         sessionHeaders(sessionID, "compaction"),
-			ProviderOptions: opts,
-			UserAgent:       userAgent,
-		})
+	if compactionMode == "remote-operation" {
+		result, err := a.generateRemoteCompaction(
+			genCtx,
+			sessionID,
+			currentSession,
+			aiMsgs,
+			instructions,
+			opts,
+			onAuthRefresh,
+			runtime,
+			&largeModel,
+			initialCompaction,
+			initialCompactionRetry,
+			initialCompactionMetadata,
+		)
 		if err != nil {
 			return err
 		}
-		summaryContent := message.TextContent{Text: result.Summary}
-		if result.History != nil {
-			envelope, envelopeErr := message.NewProviderMetadataValue(codexresponses.Name, 1, message.ProviderMetadataScopeCompaction, result.History)
-			if envelopeErr != nil {
-				return envelopeErr
-			}
-			summaryContent.ProviderMetadata = message.ProviderMetadata{envelope}
+		if err := validateRemoteCompactionAdmission(initialCompaction, initialCompactionRetry, initialCompactionMetadata, largeModel); err != nil {
+			return err
+		}
+		metadata, err := compactionMetadata(largeModel.Metadata, initialCompaction.MetadataNamespace, result.History)
+		if err != nil {
+			return err
+		}
+		summary := strings.TrimSpace(result.Summary)
+		if summary == "" {
+			return fmt.Errorf("remote compaction returned an empty checkpoint summary")
 		}
 		if result.UsageAvailable {
-			a.applySessionUsage(largeModel, &currentSession, result.Usage, nil, false)
+			a.updateSessionUsage(largeModel, &currentSession, result.Usage, nil, false)
 		}
-		currentSession.CompletionTokens = 0
 		currentSession.PromptTokens = result.ActiveInputTokens
-		currentSession.EstimatedUsage = true
+		currentSession.CompletionTokens = 0
+		currentSession.EstimatedUsage = !result.UsageAvailable
 		_, err = a.messages.CommitCompaction(genCtx, message.CommitCompactionParams{
-			SessionID:        sessionID,
-			Parts:            []message.ContentPart{summaryContent, message.Finish{Reason: message.FinishReasonEndTurn, Time: time.Now().Unix()}},
-			Model:            largeModel.ModelCfg.Model,
-			Provider:         largeModel.ModelCfg.Provider,
+			MessageID: placeholder.ID,
+			SessionID: sessionID,
+			Parts: []message.ContentPart{
+				message.TextContent{Text: summary, ProviderMetadata: metadata},
+				message.Finish{Reason: message.FinishReasonEndTurn, Time: time.Now().Unix()},
+			},
 			PromptTokens:     currentSession.PromptTokens,
 			CompletionTokens: currentSession.CompletionTokens,
 			Cost:             currentSession.Cost,
@@ -1481,126 +1629,64 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, opts fan
 		if err != nil {
 			return err
 		}
+		placeholderCommitted = true
 		result.Finalize()
-		slog.Debug("Context occupancy replaced after Codex compaction",
-			"provider", largeModel.ModelCfg.Provider,
-			"model", largeModel.ModelCfg.Model,
-			"implementation", result.Implementation,
-			"usage_available", result.UsageAvailable,
-			"active_input_tokens", result.ActiveInputTokens,
-		)
-		a.activeRequests.Del(sessionID)
-		cancel()
-		queuedMessages, ok := a.messageQueue.Get(sessionID)
-		if !ok || len(queuedMessages) == 0 {
-			return nil
-		}
-		firstQueuedMessage := queuedMessages[0]
-		a.messageQueue.Set(sessionID, queuedMessages[1:])
-		_, qErr := a.Run(ctx, firstQueuedMessage)
-		return qErr
+		return nil
 	}
 
 	agent := fantasy.NewAgent(
 		largeModel.Model,
-		fantasy.WithSystemPrompt(string(summaryPrompt)),
+		fantasy.WithInstructions(instructions, largeModel.InstructionPolicy),
 		fantasy.WithUserAgent(userAgent),
 	)
-	summaryMessage, err := a.messages.Create(ctx, sessionID, message.CreateMessageParams{
-		Role:             message.Assistant,
-		Model:            largeModel.ModelCfg.Model,
-		Provider:         largeModel.ModelCfg.Provider,
-		IsSummaryMessage: true,
-	})
-	if err != nil {
-		return err
-	}
-
-	summaryPromptText := buildSummaryPrompt(currentSession.Todos)
-
 	resp, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
-		Prompt:          summaryPromptText,
+		Prompt:          buildSummaryPrompt(currentSession.Todos),
 		Messages:        aiMsgs,
 		Headers:         sessionHeaders(sessionID, "summary"),
 		ProviderOptions: opts,
-		OnAuthRefresh:   onAuthRefresh,
+		OnAuthRefresh:   modelAuthRefresh(largeModel, refreshAdmittedModel(&largeModel, func() Model { return a.Runtime().LargeModel }, onAuthRefresh)),
+		MaxRetries:      modelMaxRetries(largeModel),
 		ModelProvider: func() fantasy.LanguageModel {
-			return a.largeModel.Get().Model
+			return largeModel.Model
 		},
 		PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
-			prepared.Messages = options.Messages
-			if systemPromptPrefix != "" {
-				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(systemPromptPrefix)}, prepared.Messages...)
-			}
+			prepared.Messages = replaceSystemInstructions(options.Messages, instructions, largeModel.InstructionPolicy)
+			prepared.Tools = nil
 			return callContext, prepared, nil
-		},
-		OnReasoningDelta: func(id string, text string) error {
-			summaryMessage.AppendReasoningContent(text)
-			return a.messages.Update(genCtx, summaryMessage)
-		},
-		OnReasoningEnd: func(id string, reasoning fantasy.ReasoningContent) error {
-			opaqueMetadata, metadataErr := message.MetadataFromFantasyMetadata(message.ProviderMetadataScopeReasoning, reasoning.ProviderMetadata)
-			if metadataErr != nil {
-				return metadataErr
-			}
-			summaryMessage.SetReasoningProviderMetadata(opaqueMetadata)
-			summaryMessage.FinishThinking()
-			return a.messages.Update(genCtx, summaryMessage)
-		},
-		OnTextDelta: func(id, text string) error {
-			summaryMessage.AppendContent(text)
-			return a.messages.Update(genCtx, summaryMessage)
 		},
 	})
 	if err != nil {
-		isCancelErr := errors.Is(err, context.Canceled)
-		if isCancelErr {
-			// User cancelled summarize we need to remove the summary message.
-			deleteErr := a.messages.Delete(ctx, summaryMessage.ID)
-			return deleteErr
-		}
-		// Mark the summary message as finished with an error so the UI
-		// stops spinning.
-		summaryMessage.AddFinish(message.FinishReasonError, "Summarization Error", err.Error())
-		if updateErr := a.messages.Update(ctx, summaryMessage); updateErr != nil {
-			return updateErr
-		}
 		return err
 	}
 
-	summaryMessage.AddFinish(message.FinishReasonEndTurn, "", "")
-	err = a.messages.Update(genCtx, summaryMessage)
+	summary, err := formatCompactSummary(allResponseText(resp.Response.Content))
 	if err != nil {
 		return err
 	}
-
 	a.updateSessionUsage(largeModel, &currentSession, resp.TotalUsage, nil, false)
-
-	// Just in case, get just the last usage info.
-	usage := resp.Response.Usage
-	currentSession.SummaryMessageID = summaryMessage.ID
-	currentSession.CompletionTokens = summaryCompletionTokens(usage, summaryMessage)
-	currentSession.PromptTokens = 0
-	currentSession.EstimatedUsage = usageIsZero(usage)
-	_, err = a.sessions.Save(genCtx, currentSession)
+	currentSession.PromptTokens = approxTokenCount(summary)
+	currentSession.CompletionTokens = 0
+	currentSession.EstimatedUsage = true
+	_, err = a.messages.CommitCompaction(genCtx, message.CommitCompactionParams{
+		MessageID: placeholder.ID,
+		SessionID: sessionID,
+		Parts: []message.ContentPart{
+			message.TextContent{Text: summary},
+			message.Finish{Reason: message.FinishReasonEndTurn, Time: time.Now().Unix()},
+		},
+		PromptTokens:     currentSession.PromptTokens,
+		CompletionTokens: currentSession.CompletionTokens,
+		Cost:             currentSession.Cost,
+		EstimatedUsage:   currentSession.EstimatedUsage,
+	})
 	if err != nil {
 		return err
 	}
-
-	// Release the active request before processing queued messages so that
-	// Run() does not see the session as busy.
-	a.activeRequests.Del(sessionID)
-	cancel()
-
-	// Process any messages that were queued while summarizing.
-	queuedMessages, ok := a.messageQueue.Get(sessionID)
-	if !ok || len(queuedMessages) == 0 {
-		return nil
+	placeholderCommitted = true
+	if resetter, ok := largeModel.Model.(interface{ ResetConversationChain(string) }); ok {
+		resetter.ResetConversationChain(session.HashID(sessionID))
 	}
-	firstQueuedMessage := queuedMessages[0]
-	a.messageQueue.Set(sessionID, queuedMessages[1:])
-	_, qErr := a.Run(ctx, firstQueuedMessage)
-	return qErr
+	return nil
 }
 
 // sessionHeaders returns the HTTP headers we use for cache affinity on
@@ -1608,6 +1694,49 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, opts fan
 //
 // We use the session hash is used instead of the raw UUID so the header
 // value is deterministic and opaque.
+func modelMaxRetries(model Model) *int {
+	if model.Retry == nil {
+		return nil
+	}
+	return new(0)
+}
+
+func modelAuthRefresh(model Model, callback func(context.Context, *fantasy.ProviderError) error) func(context.Context, *fantasy.ProviderError) error {
+	if model.Retry == nil {
+		return callback
+	}
+	if model.Retry.Authentication != "refresh-once" {
+		return nil
+	}
+	return callback
+}
+
+func refreshAdmittedModel(admitted *Model, current func() Model, callback func(context.Context, *fantasy.ProviderError) error) func(context.Context, *fantasy.ProviderError) error {
+	return refreshAdmittedModelValidated(admitted, current, callback, nil)
+}
+
+func refreshAdmittedModelValidated(admitted *Model, current func() Model, callback func(context.Context, *fantasy.ProviderError) error, validate func(Model) error) func(context.Context, *fantasy.ProviderError) error {
+	if callback == nil {
+		return nil
+	}
+	return func(ctx context.Context, providerErr *fantasy.ProviderError) error {
+		if err := callback(ctx, providerErr); err != nil {
+			return err
+		}
+		refreshed := current()
+		if refreshed.ModelCfg.Provider != admitted.ModelCfg.Provider || refreshed.ModelCfg.Model != admitted.ModelCfg.Model {
+			return fmt.Errorf("model generation changed during authentication refresh")
+		}
+		if validate != nil {
+			if err := validate(refreshed); err != nil {
+				return err
+			}
+		}
+		*admitted = refreshed
+		return nil
+	}
+}
+
 func sessionHeaders(sessionID, purpose string) map[string]string {
 	hash := session.HashID(sessionID)
 	return map[string]string{
@@ -1615,6 +1744,46 @@ func sessionHeaders(sessionID, purpose string) map[string]string {
 		"x-session-affinity": hash,
 		"x-request-purpose":  purpose,
 	}
+}
+
+func stepProviderMetadata(contracts []manifest.MetadataContract, metadata fantasy.ProviderMetadata) (message.ProviderMetadata, error) {
+	compiled, err := manifest.CompileMetadataContracts(contracts)
+	if err != nil {
+		return nil, err
+	}
+	declared := make(map[string]manifest.MetadataContract, len(contracts))
+	for _, contract := range contracts {
+		declared[contract.Namespace] = contract
+	}
+	messageMetadata := make(fantasy.ProviderMetadata)
+	continuationMetadata := make(fantasy.ProviderMetadata)
+	for namespace, value := range metadata {
+		contract, ok := declared[namespace]
+		if !ok {
+			messageMetadata[namespace] = value
+			continue
+		}
+		if err := manifest.ValidateMetadataValue(namespace, compiled[namespace], value); err != nil {
+			return nil, fmt.Errorf("provider metadata %q: %w", namespace, err)
+		}
+		switch contract.Scope {
+		case string(message.ProviderMetadataScopeMessage):
+			messageMetadata[namespace] = value
+		case string(message.ProviderMetadataScopeContinuation):
+			continuationMetadata[namespace] = value
+		default:
+			return nil, fmt.Errorf("provider metadata %q with scope %q cannot cross the message persistence boundary", namespace, contract.Scope)
+		}
+	}
+	result, err := message.MetadataFromFantasyMetadata(message.ProviderMetadataScopeMessage, messageMetadata)
+	if err != nil {
+		return nil, err
+	}
+	continuation, err := message.MetadataFromFantasyMetadata(message.ProviderMetadataScopeContinuation, continuationMetadata)
+	if err != nil {
+		return nil, err
+	}
+	return append(result, continuation...), nil
 }
 
 func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentCall) (message.Message, error) {
@@ -1675,41 +1844,88 @@ If not, please feel free to ignore. Again do not mention this message to the use
 			),
 		))
 	}
-	// Collect all tool call IDs present in assistant messages and all tool
-	// result IDs present in tool messages. This lets us detect both orphaned
-	// tool results (result without a call) and orphaned tool calls (call
-	// without a result).
-	knownToolCallIDs := make(map[string]struct{})
-	knownToolResultIDs := make(map[string]struct{})
-	for _, m := range msgs {
-		switch m.Role {
-		case message.Assistant:
-			for _, tc := range m.ToolCalls() {
-				knownToolCallIDs[tc.ID] = struct{}{}
+
+	type toolCallOwner struct {
+		messageIndex     int
+		providerExecuted bool
+	}
+	toolCallOwners := make(map[string]toolCallOwner)
+	providerResultIDs := make(map[string]struct{})
+	for messageIndex, msg := range msgs {
+		if msg.Role == message.Assistant {
+			for _, call := range msg.ToolCalls() {
+				if _, exists := toolCallOwners[call.ID]; !exists {
+					toolCallOwners[call.ID] = toolCallOwner{
+						messageIndex:     messageIndex,
+						providerExecuted: call.ProviderExecuted,
+					}
+				}
 			}
-		case message.Tool:
-			for _, tr := range m.ToolResults() {
-				knownToolResultIDs[tr.ToolCallID] = struct{}{}
+		}
+		for _, result := range msg.ToolResults() {
+			if result.ProviderExecuted {
+				providerResultIDs[result.ToolCallID] = struct{}{}
 			}
 		}
 	}
 
-	for _, m := range msgs {
-		if len(m.Parts) == 0 {
+	clientResultsByAssistant := make(map[int][]fantasy.Message)
+	providerResultsByAssistant := make(map[int][]fantasy.ToolResultPart)
+	remainingToolMessages := make(map[int][]fantasy.Message)
+	clientResultIDs := make(map[string]struct{})
+	for messageIndex, msg := range msgs {
+		if msg.Role != message.Tool {
 			continue
 		}
-		// Assistant message without content, tool calls, or replay metadata
-		// (cancelled before it returned anything).
-		if m.Role == message.Assistant && len(m.ToolCalls()) == 0 && m.Content().Text == "" && m.ReasoningContent().String() == "" && len(m.MetadataContent()) == 0 {
-			continue
-		}
-		if m.Role == message.Tool {
-			if msg, ok := filterOrphanedToolResults(m, knownToolCallIDs); ok {
-				history = append(history, msg)
+		for _, aiMsg := range msg.ToAIMessage() {
+			remainingParts := make([]fantasy.MessagePart, 0, len(aiMsg.Content))
+			for _, part := range aiMsg.Content {
+				result, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part)
+				if !ok {
+					remainingParts = append(remainingParts, part)
+					continue
+				}
+				owner, known := toolCallOwners[result.ToolCallID]
+				if !known {
+					slog.Warn(
+						"Dropping orphaned tool result with no matching tool call",
+						"tool_call_id", result.ToolCallID,
+					)
+					continue
+				}
+				_, providerResult := providerResultIDs[result.ToolCallID]
+				if result.ProviderExecuted || owner.providerExecuted || providerResult {
+					result.ProviderExecuted = true
+					providerResultsByAssistant[owner.messageIndex] = append(providerResultsByAssistant[owner.messageIndex], result)
+					providerResultIDs[result.ToolCallID] = struct{}{}
+					continue
+				}
+				clientResultsByAssistant[owner.messageIndex] = append(clientResultsByAssistant[owner.messageIndex], fantasy.Message{
+					Role:            fantasy.MessageRoleTool,
+					Content:         []fantasy.MessagePart{result},
+					ProviderOptions: aiMsg.ProviderOptions,
+				})
+				clientResultIDs[result.ToolCallID] = struct{}{}
 			}
+			if len(remainingParts) > 0 {
+				aiMsg.Content = remainingParts
+				remainingToolMessages[messageIndex] = append(remainingToolMessages[messageIndex], aiMsg)
+			}
+		}
+	}
+
+	for messageIndex, msg := range msgs {
+		if len(msg.Parts) == 0 {
 			continue
 		}
-		aiMsgs := m.ToAIMessage()
+		if msg.Role == message.Assistant && len(msg.ToolCalls()) == 0 && msg.Content().Text == "" && msg.ReasoningContent().String() == "" && len(msg.MetadataContent()) == 0 {
+			continue
+		}
+		if msg.Role == message.Tool {
+			history = append(history, remainingToolMessages[messageIndex]...)
+			continue
+		}
+		aiMsgs := msg.ToAIMessage()
 		if !options.SupportsImages {
 			for i := range aiMsgs {
 				if aiMsgs[i].Role == fantasy.MessageRoleUser {
@@ -1717,11 +1933,29 @@ If not, please feel free to ignore. Again do not mention this message to the use
 				}
 			}
 		}
+		if msg.Role == message.Assistant && len(aiMsgs) > 0 {
+			for aiMessageIndex := range aiMsgs {
+				for partIndex, part := range aiMsgs[aiMessageIndex].Content {
+					call, ok := fantasy.AsMessagePart[fantasy.ToolCallPart](part)
+					if !ok {
+						continue
+					}
+					if _, providerExecuted := providerResultIDs[call.ToolCallID]; providerExecuted {
+						call.ProviderExecuted = true
+						aiMsgs[aiMessageIndex].Content[partIndex] = call
+					}
+				}
+			}
+			for _, result := range providerResultsByAssistant[messageIndex] {
+				aiMsgs[len(aiMsgs)-1].Content = append(aiMsgs[len(aiMsgs)-1].Content, result)
+			}
+		}
 		history = append(history, aiMsgs...)
 
-		if m.Role == message.Assistant {
-			if msg, ok := syntheticToolResultsForOrphanedCalls(m, knownToolResultIDs); ok {
-				history = append(history, msg)
+		if msg.Role == message.Assistant {
+			history = append(history, clientResultsByAssistant[messageIndex]...)
+			if synthetic, ok := syntheticToolResultsForOrphanedCalls(msg, clientResultIDs, providerResultIDs); ok {
+				history = append(history, synthetic)
 			}
 		}
 	}
@@ -1758,60 +1992,63 @@ func filterFileParts(parts []fantasy.MessagePart) []fantasy.MessagePart {
 	return filtered
 }
 
-// filterOrphanedToolResults converts a tool message to a fantasy.Message,
-// dropping any tool result parts whose tool_call_id has no matching tool call
-// in the known set. An orphaned result causes API validation to fail on every
-// subsequent turn, permanently locking the session. Returns the filtered
-// message and true if at least one valid part remains.
-func filterOrphanedToolResults(m message.Message, knownToolCallIDs map[string]struct{}) (fantasy.Message, bool) {
-	aiMsgs := m.ToAIMessage()
-	if len(aiMsgs) == 0 {
-		return fantasy.Message{}, false
-	}
-	var validParts []fantasy.MessagePart
-	for _, part := range aiMsgs[0].Content {
-		tr, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part)
-		if !ok {
-			validParts = append(validParts, part)
+func omitAgedImageHistory(messages []fantasy.Message, syntheticUserMessages map[int]struct{}) []fantasy.Message {
+	result := slices.Clone(messages)
+	laterUserTurns := 0
+	for index := len(result) - 1; index >= 0; index-- {
+		if result[index].Role != fantasy.MessageRoleUser {
 			continue
 		}
-		if _, known := knownToolCallIDs[tr.ToolCallID]; known {
-			validParts = append(validParts, part)
-		} else {
-			slog.Warn(
-				"Dropping orphaned tool result with no matching tool call",
-				"tool_call_id", tr.ToolCallID,
-			)
+		if laterUserTurns > retainedImageHistoryTurns {
+			filtered := make([]fantasy.MessagePart, 0, len(result[index].Content))
+			omitted := false
+			for _, part := range result[index].Content {
+				file, ok := fantasy.AsMessagePart[fantasy.FilePart](part)
+				if ok && strings.HasPrefix(strings.ToLower(file.MediaType), "image/") {
+					if !omitted {
+						filtered = append(filtered, fantasy.TextPart{Text: omittedImageHistoryMessage})
+						omitted = true
+					}
+					continue
+				}
+				filtered = append(filtered, part)
+			}
+			if omitted {
+				message := result[index]
+				message.Content = filtered
+				result[index] = message
+			}
+		}
+		if _, synthetic := syntheticUserMessages[index]; !synthetic {
+			laterUserTurns++
 		}
 	}
-	if len(validParts) == 0 {
-		return fantasy.Message{}, false
-	}
-	msg := aiMsgs[0]
-	msg.Content = validParts
-	return msg, true
+	return result
 }
 
-// syntheticToolResultsForOrphanedCalls returns a tool message containing
-// synthetic tool results for any tool calls in the assistant message that
-// have no matching result in knownToolResultIDs. LLM APIs require every
-// tool_use to be immediately followed by a tool_result; an interrupted
-// session can leave orphaned tool_use blocks that permanently lock the
-// conversation. Returns the message and true if any synthetic results were
-// produced.
-func syntheticToolResultsForOrphanedCalls(m message.Message, knownToolResultIDs map[string]struct{}) (fantasy.Message, bool) {
+func syntheticToolResultsForOrphanedCalls(
+	msg message.Message,
+	clientResultIDs map[string]struct{},
+	providerResultIDs map[string]struct{},
+) (fantasy.Message, bool) {
 	var syntheticParts []fantasy.MessagePart
-	for _, tc := range m.ToolCalls() {
-		if _, hasResult := knownToolResultIDs[tc.ID]; hasResult {
+	for _, call := range msg.ToolCalls() {
+		if call.ProviderExecuted {
+			continue
+		}
+		if _, providerExecuted := providerResultIDs[call.ID]; providerExecuted {
+			continue
+		}
+		if _, hasResult := clientResultIDs[call.ID]; hasResult {
 			continue
 		}
 		slog.Warn(
 			"Injecting synthetic tool result for orphaned tool call",
-			"tool_call_id", tc.ID,
-			"tool_name", tc.Name,
+			"tool_call_id", call.ID,
+			"tool_name", call.Name,
 		)
 		syntheticParts = append(syntheticParts, fantasy.ToolResultPart{
-			ToolCallID: tc.ID,
+			ToolCallID: call.ID,
 			Output: fantasy.ToolResultOutputContentError{
 				Error: errors.New("tool call was interrupted and did not produce a result, you may retry this call if the result is still needed"),
 			},
@@ -1826,18 +2063,24 @@ func syntheticToolResultsForOrphanedCalls(m message.Message, knownToolResultIDs 
 	}, true
 }
 
-func auxiliaryStreamCall(prompt string, headers map[string]string, model Model, modelProvider func() fantasy.LanguageModel) fantasy.AgentStreamCall {
+func auxiliaryInstructions(text string, model Model) fantasy.Instructions {
+	return fantasy.NewInstructions(
+		fantasy.StaticInstruction(fantasy.InstructionKindAuxiliary, text),
+	).Prepend(
+		fantasy.StaticInstruction(fantasy.InstructionKindProviderPrefix, model.SystemPromptPrefix),
+	)
+}
+
+func auxiliaryStreamCall(prompt string, headers map[string]string, model Model, modelProvider func() Model, instructions fantasy.Instructions) fantasy.AgentStreamCall {
 	return fantasy.AgentStreamCall{
 		Prompt:          prompt,
 		Headers:         headers,
 		ProviderOptions: model.ProviderOptions,
-		OnAuthRefresh:   model.OnAuthRefresh,
-		ModelProvider:   modelProvider,
+		OnAuthRefresh:   modelAuthRefresh(model, refreshAdmittedModel(&model, modelProvider, model.OnAuthRefresh)),
+		MaxRetries:      modelMaxRetries(model),
+		ModelProvider:   func() fantasy.LanguageModel { return model.Model },
 		PrepareStep: func(callCtx context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
-			prepared.Messages = options.Messages
-			if model.SystemPromptPrefix != "" {
-				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(model.SystemPromptPrefix)}, prepared.Messages...)
-			}
+			prepared.Messages = replaceSystemInstructions(options.Messages, instructions, model.InstructionPolicy)
 			return callCtx, prepared, nil
 		},
 	}
@@ -1847,10 +2090,12 @@ func (a *sessionAgent) GenerateMemory(ctx context.Context, purpose, prompt strin
 	if purpose != "memory_extraction" && purpose != "memory_consolidation" {
 		return "", fmt.Errorf("invalid memory request purpose %q", purpose)
 	}
-	smallModel := a.smallModel.Get()
+	runtime := a.Runtime()
+	smallModel := runtime.SmallModel
+	instructions := auxiliaryInstructions("You maintain a private persistent memory index. Follow the requested JSON schema exactly and do not use tools.\n /no_think", smallModel)
 	memoryAgent := fantasy.NewAgent(
 		smallModel.Model,
-		fantasy.WithSystemPrompt("You maintain a private persistent memory index. Follow the requested JSON schema exactly and do not use tools.\n /no_think"),
+		fantasy.WithInstructions(instructions, smallModel.InstructionPolicy),
 		fantasy.WithMaxOutputTokens(maxOutputTokens),
 		fantasy.WithUserAgent(userAgent),
 	)
@@ -1858,7 +2103,8 @@ func (a *sessionAgent) GenerateMemory(ctx context.Context, purpose, prompt strin
 		prompt,
 		sessionHeaders("auto-memory", purpose),
 		smallModel,
-		func() fantasy.LanguageModel { return a.smallModel.Get().Model },
+		func() Model { return a.Runtime().SmallModel },
+		instructions,
 	))
 	if err != nil {
 		return "", err
@@ -1921,11 +2167,13 @@ func (a *sessionAgent) SuggestPrompt(ctx context.Context, sessionID string) (str
 		return "", nil
 	}
 
-	smallModel := a.smallModel.Get()
+	runtime := a.Runtime()
+	smallModel := runtime.SmallModel
+	instructions := auxiliaryInstructions(string(suggestPromptTemplate)+"\n /no_think", smallModel)
 
 	agent := fantasy.NewAgent(
 		smallModel.Model,
-		fantasy.WithSystemPrompt(string(suggestPromptTemplate)+"\n /no_think"),
+		fantasy.WithInstructions(instructions, smallModel.InstructionPolicy),
 		fantasy.WithMaxOutputTokens(256),
 		fantasy.WithUserAgent(userAgent),
 	)
@@ -1934,7 +2182,8 @@ func (a *sessionAgent) SuggestPrompt(ctx context.Context, sessionID string) (str
 		"Conversation:\n\n"+transcript.String()+"\nPredicted next user message:",
 		sessionHeaders(sessionID, "suggestion"),
 		smallModel,
-		func() fantasy.LanguageModel { return a.smallModel.Get().Model },
+		func() Model { return a.Runtime().SmallModel },
+		instructions,
 	))
 	if err != nil {
 		return "", err
@@ -1993,6 +2242,10 @@ func hasUserTextMessage(msgs []message.Message) bool {
 
 // GenerateTitle generates a session title based on the initial prompt.
 func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, userPrompt string) {
+	a.generateTitleWithRuntime(ctx, sessionID, userPrompt, a.Runtime())
+}
+
+func (a *sessionAgent) generateTitleWithRuntime(ctx context.Context, sessionID string, userPrompt string, runtime InstalledRuntime) {
 	if userPrompt == "" {
 		return
 	}
@@ -2010,17 +2263,8 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 		}
 	}()
 
-	smallModel := a.smallModel.Get()
-	largeModel := a.largeModel.Get()
-
-	newAgent := func(m fantasy.LanguageModel, p []byte, tok int64) fantasy.Agent {
-		return fantasy.NewAgent(
-			m,
-			fantasy.WithSystemPrompt(string(p)+"\n /no_think"),
-			fantasy.WithMaxOutputTokens(tok),
-			fantasy.WithUserAgent(userAgent),
-		)
-	}
+	smallModel := runtime.SmallModel
+	largeModel := runtime.LargeModel
 
 	prompt := fmt.Sprintf("Generate a concise title for the following content:\n\n%s\n <think>\n\n</think>", userPrompt)
 
@@ -2039,19 +2283,26 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 	var success bool
 	for _, attempt := range attempts {
 		tok := int64(40)
-		if attempt.model.CatwalkCfg.CanReason {
-			tok = attempt.model.CatwalkCfg.DefaultMaxTokens
+		if attempt.model.CatalogModel.CanReason {
+			tok = attempt.model.CatalogModel.DefaultMaxTokens
 		}
-		agent := newAgent(attempt.model.Model, titlePrompt, tok)
-		modelProvider := func() fantasy.LanguageModel { return a.largeModel.Get().Model }
+		instructions := auxiliaryInstructions(string(titlePrompt)+"\n /no_think", attempt.model)
+		agent := fantasy.NewAgent(
+			attempt.model.Model,
+			fantasy.WithInstructions(instructions, attempt.model.InstructionPolicy),
+			fantasy.WithMaxOutputTokens(tok),
+			fantasy.WithUserAgent(userAgent),
+		)
+		modelProvider := func() Model { return a.Runtime().LargeModel }
 		if attempt.name == "small" {
-			modelProvider = func() fantasy.LanguageModel { return a.smallModel.Get().Model }
+			modelProvider = func() Model { return a.Runtime().SmallModel }
 		}
 		resp, err = agent.Stream(ctx, auxiliaryStreamCall(
 			prompt,
 			sessionHeaders(sessionID, "title"),
 			attempt.model,
 			modelProvider,
+			instructions,
 		))
 		if err == nil && resp.Response.FinishReason != fantasy.FinishReasonLength {
 			model = attempt.model
@@ -2092,7 +2343,7 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 	}
 
 	// Calculate usage and cost.
-	modelConfig := model.CatwalkCfg
+	modelConfig := model.CatalogModel
 	cost := modelConfig.CostPer1MInCached/1e6*float64(resp.TotalUsage.CacheCreationTokens) +
 		modelConfig.CostPer1MOutCached/1e6*float64(resp.TotalUsage.CacheReadTokens) +
 		modelConfig.CostPer1MIn/1e6*float64(resp.TotalUsage.InputTokens) +
@@ -2113,16 +2364,30 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 	titleSaved = true
 }
 
-func shouldAutoCompact(contextWindow, promptTokens, completionTokens, unseenLocalTokens int64, disabled bool) (bool, int64) {
+func shouldAutoCompact(contextWindow, promptTokens, completionTokens, unseenLocalTokens, retainedTokenBudget int64, disabled bool) (bool, int64) {
 	if contextWindow == 0 {
 		return false, 0
 	}
-	threshold := int64(float64(contextWindow) * smallContextWindowRatio)
-	if contextWindow > largeContextWindowThreshold {
-		threshold = largeContextWindowBuffer
+	threshold := retainedTokenBudget
+	if threshold == 0 {
+		threshold = int64(float64(contextWindow) * smallContextWindowRatio)
+		if contextWindow > largeContextWindowThreshold {
+			threshold = largeContextWindowBuffer
+		}
 	}
 	remaining := contextWindow - promptTokens - completionTokens - unseenLocalTokens
 	return remaining <= threshold && !disabled, threshold
+}
+
+func modelUsesCodexRuntime(model Model) bool {
+	return model.InstructionPolicy == fantasy.InstructionPolicyCodex
+}
+
+func toolResultContentForModel(model Model, content string) string {
+	if !modelUsesCodexRuntime(model) {
+		return content
+	}
+	return codexresponses.TruncateToolOutput(model.ModelCfg.Model, content)
 }
 
 func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session, usage fantasy.Usage, overrideCost *float64, estimated bool) {
@@ -2130,7 +2395,7 @@ func (a *sessionAgent) updateSessionUsage(model Model, session *session.Session,
 }
 
 func (a *sessionAgent) applySessionUsage(model Model, session *session.Session, usage fantasy.Usage, overrideCost *float64, estimated bool) float64 {
-	if estimated && model.ModelCfg.Provider == codexresponses.Name && !session.EstimatedUsage && (session.PromptTokens != 0 || session.CompletionTokens != 0) {
+	if estimated && modelUsesCodexRuntime(model) && !session.EstimatedUsage && (session.PromptTokens != 0 || session.CompletionTokens != 0) {
 		return 0
 	}
 	if !usageIsZero(usage) {
@@ -2138,12 +2403,12 @@ func (a *sessionAgent) applySessionUsage(model Model, session *session.Session, 
 	}
 
 	billingUsage := usage
-	if model.ModelCfg.Provider == codexresponses.Name && usage.TotalTokens > 0 {
+	if modelUsesCodexRuntime(model) && usage.TotalTokens > 0 {
 		providerInput := max(usage.TotalTokens-usage.OutputTokens, 0)
 		billingUsage.CacheReadTokens = min(max(usage.CacheReadTokens, 0), providerInput)
 		billingUsage.InputTokens = providerInput - billingUsage.CacheReadTokens
 	}
-	modelConfig := model.CatwalkCfg
+	modelConfig := model.CatalogModel
 	cost := modelConfig.CostPer1MInCached/1e6*float64(billingUsage.CacheCreationTokens) +
 		modelConfig.CostPer1MOutCached/1e6*float64(billingUsage.CacheReadTokens) +
 		modelConfig.CostPer1MIn/1e6*float64(billingUsage.InputTokens) +
@@ -2167,7 +2432,7 @@ func (a *sessionAgent) applySessionUsage(model Model, session *session.Session, 
 }
 
 func updateSessionTokenCounters(model Model, session *session.Session, usage fantasy.Usage) {
-	if model.ModelCfg.Provider == codexresponses.Name && usage.TotalTokens > 0 {
+	if modelUsesCodexRuntime(model) && usage.TotalTokens > 0 {
 		session.PromptTokens = max(usage.TotalTokens-usage.OutputTokens, 0)
 		session.CompletionTokens = max(usage.OutputTokens, 0)
 		return
@@ -2309,21 +2574,62 @@ func (a *sessionAgent) QueuedPromptsList(sessionID string) []QueuedPrompt {
 }
 
 func (a *sessionAgent) SetModels(large Model, small Model) {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
 	a.largeModel.Set(large)
 	a.smallModel.Set(small)
 }
 
 func (a *sessionAgent) SetTools(tools, planModeTools []fantasy.AgentTool) {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
 	a.tools.SetSlice(tools)
 	a.planModeTools.SetSlice(planModeTools)
 }
 
+func (a *sessionAgent) SetInstructions(instructions fantasy.Instructions) {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	a.systemInstructions.Set(instructions)
+}
+
 func (a *sessionAgent) SetSystemPrompt(systemPrompt string) {
-	a.systemPrompt.Set(systemPrompt)
+	a.SetInstructions(fantasy.NewInstructions(
+		fantasy.StaticInstruction(fantasy.InstructionKindTooling, systemPrompt),
+	))
+}
+
+func (a *sessionAgent) SetRuntime(runtime InstalledRuntime) {
+	a.runtimeMu.Lock()
+	defer a.runtimeMu.Unlock()
+	a.largeModel.Set(runtime.LargeModel)
+	a.smallModel.Set(runtime.SmallModel)
+	a.systemPromptPrefix.Set(runtime.LargeModel.SystemPromptPrefix)
+	a.systemInstructions.Set(runtime.Instructions)
+	a.tools.SetSlice(runtime.Tools)
+	a.planModeTools.SetSlice(runtime.PlanModeTools)
+	a.disableAutoSummarize = runtime.DisableAutoSummarize
+	a.systemPromptBuilder = runtime.SystemPromptBuilder
+	a.runtimeSnapshot = runtime.Snapshot
+}
+
+func (a *sessionAgent) Runtime() InstalledRuntime {
+	a.runtimeMu.RLock()
+	defer a.runtimeMu.RUnlock()
+	return InstalledRuntime{
+		LargeModel:           a.largeModel.Get(),
+		SmallModel:           a.smallModel.Get(),
+		Instructions:         a.systemInstructions.Get(),
+		Tools:                a.tools.Copy(),
+		PlanModeTools:        a.planModeTools.Copy(),
+		DisableAutoSummarize: a.disableAutoSummarize,
+		SystemPromptBuilder:  a.systemPromptBuilder,
+		Snapshot:             a.runtimeSnapshot,
+	}
 }
 
 func (a *sessionAgent) Model() Model {
-	return a.largeModel.Get()
+	return a.Runtime().LargeModel
 }
 
 // convertToToolResult converts a fantasy tool result to a message tool result.
@@ -2338,6 +2644,9 @@ func (a *sessionAgent) convertToToolResult(result fantasy.ToolResultContent) mes
 		Metadata:         result.ClientMetadata,
 		ProviderExecuted: result.ProviderExecuted,
 		ProviderMetadata: opaqueMetadata,
+	}
+	if result.Result == nil {
+		return baseResult
 	}
 
 	switch result.Result.GetType() {
@@ -2394,12 +2703,26 @@ func (a *sessionAgent) convertToToolResult(result fantasy.ToolResultContent) mes
 //	BEFORE: [tool result: image data]
 //	AFTER:  [tool result: "Image loaded - see attached"], [user: image attachment]
 func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Message, largeModel Model) ([]fantasy.Message, error) {
-	supportsImages := largeModel.CatwalkCfg.SupportsImages
+	supportsImages := largeModel.CatalogModel.SupportsImages
 
 	convertedMessages := make([]fantasy.Message, 0, len(messages))
+	syntheticUserMessages := make(map[int]struct{})
+	var pendingMediaFiles []fantasy.FilePart
+	flushMediaFiles := func() {
+		if len(pendingMediaFiles) == 0 {
+			return
+		}
+		syntheticUserMessages[len(convertedMessages)] = struct{}{}
+		convertedMessages = append(convertedMessages, fantasy.NewUserMessage(
+			"Here is the media content from the tool result:",
+			pendingMediaFiles...,
+		))
+		pendingMediaFiles = nil
+	}
 
 	for _, msg := range messages {
 		if msg.Role != fantasy.MessageRoleTool {
+			flushMediaFiles()
 			convertedMessages = append(convertedMessages, msg)
 			continue
 		}
@@ -2420,12 +2743,19 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 					// placeholder and skip creating a synthetic user
 					// message with FilePart, which would brick the
 					// session on text-only models.
+					text := media.Text
+					if text != "" {
+						text += "\n\n"
+					}
+					text += "[Image/media content not supported by this model]"
 					textParts = append(textParts, fantasy.ToolResultPart{
 						ToolCallID: toolResult.ToolCallID,
 						Output: fantasy.ToolResultOutputContentText{
-							Text: "[Image/media content not supported by this model]",
+							Text: text,
 						},
-						ProviderOptions: toolResult.ProviderOptions,
+						ProviderExecuted: toolResult.ProviderExecuted,
+						ProviderOptions:  toolResult.ProviderOptions,
+						ClientMetadata:   toolResult.ClientMetadata,
 					})
 					continue
 				}
@@ -2437,27 +2767,25 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 					continue
 				}
 
-				filename := fmt.Sprintf("tool-result-%s", toolResult.ToolCallID)
-				normalized, normalizeErr := imageattachment.NormalizeAll(largeModel.ModelCfg.Provider, []message.Attachment{{
-					Content:  decoded,
-					MimeType: media.MediaType,
-					FileName: filename,
-				}})
-				if normalizeErr != nil {
-					return nil, normalizeErr
-				}
 				mediaFiles = append(mediaFiles, fantasy.FilePart{
-					Data:      normalized[0].Content,
-					MediaType: normalized[0].MimeType,
-					Filename:  normalized[0].FileName,
+					Data:      decoded,
+					MediaType: media.MediaType,
+					Filename:  fmt.Sprintf("tool-result-%s", toolResult.ToolCallID),
 				})
 
+				text := media.Text
+				if text != "" {
+					text += "\n\n"
+				}
+				text += "[Image/media content loaded - see attached file]"
 				textParts = append(textParts, fantasy.ToolResultPart{
 					ToolCallID: toolResult.ToolCallID,
 					Output: fantasy.ToolResultOutputContentText{
-						Text: "[Image/media content loaded - see attached file]",
+						Text: text,
 					},
-					ProviderOptions: toolResult.ProviderOptions,
+					ProviderExecuted: toolResult.ProviderExecuted,
+					ProviderOptions:  toolResult.ProviderOptions,
+					ClientMetadata:   toolResult.ClientMetadata,
 				})
 			} else {
 				textParts = append(textParts, part)
@@ -2469,30 +2797,106 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 			Content: textParts,
 		})
 
-		if len(mediaFiles) > 0 {
-			convertedMessages = append(convertedMessages, fantasy.NewUserMessage(
-				"Here is the media content from the tool result:",
-				mediaFiles...,
-			))
+		pendingMediaFiles = append(pendingMediaFiles, mediaFiles...)
+	}
+	flushMediaFiles()
+
+	retainedMessages := omitAgedImageHistory(convertedMessages, syntheticUserMessages)
+	normalizedMessages, err := normalizeProviderPromptImages(retainedMessages, largeModel.ImagePolicy)
+	if err != nil {
+		return nil, err
+	}
+	return normalizedMessages, nil
+}
+
+func normalizeProviderPromptImages(messages []fantasy.Message, policy *imageattachment.Policy) ([]fantasy.Message, error) {
+	if policy == nil {
+		return messages, nil
+	}
+	result := make([]fantasy.Message, len(messages))
+	for messageIndex, promptMessage := range messages {
+		result[messageIndex] = promptMessage
+		result[messageIndex].Content = append([]fantasy.MessagePart(nil), promptMessage.Content...)
+		for partIndex, part := range result[messageIndex].Content {
+			file, ok := fantasy.AsMessagePart[fantasy.FilePart](part)
+			if !ok || !strings.HasPrefix(strings.ToLower(file.MediaType), "image/") {
+				continue
+			}
+			normalized, err := imageattachment.Normalize(*policy, message.Attachment{
+				FileName: file.Filename,
+				MimeType: strings.ToLower(file.MediaType),
+				Content:  file.Data,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("prepare provider image %q: %w", file.Filename, err)
+			}
+			file.Filename = normalized.FileName
+			file.MediaType = normalized.MimeType
+			file.Data = normalized.Content
+			result[messageIndex].Content[partIndex] = file
 		}
 	}
-
-	return convertedMessages, nil
+	return result, nil
 }
 
 // buildSummaryPrompt constructs the prompt text for session summarization.
 func buildSummaryPrompt(todos []session.Todo) string {
-	var sb strings.Builder
-	sb.WriteString("Provide a detailed summary of our conversation above.")
-	if len(todos) > 0 {
-		sb.WriteString("\n\n## Current Todo List\n\n")
-		for _, t := range todos {
-			fmt.Fprintf(&sb, "- [%s] %s\n", t.Status, t.Content)
-		}
-		sb.WriteString("\nInclude these tasks and their statuses in your summary. ")
-		sb.WriteString("Instruct the resuming assistant to use the `todos` tool to continue tracking progress on these tasks.")
+	prompt := strings.TrimSpace(string(summaryPrompt))
+	if len(todos) == 0 {
+		return prompt
 	}
-	return sb.String()
+	var context strings.Builder
+	context.WriteString(prompt)
+	context.WriteString("\n\nAdditional Context:\nCurrent todo list:\n")
+	for _, todo := range todos {
+		fmt.Fprintf(&context, "- [%s] %s\n", todo.Status, todo.Content)
+	}
+	context.WriteString("Preserve these statuses, but only keep tasks that still follow from the newest user direction.")
+	return context.String()
+}
+
+// allResponseText preserves provider text items in response order. Summary tags
+// can span items, so the first-text-only API can discard the body or closing tag
+// and prevent an otherwise valid compaction from being saved.
+func allResponseText(response fantasy.ResponseContent) string {
+	var text strings.Builder
+	for _, content := range response {
+		if content.GetType() != fantasy.ContentTypeText {
+			continue
+		}
+		textContent, ok := fantasy.AsContentType[fantasy.TextContent](content)
+		if ok {
+			text.WriteString(textContent.Text)
+		}
+	}
+	return text.String()
+}
+
+func formatCompactSummary(response string) (string, error) {
+	withoutAnalysis := summaryAnalysisRegex.ReplaceAllString(response, "")
+	match := summaryBlockRegex.FindStringSubmatch(withoutAnalysis)
+	if len(match) != 2 || strings.TrimSpace(match[1]) == "" {
+		return "", errors.New("summary response did not contain a non-empty <summary> block")
+	}
+	return "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n" + strings.TrimSpace(match[1]) + "\n\nContinue from the newest unfinished user request. Do not acknowledge this summary, repeat completed work, or resume superseded tasks.", nil
+}
+
+func compactionContinuationCall(call SessionAgentCall) SessionAgentCall {
+	return SessionAgentCall{
+		SessionID:         call.SessionID,
+		Prompt:            "Continue the most recent unfinished task from the compacted context. Follow the newest user request and do not resume superseded work.",
+		ProviderOptions:   call.ProviderOptions,
+		MaxOutputTokens:   call.MaxOutputTokens,
+		Temperature:       call.Temperature,
+		TopP:              call.TopP,
+		TopK:              call.TopK,
+		FrequencyPenalty:  call.FrequencyPenalty,
+		PresencePenalty:   call.PresencePenalty,
+		NonInteractive:    call.NonInteractive,
+		OnProviderWarning: call.OnProviderWarning,
+		OnAuthRefresh:     call.OnAuthRefresh,
+		runtime:           call.runtime,
+	}
 }
 
 func providerRetryLogFields(err *fantasy.ProviderError, delay time.Duration) []any {

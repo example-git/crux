@@ -125,23 +125,24 @@ type FieldDisplay struct {
 }
 
 type Capabilities struct {
-	Compatibility    *CompatibilityAdapter     `json:"compatibility_adapter,omitempty"`
-	Credentials      []Credential              `json:"credentials,omitempty" jsonschema:"maxItems=32"`
-	OAuth            []OAuthFlow               `json:"oauth,omitempty" jsonschema:"maxItems=16"`
-	Endpoints        []Endpoint                `json:"endpoints" jsonschema:"required,minItems=1,maxItems=64"`
-	Headers          []HeaderRule              `json:"headers,omitempty" jsonschema:"maxItems=256"`
-	JSONTransforms   map[string]JSONPipeline   `json:"json_transforms,omitempty"`
-	PromptTransforms map[string]PromptPipeline `json:"prompt_transforms,omitempty"`
-	RoleMaps         map[string]RoleMap        `json:"role_maps,omitempty"`
-	ToolCodecs       map[string]ToolCodec      `json:"tool_codecs,omitempty"`
-	Operations       []Operation               `json:"operations" jsonschema:"required,minItems=1,maxItems=64"`
-	Usage            *UsagePolicy              `json:"usage,omitempty"`
-	Images           *ImagePolicy              `json:"images,omitempty"`
-	Instructions     *InstructionPolicy        `json:"instructions,omitempty"`
-	RuntimeControls  []RuntimeControl          `json:"runtime_controls,omitempty" jsonschema:"maxItems=64"`
-	Metadata         []MetadataContract        `json:"metadata,omitempty" jsonschema:"maxItems=64"`
-	Errors           []ErrorMapping            `json:"errors,omitempty" jsonschema:"maxItems=256"`
-	Anthropic        *AnthropicPolicy          `json:"anthropic,omitempty"`
+	Compatibility    *CompatibilityAdapter             `json:"compatibility_adapter,omitempty"`
+	Credentials      []Credential                      `json:"credentials,omitempty" jsonschema:"maxItems=32"`
+	OAuth            []OAuthFlow                       `json:"oauth,omitempty" jsonschema:"maxItems=16"`
+	ClientIdentities map[string]ResolvedClientIdentity `json:"client_identities,omitempty"`
+	Endpoints        []Endpoint                        `json:"endpoints" jsonschema:"required,minItems=1,maxItems=64"`
+	Headers          []HeaderRule                      `json:"headers,omitempty" jsonschema:"maxItems=256"`
+	JSONTransforms   map[string]JSONPipeline           `json:"json_transforms,omitempty"`
+	PromptTransforms map[string]PromptPipeline         `json:"prompt_transforms,omitempty"`
+	RoleMaps         map[string]RoleMap                `json:"role_maps,omitempty"`
+	ToolCodecs       map[string]ToolCodec              `json:"tool_codecs,omitempty"`
+	Operations       []Operation                       `json:"operations" jsonschema:"required,minItems=1,maxItems=64"`
+	Usage            *UsagePolicy                      `json:"usage,omitempty"`
+	Images           *ImagePolicy                      `json:"images,omitempty"`
+	Instructions     *InstructionPolicy                `json:"instructions,omitempty"`
+	RuntimeControls  []RuntimeControl                  `json:"runtime_controls,omitempty" jsonschema:"maxItems=64"`
+	Metadata         []MetadataContract                `json:"metadata,omitempty" jsonschema:"maxItems=64"`
+	Errors           []ErrorMapping                    `json:"errors,omitempty" jsonschema:"maxItems=256"`
+	Anthropic        *AnthropicPolicy                  `json:"anthropic,omitempty"`
 }
 
 // CompatibilityAdapter explicitly delegates finite capability groups to a

@@ -32,80 +32,70 @@ var serverCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Start the Crux server",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		dataDir, err := cmd.Flags().GetString("data-dir")
-		if err != nil {
-			return fmt.Errorf("failed to get data directory: %v", err)
-		}
-		debug, err := cmd.Flags().GetBool("debug")
-		if err != nil {
-			return fmt.Errorf("failed to get debug flag: %v", err)
-		}
-
-		cfg, err := config.Load(config.GlobalWorkspaceDir(), dataDir, debug)
-		if err != nil {
-			return fmt.Errorf("failed to load configuration: %v", err)
-		}
-
-		hostURL, err := server.ParseHostURL(serverHost)
-		if err != nil {
-			return fmt.Errorf("invalid server host: %v", err)
-		}
-
-		logFile := filepath.Join(config.GlobalCacheDir(), "server-"+safeHostName(hostURL), "crux.log")
-
-		if term.IsTerminal(os.Stderr.Fd()) {
-			cruxlog.Setup(logFile, debug, os.Stderr)
-		} else {
-			cruxlog.Setup(logFile, debug)
-		}
-
-		srv := server.NewServer(cfg, hostURL.Scheme, hostURL.Host)
-		if err := srv.SetWorkspaceRoots(serverWorkspaceRoots); err != nil {
-			return fmt.Errorf("configure workspace roots: %w", err)
-		}
-		if hostURL.Scheme == "tcp" && !server.IsLoopbackHost(hostURL) {
-			if err := srv.EnableNetworkAuth(cmd.Context()); err != nil {
-				return fmt.Errorf("configure network authentication: %w", err)
-			}
-		}
-		srv.SetLogger(slog.Default())
-		slog.Info("Starting Crux server...", "addr", serverHost)
-
-		errch := make(chan error, 1)
-		sigch := make(chan os.Signal, 1)
-		sigs := []os.Signal{os.Interrupt}
-		sigs = append(sigs, addSignals(sigs)...)
-		signal.Notify(sigch, sigs...)
-
-		go func() {
-			errch <- srv.ListenAndServe()
-		}()
-
-		select {
-		case <-sigch:
-			slog.Info("Received interrupt signal...")
-		case err = <-errch:
-			if err != nil && !errors.Is(err, server.ErrServerClosed) {
-				_ = srv.Close()
-				slog.Error("Server error", "error", err)
-				return fmt.Errorf("server error: %v", err)
-			}
-		}
-
-		if errors.Is(err, server.ErrServerClosed) {
-			return nil
-		}
-
-		ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
-		defer cancel()
-
-		slog.Info("Shutting down...")
-
-		if err := srv.Shutdown(ctx); err != nil {
-			slog.Error("Failed to shutdown server", "error", err)
-			return fmt.Errorf("failed to shutdown server: %v", err)
-		}
-
-		return nil
+		return runServer(cmd, serverHost, serverWorkspaceRoots)
 	},
+}
+
+func runServer(cmd *cobra.Command, host string, workspaceRoots []string) error {
+	dataDir, err := cmd.Flags().GetString("data-dir")
+	if err != nil {
+		return fmt.Errorf("failed to get data directory: %v", err)
+	}
+	debug, err := cmd.Flags().GetBool("debug")
+	if err != nil {
+		return fmt.Errorf("failed to get debug flag: %v", err)
+	}
+	cfg, err := config.Load(config.GlobalWorkspaceDir(), dataDir, debug)
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %v", err)
+	}
+	hostURL, err := server.ParseHostURL(host)
+	if err != nil {
+		return fmt.Errorf("invalid server host: %v", err)
+	}
+	logFile := filepath.Join(config.GlobalCacheDir(), "server-"+safeHostName(hostURL), "crux.log")
+	if term.IsTerminal(os.Stderr.Fd()) {
+		cruxlog.Setup(logFile, debug, os.Stderr)
+	} else {
+		cruxlog.Setup(logFile, debug)
+	}
+	srv := server.NewServer(cfg, hostURL.Scheme, hostURL.Host)
+	if err := srv.SetWorkspaceRoots(workspaceRoots); err != nil {
+		return fmt.Errorf("configure workspace roots: %w", err)
+	}
+	if hostURL.Scheme == "tcp" && !server.IsLoopbackHost(hostURL) {
+		if err := srv.EnableNetworkAuth(cmd.Context()); err != nil {
+			return fmt.Errorf("configure network authentication: %w", err)
+		}
+	}
+	srv.SetLogger(slog.Default())
+	slog.Info("Starting Crux server...", "addr", host)
+	errch := make(chan error, 1)
+	sigch := make(chan os.Signal, 1)
+	sigs := []os.Signal{os.Interrupt}
+	sigs = append(sigs, addSignals(sigs)...)
+	signal.Notify(sigch, sigs...)
+	defer signal.Stop(sigch)
+	go func() { errch <- srv.ListenAndServe() }()
+	select {
+	case <-sigch:
+		slog.Info("Received interrupt signal...")
+	case err = <-errch:
+		if err != nil && !errors.Is(err, server.ErrServerClosed) {
+			_ = srv.Close()
+			slog.Error("Server error", "error", err)
+			return fmt.Errorf("server error: %v", err)
+		}
+	}
+	if errors.Is(err, server.ErrServerClosed) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Second)
+	defer cancel()
+	slog.Info("Shutting down...")
+	if err := srv.Shutdown(ctx); err != nil {
+		slog.Error("Failed to shutdown server", "error", err)
+		return fmt.Errorf("failed to shutdown server: %v", err)
+	}
+	return nil
 }

@@ -16,10 +16,10 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/agent/tools/mcp"
@@ -31,6 +31,7 @@ import (
 	"github.com/example-git/crux/internal/format"
 	"github.com/example-git/crux/internal/herdr"
 	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/imagegen"
 	"github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/lsp"
 	"github.com/example-git/crux/internal/message"
@@ -54,9 +55,12 @@ type App struct {
 	FileTracker      filetracker.Service
 	BackgroundShells *shell.BackgroundShellManager
 	BackgroundAgents *agent.BackgroundAgentManager
+	BackgroundImages *imagegen.JobManager
 	TaskStore        *managedtask.Store
 
 	AgentCoordinator agent.Coordinator
+	agentInitMu      sync.RWMutex
+	newCoordinator   func(context.Context, agent.CoordinatorOptions) (agent.Coordinator, error)
 
 	LSPManager *lsp.Manager
 
@@ -98,7 +102,14 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	q := db.New(conn)
 	sessions := session.NewService(q, conn)
 	messages := message.NewService(q, message.WithCompactionStore(conn, sessions))
-	files := history.NewService(q, conn)
+	homeDirectory, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve snapshot home directory: %w", err)
+	}
+	files, err := history.NewServiceWithSnapshots(q, conn, filepath.Join(homeDirectory, ".ai-cli", "file-snapshots"), store.WorkingDir())
+	if err != nil {
+		return nil, fmt.Errorf("initialize file snapshots: %w", err)
+	}
 	cfg := store.Config()
 	skipPermissionsRequests := store.Overrides().SkipPermissionRequests
 	var allowedTools []string
@@ -136,7 +147,24 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	if err != nil {
 		_ = recordStore.Close()
 		_ = outputStore.Close()
-		return nil, fmt.Errorf("recover background agents: %w", err)
+		return nil, fmt.Errorf("initialize background agents: %w", err)
+	}
+	questions := question.NewService()
+	imageRuntime, err := imagegen.NewHostPluginRuntime(ctx, store, imagegen.PluginCredentialBindings{})
+	if err != nil {
+		_ = recordStore.Close()
+		_ = outputStore.Close()
+		return nil, fmt.Errorf("initialize image plugins: %w", err)
+	}
+	backgroundImages, err := imagegen.NewJobManagerWithStore(store.WorkingDir(), recordStore, imagegen.JobManagerOptions{
+		PluginRuntime: imageRuntime,
+		Setup:         &imagegen.SetupService{Runtime: imageRuntime, Store: store, Questions: questions},
+	})
+	if err != nil {
+		imageRuntime.Manager.Close()
+		_ = recordStore.Close()
+		_ = outputStore.Close()
+		return nil, fmt.Errorf("recover background image jobs: %w", err)
 	}
 
 	app := &App{
@@ -144,10 +172,11 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		Messages:         messages,
 		History:          files,
 		Permissions:      permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools, trustedPaths...),
-		Questions:        question.NewService(),
+		Questions:        questions,
 		FileTracker:      filetracker.NewService(q),
 		BackgroundShells: backgroundShells,
 		BackgroundAgents: backgroundAgents,
+		BackgroundImages: backgroundImages,
 		TaskStore:        recordStore,
 		LSPManager:       lsp.NewManager(store),
 		Skills:           skillsMgr,
@@ -192,6 +221,10 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	dataDir := cfg.Options.DataDirectory
 	app.cleanupFuncs = append(
 		app.cleanupFuncs,
+		func(context.Context) error {
+			imageRuntime.Manager.Close()
+			return nil
+		},
 		func(context.Context) error { return db.Release(dataDir) },
 		func(ctx context.Context) error { return mcp.Close(ctx) },
 	)
@@ -230,6 +263,18 @@ func (app *App) Config() *config.Config {
 // Store returns the config store.
 func (app *App) Store() *config.ConfigStore {
 	return app.config
+}
+
+func (app *App) CurrentAgentCoordinator() agent.Coordinator {
+	app.agentInitMu.RLock()
+	defer app.agentInitMu.RUnlock()
+	return app.AgentCoordinator
+}
+
+func (app *App) ResetAgentSession(sessionID string) {
+	if resetter, ok := app.CurrentAgentCoordinator().(interface{ ResetSession(string) }); ok {
+		resetter.ResetSession(sessionID)
+	}
 }
 
 // Events returns a per-caller subscription channel for application events.
@@ -296,23 +341,31 @@ func (app *App) resolveSession(ctx context.Context, continueSessionID string, us
 	}
 }
 
+func nonInteractivePermissionContext(ctx context.Context, autoApprove bool) context.Context {
+	if autoApprove {
+		return permission.WithRunApproval(ctx)
+	}
+	return permission.WithDetachedAgent(ctx)
+}
+
 // RunNonInteractive runs the application in non-interactive mode with the
 // given prompt, printing to stdout.
-func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel string, hideSpinner bool, continueSessionID string, useLast bool) error {
+func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt, largeModel, smallModel string, hideSpinner bool, continueSessionID string, useLast, autoApprove bool) error {
 	slog.Info("Running in non-interactive mode")
-
-	// Re-initialize the coder agent without interactive-only tools.
-	if err := app.InitCoderAgentNonInteractive(ctx); err != nil {
-		return fmt.Errorf("failed to reinitialize agent for non-interactive mode: %w", err)
-	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	if largeModel != "" || smallModel != "" {
-		if err := app.overrideModelsForNonInteractive(ctx, largeModel, smallModel); err != nil {
+		if err := app.overrideModelsForNonInteractive(largeModel, smallModel); err != nil {
 			return fmt.Errorf("failed to override models: %w", err)
 		}
+	}
+
+	// Re-initialize the coder agent without interactive-only tools.
+	coordinator, err := app.initCoderAgent(ctx, false)
+	if err != nil {
+		return fmt.Errorf("failed to reinitialize agent for non-interactive mode: %w", err)
 	}
 
 	var (
@@ -355,7 +408,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	}
 
 	// force update of agent models before running so mcp tools are loaded
-	app.AgentCoordinator.UpdateModels(ctx)
+	coordinator.UpdateModels(ctx)
 
 	defer stopSpinner()
 
@@ -378,10 +431,6 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		slog.Info("Created session for non-interactive run", "session_id", sess.ID)
 	}
 
-	// Automatically approve all permission requests for this non-interactive
-	// session.
-	app.Permissions.AutoApproveSession(sess.ID)
-
 	// Report session identity to herdr.
 	app.ReportCurrentSession(sess.ID)
 
@@ -391,8 +440,9 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	}
 	done := make(chan response, 1)
 
+	runCtx := nonInteractivePermissionContext(ctx, autoApprove)
 	go func(ctx context.Context, sessionID, prompt string) {
-		result, err := app.AgentCoordinator.Run(ctx, sess.ID, prompt)
+		result, err := coordinator.Run(ctx, sess.ID, prompt)
 		if err != nil {
 			done <- response{
 				err: fmt.Errorf("failed to start agent processing stream: %w", err),
@@ -402,7 +452,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		done <- response{
 			result: result,
 		}
-	}(ctx, sess.ID, prompt)
+	}(runCtx, sess.ID, prompt)
 
 	messageEvents := app.Messages.Subscribe(ctx)
 	messageReadBytes := make(map[string]int)
@@ -474,17 +524,19 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 // RewindSession rewinds a session to the given user message: every
 // message from that point onward (inclusive) is deleted. When
 // summarize is true, the conversation is summarized first and the
-// summary message is preserved so the agent keeps condensed context.
-func (app *App) RewindSession(ctx context.Context, sessionID, messageID string, summarize bool) error {
-	if app.AgentCoordinator != nil && app.AgentCoordinator.IsSessionBusy(sessionID) {
+// summary message is preserved so the agent keeps condensed context. File
+// snapshots are restored only when restoreFiles is true.
+func (app *App) RewindSession(ctx context.Context, sessionID, messageID string, summarize, restoreFiles bool) error {
+	coordinator := app.CurrentAgentCoordinator()
+	if coordinator != nil && coordinator.IsSessionBusy(sessionID) {
 		return errors.New("session is busy")
 	}
 
 	if summarize {
-		if app.AgentCoordinator == nil {
+		if coordinator == nil {
 			return errors.New("agent coordinator not initialized")
 		}
-		if err := app.AgentCoordinator.Summarize(ctx, sessionID); err != nil {
+		if err := coordinator.Summarize(ctx, sessionID); err != nil {
 			return fmt.Errorf("failed to summarize before rewind: %w", err)
 		}
 	}
@@ -513,6 +565,16 @@ func (app *App) RewindSession(ctx context.Context, sessionID, messageID string, 
 		return err
 	}
 
+	checkpointTurnIDs := make([]string, 0, len(msgs)-idx)
+	for _, msg := range msgs[idx:] {
+		if msg.Role == message.User {
+			checkpointTurnIDs = append(checkpointTurnIDs, msg.ID)
+		}
+	}
+	if err := app.History.RewindCheckpoints(ctx, sessionID, checkpointTurnIDs, restoreFiles); err != nil {
+		return fmt.Errorf("rewind file checkpoints: %w", err)
+	}
+
 	summaryDeleted := false
 	for _, m := range msgs[idx:] {
 		if summarize && m.ID == sess.SummaryMessageID {
@@ -535,11 +597,19 @@ func (app *App) RewindSession(ctx context.Context, sessionID, messageID string, 
 	return nil
 }
 
-func (app *App) UpdateAgentModel(ctx context.Context) error {
-	if app.AgentCoordinator == nil {
-		return fmt.Errorf("agent configuration is missing")
+func (app *App) UpdateAgentModel(ctx context.Context, expected config.AgentModelState) error {
+	coordinator := app.CurrentAgentCoordinator()
+	if coordinator == nil {
+		if err := app.config.RuntimeSnapshot().ValidateAgentModelState(expected); err != nil {
+			return err
+		}
+		var err error
+		coordinator, err = app.ensureCoderAgent(ctx, true)
+		if err != nil {
+			return fmt.Errorf("initialize coder agent: %w", err)
+		}
 	}
-	return app.AgentCoordinator.UpdateModels(ctx)
+	return coordinator.UpdateModelsForState(ctx, expected)
 }
 
 // restoreModelFromSession reads the last assistant message in the
@@ -573,15 +643,26 @@ func (app *App) restoreModelFromSession(ctx context.Context, sessionID string) e
 		return nil
 	}
 
-	app.config.OverridePreferredModel(config.SelectedModelTypeLarge, config.SelectedModel{
+	if err := app.config.OverridePreferredModel(config.SelectedModelTypeLarge, config.SelectedModel{
 		Provider: lastMsg.Provider,
 		Model:    lastMsg.Model,
-	})
-	if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
-		smallModel := app.GetDefaultSmallModel(lastMsg.Provider)
-		app.config.OverridePreferredModel(config.SelectedModelTypeSmall, smallModel)
+	}); err != nil {
+		return fmt.Errorf("restore large model: %w", err)
 	}
-	if err := app.AgentCoordinator.UpdateModels(ctx); err != nil {
+	if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
+		smallModel, err := app.GetDefaultSmallModel(lastMsg.Provider)
+		if err != nil {
+			return fmt.Errorf("resolve default small model: %w", err)
+		}
+		if err := app.config.OverridePreferredModel(config.SelectedModelTypeSmall, smallModel); err != nil {
+			return fmt.Errorf("restore small model: %w", err)
+		}
+	}
+	coordinator := app.CurrentAgentCoordinator()
+	if coordinator == nil {
+		return errors.New("agent coordinator not initialized")
+	}
+	if err := coordinator.UpdateModels(ctx); err != nil {
 		return fmt.Errorf("failed to update agent models: %w", err)
 	}
 	slog.Info("Restored model from session",
@@ -591,93 +672,111 @@ func (app *App) restoreModelFromSession(ctx context.Context, sessionID string) e
 }
 
 // overrideModelsForNonInteractive parses the model strings and temporarily
-// overrides the model configurations, then rebuilds the agent.
+// overrides the model configurations before the agent is built.
 // Format: "model-name" (searches all providers) or "provider/model-name".
 // Model matching is case-insensitive.
 // If largeModel is provided but smallModel is not, the small model defaults to
 // the provider's default small model.
-func (app *App) overrideModelsForNonInteractive(ctx context.Context, largeModel, smallModel string) error {
-	providers := app.config.Config().Providers.Copy()
-
-	largeMatches, smallMatches, err := findModels(providers, largeModel, smallModel)
+func (app *App) overrideModelsForNonInteractive(largeModel, smallModel string) error {
+	cfg := app.config.Config()
+	largeMatches, smallMatches, err := findModels(cfg, largeModel, smallModel)
 	if err != nil {
 		return err
 	}
 
-	var largeProviderID string
-
-	// Override large model.
+	var largeMatch, smallMatch modelMatch
 	if largeModel != "" {
-		found, err := validateMatches(largeMatches, largeModel, "large")
+		largeMatch, err = validateMatches(largeMatches, largeModel, "large")
 		if err != nil {
 			return err
 		}
-		largeProviderID = found.provider
-		slog.Info("Overriding large model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.OverridePreferredModel(config.SelectedModelTypeLarge, config.SelectedModel{
-			Provider: found.provider,
-			Model:    found.modelID,
-		})
+	}
+	if smallModel != "" {
+		smallMatch, err = validateMatches(smallMatches, smallModel, "small")
+		if err != nil {
+			return err
+		}
 	}
 
-	// Override small model.
+	if largeModel != "" {
+		slog.Info("Overriding large model for non-interactive run", "provider", largeMatch.provider, "model", largeMatch.modelID)
+		if err := app.config.OverridePreferredModel(config.SelectedModelTypeLarge, config.SelectedModel{
+			Provider: largeMatch.provider,
+			Model:    largeMatch.modelID,
+		}); err != nil {
+			return fmt.Errorf("override large model: %w", err)
+		}
+	}
+
 	switch {
 	case smallModel != "":
-		found, err := validateMatches(smallMatches, smallModel, "small")
+		slog.Info("Overriding small model for non-interactive run", "provider", smallMatch.provider, "model", smallMatch.modelID)
+		if err := app.config.OverridePreferredModel(config.SelectedModelTypeSmall, config.SelectedModel{
+			Provider: smallMatch.provider,
+			Model:    smallMatch.modelID,
+		}); err != nil {
+			return fmt.Errorf("override small model: %w", err)
+		}
+
+	case largeModel != "":
+		smallCfg, err := app.GetDefaultSmallModel(largeMatch.provider)
 		if err != nil {
 			return err
 		}
-		slog.Info("Overriding small model for non-interactive run", "provider", found.provider, "model", found.modelID)
-		app.config.OverridePreferredModel(config.SelectedModelTypeSmall, config.SelectedModel{
-			Provider: found.provider,
-			Model:    found.modelID,
-		})
-
-	case largeModel != "":
-		// No small model specified, but large model was - use provider's default.
-		smallCfg := app.GetDefaultSmallModel(largeProviderID)
-		app.config.OverridePreferredModel(config.SelectedModelTypeSmall, smallCfg)
+		if err := app.config.OverridePreferredModel(config.SelectedModelTypeSmall, smallCfg); err != nil {
+			return fmt.Errorf("override small model: %w", err)
+		}
 	}
 
-	return app.AgentCoordinator.UpdateModels(ctx)
+	return nil
 }
 
 // GetDefaultSmallModel returns the default small model for the given
 // provider. Falls back to the large model if no default is found.
-func (app *App) GetDefaultSmallModel(providerID string) config.SelectedModel {
+func (app *App) GetDefaultSmallModel(providerID string) (config.SelectedModel, error) {
 	cfg := app.config.Config()
-	largeModelCfg := cfg.Models[config.SelectedModelTypeLarge]
-
-	// Find the provider in the known providers list to get its default small model.
 	knownProviders, _ := config.Providers(cfg)
-	var knownProvider *catwalk.Provider
-	for _, p := range knownProviders {
-		if string(p.ID) == providerID {
-			knownProvider = &p
-			break
+	return defaultSmallModel(cfg, providerID, knownProviders)
+}
+
+func defaultSmallModel(cfg *config.Config, providerID string, knownProviders []catalog.Provider) (config.SelectedModel, error) {
+	provider, ok := cfg.Providers.Get(providerID)
+	if !ok || !cfg.IsProviderAvailable(providerID) {
+		return config.SelectedModel{}, fmt.Errorf("provider %s is not available", providerID)
+	}
+	if len(provider.Models) == 0 {
+		return config.SelectedModel{}, fmt.Errorf("provider %s has no models configured", providerID)
+	}
+
+	for _, known := range knownProviders {
+		if string(known.ID) != providerID {
+			continue
+		}
+		if model := cfg.GetModel(providerID, known.DefaultSmallModelID); model != nil {
+			return config.SelectedModel{
+				Provider:        providerID,
+				Model:           model.ID,
+				MaxTokens:       model.DefaultMaxTokens,
+				ReasoningEffort: model.DefaultReasoningEffort,
+			}, nil
+		}
+		break
+	}
+
+	large := cfg.Models[config.SelectedModelTypeLarge]
+	if large.Provider == providerID {
+		if model := cfg.GetModel(providerID, large.Model); model != nil {
+			return large, nil
 		}
 	}
 
-	// For unknown/local providers, use the large model as small.
-	if knownProvider == nil {
-		slog.Warn("Using large model as small model for unknown provider", "provider", providerID, "model", largeModelCfg.Model)
-		return largeModelCfg
-	}
-
-	defaultSmallModelID := knownProvider.DefaultSmallModelID
-	model := cfg.GetModel(providerID, defaultSmallModelID)
-	if model == nil {
-		slog.Warn("Default small model not found, using large model", "provider", providerID, "model", largeModelCfg.Model)
-		return largeModelCfg
-	}
-
-	slog.Info("Using provider default small model", "provider", providerID, "model", defaultSmallModelID)
+	model := provider.Models[0]
 	return config.SelectedModel{
 		Provider:        providerID,
-		Model:           defaultSmallModelID,
+		Model:           model.ID,
 		MaxTokens:       model.DefaultMaxTokens,
 		ReasoningEffort: model.DefaultReasoningEffort,
-	}
+	}, nil
 }
 
 func (app *App) setupEvents() {
@@ -694,6 +793,7 @@ func (app *App) setupEvents() {
 	setupSubscriberMustDeliver(ctx, app.serviceEventsWG, "run-completions", app.runCompletions.Subscribe, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "shell-task-notifications", app.BackgroundShells.SubscribeNotifications, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "agent-task-notifications", app.BackgroundAgents.SubscribeNotifications, app.events)
+	setupSubscriber(ctx, app.serviceEventsWG, "image-task-notifications", app.BackgroundImages.SubscribeNotifications, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "mcp", mcp.SubscribeEvents, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "lsp", SubscribeLSPEvents, app.events)
 	if app.Skills != nil {
@@ -766,22 +866,42 @@ func setupSubscriberMustDeliver[T any](
 }
 
 func (app *App) InitCoderAgent(ctx context.Context) error {
-	return app.initCoderAgent(ctx, true)
+	_, err := app.initCoderAgent(ctx, true)
+	return err
 }
 
 // InitCoderAgentNonInteractive initializes the coder agent without
 // interactive-only tools (e.g. question).
 func (app *App) InitCoderAgentNonInteractive(ctx context.Context) error {
-	return app.initCoderAgent(ctx, false)
+	_, err := app.initCoderAgent(ctx, false)
+	return err
 }
 
-func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
+func (app *App) initCoderAgent(ctx context.Context, interactive bool) (agent.Coordinator, error) {
+	app.agentInitMu.Lock()
+	defer app.agentInitMu.Unlock()
+	return app.newCoderAgentLocked(ctx, interactive)
+}
+
+func (app *App) ensureCoderAgent(ctx context.Context, interactive bool) (agent.Coordinator, error) {
+	app.agentInitMu.Lock()
+	defer app.agentInitMu.Unlock()
+	if app.AgentCoordinator != nil {
+		return app.AgentCoordinator, nil
+	}
+	return app.newCoderAgentLocked(ctx, interactive)
+}
+
+func (app *App) newCoderAgentLocked(ctx context.Context, interactive bool) (agent.Coordinator, error) {
 	coderAgentCfg := app.config.Config().Agents[config.AgentCoder]
 	if coderAgentCfg.ID == "" {
-		return fmt.Errorf("coder agent configuration is missing")
+		return nil, fmt.Errorf("coder agent configuration is missing")
 	}
-	var err error
-	app.AgentCoordinator, err = agent.NewCoordinator(ctx, agent.CoordinatorOptions{
+	newCoordinator := app.newCoordinator
+	if newCoordinator == nil {
+		newCoordinator = agent.NewCoordinator
+	}
+	coordinator, err := newCoordinator(ctx, agent.CoordinatorOptions{
 		Config:           app.config,
 		Sessions:         app.Sessions,
 		Messages:         app.Messages,
@@ -796,13 +916,15 @@ func (app *App) initCoderAgent(ctx context.Context, interactive bool) error {
 		Interactive:      interactive,
 		BackgroundShells: app.BackgroundShells,
 		BackgroundAgents: app.BackgroundAgents,
+		BackgroundImages: app.BackgroundImages,
 	})
 	if err != nil {
 		slog.Error("Failed to create coder agent")
-		return err
+		return nil, err
 	}
+	app.AgentCoordinator = coordinator
 	app.startTaskNotificationDelivery()
-	return nil
+	return coordinator, nil
 }
 
 // Subscribe sends events to the TUI as tea.Msgs.
@@ -852,11 +974,11 @@ func (app *App) shutdown() {
 
 	// First, cancel all agents and wait for them to finish. This must complete
 	// before closing the DB so agents can finish writing their state.
-	if app.AgentCoordinator != nil {
-		app.AgentCoordinator.CancelAll()
-		if closer, ok := app.AgentCoordinator.(interface{ CloseContext(context.Context) }); ok {
+	if coordinator := app.CurrentAgentCoordinator(); coordinator != nil {
+		coordinator.CancelAll()
+		if closer, ok := coordinator.(interface{ CloseContext(context.Context) }); ok {
 			closer.CloseContext(shutdownCtx)
-		} else if closer, ok := app.AgentCoordinator.(interface{ Close() }); ok {
+		} else if closer, ok := coordinator.(interface{ Close() }); ok {
 			closer.Close()
 		}
 	}
@@ -878,6 +1000,11 @@ func (app *App) shutdown() {
 	wg.Go(func() {
 		app.BackgroundShells.KillAll(shutdownCtx)
 	})
+	if app.BackgroundImages != nil {
+		wg.Go(func() {
+			app.BackgroundImages.StopAll(shutdownCtx)
+		})
+	}
 
 	// Close herdr client to stop its background writer.
 	app.herdrClient.Close()

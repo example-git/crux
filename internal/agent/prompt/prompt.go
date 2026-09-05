@@ -9,16 +9,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"text/template"
 	"time"
 
+	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/automemory"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/filepathext"
 	"github.com/example-git/crux/internal/home"
 	"github.com/example-git/crux/internal/projects"
-	"github.com/example-git/crux/internal/shell"
 	"github.com/example-git/crux/internal/skills"
 )
 
@@ -30,8 +31,10 @@ type Prompt struct {
 	now                     func() time.Time
 	platform                string
 	workingDir              string
-	systemPromptOverrideDir string
+	providerInstructionsDir string
 	projectService          *projects.Service
+	activeSkills            []*skills.Skill
+	activeSkillsSet         bool
 }
 
 type LifecycleStage string
@@ -41,6 +44,16 @@ const (
 	LifecycleDraft     LifecycleStage = "plan"
 	LifecycleRevision  LifecycleStage = "plan_revision"
 	LifecycleExecution LifecycleStage = "plan_execution"
+
+	skillUsageInstructions = "<skills_usage>\n" +
+		"The `<description>` of each skill is a TRIGGER — it tells you *when* a skill applies. It is NOT a specification of what the skill does or how to do it. The procedure, scripts, commands, references, and required flags live only in the SKILL.md body.\n\n" +
+		"MANDATORY activation flow:\n" +
+		"1. Scan `<available_skills>` against the current user task.\n" +
+		"2. If any skill's `<description>` matches, call the skill_load tool with its name before any other tool call that performs the task.\n" +
+		"3. Read the entire SKILL.md and follow its instructions.\n" +
+		"4. Only then execute the task, using the skill's prescribed commands/tools.\n\n" +
+		"Do NOT skip step 2. Do NOT infer a skill's behavior from its name or description. If you find yourself about to run a task-doing tool for a skill-eligible request without having just loaded the SKILL.md, stop and load the skill first.\n" +
+		"</skills_usage>"
 )
 
 type Lifecycle struct {
@@ -57,12 +70,13 @@ type PromptDat struct {
 	IsGitRepo          bool
 	Platform           string
 	Date               string
-	GitStatus          string
+	RenderDate         bool
 	NativeSections     string // Pre-built native instruction sections.
 	Lifecycle          string
 	ContextFiles       []ContextFile
 	GlobalContextFiles []ContextFile
 	AvailSkillXML      string
+	SkillUsage         string
 }
 
 type ContextFile struct {
@@ -90,15 +104,24 @@ func WithWorkingDir(workingDir string) Option {
 	}
 }
 
+// WithSkills binds the prompt to the coordinator's effective active skill
+// snapshot so model-facing instructions match skill_list and skill_load.
+func WithSkills(active []*skills.Skill) Option {
+	return func(p *Prompt) {
+		p.activeSkills = slices.Clone(active)
+		p.activeSkillsSet = true
+	}
+}
+
 func WithInstructions(instructions string) Option {
 	return func(p *Prompt) {
 		p.instructions = instructions
 	}
 }
 
-func withSystemPromptOverrideDir(dir string) Option {
+func withProviderInstructionsDir(dir string) Option {
 	return func(p *Prompt) {
-		p.systemPromptOverrideDir = dir
+		p.providerInstructionsDir = dir
 	}
 }
 
@@ -113,7 +136,7 @@ func NewPrompt(name, promptTemplate string, opts ...Option) (*Prompt, error) {
 		name:                    name,
 		template:                promptTemplate,
 		now:                     time.Now,
-		systemPromptOverrideDir: filepath.Join(home.Dir(), ".ai-cli", "instructions"),
+		providerInstructionsDir: filepath.Join(home.Dir(), ".ai-cli", "instructions"),
 		projectService:          projects.NewService(),
 	}
 	for _, opt := range opts {
@@ -123,71 +146,146 @@ func NewPrompt(name, promptTemplate string, opts ...Option) (*Prompt, error) {
 }
 
 func (p *Prompt) Build(ctx context.Context, provider, model string, store *config.ConfigStore) (string, error) {
-	return p.BuildLifecycle(ctx, provider, model, store, Lifecycle{Stage: LifecycleDefault})
+	instructions, err := p.BuildInstructions(ctx, provider, model, store)
+	if err != nil {
+		return "", err
+	}
+	return instructions.String(), nil
+}
+
+func (p *Prompt) BuildInstructions(ctx context.Context, provider, model string, store *config.ConfigStore) (fantasy.Instructions, error) {
+	return p.BuildLifecycleInstructions(ctx, provider, model, store, Lifecycle{Stage: LifecycleDefault})
+}
+
+func (p *Prompt) BuildInstructionsWithSnapshot(ctx context.Context, provider, model string, store *config.ConfigStore, snapshot config.RuntimeSnapshot) (fantasy.Instructions, error) {
+	return p.buildLifecycleInstructions(ctx, provider, model, store, snapshot.Config(), snapshot.Resolve, Lifecycle{Stage: LifecycleDefault})
 }
 
 func (p *Prompt) BuildLifecycle(ctx context.Context, provider, model string, store *config.ConfigStore, lifecycle Lifecycle) (string, error) {
-	if err := validateLifecycle(lifecycle); err != nil {
+	instructions, err := p.BuildLifecycleInstructions(ctx, provider, model, store, lifecycle)
+	if err != nil {
 		return "", err
+	}
+	return instructions.String(), nil
+}
+
+func (p *Prompt) BuildLifecycleInstructions(ctx context.Context, provider, model string, store *config.ConfigStore, lifecycle Lifecycle) (fantasy.Instructions, error) {
+	snapshot := store.RuntimeSnapshot()
+	return p.buildLifecycleInstructions(ctx, provider, model, store, snapshot.Config(), snapshot.Resolve, lifecycle)
+}
+
+func (p *Prompt) BuildLifecycleInstructionsWithSnapshot(ctx context.Context, provider, model string, store *config.ConfigStore, snapshot config.RuntimeSnapshot, lifecycle Lifecycle) (fantasy.Instructions, error) {
+	return p.buildLifecycleInstructions(ctx, provider, model, store, snapshot.Config(), snapshot.Resolve, lifecycle)
+}
+
+func (p *Prompt) buildLifecycleInstructions(ctx context.Context, provider, model string, store *config.ConfigStore, cfg *config.Config, resolve func(string) (string, error), lifecycle Lifecycle) (fantasy.Instructions, error) {
+	if err := validateLifecycle(lifecycle); err != nil {
+		return fantasy.Instructions{}, err
 	}
 	if lifecycle.Stage != LifecycleDefault && p.name != "coder" {
-		return "", fmt.Errorf("prompt %q does not support lifecycle stage %q", p.name, lifecycle.Stage)
+		return fantasy.Instructions{}, fmt.Errorf("prompt %q does not support lifecycle stage %q", p.name, lifecycle.Stage)
 	}
-	if lifecycle.Stage == LifecycleDefault {
-		if override, ok, err := p.systemPromptOverride(provider, store.Config()); err != nil {
-			return "", err
-		} else if ok {
-			return p.appendCoderContext(ctx, override, store)
-		}
-	}
-
 	t, err := template.New(p.name).Parse(p.template)
 	if err != nil {
-		return "", fmt.Errorf("parsing template: %w", err)
+		return fantasy.Instructions{}, fmt.Errorf("parsing template: %w", err)
 	}
-	var sb strings.Builder
-	d, err := p.promptData(ctx, provider, model, store, lifecycle)
+	data, err := p.promptData(ctx, provider, model, store, cfg, resolve, lifecycle)
 	if err != nil {
-		return "", err
+		return fantasy.Instructions{}, err
 	}
-	if err := t.Execute(&sb, d); err != nil {
-		return "", fmt.Errorf("executing template: %w", err)
+	structuredDate := strings.Contains(p.template, ".RenderDate")
+	runtimeInstructions := ""
+	if structuredDate {
+		runtimeInstructions = "Today's date: " + data.Date
 	}
-	if lifecycle.Stage == LifecycleDefault {
-		if err := p.initializeSystemPromptOverride(provider, store.Config(), sb.String()); err != nil {
-			return "", err
+	var nativeInstructions string
+	var lifecycleInstructions string
+	if p.name == "coder" {
+		if strings.Contains(p.template, ".NativeSections") {
+			nativeInstructions = data.NativeSections
+			data.NativeSections = ""
+		}
+		if strings.Contains(p.template, ".Lifecycle") {
+			lifecycleInstructions = data.Lifecycle
+			data.Lifecycle = ""
 		}
 	}
-
-	return p.appendCoderContext(ctx, sb.String(), store)
-}
-
-func (p *Prompt) appendCoderContext(ctx context.Context, base string, store *config.ConfigStore) (string, error) {
-	withProject, err := p.appendProject(base, store)
-	if err != nil {
-		return "", err
+	var builder strings.Builder
+	if err := t.Execute(&builder, data); err != nil {
+		return fantasy.Instructions{}, fmt.Errorf("executing template: %w", err)
 	}
-	return p.appendMemory(ctx, withProject, store)
+
+	renderedStability := fantasy.InstructionStabilityStatic
+	if strings.Contains(p.template, ".Date") && !structuredDate {
+		renderedStability = fantasy.InstructionStabilityDynamic
+	}
+	renderedKind := fantasy.InstructionKindAuxiliary
+	if p.name == "coder" {
+		renderedKind = fantasy.InstructionKindEnvironment
+	}
+	renderedInstructions := fantasy.InstructionSection{
+		Kind:      renderedKind,
+		Stability: renderedStability,
+		Text:      builder.String(),
+	}
+	providerInstructions, err := p.providerInstructions(provider)
+	if err != nil {
+		return fantasy.Instructions{}, err
+	}
+	var instructions fantasy.Instructions
+	if p.name == "coder" {
+		instructions = fantasy.NewInstructions(
+			fantasy.StaticInstruction(fantasy.InstructionKindTooling, nativeInstructions),
+			fantasy.DynamicInstruction(fantasy.InstructionKindProviderContext, providerInstructions),
+			renderedInstructions,
+			fantasy.DynamicInstruction(fantasy.InstructionKindLifecycle, lifecycleInstructions),
+			fantasy.DynamicInstruction(fantasy.InstructionKindRuntime, runtimeInstructions),
+		)
+	} else {
+		instructions = fantasy.NewInstructions(
+			renderedInstructions,
+			fantasy.DynamicInstruction(fantasy.InstructionKindRuntime, runtimeInstructions),
+		)
+	}
+	instructions, err = p.appendCoderContextInstructions(ctx, instructions, store)
+	if err != nil {
+		return fantasy.Instructions{}, err
+	}
+	return instructions, nil
 }
 
-func (p *Prompt) appendProject(base string, store *config.ConfigStore) (string, error) {
+func (p *Prompt) appendCoderContextInstructions(ctx context.Context, base fantasy.Instructions, store *config.ConfigStore) (fantasy.Instructions, error) {
+	projectInstructions, err := p.projectInstructions(store)
+	if err != nil {
+		return fantasy.Instructions{}, err
+	}
+	memoryInstructions, err := p.memoryInstructions(ctx, store)
+	if err != nil {
+		return fantasy.Instructions{}, err
+	}
+	return base.Append(
+		fantasy.DynamicInstruction(fantasy.InstructionKindProjectState, projectInstructions),
+		fantasy.DynamicInstruction(fantasy.InstructionKindMemory, memoryInstructions),
+	), nil
+}
+
+func (p *Prompt) projectInstructions(store *config.ConfigStore) (string, error) {
 	if p.name != "coder" {
-		return base, nil
+		return "", nil
 	}
 	workingDir := cmp.Or(p.workingDir, store.WorkingDir())
 	if workingDir == "" {
-		return base, nil
+		return "", nil
 	}
 	document, ok, err := p.projectService.Active(workingDir)
 	if err != nil {
 		return "", err
 	}
 	if !ok {
-		return base, nil
+		return "", nil
 	}
 	var builder strings.Builder
-	builder.WriteString(strings.TrimRight(base, "\n"))
-	builder.WriteString("\n\n<persistent_project>\n")
+	builder.WriteString("<persistent_project>\n")
 	builder.WriteString("# Active Project\n\n")
 	builder.WriteString("The following durable project is selected for this workspace. Treat the main project file as the authoritative goal and task state, and the notes file as durable supporting context. Keep Projects separate from plans. Use the existing `todos` tool to track the incomplete subtasks of the current project goal during this session. Use the typed project tools to make durable project changes.\n\n")
 	if goal, subtasks, found := document.CurrentGoal(); found {
@@ -202,17 +300,17 @@ func (p *Prompt) appendProject(base string, store *config.ConfigStore) (string, 
 	}
 	fmt.Fprintf(&builder, "<file path=%q>\n%s\n</file>\n", filepath.ToSlash(document.Path), document.Content)
 	fmt.Fprintf(&builder, "<file path=%q>\n%s\n</file>\n", filepath.ToSlash(document.NotesPath), document.Notes)
-	builder.WriteString("</persistent_project>\n")
+	builder.WriteString("</persistent_project>")
 	return builder.String(), nil
 }
 
-func (p *Prompt) appendMemory(ctx context.Context, base string, store *config.ConfigStore) (string, error) {
+func (p *Prompt) memoryInstructions(ctx context.Context, store *config.ConfigStore) (string, error) {
 	if p.name != "coder" {
-		return base, nil
+		return "", nil
 	}
 	workingDir := cmp.Or(p.workingDir, store.WorkingDir())
 	if workingDir == "" {
-		return base, nil
+		return "", nil
 	}
 	memory, err := automemory.Load(ctx, workingDir)
 	if err != nil {
@@ -220,65 +318,32 @@ func (p *Prompt) appendMemory(ctx context.Context, base string, store *config.Co
 			return "", err
 		}
 		slog.Debug("Failed to load auto memory", "error", err)
-		return base, nil
+		return "", nil
 	}
-	memoryPrompt := automemory.Prompt(memory)
-	if memoryPrompt == "" {
-		return base, nil
-	}
-	return strings.TrimRight(base, "\n") + "\n\n" + memoryPrompt + "\n", nil
+	return automemory.Prompt(memory), nil
 }
 
-func (p *Prompt) systemPromptOverride(provider string, cfg *config.Config) (string, bool, error) {
-	if p.name != "coder" || cfg.Options == nil || !cfg.Options.SystemPromptOverride {
-		return "", false, nil
+func (p *Prompt) providerInstructions(provider string) (string, error) {
+	if p.name != "coder" || provider == "" {
+		return "", nil
 	}
-	if err := validateSystemPromptOverrideProvider(provider); err != nil {
-		return "", false, err
+	if err := validateProviderInstructionsID(provider); err != nil {
+		return "", err
 	}
-
-	path := filepath.Join(p.systemPromptOverrideDir, provider+".txt")
+	path := filepath.Join(p.providerInstructionsDir, provider+".txt")
 	content, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return "", false, nil
+		return "", nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("reading system prompt override %q: %w", path, err)
+		return "", fmt.Errorf("reading provider instructions %q: %w", path, err)
 	}
-	return string(content), true, nil
+	return string(content), nil
 }
 
-func (p *Prompt) initializeSystemPromptOverride(provider string, cfg *config.Config, content string) error {
-	if p.name != "coder" || cfg.Options == nil || !cfg.Options.SystemPromptOverride {
-		return nil
-	}
-	if err := validateSystemPromptOverrideProvider(provider); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(p.systemPromptOverrideDir, 0o755); err != nil {
-		return fmt.Errorf("creating system prompt override directory %q: %w", p.systemPromptOverrideDir, err)
-	}
-	path := filepath.Join(p.systemPromptOverrideDir, provider+".txt")
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if os.IsExist(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("creating system prompt override %q: %w", path, err)
-	}
-	if _, err := file.WriteString(content); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("initializing system prompt override %q: %w", path, err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("closing system prompt override %q: %w", path, err)
-	}
-	return nil
-}
-
-func validateSystemPromptOverrideProvider(provider string) error {
+func validateProviderInstructionsID(provider string) error {
 	if provider == "" || provider == "." || provider == ".." || strings.ContainsAny(provider, `/\\`) {
-		return fmt.Errorf("invalid provider ID %q for system prompt override", provider)
+		return fmt.Errorf("invalid provider ID %q for provider instructions", provider)
 	}
 	return nil
 }
@@ -323,11 +388,10 @@ func processContextPath(p string, store *config.ConfigStore) []ContextFile {
 }
 
 // expandPath expands ~ and environment variables in file paths
-func expandPath(path string, store *config.ConfigStore) string {
+func expandPath(path string, resolve func(string) (string, error)) string {
 	path = home.Long(path)
-	// Handle environment variable expansion using the same pattern as config
 	if strings.HasPrefix(path, "$") {
-		if expanded, err := store.Resolver().ResolveValue(path); err == nil {
+		if expanded, err := resolve(path); err == nil {
 			path = expanded
 		}
 	}
@@ -336,10 +400,10 @@ func expandPath(path string, store *config.ConfigStore) string {
 }
 
 // loadContextFiles loads and deduplicates context files from a list of paths.
-func loadContextFiles(paths []string, store *config.ConfigStore) map[string][]ContextFile {
+func loadContextFiles(paths []string, store *config.ConfigStore, resolve func(string) (string, error)) map[string][]ContextFile {
 	files := map[string][]ContextFile{}
 	for _, pth := range paths {
-		expanded := expandPath(pth, store)
+		expanded := expandPath(pth, resolve)
 		pathKey := strings.ToLower(expanded)
 		if _, ok := files[pathKey]; ok {
 			continue
@@ -349,47 +413,28 @@ func loadContextFiles(paths []string, store *config.ConfigStore) map[string][]Co
 	return files
 }
 
-func (p *Prompt) promptData(ctx context.Context, provider, model string, store *config.ConfigStore, lifecycle Lifecycle) (PromptDat, error) {
+func (p *Prompt) availableSkillXML(store *config.ConfigStore, cfg *config.Config, resolve func(string) (string, error)) string {
+	if p.activeSkillsSet {
+		return skills.ToPromptXML(p.activeSkills)
+	}
+
+	_, active, _ := skills.DiscoverFromConfig(skills.DiscoveryConfig{
+		SkillsPaths:    cfg.Options.SkillsPaths,
+		DisabledSkills: cfg.Options.DisabledSkills,
+		WorkingDir:     store.WorkingDir(),
+		Resolver:       resolve,
+	})
+	return skills.ToPromptXML(active)
+}
+
+func (p *Prompt) promptData(ctx context.Context, provider, model string, store *config.ConfigStore, cfg *config.Config, resolve func(string) (string, error), lifecycle Lifecycle) (PromptDat, error) {
 	workingDir := cmp.Or(p.workingDir, store.WorkingDir())
 	platform := cmp.Or(p.platform, runtime.GOOS)
 
-	cfg := store.Config()
-	contextFiles := loadContextFiles(cfg.Options.ContextPaths, store)
-	globalContextFiles := loadContextFiles(cfg.Options.GlobalContextPaths, store)
+	contextFiles := loadContextFiles(cfg.Options.ContextPaths, store, resolve)
+	globalContextFiles := loadContextFiles(cfg.Options.GlobalContextPaths, store, resolve)
 
-	// Discover and load skills metadata.
-	var availSkillXML string
-
-	// Start with builtin skills.
-	allSkills := skills.DiscoverBuiltin()
-	builtinNames := make(map[string]bool, len(allSkills))
-	for _, s := range allSkills {
-		builtinNames[s.Name] = true
-	}
-
-	// Discover user skills from configured paths.
-	if len(cfg.Options.SkillsPaths) > 0 {
-		expandedPaths := make([]string, 0, len(cfg.Options.SkillsPaths))
-		for _, pth := range cfg.Options.SkillsPaths {
-			expandedPaths = append(expandedPaths, expandPath(pth, store))
-		}
-		for _, userSkill := range skills.Discover(expandedPaths) {
-			if builtinNames[userSkill.Name] {
-				slog.Warn("User skill overrides builtin skill", "name", userSkill.Name)
-			}
-			allSkills = append(allSkills, userSkill)
-		}
-	}
-
-	// Deduplicate: user skills override builtins with the same name.
-	allSkills = skills.Deduplicate(allSkills)
-
-	// Filter out disabled skills.
-	allSkills = skills.Filter(allSkills, cfg.Options.DisabledSkills)
-
-	if len(allSkills) > 0 {
-		availSkillXML = skills.ToPromptXML(allSkills)
-	}
+	availSkillXML := p.availableSkillXML(store, cfg, resolve)
 
 	var nativeSections string
 	mode := cmp.Or(cfg.Options.InstructionMode, "all")
@@ -401,7 +446,7 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		nativeSections = instructions
 	}
 
-	isGit := isGitRepo(store.WorkingDir())
+	isGit := isGitRepo(workingDir)
 	data := PromptDat{
 		Provider:       provider,
 		Model:          model,
@@ -414,15 +459,8 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 		NativeSections: nativeSections,
 		Lifecycle:      lifecycleInstructions(lifecycle),
 		AvailSkillXML:  availSkillXML,
+		SkillUsage:     skillUsageInstructions,
 	}
-	if isGit {
-		var err error
-		data.GitStatus, err = getGitStatus(ctx, store.WorkingDir())
-		if err != nil {
-			return PromptDat{}, err
-		}
-	}
-
 	// In "native" mode, skip project/global context files.
 	if mode != "native" {
 		for _, files := range contextFiles {
@@ -436,10 +474,14 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 }
 
 func toolingInstructions(providerID string, cfg *config.Config) (string, error) {
+	registration, hasRegistration := cfg.ProviderBehaviorRegistration(providerID)
 	profile := config.ToolingInstructionsCrux
+	if hasRegistration && registration.ProviderID == providerID && registration.Instructions != nil {
+		profile = cmp.Or(registration.Instructions.SelectionDefault, config.ToolingInstructionsCrux)
+	}
 	if cfg.Providers != nil {
-		if providerCfg, ok := cfg.Providers.Get(providerID); ok {
-			profile = cmp.Or(providerCfg.ToolingInstructions, config.ToolingInstructionsCrux)
+		if providerCfg, ok := cfg.Providers.Get(providerID); ok && providerCfg.ToolingInstructions != "" {
+			profile = providerCfg.ToolingInstructions
 		}
 	}
 
@@ -448,8 +490,7 @@ func toolingInstructions(providerID string, cfg *config.Config) (string, error) 
 		sections := FilterSections(AllSections(), cfg.Options.DisabledInstructionSections)
 		return SectionsToString(sections), nil
 	case config.ToolingInstructionsNative:
-		registration, ok := config.ProviderBehaviorCapabilities(providerID)
-		if !ok || registration.ProviderID != providerID || registration.Instructions == nil {
+		if !hasRegistration || registration.ProviderID != providerID || registration.Instructions == nil {
 			return "", fmt.Errorf("provider %q does not provide native tooling instructions", providerID)
 		}
 		text, ok := registration.Instructions.Profiles[registration.Instructions.Default]
@@ -465,58 +506,6 @@ func toolingInstructions(providerID string, cfg *config.Config) (string, error) 
 func isGitRepo(dir string) bool {
 	_, err := os.Stat(filepath.Join(dir, ".git"))
 	return err == nil
-}
-
-func getGitStatus(ctx context.Context, dir string) (string, error) {
-	sh := shell.NewShell(&shell.Options{
-		WorkingDir: dir,
-	})
-	branch, err := getGitBranch(ctx, sh)
-	if err != nil {
-		return "", err
-	}
-	status, err := getGitStatusSummary(ctx, sh)
-	if err != nil {
-		return "", err
-	}
-	commits, err := getGitRecentCommits(ctx, sh)
-	if err != nil {
-		return "", err
-	}
-	return branch + status + commits, nil
-}
-
-func getGitBranch(ctx context.Context, sh *shell.Shell) (string, error) {
-	out, _, err := sh.Exec(ctx, "git branch --show-current 2>/dev/null")
-	if err != nil {
-		return "", nil
-	}
-	out = strings.TrimSpace(out)
-	if out == "" {
-		return "", nil
-	}
-	return fmt.Sprintf("Current branch: %s\n", out), nil
-}
-
-func getGitStatusSummary(ctx context.Context, sh *shell.Shell) (string, error) {
-	out, _, err := sh.Exec(ctx, "git status --short 2>/dev/null | head -20")
-	if err != nil {
-		return "", nil
-	}
-	out = strings.TrimSpace(out)
-	if out == "" {
-		return "Status: clean\n", nil
-	}
-	return fmt.Sprintf("Status:\n%s\n", out), nil
-}
-
-func getGitRecentCommits(ctx context.Context, sh *shell.Shell) (string, error) {
-	out, _, err := sh.Exec(ctx, "git log --oneline -n 3 2>/dev/null")
-	if err != nil || out == "" {
-		return "", nil
-	}
-	out = strings.TrimSpace(out)
-	return fmt.Sprintf("Recent commits:\n%s\n", out), nil
 }
 
 func (p *Prompt) Name() string {

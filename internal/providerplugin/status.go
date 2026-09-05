@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/redact"
 )
 
 // State is the lifecycle state of one discovered bundle.
@@ -39,12 +40,30 @@ const (
 	CompatibilityIncompatible CompatibilityState = "incompatible"
 )
 
+type DiagnosticSeverity string
+
+const (
+	DiagnosticSeverityError DiagnosticSeverity = "error"
+)
+
+type DiagnosticPhase string
+
+const (
+	DiagnosticPhaseBundle        DiagnosticPhase = "bundle"
+	DiagnosticPhaseManifest      DiagnosticPhase = "manifest"
+	DiagnosticPhaseCompatibility DiagnosticPhase = "compatibility"
+	DiagnosticPhaseActivation    DiagnosticPhase = "activation"
+)
+
 // Diagnostic is safe to expose through logs, CLI, UI, and client/server APIs.
 // Message is bounded and scrubbed before construction; it never contains raw
 // plugin stderr, credentials, source URLs, or absolute source/cache paths.
 type Diagnostic struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code     string             `json:"code"`
+	Message  string             `json:"message"`
+	Severity DiagnosticSeverity `json:"severity,omitempty"`
+	Phase    DiagnosticPhase    `json:"phase,omitempty"`
+	Path     string             `json:"path,omitempty"`
 }
 
 // Status is the redacted status of one installed direct-child bundle.
@@ -68,6 +87,7 @@ type Status struct {
 
 	manifest   *manifest.Manifest
 	preset     *manifest.PresetManifest
+	image      *manifest.ImageManifest
 	staticText map[string]string
 	path       string
 }
@@ -86,6 +106,9 @@ func (s Snapshot) clone() Snapshot {
 		result.Plugins[i] = s.Plugins[i]
 		result.Plugins[i].Capabilities = slices.Clone(s.Plugins[i].Capabilities)
 		result.Plugins[i].Diagnostics = slices.Clone(s.Plugins[i].Diagnostics)
+		for index := range result.Plugins[i].Diagnostics {
+			result.Plugins[i].Diagnostics[index].Message = redact.String(result.Plugins[i].Diagnostics[index].Message)
+		}
 		result.Plugins[i].staticText = maps.Clone(s.Plugins[i].staticText)
 		if s.Plugins[i].manifest != nil {
 			value := *s.Plugins[i].manifest
@@ -95,8 +118,13 @@ func (s Snapshot) clone() Snapshot {
 			value := *s.Plugins[i].preset
 			result.Plugins[i].preset = &value
 		}
+		result.Plugins[i].image = nil
 	}
 	return result
+}
+
+func (s Status) Clone() Status {
+	return Snapshot{Plugins: []Status{s}}.clone().Plugins[0]
 }
 
 // Event notifies consumers that an authoritative snapshot revision changed.
@@ -108,6 +136,7 @@ type Event struct {
 
 // InstallRequest describes one explicit local-directory or HTTPS Git install.
 type InstallRequest struct {
+	ExpectedDigest   string `json:"expected_digest,omitempty"`
 	Source           string `json:"source"`
 	Ref              string `json:"ref,omitempty"`
 	Update           bool   `json:"update,omitempty"`

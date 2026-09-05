@@ -21,6 +21,8 @@ import (
 // truncated in the collapsed state.
 const assistantMessageTruncateFormat = "… (%d lines hidden) [click or space to expand]"
 
+const summaryPreviewHeight = 4
+
 // assistantMessageTailWindowFormat is shown above a tail-windowed thinking
 // block to advertise that earlier lines exist and that the user can
 // promote the view to a full expansion. The promotion is wired through
@@ -181,6 +183,9 @@ type AssistantMessageItem struct {
 	message           *message.Message
 	sty               *styles.Styles
 	anim              *anim.Anim
+	retryAnim         *anim.Anim
+	activeRetryAnim   bool
+	summaryExpanded   bool
 	thinkingViewMode  thinkingViewMode
 	thinkingBoxHeight int // Tracks the rendered thinking box height for click detection.
 
@@ -242,6 +247,19 @@ func NewAssistantMessageItem(sty *styles.Styles, message *message.Message) Messa
 		},
 		SuffixColor: sty.WorkingTimerColor,
 	})
+	a.retryAnim = anim.New(anim.Settings{
+		ID:          a.ID() + "-retry",
+		Size:        15,
+		GradColorA:  sty.RetryLabelColor,
+		GradColorB:  sty.RetryLabelColor,
+		LabelColor:  sty.RetryLabelColor,
+		CycleColors: true,
+		Suffix: func() string {
+			return common.Elapsed()
+		},
+		SuffixColor: sty.RetryLabelColor,
+	})
+	_, a.activeRetryAnim = message.Retrying()
 	return a
 }
 
@@ -250,7 +268,7 @@ func (a *AssistantMessageItem) StartAnimation() tea.Cmd {
 	if !a.isSpinning() {
 		return nil
 	}
-	return a.anim.Start()
+	return a.currentAnim().Start()
 }
 
 // Animate progresses the assistant message animation if it should be spinning.
@@ -265,7 +283,7 @@ func (a *AssistantMessageItem) Animate(msg anim.StepMsg) tea.Cmd {
 	// list cache would serve the previously rendered frame
 	// indefinitely and the spinner would appear frozen.
 	a.Bump()
-	return a.anim.Animate(msg)
+	return a.currentAnim().Animate(msg)
 }
 
 // ID implements MessageItem.
@@ -320,6 +338,10 @@ func (a *AssistantMessageItem) Render(width int) string {
 	}
 	focused := a.sty.Messages.AssistantFocused.Render()
 	blurred := a.sty.Messages.AssistantBlurred.Render()
+	if a.message.IsSummaryMessage {
+		focused = a.sty.Messages.SummaryFocused.Render()
+		blurred = a.sty.Messages.SummaryBlurred.Render()
+	}
 	rendered := a.RawRender(width)
 	lines := strings.Split(rendered, "\n")
 	for i, line := range lines {
@@ -377,17 +399,24 @@ func (a *AssistantMessageItem) prefixCacheKey(cappedWidth int) uint64 {
 // decisions (which sections to include, whether to append the
 // constant "Canceled" footer) so that flipping IsFinished or the
 // finish reason invalidates the prefix cache even when no section's
-// own source text changed.
+// own source text changed. Summary identity and expansion state are included
+// because they change both composition and the message prefix style.
 func (a *AssistantMessageItem) compositionKey() uint64 {
-	var finishedFlag byte
+	var state byte
 	var reason string
 	if a.message.IsFinished() {
-		finishedFlag = 1
+		state |= 1
 		reason = string(a.message.FinishReason())
 	}
-	// Length-prefixed framing keeps the finished flag and the reason
-	// string from blending into one another.
-	return fnvFields([]byte{finishedFlag}, []byte(reason))
+	if a.message.IsSummaryMessage {
+		state |= 2
+		if a.summaryExpanded {
+			state |= 4
+		}
+	}
+	// Length-prefixed framing keeps the state flags and the reason string
+	// from blending into one another.
+	return fnvFields([]byte{state}, []byte(reason))
 }
 
 // renderMessageContent renders the message content including thinking, main
@@ -395,6 +424,11 @@ func (a *AssistantMessageItem) compositionKey() uint64 {
 // only the section whose source text or extras changed since the last
 // render is recomputed.
 func (a *AssistantMessageItem) renderMessageContent(width int) (string, int) {
+	if a.message.IsSummaryMessage {
+		content := a.renderSummary(width)
+		return content, lipgloss.Height(content)
+	}
+
 	var messageParts []string
 	thinking := strings.TrimSpace(a.message.ReasoningContent().Thinking)
 	content := strings.TrimSpace(a.message.Content().Text)
@@ -421,6 +455,34 @@ func (a *AssistantMessageItem) renderMessageContent(width int) (string, int) {
 
 	out := strings.Join(messageParts, "\n")
 	return out, lipgloss.Height(out)
+}
+
+func (a *AssistantMessageItem) renderSummary(width int) string {
+	contentText := strings.TrimSpace(a.message.Content().Text)
+	icon := "▸"
+	hint := ""
+	if contentText != "" {
+		hint = "  click or space to expand"
+	}
+	if a.summaryExpanded {
+		icon = "▾"
+		hint = "  click or space to collapse"
+	}
+	header := a.sty.Messages.SummaryHeader.Render(icon + " Conversation Summary")
+	header += a.sty.Messages.SummaryHint.Render(hint)
+	header = ansi.Truncate(header, max(1, width), "…")
+	if contentText == "" {
+		return header
+	}
+	content := a.cachedContent(width)
+	if a.summaryExpanded {
+		return header + "\n\n" + content
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) > summaryPreviewHeight {
+		lines = lines[:summaryPreviewHeight]
+	}
+	return header + "\n\n" + strings.Join(lines, "\n")
 }
 
 // thinkingKey returns the (srcHash, extra) cache key components for the
@@ -675,7 +737,18 @@ func (a *AssistantMessageItem) renderMarkdown(content string, width int) string 
 	return a.streamingContent.Render(content, width, renderer)
 }
 
+func (a *AssistantMessageItem) currentAnim() *anim.Anim {
+	if a.activeRetryAnim {
+		return a.retryAnim
+	}
+	return a.anim
+}
+
 func (a *AssistantMessageItem) renderSpinning() string {
+	if _, ok := a.message.Retrying(); ok {
+		a.retryAnim.SetLabel("Thinking")
+		return a.retryAnim.Render()
+	}
 	if a.message.IsThinking() {
 		a.anim.SetLabel("Thinking")
 	} else if a.message.IsSummaryMessage {
@@ -721,6 +794,7 @@ func (a *AssistantMessageItem) isSpinning() bool {
 func (a *AssistantMessageItem) SetMessage(msg *message.Message) tea.Cmd {
 	wasSpinning := a.isSpinning()
 	a.message = msg
+	_, retrying := a.message.Retrying()
 	// Bump the F6 version even if the underlying *message.Message
 	// pointer is identical: callers may have mutated the message in
 	// place (delta append) and we cannot tell from here. The
@@ -732,6 +806,11 @@ func (a *AssistantMessageItem) SetMessage(msg *message.Message) tea.Cmd {
 	// cache valid while a changed section forces a miss naturally.
 	// Section caches themselves are content-keyed, so they do not
 	// need an explicit drop here either.
+	if a.activeRetryAnim != retrying {
+		a.currentAnim().Stop()
+		a.activeRetryAnim = retrying
+		return a.StartAnimation()
+	}
 	if !wasSpinning && a.isSpinning() {
 		return a.StartAnimation()
 	}
@@ -767,8 +846,8 @@ func (a *AssistantMessageItem) clearCache() {
 	a.thinkingLineCount = 0
 }
 
-// ToggleExpanded advances the F5 thinking view-mode cycle and returns
-// whether the item is now in any expanded state (tail-window or full).
+// ToggleExpanded toggles summary content or advances the F5 thinking
+// view-mode cycle and returns whether the item is now expanded.
 // The cycle is collapsed → tail-window → full → collapsed, with the
 // tail-window step skipped when the rendered thinking fits within
 // maxExpandedThinkingTailLines so short blocks remain a two-click
@@ -780,6 +859,14 @@ func (a *AssistantMessageItem) clearCache() {
 // there is nothing to expand, and mutating the view mode would
 // thrash the thinking-section cache key for no visible benefit.
 func (a *AssistantMessageItem) ToggleExpanded() bool {
+	if a.message.IsSummaryMessage {
+		if strings.TrimSpace(a.message.Content().Text) == "" {
+			return a.summaryExpanded
+		}
+		a.summaryExpanded = !a.summaryExpanded
+		a.Bump()
+		return a.summaryExpanded
+	}
 	if strings.TrimSpace(a.message.ReasoningContent().Thinking) == "" {
 		return a.thinkingViewMode != thinkingCollapsed
 	}
@@ -834,6 +921,9 @@ func (a *AssistantMessageItem) tailWindowWouldTruncate() bool {
 func (a *AssistantMessageItem) HandleMouseClick(btn ansi.MouseButton, x, y int) bool {
 	if btn != ansi.MouseLeft {
 		return false
+	}
+	if a.message.IsSummaryMessage {
+		return y == 0
 	}
 	// Only the thinking box is clickable; other regions of the assistant
 	// message should not trigger expansion.

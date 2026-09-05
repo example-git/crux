@@ -25,8 +25,9 @@ import (
 	"strings"
 	"sync"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/providertransport"
 )
 
 const (
@@ -106,18 +107,18 @@ var geminiModels = map[string]modelSpec{
 	"claude-sonnet-4-6":          {name: "Claude Sonnet 4.6 (Thinking, via Antigravity)", context: 250_000, output: 64_000},
 }
 
-// Models returns the Antigravity lineup as catwalk models.
-func Models() []catwalk.Model {
+// Models returns the Antigravity lineup as catalog models.
+func Models() []catalog.Model {
 	ids := make([]string, 0, len(geminiModels))
 	for id := range geminiModels {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
 
-	models := make([]catwalk.Model, 0, len(ids))
+	models := make([]catalog.Model, 0, len(ids))
 	for _, id := range ids {
 		spec := geminiModels[id]
-		model := catwalk.Model{
+		model := catalog.Model{
 			ID:               id,
 			Name:             spec.name,
 			ContextWindow:    spec.context,
@@ -134,15 +135,15 @@ func Models() []catwalk.Model {
 	return models
 }
 
-// CatwalkProvider returns the built-in "gemini-ag" provider definition. It is
+// CatalogProvider returns the built-in "gemini-ag" provider definition. It is
 // appended to the known-provider catalog at load time so the provider is
 // selectable and login can attach credentials to it.
-func CatwalkProvider() catwalk.Provider {
-	return catwalk.Provider{
+func CatalogProvider() catalog.Provider {
+	return catalog.Provider{
 		Name:                Name,
-		ID:                  catwalk.InferenceProvider(ID),
+		ID:                  catalog.ProviderID(ID),
 		APIEndpoint:         APIEndpoint,
-		Type:                catwalk.TypeGoogle,
+		Type:                catalog.TypeGoogle,
 		DefaultLargeModelID: "gemini-3.1-pro-high",
 		DefaultSmallModelID: "gemini-3-flash",
 		Models:              Models(),
@@ -167,7 +168,7 @@ func tokenRequest(ctx context.Context, form url.Values) (tokenResponse, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "Go-http-client/2.0")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
 	if err != nil {
 		return tokenResponse{}, err
 	}
@@ -350,14 +351,28 @@ var projectCache sync.Map // access token -> project id
 // is returned (without error) when the endpoint does not provide one, which
 // the endpoint tolerates for some accounts.
 func Project(ctx context.Context, accessToken string) string {
-	if v := os.Getenv("GEMINI_PROJECT_ID"); v != "" {
-		return v
+	ownerBound := providertransport.OwnerValidatorFromContext(ctx) != nil
+	if ownerBound {
+		if err := providertransport.ValidateContextOwner(ctx); err != nil {
+			return ""
+		}
 	}
-	if v, ok := projectCache.Load(accessToken); ok {
-		return v.(string)
+	if value := os.Getenv("GEMINI_PROJECT_ID"); value != "" {
+		return value
+	}
+	if !ownerBound {
+		if value, ok := projectCache.Load(accessToken); ok {
+			return value.(string)
+		}
 	}
 
 	project := fetchProject(ctx, accessToken)
+	if ownerBound {
+		if err := providertransport.ValidateContextOwner(ctx); err != nil {
+			return ""
+		}
+		return project
+	}
 	projectCache.Store(accessToken, project)
 	return project
 }
@@ -369,10 +384,14 @@ func fetchProject(ctx context.Context, accessToken string) string {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("User-Agent", UserAgent())
+	userAgent, err := UserAgentForContext(ctx)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
 	if err != nil {
 		return ""
 	}
@@ -404,7 +423,7 @@ func AccountEmail(ctx context.Context, accessToken string) string {
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("User-Agent", "Go-http-client/2.0")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
 	if err != nil {
 		return ""
 	}

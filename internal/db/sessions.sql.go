@@ -37,7 +37,7 @@ INSERT INTO sessions (
     '',
     strftime('%s', 'now'),
     strftime('%s', 'now')
-) RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
+) RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage
 `
 
 type CreateSessionParams struct {
@@ -75,6 +75,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.Todos,
 		&i.Mode,
 		&i.Plan,
+		&i.EstimatedUsage,
 	)
 	return i, err
 }
@@ -90,7 +91,7 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 }
 
 const getLastSession = `-- name: GetLastSession :one
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage
 FROM sessions
 ORDER BY updated_at DESC
 LIMIT 1
@@ -113,12 +114,13 @@ func (q *Queries) GetLastSession(ctx context.Context) (Session, error) {
 		&i.Todos,
 		&i.Mode,
 		&i.Plan,
+		&i.EstimatedUsage,
 	)
 	return i, err
 }
 
 const getSessionByID = `-- name: GetSessionByID :one
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage
 FROM sessions
 WHERE id = ? LIMIT 1
 `
@@ -140,12 +142,13 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 		&i.Todos,
 		&i.Mode,
 		&i.Plan,
+		&i.EstimatedUsage,
 	)
 	return i, err
 }
 
 const listSessions = `-- name: ListSessions :many
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage
 FROM sessions
 WHERE parent_session_id is NULL
 ORDER BY updated_at DESC
@@ -174,6 +177,7 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 			&i.Todos,
 			&i.Mode,
 			&i.Plan,
+			&i.EstimatedUsage,
 		); err != nil {
 			return nil, err
 		}
@@ -233,9 +237,10 @@ SET
     completion_tokens = ?,
     summary_message_id = ?,
     cost = ?,
-    todos = ?
+    todos = ?,
+    estimated_usage = ?
 WHERE id = ?
-RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage
 `
 
 type UpdateSessionParams struct {
@@ -245,6 +250,7 @@ type UpdateSessionParams struct {
 	SummaryMessageID sql.NullString `json:"summary_message_id"`
 	Cost             float64        `json:"cost"`
 	Todos            sql.NullString `json:"todos"`
+	EstimatedUsage   int64          `json:"estimated_usage"`
 	ID               string         `json:"id"`
 }
 
@@ -256,6 +262,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 		arg.SummaryMessageID,
 		arg.Cost,
 		arg.Todos,
+		arg.EstimatedUsage,
 		arg.ID,
 	)
 	var i Session
@@ -273,6 +280,7 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 		&i.Todos,
 		&i.Mode,
 		&i.Plan,
+		&i.EstimatedUsage,
 	)
 	return i, err
 }
@@ -283,9 +291,10 @@ SET
     summary_message_id = ?,
     prompt_tokens = ?,
     completion_tokens = ?,
-    cost = ?
+    cost = ?,
+    estimated_usage = ?
 WHERE id = ?
-RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan"
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage
 `
 
 type UpdateSessionCompactionParams struct {
@@ -293,6 +302,7 @@ type UpdateSessionCompactionParams struct {
 	PromptTokens     int64          `json:"prompt_tokens"`
 	CompletionTokens int64          `json:"completion_tokens"`
 	Cost             float64        `json:"cost"`
+	EstimatedUsage   int64          `json:"estimated_usage"`
 	ID               string         `json:"id"`
 }
 
@@ -302,6 +312,7 @@ func (q *Queries) UpdateSessionCompaction(ctx context.Context, arg UpdateSession
 		arg.PromptTokens,
 		arg.CompletionTokens,
 		arg.Cost,
+		arg.EstimatedUsage,
 		arg.ID,
 	)
 	var i Session
@@ -319,6 +330,7 @@ func (q *Queries) UpdateSessionCompaction(ctx context.Context, arg UpdateSession
 		&i.Todos,
 		&i.Mode,
 		&i.Plan,
+		&i.EstimatedUsage,
 	)
 	return i, err
 }

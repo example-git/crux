@@ -38,15 +38,15 @@ const (
 )
 
 type tasksLoadedMsg struct {
-	tasks         []managedtask.View
-	notifications []managedtask.Notification
-	err           error
+	tasks []managedtask.View
+	err   error
 }
 
 type taskOutputLoadedMsg struct {
-	result   managedtask.OutputResult
-	messages []message.Message
-	err      error
+	result        managedtask.OutputResult
+	messages      []message.Message
+	notifications []managedtask.Notification
+	err           error
 }
 
 type taskDetailTickMsg struct {
@@ -138,8 +138,7 @@ func (d *Tasks) loadCmd() tea.Cmd {
 		if err != nil {
 			return tasksLoadedMsg{err: err}
 		}
-		notifications, err := d.com.Workspace.ListTaskNotifications(context.Background(), "", true)
-		return tasksLoadedMsg{tasks: tasks, notifications: notifications, err: err}
+		return tasksLoadedMsg{tasks: tasks}
 	}
 }
 
@@ -154,7 +153,6 @@ func (d *Tasks) HandleMsg(msg tea.Msg) Action {
 				selectedID = task.ID
 			}
 			d.tasks = msg.tasks
-			d.notifications = msg.notifications
 			d.sortTasks()
 			d.selected = 0
 			if selectedID != "" {
@@ -180,6 +178,7 @@ func (d *Tasks) HandleMsg(msg tea.Msg) Action {
 			}
 			d.output = msg.result
 			d.messages = msg.messages
+			d.notifications = msg.notifications
 			d.replaceTask(msg.result.Task)
 			if !msg.result.Task.State.Status.Terminal() {
 				return ActionCmd{Cmd: scheduleTaskDetailRefresh(msg.result.Task.ID)}
@@ -393,21 +392,31 @@ func (d *Tasks) loadSelectedOutput(initial bool) Action {
 			return taskOutputLoadedMsg{result: result, err: err}
 		}
 		var messages []message.Message
-		if task.Type == managedtask.TypeAgent && task.ChildSessionID != "" {
-			messages, err = d.com.Workspace.ListMessages(context.Background(), task.ChildSessionID)
+		if result.Task.Type == managedtask.TypeAgent && result.Task.ChildSessionID != "" {
+			messages, err = d.com.Workspace.ListMessages(context.Background(), result.Task.ChildSessionID)
+			if err != nil {
+				return taskOutputLoadedMsg{result: result, err: err}
+			}
 		}
-		return taskOutputLoadedMsg{result: result, messages: messages, err: err}
+		notifications, err := d.com.Workspace.ListTaskNotifications(context.Background(), result.Task.Ownership.ParentSessionID, true)
+		if err != nil {
+			return taskOutputLoadedMsg{result: result, messages: messages, err: err}
+		}
+		selectedNotifications := make([]managedtask.Notification, 0, 1)
+		for _, notification := range notifications {
+			if notification.TaskID != task.ID {
+				continue
+			}
+			if notification.ReadAt.IsZero() {
+				notification, err = d.com.Workspace.MarkTaskNotificationRead(context.Background(), notification.ID)
+				if err != nil {
+					return taskOutputLoadedMsg{result: result, messages: messages, err: err}
+				}
+			}
+			selectedNotifications = append(selectedNotifications, notification)
+		}
+		return taskOutputLoadedMsg{result: result, messages: messages, notifications: selectedNotifications}
 	})
-	for _, notification := range d.notifications {
-		if notification.TaskID == task.ID && notification.ReadAt.IsZero() {
-			notificationID := notification.ID
-			commands = append(commands, func() tea.Msg {
-				read, err := d.com.Workspace.MarkTaskNotificationRead(context.Background(), notificationID)
-				return taskNotificationReadMsg{notification: read, err: err}
-			})
-			break
-		}
-	}
 	return ActionCmd{Cmd: tea.Batch(commands...)}
 }
 
@@ -469,6 +478,9 @@ func (d *Tasks) dialogTitle() string {
 	}
 	if task.Type == managedtask.TypeShell {
 		return "Shell details"
+	}
+	if task.Type == managedtask.TypeImage {
+		return "Image details"
 	}
 	return "Agent details"
 }
@@ -574,13 +586,19 @@ func (d *Tasks) drawList(width, height int) string {
 				break
 			}
 		}
-		line := fmt.Sprintf("%s %-10s %-9s %s", unread, task.ID, task.State.Status, task.Description)
-		line = ansi.Truncate(line, max(0, width), "…")
-		if i == d.selected {
-			line = t.Dialog.SelectedItem.Render(line)
-		} else {
-			line = t.Dialog.NormalItem.Render(line)
+		description := task.Description
+		trailer := "…"
+		if task.Type == managedtask.TypeImage {
+			description = strings.Join(strings.Fields(description), " ")
+			trailer = "..."
 		}
+		itemStyle := t.Dialog.NormalItem
+		if i == d.selected {
+			itemStyle = t.Dialog.SelectedItem
+		}
+		line := fmt.Sprintf("%s %-10s %-9s %s", unread, task.ID, task.State.Status, description)
+		lineWidth := max(0, width-t.Dialog.List.GetHorizontalFrameSize()-itemStyle.GetHorizontalFrameSize())
+		line = itemStyle.Render(ansi.Truncate(line, lineWidth, trailer))
 		lines = append(lines, line)
 	}
 	return t.Dialog.List.Render(strings.Join(lines, "\n"))
@@ -593,6 +611,9 @@ func (d *Tasks) drawDetail(width, height int) string {
 	}
 	if task.Type == managedtask.TypeShell {
 		return d.drawShellDetail(width, height, task)
+	}
+	if task.Type == managedtask.TypeImage {
+		return d.drawImageDetail(width, height, task)
 	}
 	owner := task.Ownership.ParentSessionID
 	if task.Ownership.OwnerAgentTaskID != "" {
@@ -622,6 +643,30 @@ func (d *Tasks) drawDetail(width, height int) string {
 		d.com.Styles.Dialog.ContentPanel.Width(width).Render(strings.Join(lines, "\n")),
 		d.drawAgentActivity(width, remaining),
 	}, "\n")
+}
+
+func (d *Tasks) drawImageDetail(width, _ int, task managedtask.View) string {
+	status := d.taskStatusStyle(task.State.Status).Render(string(task.State.Status))
+	lines := []string{
+		"Status: " + status,
+		"Runtime: " + taskRuntime(task).Round(time.Second).String(),
+		"Description: " + task.Description,
+	}
+	switch task.State.Status {
+	case managedtask.StatusPending:
+		lines = append(lines, "Waiting in the image queue. Up to four image jobs run at once.")
+	case managedtask.StatusRunning:
+		lines = append(lines, "Generating image…")
+	default:
+		if formatted, ok := chat.FormatImagegenResult(d.output.Output); ok {
+			lines = append(lines, "", formatted)
+		} else if task.State.ErrorMessage != "" {
+			lines = append(lines, "Error: "+task.State.ErrorMessage)
+		} else if task.State.LostReason != "" {
+			lines = append(lines, "Interrupted: "+task.State.LostReason)
+		}
+	}
+	return d.com.Styles.Dialog.ContentPanel.Width(width).Render(strings.Join(lines, "\n"))
 }
 
 func taskRuntime(task managedtask.View) time.Duration {

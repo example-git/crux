@@ -14,15 +14,16 @@ func (b *Backend) CodebaseIndexStatus(workspaceID string) (proto.CodebaseIndexSt
 	if err != nil {
 		return proto.CodebaseIndexStatus{}, err
 	}
-	if ws.AgentCoordinator == nil {
+	coordinator := ws.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return proto.CodebaseIndexStatus{}, ErrAgentNotInitialized
 	}
-	status, err := agent.CodebaseIndexStatus(ws.ctx, ws.AgentCoordinator)
+	status, err := agent.CodebaseIndexStatus(ws.ctx, coordinator)
 	if err != nil {
 		return proto.CodebaseIndexStatus{}, err
 	}
 	result := codebaseIndexStatusProto(ws.Cfg.Config().Tools.CodebaseSearch, status)
-	result.MemoryActivity = agent.AutoMemoryActivity(ws.AgentCoordinator)
+	result.MemoryActivity = agent.AutoMemoryActivity(coordinator)
 	return result, nil
 }
 
@@ -31,7 +32,8 @@ func (b *Backend) UpdateCodebaseIndex(workspaceID string, update proto.CodebaseI
 	if err != nil {
 		return proto.CodebaseIndexStatus{}, err
 	}
-	if ws.AgentCoordinator == nil {
+	coordinator := ws.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return proto.CodebaseIndexStatus{}, ErrAgentNotInitialized
 	}
 	filters := codebaseindex.NormalizeProjectFilters(codebaseindex.ProjectFilters{
@@ -48,16 +50,16 @@ func (b *Backend) UpdateCodebaseIndex(workspaceID string, update proto.CodebaseI
 		return proto.CodebaseIndexStatus{}, err
 	}
 	publishConfigChanged(ws)
-	if err := ws.AgentCoordinator.UpdateModels(ws.ctx); err != nil {
+	if err := coordinator.UpdateModels(ws.ctx); err != nil {
 		return proto.CodebaseIndexStatus{}, err
 	}
 	if update.Reindex {
-		status, err := agent.ReconcileCodebaseIndex(ws.ctx, ws.AgentCoordinator)
+		status, err := agent.ReconcileCodebaseIndex(ws.ctx, coordinator)
 		if err != nil {
 			return proto.CodebaseIndexStatus{}, err
 		}
 		result := codebaseIndexStatusProto(ws.Cfg.Config().Tools.CodebaseSearch, status)
-		result.MemoryActivity = agent.AutoMemoryActivity(ws.AgentCoordinator)
+		result.MemoryActivity = agent.AutoMemoryActivity(coordinator)
 		return result, nil
 	}
 	return b.CodebaseIndexStatus(workspaceID)
@@ -67,6 +69,7 @@ func codebaseIndexStatusProto(settings config.ToolCodebaseSearch, status codebas
 	result := proto.CodebaseIndexStatus{
 		Enabled:          settings.IsEnabled(),
 		State:            string(status.State),
+		Serving:          status.Serving,
 		ProjectRoot:      status.ProjectRoot,
 		DatabasePath:     status.DatabasePath,
 		StoreDirectory:   status.StoreDirectory,

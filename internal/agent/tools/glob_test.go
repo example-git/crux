@@ -53,6 +53,32 @@ func TestGlobFilesDoesNotFollowSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestGlobFilesHonorsRootIgnoreFilesOutsideGitRepository(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	for path, content := range map[string]string{
+		"visible.txt":        "visible",
+		"ignored-git.txt":    "git",
+		"ignored-crux.txt":   "crux",
+		".hidden.txt":        "hidden",
+		".gitignore":         "ignored-git.txt\n",
+		".cruxignore":        "ignored-crux.txt\n",
+		"nested/visible.txt": "nested",
+	} {
+		fullPath := filepath.Join(root, path)
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0o755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o644))
+	}
+
+	got, _, err := globFiles(context.Background(), "**/*.txt", root, 100)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{
+		filepath.Join(root, "visible.txt"),
+		filepath.Join(root, "nested", "visible.txt"),
+	}, got)
+}
+
 func TestGlobFilesCapsResultsOnLargeTree(t *testing.T) {
 	t.Parallel()
 

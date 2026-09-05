@@ -3,53 +3,253 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/agent/tools"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/permission"
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/stretchr/testify/require"
 )
 
-func TestAgentToolSelectsGenericAndCustomPresetsStrictly(t *testing.T) {
-	task := &mockSessionAgent{}
-	reviewer := &mockSessionAgent{}
-	presets := map[string]presetSubagent{
-		config.AgentTask: {agent: task, title: "New Agent Session"},
-		"reviewer":       {agent: reviewer, title: "Agent: reviewer"},
-	}
-	available := []string{"reviewer", "task"}
-
-	selected, err := selectPresetSubagent(presets, "", available)
-	require.NoError(t, err)
-	require.Same(t, task, selected.agent)
-	require.Equal(t, "New Agent Session", selected.title)
-
-	selected, err = selectPresetSubagent(presets, "reviewer", available)
-	require.NoError(t, err)
-	require.Same(t, reviewer, selected.agent)
-	require.Equal(t, "Agent: reviewer", selected.title)
-
-	_, err = selectPresetSubagent(presets, "missing", available)
-	require.EqualError(t, err, `unknown subagent type "missing"; available types: reviewer, task`)
+type recordingAgentPermissionService struct {
+	permission.Service
+	granted  bool
+	err      error
+	requests []permission.CreatePermissionRequest
 }
 
-func TestAgentToolReturnsDefinitionErrorOnlyForSelectedPreset(t *testing.T) {
-	task := &mockSessionAgent{}
-	validationErr := errors.New(`agent definition "reviewer.md": field toolz not found`)
-	presets := map[string]presetSubagent{
-		config.AgentTask: {agent: task, title: "New Agent Session"},
-		"reviewer":       {title: "Agent: reviewer", err: validationErr},
+func (s *recordingAgentPermissionService) Request(_ context.Context, request permission.CreatePermissionRequest) (bool, error) {
+	s.requests = append(s.requests, request)
+	return s.granted, s.err
+}
+
+func TestAgentToolRefreshesDefinitionsWithoutRebuild(t *testing.T) {
+	workingDir := t.TempDir()
+	userDir := filepath.Join(t.TempDir(), "user")
+	projectDir := filepath.Join(workingDir, ".ai-cli", "agents")
+	validationCfg := testAgentDefinitionConfig()
+	cfg := initTestConfig(t, workingDir)
+	cfg.SetupAgents()
+	coord := &coordinator{
+		cfg: cfg,
+		loadAgentDefinitions: func(_ string, _ *config.Config) ([]agentDefinition, error) {
+			return loadAgentDefinitionsFromDirs(
+				userDir,
+				projectDir,
+				validationCfg,
+			)
+		},
 	}
-	available := []string{"reviewer", "task"}
-
-	selected, err := selectPresetSubagent(presets, "", available)
+	taskCfg := cfg.Config().Agents[config.AgentTask]
+	taskAgent := &mockSessionAgent{}
+	taskPreset := presetSubagent{
+		agent: taskAgent,
+		title: "New Agent Session",
+	}
+	tool := newRefreshingAgentTool(coord, taskCfg, taskPreset)
+	selected, err := coord.resolveAgentToolPreset(
+		t.Context(),
+		taskPreset,
+		"",
+	)
 	require.NoError(t, err)
-	require.Same(t, task, selected.agent)
+	require.Same(t, taskAgent, selected.agent)
+	writeDefinition := func(dir, description, toolsField string) string {
+		t.Helper()
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		path := filepath.Join(dir, "reviewer.md")
+		content := "---\n" +
+			"name: reviewer\n" +
+			"description: " + description + "\n" +
+			"model: provider/model\n" +
+			toolsField + "\n" +
+			"---\n\nReview the requested change.\n"
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+		return path
+	}
 
-	_, err = selectPresetSubagent(presets, "reviewer", available)
-	require.ErrorIs(t, err, validationErr)
-	require.ErrorContains(t, err, "field toolz not found")
+	require.NotContains(t, tool.Info().Description, "- reviewer:")
+	userPath := writeDefinition(userDir, "User reviewer", "tools: []")
+	require.Contains(t, tool.Info().Description, "- reviewer: User reviewer")
+
+	writeDefinition(userDir, "Updated user reviewer", "tools: []")
+	require.Contains(t, tool.Info().Description, "- reviewer: Updated user reviewer")
+	require.NotContains(t, tool.Info().Description, "- reviewer: User reviewer")
+
+	projectPath := writeDefinition(projectDir, "Project reviewer", "tools: []")
+	require.Contains(t, tool.Info().Description, "- reviewer: Project reviewer")
+	require.NotContains(t, tool.Info().Description, "Updated user reviewer")
+
+	writeDefinition(projectDir, "Broken project reviewer", "toolz: []")
+	require.Contains(
+		t,
+		tool.Info().Description,
+		"- reviewer: invalid definition at "+projectPath,
+	)
+	toolContext := context.WithValue(
+		t.Context(),
+		tools.SessionIDContextKey,
+		"session",
+	)
+	toolContext = context.WithValue(
+		toolContext,
+		tools.MessageIDContextKey,
+		"message",
+	)
+	response, err := tool.Run(toolContext, fantasy.ToolCall{
+		ID:    "invalid-definition",
+		Input: `{"prompt":"review","subagent_type":"reviewer"}`,
+	})
+	require.NoError(t, err)
+	require.True(t, response.IsError)
+	require.Contains(t, response.Content, "field toolz not found")
+
+	require.NoError(t, os.Remove(projectPath))
+	require.Contains(t, tool.Info().Description, "- reviewer: Updated user reviewer")
+	require.NoError(t, os.Remove(userPath))
+	require.NotContains(t, tool.Info().Description, "- reviewer:")
+
+	response, err = tool.Run(toolContext, fantasy.ToolCall{
+		ID:    "deleted-definition",
+		Input: `{"prompt":"review","subagent_type":"reviewer"}`,
+	})
+	require.NoError(t, err)
+	require.True(t, response.IsError)
+	require.Contains(
+		t,
+		response.Content,
+		`unknown subagent type "reviewer"; available types: task`,
+	)
+}
+
+func TestAgentToolDescriptionsAndApprovalUseResolvedSubagentTools(t *testing.T) {
+	cfg := initTestConfig(t, t.TempDir())
+	definition := agentDefinition{
+		Name:        "reviewer",
+		Description: "Review changes",
+		Model:       config.SelectedModel{Provider: "provider", Model: "model"},
+		Tools: []string{
+			AgentToolName,
+			tools.AgenticFetchToolName,
+			tools.CodebaseSearchToolName,
+			tools.ImagegenToolName,
+			tools.ViewToolName,
+		},
+	}
+	coord := &coordinator{
+		cfg: cfg,
+		loadAgentDefinitions: func(string, *config.Config) ([]agentDefinition, error) {
+			return []agentDefinition{definition}, nil
+		},
+	}
+	taskCfg := config.Agent{
+		ID:          config.AgentTask,
+		Description: "General research",
+		AllowedTools: []string{
+			tools.AgenticFetchToolName,
+			tools.CodebaseSearchToolName,
+			tools.ViewToolName,
+		},
+	}
+
+	description := coord.currentAgentToolDescription(taskCfg)
+	require.Contains(t, description, "- task: General research (model: configured large model; tools: view, fetch)")
+	require.Contains(t, description, "- reviewer: Review changes (model: provider/model; tools: view)")
+	require.NotContains(t, description, tools.AgenticFetchToolName)
+	require.NotContains(t, description, tools.CodebaseSearchToolName)
+
+	resolved := coord.customAgentTools(definition)
+	require.Equal(t, []string{tools.ViewToolName}, resolved)
+	require.False(t, subagentRequiresApproval(resolved))
+}
+
+func TestAgentToolRejectsAllLaunchModesFromSubagent(t *testing.T) {
+	coord := &coordinator{}
+	ctx := permission.WithSubagent(t.Context())
+	for _, test := range []struct {
+		name   string
+		params AgentParams
+	}{
+		{name: "foreground", params: AgentParams{Prompt: "work"}},
+		{name: "background", params: AgentParams{Prompt: "work", RunInBackground: true}},
+		{name: "continuation", params: AgentParams{Prompt: "continue", RunInBackground: true, ContinueTaskID: "a12345678"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response, err := coord.runAgentTool(ctx, test.params, fantasy.ToolCall{ID: "call"}, presetSubagent{})
+			require.NoError(t, err)
+			require.True(t, response.IsError)
+			require.Equal(t, permission.ErrSubagentLaunch.Error(), response.Content)
+		})
+	}
+}
+
+func TestAgentToolAllowsTopLevelForegroundLaunch(t *testing.T) {
+	const providerID = "test-provider"
+	env := testEnv(t)
+	coord := newTestCoordinator(t, env, providerID, config.ProviderConfig{ID: providerID})
+	parent, err := env.sessions.Create(t.Context(), "Parent")
+	require.NoError(t, err)
+	subagent := newMockAgent(providerID, 4096, coord.cfg.RuntimeSnapshot(), func(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+		require.Equal(t, "work", call.Prompt)
+		return agentResultWithText("done"), nil
+	})
+	ctx := context.WithValue(permission.WithDetachedAgent(t.Context()), tools.SessionIDContextKey, parent.ID)
+	ctx = context.WithValue(ctx, tools.MessageIDContextKey, "message")
+
+	response, err := coord.runAgentTool(ctx, AgentParams{Prompt: "work"}, fantasy.ToolCall{ID: "call"}, presetSubagent{agent: subagent, title: "Task"})
+	require.NoError(t, err)
+	require.False(t, response.IsError)
+	require.Equal(t, "done", response.Content)
+}
+
+func TestCoordinatorContinueTaskRejectsSubagent(t *testing.T) {
+	_, err := (&coordinator{}).ContinueTask(permission.WithSubagent(t.Context()), "a12345678", "parent", "continue", "call")
+	require.ErrorIs(t, err, permission.ErrSubagentBackgroundTask)
+}
+
+func TestApproveBackgroundSubagentScopesWritableRuns(t *testing.T) {
+	workingDir := t.TempDir()
+	service := &recordingAgentPermissionService{granted: true}
+	coord := &coordinator{cfg: initTestConfig(t, workingDir), permissions: service}
+
+	approved, err := coord.approveBackgroundSubagent(t.Context(), presetSubagent{
+		title:            "Agent: reviewer",
+		tools:            []string{"view", "edit"},
+		requiresApproval: true,
+	}, "parent", "call")
+	require.NoError(t, err)
+	require.True(t, approved)
+	require.Len(t, service.requests, 1)
+	require.Equal(t, AgentToolName, service.requests[0].ToolName)
+	require.Equal(t, "delegate", service.requests[0].Action)
+	require.Equal(t, workingDir, service.requests[0].Path)
+
+	approved, err = coord.approveBackgroundSubagent(t.Context(), presetSubagent{
+		title: "Agent: reader",
+		tools: []string{"view", "search"},
+	}, "parent", "other-call")
+	require.NoError(t, err)
+	require.False(t, approved)
+	require.Len(t, service.requests, 1)
+
+	service.granted = false
+	_, err = coord.approveBackgroundSubagent(t.Context(), presetSubagent{
+		title:            "Agent: writer",
+		tools:            []string{"write"},
+		requiresApproval: true,
+	}, "parent", "denied-call")
+	require.ErrorContains(t, err, "permission denied for Agent: writer")
+}
+
+func TestSubagentRequiresApprovalDefaultsUnknownToolsToWritable(t *testing.T) {
+	require.False(t, subagentRequiresApproval([]string{"view", "search", "lsp_definition"}))
+	require.True(t, subagentRequiresApproval([]string{"view", "edit"}))
+	require.True(t, subagentRequiresApproval([]string{"third_party_tool"}))
 }
 
 func TestResolveBackgroundAgentContinuation(t *testing.T) {
@@ -92,7 +292,7 @@ func TestResolveBackgroundAgentContinuation(t *testing.T) {
 }
 
 func TestAgentToolResolvesCustomToolAllowlist(t *testing.T) {
-	available := []string{"view", "write", "grep", AgentToolName, "agentic_fetch"}
+	available := []string{"view", "write", "search", AgentToolName, "agentic_fetch"}
 
 	resolved, err := resolveCustomAgentTools(config.Agent{DefinitionPath: "none.md"}, available, nil)
 	require.NoError(t, err)
@@ -100,10 +300,10 @@ func TestAgentToolResolvesCustomToolAllowlist(t *testing.T) {
 
 	resolved, err = resolveCustomAgentTools(config.Agent{
 		DefinitionPath: "readonly.md",
-		AllowedTools:   []string{"view", "grep"},
+		AllowedTools:   []string{"view", "search"},
 	}, available, nil)
 	require.NoError(t, err)
-	require.Equal(t, []string{"view", "grep"}, resolved)
+	require.Equal(t, []string{"view", "search"}, resolved)
 
 	resolved, err = resolveCustomAgentTools(config.Agent{
 		DefinitionPath: "script.md",
@@ -124,7 +324,7 @@ func TestAgentToolResolvesCustomToolAllowlist(t *testing.T) {
 		AllowAllTools:  true,
 	}, available, []string{"write"})
 	require.NoError(t, err)
-	require.Equal(t, []string{"grep", "view"}, resolved)
+	require.Equal(t, []string{"search", "view"}, resolved)
 
 	_, err = resolveCustomAgentTools(config.Agent{
 		DefinitionPath: "unavailable.md",

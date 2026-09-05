@@ -28,6 +28,24 @@ func TestCommandsIncludesAgentDefinitionCreator(t *testing.T) {
 	require.True(t, found)
 }
 
+func TestCommandsIncludesTmuxSessionsPicker(t *testing.T) {
+	theme := styles.ThemeForProvider("")
+	ws := &mcpServersTestWorkspace{cfg: &config.Config{}}
+	commands, err := NewCommands(&common.Common{Workspace: ws, Styles: &theme}, "", false, false, false, nil, nil)
+	require.NoError(t, err)
+
+	for _, item := range commands.defaultCommands() {
+		if item.id != "tmux_sessions" {
+			continue
+		}
+		action, ok := item.action.(ActionOpenDialog)
+		require.True(t, ok)
+		require.Equal(t, TmuxSessionsID, action.DialogID)
+		return
+	}
+	t.Fatal("tmux sessions command not found")
+}
+
 func TestCommandsIncludesProjectsPicker(t *testing.T) {
 	theme := styles.ThemeForProvider("")
 	ws := &mcpServersTestWorkspace{cfg: &config.Config{}}

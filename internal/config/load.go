@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -18,41 +19,69 @@ import (
 	"sync"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
 	powernapConfig "github.com/charmbracelet/x/powernap/pkg/config"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/discover"
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/filepathext"
 	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/home"
+	"github.com/example-git/crux/internal/lock"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/shellconfig"
 	"github.com/qjebbs/go-jsons"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
-// Load loads the configuration from the default paths and returns a
-// ConfigStore that owns both the pure-data Config and all runtime state.
+// Load loads configuration and installs the resolved selections used by the
+// runtime. Persisted plugin-backed selections remain authoritative even when
+// their integration is temporarily unavailable. Do not make startup success
+// depend on rewriting them to an unrelated available provider; retain them and
+// let construction report the unavailable selected integration clearly.
 func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
-	// Migrate deprecated disable_notifications before loading config.
-	migrateDisableNotifications()
+	return loadWithEnvironment(workingDir, dataDir, debug, snapshotEnvironment(), true)
+}
 
-	configPaths := lookupConfigs(workingDir)
+func LoadIsolated(workingDir, dataDir string, debug bool, baseEnvironment env.Env) (*ConfigStore, error) {
+	if baseEnvironment == nil {
+		return nil, errors.New("isolated config load requires a base environment")
+	}
+	return loadWithEnvironment(workingDir, dataDir, debug, cloneEnvironment(baseEnvironment), false)
+}
 
-	cfg, loadedPaths, err := loadFromConfigPaths(context.Background(), configPaths)
+func SnapshotEnvironment() env.Env {
+	return snapshotEnvironment()
+}
+
+func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment env.Env, publishProcessState bool) (*ConfigStore, error) {
+	globalConfigPath := globalConfigFromEnvironment(baseEnvironment)
+	globalDataPath := globalConfigDataFromEnvironment(appName, baseEnvironment)
+	notificationMigration := prepareDisableNotificationsMigration(globalConfigPath, globalDataPath)
+	preimages, err := captureConfigPreimages(globalConfigPath, globalDataPath)
+	if err != nil {
+		return nil, fmt.Errorf("capture startup config state: %w", err)
+	}
+	configPaths := lookupConfigsFromEnvironment(workingDir, baseEnvironment)
+
+	cfg, loadedPaths, err := loadFromConfigPathsWithOverrides(context.Background(), configPaths, notificationMigration.overrides, baseEnvironment)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config from paths %v: %w", configPaths, err)
 	}
 
-	cfg.setDefaults(workingDir, dataDir)
+	if err := cfg.setDefaultsFromEnvironment(workingDir, dataDir, baseEnvironment); err != nil {
+		return nil, fmt.Errorf("apply configuration defaults: %w", err)
+	}
 
 	store := &ConfigStore{
-		config:         cfg,
-		workingDir:     workingDir,
-		globalDataPath: GlobalConfigData(),
-		workspacePath:  filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)),
-		loadedPaths:    loadedPaths,
+		config:              cfg,
+		workingDir:          workingDir,
+		baseEnvironment:     baseEnvironment,
+		publishProcessState: publishProcessState,
+		globalDataPath:      globalDataPath,
+		workspacePath:       filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName)),
+		loadedPaths:         loadedPaths,
 	}
 
 	if debug {
@@ -69,12 +98,14 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 			// Preserve defaults that setDefaults already applied.
 			dataDir := cfg.Options.DataDirectory
 			*cfg = *merged
-			cfg.setDefaults(workingDir, dataDir)
+			if err := cfg.setDefaultsFromEnvironment(workingDir, dataDir, baseEnvironment); err != nil {
+				return nil, fmt.Errorf("apply workspace configuration defaults: %w", err)
+			}
 			store.config = cfg
 			store.loadedPaths = append(store.loadedPaths, store.workspacePath)
 		}
 	}
-	registerConfigSecrets(cfg)
+	cfg.captureExplicitModels()
 
 	// Validate hooks after all config merging is complete so workspace
 	// hooks also get their matcher regexes compiled.
@@ -95,77 +126,126 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 		assignIfNil(&cfg.Options.TUI.Completions.MaxItems, items)
 	}
 
-	if isAppleTerminal() {
+	if isAppleTerminalFromEnvironment(baseEnvironment) {
 		slog.Warn("Detected Apple Terminal, enabling transparent mode")
 		assignIfNil(&cfg.Options.TUI.Transparent, true)
 	}
 
-	// Load known providers, this loads the config from catwalk. A failed
-	// refresh still yields the cached or embedded catalog, so only an empty
-	// list is fatal: starting up without providers is worse than starting
-	// up with slightly stale ones.
-	providers, err := Providers(cfg)
+	candidateEnv, valueResolver, resolvedEnv, err := cfg.buildEnvironmentFrom(baseEnvironment)
 	if err != nil {
-		if len(providers) == 0 {
-			return nil, err
-		}
-		slog.Warn("Continuing with the previously known providers", "error", err)
+		return nil, fmt.Errorf("build candidate environment: %w", err)
 	}
-	store.knownProviders = cloneProviderCatalog(providers)
-	store.providerRegistry = ProviderRegistry()
-
-	env := env.New()
-	// Configure providers
-	valueResolver := NewShellVariableResolver(env)
+	scan, err := freshProviderScan(context.Background(), cfg, baseEnvironment)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan providers: %w", err)
+	}
+	cfg.bindProviderScan(scan)
+	store.knownProviders = cloneProviderCatalog(scan.Providers)
+	if scan.Registry != nil {
+		store.providerRegistry = scan.Registry.Clone()
+	}
 	store.resolver = valueResolver
 
-	// Hold writeMu during initial load to prevent configureProviders
-	// from triggering auto-reload via RemoveConfigField.
 	store.writeMu.Lock()
 	defer store.writeMu.Unlock()
-
-	// Apply top-level env vars before configuring providers so variables
-	// like AWS_PROFILE are visible to the AWS SDK credential chain.
-	cfg.applyEnv(valueResolver)
-
-	if err := cfg.configureProviders(context.Background(), store, env, valueResolver, store.knownProviders); err != nil {
+	var pendingOwners map[string]ProviderOwnerReference
+	var pendingPlugins map[string]ProviderPluginReference
+	var pendingPresets map[string]ProviderPresetReference
+	collectMigration := func(owners map[string]ProviderOwnerReference, plugins map[string]ProviderPluginReference, presets map[string]ProviderPresetReference) error {
+		pendingOwners = maps.Clone(owners)
+		pendingPlugins = maps.Clone(plugins)
+		pendingPresets = maps.Clone(presets)
+		return nil
+	}
+	if err := cfg.configureProvidersWithMigration(context.Background(), store, candidateEnv, valueResolver, store.knownProviders, collectMigration); err != nil {
 		return nil, fmt.Errorf("failed to configure providers: %w", err)
 	}
 
+	pendingModelFields := make(map[string]any)
 	if !cfg.IsConfigured() {
 		slog.Warn("No providers configured")
-		store.captureStalenessSnapshot(append(slices.Clone(configPaths), loadedPaths...))
-		return store, nil
-	}
+	} else {
+		resolved, resolveErr := resolveSelectedModels(cfg, store.knownProviders)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("failed to configure selected models: %w", resolveErr)
+		}
+		cfg.Models[SelectedModelTypeLarge] = resolved.Large
+		cfg.Models[SelectedModelTypeSmall] = resolved.Small
 
-	resolved, err := resolveSelectedModels(cfg, store.knownProviders)
+		if resolved.LargeFallback {
+			maps.Copy(pendingModelFields, store.updatePreferredModelFields(cfg, SelectedModelTypeLarge, resolved.Large))
+		}
+		if resolved.SmallFallback {
+			maps.Copy(pendingModelFields, store.updatePreferredModelFields(cfg, SelectedModelTypeSmall, resolved.Small))
+		}
+	}
+	cfg.SetupAgents()
+	if err := commitStartupCorrections(store, notificationMigration, pendingModelFields, preimages); err != nil {
+		rollbackErr := restoreConfigPreimages(preimages)
+		return nil, errors.Join(fmt.Errorf("commit startup config corrections: %w", err), rollbackErr)
+	}
+	if err := captureConfigPostimages(preimages); err != nil {
+		rollbackErr := restoreConfigPreimages(preimages)
+		return nil, errors.Join(fmt.Errorf("capture startup config correction postimages: %w", err), rollbackErr)
+	}
+	migrationExpectedData, migrationExpectedExists, err := configPostimage(preimages, store.globalDataPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to configure selected models: %w", err)
+		rollbackErr := restoreConfigPreimages(preimages)
+		return nil, errors.Join(fmt.Errorf("resolve startup provider ownership migration postimage: %w", err), rollbackErr)
 	}
-	cfg.Models[SelectedModelTypeLarge] = resolved.Large
-	cfg.Models[SelectedModelTypeSmall] = resolved.Small
-
-	// Persist any fallback corrections while we still hold writeMu.
-	if resolved.LargeFallback {
-		if err := store.updateLocked(ScopeGlobal, func(c *Config) map[string]any {
-			return store.updatePreferredModelFields(c, SelectedModelTypeLarge, resolved.Large)
-		}); err != nil {
-			return nil, fmt.Errorf("failed to update preferred large model: %w", err)
+	_, migrationBeforeHash, migrationBeforeExists, err := fileBytesAndHash(store.globalDataPath)
+	if err != nil {
+		rollbackErr := restoreConfigPreimages(preimages)
+		return nil, errors.Join(fmt.Errorf("capture provider ownership migration preimage: %w", err), rollbackErr)
+	}
+	if err := store.migrateProviderReferencesIfCurrent(pendingOwners, pendingPlugins, pendingPresets, migrationExpectedData, migrationExpectedExists); err != nil {
+		rollbackErr := restoreConfigPreimages(preimages)
+		return nil, errors.Join(fmt.Errorf("migrate provider ownership: %w", err), rollbackErr)
+	}
+	_, migrationAfterHash, migrationAfterExists, migrationInspectErr := fileBytesAndHash(store.globalDataPath)
+	ownershipChanged := migrationBeforeExists != migrationAfterExists || migrationBeforeHash != migrationAfterHash
+	_, startupInspectErr := inspectStartupConfigPreimageChanged(preimages, store.globalDataPath)
+	if err := errors.Join(migrationInspectErr, startupInspectErr); err != nil {
+		var migrationRollbackErr error
+		if ownershipChanged {
+			migrationRollbackErr = store.rollbackProviderMigration()
 		}
+		rollbackErr := restoreConfigPreimages(preimages)
+		return nil, errors.Join(fmt.Errorf("inspect provider ownership migration: %w", err), migrationRollbackErr, rollbackErr)
 	}
-	if resolved.SmallFallback {
-		if err := store.updateLocked(ScopeGlobal, func(c *Config) map[string]any {
-			return store.updatePreferredModelFields(c, SelectedModelTypeSmall, resolved.Small)
-		}); err != nil {
-			return nil, fmt.Errorf("failed to update preferred small model: %w", err)
+	publish := func(published ProviderScan) error {
+		if publishProcessState {
+			if err := applyEnvironment(baseEnvironment, nil, resolvedEnv); err != nil {
+				return err
+			}
+			store.appliedEnvironment = maps.Clone(resolvedEnv)
 		}
+		store.effectiveEnvironment = cloneEnvironment(candidateEnv)
+		registerConfigSecrets(cfg)
+		store.knownProviders = cloneProviderCatalog(published.Providers)
+		if published.Registry == nil {
+			store.providerRegistry = nil
+		} else {
+			store.providerRegistry = published.Registry.Clone()
+		}
+		store.config = cfg
+		return nil
 	}
-	store.SetupAgents()
-	registerConfigSecrets(store.Config())
+	var publishErr error
+	if publishProcessState {
+		publishErr = publishConfiguredProviderScan(scan, publish)
+	} else {
+		publishErr = publish(cloneProviderScan(scan))
+	}
+	if publishErr != nil {
+		var migrationRollbackErr error
+		if ownershipChanged {
+			migrationRollbackErr = store.rollbackProviderMigration()
+		}
+		rollbackErr := restoreConfigPreimages(preimages)
+		return nil, errors.Join(fmt.Errorf("publish startup generation: %w", publishErr), migrationRollbackErr, rollbackErr)
+	}
 
-	// Capture initial staleness snapshot. Track every discovered config path,
-	// not just the ones that loaded, so a config file created after startup
-	// (e.g. a cruxrc added mid-session) is detected as a change.
 	store.captureStalenessSnapshot(append(slices.Clone(configPaths), loadedPaths...))
 
 	return store, nil
@@ -181,52 +261,94 @@ func mustMarshalConfig(cfg *Config) []byte {
 	return data
 }
 
-func PushPopCruxEnv() func() {
-	var found []string
-	for _, ev := range os.Environ() {
-		if strings.HasPrefix(ev, "CRUX_") {
-			pair := strings.SplitN(ev, "=", 2)
-			if len(pair) != 2 {
-				continue
-			}
-			found = append(found, strings.TrimPrefix(pair[0], "CRUX_"))
+func (c *Config) completeProviderOwner(providerID string, provider ProviderConfig) ProviderConfig {
+	if provider.Owner == nil {
+		return provider
+	}
+	owner := *provider.Owner
+	provider.Owner = &owner
+	switch owner.Type {
+	case ProviderOwnerPlugin:
+		if provider.Plugin == nil {
+			return provider
 		}
-	}
-	backups := make(map[string]string)
-	for _, ev := range found {
-		backups[ev] = os.Getenv(ev)
-	}
-
-	for _, ev := range found {
-		os.Setenv(ev, os.Getenv("CRUX_"+ev))
-	}
-
-	restore := func() {
-		for k, v := range backups {
-			os.Setenv(k, v)
+		registration, found := c.providerCapabilities().Lookup(providerID)
+		if !found || registration.Manifest == nil || registration.Manifest.ID != provider.Plugin.ID {
+			return provider
 		}
+		plugin := *provider.Plugin
+		if plugin.Version == "" {
+			plugin.Version = registration.Manifest.Version
+		}
+		if plugin.Version != registration.Manifest.Version {
+			return provider
+		}
+		provider.Plugin = &plugin
+		if owner.Construction == "" {
+			owner.Construction = registration.Construction
+		}
+		if owner.CompatibilityAdapter == "" {
+			owner.CompatibilityAdapter = registration.CompatibilityAdapter
+		}
+	case ProviderOwnerPreset:
+		if provider.Preset == nil {
+			return provider
+		}
+		active, found := c.activeProviderPreset(providerID)
+		if !found || active.ID != provider.Preset.ID {
+			return provider
+		}
+		preset := *provider.Preset
+		if preset.Version == "" {
+			preset.Version = active.Version
+		}
+		if preset.Version != active.Version {
+			return provider
+		}
+		if preset.Digest == "" {
+			preset.Digest = active.Digest
+		}
+		provider.Preset = &preset
 	}
-	return restore
+	return provider
 }
 
-func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env env.Env, resolver VariableResolver, knownProviders []catwalk.Provider) error {
-	knownProviderNames := make(map[string]bool)
-	restore := PushPopCruxEnv()
-	defer restore()
+// configureProviders is the durable provider ownership boundary. Plugin and
+// preset markers, credentials, catalogs, and custom configuration must survive
+// a temporary registration absence so that a later startup can reconstruct the
+// same provider. Do not reinterpret an unavailable owned provider as a generic
+// endpoint, run generic model discovery for it, or delete it because the
+// current process cannot construct it.
+func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env env.Env, resolver VariableResolver, knownProviders []catalog.Provider) error {
+	return c.configureProvidersWithMigration(ctx, store, env, resolver, knownProviders, store.migrateProviderReferences)
+}
 
-	// When disable_default_providers is enabled, skip all default/embedded
-	// providers entirely. Users must fully specify any providers they want.
+func (c *Config) configureProvidersWithMigration(ctx context.Context, store *ConfigStore, env env.Env, resolver VariableResolver, knownProviders []catalog.Provider, migrate func(map[string]ProviderOwnerReference, map[string]ProviderPluginReference, map[string]ProviderPresetReference) error) error {
+	if err := prepareConfiguredProviderOwners(c); err != nil {
+		return err
+	}
+	knownProviderNames := make(map[string]bool)
+
+	// When disable_default_providers is enabled, skip all core and installed
+	// provider catalogs. Users must fully specify any providers they want.
 	// We skip to the custom provider validation loop which handles all
 	// user-configured providers uniformly.
 	if c.Options.DisableDefaultProviders {
 		knownProviders = nil
 	}
 
+	for id, provider := range c.Providers.Seq2() {
+		c.Providers.Set(id, c.completeProviderOwner(id, provider))
+	}
+
 	for _, p := range knownProviders {
 		knownProviderNames[string(p.ID)] = true
 		config, configExists := c.Providers.Get(string(p.ID))
 		if configExists {
-			if err := ValidateProviderConfiguration(string(p.ID), config.Configuration); err != nil {
+			if c.isUnavailableRegisteredProvider(string(p.ID)) {
+				continue
+			}
+			if err := c.ValidateProviderConfiguration(string(p.ID), config.Configuration); err != nil {
 				return err
 			}
 		}
@@ -239,7 +361,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 				p.APIKey = config.APIKey
 			}
 			if len(config.Models) > 0 {
-				models := []catwalk.Model{}
+				models := []catalog.Model{}
 				seen := make(map[string]bool)
 
 				for _, model := range config.Models {
@@ -291,7 +413,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 			headers[k] = resolved
 		}
 		// Start from user config so all user fields survive without
-		// explicit copying. Overlay catwalk identity/endpoint fields
+		// explicit copying. Overlay catalog identity/endpoint fields
 		// (already merged with user overrides above).
 		prepared := config
 		prepared.ID = string(p.ID)
@@ -302,16 +424,26 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 		prepared.Type = p.Type
 		prepared.Models = p.Models
 		prepared.ExtraHeaders = headers
-		if registration, ok := ProviderCapabilities().Lookup(string(p.ID)); ok && registration.Manifest != nil {
-			prepared.Plugin = &ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+		if prepared.Owner == nil {
+			if registration, ok := c.providerCapabilities().Lookup(string(p.ID)); ok {
+				prepared.Owner = providerOwnerReferenceForRegistration(registration)
+				if registration.Manifest != nil {
+					prepared.Plugin = &ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+				}
+			} else if reference, ok := c.activeProviderPreset(string(p.ID)); ok {
+				prepared.Owner = providerPresetOwnerReference()
+				prepared.Preset = &reference
+			}
 		}
 		if prepared.ExtraParams == nil {
 			prepared.ExtraParams = make(map[string]string)
 		}
 
-		switch {
-		case p.ID == catwalk.InferenceProviderCopilot && config.OAuthToken != nil:
-			prepared.SetupGitHubCopilot()
+		if config.OAuthToken != nil {
+			registration, ok := c.providerRegistration(c.providerCapabilities(), string(p.ID))
+			if ok && registration.Construction == providerregistry.ConstructionCopilot {
+				prepared.SetupGitHubCopilot()
+			}
 		}
 
 		// When a provider is explicitly disabled, skip credential
@@ -322,10 +454,26 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 			continue
 		}
 
+		anonymous := false
+		if registration, ok := c.ProviderRegistration(string(p.ID)); ok && registration.Manifest != nil && registration.OAuth == nil {
+			anonymous = true
+			for _, credential := range registration.Manifest.Capabilities.Credentials {
+				if credential.Kind != "none" {
+					anonymous = false
+					break
+				}
+			}
+		}
+		if anonymous && !configExists {
+			if err := c.ValidateProviderConfiguration(string(p.ID), prepared.Configuration); err != nil {
+				return err
+			}
+		}
+
 		// If the provider API key is missing, skip it. Copilot OAuth setup
 		// above replaces the catalog template before this check.
 		v, err := resolver.ResolveValue(p.APIKey)
-		if v == "" || err != nil {
+		if v == "" && !anonymous || err != nil {
 			if configExists {
 				slog.Warn("Skipping provider due to missing API key", "provider", p.ID)
 				c.Providers.Del(string(p.ID))
@@ -335,24 +483,32 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 		c.Providers.Set(string(p.ID), prepared)
 	}
 
-	// Persist active plugin ownership before any later absence can make this
-	// provider look like a custom OpenAI-compatible endpoint. The migration
-	// helper writes all markers in one backed-up config transaction.
+	ownerReferences := make(map[string]ProviderOwnerReference)
 	pluginOwnership := make(map[string]ProviderPluginReference)
+	presetOwnership := make(map[string]ProviderPresetReference)
 	for id, provider := range c.Providers.Seq2() {
+		provider = c.completeProviderOwner(id, provider)
+		c.Providers.Set(id, provider)
+		if provider.Owner != nil {
+			ownerReferences[id] = *provider.Owner
+		}
 		if provider.Plugin != nil {
 			pluginOwnership[id] = *provider.Plugin
+		} else if provider.Preset != nil {
+			presetOwnership[id] = *provider.Preset
 		}
 	}
-	if err := store.migrateProviderOwnership(pluginOwnership); err != nil {
-		return fmt.Errorf("migrate provider ownership: %w", err)
+	if migrate != nil {
+		if err := migrate(ownerReferences, pluginOwnership, presetOwnership); err != nil {
+			return fmt.Errorf("migrate provider ownership: %w", err)
+		}
 	}
 
 	// Discover models concurrently for custom providers that need it.
 	// A provider needs discovery when discover_models is explicitly true,
 	// or when the models list is empty (auto-trigger, unless opted out).
 	type discoveryResult struct {
-		models []catwalk.Model
+		models []catalog.Model
 		err    error
 	}
 
@@ -381,7 +537,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 			ExtraHeaders:   pc.ExtraHeaders,
 			ExistingModels: pc.Models,
 		}
-		providerType := cmp.Or(pc.Type, catwalk.TypeOpenAICompat)
+		providerType := cmp.Or(pc.Type, catalog.TypeOpenAICompat)
 		wg.Go(func() {
 			models, err := discover.DiscoverModels(discoverCtx, cfg, resolver)
 			if err == nil && len(models) > 0 {
@@ -414,8 +570,8 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 		providerConfig.Name = cmp.Or(providerConfig.Name, id) // Use ID as name if not set
 		// Empty and local custom-provider types all use the retained
 		// OpenAI-compatible runtime.
-		providerConfig.Type = cmp.Or(providerConfig.Type, catwalk.TypeOpenAICompat)
-		if providerConfig.Type != catwalk.TypeOpenAICompat &&
+		providerConfig.Type = cmp.Or(providerConfig.Type, catalog.TypeOpenAICompat)
+		if providerConfig.Type != catalog.TypeOpenAICompat &&
 			!discover.IsKnownCustomProvider(string(providerConfig.Type)) {
 			slog.Warn("Skipping custom provider due to unsupported provider type", "provider", id)
 			c.Providers.Del(id)
@@ -492,26 +648,153 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 	return nil
 }
 
-// applyEnv sets top-level env vars from the config. Keys are sorted for
-// deterministic ordering so that vars referencing other vars via the
-// value resolver produce consistent results.
-func (c *Config) applyEnv(resolver VariableResolver) {
+var immutableHostEnvironmentVariables = map[string]bool{
+	"AI_CLI_DIR":                     true,
+	"CRUX_CACHE_DIR":                 true,
+	"CRUX_DISABLE_DEFAULT_PROVIDERS": true,
+	"CRUX_GLOBAL_CONFIG":             true,
+	"CRUX_GLOBAL_DATA":               true,
+	"CRUX_PROVIDER_PLUGIN_COMPAT":    true,
+	"CRUX_PROVIDER_PLUGINS":          true,
+	"CRUX_PROVIDER_PROFILE":          true,
+	"CRUX_SKILLS_DIR":                true,
+	"HOME":                           true,
+	"HOMEDRIVE":                      true,
+	"HOMEPATH":                       true,
+	"LOCALAPPDATA":                   true,
+	"USERPROFILE":                    true,
+	"XDG_CACHE_HOME":                 true,
+	"XDG_CONFIG_HOME":                true,
+	"XDG_DATA_HOME":                  true,
+}
+
+func snapshotEnvironment() env.Env {
+	return cloneEnvironment(env.New())
+}
+
+func cloneEnvironment(environment env.Env) env.Env {
+	return env.NewFromMap(environmentValues(environment))
+}
+
+func environmentValues(environment env.Env) map[string]string {
+	values := make(map[string]string)
+	if environment == nil {
+		return values
+	}
+	for _, entry := range environment.Env() {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			values[key] = value
+		}
+	}
+	return values
+}
+
+func (c *Config) buildEnvironment() (env.Env, VariableResolver, map[string]string, error) {
+	return c.buildEnvironmentFrom(snapshotEnvironment())
+}
+
+func (c *Config) buildEnvironmentFrom(base env.Env) (env.Env, VariableResolver, map[string]string, error) {
+	values := environmentValues(base)
+	candidate := env.NewFromMap(values)
+	resolver := NewShellVariableResolver(candidate)
+	resolvedValues := make(map[string]string, len(c.Env))
 	keys := make([]string, 0, len(c.Env))
-	for k := range c.Env {
-		keys = append(keys, k)
+	for key := range c.Env {
+		keys = append(keys, key)
 	}
 	slices.Sort(keys)
-	for _, k := range keys {
-		resolved, err := resolver.ResolveValue(c.Env[k])
+	for _, key := range keys {
+		if key == "" || strings.ContainsAny(key, "=\x00") {
+			return nil, nil, nil, fmt.Errorf("invalid environment variable name %q", key)
+		}
+		if immutableHostEnvironmentVariables[key] {
+			return nil, nil, nil, fmt.Errorf("environment variable %q is a startup-only host setting", key)
+		}
+		resolved, err := resolver.ResolveValue(c.Env[key])
 		if err != nil {
-			slog.Warn("Skipping env var due to resolution failure.", "key", k, "value", c.Env[k], "error", err)
+			return nil, nil, nil, fmt.Errorf("resolve environment variable %q", key)
+		}
+		if strings.ContainsRune(resolved, '\x00') {
+			return nil, nil, nil, fmt.Errorf("environment variable %q contains an invalid value", key)
+		}
+		values[key] = resolved
+		resolvedValues[key] = resolved
+	}
+	return candidate, resolver, resolvedValues, nil
+}
+
+func applyEnvironment(base env.Env, previous, current map[string]string) error {
+	return applyEnvironmentWith(base, previous, current, os.Setenv, os.Unsetenv)
+}
+
+func applyEnvironmentWith(base env.Env, previous, current map[string]string, setenv func(string, string) error, unsetenv func(string) error) error {
+	baseValues := environmentValues(base)
+	keys := make([]string, 0, len(previous)+len(current))
+	seen := make(map[string]bool, len(previous)+len(current))
+	for key := range previous {
+		if !seen[key] {
+			keys = append(keys, key)
+			seen[key] = true
+		}
+	}
+	for key := range current {
+		if !seen[key] {
+			keys = append(keys, key)
+			seen[key] = true
+		}
+	}
+	slices.Sort(keys)
+	type originalValue struct {
+		value  string
+		exists bool
+	}
+	originals := make(map[string]originalValue, len(keys))
+	applied := make([]string, 0, len(keys))
+	for _, key := range keys {
+		value, exists := os.LookupEnv(key)
+		originals[key] = originalValue{value: value, exists: exists}
+		var err error
+		if value, ok := current[key]; ok {
+			err = setenv(key, value)
+		} else if value, ok := baseValues[key]; ok {
+			err = setenv(key, value)
+		} else {
+			err = unsetenv(key)
+		}
+		if err == nil {
+			applied = append(applied, key)
 			continue
 		}
-		os.Setenv(k, resolved)
+		result := fmt.Errorf("apply environment variable %q: %w", key, err)
+		for index := len(applied) - 1; index >= 0; index-- {
+			appliedKey := applied[index]
+			original := originals[appliedKey]
+			if original.exists {
+				err = setenv(appliedKey, original.value)
+			} else {
+				err = unsetenv(appliedKey)
+			}
+			if err != nil {
+				result = errors.Join(result, fmt.Errorf("restore environment variable %q: %w", appliedKey, err))
+			}
+		}
+		return result
 	}
+	return nil
 }
 
 func (c *Config) setDefaults(workingDir, dataDir string) {
+	_ = c.setDefaultsFromEnvironment(workingDir, dataDir, env.New())
+}
+
+func (c *Config) setDefaultsFromEnvironment(workingDir, dataDir string, environment env.Env) error {
+	if err := c.Images.Validate(); err != nil {
+		return err
+	}
+	if environment == nil {
+		environment = env.New()
+	}
 	if c.Options == nil {
 		c.Options = &Options{}
 	}
@@ -519,7 +802,7 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 		c.Options.TUI = &TUIOptions{}
 	}
 	if len(c.Options.GlobalContextPaths) == 0 {
-		cruxConfigDir := filepath.Dir(GlobalConfig())
+		cruxConfigDir := filepath.Dir(globalConfigFromEnvironment(environment))
 		c.Options.GlobalContextPaths = []string{
 			filepath.Join(cruxConfigDir, "CRUX.md"),
 			filepath.Join(filepath.Dir(cruxConfigDir), "AGENTS.md"),
@@ -570,7 +853,7 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 	// Prepend ~/.ai-cli/ per-project instructions (absolute path, resolved
 	// from the working directory hash). This is the primary instructions
 	// source; the AGENTS.md/CRUX.md files above serve as fallbacks.
-	if projInstr := AiCliProjectInstructionsPath(workingDir); projInstr != "" {
+	if projInstr := aiCliProjectInstructionsPathFromEnvironment(workingDir, environment); projInstr != "" {
 		c.Options.ContextPaths = append([]string{projInstr}, c.Options.ContextPaths...)
 	}
 
@@ -578,7 +861,7 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 	c.Options.ContextPaths = slices.Compact(c.Options.ContextPaths)
 
 	// Add the default skills directories if not already present.
-	for _, dir := range GlobalSkillsDirs() {
+	for _, dir := range globalSkillsDirsFromEnvironment(environment) {
 		if !slices.Contains(c.Options.SkillsPaths, dir) {
 			c.Options.SkillsPaths = append(c.Options.SkillsPaths, dir)
 		}
@@ -587,18 +870,19 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 	// Project specific skills dirs.
 	c.Options.SkillsPaths = append(c.Options.SkillsPaths, ProjectSkillsDir(workingDir)...)
 
-	if str, ok := os.LookupEnv("CRUX_DISABLE_PROVIDER_AUTO_UPDATE"); ok {
-		c.Options.DisableProviderAutoUpdate, _ = strconv.ParseBool(str)
-	}
-
-	if str, ok := os.LookupEnv("CRUX_DISABLE_DEFAULT_PROVIDERS"); ok {
-		c.Options.DisableDefaultProviders, _ = strconv.ParseBool(str)
+	if str, ok := environmentValues(environment)["CRUX_DISABLE_DEFAULT_PROVIDERS"]; ok {
+		disabled, err := strconv.ParseBool(str)
+		if err != nil {
+			return fmt.Errorf("invalid CRUX_DISABLE_DEFAULT_PROVIDERS value %q: %w", str, err)
+		}
+		c.Options.DisableDefaultProviders = disabled
 	}
 
 	// /init and the startup initialization flow target the per-project
 	// ai-cli instructions file: it is the primary context injection source
 	// in this fork, while AGENTS.md is only a fallback read.
-	c.Options.InitializeAs = cmp.Or(c.Options.InitializeAs, AiCliProjectInstructionsPath(workingDir), defaultInitializeAs)
+	c.Options.InitializeAs = cmp.Or(c.Options.InitializeAs, aiCliProjectInstructionsPathFromEnvironment(workingDir, environment), defaultInitializeAs)
+	return nil
 }
 
 // powernapDefaults caches the powernap default LSP server catalog. The
@@ -663,7 +947,11 @@ func (c *Config) applyLSPDefaults() {
 	}
 }
 
-func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (largeModel SelectedModel, smallModel SelectedModel, err error) {
+// defaultModelSelection chooses defaults only when no valid explicit selection
+// owns a model slot. Its result must never replace an explicit selection merely
+// because a plugin is temporarily unregistered, disabled by rollout, or absent
+// from this process. That selection remains user-owned configuration.
+func (c *Config) defaultModelSelection(knownProviders []catalog.Provider) (largeModel SelectedModel, smallModel SelectedModel, err error) {
 	if len(knownProviders) == 0 && c.Providers.Len() == 0 {
 		err = fmt.Errorf("no providers configured, please configure at least one provider")
 		return largeModel, smallModel, err
@@ -673,7 +961,7 @@ func (c *Config) defaultModelSelection(knownProviders []catwalk.Provider) (large
 	// if no provider found that is known use the first provider configured
 	for _, p := range knownProviders {
 		providerConfig, ok := c.Providers.Get(string(p.ID))
-		if !ok || providerConfig.Disable {
+		if !ok || !c.IsProviderAvailable(string(p.ID)) {
 			continue
 		}
 		defaultLargeModel := c.GetModel(string(p.ID), p.DefaultLargeModelID)
@@ -747,158 +1035,199 @@ type resolvedModels struct {
 	SmallFallback bool // true if Small was corrected to a default
 }
 
-// resolveSelectedModels validates the user's configured model selections
-// against the provider catalog, falling back to defaults when a model ID is
-// invalid. It is pure resolution logic: it does not mutate the store or
-// touch disk. The caller assigns the results to c.Models and persists any
-// fallback corrections as appropriate.
-func resolveSelectedModels(cfg *Config, knownProviders []catwalk.Provider) (resolvedModels, error) {
+// resolveSelectedModels is the authority for installing persisted model
+// selections into the runtime configuration at startup and reload. A selected
+// owned provider that is temporarily unavailable is retained byte-for-value,
+// including model identity, token limits, reasoning controls, sampling values,
+// penalties, and provider options. Unavailability is not invalidity and must
+// never select an unrelated provider as a hidden runtime substitute.
+//
+// Fallback is permitted only for a selection whose integration is available
+// but whose model ID is invalid. The fallback flags authorize callers to
+// persist that correction. Unavailable selections never set those flags. Keep
+// this function pure: callers own assignment and persistence.
+func (c *Config) defaultModelForProvider(providerID string, modelType SelectedModelType, knownProviders []catalog.Provider) (SelectedModel, error) {
+	provider, ok := c.Providers.Get(providerID)
+	if !ok || !c.IsProviderAvailable(providerID) {
+		return SelectedModel{}, fmt.Errorf("selected provider %s is not available", providerID)
+	}
+	if len(provider.Models) == 0 {
+		return SelectedModel{}, fmt.Errorf("selected provider %s has no models configured", providerID)
+	}
+
+	defaultModelID := ""
+	for _, known := range knownProviders {
+		if string(known.ID) != providerID {
+			continue
+		}
+		if modelType == SelectedModelTypeSmall {
+			defaultModelID = known.DefaultSmallModelID
+		} else {
+			defaultModelID = known.DefaultLargeModelID
+		}
+		break
+	}
+	model := c.GetModel(providerID, defaultModelID)
+	if model == nil {
+		model = &provider.Models[0]
+	}
+	return SelectedModel{
+		Provider:        providerID,
+		Model:           model.ID,
+		MaxTokens:       model.DefaultMaxTokens,
+		ReasoningEffort: model.DefaultReasoningEffort,
+	}, nil
+}
+
+func resolveSelectedModels(cfg *Config, knownProviders []catalog.Provider) (resolvedModels, error) {
 	var result resolvedModels
 	largeModelSelected, largeModelConfigured := cfg.Models[SelectedModelTypeLarge]
 	smallModelSelected, smallModelConfigured := cfg.Models[SelectedModelTypeSmall]
 	largeUnavailable := largeModelConfigured && cfg.isUnavailableRegisteredProvider(largeModelSelected.Provider)
 	smallUnavailable := smallModelConfigured && cfg.isUnavailableRegisteredProvider(smallModelSelected.Provider)
 
-	defaultLarge, defaultSmall, err := cfg.defaultModelSelection(knownProviders)
+	defaultLarge, _, err := cfg.defaultModelSelection(knownProviders)
 	if err != nil {
-		if largeUnavailable {
+		switch {
+		case largeUnavailable && smallUnavailable:
 			result.Large = largeModelSelected
-			if smallUnavailable {
+			result.Small = smallModelSelected
+			return result, nil
+		case largeUnavailable:
+			result.Large = largeModelSelected
+			if smallModelConfigured {
 				result.Small = smallModelSelected
 			} else {
 				result.Small = largeModelSelected
 			}
 			return result, nil
-		}
-		return result, fmt.Errorf("failed to select default models: %w", err)
-	}
-	large, small := defaultLarge, defaultSmall
-
-	if largeModelConfigured {
-		if largeUnavailable {
-			large = largeModelSelected
-		} else {
-			if largeModelSelected.Model != "" {
-				large.Model = largeModelSelected.Model
-			}
-			if largeModelSelected.Provider != "" {
-				large.Provider = largeModelSelected.Provider
-			}
-			model := cfg.GetModel(large.Provider, large.Model)
-			if model == nil {
-				large = defaultLarge
-				result.LargeFallback = true
+		case smallUnavailable:
+			result.Small = smallModelSelected
+			if largeModelConfigured {
+				result.Large = largeModelSelected
 			} else {
-				if largeModelSelected.MaxTokens > 0 {
-					large.MaxTokens = largeModelSelected.MaxTokens
-				} else {
-					large.MaxTokens = model.DefaultMaxTokens
-				}
-				if largeModelSelected.ReasoningEffort != "" {
-					large.ReasoningEffort = largeModelSelected.ReasoningEffort
-				} else {
-					large.ReasoningEffort = model.DefaultReasoningEffort
-				}
-				large.Think = largeModelSelected.Think
-				if largeModelSelected.Temperature != nil {
-					large.Temperature = largeModelSelected.Temperature
-				}
-				if largeModelSelected.TopP != nil {
-					large.TopP = largeModelSelected.TopP
-				}
-				if largeModelSelected.TopK != nil {
-					large.TopK = largeModelSelected.TopK
-				}
-				if largeModelSelected.FrequencyPenalty != nil {
-					large.FrequencyPenalty = largeModelSelected.FrequencyPenalty
-				}
-				if largeModelSelected.PresencePenalty != nil {
-					large.PresencePenalty = largeModelSelected.PresencePenalty
-				}
-				if largeModelSelected.ProviderOptions != nil {
-					large.ProviderOptions = maps.Clone(largeModelSelected.ProviderOptions)
-				}
+				result.Large = smallModelSelected
 			}
+			return result, nil
+		default:
+			return result, fmt.Errorf("failed to select default models: %w", err)
 		}
 	}
-	if smallModelConfigured {
-		if smallUnavailable {
-			small = smallModelSelected
+
+	resolve := func(modelType SelectedModelType, selected SelectedModel, configured, unavailable bool, fallback SelectedModel) (SelectedModel, bool, error) {
+		if unavailable {
+			return selected, false, nil
+		}
+		if !configured {
+			return fallback, false, nil
+		}
+
+		providerID := cmp.Or(selected.Provider, fallback.Provider)
+		modelID := cmp.Or(selected.Model, fallback.Model)
+		model := cfg.GetModel(providerID, modelID)
+		if model == nil {
+			if selected.Provider == "" {
+				return fallback, true, nil
+			}
+			providerFallback, fallbackErr := cfg.defaultModelForProvider(selected.Provider, modelType, knownProviders)
+			if fallbackErr != nil {
+				return SelectedModel{}, false, fallbackErr
+			}
+			return providerFallback, true, nil
+		}
+
+		resolved := SelectedModel{
+			Provider:        providerID,
+			Model:           modelID,
+			MaxTokens:       model.DefaultMaxTokens,
+			ReasoningEffort: model.DefaultReasoningEffort,
+			Think:           selected.Think,
+		}
+		if selected.MaxTokens > 0 {
+			resolved.MaxTokens = selected.MaxTokens
+		}
+		if selected.ReasoningEffort != "" {
+			resolved.ReasoningEffort = selected.ReasoningEffort
+		}
+		resolved.Temperature = selected.Temperature
+		resolved.TopP = selected.TopP
+		resolved.TopK = selected.TopK
+		resolved.FrequencyPenalty = selected.FrequencyPenalty
+		resolved.PresencePenalty = selected.PresencePenalty
+		resolved.ProviderOptions = maps.Clone(selected.ProviderOptions)
+		return resolved, false, nil
+	}
+
+	large, largeFallback, err := resolve(SelectedModelTypeLarge, largeModelSelected, largeModelConfigured, largeUnavailable, defaultLarge)
+	if err != nil {
+		return result, fmt.Errorf("resolve selected large model: %w", err)
+	}
+
+	var smallDefault SelectedModel
+	switch {
+	case smallUnavailable:
+	case smallModelSelected.Provider != "":
+		smallDefault, err = cfg.defaultModelForProvider(smallModelSelected.Provider, SelectedModelTypeSmall, knownProviders)
+		if err != nil {
+			return result, fmt.Errorf("resolve default small model: %w", err)
+		}
+	case largeUnavailable:
+		if !smallModelConfigured {
+			smallModelSelected = large
+			smallModelConfigured = true
 		} else {
-			if smallModelSelected.Model != "" {
-				small.Model = smallModelSelected.Model
+			smallModelSelected.Provider = large.Provider
+			if smallModelSelected.Model == "" {
+				smallModelSelected.Model = large.Model
 			}
-			if smallModelSelected.Provider != "" {
-				small.Provider = smallModelSelected.Provider
-			}
-
-			model := cfg.GetModel(small.Provider, small.Model)
-			if model == nil {
-				small = defaultSmall
-				result.SmallFallback = true
-			} else {
-				if smallModelSelected.MaxTokens > 0 {
-					small.MaxTokens = smallModelSelected.MaxTokens
-				} else {
-					small.MaxTokens = model.DefaultMaxTokens
-				}
-				if smallModelSelected.ReasoningEffort != "" {
-					small.ReasoningEffort = smallModelSelected.ReasoningEffort
-				} else {
-					small.ReasoningEffort = model.DefaultReasoningEffort
-				}
-				if smallModelSelected.Temperature != nil {
-					small.Temperature = smallModelSelected.Temperature
-				}
-				if smallModelSelected.TopP != nil {
-					small.TopP = smallModelSelected.TopP
-				}
-				if smallModelSelected.TopK != nil {
-					small.TopK = smallModelSelected.TopK
-				}
-				if smallModelSelected.FrequencyPenalty != nil {
-					small.FrequencyPenalty = smallModelSelected.FrequencyPenalty
-				}
-				if smallModelSelected.PresencePenalty != nil {
-					small.PresencePenalty = smallModelSelected.PresencePenalty
-				}
-				if smallModelSelected.ProviderOptions != nil {
-					small.ProviderOptions = maps.Clone(smallModelSelected.ProviderOptions)
-				}
-				small.Think = smallModelSelected.Think
-			}
+		}
+		smallUnavailable = true
+	default:
+		smallDefault, err = cfg.defaultModelForProvider(large.Provider, SelectedModelTypeSmall, knownProviders)
+		if err != nil {
+			return result, fmt.Errorf("resolve default small model: %w", err)
 		}
 	}
 
-	// When small isn't explicitly configured and the provider isn't a
-	// known built-in, use the large model as the small model. This
-	// prevents two different models from being requested concurrently
-	// for local/openai-compat providers.
-	if !smallModelConfigured {
-		isKnownProvider := false
-		for _, kp := range knownProviders {
-			if string(kp.ID) == small.Provider {
-				isKnownProvider = true
-				break
-			}
-		}
-		if !isKnownProvider {
-			slog.Warn("Using large model as small model for unknown provider", "provider", large.Provider, "model", large.Model)
-			small = large
-		}
+	small, smallFallback, err := resolve(SelectedModelTypeSmall, smallModelSelected, smallModelConfigured, smallUnavailable, smallDefault)
+	if err != nil {
+		return result, fmt.Errorf("resolve selected small model: %w", err)
 	}
 
 	result.Large = large
 	result.Small = small
+	result.LargeFallback = largeFallback
+	result.SmallFallback = smallFallback
 	return result, nil
 }
 
+// isUnavailableRegisteredProvider distinguishes a retained exact owner or
+// legacy plugin, preset, or OAuth owner from an ordinary custom provider when
+// its exact integration is absent. This classification protects the retained
+// configuration from generic-provider normalization and model fallback. Do not
+// weaken it to same-ID registration health alone or remove the durable
+// ownership checks.
 func (c *Config) isUnavailableRegisteredProvider(providerID string) bool {
 	provider, ok := c.Providers.Get(providerID)
-	if !ok || (provider.Plugin == nil && (provider.OAuthToken == nil || provider.Type == catwalk.TypeOpenAICompat)) {
+	if !ok {
 		return false
 	}
-	registration, registered := ProviderCapabilities().Lookup(providerID)
+	if provider.Owner != nil {
+		_, active := providerOwnerForProvider(c, c.providerCapabilities(), providerID, provider)
+		return !active
+	}
+	if provider.Preset != nil {
+		_, active := c.providerPreset(c.providerCapabilities(), providerID)
+		return !active
+	}
+	if provider.Plugin != nil {
+		_, active := c.providerRegistration(c.providerCapabilities(), providerID)
+		return !active
+	}
+	if provider.OAuthToken == nil || provider.Type == catalog.TypeOpenAICompat {
+		return false
+	}
+	registration, registered := c.providerCapabilities().Lookup(providerID)
 	return !registered || registration.ProviderID != providerID
 }
 
@@ -909,15 +1238,20 @@ func (c *Config) isUnavailableRegisteredProvider(providerID string) bool {
 // up. Global user-level config locations are always included
 // regardless of the boundary.
 func lookupConfigs(cwd string) []string {
+	return lookupConfigsFromEnvironment(cwd, env.New())
+}
+
+func lookupConfigsFromEnvironment(cwd string, environment env.Env) []string {
+	globalConfigPath := globalConfigFromEnvironment(environment)
 	// Prepend global user config and machine-owned data JSON. Only the user
 	// config directory contributes a cruxrc; the data directory is writable
 	// machine state and must never be executed as Bash. Missing files are
 	// skipped when loaded.
 	configPaths := []string{
 		systemConfigPath,
-		GlobalConfig(),
-		shellConfigSibling(GlobalConfig()),
-		GlobalConfigData(),
+		globalConfigPath,
+		shellConfigSibling(globalConfigPath),
+		globalConfigDataFromEnvironment(appName, environment),
 	}
 
 	// Ordered high-to-low priority within a directory. LookupBounded returns
@@ -944,6 +1278,14 @@ func lookupConfigs(cwd string) []string {
 }
 
 func loadFromConfigPaths(ctx context.Context, configPaths []string) (*Config, []string, error) {
+	return loadFromConfigPathsWithOverrides(ctx, configPaths, nil)
+}
+
+func loadFromConfigPathsWithOverrides(ctx context.Context, configPaths []string, overrides map[string][]byte, environments ...env.Env) (*Config, []string, error) {
+	environment := env.New()
+	if len(environments) > 0 && environments[0] != nil {
+		environment = environments[0]
+	}
 	var configs [][]byte
 	var loaded []string
 
@@ -957,7 +1299,11 @@ func loadFromConfigPaths(ctx context.Context, configPaths []string) (*Config, []
 		if path == "" {
 			continue
 		}
-		data, err := os.ReadFile(path)
+		data, overridden := overrides[path]
+		var err error
+		if !overridden {
+			data, err = os.ReadFile(path)
+		}
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -970,7 +1316,7 @@ func loadFromConfigPaths(ctx context.Context, configPaths []string) (*Config, []
 
 		dir := filepath.Dir(path)
 		if isShellConfig(path) {
-			jsonBytes, err := shellconfig.LoadShellConfig(ctx, path, data)
+			jsonBytes, err := shellconfig.LoadShellConfig(ctx, path, data, environment.Env())
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to load shell config %s: %w", path, err)
 			}
@@ -1057,88 +1403,340 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 // data file. If notification_style is set, it moves the value to notifications.
 // Regardless of value, it removes the deprecated fields from any file that
 // contains them.
-func migrateDisableNotifications() {
-	globalConfig := GlobalConfig()
-	dataConfig := GlobalConfigData()
+type configPreimage struct {
+	path           string
+	data           []byte
+	exists         bool
+	expectedData   []byte
+	expectedExists bool
+}
 
+func captureConfigPreimages(paths ...string) ([]configPreimage, error) {
+	result := make([]configPreimage, 0, len(paths))
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil && !os.IsNotExist(err) {
+			return nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		exists := err == nil
+		result = append(result, configPreimage{
+			path:           path,
+			data:           data,
+			exists:         exists,
+			expectedData:   slices.Clone(data),
+			expectedExists: exists,
+		})
+	}
+	return result, nil
+}
+
+func configPreimageChanged(preimages []configPreimage, path string) (bool, error) {
+	for _, preimage := range preimages {
+		if preimage.path != path {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			return preimage.exists, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return !preimage.exists || string(data) != string(preimage.data), nil
+	}
+	return false, nil
+}
+
+func captureConfigPostimages(preimages []configPreimage) error {
+	var result error
+	for index := range preimages {
+		data, err := os.ReadFile(preimages[index].path)
+		if os.IsNotExist(err) {
+			preimages[index].expectedData = nil
+			preimages[index].expectedExists = false
+			continue
+		}
+		if err != nil {
+			result = errors.Join(result, fmt.Errorf("read %s after correction: %w", preimages[index].path, err))
+			continue
+		}
+		preimages[index].expectedData = data
+		preimages[index].expectedExists = true
+	}
+	return result
+}
+
+func configPostimage(preimages []configPreimage, path string) ([]byte, bool, error) {
+	for _, preimage := range preimages {
+		if preimage.path == path {
+			return slices.Clone(preimage.expectedData), preimage.expectedExists, nil
+		}
+	}
+	return nil, false, fmt.Errorf("config postimage for %s was not captured", path)
+}
+
+func recordConfigPostimage(preimages []configPreimage, path string, data []byte) error {
+	for index := range preimages {
+		if preimages[index].path == path {
+			preimages[index].expectedData = slices.Clone(data)
+			preimages[index].expectedExists = true
+			return nil
+		}
+	}
+	return fmt.Errorf("config preimage for %s was not captured", path)
+}
+
+func restoreConfigPreimages(preimages []configPreimage) error {
+	var result error
+	for _, preimage := range preimages {
+		if err := os.MkdirAll(filepath.Dir(preimage.path), 0o755); err != nil {
+			result = errors.Join(result, fmt.Errorf("create restore directory for %s: %w", preimage.path, err))
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), configLockDeadline)
+		release, err := lock.File(ctx, preimage.path+".lock")
+		cancel()
+		if err != nil {
+			result = errors.Join(result, fmt.Errorf("lock %s for restore: %w", preimage.path, err))
+			continue
+		}
+		current, readErr := os.ReadFile(preimage.path)
+		currentExists := readErr == nil
+		if os.IsNotExist(readErr) {
+			readErr = nil
+		}
+		if readErr != nil {
+			result = errors.Join(result, fmt.Errorf("read %s before restore: %w", preimage.path, readErr))
+			release()
+			continue
+		}
+		if currentExists != preimage.expectedExists || !slices.Equal(current, preimage.expectedData) {
+			release()
+			continue
+		}
+		if preimage.exists {
+			err = atomicWriteFile(preimage.path, preimage.data, 0o600)
+		} else {
+			err = os.Remove(preimage.path)
+			if os.IsNotExist(err) {
+				err = nil
+			}
+		}
+		release()
+		if err != nil {
+			result = errors.Join(result, fmt.Errorf("restore %s: %w", preimage.path, err))
+		}
+	}
+	return result
+}
+
+type notificationMigrationPlan struct {
+	overrides        map[string][]byte
+	cleanPaths       map[string]bool
+	value            string
+	dataConfig       string
+	setNotifications bool
+}
+
+func prepareDisableNotificationsMigration(globalConfig, dataConfig string) notificationMigrationPlan {
+	originals := make(map[string][]byte)
+	filesToClean := make([]string, 0, 2)
 	var wasDisabled bool
 	var styleValue string
-	filesToClean := []string{}
-
 	for _, path := range []string{globalConfig, dataConfig} {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
+		originals[path] = data
 		needsClean := false
-		if gjson.Get(string(data), "options.disable_notifications").Exists() {
+		if gjson.GetBytes(data, "options.disable_notifications").Exists() {
 			needsClean = true
-			if gjson.Get(string(data), "options.disable_notifications").Bool() {
+			if gjson.GetBytes(data, "options.disable_notifications").Bool() {
 				wasDisabled = true
 			}
 		}
-		if v := gjson.Get(string(data), "options.notification_style"); v.Exists() {
+		if value := gjson.GetBytes(data, "options.notification_style"); value.Exists() {
 			needsClean = true
 			if styleValue == "" {
-				styleValue = v.String()
+				styleValue = value.String()
 			}
 		}
 		if needsClean {
 			filesToClean = append(filesToClean, path)
 		}
 	}
-
-	if len(filesToClean) == 0 {
-		return
+	plan := notificationMigrationPlan{overrides: make(map[string][]byte), cleanPaths: make(map[string]bool), value: styleValue, dataConfig: dataConfig}
+	if plan.value == "" && wasDisabled {
+		plan.value = "disabled"
 	}
-
-	// Determine the value to persist: notification_style takes precedence,
-	// then disable_notifications: true maps to "disabled".
-	migratedValue := styleValue
-	if migratedValue == "" && wasDisabled {
-		migratedValue = "disabled"
-	}
-
-	if migratedValue != "" {
-		data, err := os.ReadFile(dataConfig)
-		if err == nil {
-			if !gjson.Get(string(data), "options.notifications").Exists() {
-				updated, err := sjson.Set(string(data), "options.notifications", migratedValue)
-				if err == nil {
-					if err := atomicWriteFile(dataConfig, []byte(updated), 0o600); err != nil {
-						slog.Warn("Failed to migrate to notifications field", "error", err)
-					} else {
-						slog.Info("Migrated notification settings to notifications field", "value", migratedValue)
-					}
-				}
+	if plan.value != "" {
+		if data, ok := originals[dataConfig]; ok && !gjson.GetBytes(data, "options.notifications").Exists() {
+			if updated, err := sjson.SetBytes(data, "options.notifications", plan.value); err == nil {
+				plan.overrides[dataConfig] = updated
+				plan.setNotifications = true
 			}
 		}
 	}
-
-	// Remove deprecated fields from all files that contain them.
 	for _, path := range filesToClean {
-		data, err := os.ReadFile(path)
+		plan.cleanPaths[path] = true
+		data := originals[path]
+		if updated, ok := plan.overrides[path]; ok {
+			data = updated
+		}
+		updated, _ := sjson.DeleteBytes(data, "options.disable_notifications")
+		updated, _ = sjson.DeleteBytes(updated, "options.notification_style")
+		if string(updated) != string(originals[path]) {
+			plan.overrides[path] = updated
+		}
+	}
+	return plan
+}
+
+func (p notificationMigrationPlan) apply(path string, data []byte) ([]byte, error) {
+	value := string(data)
+	var err error
+	if p.setNotifications && path == p.dataConfig {
+		value, err = sjson.Set(value, "options.notifications", p.value)
 		if err != nil {
-			continue
+			return nil, err
 		}
-		updated := string(data)
-		updated, _ = sjson.Delete(updated, "options.disable_notifications")
-		updated, _ = sjson.Delete(updated, "options.notification_style")
-		if updated == string(data) {
-			continue
+	}
+	if p.cleanPaths[path] {
+		value, err = sjson.Delete(value, "options.disable_notifications")
+		if err != nil {
+			return nil, err
 		}
-		if err := atomicWriteFile(path, []byte(updated), 0o600); err != nil {
-			slog.Warn("Failed to write migrated config", "path", path, "error", err)
+		value, err = sjson.Delete(value, "options.notification_style")
+		if err != nil {
+			return nil, err
+		}
+	}
+	return []byte(value), nil
+}
+
+var (
+	inspectStartupConfigPreimageChanged = configPreimageChanged
+	writeStartupConfigFile              = atomicWriteFile
+)
+
+func commitStartupCorrections(store *ConfigStore, notification notificationMigrationPlan, modelFields map[string]any, preimages []configPreimage) error {
+	paths := make(map[string]bool, len(notification.overrides)+1)
+	for path := range notification.overrides {
+		paths[path] = true
+	}
+	if len(modelFields) > 0 {
+		paths[store.globalDataPath] = true
+	}
+	orderedPaths := make([]string, 0, len(paths))
+	for path := range paths {
+		orderedPaths = append(orderedPaths, path)
+	}
+	slices.Sort(orderedPaths)
+	if paths[store.globalDataPath] {
+		orderedPaths = append(slices.DeleteFunc(orderedPaths, func(path string) bool { return path == store.globalDataPath }), store.globalDataPath)
+	}
+	for _, path := range orderedPaths {
+		var unlock func()
+		if path == store.globalDataPath {
+			var err error
+			unlock, err = store.lockConfig(ScopeGlobal)
+			if err != nil {
+				return err
+			}
+		}
+		data, err := os.ReadFile(path)
+		if os.IsNotExist(err) {
+			data = []byte("{}")
+			err = nil
+		}
+		if err == nil {
+			data, err = notification.apply(path, data)
+		}
+		if err == nil && path == store.globalDataPath {
+			keys := make([]string, 0, len(modelFields))
+			for key := range modelFields {
+				keys = append(keys, key)
+			}
+			slices.Sort(keys)
+			value := string(data)
+			for _, key := range keys {
+				value, err = sjson.Set(value, key, modelFields[key])
+				if err != nil {
+					break
+				}
+			}
+			data = []byte(value)
+		}
+		if err == nil {
+			err = writeStartupConfigFile(path, data, 0o600)
+		}
+		if err == nil {
+			err = recordConfigPostimage(preimages, path, data)
+		}
+		if unlock != nil {
+			unlock()
+		}
+		if err != nil {
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func (p notificationMigrationPlan) commit() {
+	for path, data := range p.overrides {
+		if err := atomicWriteFile(path, data, 0o600); err != nil {
+			slog.Warn("Failed to write migrated notification config", "path", path, "error", err)
 		}
 	}
 }
 
+func migrateDisableNotifications() {
+	prepareDisableNotificationsMigration(GlobalConfig(), GlobalConfigData()).commit()
+}
+
 // GlobalConfig returns the global configuration file path for the application.
 func GlobalConfig() string {
-	if global := os.Getenv("CRUX_GLOBAL_CONFIG"); global != "" {
+	return globalConfigFromEnvironment(env.New())
+}
+
+func globalConfigFromEnvironment(environment env.Env) string {
+	if environment == nil {
+		environment = env.New()
+	}
+	if global := environment.Get("CRUX_GLOBAL_CONFIG"); global != "" {
 		return filepath.Join(global, appName+".json")
 	}
-	return filepath.Join(home.Config(), appName, appName+".json")
+	return filepath.Join(configHomeFromEnvironment(environment), appName, appName+".json")
+}
+
+func configHomeFromEnvironment(environment env.Env) string {
+	if environment == nil {
+		environment = env.New()
+	}
+	if configHome := environment.Get("XDG_CONFIG_HOME"); configHome != "" {
+		return configHome
+	}
+	return filepath.Join(homeDirFromEnvironment(environment), ".ai-cli")
+}
+
+func homeDirFromEnvironment(environment env.Env) string {
+	if environment == nil {
+		environment = env.New()
+	}
+	if runtime.GOOS == "windows" {
+		if userProfile := environment.Get("USERPROFILE"); userProfile != "" {
+			return userProfile
+		}
+		if homeDrive, homePath := environment.Get("HOMEDRIVE"), environment.Get("HOMEPATH"); homeDrive != "" && homePath != "" {
+			return homeDrive + homePath
+		}
+	}
+	if homeDir := environment.Get("HOME"); homeDir != "" {
+		return homeDir
+	}
+	return home.Dir()
 }
 
 // shellConfigSibling returns the cruxrc path that sits alongside a given
@@ -1158,20 +1756,27 @@ func isShellConfig(path string) bool {
 // GlobalCacheDir returns the path to the global cache directory for the
 // application.
 func GlobalCacheDir() string {
-	if cache := os.Getenv("CRUX_CACHE_DIR"); cache != "" {
+	return globalCacheDirFromEnvironment(env.New())
+}
+
+func globalCacheDirFromEnvironment(environment env.Env) string {
+	if environment == nil {
+		environment = env.New()
+	}
+	if cache := environment.Get("CRUX_CACHE_DIR"); cache != "" {
 		return cache
 	}
-	if xdgCacheHome := os.Getenv("XDG_CACHE_HOME"); xdgCacheHome != "" {
+	if xdgCacheHome := environment.Get("XDG_CACHE_HOME"); xdgCacheHome != "" {
 		return filepath.Join(xdgCacheHome, appName)
 	}
 	if runtime.GOOS == "windows" {
 		localAppData := cmp.Or(
-			os.Getenv("LOCALAPPDATA"),
-			filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local"),
+			environment.Get("LOCALAPPDATA"),
+			filepath.Join(environment.Get("USERPROFILE"), "AppData", "Local"),
 		)
 		return filepath.Join(localAppData, appName, "cache")
 	}
-	return filepath.Join(home.Dir(), ".cache", appName)
+	return filepath.Join(homeDirFromEnvironment(environment), ".cache", appName)
 }
 
 // ProjectConfigs returns list of current project configs paths.
@@ -1182,24 +1787,27 @@ func ProjectConfigs(cwd string) []string {
 // GlobalConfigData returns the path to the main data directory for the application.
 // this config is used when the app overrides configurations instead of updating the global config.
 func GlobalConfigData() string {
-	return globalConfigData(appName, os.Getenv("CRUX_GLOBAL_DATA"))
+	return globalConfigDataFromEnvironment(appName, env.New())
 }
 
-func globalConfigData(name, override string) string {
-	if override != "" {
+func globalConfigDataFromEnvironment(name string, environment env.Env) string {
+	if environment == nil {
+		environment = env.New()
+	}
+	if override := environment.Get("CRUX_GLOBAL_DATA"); override != "" {
 		return filepath.Join(override, name+".json")
 	}
-	if xdgDataHome := os.Getenv("XDG_DATA_HOME"); xdgDataHome != "" {
+	if xdgDataHome := environment.Get("XDG_DATA_HOME"); xdgDataHome != "" {
 		return filepath.Join(xdgDataHome, name, name+".json")
 	}
 	if runtime.GOOS == "windows" {
 		localAppData := cmp.Or(
-			os.Getenv("LOCALAPPDATA"),
-			filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local"),
+			environment.Get("LOCALAPPDATA"),
+			filepath.Join(environment.Get("USERPROFILE"), "AppData", "Local"),
 		)
 		return filepath.Join(localAppData, name, name+".json")
 	}
-	return filepath.Join(home.Data(), name, name+".json")
+	return filepath.Join(homeDirFromEnvironment(environment), ".ai-cli", "data", name, name+".json")
 }
 
 // GlobalWorkspaceDir returns the path to the global server workspace
@@ -1208,7 +1816,11 @@ func globalConfigData(name, override string) string {
 // writes, and provider resolution behave identically to project
 // workspaces.
 func GlobalWorkspaceDir() string {
-	return filepath.Dir(GlobalConfigData())
+	return globalWorkspaceDirFromEnvironment(env.New())
+}
+
+func globalWorkspaceDirFromEnvironment(environment env.Env) string {
+	return filepath.Dir(globalConfigDataFromEnvironment(appName, environment))
 }
 
 func assignIfNil[T any](ptr **T, val T) {
@@ -1287,24 +1899,33 @@ func projectBoundary(dir string) string {
 // Skills in these directories are auto-discovered and their files can be read
 // without permission prompts.
 func GlobalSkillsDirs() []string {
-	if skills := os.Getenv("CRUX_SKILLS_DIR"); skills != "" {
+	return globalSkillsDirsFromEnvironment(env.New())
+}
+
+func globalSkillsDirsFromEnvironment(environment env.Env) []string {
+	if environment == nil {
+		environment = env.New()
+	}
+	if skills := environment.Get("CRUX_SKILLS_DIR"); skills != "" {
 		return []string{skills}
 	}
 
+	configHome := configHomeFromEnvironment(environment)
+	homeDir := homeDirFromEnvironment(environment)
 	paths := []string{
-		filepath.Join(home.Config(), appName, "skills"),
-		filepath.Join(home.Config(), "agents", "skills"),
+		filepath.Join(configHome, appName, "skills"),
+		filepath.Join(configHome, "agents", "skills"),
 		// Per the Agent Skills spec, scan ~/.agents/skills
-		filepath.Join(home.Dir(), ".agents", "skills"),
-		filepath.Join(home.Dir(), ".claude", "skills"),
+		filepath.Join(homeDir, ".agents", "skills"),
+		filepath.Join(homeDir, ".claude", "skills"),
 	}
 
 	// On Windows, also load from app data on top of `$HOME/.config/crux`.
 	// This is here mostly for backwards compatibility.
 	if runtime.GOOS == "windows" {
 		appData := cmp.Or(
-			os.Getenv("LOCALAPPDATA"),
-			filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Local"),
+			environment.Get("LOCALAPPDATA"),
+			filepath.Join(environment.Get("USERPROFILE"), "AppData", "Local"),
 		)
 		paths = append(
 			paths,
@@ -1349,7 +1970,14 @@ func ProjectSkillsDir(workingDir string) []string {
 	return dirs
 }
 
-func isAppleTerminal() bool { return os.Getenv("TERM_PROGRAM") == "Apple_Terminal" }
+func isAppleTerminal() bool { return isAppleTerminalFromEnvironment(env.New()) }
+
+func isAppleTerminalFromEnvironment(environment env.Env) bool {
+	if environment == nil {
+		environment = env.New()
+	}
+	return environment.Get("TERM_PROGRAM") == "Apple_Terminal"
+}
 
 // normalizeHookEvent maps user-provided event names to their canonical
 // form. Matching is case-insensitive and accepts snake_case variants

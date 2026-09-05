@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/redact"
 	"github.com/stretchr/testify/require"
 )
 
@@ -32,7 +33,9 @@ func TestInstallRejectsUndeclaredFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(source, manifestFilename), data, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(source, "undeclared.txt"), []byte("not declared"), 0o600))
 	_, err = manager.Install(t.Context(), InstallRequest{Source: source})
-	require.ErrorContains(t, err, "undeclared file")
+	var diagnosticError *DiagnosticError
+	require.ErrorAs(t, err, &diagnosticError)
+	requireDiagnosticPath(t, diagnosticError.Report.Diagnostics, "bundle-file-unexpected", "/bundle")
 }
 
 func TestInstallRejectsExecutableDeclaration(t *testing.T) {
@@ -47,7 +50,9 @@ func TestInstallRejectsExecutableDeclaration(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(source, manifestFilename), data, 0o600))
 	_, err = manager.Install(t.Context(), InstallRequest{Source: source})
-	require.ErrorContains(t, err, "unknown field")
+	var diagnosticError *DiagnosticError
+	require.ErrorAs(t, err, &diagnosticError)
+	requireDiagnosticPath(t, diagnosticError.Report.Diagnostics, "manifest-schema-invalid", "/entrypoint")
 }
 
 func TestInstallRejectsNonUTF8StaticText(t *testing.T) {
@@ -62,7 +67,9 @@ func TestInstallRejectsNonUTF8StaticText(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(source, "instructions"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(source, "instructions", "native.txt"), []byte{0xff, 0xfe}, 0o600))
 	_, err := manager.Install(t.Context(), InstallRequest{Source: source})
-	require.ErrorContains(t, err, "bounded UTF-8")
+	var diagnosticError *DiagnosticError
+	require.ErrorAs(t, err, &diagnosticError)
+	requireDiagnosticPath(t, diagnosticError.Report.Diagnostics, "static-text-invalid", "/declared")
 }
 
 func TestInstallRejectsIncompatibleHostAPI(t *testing.T) {
@@ -72,7 +79,9 @@ func TestInstallRejectsIncompatibleHostAPI(t *testing.T) {
 	value.Compatibility.HostAPI = manifest.VersionBounds{Min: manifest.HostAPIVersion + 1, Max: manifest.HostAPIVersion + 1}
 	writeBundleManifest(t, source, value)
 	_, err := manager.Install(t.Context(), InstallRequest{Source: source})
-	require.ErrorContains(t, err, "host API")
+	var diagnosticError *DiagnosticError
+	require.ErrorAs(t, err, &diagnosticError)
+	requireDiagnosticPath(t, diagnosticError.Report.Diagnostics, "host-api-incompatible", "/compatibility")
 }
 
 func TestManifestReadBoundAppliedBeforeDecode(t *testing.T) {
@@ -195,13 +204,28 @@ func TestInstallRejectsOversizedStaticText(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(source, "instructions"), 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(source, "instructions", "native.txt"), make([]byte, MaxStaticTextBytes+1), 0o600))
 	_, err := manager.Install(t.Context(), InstallRequest{Source: source})
-	require.ErrorContains(t, err, "exceeds")
+	var diagnosticError *DiagnosticError
+	require.ErrorAs(t, err, &diagnosticError)
+	requireDiagnosticPath(t, diagnosticError.Report.Diagnostics, "static-text-oversized", "/declared")
+}
+
+func TestStatusCloneScrubsSecretsRegisteredAfterDiagnosticConstruction(t *testing.T) {
+	secret := "late-status-diagnostic-secret-value"
+	status := Status{Diagnostics: []Diagnostic{{Code: "test", Message: "failed " + secret}}}
+	redact.Register(secret)
+	cloned := status.Clone()
+	require.NotContains(t, cloned.Diagnostics[0].Message, secret)
+	require.Contains(t, cloned.Diagnostics[0].Message, redact.Replacement)
+	require.Contains(t, status.Diagnostics[0].Message, secret)
 }
 
 func TestDiagnosticScrubbingAndBound(t *testing.T) {
-	diagnostic := safeDiagnostic("test", "authorization=secret Bearer token https://user:pass@example.invalid/path?token=x unsafe\x00\x01\n"+string(make([]byte, MaxDiagnosticBytes+50)))
+	registered := "registered-diagnostic-secret-value"
+	redact.Register(registered)
+	diagnostic := safeDiagnostic("test", "ordinary "+registered+" authorization=secret Bearer token https://user:pass@example.invalid/path?token=x unsafe\x00\x01\n"+string(make([]byte, MaxDiagnosticBytes+50)))
 	require.NotContains(t, diagnostic.Message, "\x00")
-	require.NotContains(t, diagnostic.Message, "secret")
+	require.NotContains(t, diagnostic.Message, registered)
+	require.NotContains(t, diagnostic.Message, "authorization=secret")
 	require.NotContains(t, diagnostic.Message, "user:pass")
 	require.Contains(t, diagnostic.Message, "<redacted>")
 	require.Contains(t, diagnostic.Message, "<redacted-url>")

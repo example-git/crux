@@ -222,6 +222,21 @@ func TestBuildPayload(t *testing.T) {
 	require.Contains(t, s, `"tool_input":{"command":"ls"}`)
 }
 
+func TestBuildEnvFromUsesWorkspaceBase(t *testing.T) {
+	t.Parallel()
+	environment := BuildEnvFrom(
+		[]string{"CRUX_T4_4_4_HOOK_ENV=workspace"},
+		EventPreToolUse,
+		"bash",
+		"session",
+		"/workspace",
+		"/workspace",
+		`{}`,
+	)
+	require.Contains(t, environment, "CRUX_T4_4_4_HOOK_ENV=workspace")
+	require.Contains(t, environment, "CRUX_EVENT="+EventPreToolUse)
+}
+
 func TestRunnerExitCode0Allow(t *testing.T) {
 	t.Parallel()
 	hookCfg := config.HookConfig{

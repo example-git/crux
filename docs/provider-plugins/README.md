@@ -10,7 +10,7 @@ A missing `plugin_type` or `plugin_type: "provider"` selects the full declarativ
 
 `plugin_type: "provider-preset"` selects the separate Catwalk-compatible catalog contract. Its `preset` contains only provider identity, Foundation-owned implementation `type`, endpoint, environment-variable credential reference, headers, defaults, and models. Presets cannot declare OAuth, operations, compatibility adapters, static files, or executable behavior. They select an implementation already compiled into Foundation and contribute no provider registry registration.
 
-Trusted compatible presets replace an existing catalog entry in place by provider ID or append a new entry. They remain catalog data under every runtime ownership profile; profiles still control which executable provider implementations are compiled and selectable. See [`deepseek-preset.plugin`](examples/deepseek-preset.plugin) for the canonical example.
+Trusted compatible presets append catalog entries only when the provider ID is not claimed by a protected core catalog or a selected full provider registration. They never replace a same-ID core or plugin owner. Presets remain catalog data under permitted runtime ownership profiles; profiles still control which executable provider implementations are compiled and selectable. See [`deepseek-preset.plugin`](examples/deepseek-preset.plugin) for an installable example with the independent `example-deepseek` provider ID. The protected `deepseek` provider ID requires the exact canonical bundle from the optional [Catwalk v0.51.23 migration preset catalog](../../plugins/provider-presets/README.md), which provides individually installable legacy provider metadata.
 
 ## Installation sources and bundle shape
 
@@ -105,9 +105,13 @@ Missing, disabled, invalid, incompatible, untrusted, or profile-excluded bundles
 
 ### Upgrade migration and rollback
 
-When a configured provider is first owned by an active manifest, Crux adds a generic `{id, version}` plugin reference to that provider configuration. Before the atomic config write it creates private pre-image backups of the global config and account store plus a versioned journal under the host-global data directory. OAuth values, account IDs/namespaces, selected and recent models, and provider configuration remain unchanged. Transcript metadata uses the opaque on-read migration and is not rewritten.
+When a configured provider is first owned by an active manifest, Crux persists the exact non-empty owner version before activating that owner. Full provider plugin ownership is evaluated first. Provider preset ownership is considered only when the provider has no full plugin owner. A missing owner reference or a same-ID reference with an empty version can be completed from the active manifest; a different owner ID or an already pinned version is never replaced by this migration.
 
-`crux plugins rollback-migration` restores the latest configuration pre-image only when the current config still matches its journaled post-image. This compare-and-swap rule prevents rollback from overwriting later config edits. The account backup is integrity-verified but the live account store is neither compared nor rewritten, because the migration never mutates it and later account changes must survive rollback. Restart Crux after rollback. Backups contain credentials and therefore remain private host state; do not copy them into a plugin bundle or project repository.
+The migration changes only the global config. It does not create, back up, compare, or rewrite the account store. OAuth values, account IDs/namespaces, selected and recent models, provider configuration, and account state remain unchanged. Transcript metadata uses the opaque on-read migration and is not rewritten.
+
+Before replacing the global config, Crux creates the private migration directory, writes and verifies the config pre-image backup, and persists a prepared journal containing the pre-image and staged post-image hashes. Any failure before the atomic config commit preserves the original config bytes and removes the backup and prepared journal owned by that failed attempt. After the config commit, Crux marks the journal completed. If that completion write fails, startup may continue only when the prepared journal, backup, and committed config still form a structurally valid recoverable transaction. The next startup completes that journal. An interrupted prepared transaction whose config still matches the pre-image is cleaned up instead.
+
+`crux plugins rollback-migration` restores the latest configuration pre-image only when the current config still matches its journaled post-image. This compare-and-swap rule prevents rollback from overwriting later config edits. Restart Crux after rollback. Config backups can contain credentials and therefore remain private host state; do not copy them into a plugin bundle or project repository.
 
 ## Model catalog
 
@@ -223,7 +227,7 @@ A failed required transform fails the provider operation. Sending the original u
 
 ### Prompt pipelines and roles
 
-Prompt operations are `prepend`, `append`, `insert-after-role`, `remove-lines-with-prefix`, `drop-role`, and `join-adjacent-role`. They operate on normalized message blocks, not serialized wire bytes. Conditions use the same finite predicate language.
+Prompt operations are `prepend`, `append`, `insert-after-role`, `remove-lines-with-prefix`, `drop-role`, and `join-adjacent-role`. They operate on normalized message blocks, not serialized wire bytes. Conditions use the same finite predicate language. Native OpenAI Responses construction rejects `join-adjacent-role` because opaque input items can separate role messages; the other prompt operations preserve those heterogeneous item boundaries.
 
 Role maps explicitly map system, developer, user, assistant, and tool roles. Unknown roles are rejected, dropped, or warned-and-dropped exactly as declared. Protocol compilers may impose stricter public-protocol constraints; manifests cannot weaken them.
 
@@ -258,7 +262,7 @@ The stable host event vocabulary is:
 
 `warning`, text/reasoning start-delta-end, tool-input start-delta-end, `tool-call`, `tool-result`, `source`, `usage`, `finish`, and `error`.
 
-Mappings select source events and extract normalized fields through JSON Pointers. Unknown events are ignored, warned, or rejected as declared. Streaming operations declare an event source, terminal-event requirement, unknown-event policy, and maximum event size. EOF without a required terminal event is an incomplete-stream error; cancellation always wins over retry.
+Mappings select source events and extract normalized fields through JSON Pointers. Unknown events are ignored, warned, or rejected as declared. SSE operations require an `sse-data-json` event source, terminal-event requirement, unknown-event policy, and maximum event size. Generic declarative execution rejects JSON-sequence and WebSocket event sources before activation; `http-json` operations do not declare streaming policy. EOF without a required terminal event is an incomplete-stream error; cancellation always wins over retry.
 
 Arbitrary raw-byte rewriting, provider-private executable framing recovery, and unbounded stateful event synthesis are unsupported. A required behavior must be represented by an audited finite host primitive before the provider can be installed.
 
@@ -290,7 +294,7 @@ Usage sources are response, stream, or a dedicated operation. Mappings normalize
 
 ### Images
 
-Image policy explicitly declares accepted media types and source limit, plus optional side, output-byte, patch, output-format, alpha, quality, resize, and aggregate history budgets. No target-specific image fallback exists. Missing optional limits mean that dimension is not constrained by the plugin, but host global limits still apply.
+Image policy explicitly declares accepted media types and source limit, plus optional side, output-byte, patch, output-format, alpha, quality, and resize limits. These values are applied by the exact provider owner before inference; no target-specific image fallback exists. Missing optional limits mean that dimension is not constrained by the plugin, but host global limits still apply. Aggregate history budgets are accepted only for the exact delegated Codex compatibility policy and rejected for every other construction. The request and optional retry ceilings cover the complete serialized frame, per-image targets run in declaration order, and `omit_old_images` plus `retain_newest_image` control whether older images may be replaced after compression is exhausted.
 
 ### Native instructions and runtime controls
 
@@ -304,7 +308,7 @@ Each metadata contract has a namespace, independent integer version, scope, stri
 
 ### Errors
 
-Error mappings classify statuses/codes into authentication, authorization, rate limit, capacity, context overflow, invalid request, content filter, server, transport, or unknown. Mappings are evaluated in declaration order; the first mapping whose non-empty status and code predicates both match wins. Message/code extraction uses JSON Pointers. Plugin text is untrusted, bounded, and redacted before display or persistence.
+Error mappings classify statuses/codes into authentication, authorization, rate limit, capacity, context overflow, invalid request, content filter, server, transport, or unknown. Each matched class is preserved on the Foundation provider error as an observable classification; authentication and context-overflow classes also engage their dedicated Foundation semantics, while retryability remains controlled by the declared flag and standard HTTP/transport rules. Mappings are evaluated in declaration order; the first mapping whose non-empty status and code predicates both match wins. Message/code extraction uses JSON Pointers. Plugin text is untrusted, bounded, and redacted before display or persistence.
 
 ## Data-only execution boundary
 

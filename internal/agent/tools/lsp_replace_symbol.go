@@ -167,6 +167,13 @@ func NewReplaceSymbolTool(
 			}
 
 			if files != nil && sessionID != "" {
+				info, err := os.Stat(params.FilePath)
+				if err != nil {
+					return fantasy.ToolResponse{}, fmt.Errorf("inspect file before checkpoint: %w", err)
+				}
+				if err := checkpointFile(ctx, files, permissions, sessionID, call.ID, params.FilePath, string(content), true, info.Mode()); err != nil {
+					return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
+				}
 				if _, err := files.CreateVersion(ctx, sessionID, params.FilePath, string(content)); err != nil {
 					slog.Warn("Failed to create file version before replace", "path", params.FilePath, "error", err)
 				}

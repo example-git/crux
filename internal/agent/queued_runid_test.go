@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/pubsub"
@@ -90,8 +90,8 @@ func TestRun_QueuedRunIDPromptRunsRecursivelyAndPublishesRunComplete(t *testing.
 	small := &finishStreamModel{text: "title"}
 
 	sa := NewSessionAgent(SessionAgentOptions{
-		LargeModel:  Model{Model: large, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
-		SmallModel:  Model{Model: small, CatwalkCfg: catwalk.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
+		LargeModel:  Model{Model: large, CatalogModel: catalog.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
+		SmallModel:  Model{Model: small, CatalogModel: catalog.Model{ContextWindow: 200000, DefaultMaxTokens: 10000}},
 		IsYolo:      true,
 		Sessions:    env.sessions,
 		Messages:    env.messages,

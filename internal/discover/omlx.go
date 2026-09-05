@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 )
 
 func init() {
@@ -31,7 +31,7 @@ type omlxModelStatus struct {
 // models.
 type omlxEnricher struct{}
 
-func (e *omlxEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catwalk.Model) ([]catwalk.Model, error) {
+func (e *omlxEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catalog.Model) ([]catalog.Model, error) {
 	// oMLX serves /models/status under the OpenAI-compatible /v1
 	// namespace, so the path is relative to the configured base URL
 	// (which already includes /v1) rather than the server root.

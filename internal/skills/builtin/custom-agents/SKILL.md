@@ -16,7 +16,7 @@ Definitions are direct `.md` files in these directories:
 
 Project definitions override user definitions with the same `name`. Discovery is not recursive.
 
-When listing definitions, glob both directories separately. Report every physical file with its scope and path. If both scopes define the same name, identify the project file as active and the user file as overridden. Do not hide overridden files.
+When listing definitions, search both directories separately with `mode: "files"`. Report every physical file with its scope and path. If both scopes define the same name, identify the project file as active and the user file as overridden. Do not hide overridden files.
 
 ## Required format
 
@@ -27,7 +27,7 @@ description: Reviews changes for correctness and regressions
 model: provider-id/model-id
 tools:
   - view
-  - grep
+  - search
 ---
 
 # Instructions
@@ -98,4 +98,4 @@ Use the Commands menu's **Create Agent Definition** action when the user wants t
 
 Read the complete file before editing. Preserve unrelated fields and instructions. Apply only the requested changes, then verify the whole file against the format and validation rules above. If changing `name`, ensure the filename and precedence implications remain clear; do not rename files unless the user requested it.
 
-After manually creating or editing a definition, tell the user that the running workspace may need its agent configuration refreshed before the preset appears. The guided Commands-menu flow performs that refresh automatically.
+The running workspace reads user and project definitions again before each model step and each selected agent invocation. Manual edits, guided creation, project overrides, and deletions take effect without restarting or reloading the client. A definition changed during an active model step appears on the next step; malformed definitions remain isolated and report their validation error only when selected.

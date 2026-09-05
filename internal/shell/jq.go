@@ -33,6 +33,25 @@ Options:
   -h, --help                    display this help
 `
 
+type JQVariable struct {
+	Name  string
+	Value any
+}
+
+type JQOptions struct {
+	Filter        string
+	Files         []string
+	RawOutput     bool
+	JoinOutput    bool
+	CompactOutput bool
+	Slurp         bool
+	NullInput     bool
+	ExitStatus    bool
+	RawInput      bool
+	Variables     []JQVariable
+	Environment   []string
+}
+
 // handleJQ implements the jq builtin using gojq. It supports a subset of jq
 // flags: -r (raw output), -c (compact output), -s (slurp), -n (null input),
 // -e (exit status), -R (raw input), and --arg name value.
@@ -47,28 +66,13 @@ Options:
 // github.com/itchyny/gojq, and we'd ideally get the CLI exposed upstream to
 // avoid this falling out of sync.
 func handleJQ(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	// Fast-fail when ctx is already cancelled so callers don't pay for
-	// flag parsing and gojq compilation on a doomed request.
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	var (
-		rawOutput  bool
-		compact    bool
-		slurp      bool
-		nullInput  bool
-		exitStatus bool
-		rawInput   bool
-		joinOutput bool
-		argNames   []string
-		argValues  []any
-	)
-
-	// Parse flags and extract the query.
-	var queryStr string
-	var fileArgs []string
-	i := 1 // skip "jq"
+	var options JQOptions
+	var querySet bool
+	i := 1
 	for i < len(args) {
 		arg := args[i]
 		switch {
@@ -76,90 +80,101 @@ func handleJQ(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			fmt.Fprint(stdout, jqUsage)
 			return nil
 		case arg == "-r" || arg == "--raw-output":
-			rawOutput = true
+			options.RawOutput = true
 		case arg == "-j" || arg == "--join-output":
-			joinOutput = true
-			rawOutput = true
+			options.JoinOutput = true
+			options.RawOutput = true
 		case arg == "-c" || arg == "--compact-output":
-			compact = true
+			options.CompactOutput = true
 		case arg == "-s" || arg == "--slurp":
-			slurp = true
+			options.Slurp = true
 		case arg == "-n" || arg == "--null-input":
-			nullInput = true
+			options.NullInput = true
 		case arg == "-e" || arg == "--exit-status":
-			exitStatus = true
+			options.ExitStatus = true
 		case arg == "-R" || arg == "--raw-input":
-			rawInput = true
+			options.RawInput = true
 		case arg == "--arg":
 			if i+2 >= len(args) {
-				fmt.Fprintf(stderr, "jq: --arg requires name and value\n")
+				fmt.Fprintln(stderr, "jq: --arg requires name and value")
 				return interp.ExitStatus(2)
 			}
-			argNames = append(argNames, "$"+args[i+1])
-			argValues = append(argValues, args[i+2])
+			options.Variables = append(options.Variables, JQVariable{Name: args[i+1], Value: args[i+2]})
 			i += 2
 		case arg == "--argjson":
 			if i+2 >= len(args) {
-				fmt.Fprintf(stderr, "jq: --argjson requires name and value\n")
+				fmt.Fprintln(stderr, "jq: --argjson requires name and value")
 				return interp.ExitStatus(2)
 			}
-			var val any
-			if err := json.Unmarshal([]byte(args[i+2]), &val); err != nil {
+			var value any
+			if err := json.Unmarshal([]byte(args[i+2]), &value); err != nil {
 				fmt.Fprintf(stderr, "jq: invalid JSON for --argjson %s: %s\n", args[i+1], err)
 				return interp.ExitStatus(2)
 			}
-			argNames = append(argNames, "$"+args[i+1])
-			argValues = append(argValues, val)
+			options.Variables = append(options.Variables, JQVariable{Name: args[i+1], Value: value})
 			i += 2
 		case arg == "--":
 			i++
-			// Remaining args are file arguments.
-			for i < len(args) {
-				fileArgs = append(fileArgs, args[i])
-				i++
-			}
+			options.Files = append(options.Files, args[i:]...)
+			i = len(args)
 			continue
-		case strings.HasPrefix(arg, "-") && queryStr != "":
+		case strings.HasPrefix(arg, "-") && querySet:
 			fmt.Fprintf(stderr, "jq: unknown option: %s\n", arg)
 			return interp.ExitStatus(2)
 		default:
-			if queryStr == "" {
-				queryStr = arg
+			if !querySet {
+				options.Filter = arg
+				querySet = true
 			} else {
-				fileArgs = append(fileArgs, arg)
+				options.Files = append(options.Files, arg)
 			}
 		}
 		i++
 	}
 
-	if queryStr == "" {
-		queryStr = "."
-	}
+	return RunJQ(ctx, options, stdin, stdout, stderr)
+}
 
-	query, err := gojq.Parse(queryStr)
+func RunJQ(ctx context.Context, options JQOptions, stdin io.Reader, stdout, stderr io.Writer) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	filter := options.Filter
+	if filter == "" {
+		filter = "."
+	}
+	query, err := gojq.Parse(filter)
 	if err != nil {
 		fmt.Fprintf(stderr, "jq: %s\n", err)
 		return interp.ExitStatus(3)
 	}
 
-	opts := []gojq.CompilerOption{
-		gojq.WithEnvironLoader(os.Environ),
+	argNames := make([]string, 0, len(options.Variables))
+	argValues := make([]any, 0, len(options.Variables))
+	for _, variable := range options.Variables {
+		argNames = append(argNames, "$"+variable.Name)
+		argValues = append(argValues, variable.Value)
+	}
+	environment := options.Environment
+	if environment == nil {
+		environment = os.Environ()
+	}
+	compilerOptions := []gojq.CompilerOption{
+		gojq.WithEnvironLoader(func() []string {
+			return append([]string(nil), environment...)
+		}),
 	}
 	if len(argNames) > 0 {
-		opts = append(opts, gojq.WithVariables(argNames))
+		compilerOptions = append(compilerOptions, gojq.WithVariables(argNames))
 	}
-
-	code, err := gojq.Compile(query, opts...)
+	code, err := gojq.Compile(query, compilerOptions...)
 	if err != nil {
 		fmt.Fprintf(stderr, "jq: %s\n", err)
 		return interp.ExitStatus(3)
 	}
 
-	// Build input values.
-	inputs, err := readInputs(ctx, stdin, fileArgs, nullInput, rawInput, slurp)
+	inputs, err := readInputs(ctx, stdin, options.Files, options.NullInput, options.RawInput, options.Slurp)
 	if err != nil {
-		// Prefer surfacing ctx cancellation verbatim so timeouts are
-		// distinguishable from user input errors.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
@@ -167,34 +182,31 @@ func handleJQ(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return interp.ExitStatus(2)
 	}
 
+	rawOutput := options.RawOutput || options.JoinOutput
 	var lastFalsy bool
 	for _, input := range inputs {
 		iter := code.Run(input, argValues...)
 		for {
-			// Poll ctx on every value so a long-running filter (e.g. a
-			// generator over a slurped array) can be interrupted by hook
-			// timeouts without waiting for iter.Next to yield.
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			v, ok := iter.Next()
+			value, ok := iter.Next()
 			if !ok {
 				break
 			}
-			if err, ok := v.(error); ok {
-				fmt.Fprintf(stderr, "jq: %s\n", err)
+			if runErr, ok := value.(error); ok {
+				fmt.Fprintf(stderr, "jq: %s\n", runErr)
 				return interp.ExitStatus(5)
 			}
-			if exitStatus {
-				lastFalsy = v == nil || v == false
+			if options.ExitStatus {
+				lastFalsy = value == nil || value == false
 			}
-			if err := writeValue(stdout, v, rawOutput, compact, joinOutput); err != nil {
+			if err := writeValue(stdout, value, rawOutput, options.CompactOutput, options.JoinOutput); err != nil {
 				return err
 			}
 		}
 	}
-
-	if exitStatus && lastFalsy {
+	if options.ExitStatus && lastFalsy {
 		return interp.ExitStatus(1)
 	}
 	return nil

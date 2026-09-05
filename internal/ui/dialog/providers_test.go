@@ -3,7 +3,7 @@ package dialog
 import (
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/providerregistry"
@@ -20,7 +20,7 @@ func TestActiveAccountProvidersOmitStoredInactiveIntegrations(t *testing.T) {
 
 	providers := activeAccountProviders(
 		[]string{"codex", "active-account", "gemini", "active-account-legacy"},
-		registry,
+		registry.HasAccountNamespace,
 	)
 	require.Equal(t, []string{"active-account", "active-account-legacy"}, providers)
 }
@@ -37,16 +37,22 @@ func TestProviderEntriesOmitInactiveIntegrations(t *testing.T) {
 				ID:      "disabled-custom",
 				Name:    "Disabled Custom",
 				Disable: true,
-				Type:    catwalk.TypeOpenAICompat,
+				Type:    catalog.TypeOpenAICompat,
 			},
 		}),
 	}
-	known := []catwalk.Provider{{ID: "available", Name: "Available"}}
+	known := []catalog.Provider{{ID: "available", Name: "Available"}}
 
 	entries := providerEntries(cfg, known)
 	require.Equal(t, []providerEntry{
 		{id: "available", name: "Available"},
-		{id: "disabled-custom", name: "Disabled Custom", disabled: true},
+		{
+			id:       "disabled-custom",
+			name:     "Disabled Custom",
+			disabled: true,
+			owner:    providerregistry.RegistrationOwner{ProviderID: "disabled-custom"},
+			ownerSet: true,
+		},
 	}, entries)
 
 	_, preserved := cfg.Providers.Get("inactive")

@@ -31,6 +31,9 @@ func xdgIsolate(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("CRUX_GLOBAL_CONFIG", t.TempDir())
+	t.Setenv("CRUX_GLOBAL_DATA", t.TempDir())
+	t.Setenv("CRUX_CACHE_DIR", t.TempDir())
 }
 
 // runtimeServer wires the production server handler around an
@@ -47,17 +50,20 @@ func (shellTaskCoordinator) RunAccepted(context.Context, *agent.AcceptedRun, str
 	return nil, fmt.Errorf("agent unavailable")
 }
 
-func (shellTaskCoordinator) BeginAccepted(string) *agent.AcceptedRun               { return nil }
-func (shellTaskCoordinator) Cancel(string)                                         {}
-func (shellTaskCoordinator) CancelAll()                                            {}
-func (shellTaskCoordinator) IsSessionBusy(string) bool                             { return false }
-func (shellTaskCoordinator) IsBusy() bool                                          { return false }
-func (shellTaskCoordinator) QueuedPrompts(string) int                              { return 0 }
-func (shellTaskCoordinator) QueuedPromptsList(string) []agent.QueuedPrompt         { return nil }
-func (shellTaskCoordinator) ClearQueue(string)                                     {}
-func (shellTaskCoordinator) Summarize(context.Context, string) error               { return nil }
-func (shellTaskCoordinator) Model() agent.Model                                    { return agent.Model{} }
-func (shellTaskCoordinator) UpdateModels(context.Context) error                    { return nil }
+func (shellTaskCoordinator) BeginAccepted(string) *agent.AcceptedRun       { return nil }
+func (shellTaskCoordinator) Cancel(string)                                 {}
+func (shellTaskCoordinator) CancelAll()                                    {}
+func (shellTaskCoordinator) IsSessionBusy(string) bool                     { return false }
+func (shellTaskCoordinator) IsBusy() bool                                  { return false }
+func (shellTaskCoordinator) QueuedPrompts(string) int                      { return 0 }
+func (shellTaskCoordinator) QueuedPromptsList(string) []agent.QueuedPrompt { return nil }
+func (shellTaskCoordinator) ClearQueue(string)                             {}
+func (shellTaskCoordinator) Summarize(context.Context, string) error       { return nil }
+func (shellTaskCoordinator) Model() agent.Model                            { return agent.Model{} }
+func (shellTaskCoordinator) UpdateModels(context.Context) error            { return nil }
+func (shellTaskCoordinator) UpdateModelsForState(context.Context, config.AgentModelState) error {
+	return nil
+}
 func (shellTaskCoordinator) GenerateTitle(context.Context, string, string)         {}
 func (shellTaskCoordinator) SuggestPrompt(context.Context, string) (string, error) { return "", nil }
 

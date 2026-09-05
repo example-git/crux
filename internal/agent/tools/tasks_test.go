@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/permission"
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/stretchr/testify/require"
 )
@@ -89,6 +92,58 @@ func TestTaskToolsDispatchUnifiedOperations(t *testing.T) {
 	require.Equal(t, "parent-session", service.continueSessionID)
 	require.Equal(t, "continue", service.continuePrompt)
 	require.Equal(t, "tool-call", service.continueCallID)
+}
+
+func TestSubagentTaskToolsAllowInspectionAndStopButRejectContinue(t *testing.T) {
+	service := &taskServiceStub{
+		tasks:   []managedtask.View{{ID: "b12345678", Type: managedtask.TypeShell}},
+		output:  managedtask.OutputResult{Task: managedtask.View{ID: "a12345678"}, Output: "result"},
+		stopped: managedtask.View{ID: "b12345678", State: managedtask.State{Status: managedtask.StatusKilled}},
+	}
+	ctx := context.WithValue(permission.WithSubagent(t.Context()), SessionIDContextKey, "child-session")
+
+	response := runTaskTool(t, NewTaskListTool(service), ctx, TaskListToolName, struct{}{})
+	require.Contains(t, response.Content, "b12345678")
+	response = runTaskTool(t, NewTaskOutputTool(service), ctx, TaskOutputToolName, TaskOutputParams{TaskID: "a12345678"})
+	require.Contains(t, response.Content, "result")
+	response = runTaskTool(t, NewTaskStopTool(service), ctx, TaskStopToolName, TaskStopParams{TaskID: "b12345678"})
+	require.Contains(t, response.Content, "killed")
+
+	response = runTaskTool(t, NewTaskContinueTool(service), ctx, TaskContinueToolName, TaskContinueParams{TaskID: "a12345678", Prompt: "continue"})
+	require.True(t, response.IsError)
+	require.Equal(t, permission.ErrSubagentBackgroundTask.Error(), response.Content)
+	require.Empty(t, service.continueID)
+}
+
+func TestTaskListKeepsActiveAndRecentTerminalTasksCompact(t *testing.T) {
+	base := time.Now().Add(-time.Hour)
+	tasks := []managedtask.View{
+		{ID: "a-active-1", State: managedtask.State{Status: managedtask.StatusRunning, StartedAt: base.Add(30 * time.Minute)}},
+		{ID: "b-active-2", State: managedtask.State{Status: managedtask.StatusPending}},
+	}
+	for i := range 25 {
+		tasks = append(tasks, managedtask.View{
+			ID:          fmt.Sprintf("a-terminal-%02d", i),
+			FinalOutput: strings.Repeat("large-output", 1000),
+			State: managedtask.State{
+				Status:  managedtask.StatusCompleted,
+				EndedAt: base.Add(time.Duration(i) * time.Minute),
+			},
+		})
+	}
+	service := &taskServiceStub{tasks: tasks}
+
+	response := runTaskTool(t, NewTaskListTool(service), t.Context(), TaskListToolName, struct{}{})
+	require.Less(t, len(response.Content), 30000)
+	require.NotContains(t, response.Content, "large-output")
+	require.Contains(t, response.Content, "a-active-1")
+	require.Contains(t, response.Content, "b-active-2")
+	require.Contains(t, response.Content, "a-terminal-24")
+	require.NotContains(t, response.Content, "a-terminal-00")
+
+	var listed []taskListView
+	require.NoError(t, json.Unmarshal([]byte(response.Content), &listed))
+	require.Len(t, listed, 17)
 }
 
 func TestTaskToolsRejectInvalidExplicitInputs(t *testing.T) {

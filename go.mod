@@ -1,3 +1,4 @@
+
 module github.com/example-git/crux
 
 go 1.26.6
@@ -5,7 +6,6 @@ go 1.26.6
 require (
 	charm.land/bubbles/v2 v2.1.1
 	charm.land/bubbletea/v2 v2.0.8
-	charm.land/catwalk v0.51.23
 	charm.land/fang/v2 v2.0.1
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.5
@@ -23,7 +23,6 @@ require (
 	github.com/charmbracelet/ultraviolet v0.0.0-20260703014108-f5a850f9c2b7
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/editor v0.2.0
-	github.com/charmbracelet/x/etag v0.2.0
 	github.com/charmbracelet/x/exp/charmtone v0.0.0-20260527151214-009e6338d40d
 	github.com/charmbracelet/x/exp/golden v0.0.0-20250806222409-83e3a29d542f
 	github.com/charmbracelet/x/exp/ordered v0.1.0
@@ -34,9 +33,11 @@ require (
 	github.com/clipperhouse/displaywidth v0.11.0
 	github.com/clipperhouse/uax29/v2 v2.7.0
 	github.com/dustin/go-humanize v1.0.1
+	github.com/ebitengine/purego v0.10.2
 	github.com/gen2brain/beeep v0.11.2
 	github.com/go-git/go-git/v5 v5.19.2
 	github.com/go-viper/mapstructure/v2 v2.5.0
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/invopop/jsonschema v0.14.0
@@ -67,7 +68,7 @@ require (
 	github.com/zeebo/xxh3 v1.1.0
 	go.uber.org/goleak v1.3.0
 	golang.design/x/clipboard v0.8.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/image v0.45.0
 	golang.org/x/mod v0.40.0
 	golang.org/x/net v0.58.0
@@ -99,7 +100,6 @@ require (
 	github.com/cyphar/filepath-securejoin v0.6.1 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dlclark/regexp2/v2 v2.2.1 // indirect
-	github.com/ebitengine/purego v0.10.2 // indirect
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/esiqveland/notify v0.13.3 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
@@ -113,7 +113,6 @@ require (
 	github.com/go-openapi/spec v0.20.6 // indirect
 	github.com/go-openapi/swag v0.19.15 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
-	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect

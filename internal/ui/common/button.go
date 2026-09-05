@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/example-git/crux/internal/ui/styles"
 )
 
@@ -26,9 +27,7 @@ type ButtonOpts struct {
 func Button(t *styles.Styles, opts ButtonOpts) string {
 	// Select style based on selection/hover state.
 	style := t.Button.Blurred
-	if opts.Selected && opts.Hovered {
-		style = t.Button.Focused.Bold(true)
-	} else if opts.Hovered {
+	if opts.Hovered {
 		style = t.Button.Hovered.Bold(true)
 	} else if opts.Selected {
 		style = t.Button.Focused
@@ -95,6 +94,35 @@ func ButtonHitCompositor(sty *styles.Styles, opts []ButtonOpts, spacing string, 
 		hitStr := strings.Repeat(" ", w)
 		layers = append(layers, lipgloss.NewLayer(hitStr).X(bx).Y(y).ID(fmt.Sprintf("btn_%d", i)))
 		bx += w + spacingWidth
+	}
+	return lipgloss.NewCompositor(layers...)
+}
+
+func ButtonHitCompositorForView(sty *styles.Styles, opts []ButtonOpts, view string, x, y int) *lipgloss.Compositor {
+	lines := strings.Split(ansi.Strip(view), "\n")
+	layers := make([]*lipgloss.Layer, 0, len(opts))
+	lastRow := len(lines) - 1
+	for index := len(opts) - 1; index >= 0; index-- {
+		button := ansi.Strip(Button(sty, opts[index]))
+		for row := lastRow; row >= 0; row-- {
+			column := strings.LastIndex(lines[row], button)
+			if column < 0 {
+				continue
+			}
+			width := lipgloss.Width(button)
+			if width == 0 {
+				break
+			}
+			layers = append(layers, lipgloss.NewLayer(strings.Repeat(" ", width)).
+				X(x+lipgloss.Width(lines[row][:column])).
+				Y(y+row).
+				ID(fmt.Sprintf("btn_%d", index)))
+			lastRow = row
+			break
+		}
+	}
+	if len(layers) == 0 {
+		return nil
 	}
 	return lipgloss.NewCompositor(layers...)
 }

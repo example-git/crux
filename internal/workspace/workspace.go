@@ -10,7 +10,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/agent"
 	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/commands"
@@ -109,8 +109,8 @@ type LSPEvent struct {
 
 // AgentModel holds the model information exposed to the UI.
 type AgentModel struct {
-	CatwalkCfg catwalk.Model
-	ModelCfg   config.SelectedModel
+	CatalogModel catalog.Model
+	ModelCfg     config.SelectedModel
 }
 
 // Workspace is the main abstraction consumed by the TUI and CLI. It
@@ -146,6 +146,7 @@ type Workspace interface {
 	AgentIsBusy() bool
 	AgentIsSessionBusy(sessionID string) bool
 	AgentModel() AgentModel
+	AgentInstructionSnapshot(ctx context.Context) (agent.InstructionSnapshot, error)
 	AgentIsReady() bool
 	// AgentReadyErr reports nil when the coder agent is ready to accept
 	// work, or a descriptive error otherwise: ErrAgentNotInitialized
@@ -168,12 +169,12 @@ type Workspace interface {
 	// SessionRewind deletes the given user message and everything after
 	// it. When summarize is true the conversation is summarized first
 	// and the summary message is kept.
-	SessionRewind(ctx context.Context, sessionID, messageID string, summarize bool) error
-	UpdateAgentModel(ctx context.Context) error
+	SessionRewind(ctx context.Context, sessionID, messageID string, summarize, restoreFiles bool) error
+	UpdateAgentModel(ctx context.Context, expected config.AgentModelState) error
 	CreateAgentDefinition(ctx context.Context, request proto.CreateAgentDefinitionRequest) (string, error)
 	InitCoderAgent(ctx context.Context) error
 	InitCoderAgentNonInteractive(ctx context.Context) error
-	GetDefaultSmallModel(providerID string) config.SelectedModel
+	GetDefaultSmallModel(providerID string) (config.SelectedModel, error)
 
 	// Tasks
 	ListTasks(ctx context.Context) ([]managedtask.View, error)
@@ -227,13 +228,15 @@ type Workspace interface {
 	Resolver() config.VariableResolver
 
 	// Config mutations (proxied to server in client mode)
-	UpdatePreferredModel(scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel) error
+	UpdatePreferredModel(scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel, owner providerregistry.RegistrationOwner) (config.AgentModelState, error)
+	SetProviderDisabled(scope config.Scope, owner providerregistry.RegistrationOwner, disabled bool) error
 	SetCompactMode(scope config.Scope, enabled bool) error
 	SetProviderAPIKey(scope config.Scope, providerID string, apiKey any) error
+	RemoveProviderCredentials(scope config.Scope, owner providerregistry.RegistrationOwner) error
 	SetConfigField(scope config.Scope, key string, value any) error
 	RemoveConfigField(scope config.Scope, key string) error
 	ImportCopilot() (*oauth.Token, bool)
-	RefreshOAuthToken(ctx context.Context, scope config.Scope, providerID string) error
+	RefreshOAuthToken(ctx context.Context, scope config.Scope, owner providerregistry.RegistrationOwner) error
 	CodebaseIndexStatus(ctx context.Context) (proto.CodebaseIndexStatus, error)
 	UpdateCodebaseIndex(ctx context.Context, update proto.CodebaseIndexUpdate) (proto.CodebaseIndexStatus, error)
 

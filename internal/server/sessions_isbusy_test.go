@@ -13,6 +13,7 @@ import (
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/app"
 	"github.com/example-git/crux/internal/backend"
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/session"
@@ -51,8 +52,11 @@ func (s *stubCoordinator) ClearQueue(string)                             {}
 func (s *stubCoordinator) Summarize(context.Context, string) error {
 	return nil
 }
-func (s *stubCoordinator) Model() agent.Model                            { return agent.Model{} }
-func (s *stubCoordinator) UpdateModels(context.Context) error            { return nil }
+func (s *stubCoordinator) Model() agent.Model                 { return agent.Model{} }
+func (s *stubCoordinator) UpdateModels(context.Context) error { return nil }
+func (s *stubCoordinator) UpdateModelsForState(context.Context, config.AgentModelState) error {
+	return nil
+}
 func (s *stubCoordinator) GenerateTitle(context.Context, string, string) {}
 
 func (s *stubCoordinator) SuggestPrompt(context.Context, string) (string, error) { return "", nil }

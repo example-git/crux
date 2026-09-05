@@ -66,6 +66,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&connectionName, "connection", "", "Use a saved authenticated server connection")
 	rootCmd.Flags().BoolP("help", "h", false, "Help")
 	rootCmd.Flags().BoolP("yolo", "y", false, "Automatically accept all permissions (dangerous mode)")
+	rootCmd.Flags().String("initial-prompt", "", "Submit an initial prompt after startup")
+	_ = rootCmd.Flags().MarkHidden("initial-prompt")
 	rootCmd.PersistentFlags().StringSlice("channels", nil, "MCP servers to enable as channels (repeatable), e.g. --channels server:webhook")
 	_ = rootCmd.PersistentFlags().MarkHidden("channels")
 	rootCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
@@ -77,7 +79,6 @@ func init() {
 		dirsCmd,
 		projectsCmd,
 		pluginsCmd,
-		updateProvidersCmd,
 		logsCmd,
 		logoutCmd,
 		schemaCmd,
@@ -125,6 +126,7 @@ crux --continue
 		}
 		sessionID, _ := cmd.Flags().GetString("session")
 		continueLast, _ := cmd.Flags().GetBool("continue")
+		initialPrompt, _ := cmd.Flags().GetString("initial-prompt")
 		ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
 		if err != nil {
 			return err
@@ -137,13 +139,17 @@ crux --continue
 			}
 			sessionID = sess.ID
 		}
-		return runWorkspaceTUI(cmd.Context(), ws, sessionID, continueLast, true)
+		return runWorkspaceTUIWithPrompt(cmd.Context(), ws, sessionID, continueLast, initialPrompt, true)
 	},
 }
 
 func runWorkspaceTUI(ctx context.Context, ws workspace.Workspace, sessionID string, continueLast, printExit bool) error {
+	return runWorkspaceTUIWithPrompt(ctx, ws, sessionID, continueLast, "", printExit)
+}
+
+func runWorkspaceTUIWithPrompt(ctx context.Context, ws workspace.Workspace, sessionID string, continueLast bool, initialPrompt string, printExit bool) error {
 	com := common.DefaultCommon(ws)
-	model := ui.New(com, sessionID, continueLast)
+	model := ui.New(com, sessionID, continueLast, initialPrompt)
 	inputFilter := ui.NewFilter()
 	var environment uv.Environ = os.Environ()
 	program := tea.NewProgram(
@@ -167,7 +173,7 @@ func shouldOpenServerMenu(cmd *cobra.Command, args []string) bool {
 	if connectionName == "" || len(args) != 0 {
 		return false
 	}
-	for _, name := range []string{"cwd", "data-dir", "session", "continue", "yolo", "channels"} {
+	for _, name := range []string{"cwd", "data-dir", "session", "continue", "yolo", "channels", "initial-prompt"} {
 		if flag := cmd.Flags().Lookup(name); flag != nil && flag.Changed {
 			return false
 		}
@@ -428,8 +434,7 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 	}
 
 	cfg := store.Config()
-	store.Overrides().SkipPermissionRequests = yolo
-	store.Overrides().EnabledChannels = channels
+	store.SetRuntimeOverrides(yolo, channels)
 
 	if err := os.MkdirAll(cfg.Options.DataDirectory, 0o700); err != nil {
 		return nil, nil, fmt.Errorf("failed to create data directory: %q %w", cfg.Options.DataDirectory, err)
@@ -550,6 +555,7 @@ func runServerMenu(cmd *cobra.Command) error {
 	var menuError error
 	for {
 		model := servermenu.New(cmd.Context(), menuClient)
+		model.SetConnection(saved.Name, saved.Address)
 		model.SetError(menuError)
 		menuError = nil
 		var environment uv.Environ = os.Environ()
@@ -614,7 +620,7 @@ func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection,
 	return runWorkspaceTUI(cmd.Context(), clientWorkspace, "", false, false)
 }
 
-func forwardedProviderState(ctx context.Context, cwd, dataDir string, debug bool) (map[string]config.ProviderConfig, map[string]accounts.Entry, error) {
+func forwardedProviderState(ctx context.Context, cwd, dataDir string, debug bool) (map[string]config.ProviderConfig, map[string]config.ForwardedAccount, error) {
 	cfg, err := config.Load(cwd, dataDir, debug)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load provider state for remote server: %w", err)
@@ -623,18 +629,28 @@ func forwardedProviderState(ctx context.Context, cwd, dataDir string, debug bool
 	for id, provider := range cfg.Config().Providers.Seq2() {
 		providers[id] = provider
 	}
-	forwardedAccounts := make(map[string]accounts.Entry)
-	namespaces, err := accounts.Providers(ctx)
+	forwardedAccounts := make(map[string]config.ForwardedAccount)
+	namespaces, err := accounts.ProvidersFor(ctx, cfg.Config().ProviderAccountNamespaces())
 	if err != nil {
 		return nil, nil, fmt.Errorf("load accounts for remote server: %w", err)
 	}
 	for _, namespace := range namespaces {
+		registration, ok := cfg.Config().ProviderRegistrationForAccount(namespace)
+		if !ok || registration.AccountNamespace != namespace {
+			return nil, nil, fmt.Errorf("account namespace %q does not match an active exact provider owner for remote forwarding", namespace)
+		}
+		if registration.OAuth == nil {
+			return nil, nil, fmt.Errorf("account namespace %q active exact owner does not support OAuth account forwarding", namespace)
+		}
 		entry, err := accounts.Active(ctx, namespace)
 		if err != nil {
 			return nil, nil, fmt.Errorf("load active %s account for remote server: %w", namespace, err)
 		}
 		if entry != nil {
-			forwardedAccounts[namespace] = *entry
+			forwardedAccounts[namespace] = config.ForwardedAccount{
+				Owner: registration.Owner(),
+				Entry: *entry,
+			}
 		}
 	}
 	return providers, forwardedAccounts, nil

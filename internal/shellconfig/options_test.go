@@ -50,8 +50,7 @@ func TestOption_PromptControls(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "cruxrc")
-	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(`option system-prompt-override
-option response-verbosity high
+	jsonBytes, err := LoadShellConfig(t.Context(), path, []byte(`option response-verbosity high
 option analysis-effort max`))
 	require.NoError(t, err)
 
@@ -59,7 +58,6 @@ option analysis-effort max`))
 	require.NoError(t, json.Unmarshal(jsonBytes, &result))
 
 	opts := result["options"].(map[string]any)
-	require.Equal(t, true, opts["system_prompt_override"])
 	require.Equal(t, "high", opts["response_verbosity"])
 	require.Equal(t, "max", opts["analysis_effort"])
 }
@@ -71,6 +69,14 @@ func TestOption_PromptControlsRequireValues(t *testing.T) {
 	_, err := LoadShellConfig(t.Context(), path, []byte("option analysis-effort"))
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires a value")
+}
+
+func TestOption_RemovedPromptOverrideIsRejected(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "cruxrc")
+	_, err := LoadShellConfig(t.Context(), path, []byte("option system-prompt-override"))
+	require.ErrorContains(t, err, `unknown key "system-prompt-override"`)
 }
 
 func TestOption_String(t *testing.T) {

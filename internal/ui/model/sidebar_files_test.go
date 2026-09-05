@@ -33,6 +33,23 @@ func TestModifiedFilesSectionCollapsesWithoutAffectingCompactDetails(t *testing.
 	require.Contains(t, compactDetails, "main.go")
 }
 
+func TestModifiedFilesSectionShowsCreatedEmptyFile(t *testing.T) {
+	t.Parallel()
+
+	ui := newTestUI()
+	ui.sessionFiles = []SessionFile{{
+		FirstVersion:  history.File{Path: "/workspace/empty.txt"},
+		LatestVersion: history.File{Path: "/workspace/empty.txt", Exists: true},
+		Created:       true,
+	}}
+
+	rendered := stripANSI(ui.filesInfo("/workspace", 32, 10, true))
+	require.Contains(t, rendered, "Modified Files")
+	require.Contains(t, rendered, "1")
+	require.Contains(t, rendered, "empty.txt")
+	require.Contains(t, rendered, "new")
+}
+
 func TestSidebarModifiedFilesHeaderClickTogglesCollapsedState(t *testing.T) {
 	t.Parallel()
 

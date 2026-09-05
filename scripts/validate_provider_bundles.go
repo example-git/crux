@@ -21,7 +21,10 @@ import (
 func main() {
 	roots := os.Args[1:]
 	if len(roots) == 0 {
-		roots = []string{filepath.FromSlash("docs/provider-plugins/examples")}
+		roots = []string{
+			filepath.FromSlash("docs/provider-plugins/examples"),
+			filepath.FromSlash("plugins/provider-presets"),
+		}
 	}
 
 	bundles, err := discoverBundles(roots)
@@ -123,8 +126,12 @@ func validateBundle(ctx context.Context, source string) (string, string, error) 
 		if len(bundles) != 1 {
 			return "", "", fmt.Errorf("expected one runtime provider registration, got %d", len(bundles))
 		}
-		if _, err := providerregistry.FromManifest(bundles[0].Manifest, bundles[0].StaticText); err != nil {
+		registration, err := providerregistry.FromManifest(bundles[0].Manifest, bundles[0].StaticText)
+		if err != nil {
 			return "", "", fmt.Errorf("compile runtime provider registration: %w", err)
+		}
+		if _, err := providerregistry.New(registration); err != nil {
+			return "", "", fmt.Errorf("activate runtime provider registration: %w", err)
 		}
 		providers, err := manager.CatalogProviders()
 		if err != nil {

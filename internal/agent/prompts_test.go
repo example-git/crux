@@ -47,6 +47,54 @@ func TestCoderPromptBuildsLifecycleProfilesCentrally(t *testing.T) {
 	require.Contains(t, execution, "<editing_files>")
 }
 
+func TestCoderPromptUsesEvidenceBasedCorrectionGuidance(t *testing.T) {
+	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "true")
+	store := config.NewTestStore(&config.Config{Options: &config.Options{InstructionMode: "native"}})
+	coder, err := coderPrompt(prompt.WithWorkingDir(t.TempDir()))
+	require.NoError(t, err)
+
+	for _, lifecycle := range []prompt.Lifecycle{
+		{Stage: prompt.LifecycleDefault},
+		{Stage: prompt.LifecycleDraft},
+		{Stage: prompt.LifecycleRevision, Plan: "Revise the implementation plan"},
+		{Stage: prompt.LifecycleExecution, Plan: "Implement the requested outcome"},
+	} {
+		t.Run(string(lifecycle.Stage), func(t *testing.T) {
+			result, err := coder.BuildLifecycle(t.Context(), "openai", "model", store, lifecycle)
+			require.NoError(t, err)
+			if lifecycle.Stage == prompt.LifecycleDefault {
+				require.Contains(t, result, "You have no position, reputation, or prior answer to defend.")
+				require.Contains(t, result, "The user owns the requirements and reports their observed behavior")
+			}
+			for _, expected := range []string{
+				"When corrected, stop acting on the disputed interpretation.",
+				"Treat reported observations as evidence requiring investigation.",
+				"Distinguish the requested outcome from a proposed diagnosis of its cause.",
+				"Verify disputed diagnoses with evidence rather than defending them or agreeing automatically.",
+				"Acknowledging feedback while retaining the rejected behavior is a failure.",
+				"unrequested gates, fallbacks, substitutions, or narrower success conditions",
+				"Change conclusions when evidence warrants it",
+			} {
+				require.Contains(t, result, expected)
+			}
+			if lifecycle.Stage == prompt.LifecycleDefault || lifecycle.Stage == prompt.LifecycleExecution {
+				require.Contains(t, result, "Distinguish source inspection, automated tests, and live verification")
+				require.Contains(t, result, "Avoid formulaic validation, repeated apologies, flattery")
+			}
+			for _, rejected := range []string{
+				"The user is always better at diagnosing",
+				"When your output contradicts the user's observation, your output is wrong.",
+				"no intelligence to protect",
+				"no intelligence to apply",
+				"no right answers to defend",
+				"no right answers to protect",
+			} {
+				require.NotContains(t, result, rejected)
+			}
+		})
+	}
+}
+
 func TestPromptLifecycleMapsPersistedSessionState(t *testing.T) {
 	tests := []struct {
 		mode  session.Mode
@@ -90,6 +138,21 @@ func TestCustomAgentPromptKeepsInstructionsLiteralAndIsolated(t *testing.T) {
 	require.NotContains(t, result, "<plan_lifecycle")
 	require.NotContains(t, result, "<persistent_memory>")
 	require.NotContains(t, result, "<available_skills>")
+}
+
+func TestCoderPromptDoesNotRunOrInjectGitStatus(t *testing.T) {
+	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "true")
+	workingDir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(workingDir, ".git"), 0o700))
+	store := config.NewTestStore(&config.Config{Options: &config.Options{InstructionMode: "native"}})
+	coder, err := coderPrompt(prompt.WithWorkingDir(workingDir))
+	require.NoError(t, err)
+
+	result, err := coder.Build(t.Context(), "codex", "gpt-5.6-sol", store)
+	require.NoError(t, err)
+	require.Contains(t, result, "Is directory a git repo: yes")
+	require.NotContains(t, result, "Git status (snapshot")
+	require.NotContains(t, result, "Recent commits:")
 }
 
 func TestCoderPromptDoesNotInjectCodexRuntimeControls(t *testing.T) {

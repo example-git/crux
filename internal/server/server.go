@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/example-git/crux/internal/backend"
 	"github.com/example-git/crux/internal/config"
@@ -266,6 +267,7 @@ func (s *Server) installHandler() {
 	mux.HandleFunc("DELETE /v1/workspaces/{id}/sessions/{sid}", c.handleDeleteWorkspaceSession)
 	mux.HandleFunc("GET /v1/workspaces/{id}/sessions/{sid}/history", c.handleGetWorkspaceSessionHistory)
 	mux.HandleFunc("POST /v1/workspaces/{id}/sessions/{sid}/rewind", c.handlePostWorkspaceSessionRewind)
+	mux.HandleFunc("POST /v1/workspaces/{id}/sessions/{sid}/fork", c.handlePostWorkspaceSessionFork)
 	mux.HandleFunc("GET /v1/workspaces/{id}/sessions/{sid}/messages", c.handleGetWorkspaceSessionMessages)
 	mux.HandleFunc("GET /v1/workspaces/{id}/sessions/{sid}/messages/user", c.handleGetWorkspaceSessionUserMessages)
 	mux.HandleFunc("GET /v1/workspaces/{id}/messages/user", c.handleGetWorkspaceAllUserMessages)
@@ -282,6 +284,7 @@ func (s *Server) installHandler() {
 	mux.HandleFunc("POST /v1/workspaces/{id}/questions/answer", c.handlePostWorkspaceQuestionsAnswer)
 	mux.HandleFunc("POST /v1/workspaces/{id}/questions/cancel", c.handlePostWorkspaceQuestionsCancel)
 	mux.HandleFunc("GET /v1/workspaces/{id}/agent", c.handleGetWorkspaceAgent)
+	mux.HandleFunc("GET /v1/workspaces/{id}/agent/instructions", c.handleGetWorkspaceAgentInstructions)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agent", c.handlePostWorkspaceAgent)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agent/init", c.handlePostWorkspaceAgentInit)
 	mux.HandleFunc("POST /v1/workspaces/{id}/agent/update", c.handlePostWorkspaceAgentUpdate)
@@ -330,8 +333,11 @@ func (s *Server) installHandler() {
 	mux.HandleFunc("POST /v1/workspaces/{id}/mcp/docker/disable", c.handlePostWorkspaceMCPDisableDocker)
 	mux.Handle("/v1/docs/", httpswagger.WrapHandler)
 	s.h = &http.Server{
-		Protocols: &p,
-		Handler:   cruxlog.TraceHTTPHandler(s.recoverHandler(s.loggingHandler(mux))),
+		Protocols:         &p,
+		Handler:           cruxlog.TraceHTTPHandler(s.recoverHandler(s.loggingHandler(mux))),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 	}
 }
 

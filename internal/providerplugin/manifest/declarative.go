@@ -12,21 +12,37 @@ type Credential struct {
 }
 
 type OAuthFlow struct {
-	ID                    string        `json:"id" jsonschema:"required,pattern=^[a-z][a-z0-9_-]*$,maxLength=64"`
-	Credential            string        `json:"credential" jsonschema:"required,maxLength=64"`
-	AuthorizationEndpoint string        `json:"authorization_endpoint" jsonschema:"required,maxLength=64"`
-	TokenEndpoint         string        `json:"token_endpoint" jsonschema:"required,maxLength=64"`
-	RevocationEndpoint    string        `json:"revocation_endpoint,omitempty" jsonschema:"maxLength=64"`
-	ClientID              Template      `json:"client_id" jsonschema:"required"`
-	ClientSecret          *Template     `json:"client_secret,omitempty"`
-	Scopes                []string      `json:"scopes" jsonschema:"required,minItems=1,uniqueItems=true,maxItems=128"`
-	RefreshScopes         []string      `json:"refresh_scopes,omitempty" jsonschema:"uniqueItems=true,maxItems=128"`
-	PKCE                  string        `json:"pkce" jsonschema:"required,enum=required-s256,enum=optional-s256,enum=disabled"`
-	Redirect              OAuthRedirect `json:"redirect" jsonschema:"required"`
-	AuthorizationParams   []QueryRule   `json:"authorization_params,omitempty" jsonschema:"maxItems=64"`
-	TokenRequest          TokenRequest  `json:"token_request" jsonschema:"required"`
-	TokenResponse         TokenResponse `json:"token_response" jsonschema:"required"`
-	TimeoutSeconds        int           `json:"timeout_seconds,omitempty" jsonschema:"minimum=1,maximum=600"`
+	ID                    string          `json:"id" jsonschema:"required,pattern=^[a-z][a-z0-9_-]*$,maxLength=64"`
+	Credential            string          `json:"credential" jsonschema:"required,maxLength=64"`
+	AuthorizationEndpoint string          `json:"authorization_endpoint" jsonschema:"required,maxLength=64"`
+	TokenEndpoint         string          `json:"token_endpoint" jsonschema:"required,maxLength=64"`
+	RevocationEndpoint    string          `json:"revocation_endpoint,omitempty" jsonschema:"maxLength=64"`
+	ClientID              Template        `json:"client_id" jsonschema:"required"`
+	ClientSecret          *Template       `json:"client_secret,omitempty"`
+	Scopes                []string        `json:"scopes" jsonschema:"required,minItems=1,uniqueItems=true,maxItems=128"`
+	RefreshScopes         []string        `json:"refresh_scopes,omitempty" jsonschema:"uniqueItems=true,maxItems=128"`
+	PKCE                  string          `json:"pkce" jsonschema:"required,enum=required-s256,enum=optional-s256,enum=disabled"`
+	Redirect              OAuthRedirect   `json:"redirect" jsonschema:"required"`
+	AuthorizationParams   []QueryRule     `json:"authorization_params,omitempty" jsonschema:"maxItems=64"`
+	TokenRequest          TokenRequest    `json:"token_request" jsonschema:"required"`
+	TokenResponse         TokenResponse   `json:"token_response" jsonschema:"required"`
+	DeviceCode            *DeviceCodeFlow `json:"device_code,omitempty"`
+	TimeoutSeconds        int             `json:"timeout_seconds,omitempty" jsonschema:"minimum=1,maximum=600"`
+}
+
+type DeviceCodeFlow struct {
+	Endpoint               string       `json:"endpoint" jsonschema:"required,maxLength=64"`
+	Request                []FieldRule  `json:"request" jsonschema:"required,minItems=1,maxItems=64"`
+	Headers                []HeaderRule `json:"headers,omitempty" jsonschema:"maxItems=32"`
+	DeviceCodePointer      string       `json:"device_code_pointer" jsonschema:"required,pattern=^/"`
+	UserCodePointer        string       `json:"user_code_pointer" jsonschema:"required,pattern=^/"`
+	VerificationURLPointer string       `json:"verification_url_pointer" jsonschema:"required,pattern=^/"`
+	ExpiresInPointer       string       `json:"expires_in_pointer,omitempty" jsonschema:"pattern=^/"`
+	IntervalPointer        string       `json:"interval_pointer,omitempty" jsonschema:"pattern=^/"`
+	DefaultIntervalSeconds int          `json:"default_interval_seconds" jsonschema:"required,minimum=1,maximum=60"`
+	Poll                   []FieldRule  `json:"poll" jsonschema:"required,minItems=1,maxItems=64"`
+	ErrorPointer           string       `json:"error_pointer" jsonschema:"required,pattern=^/"`
+	MaxBodyBytes           int64        `json:"max_body_bytes" jsonschema:"required,minimum=1,maximum=10485760"`
 }
 
 type OAuthRedirect struct {
@@ -136,15 +152,24 @@ type RoleMap struct {
 }
 
 type ToolCodec struct {
-	Aliases         []ToolAlias    `json:"aliases" jsonschema:"required,minItems=1,maxItems=512"`
-	Parameters      []ParameterMap `json:"parameters,omitempty" jsonschema:"maxItems=1024"`
-	Surfaces        []string       `json:"surfaces" jsonschema:"required,minItems=1,uniqueItems=true,enum=definitions,enum=prompt-references,enum=history-calls,enum=history-results,enum=stream-events"`
-	CaseFoldInbound bool           `json:"case_fold_inbound,omitempty"`
+	Aliases         []ToolAlias       `json:"aliases,omitempty" jsonschema:"maxItems=512"`
+	PrefixAliases   []ToolPrefixAlias `json:"prefix_aliases,omitempty" jsonschema:"maxItems=64"`
+	Parameters      []ParameterMap    `json:"parameters,omitempty" jsonschema:"maxItems=1024"`
+	Surfaces        []string          `json:"surfaces" jsonschema:"required,minItems=1,uniqueItems=true,enum=definitions,enum=prompt-references,enum=history-calls,enum=history-results,enum=stream-events"`
+	CaseFoldInbound bool              `json:"case_fold_inbound,omitempty"`
+	ToolSearch      string            `json:"tool_search,omitempty" jsonschema:"enum=regex,enum=bm25"`
 }
 
 type ToolAlias struct {
 	Host     string `json:"host" jsonschema:"required,minLength=1,maxLength=128"`
 	Provider string `json:"provider" jsonschema:"required,minLength=1,maxLength=128"`
+}
+
+type ToolPrefixAlias struct {
+	HostPrefix        string `json:"host_prefix" jsonschema:"required,minLength=1,maxLength=128"`
+	ProviderPrefix    string `json:"provider_prefix" jsonschema:"required,minLength=1,maxLength=128"`
+	DeferLoading      bool   `json:"defer_loading,omitempty"`
+	OmitEmptyRequired bool   `json:"omit_empty_required,omitempty"`
 }
 
 type ParameterMap struct {

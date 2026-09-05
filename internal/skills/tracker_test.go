@@ -47,6 +47,30 @@ func TestTracker_NonActiveSkillCannotBeMarkedLoaded(t *testing.T) {
 	require.True(t, tracker.IsLoaded("go-doc"))
 }
 
+func TestTracker_CloneForActivePreservesOnlyStillActiveLoadedSkills(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewTracker([]*Skill{{Name: "keep"}, {Name: "remove"}})
+	tracker.MarkLoaded("keep")
+	tracker.MarkLoaded("remove")
+
+	next := tracker.CloneForActive([]*Skill{{Name: "keep"}, {Name: "added"}})
+	require.True(t, next.IsLoaded("keep"))
+	require.False(t, next.IsLoaded("remove"))
+	require.False(t, next.IsLoaded("added"))
+	next.MarkLoaded("added")
+	require.True(t, next.IsLoaded("added"))
+	require.True(t, tracker.IsLoaded("remove"), "prior generation must remain unchanged")
+}
+
+func TestTracker_IsActive(t *testing.T) {
+	t.Parallel()
+
+	tracker := NewTracker([]*Skill{{Name: "imagegen"}})
+	require.True(t, tracker.IsActive("imagegen"))
+	require.False(t, tracker.IsActive("crux-config"))
+}
+
 func TestTracker_NilSafety(t *testing.T) {
 	t.Parallel()
 
@@ -54,6 +78,7 @@ func TestTracker_NilSafety(t *testing.T) {
 
 	// Should not panic.
 	tracker.MarkLoaded("go-doc")
+	require.False(t, tracker.IsActive("go-doc"))
 	require.False(t, tracker.IsLoaded("go-doc"))
 }
 

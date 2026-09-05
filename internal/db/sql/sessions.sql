@@ -52,7 +52,8 @@ SET
     completion_tokens = ?,
     summary_message_id = ?,
     cost = ?,
-    todos = ?
+    todos = ?,
+    estimated_usage = ?
 WHERE id = ?
 RETURNING *;
 
@@ -78,7 +79,8 @@ SET
     summary_message_id = ?,
     prompt_tokens = ?,
     completion_tokens = ?,
-    cost = ?
+    cost = ?,
+    estimated_usage = ?
 WHERE id = ?
 RETURNING *;
 

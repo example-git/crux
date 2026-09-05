@@ -72,10 +72,12 @@ type BackgroundAgentTask struct {
 	terminalOnce     sync.Once
 	stopOnce         sync.Once
 	ownerCleanupOnce sync.Once
+	capacityOnce     sync.Once
 	notified         bool
 	notification     *managedtask.Notification
 	notify           func(managedtask.Notification)
 	release          func()
+	admissionRelease func()
 	ownerCleanup     func()
 	persist          func(*BackgroundAgentTask) error
 }
@@ -86,6 +88,7 @@ type BackgroundAgentManager struct {
 	tasks            map[string]*BackgroundAgentTask
 	active           int
 	maxActive        int
+	globalAdmission  *backgroundAgentAdmission
 	backgroundShells *shell.BackgroundShellManager
 	recordStore      *managedtask.Store
 	notifications    *pubsub.Broker[managedtask.Notification]
@@ -106,10 +109,22 @@ func NewBackgroundAgentManager(workspaceID string, backgroundShells ...*shell.Ba
 }
 
 func NewBackgroundAgentManagerWithStore(workspaceID string, backgroundShells *shell.BackgroundShellManager, recordStore *managedtask.Store) (*BackgroundAgentManager, error) {
+	admission, err := newSystemBackgroundAgentAdmission(defaultMaxActiveBackgroundAgents)
+	if err != nil {
+		return nil, err
+	}
+	return newBackgroundAgentManager(workspaceID, backgroundShells, recordStore, admission)
+}
+
+func newBackgroundAgentManager(workspaceID string, backgroundShells *shell.BackgroundShellManager, recordStore *managedtask.Store, admission *backgroundAgentAdmission) (*BackgroundAgentManager, error) {
+	if admission == nil {
+		return nil, fmt.Errorf("global background agent admission tracker is required")
+	}
 	manager := &BackgroundAgentManager{
 		workspaceID:      workspaceID,
 		tasks:            make(map[string]*BackgroundAgentTask),
 		maxActive:        defaultMaxActiveBackgroundAgents,
+		globalAdmission:  admission,
 		backgroundShells: backgroundShells,
 		recordStore:      recordStore,
 		notifications:    pubsub.NewBroker[managedtask.Notification](),
@@ -220,11 +235,16 @@ func (t *BackgroundAgentTask) persistLocked() error {
 func (m *BackgroundAgentManager) configureTask(backgroundTask *BackgroundAgentTask) {
 	id := backgroundTask.ID
 	backgroundTask.release = func() {
-		m.mu.Lock()
-		if m.active > 0 {
-			m.active--
-		}
-		m.mu.Unlock()
+		backgroundTask.capacityOnce.Do(func() {
+			m.mu.Lock()
+			if m.active > 0 {
+				m.active--
+			}
+			m.mu.Unlock()
+			if backgroundTask.admissionRelease != nil {
+				backgroundTask.admissionRelease()
+			}
+		})
 	}
 	backgroundTask.notify = func(notification managedtask.Notification) {
 		m.notifications.PublishMustDeliver(context.Background(), pubsub.CreatedEvent, notification)
@@ -244,17 +264,25 @@ func (m *BackgroundAgentManager) configureTask(backgroundTask *BackgroundAgentTa
 }
 
 func (m *BackgroundAgentManager) Reserve(prompt, agentType, description string, ownership managedtask.Ownership) (*BackgroundAgentTask, error) {
-	return m.reserve(prompt, agentType, description, "", managedtask.AgentUsage{}, ownership)
+	return m.ReserveContext(context.Background(), prompt, agentType, description, ownership)
+}
+
+func (m *BackgroundAgentManager) ReserveContext(ctx context.Context, prompt, agentType, description string, ownership managedtask.Ownership) (*BackgroundAgentTask, error) {
+	return m.reserve(ctx, prompt, agentType, description, "", managedtask.AgentUsage{}, ownership)
 }
 
 func (m *BackgroundAgentManager) ReserveContinuation(prompt, agentType, description, continuationOf string, usageBaseline managedtask.AgentUsage, ownership managedtask.Ownership) (*BackgroundAgentTask, error) {
+	return m.ReserveContinuationContext(context.Background(), prompt, agentType, description, continuationOf, usageBaseline, ownership)
+}
+
+func (m *BackgroundAgentManager) ReserveContinuationContext(ctx context.Context, prompt, agentType, description, continuationOf string, usageBaseline managedtask.AgentUsage, ownership managedtask.Ownership) (*BackgroundAgentTask, error) {
 	if taskType, err := managedtask.ParseID(continuationOf); err != nil || taskType != managedtask.TypeAgent {
 		return nil, fmt.Errorf("invalid background agent continuation task ID %q", continuationOf)
 	}
-	return m.reserve(prompt, agentType, description, continuationOf, usageBaseline, ownership)
+	return m.reserve(ctx, prompt, agentType, description, continuationOf, usageBaseline, ownership)
 }
 
-func (m *BackgroundAgentManager) reserve(prompt, agentType, description, continuationOf string, usageBaseline managedtask.AgentUsage, ownership managedtask.Ownership) (*BackgroundAgentTask, error) {
+func (m *BackgroundAgentManager) reserve(ctx context.Context, prompt, agentType, description, continuationOf string, usageBaseline managedtask.AgentUsage, ownership managedtask.Ownership) (*BackgroundAgentTask, error) {
 	if ownership.ParentSessionID == "" {
 		return nil, fmt.Errorf("parent session ID is required for a background agent")
 	}
@@ -264,28 +292,34 @@ func (m *BackgroundAgentManager) reserve(prompt, agentType, description, continu
 		return nil, fmt.Errorf("background agent manager is closed")
 	}
 	if m.active >= m.maxActive {
-		return nil, fmt.Errorf("background agent capacity reached: %d active tasks", m.maxActive)
+		return nil, fmt.Errorf("background agent workspace capacity reached: %d active tasks", m.maxActive)
 	}
 	id, err := managedtask.NewID(managedtask.TypeAgent)
 	if err != nil {
 		return nil, err
 	}
+	admissionRelease, err := m.globalAdmission.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
 	ownership.WorkspaceID = m.workspaceID
 	task := &BackgroundAgentTask{
-		ID:             id,
-		Prompt:         prompt,
-		AgentType:      agentType,
-		Description:    description,
-		Ownership:      ownership,
-		continuationOf: continuationOf,
-		createdAt:      time.Now().UnixMilli(),
-		usageBaseline:  usageBaseline,
-		state:          managedtask.State{Status: managedtask.StatusPending},
-		done:           make(chan struct{}),
-		executionDone:  make(chan struct{}),
+		ID:               id,
+		Prompt:           prompt,
+		AgentType:        agentType,
+		Description:      description,
+		Ownership:        ownership,
+		continuationOf:   continuationOf,
+		createdAt:        time.Now().UnixMilli(),
+		usageBaseline:    usageBaseline,
+		state:            managedtask.State{Status: managedtask.StatusPending},
+		admissionRelease: admissionRelease,
+		done:             make(chan struct{}),
+		executionDone:    make(chan struct{}),
 	}
 	m.configureTask(task)
 	if err := task.persistLocked(); err != nil {
+		admissionRelease()
 		return nil, fmt.Errorf("persisting background agent: %w", err)
 	}
 	m.tasks[id] = task
@@ -294,9 +328,21 @@ func (m *BackgroundAgentManager) reserve(prompt, agentType, description, continu
 }
 
 func (m *BackgroundAgentManager) Start(task *BackgroundAgentTask, childSessionID string, run func(context.Context) backgroundAgentResult) error {
+	return m.start(task, childSessionID, false, run)
+}
+
+func (m *BackgroundAgentManager) StartApproved(task *BackgroundAgentTask, childSessionID string, run func(context.Context) backgroundAgentResult) error {
+	return m.start(task, childSessionID, true, run)
+}
+
+func (m *BackgroundAgentManager) start(task *BackgroundAgentTask, childSessionID string, approved bool, run func(context.Context) backgroundAgentResult) error {
 	ownership := task.Ownership
 	ownership.OwnerAgentTaskID = task.ID
-	runCtx, cancel := context.WithCancel(permission.WithDetachedAgent(managedtask.WithOwnership(context.Background(), ownership)))
+	runCtx := permission.WithDetachedAgent(managedtask.WithOwnership(context.Background(), ownership))
+	if approved {
+		runCtx = permission.WithRunApproval(runCtx)
+	}
+	runCtx, cancel := context.WithCancel(runCtx)
 	task.mu.Lock()
 	task.childSessionID = childSessionID
 	task.cancel = cancel
@@ -606,31 +652,58 @@ type taskNotificationPrompt struct {
 }
 
 func (c *coordinator) listManagedTasks() []ManagedTaskInfo {
-	var tasks []ManagedTaskInfo
+	var active []ManagedTaskInfo
+	var terminal []ManagedTaskInfo
+	appendTask := func(task ManagedTaskInfo) {
+		if task.State.Status.Terminal() {
+			terminal = append(terminal, task)
+		} else {
+			active = append(active, task)
+		}
+	}
 	if c.backgroundShells != nil {
 		for _, id := range c.backgroundShells.List() {
 			backgroundShell, ok := c.backgroundShells.Get(id)
 			if !ok {
 				continue
 			}
-			tasks = append(tasks, ManagedTaskInfo{
+			appendTask(ManagedTaskInfo{
 				ID:          id,
 				Type:        managedtask.TypeShell,
 				Description: backgroundShell.Description,
-				Command:     backgroundShell.Command,
-				Ownership:   backgroundShell.Ownership,
 				State:       backgroundShell.State(),
-				OutputRef:   backgroundShell.OutputRef(),
 			})
 		}
 	}
 	if c.backgroundAgents != nil {
 		for _, backgroundAgent := range c.backgroundAgents.List() {
-			backgroundAgent = c.refreshBackgroundAgentProgress(backgroundAgent)
-			tasks = append(tasks, managedAgentInfo(backgroundAgent))
+			appendTask(ManagedTaskInfo{
+				ID:          backgroundAgent.ID,
+				Type:        managedtask.TypeAgent,
+				Description: backgroundAgent.Description,
+				State:       backgroundAgent.State,
+				AgentType:   backgroundAgent.AgentType,
+			})
 		}
 	}
-	slices.SortFunc(tasks, func(a, b ManagedTaskInfo) int { return stringCompare(a.ID, b.ID) })
+	if c.backgroundImages != nil {
+		for _, imageJob := range c.backgroundImages.List() {
+			appendTask(imageJob)
+		}
+	}
+	slices.SortFunc(active, func(a, b ManagedTaskInfo) int {
+		return b.State.StartedAt.Compare(a.State.StartedAt)
+	})
+	slices.SortFunc(terminal, func(a, b ManagedTaskInfo) int {
+		return b.State.EndedAt.Compare(a.State.EndedAt)
+	})
+	if len(terminal) > managedtask.RecentTerminalLimit {
+		terminal = terminal[:managedtask.RecentTerminalLimit]
+	}
+	tasks := append(active, terminal...)
+	for index := range tasks {
+		tasks[index].State = managedtask.State{Status: tasks[index].State.Status}
+	}
 	return tasks
 }
 
@@ -678,6 +751,11 @@ func (c *coordinator) managedTaskOutput(ctx context.Context, id string, wait boo
 			Status:          status,
 			NextOffset:      int64(len(info.FinalOutput)),
 		}, err
+	case managedtask.TypeImage:
+		if c.backgroundImages == nil {
+			return ManagedTaskOutput{}, fmt.Errorf("background image job not found: %s", id)
+		}
+		return c.backgroundImages.Output(ctx, id, wait, timeout)
 	default:
 		return ManagedTaskOutput{}, fmt.Errorf("unsupported task type %q", taskType)
 	}
@@ -705,6 +783,11 @@ func (c *coordinator) stopManagedTask(ctx context.Context, id string) (ManagedTa
 		}
 		info, err := c.backgroundAgents.Stop(ctx, id)
 		return managedAgentInfo(info), err
+	case managedtask.TypeImage:
+		if c.backgroundImages == nil {
+			return ManagedTaskInfo{}, fmt.Errorf("background image job not found: %s", id)
+		}
+		return c.backgroundImages.Stop(ctx, id)
 	default:
 		return ManagedTaskInfo{}, fmt.Errorf("unsupported task type %q", taskType)
 	}

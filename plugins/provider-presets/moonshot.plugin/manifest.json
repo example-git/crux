@@ -1,0 +1,137 @@
+{
+  "$schema": "../../../provider-preset-plugin.schema.json",
+  "plugin_type": "provider-preset",
+  "manifest_version": 1,
+  "id": "crux.catwalk.moonshot",
+  "version": "0.51.23",
+  "name": "Moonshot Provider Preset",
+  "description": "Optional Moonshot provider and model catalog preset derived from Catwalk v0.51.23 for Crux's Foundation-owned OpenAI-compatible runtime.",
+  "publisher": {
+    "id": "crux.project",
+    "name": "Crux Project",
+    "url": "https://github.com/example-git/crux"
+  },
+  "compatibility": {
+    "host_api": {
+      "min": 1,
+      "max": 1
+    }
+  },
+  "preset": {
+    "name": "Moonshot",
+    "id": "moonshot",
+    "type": "openai-compat",
+    "api_key": "$MOONSHOT_API_KEY",
+    "api_endpoint": "https://api.moonshot.ai/v1",
+    "default_large_model_id": "kimi-k3",
+    "default_small_model_id": "kimi-k2.7-code",
+    "models": [
+      {
+        "id": "kimi-k3",
+        "name": "Kimi K3",
+        "cost_per_1m_in": 3,
+        "cost_per_1m_out": 15,
+        "cost_per_1m_in_cached": 0.3,
+        "context_window": 1048576,
+        "default_max_tokens": 131072,
+        "can_reason": true,
+        "supports_attachments": true
+      },
+      {
+        "id": "kimi-k2.7-code",
+        "name": "Kimi K2.7 Code",
+        "cost_per_1m_in": 0.95,
+        "cost_per_1m_out": 4,
+        "cost_per_1m_in_cached": 0.19,
+        "context_window": 262144,
+        "default_max_tokens": 32768,
+        "can_reason": true,
+        "supports_attachments": true
+      },
+      {
+        "id": "kimi-k2.7-code-highspeed",
+        "name": "Kimi K2.7 Code High Speed",
+        "cost_per_1m_in": 1.9,
+        "cost_per_1m_out": 8,
+        "cost_per_1m_in_cached": 0.38,
+        "context_window": 262144,
+        "default_max_tokens": 32768,
+        "can_reason": true,
+        "supports_attachments": true
+      },
+      {
+        "id": "kimi-k2.6",
+        "name": "Kimi K2.6",
+        "cost_per_1m_in": 0.95,
+        "cost_per_1m_out": 4,
+        "cost_per_1m_in_cached": 0.16,
+        "context_window": 262144,
+        "default_max_tokens": 32768,
+        "can_reason": true,
+        "supports_attachments": true
+      },
+      {
+        "id": "kimi-k2.5",
+        "name": "Kimi K2.5",
+        "cost_per_1m_in": 0.6,
+        "cost_per_1m_out": 3,
+        "cost_per_1m_in_cached": 0.1,
+        "context_window": 262144,
+        "default_max_tokens": 32768,
+        "can_reason": true,
+        "supports_attachments": true
+      },
+      {
+        "id": "moonshot-v1-8k",
+        "name": "Moonshot V1 8K",
+        "cost_per_1m_in": 0.2,
+        "cost_per_1m_out": 2,
+        "context_window": 8192,
+        "default_max_tokens": 4096
+      },
+      {
+        "id": "moonshot-v1-32k",
+        "name": "Moonshot V1 32K",
+        "cost_per_1m_in": 1,
+        "cost_per_1m_out": 3,
+        "context_window": 32768,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "moonshot-v1-128k",
+        "name": "Moonshot V1 128K",
+        "cost_per_1m_in": 2,
+        "cost_per_1m_out": 5,
+        "context_window": 131072,
+        "default_max_tokens": 16384
+      },
+      {
+        "id": "moonshot-v1-8k-vision-preview",
+        "name": "Moonshot V1 8K Vision Preview",
+        "cost_per_1m_in": 0.2,
+        "cost_per_1m_out": 2,
+        "context_window": 8192,
+        "default_max_tokens": 4096,
+        "supports_attachments": true
+      },
+      {
+        "id": "moonshot-v1-32k-vision-preview",
+        "name": "Moonshot V1 32K Vision Preview",
+        "cost_per_1m_in": 1,
+        "cost_per_1m_out": 3,
+        "context_window": 32768,
+        "default_max_tokens": 8192,
+        "supports_attachments": true
+      },
+      {
+        "id": "moonshot-v1-128k-vision-preview",
+        "name": "Moonshot V1 128K Vision Preview",
+        "cost_per_1m_in": 2,
+        "cost_per_1m_out": 5,
+        "context_window": 131072,
+        "default_max_tokens": 16384,
+        "supports_attachments": true
+      }
+    ]
+  }
+}

@@ -8,13 +8,15 @@ import (
 	"path/filepath"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/commands"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/skills"
+	"github.com/example-git/crux/internal/tmuxsession"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/util"
 )
@@ -42,12 +44,36 @@ type ActionSelectSession struct {
 	Session session.Session
 }
 
+type ActionAttachTmuxSession struct {
+	Session tmuxsession.Session
+}
+
 // ActionSelectModel is a message indicating a model has been selected.
 type ActionSelectModel struct {
-	Provider       catwalk.Provider
-	Model          config.SelectedModel
-	ModelType      config.SelectedModelType
-	ReAuthenticate bool
+	Provider         catalog.Provider
+	Model            config.SelectedModel
+	ModelType        config.SelectedModelType
+	ProviderOwner    providerregistry.RegistrationOwner
+	ProviderOwnerSet bool
+	ReAuthenticate   bool
+}
+
+func (a ActionSelectModel) ValidateProviderOwner(cfg *config.Config) error {
+	providerID := a.Model.Provider
+	if providerID == "" || string(a.Provider.ID) != providerID {
+		return fmt.Errorf("model selection provider identity is invalid")
+	}
+	if cfg == nil {
+		return fmt.Errorf("configuration not found")
+	}
+	if !a.ProviderOwnerSet {
+		return fmt.Errorf("model selection provider owner is missing for %s", providerID)
+	}
+	current, ok := cfg.ProviderOwner(providerID)
+	if !ok || current != a.ProviderOwner {
+		return fmt.Errorf("model selection provider owner changed for %s", providerID)
+	}
+	return nil
 }
 
 // Messages for commands

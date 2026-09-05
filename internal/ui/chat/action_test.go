@@ -68,6 +68,27 @@ func TestActionToolRenderersSummarizeStructuredResults(t *testing.T) {
 	require.NotContains(t, view, `"usage"`)
 }
 
+func TestTaskOutputRendererFormatsImageResult(t *testing.T) {
+	sty := styles.CharmtonePantera()
+	content, err := json.Marshal(managedtask.OutputResult{
+		Task: managedtask.View{
+			ID:    "i12345678",
+			Type:  managedtask.TypeImage,
+			State: managedtask.State{Status: managedtask.StatusCompleted},
+		},
+		Output: `{"success":true,"mode":"generate","outputs":["/workspace/generated.png"],"auth_mode":"codex","model":"gpt-image-2"}`,
+	})
+	require.NoError(t, err)
+	call := message.ToolCall{ID: "task-output", Name: tools.TaskOutputToolName, Input: `{"task_id":"i12345678"}`, Finished: true}
+	result := &message.ToolResult{ToolCallID: call.ID, Content: string(content)}
+
+	view := ansi.Strip(NewToolMessageItem(&sty, "message", call, result, false, "").Render(100))
+	require.Contains(t, view, "Image generated")
+	require.Contains(t, view, "/workspace/generated.png")
+	require.Contains(t, view, "Account: Codex")
+	require.NotContains(t, view, `{"success"`)
+}
+
 func TestBackgroundAgentLaunchUsesConciseResult(t *testing.T) {
 	sty := styles.CharmtonePantera()
 	call := message.ToolCall{ID: "agent", Name: agent.AgentToolName, Input: `{"prompt":"review changes","subagent_type":"reviewer","run_in_background":true}`, Finished: true}

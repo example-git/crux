@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/example-git/crux/internal/redact"
 )
 
 var (
@@ -25,6 +27,15 @@ const (
 )
 
 func safeDiagnostic(code, message string) Diagnostic {
+	return Diagnostic{Code: code, Message: safeDiagnosticMessage(message)}
+}
+
+func safeDetailedDiagnostic(code string, phase DiagnosticPhase, path, message string) Diagnostic {
+	return Diagnostic{Code: code, Message: safeDiagnosticMessage(message), Severity: DiagnosticSeverityError, Phase: phase, Path: path}
+}
+
+func safeDiagnosticMessage(message string) string {
+	message = redact.String(message)
 	message = credentialDiagnosticPattern.ReplaceAllString(message, `$1=<redacted>`)
 	message = bearerDiagnosticPattern.ReplaceAllString(message, "Bearer <redacted>")
 	message = urlDiagnosticPattern.ReplaceAllString(message, "<redacted-url>")
@@ -42,5 +53,5 @@ func safeDiagnostic(code, message string) Diagnostic {
 		}
 		message += "…"
 	}
-	return Diagnostic{Code: code, Message: message}
+	return message
 }

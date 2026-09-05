@@ -4,18 +4,22 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,6 +48,11 @@ type Summary struct {
 	Address string
 }
 
+type AuthorizedClient struct {
+	Name        string
+	Fingerprint string
+}
+
 type store struct {
 	Version           int                   `json:"version"`
 	Server            *Identity             `json:"server,omitempty"`
@@ -67,36 +76,105 @@ func EnsureServerIdentity(ctx context.Context) (string, error) {
 	return code, err
 }
 
+func ServerIdentity(ctx context.Context) (Identity, bool, error) {
+	data, err := load(ctx)
+	if err != nil {
+		return Identity{}, false, err
+	}
+	if data.Server == nil {
+		return Identity{}, false, nil
+	}
+	return *data.Server, true, nil
+}
+
+func NormalizeConnectionAddress(address string) (string, error) {
+	if address != strings.TrimSpace(address) {
+		return "", errors.New("connection address cannot contain surrounding whitespace")
+	}
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Scheme != "tcp" || parsed.Opaque != "" || parsed.User != nil || parsed.Host == "" || parsed.Path != "" || parsed.RawPath != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("connection address must use tcp://host:port: %s", address)
+	}
+	host := parsed.Hostname()
+	portText := parsed.Port()
+	if host == "" || portText == "" {
+		return "", fmt.Errorf("connection address must include a host and port: %s", address)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return "", fmt.Errorf("connection address has an invalid port: %s", address)
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsUnspecified() {
+		return "", fmt.Errorf("connection address cannot use a wildcard host: %s", address)
+	}
+	if strings.EqualFold(host, "localhost") {
+		host = "localhost"
+	} else if ip != nil {
+		host = ip.String()
+	} else {
+		host = strings.ToLower(host)
+	}
+	return "tcp://" + net.JoinHostPort(host, strconv.Itoa(port)), nil
+}
+
+func NewClientIdentity(name string) (Identity, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return Identity{}, errors.New("connection name cannot be empty")
+	}
+	return generateIdentity("Crux client "+name, x509.ExtKeyUsageClientAuth)
+}
+
+func SaveConnection(ctx context.Context, created Connection) error {
+	created.Name = strings.TrimSpace(created.Name)
+	if created.Name == "" {
+		return errors.New("connection name cannot be empty")
+	}
+	address, err := NormalizeConnectionAddress(created.Address)
+	if err != nil {
+		return err
+	}
+	created.Address = address
+	created.ServerCertificate = strings.TrimSpace(created.ServerCertificate)
+	if _, err := parseCertificate(created.ServerCertificate, x509.ExtKeyUsageServerAuth); err != nil {
+		return fmt.Errorf("invalid server pairing code: %w", err)
+	}
+	if _, _, err := parseIdentity(created.Client, x509.ExtKeyUsageClientAuth); err != nil {
+		return fmt.Errorf("invalid client identity: %w", err)
+	}
+	return update(ctx, func(data *store) error {
+		if _, exists := data.Connections[created.Name]; exists {
+			return fmt.Errorf("connection already exists: %s", created.Name)
+		}
+		data.Connections[created.Name] = created
+		return nil
+	})
+}
+
 func Add(ctx context.Context, name, address, serverCertificate string) (Connection, string, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Connection{}, "", errors.New("connection name cannot be empty")
 	}
-	parsed, err := url.Parse(address)
-	if err != nil || parsed.Scheme != "tcp" || parsed.Host == "" || parsed.Path != "" {
-		return Connection{}, "", fmt.Errorf("connection address must use tcp://host:port: %s", address)
+	address, err := NormalizeConnectionAddress(address)
+	if err != nil {
+		return Connection{}, "", err
 	}
 	if _, err := parseCertificate(serverCertificate, x509.ExtKeyUsageServerAuth); err != nil {
 		return Connection{}, "", fmt.Errorf("invalid server pairing code: %w", err)
 	}
-	clientIdentity, err := generateIdentity("Crux client "+name, x509.ExtKeyUsageClientAuth)
+	clientIdentity, err := NewClientIdentity(name)
 	if err != nil {
 		return Connection{}, "", err
 	}
 	created := Connection{
 		Name:              name,
 		Address:           address,
-		ServerCertificate: serverCertificate,
+		ServerCertificate: strings.TrimSpace(serverCertificate),
 		Client:            clientIdentity,
 	}
-	err = update(ctx, func(data *store) error {
-		if _, exists := data.Connections[name]; exists {
-			return fmt.Errorf("connection already exists: %s", name)
-		}
-		data.Connections[name] = created
-		return nil
-	})
-	if err != nil {
+	if err := SaveConnection(ctx, created); err != nil {
 		return Connection{}, "", err
 	}
 	return created, clientIdentity.Certificate, nil
@@ -107,9 +185,12 @@ func AuthorizeClient(ctx context.Context, name, clientCertificate string) error 
 	if name == "" {
 		return errors.New("client name cannot be empty")
 	}
-	if _, err := parseCertificate(clientCertificate, x509.ExtKeyUsageClientAuth); err != nil {
+	clientCertificate = strings.TrimSpace(clientCertificate)
+	certificate, err := parseCertificate(clientCertificate, x509.ExtKeyUsageClientAuth)
+	if err != nil {
 		return fmt.Errorf("invalid client pairing code: %w", err)
 	}
+	fingerprint := certificateFingerprint(certificate)
 	return update(ctx, func(data *store) error {
 		if data.Server == nil {
 			return errors.New("server identity is not initialized")
@@ -117,7 +198,47 @@ func AuthorizeClient(ctx context.Context, name, clientCertificate string) error 
 		if _, exists := data.AuthorizedClients[name]; exists {
 			return fmt.Errorf("client is already authorized: %s", name)
 		}
+		for existingName, existingCode := range data.AuthorizedClients {
+			existing, parseErr := parseCertificate(existingCode, x509.ExtKeyUsageClientAuth)
+			if parseErr != nil {
+				return fmt.Errorf("load authorized client %s: %w", existingName, parseErr)
+			}
+			if certificateFingerprint(existing) == fingerprint {
+				return fmt.Errorf("client certificate is already authorized as %s", existingName)
+			}
+		}
 		data.AuthorizedClients[name] = clientCertificate
+		return nil
+	})
+}
+
+func ListAuthorizedClients(ctx context.Context) ([]AuthorizedClient, error) {
+	data, err := load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	clients := make([]AuthorizedClient, 0, len(data.AuthorizedClients))
+	for name, code := range data.AuthorizedClients {
+		certificate, err := parseCertificate(code, x509.ExtKeyUsageClientAuth)
+		if err != nil {
+			return nil, fmt.Errorf("load authorized client %s: %w", name, err)
+		}
+		clients = append(clients, AuthorizedClient{Name: name, Fingerprint: certificateFingerprint(certificate)})
+	}
+	sort.Slice(clients, func(i, j int) bool { return clients[i].Name < clients[j].Name })
+	return clients, nil
+}
+
+func RevokeClient(ctx context.Context, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("client name cannot be empty")
+	}
+	return update(ctx, func(data *store) error {
+		if _, exists := data.AuthorizedClients[name]; !exists {
+			return fmt.Errorf("authorized client not found: %s", name)
+		}
+		delete(data.AuthorizedClients, name)
 		return nil
 	})
 }
@@ -314,20 +435,46 @@ func parseCertificate(code string, usage x509.ExtKeyUsage) (*x509.Certificate, e
 	if err != nil {
 		return nil, errors.New("pairing code is not valid base64")
 	}
+	if len(certificateDER) == 0 || len(certificateDER) > 8192 {
+		return nil, errors.New("pairing certificate has an invalid size")
+	}
 	certificate, err := x509.ParseCertificate(certificateDER)
 	if err != nil {
 		return nil, errors.New("pairing code does not contain a certificate")
 	}
-	if time.Now().Before(certificate.NotBefore) || time.Now().After(certificate.NotAfter) {
+	now := time.Now()
+	if now.Before(certificate.NotBefore) || now.After(certificate.NotAfter) {
 		return nil, errors.New("pairing certificate is not currently valid")
+	}
+	if certificate.IsCA || len(certificate.UnhandledCriticalExtensions) != 0 {
+		return nil, errors.New("pairing certificate has unsupported constraints")
+	}
+	if certificate.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		return nil, errors.New("pairing certificate cannot authenticate signatures")
 	}
 	if !slicesContains(certificate.ExtKeyUsage, usage) {
 		return nil, errors.New("pairing certificate has the wrong purpose")
 	}
+	if certificate.PublicKeyAlgorithm != x509.Ed25519 || certificate.SignatureAlgorithm != x509.PureEd25519 {
+		return nil, errors.New("pairing certificate does not use Ed25519")
+	}
 	if _, ok := certificate.PublicKey.(ed25519.PublicKey); !ok {
 		return nil, errors.New("pairing certificate does not use an Ed25519 key")
 	}
+	if err := certificate.CheckSignature(certificate.SignatureAlgorithm, certificate.RawTBSCertificate, certificate.Signature); err != nil {
+		return nil, errors.New("pairing certificate signature is invalid")
+	}
+	if usage == x509.ExtKeyUsageServerAuth {
+		if err := certificate.VerifyHostname("crux-server"); err != nil {
+			return nil, errors.New("pairing certificate is not a Crux server identity")
+		}
+	}
 	return certificate, nil
+}
+
+func certificateFingerprint(certificate *x509.Certificate) string {
+	digest := sha256.Sum256(certificate.Raw)
+	return hex.EncodeToString(digest[:])
 }
 
 func parseIdentity(identity Identity, usage x509.ExtKeyUsage) (*x509.Certificate, ed25519.PrivateKey, error) {

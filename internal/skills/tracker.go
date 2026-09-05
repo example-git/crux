@@ -45,6 +45,26 @@ func (t *Tracker) MarkLoaded(name string) {
 	}
 }
 
+// CloneForActive creates an independent tracker generation while preserving
+// loaded state only for skills that remain active. Old prompt/tool generations
+// keep their original tracker and cannot observe a partial reload.
+func (t *Tracker) CloneForActive(activeSkills []*Skill) *Tracker {
+	next := NewTracker(activeSkills)
+	for _, name := range t.LoadedNames() {
+		next.MarkLoaded(name)
+	}
+	return next
+}
+
+func (t *Tracker) IsActive(name string) bool {
+	if t == nil {
+		return false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.activeNames[name]
+}
+
 // IsLoaded returns true if the skill has been loaded.
 func (t *Tracker) IsLoaded(name string) bool {
 	if t == nil {

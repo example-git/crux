@@ -26,6 +26,11 @@ type Key struct {
 	Transport string
 }
 
+type ResolvedSystemInstruction struct {
+	Text         string
+	CacheControl *manifest.AnthropicCacheControl
+}
+
 // Operation is a closed immutable projection of one manifest operation and all
 // declarative policy it references.
 type Operation struct {
@@ -41,16 +46,25 @@ type Operation struct {
 	PromptTransform   *manifest.PromptPipeline
 	RoleMap           *manifest.RoleMap
 	ToolCodec         *manifest.ToolCodec
+	ClientIdentity    *manifest.ResolvedClientIdentity
 	Anthropic         *manifest.AnthropicPolicy
+	SystemInstruction *ResolvedSystemInstruction
 	Streaming         *manifest.StreamingPolicy
 	Retry             manifest.RetryPolicy
+	Errors            []manifest.ErrorMapping
 	Continuation      *manifest.ContinuationPolicy
 	Compaction        *manifest.CompactionPolicy
+	Timeouts          *manifest.TimeoutHints
 	ConnectTimeout    time.Duration
 	RequestTimeout    time.Duration
 	StreamIdleTimeout time.Duration
 }
 
+// Compile binds one validated manifest operation to every declarative policy
+// needed at runtime. The resulting snapshot is the handoff between plugin
+// registration and provider construction. Do not omit policy fields, borrow
+// defaults from a built-in provider, or retain mutable references to manifest
+// data; any of those changes silently alters active private-plugin behavior.
 func Compile(value manifest.Manifest, operation manifest.Operation) (*Operation, error) {
 	endpoint, ok := findEndpoint(value.Capabilities.Endpoints, operation.Endpoint)
 	if !ok {
@@ -60,12 +74,16 @@ func Compile(value manifest.Manifest, operation manifest.Operation) (*Operation,
 	if operation.Kind == "inference" {
 		headers = append(clone(value.Capabilities.Headers), headers...)
 	}
+	var errorMappings []manifest.ErrorMapping
+	if operation.Kind == "inference" || operation.Kind == "compaction" {
+		errorMappings = clone(value.Capabilities.Errors)
+	}
 	compiled := &Operation{
 		ID: operation.ID, Kind: operation.Kind,
 		Key:      Key{Protocol: operation.Protocol, Transport: operation.Transport},
 		Endpoint: endpoint, Method: operation.Method, Path: operation.Path,
 		Headers: headers, Anthropic: clonePointer(value.Capabilities.Anthropic), Streaming: clonePointer(operation.Streaming),
-		Continuation: clonePointer(operation.Continuation), Compaction: clonePointer(operation.Compaction),
+		Errors: errorMappings, Continuation: clonePointer(operation.Continuation), Compaction: clonePointer(operation.Compaction), Timeouts: clonePointer(operation.Timeouts),
 		ConnectTimeout: DefaultConnectTimeout, RequestTimeout: DefaultRequestTimeout, StreamIdleTimeout: DefaultStreamIdle,
 		Retry: manifest.RetryPolicy{MaxAttempts: 1, Authentication: "never", ReplayRequirement: "never"},
 	}
@@ -118,9 +136,19 @@ func Compile(value manifest.Manifest, operation manifest.Operation) (*Operation,
 		}
 		compiled.ToolCodec = clonePointer(&codec)
 	}
+	if operation.ClientIdentity != "" {
+		identity, ok := value.Capabilities.ClientIdentities[operation.ClientIdentity]
+		if !ok {
+			return nil, fmt.Errorf("operation %q references missing client identity %q", operation.ID, operation.ClientIdentity)
+		}
+		compiled.ClientIdentity = clonePointer(&identity)
+	}
 	return compiled, nil
 }
 
+// Clone isolates a compiled operation for a transport instance. Plugin policy
+// contains slices, maps, and nested structures that must not be shared with
+// mutable registration state or another client.
 func (o *Operation) Clone() *Operation {
 	if o == nil {
 		return nil
@@ -128,8 +156,24 @@ func (o *Operation) Clone() *Operation {
 	return clonePointer(o)
 }
 
-// ResolveEndpoint applies a declared endpoint override policy to a configured
-// URL. A forbidden override always returns the immutable manifest endpoint.
+// ResolveEndpoint applies the manifest's endpoint ownership policy. A
+// forbidden override always returns the immutable manifest endpoint; allowed
+// overrides remain constrained by scheme, host, and same-origin declarations.
+// Do not fall back to a generic public endpoint when validation fails.
+func (o *Operation) HTTPClient(base *http.Client) *http.Client {
+	if base == nil {
+		base = http.DefaultClient
+	}
+	client := *base
+	if o != nil && o.RequestTimeout > 0 {
+		client.Timeout = o.RequestTimeout
+	}
+	if o != nil && !o.Endpoint.FollowRedirects {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
+	return &client
+}
+
 func (o *Operation) ResolveEndpoint(configured string) (string, error) {
 	if o == nil {
 		return configured, nil
@@ -158,8 +202,10 @@ func (o *Operation) ResolveEndpoint(configured string) (string, error) {
 	return candidate.String(), nil
 }
 
-// ApplyHeaders applies ordered manifest rules after configured headers. A
-// protected set therefore cannot be replaced by ambient provider headers.
+// ApplyHeaders applies ordered manifest rules after configured headers. This
+// ordering gives the trusted plugin contract final ownership of protected
+// identity and protocol headers. Do not reverse the order, skip delete rules,
+// or let ambient provider headers replace protected values.
 func (o *Operation) ApplyHeaders(configured map[string]string, contextValues map[string]string) (map[string]string, error) {
 	if o == nil {
 		return configured, nil
@@ -211,6 +257,9 @@ func (o *Operation) ApplyHeaders(configured map[string]string, contextValues map
 	return result, nil
 }
 
+// operationTemplate evaluates only the bounded template forms allowed in
+// compiled header policy. Extending it with environment, file, or command
+// access would turn a declarative plugin into an executable trust boundary.
 func operationTemplate(value manifest.Template, contextValues map[string]string) (string, error) {
 	switch value.Kind {
 	case "literal":
@@ -236,12 +285,18 @@ func operationTemplate(value manifest.Template, contextValues map[string]string)
 	}
 }
 
+// sameURL performs the exact normalized comparison used before endpoint
+// override enforcement. Keep it credential-blind and fail closed on parse
+// errors so malformed configuration cannot bypass manifest endpoint policy.
 func sameURL(left, right string) bool {
 	leftURL, leftErr := url.Parse(left)
 	rightURL, rightErr := url.Parse(right)
 	return leftErr == nil && rightErr == nil && leftURL.String() == rightURL.String()
 }
 
+// containsFold implements case-insensitive matching for schemes, hosts, and
+// related HTTP policy values. Case-sensitive replacement would reject valid
+// declarations or create inconsistent allowlist behavior.
 func containsFold(values []string, target string) bool {
 	for _, value := range values {
 		if strings.EqualFold(value, target) {
@@ -252,9 +307,11 @@ func containsFold(values []string, target string) bool {
 }
 
 // ValidateSelection prevents a consumer adapter from silently replacing a
-// manifest's protocol or transport with a different implementation. A nil
-// operation represents an integrated compatibility registration and is left to
-// that registration's explicit constructor.
+// manifest's protocol or transport with a nearby implementation. A matching
+// provider name is not sufficient: protocol and transport determine framing,
+// identity, retries, and stream semantics. A nil operation represents an
+// integrated compatibility registration and is left to its explicit
+// constructor.
 func (o *Operation) ValidateSelection(protocol string, transports ...string) error {
 	if o == nil {
 		return nil
@@ -270,6 +327,9 @@ func (o *Operation) ValidateSelection(protocol string, transports ...string) err
 	return fmt.Errorf("operation %q declares unsupported %s transport %q", o.ID, protocol, o.Key.Transport)
 }
 
+// findEndpoint returns a detached copy of the exact endpoint referenced by an
+// operation. Do not select the first endpoint or a host default when the ID is
+// missing; Compile must reject an incomplete plugin contract.
 func findEndpoint(endpoints []manifest.Endpoint, id string) (manifest.Endpoint, bool) {
 	for _, endpoint := range endpoints {
 		if endpoint.ID == id {
@@ -279,6 +339,8 @@ func findEndpoint(endpoints []manifest.Endpoint, id string) (manifest.Endpoint, 
 	return manifest.Endpoint{}, false
 }
 
+// clonePointer deep-copies optional manifest policy so compiled operations and
+// transports cannot mutate registration-owned data through shared pointers.
 func clonePointer[T any](value *T) *T {
 	if value == nil {
 		return nil
@@ -287,6 +349,9 @@ func clonePointer[T any](value *T) *T {
 	return &result
 }
 
+// clone deep-copies declarative manifest values through their JSON contract.
+// On failure it preserves the original value rather than inventing partial
+// policy; callers validate manifests before compilation.
 func clone[T any](value T) T {
 	data, err := json.Marshal(value)
 	if err != nil {

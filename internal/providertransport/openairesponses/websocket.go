@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	fantasy "github.com/example-git/crux/foundation"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -144,6 +145,20 @@ func (c *WebSocket) readLoop() {
 			_ = c.shutdown(err)
 			return
 		}
+		if retryErr := classifyRetryableErrorEvent(event); retryErr != nil {
+			if event.StreamID == "" {
+				_ = c.shutdown(retryErr)
+				return
+			}
+			c.mu.Lock()
+			stream := c.streams[event.StreamID]
+			c.mu.Unlock()
+			if stream != nil {
+				c.remove(event.StreamID, stream)
+				stream.close(retryErr)
+			}
+			continue
+		}
 		if event.StreamID == "" {
 			_ = c.shutdown(fmt.Errorf("Responses WebSocket event %q is missing stream_id", event.Type))
 			return
@@ -167,6 +182,37 @@ func (c *WebSocket) readLoop() {
 			c.remove(event.StreamID, stream)
 			stream.close(ErrStreamBacklog)
 		}
+	}
+}
+
+func classifyRetryableErrorEvent(event Event) error {
+	if event.Type != "error" {
+		return nil
+	}
+	var payload struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Error   *struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(event.Raw, &payload); err != nil {
+		return nil
+	}
+	if payload.Error != nil {
+		payload.Code = payload.Error.Code
+		payload.Message = payload.Error.Message
+	}
+	switch {
+	case payload.Code == "overloaded_error" || payload.Message == fantasy.ServerOverloadMessage:
+		return fantasy.NewServerOverloadError()
+	case payload.Code == "websocket_connection_limit_reached" ||
+		payload.Code == "connection_limit_reached" ||
+		payload.Message == fantasy.ConnectionLimitMessage:
+		return fantasy.NewConnectionLimitError()
+	default:
+		return nil
 	}
 }
 

@@ -3,107 +3,17 @@ package tools
 import (
 	"bufio"
 	"bytes"
-	"cmp"
 	"context"
-	_ "embed"
 	"fmt"
-	"html/template"
 	"log/slog"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	fantasy "github.com/example-git/crux/foundation"
-	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/filepathext"
 	"github.com/example-git/crux/internal/fsext"
-	"github.com/example-git/crux/internal/permission"
 )
-
-const GlobToolName = "glob"
-
-//go:embed glob.md.tpl
-var globDescriptionTmpl []byte
-
-var globDescriptionTpl = template.Must(
-	template.New("globDescription").
-		Parse(string(globDescriptionTmpl)),
-)
-
-type globDescriptionData struct {
-	MaxResults int
-}
-
-func globDescription() string {
-	return renderTemplate(globDescriptionTpl, globDescriptionData{
-		MaxResults: 100,
-	})
-}
-
-type GlobParams struct {
-	Pattern string `json:"pattern" description:"The glob pattern to match files against"`
-	Path    string `json:"path,omitempty" description:"The directory to search in. Defaults to the current working directory."`
-}
-
-type GlobResponseMetadata struct {
-	NumberOfFiles int  `json:"number_of_files"`
-	Truncated     bool `json:"truncated"`
-}
-
-func NewGlobTool(permissions permission.Service, workingDir string, cfg config.ToolGlob) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
-		GlobToolName,
-		globDescription(),
-		func(ctx context.Context, params GlobParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			if params.Pattern == "" {
-				return fantasy.NewTextErrorResponse("pattern is required"), nil
-			}
-
-			searchPath, err := canonicalToolPath(workingDir, cmp.Or(params.Path, workingDir))
-			if err != nil {
-				return fantasy.NewTextErrorResponse(err.Error()), nil
-			}
-			granted, err := authorizeExternalPath(ctx, permissions, workingDir, searchPath, call.ID, GlobToolName, "list", fmt.Sprintf("Search files outside working directory: %s", searchPath), params)
-			if err != nil {
-				return fantasy.ToolResponse{}, err
-			}
-			if !granted {
-				return NewPermissionDeniedResponse(), nil
-			}
-
-			// Bound the search so a huge or symlink-heavy root (e.g. $HOME
-			// or a module cache) fails cleanly instead of pinning the CPU
-			// and hanging the agent.
-			searchCtx, cancel := context.WithTimeout(ctx, cfg.GetTimeout())
-			defer cancel()
-
-			files, truncated, err := globFiles(searchCtx, params.Pattern, searchPath, 100)
-			if err != nil {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("error finding files: %v", err)), nil
-			}
-
-			var output string
-			if len(files) == 0 {
-				output = "No files found"
-			} else {
-				normalizeFilePaths(files)
-				output = strings.Join(files, "\n")
-				if truncated {
-					output += "\n\n(Results are truncated. Consider using a more specific path or pattern.)"
-				}
-			}
-
-			return fantasy.WithResponseMetadata(
-				fantasy.NewTextResponse(output),
-				GlobResponseMetadata{
-					NumberOfFiles: len(files),
-					Truncated:     truncated,
-				},
-			), nil
-		},
-	)
-}
 
 func globFiles(ctx context.Context, pattern, searchPath string, limit int) ([]string, bool, error) {
 	// Scope the walk to the pattern's literal directory prefix. A pattern
@@ -122,7 +32,7 @@ func globFiles(ctx context.Context, pattern, searchPath string, limit int) ([]st
 	cmdRg := getRgCmd(ctx, walkPattern)
 	if cmdRg != nil {
 		cmdRg.Dir = walkRoot
-		matches, err := runRipgrep(cmdRg, walkRoot, limit)
+		matches, err := runRipgrep(cmdRg, walkRoot, searchPath, limit)
 		if err == nil {
 			return matches, len(matches) >= limit && limit > 0, nil
 		}
@@ -132,7 +42,7 @@ func globFiles(ctx context.Context, pattern, searchPath string, limit int) ([]st
 	return fsext.GlobGitignoreAwareCtx(ctx, walkPattern, walkRoot, limit)
 }
 
-func runRipgrep(cmd *exec.Cmd, searchRoot string, limit int) ([]string, error) {
+func runRipgrep(cmd *exec.Cmd, searchRoot, ignoreRoot string, limit int) ([]string, error) {
 	// Stream ripgrep's stdout instead of buffering the whole file list.
 	// Over a huge root (e.g. $HOME) the full --files listing can be
 	// hundreds of MB; reading it all at once and then sorting allocated
@@ -156,6 +66,7 @@ func runRipgrep(cmd *exec.Cmd, searchRoot string, limit int) ([]string, error) {
 	}
 
 	var matches []string
+	ignoreWalker := fsext.NewFastGlobWalker(ignoreRoot)
 	reader := bufio.NewReader(stdout)
 	for {
 		path, err := reader.ReadString(0)
@@ -163,7 +74,7 @@ func runRipgrep(cmd *exec.Cmd, searchRoot string, limit int) ([]string, error) {
 			path = strings.TrimRight(path, "\x00")
 			if path != "" {
 				absPath := filepathext.SmartJoin(searchRoot, path)
-				if !fsext.SkipHidden(absPath) {
+				if !fsext.SkipHidden(absPath) && !ignoreWalker.ShouldSkip(absPath) {
 					matches = append(matches, absPath)
 				}
 			}

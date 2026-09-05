@@ -157,7 +157,7 @@
         "parameters": [
           {"tool": "view", "host": "file_path", "provider": "path"}
         ],
-        "surfaces": ["definitions", "prompt-references", "history-calls", "history-results", "stream-events"]
+        "surfaces": ["definitions", "prompt-references", "history-calls", "stream-events"]
       }
     },
     "operations": [
@@ -173,19 +173,6 @@
         "prompt_transform": "provider-prefix",
         "role_map": "responses",
         "tool_codec": "example-tools",
-        "streaming": {
-          "event_source": "sse-data-json",
-          "done_marker": "[DONE]",
-          "event_type_pointer": "/type",
-          "mappings": [
-            {"source": "response.output_text.delta", "event": "text-delta", "fields": {"delta": "/delta"}},
-            {"source": "response.completed", "event": "finish", "fields": {"response_id": "/response/id"}},
-            {"source": "error", "event": "error", "fields": {"message": "/message"}}
-          ],
-          "require_terminal": true,
-          "unknown_event": "warn",
-          "max_event_bytes": 1048576
-        },
         "retry": {
           "max_attempts": 3,
           "initial_delay_ms": 1000,
@@ -195,8 +182,7 @@
           "retry_after": true,
           "statuses": [408, 409, 429, 500, 502, 503, 504],
           "transport_errors": true,
-          "unexpected_eof": true,
-          "authentication": "refresh-once",
+          "authentication": "never",
           "replay_requirement": "before-first-event"
         },
         "continuation": {
@@ -208,14 +194,13 @@
           "store": "required",
           "fallback": "full-replay",
           "metadata_namespace": "example.responses.continuation"
-        },
-        "timeouts": {"connect_seconds": 30, "request_seconds": 300, "idle_seconds": 60}
+        }
       }
     ],
     "usage": {
       "source": "stream",
       "mappings": [
-        {"target": "input_tokens", "pointer": "/response/usage/input_tokens", "operation": "replace"},
+        {"target": "input_tokens", "pointer": "/response/usage/input_tokens", "operation": "subtract-cache-read"},
         {"target": "output_tokens", "pointer": "/response/usage/output_tokens", "operation": "replace"},
         {"target": "cache_read_tokens", "pointer": "/response/usage/input_tokens_details/cached_tokens", "operation": "replace"}
       ],
@@ -262,8 +247,8 @@
     ],
     "errors": [
       {"class": "authentication", "statuses": [401, 403], "title": "Authentication required"},
-      {"class": "rate-limit", "statuses": [429], "code_pointer": "/error/code", "message_pointer": "/error/message", "retryable": true},
-      {"class": "context-overflow", "codes": ["context_length_exceeded"], "context_overflow": true}
+      {"class": "rate-limit", "statuses": [429], "message_pointer": "/error/message", "retryable": true},
+      {"class": "context-overflow", "codes": ["context_length_exceeded"], "code_pointer": "/error/code", "context_overflow": true}
     ]
   },
   "configuration": {

@@ -1,6 +1,8 @@
 package copilot
 
 import (
+	"context"
+
 	"github.com/example-git/crux/internal/oauth/useragent"
 )
 
@@ -9,16 +11,27 @@ import (
 // COPILOT_ADVERTISE_MODE). Endpoints validate these against the client
 // identity, so they must match a real client.
 func Headers() map[string]string {
-	id := useragent.Copilot()
+	return headersForIdentity(useragent.Copilot())
+}
+
+func HeadersForContext(ctx context.Context) (map[string]string, error) {
+	identity, err := useragent.CopilotForContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return headersForIdentity(identity), nil
+}
+
+func headersForIdentity(identity useragent.CopilotIdentity) map[string]string {
 	headers := map[string]string{
-		"User-Agent":             id.UserAgent,
-		"Copilot-Integration-Id": id.IntegrationID,
+		"User-Agent":             identity.UserAgent,
+		"Copilot-Integration-Id": identity.IntegrationID,
 	}
-	if id.EditorVersion != "" {
-		headers["Editor-Version"] = id.EditorVersion
+	if identity.EditorVersion != "" {
+		headers["Editor-Version"] = identity.EditorVersion
 	}
-	if id.EditorPluginVersion != "" {
-		headers["Editor-Plugin-Version"] = id.EditorPluginVersion
+	if identity.EditorPluginVersion != "" {
+		headers["Editor-Plugin-Version"] = identity.EditorPluginVersion
 	}
 	return headers
 }

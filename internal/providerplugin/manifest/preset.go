@@ -39,7 +39,7 @@ func DecodePluginType(data []byte) (string, error) {
 		return PluginTypeProvider, nil
 	}
 	switch envelope.PluginType {
-	case PluginTypeProvider, PluginTypeProviderPreset:
+	case PluginTypeProvider, PluginTypeProviderPreset, PluginTypeImageProvider:
 		return envelope.PluginType, nil
 	default:
 		return "", fmt.Errorf("unknown plugin_type %q", envelope.PluginType)

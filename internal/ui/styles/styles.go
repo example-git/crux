@@ -204,6 +204,7 @@ type Styles struct {
 	WorkingGradToColor   color.Color
 	WorkingLabelColor    color.Color // Label text color next to the indicator
 	WorkingTimerColor    color.Color // Elapsed timer suffix color
+	RetryLabelColor      color.Color
 
 	// Section Title
 	Section struct {
@@ -282,6 +283,10 @@ type Styles struct {
 		UserFocused      lipgloss.Style
 		AssistantBlurred lipgloss.Style
 		AssistantFocused lipgloss.Style
+		SummaryBlurred   lipgloss.Style
+		SummaryFocused   lipgloss.Style
+		SummaryHeader    lipgloss.Style
+		SummaryHint      lipgloss.Style
 		NoContent        lipgloss.Style
 		Thinking         lipgloss.Style
 		ErrorTag         lipgloss.Style

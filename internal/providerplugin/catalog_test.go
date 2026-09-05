@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/stretchr/testify/require"
 )
@@ -15,9 +15,9 @@ func TestCatalogProviderPreservesManifestOrderAndDefaults(t *testing.T) {
 
 	provider, err := catalogProvider(value)
 	require.NoError(t, err)
-	require.Equal(t, catwalk.InferenceProvider("example-responses"), provider.ID)
+	require.Equal(t, catalog.ProviderID("example-responses"), provider.ID)
 	require.Equal(t, "https://api.example.invalid", provider.APIEndpoint)
-	require.Equal(t, catwalk.TypeOpenAI, provider.Type)
+	require.Equal(t, catalog.TypeOpenAI, provider.Type)
 	require.Equal(t, "example-reasoner", provider.DefaultLargeModelID)
 	require.Equal(t, "example-small", provider.DefaultSmallModelID)
 	require.Equal(t, []string{"example-reasoner", "example-small"}, []string{provider.Models[0].ID, provider.Models[1].ID})
@@ -41,8 +41,8 @@ func TestCatalogPresetPreservesCatwalkProviderData(t *testing.T) {
 	require.NoError(t, err)
 
 	provider := catalogPreset(value.Preset)
-	require.Equal(t, catwalk.InferenceProvider("deepseek"), provider.ID)
-	require.Equal(t, catwalk.TypeOpenAICompat, provider.Type)
+	require.Equal(t, catalog.ProviderID("example-deepseek"), provider.ID)
+	require.Equal(t, catalog.TypeOpenAICompat, provider.Type)
 	require.Equal(t, "$DEEPSEEK_API_KEY", provider.APIKey)
 	require.Equal(t, "https://api.deepseek.com/v1", provider.APIEndpoint)
 	require.Equal(t, "deepseek-v4-pro", provider.DefaultLargeModelID)
@@ -54,7 +54,7 @@ func TestCatalogPresetPreservesCatwalkProviderData(t *testing.T) {
 func TestManagerCatalogSeparatesProviderPresets(t *testing.T) {
 	manager := newTestManager(t)
 	snapshot, err := manager.Install(t.Context(), InstallRequest{
-		Source:           exampleBundle(t, "deepseek-preset.plugin"),
+		Source:           filepath.Join(generatedPresetRoot(t), "deepseek.plugin"),
 		Trust:            true,
 		ExpectedRevision: manager.Snapshot().Revision,
 	})
@@ -68,7 +68,22 @@ func TestManagerCatalogSeparatesProviderPresets(t *testing.T) {
 	require.Empty(t, providers)
 	presets := manager.CatalogPresets()
 	require.Len(t, presets, 1)
-	require.Equal(t, catwalk.InferenceProvider("deepseek"), presets[0].ID)
+	require.Equal(t, catalog.ProviderID("deepseek"), presets[0].ID)
+}
+
+func TestManagerActivatesDocumentedDeepSeekPreset(t *testing.T) {
+	manager := newTestManager(t)
+	snapshot, err := manager.Install(t.Context(), InstallRequest{
+		Source:           exampleBundle(t, "deepseek-preset.plugin"),
+		Trust:            true,
+		ExpectedRevision: manager.Snapshot().Revision,
+	})
+	require.NoError(t, err)
+	require.Len(t, snapshot.Plugins, 1)
+	require.Len(t, manager.RegisteredPresetBundles(), 1)
+	presets := manager.CatalogPresets()
+	require.Len(t, presets, 1)
+	require.Equal(t, catalog.ProviderID("example-deepseek"), presets[0].ID)
 }
 
 func TestManagerCatalogIncludesOnlyRegisteredPlugins(t *testing.T) {
@@ -92,5 +107,5 @@ func TestManagerCatalogIncludesOnlyRegisteredPlugins(t *testing.T) {
 	providers, err = manager.CatalogProviders()
 	require.NoError(t, err)
 	require.Len(t, providers, 1)
-	require.Equal(t, catwalk.InferenceProvider("example-echo"), providers[0].ID)
+	require.Equal(t, catalog.ProviderID("example-echo"), providers[0].ID)
 }

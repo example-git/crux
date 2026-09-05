@@ -1,0 +1,201 @@
+{
+  "$schema": "../../../provider-preset-plugin.schema.json",
+  "plugin_type": "provider-preset",
+  "manifest_version": 1,
+  "id": "crux.catwalk.huggingface",
+  "version": "0.51.23",
+  "name": "Hugging Face Provider Preset",
+  "description": "Optional Hugging Face provider and model catalog preset derived from Catwalk v0.51.23 for Crux's Foundation-owned OpenAI-compatible runtime.",
+  "publisher": {
+    "id": "crux.project",
+    "name": "Crux Project",
+    "url": "https://github.com/example-git/crux"
+  },
+  "compatibility": {
+    "host_api": {
+      "min": 1,
+      "max": 1
+    }
+  },
+  "preset": {
+    "name": "Hugging Face",
+    "id": "huggingface",
+    "type": "openai-compat",
+    "api_key": "$HF_TOKEN",
+    "api_endpoint": "https://router.huggingface.co/v1",
+    "default_large_model_id": "zai-org/GLM-5.2:fireworks-ai",
+    "default_small_model_id": "deepseek-ai/DeepSeek-V4-Flash:fireworks-ai",
+    "models": [
+      {
+        "id": "MiniMaxAI/MiniMax-M2.7:fireworks-ai",
+        "name": "MiniMaxAI/MiniMax-M2.7 (fireworks-ai)",
+        "cost_per_1m_in": 0.3,
+        "cost_per_1m_out": 1.2,
+        "context_window": 196608,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "MiniMaxAI/MiniMax-M3:fireworks-ai",
+        "name": "MiniMaxAI/MiniMax-M3 (fireworks-ai)",
+        "cost_per_1m_in": 0.3,
+        "cost_per_1m_out": 1.2,
+        "context_window": 512000,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Flash:fireworks-ai",
+        "name": "deepseek-ai/DeepSeek-V4-Flash (fireworks-ai)",
+        "cost_per_1m_in": 0.14,
+        "cost_per_1m_out": 0.28,
+        "context_window": 1048576,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Flash-0731:fireworks-ai",
+        "name": "deepseek-ai/DeepSeek-V4-Flash-0731 (fireworks-ai)",
+        "context_window": 1048576,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "deepseek-ai/DeepSeek-V4-Pro:fireworks-ai",
+        "name": "deepseek-ai/DeepSeek-V4-Pro (fireworks-ai)",
+        "cost_per_1m_in": 1.74,
+        "cost_per_1m_out": 3.48,
+        "context_window": 1048576,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "google/gemma-4-31B-it:cerebras",
+        "name": "google/gemma-4-31B-it (cerebras)",
+        "cost_per_1m_in": 0.99,
+        "cost_per_1m_out": 1.49,
+        "context_window": 131072,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "meta-llama/Llama-3.3-70B-Instruct:groq",
+        "name": "meta-llama/Llama-3.3-70B-Instruct (groq)",
+        "cost_per_1m_in": 0.59,
+        "cost_per_1m_out": 0.79,
+        "context_window": 131072,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "meta-models/Muse-Glimmer-30B:fireworks-ai",
+        "name": "meta-models/Muse-Glimmer-30B (fireworks-ai)",
+        "context_window": 131072,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "moonshotai/Kimi-K2.6:fireworks-ai",
+        "name": "moonshotai/Kimi-K2.6 (fireworks-ai)",
+        "cost_per_1m_in": 0.95,
+        "cost_per_1m_out": 4,
+        "context_window": 262144,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "moonshotai/Kimi-K2.7-Code:fireworks-ai",
+        "name": "moonshotai/Kimi-K2.7-Code (fireworks-ai)",
+        "cost_per_1m_in": 0.95,
+        "cost_per_1m_out": 4,
+        "context_window": 262144,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "moonshotai/Kimi-K3:fireworks-ai",
+        "name": "moonshotai/Kimi-K3 (fireworks-ai)",
+        "cost_per_1m_in": 3,
+        "cost_per_1m_out": 15,
+        "context_window": 1048576,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:fireworks-ai",
+        "name": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4 (fireworks-ai)",
+        "cost_per_1m_in": 0.6,
+        "cost_per_1m_out": 2.4,
+        "context_window": 262144,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:fireworks-ai",
+        "name": "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16 (fireworks-ai)",
+        "context_window": 262144,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "openai/gpt-oss-120b:cerebras",
+        "name": "openai/gpt-oss-120b (cerebras)",
+        "cost_per_1m_in": 0.35,
+        "cost_per_1m_out": 0.75,
+        "context_window": 131072,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "openai/gpt-oss-120b:fireworks-ai",
+        "name": "openai/gpt-oss-120b (fireworks-ai)",
+        "cost_per_1m_in": 0.15,
+        "cost_per_1m_out": 0.6,
+        "context_window": 131072,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "openai/gpt-oss-120b:groq",
+        "name": "openai/gpt-oss-120b (groq)",
+        "cost_per_1m_in": 0.15,
+        "cost_per_1m_out": 0.75,
+        "context_window": 131072,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "openai/gpt-oss-20b:fireworks-ai",
+        "name": "openai/gpt-oss-20b (fireworks-ai)",
+        "cost_per_1m_in": 0.07,
+        "cost_per_1m_out": 0.3,
+        "context_window": 131072,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "openai/gpt-oss-20b:groq",
+        "name": "openai/gpt-oss-20b (groq)",
+        "cost_per_1m_in": 0.1,
+        "cost_per_1m_out": 0.5,
+        "context_window": 131072,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "openai/gpt-oss-safeguard-20b:groq",
+        "name": "openai/gpt-oss-safeguard-20b (groq)",
+        "context_window": 131072,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "thinkingmachines/Inkling:fireworks-ai",
+        "name": "thinkingmachines/Inkling (fireworks-ai)",
+        "context_window": 1048576,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "zai-org/GLM-4.7:cerebras",
+        "name": "zai-org/GLM-4.7 (cerebras)",
+        "cost_per_1m_in": 2.25,
+        "cost_per_1m_out": 2.75,
+        "context_window": 131072,
+        "default_max_tokens": 8192
+      },
+      {
+        "id": "zai-org/GLM-5.2:fireworks-ai",
+        "name": "zai-org/GLM-5.2 (fireworks-ai)",
+        "cost_per_1m_in": 1.4,
+        "cost_per_1m_out": 4.4,
+        "context_window": 1048576,
+        "default_max_tokens": 8192
+      }
+    ],
+    "default_headers": {
+      "HTTP-Referer": "https://github.com/example-git/crux",
+      "X-Title": "Crux"
+    }
+  }
+}

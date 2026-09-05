@@ -193,18 +193,28 @@ func TestCommitCompactionAtomicallyInstallsCheckpoint(t *testing.T) {
 	svc := NewService(q, WithCompactionStore(conn, sessions))
 	messageEvents := svc.Subscribe(t.Context())
 	sessionEvents := sessions.Subscribe(t.Context())
-	committed, err := svc.CommitCompaction(t.Context(), CommitCompactionParams{
-		SessionID:        sess.ID,
-		Parts:            []ContentPart{TextContent{Text: "checkpoint"}, Finish{Reason: FinishReasonEndTurn, Time: time.Now().Unix()}},
+	placeholder, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{
+		Role:             Assistant,
 		Model:            "gpt-test",
 		Provider:         "codex",
+		IsSummaryMessage: true,
+	})
+	require.NoError(t, err)
+	require.False(t, placeholder.IsFinished())
+
+	committed, err := svc.CommitCompaction(t.Context(), CommitCompactionParams{
+		MessageID:        placeholder.ID,
+		SessionID:        sess.ID,
+		Parts:            []ContentPart{TextContent{Text: "checkpoint"}, Finish{Reason: FinishReasonEndTurn, Time: time.Now().Unix()}},
 		PromptTokens:     321,
 		CompletionTokens: 0,
 		Cost:             1.25,
 		EstimatedUsage:   true,
 	})
 	require.NoError(t, err)
+	require.Equal(t, placeholder.ID, committed.ID)
 	require.True(t, committed.IsSummaryMessage)
+	require.True(t, committed.IsFinished())
 	require.Equal(t, "checkpoint", committed.Content().Text)
 
 	storedSession, err := sessions.Get(t.Context(), sess.ID)
@@ -220,7 +230,14 @@ func TestCommitCompactionAtomicallyInstallsCheckpoint(t *testing.T) {
 	dbMessage, err := q.GetMessage(t.Context(), committed.ID)
 	require.NoError(t, err)
 	require.True(t, dbMessage.FinishedAt.Valid)
-	require.Equal(t, pubsub.CreatedEvent, (<-messageEvents).Type)
+	createdEvent := <-messageEvents
+	require.Equal(t, pubsub.CreatedEvent, createdEvent.Type)
+	require.Equal(t, placeholder.ID, createdEvent.Payload.ID)
+	require.False(t, createdEvent.Payload.IsFinished())
+	updatedEvent := <-messageEvents
+	require.Equal(t, pubsub.UpdatedEvent, updatedEvent.Type)
+	require.Equal(t, placeholder.ID, updatedEvent.Payload.ID)
+	require.True(t, updatedEvent.Payload.IsFinished())
 	require.Equal(t, pubsub.UpdatedEvent, (<-sessionEvents).Type)
 }
 
@@ -236,6 +253,13 @@ func TestCommitCompactionRollsBackWhenCheckpointUpdateFails(t *testing.T) {
 	svc := NewService(q, WithCompactionStore(conn, sessions))
 	messageEvents := svc.Subscribe(t.Context())
 	sessionEvents := sessions.Subscribe(t.Context())
+	placeholder, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{
+		Role:             Assistant,
+		Model:            "gpt-test",
+		Provider:         "codex",
+		IsSummaryMessage: true,
+	})
+	require.NoError(t, err)
 
 	_, err = conn.ExecContext(t.Context(), `
 		CREATE TRIGGER reject_compaction
@@ -248,10 +272,9 @@ func TestCommitCompactionRollsBackWhenCheckpointUpdateFails(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = svc.CommitCompaction(t.Context(), CommitCompactionParams{
+		MessageID:      placeholder.ID,
 		SessionID:      sess.ID,
 		Parts:          []ContentPart{TextContent{Text: "must roll back"}, Finish{Reason: FinishReasonEndTurn, Time: time.Now().Unix()}},
-		Model:          "gpt-test",
-		Provider:       "codex",
 		PromptTokens:   99,
 		Cost:           2,
 		EstimatedUsage: true,
@@ -260,13 +283,19 @@ func TestCommitCompactionRollsBackWhenCheckpointUpdateFails(t *testing.T) {
 
 	messages, err := svc.List(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.Empty(t, messages)
+	require.Len(t, messages, 1)
+	require.Equal(t, placeholder.ID, messages[0].ID)
+	require.Empty(t, messages[0].Content().Text)
+	require.False(t, messages[0].IsFinished())
 	storedSession, err := sessions.Get(t.Context(), sess.ID)
 	require.NoError(t, err)
 	require.Empty(t, storedSession.SummaryMessageID)
 	require.Zero(t, storedSession.PromptTokens)
 	require.Zero(t, storedSession.Cost)
 
+	createdEvent := <-messageEvents
+	require.Equal(t, pubsub.CreatedEvent, createdEvent.Type)
+	require.Equal(t, placeholder.ID, createdEvent.Payload.ID)
 	select {
 	case event := <-messageEvents:
 		t.Fatalf("unexpected message event: %#v", event)

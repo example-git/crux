@@ -19,11 +19,13 @@ import (
 	"maps"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/foundation/object"
 	"github.com/example-git/crux/foundation/schema"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/google/uuid"
 )
 
@@ -47,6 +49,9 @@ type options struct {
 	project        ProjectLoader
 	toolCallIDFunc ToolCallIDFunc
 	objectMode     fantasy.ObjectMode
+	maxEventBytes  int64
+	retry          manifest.RetryPolicy
+	errors         []manifest.ErrorMapping
 }
 
 // Option defines a function that configures Antigravity provider options.
@@ -56,6 +61,7 @@ type Option = func(*options)
 func New(opts ...Option) (fantasy.Provider, error) {
 	options := options{
 		headers: map[string]string{},
+		retry:   defaultRetryPolicy(),
 		toolCallIDFunc: func() string {
 			return uuid.NewString()
 		},
@@ -137,6 +143,31 @@ func WithObjectMode(om fantasy.ObjectMode) Option {
 	}
 }
 
+func WithMaxEventBytes(maxEventBytes int64) Option {
+	return func(o *options) {
+		o.maxEventBytes = maxEventBytes
+	}
+}
+
+func WithRetryPolicy(policy manifest.RetryPolicy) Option {
+	return func(o *options) {
+		policy.Statuses = slices.Clone(policy.Statuses)
+		policy.Codes = slices.Clone(policy.Codes)
+		o.retry = policy
+	}
+}
+
+func WithErrorMappings(mappings []manifest.ErrorMapping) Option {
+	return func(o *options) {
+		o.errors = make([]manifest.ErrorMapping, len(mappings))
+		for i := range mappings {
+			o.errors[i] = mappings[i]
+			o.errors[i].Statuses = slices.Clone(mappings[i].Statuses)
+			o.errors[i].Codes = slices.Clone(mappings[i].Codes)
+		}
+	}
+}
+
 func (*provider) Name() string {
 	return Name
 }
@@ -166,12 +197,15 @@ func (a *provider) LanguageModel(_ context.Context, modelID string) (fantasy.Lan
 		providerOptions: a.options,
 		objectMode:      objectMode,
 		client: &client{
-			httpClient: a.options.client,
-			baseURL:    a.options.baseURL,
-			token:      a.options.token,
-			project:    a.options.project,
-			userAgent:  userAgent,
-			headers:    resolved,
+			httpClient:    a.options.client,
+			baseURL:       a.options.baseURL,
+			token:         a.options.token,
+			project:       a.options.project,
+			userAgent:     userAgent,
+			headers:       resolved,
+			maxEventBytes: a.options.maxEventBytes,
+			retry:         a.options.retry,
+			errors:        a.options.errors,
 		},
 	}, nil
 }
@@ -398,6 +432,17 @@ func (g *languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.
 					Error: err,
 				})
 				return
+			}
+			if len(chunk.Candidates) == 0 && chunk.UsageMetadata == nil {
+				if !yield(fantasy.StreamPart{
+					Type: fantasy.StreamPartTypeWarnings,
+					Warnings: []fantasy.CallWarning{{
+						Type:    fantasy.CallWarningTypeOther,
+						Message: "unrecognized Antigravity stream event",
+					}},
+				}) {
+					return
+				}
 			}
 
 			if len(chunk.Candidates) > 0 && chunk.Candidates[0].Content != nil {

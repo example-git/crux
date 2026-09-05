@@ -1,11 +1,37 @@
 package tools
 
 import (
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 
+	fantasy "github.com/example-git/crux/foundation"
 	"github.com/stretchr/testify/require"
 )
+
+type sourcegraphRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (roundTrip sourcegraphRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return roundTrip(request)
+}
+
+func TestSourcegraphTransportFailureDoesNotStopAgent(t *testing.T) {
+	client := &http.Client{
+		Transport: sourcegraphRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("network unavailable")
+		}),
+	}
+	response, err := NewSourcegraphTool(client).Run(t.Context(), fantasy.ToolCall{
+		ID:    "sourcegraph-call",
+		Name:  SourcegraphToolName,
+		Input: `{"query":"example"}`,
+	})
+	require.NoError(t, err)
+	require.True(t, response.IsError)
+	require.False(t, response.StopTurn)
+	require.Contains(t, response.Content, "Continue without Sourcegraph results")
+}
 
 func TestFormatSourcegraphResults(t *testing.T) {
 	t.Parallel()

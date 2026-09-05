@@ -11,6 +11,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/skills"
 )
@@ -56,6 +57,11 @@ func (b *Backend) SetConfigField(workspaceID string, scope config.Scope, key str
 	if err := ws.Cfg.SetConfigField(scope, key, value); err != nil {
 		return err
 	}
+	if coordinator := ws.CurrentAgentCoordinator(); skills.ConfigKeyAffectsDiscovery(key) && coordinator != nil {
+		if err := coordinator.UpdateModels(ws.ctx); err != nil {
+			return fmt.Errorf("refresh agent after skill configuration change: %w", err)
+		}
+	}
 	publishConfigChanged(ws)
 	return nil
 }
@@ -70,18 +76,36 @@ func (b *Backend) RemoveConfigField(workspaceID string, scope config.Scope, key 
 	if err := ws.Cfg.RemoveConfigField(scope, key); err != nil {
 		return err
 	}
+	if coordinator := ws.CurrentAgentCoordinator(); skills.ConfigKeyAffectsDiscovery(key) && coordinator != nil {
+		if err := coordinator.UpdateModels(ws.ctx); err != nil {
+			return fmt.Errorf("refresh agent after skill configuration change: %w", err)
+		}
+	}
 	publishConfigChanged(ws)
 	return nil
 }
 
 // UpdatePreferredModel updates the preferred model for the given type
 // and persists it to the config file at the given scope.
-func (b *Backend) UpdatePreferredModel(workspaceID string, scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel) error {
+func (b *Backend) UpdatePreferredModel(workspaceID string, scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel, owner providerregistry.RegistrationOwner) (config.AgentModelState, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return config.AgentModelState{}, err
+	}
+	state, err := ws.Cfg.UpdatePreferredModelForOwner(scope, modelType, model, owner)
+	if err != nil {
+		return config.AgentModelState{}, err
+	}
+	publishConfigChanged(ws)
+	return state, nil
+}
+
+func (b *Backend) SetProviderDisabled(workspaceID string, scope config.Scope, owner providerregistry.RegistrationOwner, disabled bool) error {
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {
 		return err
 	}
-	if err := ws.Cfg.UpdatePreferredModel(scope, modelType, model); err != nil {
+	if err := ws.Cfg.SetProviderDisabled(scope, owner, disabled); err != nil {
 		return err
 	}
 	publishConfigChanged(ws)
@@ -107,10 +131,26 @@ func (b *Backend) SetProviderAPIKey(workspaceID string, scope config.Scope, prov
 	if err != nil {
 		return err
 	}
+	owner, err := config.ProviderCredentialOwner(providerID, apiKey)
+	if err != nil {
+		return err
+	}
 	if err := ws.Cfg.SetProviderAPIKey(scope, providerID, apiKey); err != nil {
 		return err
 	}
-	ws.Cfg.SignalAuthComplete(providerID)
+	ws.Cfg.SignalAuthComplete(owner)
+	publishConfigChanged(ws)
+	return nil
+}
+
+func (b *Backend) RemoveProviderCredentials(workspaceID string, scope config.Scope, owner providerregistry.RegistrationOwner) error {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return err
+	}
+	if err := ws.Cfg.RemoveProviderCredentials(scope, owner); err != nil {
+		return err
+	}
 	publishConfigChanged(ws)
 	return nil
 }
@@ -129,12 +169,15 @@ func (b *Backend) ImportCopilot(workspaceID string) (*oauth.Token, bool, error) 
 }
 
 // RefreshOAuthToken refreshes the OAuth token for a provider.
-func (b *Backend) RefreshOAuthToken(ctx context.Context, workspaceID string, scope config.Scope, providerID string) error {
+func (b *Backend) RefreshOAuthToken(ctx context.Context, workspaceID string, scope config.Scope, owner providerregistry.RegistrationOwner) error {
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {
 		return err
 	}
-	if err := ws.Cfg.RefreshOAuthToken(ctx, scope, providerID); err != nil {
+	if owner.ProviderID == "" {
+		return fmt.Errorf("OAuth refresh initiating owner is required")
+	}
+	if _, err := ws.Cfg.RefreshOAuthTokenForOwner(ctx, scope, owner); err != nil {
 		return err
 	}
 	publishConfigChanged(ws)

@@ -3,11 +3,15 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
@@ -72,6 +76,56 @@ func TestDialAdvertisesRemoteCompactionV2(t *testing.T) {
 	for _, secret := range []string{"conversation-test", "acct_test", "test-token"} {
 		require.NotContains(t, compatibility, secret)
 	}
+}
+
+func TestDialRejectsOwnerReplacementBeforeHandshake(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests.Add(1)
+	}))
+	defer server.Close()
+
+	client := &client{
+		url: strings.Replace(server.URL, "http://", "ws://", 1),
+		ownerValidator: func() error {
+			return errors.New("owner changed")
+		},
+	}
+	connection, err := client.dial(t.Context(), "test-token", "acct_test", "compatibility", "test-trace")
+	require.Nil(t, connection)
+	require.ErrorContains(t, err, "owner changed before WebSocket dial")
+	require.Zero(t, requests.Load())
+}
+
+func TestDialMapsBoundedHandshakeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusTeapot)
+		_, _ = w.Write([]byte(`{"error":{"code":"session_expired","message":"renew session"}}`))
+	}))
+	defer server.Close()
+
+	client := &client{url: strings.Replace(server.URL, "http://", "ws://", 1)}
+	connection, err := client.dialWithProfile(t.Context(), "token", "account", "compatibility", "trace", executionProfile{
+		errors: []manifest.ErrorMapping{{
+			Class:          "authentication",
+			Statuses:       []int{http.StatusTeapot},
+			Codes:          []string{"session_expired"},
+			CodePointer:    "/error/code",
+			MessagePointer: "/error/message",
+		}},
+	})
+	if connection != nil {
+		_ = connection.Close()
+		t.Fatal("unexpected WebSocket connection")
+	}
+	var providerErr *fantasy.ProviderError
+	require.ErrorAs(t, err, &providerErr)
+	require.Equal(t, fantasy.ProviderErrorClassAuthentication, providerErr.Class)
+	require.True(t, providerErr.AuthError)
+	require.Equal(t, "renew session", providerErr.Message)
+	require.Equal(t, "3", providerErr.ResponseHeaders["Retry-After"])
+	require.LessOrEqual(t, len(providerErr.ResponseBody), 1<<20)
 }
 
 func TestRequestClientMetadataIdentifiesCompaction(t *testing.T) {

@@ -15,6 +15,7 @@ func TestCodebaseIndexStatus(t *testing.T) {
 	want := proto.CodebaseIndexStatus{
 		Enabled:          true,
 		State:            "indexing",
+		Serving:          true,
 		ProjectRoot:      "/project",
 		DatabasePath:     "/indexes/source.db",
 		StoreDirectory:   "/indexes/store",

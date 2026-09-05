@@ -101,6 +101,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.WorkingGradToColor = o.secondary
 	s.WorkingLabelColor = o.fgMostSubtle
 	s.WorkingTimerColor = o.fgMostSubtle
+	s.RetryLabelColor = o.error
 
 	s.TextInput = textinput.Styles{
 		Focused: textinput.StyleState{
@@ -160,8 +161,12 @@ func quickStyle(o quickStyleOpts) Styles {
 		},
 		BlockQuote: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{},
-			Indent:         new(uint(1)),
-			IndentToken:    new("│ "),
+			// Margin (not Indent): glamour reserves 2 cells per margin
+			// unit, matching the display width of the "│ " token, so
+			// word-wrapped and hard-wrapped quote lines keep the token
+			// instead of overflowing and losing it on the re-wrap.
+			Margin:      new(uint(1)),
+			IndentToken: new("│ "),
 		},
 		List: ansi.StyleList{
 			LevelIndent: defaultListIndent,
@@ -373,7 +378,8 @@ func quickStyle(o quickStyleOpts) Styles {
 				Color:           plainFg,
 				BackgroundColor: plainBg,
 			},
-			Indent:      new(uint(1)),
+			// Margin (not Indent): see the Markdown BlockQuote comment.
+			Margin:      new(uint(1)),
 			IndentToken: new("│ "),
 		},
 		List: ansi.StyleList{
@@ -713,9 +719,9 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Tool.ResultItemDesc = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
 
 	// Buttons
-	s.Button.Focused = lipgloss.NewStyle().Foreground(o.onPrimary).Background(o.secondary)
-	s.Button.Blurred = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.bgLessVisible)
-	s.Button.Hovered = lipgloss.NewStyle().Foreground(o.onPrimary).Background(o.fgMostSubtle)
+	s.Button.Focused = lipgloss.NewStyle().Foreground(o.bgBase).Background(o.fgBase)
+	s.Button.Blurred = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.bgLeastVisible)
+	s.Button.Hovered = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.bgMostVisible)
 	s.Button.Negative = lipgloss.NewStyle().Foreground(o.onPrimary).Background(o.error)
 
 	// Editor
@@ -863,6 +869,12 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Messages.AssistantBlurred = s.Messages.NoContent.PaddingLeft(2)
 	s.Messages.AssistantFocused = s.Messages.NoContent.PaddingLeft(1).BorderLeft(true).
 		BorderForeground(o.successMostSubtle).BorderStyle(messageFocussedBorder)
+	s.Messages.SummaryBlurred = s.Messages.NoContent.PaddingLeft(1).BorderLeft(true).
+		BorderForeground(o.secondary).BorderStyle(lipgloss.NormalBorder())
+	s.Messages.SummaryFocused = s.Messages.NoContent.PaddingLeft(1).BorderLeft(true).
+		BorderForeground(o.secondary).BorderStyle(messageFocussedBorder)
+	s.Messages.SummaryHeader = base.Foreground(o.secondary).Bold(true)
+	s.Messages.SummaryHint = muted
 	s.Messages.Thinking = lipgloss.NewStyle().MaxHeight(10)
 	s.Messages.ErrorTag = lipgloss.NewStyle().Padding(0, 1).
 		Background(o.destructive).Foreground(o.onPrimary)

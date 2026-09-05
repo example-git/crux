@@ -22,27 +22,24 @@ func (d *denyPermissionService) Request(context.Context, permission.CreatePermis
 	return false, nil
 }
 
-func TestSearchToolsRequirePermissionBeforeReadingOutsideWorkspace(t *testing.T) {
+func TestSearchToolRequiresPermissionBeforeReadingOutsideWorkspace(t *testing.T) {
 	workingDir := t.TempDir()
 	outsideDir := t.TempDir()
 	secretPath := filepath.Join(outsideDir, "secret-value.txt")
 	require.NoError(t, os.WriteFile(secretPath, []byte("private contents"), 0o600))
 	ctx := context.WithValue(t.Context(), SessionIDContextKey, "session")
 	permissions := &denyPermissionService{}
+	tool := NewSearchTool(permissions, workingDir, config.ToolSearch{})
 
-	testCases := map[string]fantasy.AgentTool{
-		"glob": NewGlobTool(permissions, workingDir, config.ToolGlob{}),
-		"grep": NewGrepTool(permissions, workingDir, config.ToolGrep{}),
+	inputs := map[string]SearchParams{
+		SearchModeFiles:   {Mode: SearchModeFiles, Pattern: "*", Path: outsideDir},
+		SearchModeContent: {Mode: SearchModeContent, Pattern: "private", Path: outsideDir},
 	}
-	inputs := map[string]any{
-		"glob": GlobParams{Pattern: "*", Path: outsideDir},
-		"grep": GrepParams{Pattern: "private", Path: outsideDir},
-	}
-	for name, tool := range testCases {
-		t.Run(name, func(t *testing.T) {
-			input, err := json.Marshal(inputs[name])
+	for mode, params := range inputs {
+		t.Run(mode, func(t *testing.T) {
+			input, err := json.Marshal(params)
 			require.NoError(t, err)
-			response, err := tool.Run(ctx, fantasy.ToolCall{ID: "call", Name: name, Input: string(input)})
+			response, err := tool.Run(ctx, fantasy.ToolCall{ID: "call", Name: SearchToolName, Input: string(input)})
 			require.NoError(t, err)
 			require.NotContains(t, response.Content, "secret-value")
 			require.NotContains(t, response.Content, "private contents")

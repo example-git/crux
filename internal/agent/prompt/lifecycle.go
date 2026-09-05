@@ -52,6 +52,17 @@ func lifecycleToolingInstructions(provider string, cfg *config.Config, stage Lif
 	if stage == LifecycleDefault {
 		return toolingInstructions(provider, cfg)
 	}
+	if registration, ok := cfg.ProviderBehaviorRegistration(provider); ok && registration.Instructions != nil {
+		profile := registration.Instructions.SelectionDefault
+		if cfg.Providers != nil {
+			if providerCfg, found := cfg.Providers.Get(provider); found && providerCfg.ToolingInstructions != "" {
+				profile = providerCfg.ToolingInstructions
+			}
+		}
+		if profile == config.ToolingInstructionsNative {
+			return toolingInstructions(provider, cfg)
+		}
+	}
 
 	allowed := planningSectionIDs
 	if stage == LifecycleExecution {

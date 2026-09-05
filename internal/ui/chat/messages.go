@@ -7,8 +7,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/ui/anim"
@@ -343,7 +343,7 @@ func (a *AssistantInfoItem) renderContent(width int) string {
 	icon := a.sty.Messages.AssistantInfoIcon.Render(styles.ModelIcon)
 	model := a.cfg.GetModel(a.message.Provider, a.message.Model)
 	if model == nil {
-		model = &catwalk.Model{Name: "Unknown Model"}
+		model = &catalog.Model{Name: "Unknown Model"}
 	}
 	modelFormatted := a.sty.Messages.AssistantInfoModel.Render(model.Name)
 	providerName := a.message.Provider

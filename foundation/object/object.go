@@ -185,27 +185,7 @@ func GenerateWithText(
 		string(jsonSchemaBytes),
 	)
 
-	enhancedPrompt := make(fantasy.Prompt, 0, len(call.Prompt)+1)
-
-	hasSystem := false
-	for _, msg := range call.Prompt {
-		if msg.Role == fantasy.MessageRoleSystem {
-			hasSystem = true
-			existingText := ""
-			if len(msg.Content) > 0 {
-				if textPart, ok := msg.Content[0].(fantasy.TextPart); ok {
-					existingText = textPart.Text
-				}
-			}
-			enhancedPrompt = append(enhancedPrompt, fantasy.NewSystemMessage(existingText+"\n\n"+schemaInstruction))
-		} else {
-			enhancedPrompt = append(enhancedPrompt, msg)
-		}
-	}
-
-	if !hasSystem {
-		enhancedPrompt = append(fantasy.Prompt{fantasy.NewSystemMessage(schemaInstruction)}, call.Prompt...)
-	}
+	enhancedPrompt := fantasy.AppendDynamicInstruction(call.Prompt, fantasy.InstructionKindSchema, schemaInstruction)
 
 	resp, err := model.Generate(ctx, fantasy.Call{
 		Prompt:           enhancedPrompt,
@@ -480,27 +460,7 @@ func StreamWithText(
 		string(jsonSchemaBytes),
 	)
 
-	enhancedPrompt := make(fantasy.Prompt, 0, len(call.Prompt)+1)
-
-	hasSystem := false
-	for _, msg := range call.Prompt {
-		if msg.Role == fantasy.MessageRoleSystem {
-			hasSystem = true
-			existingText := ""
-			if len(msg.Content) > 0 {
-				if textPart, ok := msg.Content[0].(fantasy.TextPart); ok {
-					existingText = textPart.Text
-				}
-			}
-			enhancedPrompt = append(enhancedPrompt, fantasy.NewSystemMessage(existingText+"\n\n"+schemaInstruction))
-		} else {
-			enhancedPrompt = append(enhancedPrompt, msg)
-		}
-	}
-
-	if !hasSystem {
-		enhancedPrompt = append(fantasy.Prompt{fantasy.NewSystemMessage(schemaInstruction)}, call.Prompt...)
-	}
+	enhancedPrompt := fantasy.AppendDynamicInstruction(call.Prompt, fantasy.InstructionKindSchema, schemaInstruction)
 
 	stream, err := model.Stream(ctx, fantasy.Call{
 		Prompt:           enhancedPrompt,

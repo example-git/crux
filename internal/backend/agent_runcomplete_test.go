@@ -9,6 +9,7 @@ import (
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/app"
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/google/uuid"
@@ -47,7 +48,10 @@ func (c *errorCoordinator) ClearQueue(string)                                 {}
 func (c *errorCoordinator) Summarize(context.Context, string) error           { return nil }
 func (c *errorCoordinator) Model() agent.Model                                { return agent.Model{} }
 func (c *errorCoordinator) UpdateModels(context.Context) error                { return nil }
-func (c *errorCoordinator) GenerateTitle(context.Context, string, string)     {}
+func (c *errorCoordinator) UpdateModelsForState(context.Context, config.AgentModelState) error {
+	return nil
+}
+func (c *errorCoordinator) GenerateTitle(context.Context, string, string) {}
 
 func (c *errorCoordinator) SuggestPrompt(context.Context, string) (string, error) { return "", nil }
 

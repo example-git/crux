@@ -282,6 +282,56 @@ func TestPermissionService_HookApproval(t *testing.T) {
 	})
 }
 
+func TestPermissionService_RunApprovalDoesNotLeakAcrossRuns(t *testing.T) {
+	service := NewPermissionService(t.TempDir(), false, nil)
+	request := CreatePermissionRequest{
+		SessionID:   "session",
+		ToolCallID:  "bypass-call",
+		ToolName:    "bash",
+		Action:      "execute",
+		Description: "run command",
+		Path:        t.TempDir(),
+	}
+
+	granted, err := service.Request(WithRunApproval(t.Context()), request)
+	require.NoError(t, err)
+	require.True(t, granted)
+
+	events := service.Subscribe(t.Context())
+	type permissionResult struct {
+		granted bool
+		err     error
+	}
+	interactiveResult := make(chan permissionResult, 1)
+	go func() {
+		interactiveRequest := request
+		interactiveRequest.ToolCallID = "interactive-call"
+		approved, requestErr := service.Request(t.Context(), interactiveRequest)
+		interactiveResult <- permissionResult{granted: approved, err: requestErr}
+	}()
+	select {
+	case event := <-events:
+		require.Equal(t, "interactive-call", event.Payload.ToolCallID)
+		require.True(t, service.Deny(event.Payload))
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for interactive request after bypass run")
+	}
+	result := <-interactiveResult
+	require.NoError(t, result.err)
+	require.False(t, result.granted)
+
+	denyRequest := request
+	denyRequest.ToolCallID = "deny-call"
+	granted, err = service.Request(WithDetachedAgent(t.Context()), denyRequest)
+	require.False(t, granted)
+	require.ErrorIs(t, err, ErrInteractivePermissionUnavailable)
+
+	service.AutoApproveSession(request.SessionID)
+	granted, err = service.Request(WithDetachedAgent(t.Context()), denyRequest)
+	require.NoError(t, err)
+	require.True(t, granted, "explicit session-wide approval must remain effective")
+}
+
 func TestPermissionService_DetachedAgent(t *testing.T) {
 	request := CreatePermissionRequest{
 		SessionID:   "child",
@@ -411,6 +461,58 @@ func TestPermissionService_DetachedAgent(t *testing.T) {
 		case <-time.After(25 * time.Millisecond):
 		}
 	})
+}
+
+func TestPermissionService_ExplicitDetachedPromptIgnoresRunApproval(t *testing.T) {
+	service := NewPermissionService(t.TempDir(), false, []string{"snapshot"})
+	events := service.Subscribe(t.Context())
+	request := CreatePermissionRequest{
+		SessionID:               "child",
+		ToolCallID:              "snapshot-call",
+		ToolName:                "snapshot",
+		Action:                  "include",
+		Description:             "Include external file in workspace snapshots",
+		Path:                    filepath.Join(t.TempDir(), "external.txt"),
+		RequireExplicitApproval: true,
+		AllowDetachedPrompt:     true,
+	}
+
+	type permissionResult struct {
+		granted bool
+		err     error
+	}
+	result := make(chan permissionResult, 1)
+	go func() {
+		ctx := WithDetachedAgent(WithRunApproval(t.Context()))
+		granted, err := service.Request(ctx, request)
+		result <- permissionResult{granted: granted, err: err}
+	}()
+
+	select {
+	case event := <-events:
+		require.Equal(t, request.ToolCallID, event.Payload.ToolCallID)
+		require.True(t, service.Grant(event.Payload))
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for external snapshot permission")
+	}
+	permission := <-result
+	require.NoError(t, permission.err)
+	require.True(t, permission.granted)
+}
+
+func TestPermissionService_YoloApprovesExplicitDetachedRequest(t *testing.T) {
+	service := NewPermissionService(t.TempDir(), true, nil)
+	granted, err := service.Request(WithDetachedAgent(t.Context()), CreatePermissionRequest{
+		SessionID:               "child",
+		ToolCallID:              "snapshot-call",
+		ToolName:                "snapshot",
+		Action:                  "include",
+		Path:                    filepath.Join(t.TempDir(), "external.txt"),
+		RequireExplicitApproval: true,
+		AllowDetachedPrompt:     true,
+	})
+	require.NoError(t, err)
+	require.True(t, granted)
 }
 
 func TestPermissionService_SequentialProperties(t *testing.T) {

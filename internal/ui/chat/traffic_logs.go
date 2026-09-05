@@ -64,17 +64,95 @@ func (r *TrafficLogsToolRenderContext) RenderTool(sty *styles.Styles, width int,
 		limit = min(limit, collapsedTrafficRecordLimit)
 	}
 	for index, record := range metadata.Records[:limit] {
-		parts = append(parts, renderTrafficLogRecord(sty, record, bodyWidth, opts.ExpandedContent, params.IncludeBody, index+1))
+		parts = append(parts, renderTrafficLogRecord(sty, record, bodyWidth, false, false, index+1))
 	}
 	if !opts.ExpandedContent {
 		hidden := len(metadata.Records) - limit
 		if hidden > 0 {
-			parts = append(parts, sty.Tool.ContentTruncation.Render(fmt.Sprintf("… %d more records; expand for all fields", hidden)))
-		} else {
-			parts = append(parts, sty.Tool.ContentTruncation.Render("Expand for headers, message summaries, and body details"))
+			parts = append(parts, sty.Tool.ContentTruncation.Render(fmt.Sprintf("… %d more records; expand to show all", hidden)))
 		}
 	}
+	parts = append(parts, sty.Tool.ContentTruncation.Render("Use traffic_log_detail or traffic_log_search with a record ID"))
 	return joinToolParts(header, sty.Tool.Body.Render(strings.Join(parts, "\n")))
+}
+
+type TrafficLogDetailToolRenderContext struct{}
+
+type TrafficLogSearchToolRenderContext struct{}
+
+func NewTrafficLogDetailToolMessageItem(
+	sty *styles.Styles,
+	toolCall message.ToolCall,
+	result *message.ToolResult,
+	canceled bool,
+) ToolMessageItem {
+	return newBaseToolMessageItem(sty, toolCall, result, &TrafficLogDetailToolRenderContext{}, canceled)
+}
+
+func NewTrafficLogSearchToolMessageItem(
+	sty *styles.Styles,
+	toolCall message.ToolCall,
+	result *message.ToolResult,
+	canceled bool,
+) ToolMessageItem {
+	return newBaseToolMessageItem(sty, toolCall, result, &TrafficLogSearchToolRenderContext{}, canceled)
+}
+
+func (r *TrafficLogDetailToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
+	cappedWidth := cappedMessageWidth(width)
+	if opts.IsPending() {
+		return pendingTool(sty, "Traffic Log Detail", opts.Anim, opts.Compact)
+	}
+	var params tools.TrafficLogDetailParams
+	if err := json.Unmarshal([]byte(opts.ToolCall.Input), &params); err != nil {
+		return toolErrorContent(sty, &message.ToolResult{Content: "Invalid parameters"}, cappedWidth)
+	}
+	header := toolHeader(sty, opts.Status, "Traffic Log Detail", cappedWidth, opts, params.RecordID)
+	if opts.Compact {
+		return header
+	}
+	if earlyState, ok := toolEarlyStateContent(sty, opts, cappedWidth); ok {
+		return joinToolParts(header, earlyState)
+	}
+	if opts.HasEmptyResult() {
+		return header
+	}
+	var metadata tools.TrafficLogDetailResponseMetadata
+	if opts.Result.Metadata == "" || json.Unmarshal([]byte(opts.Result.Metadata), &metadata) != nil || metadata.Record.RecordID == "" {
+		bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
+		body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
+		return joinToolParts(header, body)
+	}
+	bodyWidth := max(1, cappedWidth-toolBodyLeftPaddingTotal)
+	body := renderTrafficLogRecord(sty, metadata.Record, bodyWidth, opts.ExpandedContent, params.IncludeBody, 1)
+	if !opts.ExpandedContent {
+		body += "\n" + sty.Tool.ContentTruncation.Render("Expand for bounded headers, summaries, and body details")
+	}
+	return joinToolParts(header, sty.Tool.Body.Render(body))
+}
+
+func (r *TrafficLogSearchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
+	cappedWidth := cappedMessageWidth(width)
+	if opts.IsPending() {
+		return pendingTool(sty, "Traffic Log Search", opts.Anim, opts.Compact)
+	}
+	var params tools.TrafficLogSearchParams
+	if err := json.Unmarshal([]byte(opts.ToolCall.Input), &params); err != nil {
+		return toolErrorContent(sty, &message.ToolResult{Content: "Invalid parameters"}, cappedWidth)
+	}
+	header := toolHeader(sty, opts.Status, "Traffic Log Search", cappedWidth, opts, params.RecordID, params.Query)
+	if opts.Compact {
+		return header
+	}
+	if earlyState, ok := toolEarlyStateContent(sty, opts, cappedWidth); ok {
+		return joinToolParts(header, earlyState)
+	}
+	if opts.HasEmptyResult() {
+		return header
+	}
+	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
+	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
+	return joinToolParts(header, body)
 }
 
 func trafficLogToolParams(params tools.TrafficLogsParams) []string {
@@ -97,15 +175,14 @@ func trafficLogToolParams(params tools.TrafficLogsParams) []string {
 			values = append(values, field.name, field.value)
 		}
 	}
-	if params.IncludeBody {
-		values = append(values, "body", "included")
-	}
 	return values
 }
 
 func renderTrafficLogRecord(sty *styles.Styles, record tools.TrafficLogRecord, width int, expanded, includeBody bool, position int) string {
 	identifier := strconv.Itoa(position)
-	if record.ID != 0 {
+	if record.RecordID != "" {
+		identifier = record.RecordID
+	} else if record.ID != 0 {
 		identifier = strconv.FormatInt(record.ID, 10)
 	}
 	parts := []string{sty.Tool.NameNested.Render("Record " + identifier)}
@@ -123,7 +200,7 @@ func renderTrafficLogRecord(sty *styles.Styles, record tools.TrafficLogRecord, w
 	}
 
 	parts = append(parts,
-		trafficLogField(sty, "Record ID", strconv.FormatInt(record.ID, 10), width, true),
+		trafficLogField(sty, "Record ID", identifier, width, true),
 		trafficLogField(sty, "Process ID", strconv.Itoa(record.ProcessID), width, true),
 		trafficLogField(sty, "Trace ID", record.TraceID, width, true),
 		trafficLogField(sty, "Message type", formatOptionalInt(record.MessageType), width, true),
@@ -148,7 +225,7 @@ func renderTrafficLogRecord(sty *styles.Styles, record tools.TrafficLogRecord, w
 		if includeBody {
 			body = "—"
 		} else {
-			body = "Not included; query with include_body=true"
+			body = "Not included; use traffic_log_detail with include_body=true"
 		}
 	}
 	parts = append(parts, trafficLogField(sty, "Body", body, width, true))

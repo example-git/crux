@@ -1,10 +1,11 @@
 package dialog
 
 import (
-	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/list"
 	"github.com/example-git/crux/internal/ui/styles"
@@ -69,9 +70,11 @@ func (m *ModelGroup) Render(width int) string {
 type ModelItem struct {
 	*list.Versioned
 
-	prov      catwalk.Provider
-	model     catwalk.Model
-	modelType ModelType
+	prov             catalog.Provider
+	model            catalog.Model
+	modelType        ModelType
+	providerOwner    providerregistry.RegistrationOwner
+	providerOwnerSet bool
 
 	cache        map[int]string
 	t            *styles.Styles
@@ -104,7 +107,7 @@ func (m *ModelItem) SelectedModelType() config.SelectedModelType {
 var _ ListItem = &ModelItem{}
 
 // NewModelItem creates a new ModelItem.
-func NewModelItem(t *styles.Styles, prov catwalk.Provider, model catwalk.Model, typ ModelType, showProvider bool) *ModelItem {
+func NewModelItem(t *styles.Styles, prov catalog.Provider, model catalog.Model, typ ModelType, showProvider bool) *ModelItem {
 	return &ModelItem{
 		Versioned:    list.NewVersioned(),
 		prov:         prov,
@@ -114,6 +117,12 @@ func NewModelItem(t *styles.Styles, prov catwalk.Provider, model catwalk.Model, 
 		cache:        make(map[int]string),
 		showProvider: showProvider,
 	}
+}
+
+func newModelItemForConfig(t *styles.Styles, cfg *config.Config, prov catalog.Provider, model catalog.Model, typ ModelType, showProvider bool) *ModelItem {
+	item := NewModelItem(t, prov, model, typ, showProvider)
+	item.providerOwner, item.providerOwnerSet = cfg.ProviderOwner(string(prov.ID))
+	return item
 }
 
 // Filter implements ListItem.

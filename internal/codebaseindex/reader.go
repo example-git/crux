@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	cruxdb "github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/lock"
 )
 
 type Chunk struct {
@@ -41,6 +42,7 @@ type Reader struct {
 	catalog      *storeCatalog
 	filters      ProjectFilters
 	filterDigest string
+	releaseLease func()
 }
 
 func Open(ctx context.Context, path string) (*Reader, error) {
@@ -79,10 +81,20 @@ func OpenWithFilters(ctx context.Context, path, storeDirectory string, filters P
 }
 
 func (r *Reader) Close() error {
-	if r.db == nil {
-		return nil
+	var err error
+	if r.db != nil {
+		err = r.db.Close()
+		r.db = nil
 	}
-	return r.db.Close()
+	if r.releaseLease != nil {
+		r.releaseLease()
+		r.releaseLease = nil
+	}
+	return err
+}
+
+func acquireGenerationLease(ctx context.Context, generationDirectory string) (func(), error) {
+	return lock.SharedFile(ctx, generationLeasePath(generationDirectory))
 }
 
 func (r *Reader) Load(ctx context.Context, projectRoot, model string) (Dataset, error) {

@@ -13,7 +13,7 @@ import (
 )
 
 var schemaCmd = &cobra.Command{
-	Use:    "schema [configuration|provider-plugin|provider-preset-plugin]",
+	Use:    "schema [configuration|provider-plugin|provider-preset-plugin|image-provider-plugin]",
 	Short:  "Generate a JSON schema",
 	Long:   "Generate the Crux configuration or provider plugin manifest JSON schema",
 	Hidden: true,
@@ -23,14 +23,17 @@ var schemaCmd = &cobra.Command{
 		if len(args) == 1 {
 			kind = args[0]
 		}
-		if kind == "provider-plugin" || kind == "provider-preset-plugin" {
+		if kind == "provider-plugin" || kind == "provider-preset-plugin" || kind == "image-provider-plugin" {
 			var (
 				bts []byte
 				err error
 			)
-			if kind == "provider-plugin" {
+			switch kind {
+			case "provider-plugin":
 				bts, err = providermanifest.SchemaJSON()
-			} else {
+			case "image-provider-plugin":
+				bts, err = providermanifest.ImageSchemaJSON()
+			case "provider-preset-plugin":
 				bts, err = providermanifest.PresetSchemaJSON()
 			}
 			if err != nil {

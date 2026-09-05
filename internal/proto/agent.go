@@ -3,6 +3,8 @@ package proto
 import (
 	"encoding/json"
 	"errors"
+
+	"github.com/example-git/crux/internal/providerregistry"
 )
 
 // AgentEventType represents the type of agent event.
@@ -27,9 +29,11 @@ func (t *AgentEventType) UnmarshalText(text []byte) error {
 
 // AgentEvent represents an event emitted by the agent.
 type AgentEvent struct {
-	Type    AgentEventType `json:"type"`
-	Message Message        `json:"message"`
-	Error   error          `json:"error,omitempty"`
+	Type       AgentEventType                      `json:"type"`
+	Message    Message                             `json:"message"`
+	Error      error                               `json:"error,omitempty"`
+	ProviderID string                              `json:"provider_id,omitempty"`
+	Owner      *providerregistry.RegistrationOwner `json:"owner,omitempty"`
 
 	// RunID echoes the caller-supplied AgentMessage.RunID for the run
 	// that produced this event. It lets observers (notably
