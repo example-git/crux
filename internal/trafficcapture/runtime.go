@@ -187,7 +187,7 @@ func extractRuntimeTar(destination string, archive *tar.Reader) error {
 
 func runtimeArchivePath(root, name string) (string, error) {
 	cleaned := filepath.Clean(filepath.FromSlash(name))
-	if cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+	if cleaned == "." || !filepath.IsLocal(cleaned) || strings.HasPrefix(name, "/") {
 		return "", fmt.Errorf("unsafe embedded runtime archive path %q", name)
 	}
 	path := filepath.Join(root, cleaned)
@@ -198,7 +198,7 @@ func runtimeArchivePath(root, name string) (string, error) {
 }
 
 func runtimeArchiveLink(root, parent, name string) (string, error) {
-	if filepath.IsAbs(filepath.FromSlash(name)) {
+	if strings.HasPrefix(name, "/") || filepath.IsAbs(filepath.FromSlash(name)) || filepath.VolumeName(filepath.FromSlash(name)) != "" {
 		return "", fmt.Errorf("unsafe embedded runtime archive link %q", name)
 	}
 	path := filepath.Clean(filepath.Join(parent, filepath.FromSlash(name)))

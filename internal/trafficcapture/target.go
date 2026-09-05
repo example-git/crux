@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -64,11 +65,14 @@ func resolveExecutable(raw, workingDir string) (string, error) {
 	}
 	var path string
 	var err error
-	if strings.ContainsRune(value, filepath.Separator) {
+	if strings.ContainsRune(value, filepath.Separator) || strings.ContainsRune(value, '/') {
 		if !filepath.IsAbs(value) {
 			value = filepath.Join(workingDir, value)
 		}
 		path, err = filepath.Abs(value)
+		if err == nil && runtime.GOOS == "windows" {
+			path, err = exec.LookPath(path)
+		}
 	} else {
 		path, err = exec.LookPath(value)
 	}
@@ -83,7 +87,7 @@ func resolveExecutable(raw, workingDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("inspect target executable: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+	if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
 		return "", fmt.Errorf("target is not executable: %s", path)
 	}
 	return path, nil

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -106,11 +107,15 @@ func TestWritePaneLogKeepsBoundedTail(t *testing.T) {
 
 func TestResolveTargetPreservesExecutableArguments(t *testing.T) {
 	workingDir := t.TempDir()
-	executable := filepath.Join(workingDir, "capture target")
+	name := "capture target"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	executable := filepath.Join(workingDir, name)
 	require.NoError(t, os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o700))
 
 	target, err := resolveTarget(t.Context(), Request{
-		Executable:  "./capture target",
+		Executable:  "./" + name,
 		Arguments:   []string{"value with spaces", "$(not-a-shell)"},
 		WorkingDir:  workingDir,
 		CapturePath: filepath.Join(workingDir, "capture.mitm"),

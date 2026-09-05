@@ -155,6 +155,7 @@ func prepareServiceTest(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("USERPROFILE", filepath.Join(root, "home"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
 	t.Setenv("CRUX_GLOBAL_DATA", filepath.Join(root, "data"))
 	t.Setenv("CRUX_CACHE_DIR", filepath.Join(root, "cache"))

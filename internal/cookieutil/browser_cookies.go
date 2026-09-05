@@ -252,7 +252,15 @@ func loadChromiumCookies(ctx context.Context, profile browserProfile, jar http.C
 }
 
 func openBrowserCookieDatabase(ctx context.Context, path string) (*sql.DB, error) {
-	location := &url.URL{Scheme: "file", Path: path}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	uriPath := filepath.ToSlash(absolute)
+	if !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	location := &url.URL{Scheme: "file", Path: uriPath}
 	database, err := sql.Open("sqlite", location.String()+"?mode=ro&_pragma=query_only(1)&_pragma=busy_timeout(1000)")
 	if err != nil {
 		return nil, err
