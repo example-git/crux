@@ -55,8 +55,10 @@ func TestPrepareTrafficCaptureParamsValidatesTargetAndPaths(t *testing.T) {
 	require.False(t, prepared.workingDirExplicit)
 	require.Equal(t, ".mitm", filepath.Ext(prepared.CapturePath))
 	require.True(t, prepared.managedCapture)
-	require.Contains(t, prepared.CapturePath, filepath.Join(globalData, "traffic-capture", "captures"))
-	require.NotContains(t, prepared.CapturePath, workingDir)
+	canonicalCaptureDirectory, err := canonicalToolPath(workingDir, filepath.Join(globalData, "traffic-capture", "captures"))
+	require.NoError(t, err)
+	require.Equal(t, canonicalCaptureDirectory, filepath.Dir(prepared.CapturePath))
+	require.NotContains(t, prepared.CapturePath, canonicalWorkingDir)
 	require.NoFileExists(t, prepared.CapturePath)
 }
 

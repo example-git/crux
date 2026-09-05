@@ -9,6 +9,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestStoreRejectsOperationsAfterClose(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "metadata"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	record := Record{
+		ID:        "a12345678",
+		Type:      TypeAgent,
+		Ownership: Ownership{WorkspaceID: "workspace", ParentSessionID: "parent"},
+		State:     StateToRecord(State{Status: StatusPending}),
+		Agent:     &AgentRecord{Prompt: "first", AgentType: "task"},
+	}
+	require.NoError(t, store.Put(record))
+	require.NoError(t, store.Close())
+	require.ErrorIs(t, store.Put(record), os.ErrClosed)
+	_, err = store.Get(record.ID)
+	require.ErrorIs(t, err, os.ErrClosed)
+	_, err = store.List()
+	require.ErrorIs(t, err, os.ErrClosed)
+	_, err = store.MarkNotificationRead("notification")
+	require.ErrorIs(t, err, os.ErrClosed)
+	_, err = store.MarkNotificationDelivered("notification")
+	require.ErrorIs(t, err, os.ErrClosed)
+	require.ErrorIs(t, store.Remove(record.ID), os.ErrClosed)
+	require.FileExists(t, filepath.Join(store.root, recordName(record.ID)))
+}
+
 func TestStoreRoundTripAndOrdering(t *testing.T) {
 	store, err := NewStore(filepath.Join(t.TempDir(), "metadata"))
 	require.NoError(t, err)
