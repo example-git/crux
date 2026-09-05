@@ -99,7 +99,15 @@ func extractRuntimeArchive(destination string) error {
 		return fmt.Errorf("open embedded runtime archive: %w", err)
 	}
 	defer compressed.Close()
-	archive := tar.NewReader(compressed)
+	return extractRuntimeTar(destination, tar.NewReader(compressed))
+}
+
+func extractRuntimeTar(destination string, archive *tar.Reader) error {
+	root, err := os.OpenRoot(destination)
+	if err != nil {
+		return fmt.Errorf("open embedded runtime destination: %w", err)
+	}
+	defer root.Close()
 	for {
 		header, err := archive.Next()
 		if errors.Is(err, io.EOF) {
@@ -112,16 +120,30 @@ func extractRuntimeArchive(destination string) error {
 		if err != nil {
 			return err
 		}
+		name, err := filepath.Rel(destination, path)
+		if err != nil {
+			return err
+		}
+		parent := filepath.Dir(name)
+		if err := root.MkdirAll(parent, 0o700); err != nil {
+			return fmt.Errorf("create embedded runtime parent: %w", err)
+		}
+		for current := parent; current != "."; current = filepath.Dir(current) {
+			info, err := root.Lstat(current)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("unsafe embedded runtime symlink parent %q", current)
+			}
+		}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(path, 0o700); err != nil {
+			if err := root.MkdirAll(name, 0o700); err != nil {
 				return fmt.Errorf("create embedded runtime directory: %w", err)
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				return fmt.Errorf("create embedded runtime parent: %w", err)
-			}
-			file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+			file, err := root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 			if err != nil {
 				return fmt.Errorf("create embedded runtime file: %w", err)
 			}
@@ -138,14 +160,11 @@ func extractRuntimeArchive(destination string) error {
 			if err != nil {
 				return err
 			}
-			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-				return fmt.Errorf("create embedded runtime link parent: %w", err)
-			}
 			relative, err := filepath.Rel(filepath.Dir(path), target)
 			if err != nil {
 				return fmt.Errorf("resolve embedded runtime link: %w", err)
 			}
-			if err := os.Symlink(relative, path); err != nil {
+			if err := root.Symlink(relative, name); err != nil {
 				return fmt.Errorf("create embedded runtime link: %w", err)
 			}
 		case tar.TypeLink:
@@ -153,7 +172,11 @@ func extractRuntimeArchive(destination string) error {
 			if err != nil {
 				return err
 			}
-			if err := os.Link(target, path); err != nil {
+			relative, err := filepath.Rel(destination, target)
+			if err != nil {
+				return err
+			}
+			if err := root.Link(relative, name); err != nil {
 				return fmt.Errorf("create embedded runtime hard link: %w", err)
 			}
 		default:

@@ -252,6 +252,7 @@ func CanonicalPath(path string) (string, error) {
 		return "", err
 	}
 	var suffix []string
+	links := 0
 	for {
 		resolved, resolveErr := filepath.EvalSymlinks(absolute)
 		if resolveErr == nil {
@@ -262,6 +263,25 @@ func CanonicalPath(path string) (string, error) {
 		}
 		if !os.IsNotExist(resolveErr) {
 			return "", resolveErr
+		}
+		info, statErr := os.Lstat(absolute)
+		if statErr != nil && !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+			links++
+			if links > 255 {
+				return "", fmt.Errorf("resolve path %q: too many symbolic links", path)
+			}
+			target, err := os.Readlink(absolute)
+			if err != nil {
+				return "", err
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(filepath.Dir(absolute), target)
+			}
+			absolute = target
+			continue
 		}
 		parent := filepath.Dir(absolute)
 		if parent == absolute {

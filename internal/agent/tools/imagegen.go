@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -114,6 +113,24 @@ func NewImagegenTool(manager *imagegen.JobManager, permissions permission.Servic
 					return NewPermissionDeniedResponse(), nil
 				}
 			}
+			var reservation *imagegen.OutputReservation
+			if params.OutputDirectory != "" {
+				directory := filepath.Dir(request.OutputPaths[0])
+				granted, err := authorizeExternalPath(ctx, permissions, workingDir, directory, call.ID, ImagegenToolName, "read", "Inspect image output directory: "+directory, params)
+				if err != nil {
+					return fantasy.ToolResponse{}, err
+				}
+				if !granted {
+					return NewPermissionDeniedResponse(), nil
+				}
+				reservation, err = manager.ReserveNumberedOutputs(request, directory)
+				if err != nil {
+					return fantasy.NewTextErrorResponse(err.Error()), nil
+				}
+				defer reservation.Release()
+				request.OutputPaths = reservation.Paths()
+				permissionParams.Outputs = request.OutputPaths
+			}
 			description := fmt.Sprintf("Queue %s image job with %d output(s)", request.Mode, request.Count)
 			granted, err := permissions.Request(ctx, permission.CreatePermissionRequest{
 				SessionID:   sessionID,
@@ -137,10 +154,8 @@ func NewImagegenTool(manager *imagegen.JobManager, permissions permission.Servic
 			}
 			ownership.OriginToolCallID = call.ID
 			var view managedtask.View
-			if params.OutputDirectory != "" {
-				var outputs []string
-				view, outputs, err = manager.EnqueueNumbered(request, filepath.Dir(request.OutputPaths[0]), imagegenJobDescription(request), ownership)
-				request.OutputPaths = outputs
+			if reservation != nil {
+				view, err = manager.EnqueueReserved(request, imagegenJobDescription(request), ownership, reservation)
 			} else {
 				view, err = manager.Enqueue(request, imagegenJobDescription(request), ownership)
 			}
@@ -245,7 +260,7 @@ func resolveImagegenRequest(workingDir string, params ImagegenParams, prepare ..
 	return request, nil
 }
 
-func resolveImagegenOutputPaths(directory string, backend imagegen.Backend, count int, force bool, extension ...string) ([]string, error) {
+func resolveImagegenOutputPaths(directory string, backend imagegen.Backend, count int, _ bool, extension ...string) ([]string, error) {
 	paths := make([]string, 0, count)
 	for index := 1; len(paths) < count; index++ {
 		name := imagegen.NumberedOutputName(backend, index)
@@ -253,15 +268,6 @@ func resolveImagegenOutputPaths(directory string, backend imagegen.Backend, coun
 			name = fmt.Sprintf("image_%d%s", index, extension[0])
 		}
 		path := filepath.Join(directory, name)
-		if force {
-			paths = append(paths, path)
-			continue
-		}
-		if _, err := os.Lstat(path); err == nil {
-			continue
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("inspect output path %q: %w", path, err)
-		}
 		paths = append(paths, path)
 	}
 	return paths, nil

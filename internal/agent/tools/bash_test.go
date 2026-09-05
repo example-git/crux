@@ -3,6 +3,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -285,6 +288,39 @@ func TestBashTool_ChainedCommandsDenied(t *testing.T) {
 
 	require.Equal(t, 1, perms.requestCount)
 	require.Contains(t, resp.Content, "User denied permission")
+}
+
+func TestBashToolUnsafeSyntaxDeniedBeforeExecution(t *testing.T) {
+	for _, command := range []string{
+		"echo safe\njq . %q",
+		"echo safe & jq . %q",
+		"echo <(jq . %q)",
+		"echo $(jq . %q)",
+		"echo replaced > %q",
+		"echo-unknown %q",
+		"env jq . %q",
+		"nice jq . %q",
+		"nohup jq . %q",
+		"timeout 1 jq . %q",
+	} {
+		t.Run(command, func(t *testing.T) {
+			outside := filepath.Join(t.TempDir(), "private.json")
+			original := []byte(`{"value":"private-fixture-content"}`)
+			require.NoError(t, os.WriteFile(outside, original, 0o600))
+			tool, permissions := newBashToolWithRecordingPerms(t.TempDir(), false)
+			ctx := context.WithValue(t.Context(), SessionIDContextKey, "test-session")
+			response := runBashTool(t, tool, ctx, BashParams{
+				Description: "denied script",
+				Command:     fmt.Sprintf(command, outside),
+			})
+			require.Equal(t, 1, permissions.requestCount)
+			require.Contains(t, response.Content, "User denied permission")
+			require.NotContains(t, response.Content, "private-fixture-content")
+			data, err := os.ReadFile(outside)
+			require.NoError(t, err)
+			require.Equal(t, original, data)
+		})
+	}
 }
 
 func runBashTool(t *testing.T, tool fantasy.AgentTool, ctx context.Context, params BashParams) fantasy.ToolResponse {

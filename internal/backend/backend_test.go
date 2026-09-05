@@ -1336,6 +1336,9 @@ func xdgIsolated(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("CRUX_GLOBAL_CONFIG", t.TempDir())
+	t.Setenv("CRUX_GLOBAL_DATA", t.TempDir())
+	t.Setenv("CRUX_CACHE_DIR", t.TempDir())
 }
 
 // TestFirstWinsMismatch_LogsOnFlagDifferences verifies that the

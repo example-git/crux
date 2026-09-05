@@ -98,6 +98,9 @@ func NewTrafficCaptureTool(permissions permission.Service, workingDir string) fa
 			if !granted {
 				return NewPermissionDeniedResponse(), nil
 			}
+			if err := validatePreparedTrafficCaptureParams(prepared); err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
 			metadata, err := trafficcapture.Launch(ctx, trafficcapture.Request{
 				Executable:         prepared.Executable,
 				Arguments:          prepared.Arguments,
@@ -165,13 +168,6 @@ func prepareTrafficCaptureParams(workingDir string, params TrafficCaptureParams)
 	if err != nil {
 		return TrafficCaptureParams{}, err
 	}
-	info, err := os.Stat(resolvedWorkingDir)
-	if err != nil {
-		return TrafficCaptureParams{}, fmt.Errorf("access working directory: %w", err)
-	}
-	if !info.IsDir() {
-		return TrafficCaptureParams{}, fmt.Errorf("working directory is not a directory: %s", resolvedWorkingDir)
-	}
 	params.WorkingDir = resolvedWorkingDir
 	params.workingDirExplicit = workingDirExplicit
 	if params.CapturePath == "" {
@@ -186,13 +182,24 @@ func prepareTrafficCaptureParams(workingDir string, params TrafficCaptureParams)
 	if filepath.Ext(resolvedCapturePath) != ".mitm" {
 		return TrafficCaptureParams{}, errors.New("capture_path must end in .mitm")
 	}
-	if _, err := os.Lstat(resolvedCapturePath); err == nil {
-		return TrafficCaptureParams{}, fmt.Errorf("capture file already exists: %s", resolvedCapturePath)
-	} else if !os.IsNotExist(err) {
-		return TrafficCaptureParams{}, fmt.Errorf("access capture path: %w", err)
-	}
 	params.CapturePath = resolvedCapturePath
 	return params, nil
+}
+
+func validatePreparedTrafficCaptureParams(params TrafficCaptureParams) error {
+	info, err := os.Stat(params.WorkingDir)
+	if err != nil {
+		return fmt.Errorf("access working directory: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("working directory is not a directory: %s", params.WorkingDir)
+	}
+	if _, err := os.Lstat(params.CapturePath); err == nil {
+		return fmt.Errorf("capture file already exists: %s", params.CapturePath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("access capture path: %w", err)
+	}
+	return nil
 }
 
 func trafficCapturePermissionDescription(params TrafficCaptureParams) string {

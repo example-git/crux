@@ -2,8 +2,9 @@ package tools
 
 import (
 	"runtime"
-	"slices"
 	"strings"
+
+	"mvdan.cc/sh/v3/syntax"
 )
 
 var safeCommands = []string{
@@ -13,7 +14,6 @@ var safeCommands = []string{
 	"df",
 	"du",
 	"echo",
-	"env",
 	"free",
 	"groups",
 	"hostname",
@@ -21,14 +21,10 @@ var safeCommands = []string{
 	"kill",
 	"killall",
 	"ls",
-	"nice",
-	"nohup",
 	"printenv",
 	"ps",
 	"pwd",
 	"set",
-	"time",
-	"timeout",
 	"top",
 	"type",
 	"uname",
@@ -58,20 +54,30 @@ var safeCommands = []string{
 	"git tag",
 }
 
-var chainingMetacharacters = []string{
-	";",
-	"|",
-	"&&",
-	"$(",
-	"`",
-}
-
 // containsCommandChaining reports whether s contains shell metacharacters
 // that enable command chaining or substitution.
-func containsCommandChaining(s string) bool {
-	return slices.ContainsFunc(chainingMetacharacters, func(c string) bool {
-		return strings.Contains(s, c)
+func containsCommandChaining(command string) bool {
+	file, err := syntax.NewParser().Parse(strings.NewReader(command), "")
+	if err != nil || len(file.Stmts) != 1 {
+		return true
+	}
+	statement := file.Stmts[0]
+	if statement.Background || statement.Coprocess || len(statement.Redirs) != 0 {
+		return true
+	}
+	call, ok := statement.Cmd.(*syntax.CallExpr)
+	if !ok || len(call.Assigns) != 0 || len(call.Args) == 0 {
+		return true
+	}
+	unsafe := false
+	syntax.Walk(call, func(node syntax.Node) bool {
+		switch node.(type) {
+		case *syntax.CmdSubst, *syntax.ProcSubst:
+			unsafe = true
+		}
+		return !unsafe
 	})
+	return unsafe
 }
 
 func init() {

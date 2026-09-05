@@ -13,6 +13,7 @@ func TestProjectsEmpty(t *testing.T) {
 	// Use a temp directory for projects.json
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("CRUX_GLOBAL_DATA", tmpDir)
 
 	var b bytes.Buffer
 	projectsCmd.SetOut(&b)
@@ -26,6 +27,7 @@ func TestProjectsEmpty(t *testing.T) {
 func TestProjectsJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("CRUX_GLOBAL_DATA", tmpDir)
 
 	// Register a project
 	err := projects.Register("/test/project", "/test/project/.crux")

@@ -103,6 +103,53 @@ func findLSPClient(lspManager *lsp.Manager, filePath string) *lsp.Client {
 	return nil
 }
 
+func canonicalizeWorkspaceEdit(edit *protocol.WorkspaceEdit, workingDir string) error {
+	resolve := func(uri *protocol.DocumentURI) error {
+		path, err := uri.Path()
+		if err != nil {
+			return err
+		}
+		path, err = canonicalToolPath(workingDir, path)
+		if err != nil {
+			return err
+		}
+		*uri = protocol.DocumentURI(protocol.URIFromPath(path))
+		return nil
+	}
+	changes := make(map[protocol.DocumentURI][]protocol.TextEdit, len(edit.Changes))
+	for uri, edits := range edit.Changes {
+		if err := resolve(&uri); err != nil {
+			return err
+		}
+		if _, exists := changes[uri]; exists {
+			return fmt.Errorf("multiple rename paths resolve to %s", uri)
+		}
+		changes[uri] = edits
+	}
+	edit.Changes = changes
+	for _, change := range edit.DocumentChanges {
+		var uris []*protocol.DocumentURI
+		if change.TextDocumentEdit != nil {
+			uris = append(uris, &change.TextDocumentEdit.TextDocument.URI)
+		}
+		if change.CreateFile != nil {
+			uris = append(uris, &change.CreateFile.URI)
+		}
+		if change.RenameFile != nil {
+			uris = append(uris, &change.RenameFile.OldURI, &change.RenameFile.NewURI)
+		}
+		if change.DeleteFile != nil {
+			uris = append(uris, &change.DeleteFile.URI)
+		}
+		for _, uri := range uris {
+			if err := resolve(uri); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // collectAffectedFiles extracts all unique file paths from a WorkspaceEdit.
 func collectAffectedFiles(edit *protocol.WorkspaceEdit) []string {
 	seen := make(map[string]struct{})
@@ -131,19 +178,22 @@ func collectAffectedFiles(edit *protocol.WorkspaceEdit) []string {
 	}
 
 	for _, change := range edit.DocumentChanges {
-		switch {
-		case change.TextDocumentEdit != nil:
+		if change.TextDocumentEdit != nil {
 			addURI(change.TextDocumentEdit.TextDocument.URI)
-		case change.CreateFile != nil:
+		}
+		if change.CreateFile != nil {
 			addURI(change.CreateFile.URI)
-		case change.RenameFile != nil:
+		}
+		if change.RenameFile != nil {
 			addURI(change.RenameFile.OldURI)
 			addURI(change.RenameFile.NewURI)
-		case change.DeleteFile != nil:
+		}
+		if change.DeleteFile != nil {
 			addURI(change.DeleteFile.URI)
 		}
 	}
 
+	slices.Sort(files)
 	return files
 }
 
