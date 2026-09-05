@@ -387,15 +387,14 @@ func TestInstallRejectsInsecureOrUnrecognizedPrivateDirectory(t *testing.T) {
 	executable := testExecutable(t, "crux", "crux")
 
 	insecure := filepath.Join(t.TempDir(), "compatibility")
-	require.NoError(t, os.Mkdir(insecure, 0o755))
-	require.NoError(t, os.Chmod(insecure, 0o755))
+	createInsecureDirectory(t, insecure)
 	manager, err := New(insecure)
 	require.NoError(t, err)
 	_, err = manager.Install(Options{Executable: executable, SkipPath: true})
 	require.ErrorContains(t, err, "expected no group or other access")
 
 	unrecognized := filepath.Join(t.TempDir(), "compatibility")
-	require.NoError(t, os.Mkdir(unrecognized, 0o700))
+	require.NoError(t, createPrivateDirectory(unrecognized))
 	require.NoError(t, os.WriteFile(filepath.Join(unrecognized, "unrelated"), []byte("keep"), 0o600))
 	manager, err = New(unrecognized)
 	require.NoError(t, err)
@@ -425,11 +424,4 @@ func testExecutable(t *testing.T, name, content string) string {
 	path := filepath.Join(t.TempDir(), name)
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o700))
 	return path
-}
-
-func requireMode(t *testing.T, path string, expected os.FileMode) {
-	t.Helper()
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	require.Equal(t, expected, info.Mode().Perm())
 }

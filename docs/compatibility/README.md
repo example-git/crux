@@ -72,7 +72,7 @@ Install the four managed hard links and prepend their private directory through 
 
 The default managed root is the private `compatibility` directory next to Crux's global data file. Use `--root`, `--shell`, or `--profile` to select explicit local paths. `--skip-path` creates the links without changing a shell profile. The selected Crux executable and managed root must be on a filesystem that supports hard links between them.
 
-Installation never replaces an existing unrecognized `codex`, `claude`, `agy`, or `copilot` file in the managed directory. It also refuses symlinked, unexpectedly populated, or group/world-accessible managed directories. Existing official tools elsewhere on PATH are not modified.
+Installation never replaces an existing unrecognized `codex`, `claude`, `agy`, or `copilot` file in the managed directory. It also refuses symlinked, unexpectedly populated, or group/world-accessible managed directories. On Windows, private directories use protected ACLs granting access only to the current user, SYSTEM, and Administrators; existing directories are checked against the same access policy. Existing official tools elsewhere on PATH are not modified.
 
 Start a new shell after installation, then check both configured and active PATH state:
 
