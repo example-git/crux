@@ -24,6 +24,13 @@ import (
 // it with WithGlobalMirror. Only do this when the process hosts a single
 // workspace (local mode or a client process); the backend server hosts
 // multiple workspaces concurrently and must not enable mirroring.
+type Snapshot struct {
+	AllSkills     []*Skill
+	ActiveSkills  []*Skill
+	States        []*SkillState
+	ResolvedPaths []string
+}
+
 type Manager struct {
 	mu           sync.RWMutex
 	allSkills    []*Skill
@@ -89,25 +96,35 @@ func NewManager(allSkills, activeSkills []*Skill, states []*SkillState, opts ...
 	return m
 }
 
-// AllSkills returns the deduplicated list of all discovered skills.
-func (m *Manager) AllSkills() []*Skill {
+// Snapshot returns one coherent discovery generation. Skill values are
+// immutable after discovery; the enclosing slices are copied so callers cannot
+// mutate manager state.
+func (m *Manager) Snapshot() Snapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.allSkills
+	return Snapshot{
+		AllSkills:     append([]*Skill(nil), m.allSkills...),
+		ActiveSkills:  append([]*Skill(nil), m.activeSkills...),
+		States:        cloneStates(m.states),
+		ResolvedPaths: append([]string(nil), m.resolvedPaths...),
+	}
+}
+
+// AllSkills returns the deduplicated list of all discovered skills.
+func (m *Manager) AllSkills() []*Skill {
+	return m.Snapshot().AllSkills
 }
 
 // ActiveSkills returns the post-filter list of active skills (after
 // removing disabled entries).
 func (m *Manager) ActiveSkills() []*Skill {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.activeSkills
+	return m.Snapshot().ActiveSkills
 }
 
 // ResolvedPaths returns the expanded skills directory paths stored at
 // construction time.
 func (m *Manager) ResolvedPaths() []string {
-	return m.resolvedPaths
+	return m.Snapshot().ResolvedPaths
 }
 
 // WorkingDir returns the workspace working directory stored at
@@ -143,6 +160,30 @@ func (m *Manager) PublishStates(states []*SkillState) {
 	m.mu.Lock()
 	m.states = cloneStates(states)
 	m.mu.Unlock()
+	m.publishStates(states)
+}
+
+// ReplaceSnapshot atomically installs one complete discovery generation and
+// publishes its diagnostics. Prompt and tool rebuilds should use the returned
+// Snapshot rather than querying individual manager fields.
+func (m *Manager) ReplaceSnapshot(snapshot Snapshot) Snapshot {
+	snapshot = Snapshot{
+		AllSkills:     append([]*Skill(nil), snapshot.AllSkills...),
+		ActiveSkills:  append([]*Skill(nil), snapshot.ActiveSkills...),
+		States:        cloneStates(snapshot.States),
+		ResolvedPaths: append([]string(nil), snapshot.ResolvedPaths...),
+	}
+	m.mu.Lock()
+	m.allSkills = append([]*Skill(nil), snapshot.AllSkills...)
+	m.activeSkills = append([]*Skill(nil), snapshot.ActiveSkills...)
+	m.states = cloneStates(snapshot.States)
+	m.resolvedPaths = append([]string(nil), snapshot.ResolvedPaths...)
+	m.mu.Unlock()
+	m.publishStates(snapshot.States)
+	return snapshot
+}
+
+func (m *Manager) publishStates(states []*SkillState) {
 	if m.globalMirror {
 		SetLatestStates(states)
 	}
@@ -163,6 +204,16 @@ func (m *Manager) Shutdown() {
 	if m.broker != nil {
 		m.broker.Shutdown()
 	}
+}
+
+// ConfigKeyAffectsDiscovery reports whether a config mutation changes the
+// configured discovery inputs. Skill file content changes are picked up by the
+// next coordinator UpdateModels call even when this returns false.
+func ConfigKeyAffectsDiscovery(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	return key == "options.skills_paths" || key == "options.disabled_skills" ||
+		strings.HasPrefix(key, "options.skills_paths.") ||
+		strings.HasPrefix(key, "options.disabled_skills.")
 }
 
 // DiscoverFromConfig walks the embedded builtin FS and every path in

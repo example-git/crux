@@ -121,6 +121,11 @@ func wrapEvent(ev any) *pubsub.Payload {
 			SessionTitle: e.Payload.SessionTitle,
 			RunID:        e.Payload.RunID,
 			Type:         proto.AgentEventType(e.Payload.Type),
+			ProviderID:   e.Payload.ProviderID,
+		}
+		if e.Payload.Owner.ProviderID != "" {
+			owner := e.Payload.Owner
+			payload.Owner = &owner
 		}
 		// Carry any human-readable message across the wire; the client
 		// maps Error back into Notification.Message.
@@ -200,6 +205,7 @@ func sessionToProto(s session.Session) proto.Session {
 		MessageCount:     s.MessageCount,
 		PromptTokens:     s.PromptTokens,
 		CompletionTokens: s.CompletionTokens,
+		EstimatedUsage:   s.EstimatedUsage,
 		Cost:             s.Cost,
 		Todos:            todosToProto(s.Todos),
 		Mode:             string(s.Mode),
@@ -215,10 +221,11 @@ func sessionToProto(s session.Session) proto.Session {
 // unconditionally — the workspace lookup error is already surfaced by
 // the prior ListSessions/GetSession call when relevant.
 func isSessionBusy(ws *backend.Workspace, sessionID string) bool {
-	if ws == nil || ws.App == nil || ws.AgentCoordinator == nil {
+	if ws == nil || ws.App == nil {
 		return false
 	}
-	return ws.AgentCoordinator.IsSessionBusy(sessionID)
+	coordinator := ws.CurrentAgentCoordinator()
+	return coordinator != nil && coordinator.IsSessionBusy(sessionID)
 }
 
 // attachedClients returns the number of clients currently viewing
@@ -253,6 +260,7 @@ func fileToProto(f history.File) proto.File {
 		SessionID: f.SessionID,
 		Path:      f.Path,
 		Content:   f.Content,
+		Exists:    f.Exists,
 		Version:   f.Version,
 		CreatedAt: f.CreatedAt,
 		UpdatedAt: f.UpdatedAt,
@@ -327,6 +335,8 @@ func messageToProto(m message.Message) proto.Message {
 			msg.Parts = append(msg.Parts, proto.ProviderMetadataContent{
 				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
+		case message.RetryingContent:
+			msg.Parts = append(msg.Parts, proto.RetryingContent{})
 		}
 	}
 

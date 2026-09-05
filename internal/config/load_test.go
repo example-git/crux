@@ -2,8 +2,10 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,12 +16,15 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestMain(m *testing.M) {
@@ -473,12 +478,12 @@ func TestConfig_setDefaults(t *testing.T) {
 }
 
 func TestConfig_configureProviders(t *testing.T) {
-	knownProviders := []catwalk.Provider{
+	knownProviders := []catalog.Provider{
 		{
 			ID:          "openai",
 			APIKey:      "$OPENAI_API_KEY",
 			APIEndpoint: "https://api.openai.com/v1",
-			Models: []catwalk.Model{{
+			Models: []catalog.Model{{
 				ID: "test-model",
 			}},
 		},
@@ -500,12 +505,12 @@ func TestConfig_configureProviders(t *testing.T) {
 }
 
 func TestConfig_configureProvidersWithOverride(t *testing.T) {
-	knownProviders := []catwalk.Provider{
+	knownProviders := []catalog.Provider{
 		{
 			ID:          "openai",
 			APIKey:      "$OPENAI_API_KEY",
 			APIEndpoint: "https://api.openai.com/v1",
-			Models: []catwalk.Model{{
+			Models: []catalog.Model{{
 				ID: "test-model",
 			}},
 		},
@@ -517,7 +522,7 @@ func TestConfig_configureProvidersWithOverride(t *testing.T) {
 	cfg.Providers.Set("openai", ProviderConfig{
 		APIKey:  "xyz",
 		BaseURL: "https://api.openai.com/v2",
-		Models: []catwalk.Model{
+		Models: []catalog.Model{
 			{
 				ID:   "test-model",
 				Name: "Updated",
@@ -546,12 +551,12 @@ func TestConfig_configureProvidersWithOverride(t *testing.T) {
 }
 
 func TestConfig_configureProvidersWithNewProvider(t *testing.T) {
-	knownProviders := []catwalk.Provider{
+	knownProviders := []catalog.Provider{
 		{
 			ID:          "openai",
 			APIKey:      "$OPENAI_API_KEY",
 			APIEndpoint: "https://api.openai.com/v1",
-			Models: []catwalk.Model{{
+			Models: []catalog.Model{{
 				ID: "test-model",
 			}},
 		},
@@ -562,7 +567,7 @@ func TestConfig_configureProvidersWithNewProvider(t *testing.T) {
 			"custom": {
 				APIKey:  "xyz",
 				BaseURL: "https://api.someendpoint.com/v2",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID: "test-model",
 					},
@@ -593,12 +598,12 @@ func TestConfig_configureProvidersWithNewProvider(t *testing.T) {
 }
 
 func TestConfig_configureProvidersSetProviderID(t *testing.T) {
-	knownProviders := []catwalk.Provider{
+	knownProviders := []catalog.Provider{
 		{
 			ID:          "openai",
 			APIKey:      "$OPENAI_API_KEY",
 			APIEndpoint: "https://api.openai.com/v1",
-			Models: []catwalk.Model{{
+			Models: []catalog.Model{{
 				ID: "test-model",
 			}},
 		},
@@ -722,14 +727,14 @@ func TestConfig_CanInitializeAgent(t *testing.T) {
 	available := ProviderConfig{
 		ID:     "available",
 		APIKey: "key",
-		Type:   catwalk.TypeOpenAICompat,
-		Models: []catwalk.Model{{ID: "available-model"}},
+		Type:   catalog.TypeOpenAICompat,
+		Models: []catalog.Model{{ID: "available-model"}},
 	}
 	codex := ProviderConfig{
 		ID:         "codex",
 		OAuthToken: &oauth.Token{AccessToken: "persisted-token"},
 		Plugin:     &ProviderPluginReference{ID: "private.plugin", Version: "1"},
-		Models:     []catwalk.Model{{ID: "codex-model"}},
+		Models:     []catalog.Model{{ID: "codex-model"}},
 	}
 	cfg := &Config{
 		Providers: csync.NewMapFrom(map[string]ProviderConfig{
@@ -751,7 +756,7 @@ func TestConfig_CanInitializeAgent(t *testing.T) {
 	for _, id := range []string{"legacy-codex", "legacy-gemini"} {
 		cfg.Providers.Set(id, ProviderConfig{
 			ID: id, OAuthToken: &oauth.Token{AccessToken: "persisted-token"},
-			Models: []catwalk.Model{{ID: "legacy-model"}},
+			Models: []catalog.Model{{ID: "legacy-model"}},
 		})
 		require.False(t, cfg.IsProviderIntegrationAvailable(id))
 	}
@@ -760,6 +765,310 @@ func TestConfig_CanInitializeAgent(t *testing.T) {
 	cfg.Models[SelectedModelTypeLarge] = SelectedModel{Provider: available.ID, Model: "available-model"}
 	cfg.Models[SelectedModelTypeSmall] = SelectedModel{Provider: available.ID, Model: "available-model"}
 	require.True(t, cfg.CanInitializeAgent())
+}
+
+func TestResolveSelectedModelsPreservesUnavailablePluginSelections(t *testing.T) {
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+	t.Setenv("CRUX_PROVIDER_PROFILE", string(ProviderProfileCoreOnly))
+
+	available := ProviderConfig{
+		ID:     "available",
+		APIKey: "key",
+		Type:   catalog.TypeOpenAICompat,
+		Models: []catalog.Model{
+			{ID: "large-model"},
+			{ID: "small-model"},
+		},
+	}
+	retained := ProviderConfig{
+		ID:         "retained",
+		OAuthToken: &oauth.Token{AccessToken: "persisted-token"},
+		Plugin:     &ProviderPluginReference{ID: "synthetic.plugin", Version: "1"},
+		Models:     []catalog.Model{{ID: "retained-model"}},
+	}
+	largeTemperature, largeTopP, largeFrequency, largePresence := 0.21, 0.81, 0.31, 0.41
+	largeTopK := int64(17)
+	smallTemperature, smallTopP, smallFrequency, smallPresence := 0.22, 0.82, 0.32, 0.42
+	smallTopK := int64(18)
+	largeSelected := SelectedModel{
+		Provider: retained.ID, Model: "retained-model", MaxTokens: 8192,
+		ReasoningEffort: "high", Think: true,
+		Temperature: &largeTemperature, TopP: &largeTopP, TopK: &largeTopK,
+		FrequencyPenalty: &largeFrequency, PresencePenalty: &largePresence,
+		ProviderOptions: map[string]any{"mode": "large", "nested": map[string]any{"enabled": true}},
+	}
+	smallSelected := SelectedModel{
+		Provider: retained.ID, Model: "retained-model", MaxTokens: 4096,
+		ReasoningEffort: "medium", Think: true,
+		Temperature: &smallTemperature, TopP: &smallTopP, TopK: &smallTopK,
+		FrequencyPenalty: &smallFrequency, PresencePenalty: &smallPresence,
+		ProviderOptions: map[string]any{"mode": "small", "nested": map[string]any{"enabled": false}},
+	}
+	cfg := &Config{
+		Providers: csync.NewMapFrom(map[string]ProviderConfig{
+			available.ID: available,
+			retained.ID:  retained,
+		}),
+		Models: map[SelectedModelType]SelectedModel{
+			SelectedModelTypeLarge: largeSelected,
+			SelectedModelTypeSmall: smallSelected,
+		},
+	}
+	knownProviders := []catalog.Provider{{
+		ID:                  catalog.ProviderID(available.ID),
+		DefaultLargeModelID: "large-model",
+		DefaultSmallModelID: "small-model",
+	}}
+
+	resolved, err := resolveSelectedModels(cfg, knownProviders)
+	require.NoError(t, err)
+	require.Equal(t, largeSelected, resolved.Large)
+	require.Equal(t, smallSelected, resolved.Small)
+	require.False(t, resolved.LargeFallback)
+	require.False(t, resolved.SmallFallback)
+
+	cfg.Models[SelectedModelTypeLarge] = resolved.Large
+	cfg.Models[SelectedModelTypeSmall] = resolved.Small
+	require.False(t, cfg.CanInitializeAgent())
+}
+
+func TestLoadAndReloadPreserveUnavailablePluginSelections(t *testing.T) {
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+	t.Setenv("CRUX_PROVIDER_PROFILE", string(ProviderProfileCoreOnly))
+
+	directory := t.TempDir()
+	t.Setenv("CRUX_GLOBAL_CONFIG", directory)
+	t.Setenv("CRUX_GLOBAL_DATA", directory)
+
+	largeTemperature, largeTopP, largeFrequency, largePresence := 0.21, 0.81, 0.31, 0.41
+	largeTopK := int64(17)
+	smallTemperature, smallTopP, smallFrequency, smallPresence := 0.22, 0.82, 0.32, 0.42
+	smallTopK := int64(18)
+	largeSelected := SelectedModel{
+		Provider: "retained", Model: "retained-model", MaxTokens: 8192,
+		ReasoningEffort: "high", Think: true,
+		Temperature: &largeTemperature, TopP: &largeTopP, TopK: &largeTopK,
+		FrequencyPenalty: &largeFrequency, PresencePenalty: &largePresence,
+		ProviderOptions: map[string]any{"mode": "large", "nested": map[string]any{"enabled": true}},
+	}
+	smallSelected := SelectedModel{
+		Provider: "retained", Model: "retained-model", MaxTokens: 4096,
+		ReasoningEffort: "medium", Think: true,
+		Temperature: &smallTemperature, TopP: &smallTopP, TopK: &smallTopK,
+		FrequencyPenalty: &smallFrequency, PresencePenalty: &smallPresence,
+		ProviderOptions: map[string]any{"mode": "small", "nested": map[string]any{"enabled": false}},
+	}
+	fileConfig := &Config{
+		Options: &Options{DisableDefaultProviders: true},
+		Providers: csync.NewMapFrom(map[string]ProviderConfig{
+			"available": {
+				ID: "available", APIKey: "key", BaseURL: "https://api.example.test/v1",
+				Type: catalog.TypeOpenAICompat, Models: []catalog.Model{{ID: "available-model"}},
+			},
+			"retained": {
+				ID: "retained", Plugin: &ProviderPluginReference{ID: "synthetic.plugin", Version: "1"},
+				Models: []catalog.Model{{ID: "retained-model"}},
+			},
+		}),
+		Models: map[SelectedModelType]SelectedModel{
+			SelectedModelTypeLarge: largeSelected,
+			SelectedModelTypeSmall: smallSelected,
+		},
+	}
+	configPath := filepath.Join(directory, "crux.json")
+	require.NoError(t, os.WriteFile(configPath, mustMarshalConfig(fileConfig), 0o600))
+
+	store, err := Load(directory, directory, false)
+	require.NoError(t, err)
+	require.Equal(t, largeSelected, store.Config().Models[SelectedModelTypeLarge])
+	require.Equal(t, smallSelected, store.Config().Models[SelectedModelTypeSmall])
+	require.False(t, store.Config().CanInitializeAgent())
+	available, ok := store.Config().Providers.Get("available")
+	require.True(t, ok)
+	require.Equal(t, &ProviderOwnerReference{Type: ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, available.Owner)
+	data, err := os.ReadFile(GlobalConfigData())
+	require.NoError(t, err)
+	require.Equal(t, "custom", gjson.GetBytes(data, "providers.available.owner.type").String())
+	require.Equal(t, "openai-compat", gjson.GetBytes(data, "providers.available.owner.construction").String())
+
+	require.NoError(t, store.ReloadFromDisk(t.Context()))
+	require.Equal(t, largeSelected, store.Config().Models[SelectedModelTypeLarge])
+	require.Equal(t, smallSelected, store.Config().Models[SelectedModelTypeSmall])
+	require.False(t, store.Config().CanInitializeAgent())
+	available, ok = store.Config().Providers.Get("available")
+	require.True(t, ok)
+	require.Equal(t, &ProviderOwnerReference{Type: ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, available.Owner)
+}
+
+func TestConfigureProvidersPinsLegacyEmptyPluginVersionBeforeMatching(t *testing.T) {
+	providerID := "legacy-plugin"
+	pluginID := "example.plugin"
+	registration := providerregistry.Registration{
+		ProviderID:   providerID,
+		Construction: providerregistry.ConstructionGenericJSON,
+		Manifest: &manifest.Manifest{
+			ID:      pluginID,
+			Version: "2.0.0",
+			Configuration: manifest.Configuration{Schema: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			}},
+		},
+	}
+	registry, err := providerregistry.New(registration)
+	require.NoError(t, err)
+	cfg := &Config{
+		Options: &Options{},
+		Providers: csync.NewMapFrom(map[string]ProviderConfig{
+			providerID: {
+				Plugin: &ProviderPluginReference{ID: pluginID},
+				APIKey: "key", Models: []catalog.Model{{ID: "model"}},
+			},
+		}),
+	}
+	cfg.bindProviderScan(ProviderScan{
+		Providers: []catalog.Provider{{ID: catalog.ProviderID(providerID), APIKey: "key", Models: []catalog.Model{{ID: "model"}}}},
+		Registry:  registry,
+	})
+	store := NewTestStore(cfg)
+	resolver := NewShellVariableResolver(env.NewFromMap(map[string]string{}))
+	var migratedOwners map[string]ProviderOwnerReference
+	var migratedPlugins map[string]ProviderPluginReference
+
+	err = cfg.configureProvidersWithMigration(context.Background(), store, env.NewFromMap(map[string]string{}), resolver, cfg.providerScan.Providers, func(owners map[string]ProviderOwnerReference, plugins map[string]ProviderPluginReference, _ map[string]ProviderPresetReference) error {
+		migratedOwners = maps.Clone(owners)
+		migratedPlugins = maps.Clone(plugins)
+		return nil
+	})
+	require.NoError(t, err)
+	provider, found := cfg.Providers.Get(providerID)
+	require.True(t, found)
+	require.Equal(t, "2.0.0", provider.Plugin.Version)
+	require.Equal(t, providerregistry.ConstructionGenericJSON, migratedOwners[providerID].Construction)
+	require.Equal(t, "2.0.0", migratedPlugins[providerID].Version)
+	require.True(t, cfg.IsProviderIntegrationAvailable(providerID))
+}
+
+func TestConfigureProvidersDoesNotRebindPresetOwnership(t *testing.T) {
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+	providerPresetReferences = map[string]ProviderPresetReference{
+		"retained": {ID: "other.preset", Version: "2"},
+	}
+	var err error
+	providerRegistry, err = providerregistry.New(providerregistry.Registration{
+		ProviderID: "retained",
+		Manifest: &manifest.Manifest{
+			ID: "other.plugin",
+			Configuration: manifest.Configuration{Schema: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			}},
+		},
+	})
+	require.NoError(t, err)
+
+	root := t.TempDir()
+	t.Setenv("CRUX_GLOBAL_DATA", root)
+	t.Setenv("AI_CLI_DIR", t.TempDir())
+	configPath := filepath.Join(root, "crux.json")
+	before := ProviderConfig{
+		ID: "retained", Name: "Retained", BaseURL: "https://retained.example/v1",
+		Type: catalog.TypeOpenAICompat, APIKey: "retained-key",
+		Owner:        providerPresetOwnerReference(),
+		Preset:       &ProviderPresetReference{ID: "expected.preset", Version: "1"},
+		Models:       []catalog.Model{{ID: "retained-model", Name: "Retained Model"}},
+		ExtraHeaders: map[string]string{"X-Retained": "true"},
+		ExtraBody:    map[string]any{"retained": true},
+		Configuration: map[string]any{
+			"nested": map[string]any{"value": "retained"},
+		},
+	}
+	cfg := &Config{
+		Options:   &Options{},
+		Providers: csync.NewMapFrom(map[string]ProviderConfig{"retained": before}),
+		Models:    map[SelectedModelType]SelectedModel{},
+	}
+	require.NoError(t, os.WriteFile(configPath, mustMarshalConfig(cfg), 0o600))
+	store := &ConfigStore{config: cfg, globalDataPath: configPath}
+	knownProviders := []catalog.Provider{{
+		ID: "retained", Name: "Replacement", APIEndpoint: "https://replacement.example/v1",
+		APIKey: "replacement-key", Type: catalog.TypeOpenAICompat,
+		Models: []catalog.Model{{ID: "replacement-model", Name: "Replacement Model"}},
+	}}
+	resolver := NewShellVariableResolver(env.NewFromMap(map[string]string{}))
+
+	err = cfg.configureProviders(context.Background(), store, env.NewFromMap(map[string]string{}), resolver, knownProviders)
+	require.NoError(t, err)
+	after, ok := cfg.Providers.Get("retained")
+	require.True(t, ok)
+	require.Equal(t, before, after)
+	require.False(t, cfg.IsProviderIntegrationAvailable("retained"))
+}
+
+func TestLoadAndReloadPreserveUnavailablePresetSelections(t *testing.T) {
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+
+	directory := t.TempDir()
+	t.Setenv("CRUX_GLOBAL_CONFIG", directory)
+	t.Setenv("CRUX_GLOBAL_DATA", directory)
+	t.Setenv("CRUX_CACHE_DIR", t.TempDir())
+	t.Setenv("AI_CLI_DIR", t.TempDir())
+
+	largeTemperature, largeTopP, largeFrequency, largePresence := 0.31, 0.71, 0.41, 0.51
+	largeTopK := int64(27)
+	smallTemperature, smallTopP, smallFrequency, smallPresence := 0.32, 0.72, 0.42, 0.52
+	smallTopK := int64(28)
+	largeSelected := SelectedModel{
+		Provider: "retained", Model: "retained-model", MaxTokens: 12288,
+		ReasoningEffort: "high", Think: true,
+		Temperature: &largeTemperature, TopP: &largeTopP, TopK: &largeTopK,
+		FrequencyPenalty: &largeFrequency, PresencePenalty: &largePresence,
+		ProviderOptions: map[string]any{"mode": "large-preset", "nested": map[string]any{"enabled": true}},
+	}
+	smallSelected := SelectedModel{
+		Provider: "retained", Model: "retained-model", MaxTokens: 6144,
+		ReasoningEffort: "medium", Think: true,
+		Temperature: &smallTemperature, TopP: &smallTopP, TopK: &smallTopK,
+		FrequencyPenalty: &smallFrequency, PresencePenalty: &smallPresence,
+		ProviderOptions: map[string]any{"mode": "small-preset", "nested": map[string]any{"enabled": false}},
+	}
+	fileConfig := &Config{
+		Options: &Options{DisableDefaultProviders: true},
+		Providers: csync.NewMapFrom(map[string]ProviderConfig{
+			"available": {
+				ID: "available", APIKey: "key", BaseURL: "https://api.example.test/v1",
+				Type: catalog.TypeOpenAICompat, Models: []catalog.Model{{ID: "available-model"}},
+			},
+			"retained": {
+				ID: "retained", Preset: &ProviderPresetReference{ID: "synthetic.preset", Version: "1"},
+				APIKey: "retained-key", BaseURL: "https://retained.example.test/v1",
+				Type: catalog.TypeOpenAICompat, Models: []catalog.Model{{ID: "retained-model"}},
+			},
+		}),
+		Models: map[SelectedModelType]SelectedModel{
+			SelectedModelTypeLarge: largeSelected,
+			SelectedModelTypeSmall: smallSelected,
+		},
+	}
+	configPath := filepath.Join(directory, "crux.json")
+	require.NoError(t, os.WriteFile(configPath, mustMarshalConfig(fileConfig), 0o600))
+
+	store, err := Load(directory, directory, false)
+	require.NoError(t, err)
+	require.Equal(t, largeSelected, store.Config().Models[SelectedModelTypeLarge])
+	require.Equal(t, smallSelected, store.Config().Models[SelectedModelTypeSmall])
+	require.False(t, store.Config().CanInitializeAgent())
+
+	require.NoError(t, store.ReloadFromDisk(t.Context()))
+	require.Equal(t, largeSelected, store.Config().Models[SelectedModelTypeLarge])
+	require.Equal(t, smallSelected, store.Config().Models[SelectedModelTypeSmall])
+	require.False(t, store.Config().CanInitializeAgent())
 }
 
 func TestConfig_setupAgentsWithNoDisabledTools(t *testing.T) {
@@ -773,10 +1082,18 @@ func TestConfig_setupAgentsWithNoDisabledTools(t *testing.T) {
 	coderAgent, ok := cfg.Agents[AgentCoder]
 	require.True(t, ok)
 	assert.Equal(t, allToolNames(), coderAgent.AllowedTools)
+	require.Contains(t, coderAgent.AllowedTools, "jq")
+	require.Contains(t, coderAgent.AllowedTools, "search")
+	require.NotContains(t, coderAgent.AllowedTools, "glob")
+	require.NotContains(t, coderAgent.AllowedTools, "grep")
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
 	assert.Equal(t, resolveReadOnlyTools(allToolNames()), taskAgent.AllowedTools)
+	require.Contains(t, taskAgent.AllowedTools, "jq")
+	require.Contains(t, taskAgent.AllowedTools, "search")
+	require.NotContains(t, taskAgent.AllowedTools, "glob")
+	require.NotContains(t, taskAgent.AllowedTools, "grep")
 }
 
 func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
@@ -785,7 +1102,8 @@ func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
 			DisabledTools: []string{
 				"edit",
 				"download",
-				"grep",
+				"jq",
+				"search",
 			},
 		},
 	}
@@ -796,10 +1114,14 @@ func TestConfig_setupAgentsWithDisabledTools(t *testing.T) {
 
 	allowedTools := resolveAllowedTools(allToolNames(), cfg.Options.DisabledTools)
 	assert.Equal(t, allowedTools, coderAgent.AllowedTools)
+	require.NotContains(t, coderAgent.AllowedTools, "jq")
+	require.NotContains(t, coderAgent.AllowedTools, "search")
 
 	taskAgent, ok := cfg.Agents[AgentTask]
 	require.True(t, ok)
 	assert.Equal(t, resolveReadOnlyTools(allowedTools), taskAgent.AllowedTools)
+	require.NotContains(t, taskAgent.AllowedTools, "jq")
+	require.NotContains(t, taskAgent.AllowedTools, "search")
 }
 
 func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
@@ -808,10 +1130,10 @@ func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 			DisabledTools: []string{
 				"codebase_search",
 				"git_inspect",
-				"glob",
-				"grep",
+				"search",
 				"job_list",
 				"job_output",
+				"jq",
 				"task_list",
 				"task_output",
 				"ls",
@@ -839,12 +1161,12 @@ func TestConfig_setupAgentsWithEveryReadOnlyToolDisabled(t *testing.T) {
 }
 
 func TestConfig_configureProvidersWithDisabledProvider(t *testing.T) {
-	knownProviders := []catwalk.Provider{
+	knownProviders := []catalog.Provider{
 		{
 			ID:          "openai",
 			APIKey:      "$OPENAI_API_KEY",
 			APIEndpoint: "https://api.openai.com/v1",
-			Models: []catwalk.Model{{
+			Models: []catalog.Model{{
 				ID: "test-model",
 			}},
 		},
@@ -878,7 +1200,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 			Providers: csync.NewMapFrom(map[string]ProviderConfig{
 				"custom": {
 					BaseURL: "https://api.custom.com/v1",
-					Models: []catwalk.Model{{
+					Models: []catalog.Model{{
 						ID: "test-model",
 					}},
 				},
@@ -891,7 +1213,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 1)
@@ -904,7 +1226,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 			Providers: csync.NewMapFrom(map[string]ProviderConfig{
 				"custom": {
 					APIKey: "test-key",
-					Models: []catwalk.Model{{
+					Models: []catalog.Model{{
 						ID: "test-model",
 					}},
 				},
@@ -914,7 +1236,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 0)
@@ -928,7 +1250,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				"custom": {
 					APIKey:  "test-key",
 					BaseURL: "https://api.custom.com/v1",
-					Models:  []catwalk.Model{},
+					Models:  []catalog.Model{},
 				},
 			}),
 		}
@@ -936,7 +1258,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		// Discovery fails (unreachable URL) so provider is removed.
@@ -952,7 +1274,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				"custom": {
 					APIKey:             "test-key",
 					BaseURL:            "https://api.custom.com/v1",
-					Models:             []catwalk.Model{},
+					Models:             []catalog.Model{},
 					AutoDiscoverModels: &discoverFalse,
 				},
 			}),
@@ -961,7 +1283,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		require.Equal(t, 0, cfg.Providers.Len())
@@ -985,7 +1307,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				"custom": {
 					APIKey:  "test-key",
 					BaseURL: server.URL + "/v1",
-					Models: []catwalk.Model{
+					Models: []catalog.Model{
 						{ID: "existing-model", Name: "My Custom Name", ContextWindow: 200000},
 					},
 					AutoDiscoverModels: &discoverTrue,
@@ -996,7 +1318,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		require.Equal(t, 1, cfg.Providers.Len())
@@ -1019,7 +1341,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				"custom": {
 					APIKey:  "test-key",
 					BaseURL: "https://api.custom.com/v1",
-					Models: []catwalk.Model{
+					Models: []catalog.Model{
 						{ID: "my-model", Name: "My Model"},
 					},
 				},
@@ -1029,7 +1351,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		require.Equal(t, 1, cfg.Providers.Len())
@@ -1061,7 +1383,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		require.Equal(t, 1, cfg.Providers.Len())
@@ -1079,7 +1401,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 					APIKey:  "test-key",
 					BaseURL: "https://api.custom.com/v1",
 					Type:    "unsupported",
-					Models: []catwalk.Model{{
+					Models: []catalog.Model{{
 						ID: "test-model",
 					}},
 				},
@@ -1089,7 +1411,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 0)
@@ -1103,8 +1425,8 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				"custom": {
 					APIKey:  "test-key",
 					BaseURL: "https://api.custom.com/v1",
-					Type:    catwalk.TypeOpenAICompat,
-					Models: []catwalk.Model{{
+					Type:    catalog.TypeOpenAICompat,
+					Models: []catalog.Model{{
 						ID: "test-model",
 					}},
 				},
@@ -1114,7 +1436,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		require.Equal(t, cfg.Providers.Len(), 1)
@@ -1131,8 +1453,8 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				"custom-anthropic": {
 					APIKey:  "test-key",
 					BaseURL: "https://api.anthropic.com/v1",
-					Type:    catwalk.TypeAnthropic,
-					Models: []catwalk.Model{{
+					Type:    catalog.TypeAnthropic,
+					Models: []catalog.Model{{
 						ID: "claude-3-sonnet",
 					}},
 				},
@@ -1142,7 +1464,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		require.Equal(t, 0, cfg.Providers.Len())
@@ -1156,9 +1478,9 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 				"custom": {
 					APIKey:  "test-key",
 					BaseURL: "https://api.custom.com/v1",
-					Type:    catwalk.TypeOpenAICompat,
+					Type:    catalog.TypeOpenAICompat,
 					Disable: true,
-					Models: []catwalk.Model{{
+					Models: []catalog.Model{{
 						ID: "test-model",
 					}},
 				},
@@ -1168,7 +1490,7 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.NoError(t, err)
 
 		require.Equal(t, 1, cfg.Providers.Len())
@@ -1180,13 +1502,13 @@ func TestConfig_configureProvidersCustomProviderValidation(t *testing.T) {
 
 func TestConfig_defaultModelSelection(t *testing.T) {
 	t.Run("default behavior uses the default models for given provider", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "abc",
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID:               "large-model",
 						DefaultMaxTokens: 1000,
@@ -1216,13 +1538,13 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		require.Equal(t, int64(500), small.MaxTokens)
 	})
 	t.Run("should error if no providers configured", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "$MISSING_KEY",
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID:               "large-model",
 						DefaultMaxTokens: 1000,
@@ -1246,13 +1568,13 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		require.Error(t, err)
 	})
 	t.Run("should not error if model is missing", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "abc",
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID:               "not-large-model",
 						DefaultMaxTokens: 1000,
@@ -1276,13 +1598,13 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 	})
 
 	t.Run("should configure the default models with a custom provider", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "$MISSING", // will not be included in the config
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID:               "not-large-model",
 						DefaultMaxTokens: 1000,
@@ -1300,7 +1622,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 				"custom": {
 					APIKey:  "test-key",
 					BaseURL: "https://api.custom.com/v1",
-					Models: []catwalk.Model{
+					Models: []catalog.Model{
 						{
 							ID:               "model",
 							DefaultMaxTokens: 600,
@@ -1325,13 +1647,13 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 	})
 
 	t.Run("should fail if no model configured", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "$MISSING", // will not be included in the config
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID:               "not-large-model",
 						DefaultMaxTokens: 1000,
@@ -1349,7 +1671,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 				"custom": {
 					APIKey:  "test-key",
 					BaseURL: "https://api.custom.com/v1",
-					Models:  []catwalk.Model{},
+					Models:  []catalog.Model{},
 				},
 			}),
 		}
@@ -1362,13 +1684,13 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 		require.Error(t, err)
 	})
 	t.Run("should use the default provider first", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "set",
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID:               "large-model",
 						DefaultMaxTokens: 1000,
@@ -1386,7 +1708,7 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 				"custom": {
 					APIKey:  "test-key",
 					BaseURL: "https://api.custom.com/v1",
-					Models: []catwalk.Model{
+					Models: []catalog.Model{
 						{
 							ID:               "large-model",
 							DefaultMaxTokens: 1000,
@@ -1413,12 +1735,12 @@ func TestConfig_defaultModelSelection(t *testing.T) {
 
 func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 	t.Run("when enabled, ignores all default providers and requires full specification", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:          "openai",
 				APIKey:      "$OPENAI_API_KEY",
 				APIEndpoint: "https://api.openai.com/v1",
-				Models: []catwalk.Model{{
+				Models: []catalog.Model{{
 					ID: "gpt-4",
 				}},
 			},
@@ -1453,12 +1775,12 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 	})
 
 	t.Run("when enabled, fully specified providers work", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:          "openai",
 				APIKey:      "$OPENAI_API_KEY",
 				APIEndpoint: "https://api.openai.com/v1",
-				Models: []catwalk.Model{{
+				Models: []catalog.Model{{
 					ID: "gpt-4",
 				}},
 			},
@@ -1473,7 +1795,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 				"my-llm": {
 					APIKey:  "$MY_API_KEY",
 					BaseURL: "https://my-llm.example.com/v1",
-					Models: []catwalk.Model{{
+					Models: []catalog.Model{{
 						ID: "my-model",
 					}},
 				},
@@ -1502,12 +1824,12 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 	})
 
 	t.Run("when disabled, includes all known providers with valid credentials", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:          "openai",
 				APIKey:      "$OPENAI_API_KEY",
 				APIEndpoint: "https://api.openai.com/v1",
-				Models: []catwalk.Model{{
+				Models: []catalog.Model{{
 					ID: "gpt-4",
 				}},
 			},
@@ -1515,7 +1837,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 				ID:          "anthropic",
 				APIKey:      "$ANTHROPIC_API_KEY",
 				APIEndpoint: "https://api.anthropic.com/v1",
-				Models: []catwalk.Model{{
+				Models: []catalog.Model{{
 					ID: "claude-3",
 				}},
 			},
@@ -1560,7 +1882,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 				"my-llm": {
 					APIKey:  "test-key",
 					BaseURL: "https://my-llm.example.com/v1",
-					Models:  []catwalk.Model{}, // No models.
+					Models:  []catalog.Model{}, // No models.
 				},
 			}),
 		}
@@ -1568,7 +1890,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.ErrorContains(t, err, "no custom providers")
 
 		// Discovery fails (unreachable URL) so provider is removed.
@@ -1583,7 +1905,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 			Providers: csync.NewMapFrom(map[string]ProviderConfig{
 				"my-llm": {
 					APIKey: "test-key",
-					Models: []catwalk.Model{{ID: "model"}},
+					Models: []catalog.Model{{ID: "model"}},
 					// No BaseURL.
 				},
 			}),
@@ -1592,7 +1914,7 @@ func TestConfig_configureProvidersDisableDefaultProviders(t *testing.T) {
 
 		env := env.NewFromMap(map[string]string{})
 		resolver := NewShellVariableResolver(env)
-		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catwalk.Provider{})
+		err := cfg.configureProviders(context.Background(), testStore(cfg), env, resolver, []catalog.Provider{})
 		require.ErrorContains(t, err, "no custom providers")
 
 		// Provider should be rejected for missing base_url.
@@ -1622,19 +1944,73 @@ func TestConfig_setDefaultsDisableDefaultProvidersEnvVar(t *testing.T) {
 	})
 }
 
+func TestLoadAndReloadKeepImplicitSmallOnLargeProvider(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	dataRoot := filepath.Join(root, "data")
+	workingDir := filepath.Join(root, "workspace")
+	require.NoError(t, os.MkdirAll(configDir, 0o755))
+	require.NoError(t, os.MkdirAll(workingDir, 0o755))
+	t.Setenv("CRUX_GLOBAL_CONFIG", configDir)
+	t.Setenv("CRUX_GLOBAL_DATA", dataRoot)
+	t.Setenv("CRUX_CACHE_DIR", filepath.Join(root, "cache"))
+	t.Setenv("AI_CLI_DIR", filepath.Join(root, "accounts"))
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+
+	fileConfig := &Config{
+		Options: &Options{DisableDefaultProviders: true},
+		Providers: csync.NewMapFrom(map[string]ProviderConfig{
+			"alpha": {
+				ID: "alpha", APIKey: "alpha-key", BaseURL: "https://alpha.example.test/v1", Type: catalog.TypeOpenAICompat,
+				Models: []catalog.Model{{ID: "alpha-small"}, {ID: "alpha-large"}},
+			},
+			"beta": {
+				ID: "beta", APIKey: "beta-key", BaseURL: "https://beta.example.test/v1", Type: catalog.TypeOpenAICompat,
+				Models: []catalog.Model{{ID: "beta-small", DefaultMaxTokens: 512}, {ID: "beta-large"}},
+			},
+		}),
+		Models: map[SelectedModelType]SelectedModel{
+			SelectedModelTypeLarge: {Provider: "alpha", Model: "alpha-large"},
+		},
+	}
+	configPath := filepath.Join(configDir, "crux.json")
+	require.NoError(t, os.WriteFile(configPath, mustMarshalConfig(fileConfig), 0o600))
+
+	store, err := Load(workingDir, filepath.Join(root, "workspace-data"), false)
+	require.NoError(t, err)
+	require.Equal(t, "alpha", store.Config().Models[SelectedModelTypeSmall].Provider)
+	require.False(t, store.Config().modelExplicit(SelectedModelTypeSmall))
+
+	betaLarge := SelectedModel{Provider: "beta", Model: "beta-large"}
+	require.NoError(t, store.OverridePreferredModel(SelectedModelTypeLarge, betaLarge))
+	require.Equal(t, SelectedModel{Provider: "beta", Model: "beta-small", MaxTokens: 512}, store.Config().Models[SelectedModelTypeSmall])
+	require.NoError(t, store.ReloadFromDisk(t.Context()))
+	require.Equal(t, betaLarge, store.Config().Models[SelectedModelTypeLarge])
+	require.Equal(t, SelectedModel{Provider: "beta", Model: "beta-small", MaxTokens: 512}, store.Config().Models[SelectedModelTypeSmall])
+	require.False(t, store.Config().modelExplicit(SelectedModelTypeSmall))
+
+	data, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(data, "models.small").Exists())
+	if data, err = os.ReadFile(store.globalDataPath); err == nil {
+		require.False(t, gjson.GetBytes(data, "models.small").Exists())
+	}
+}
+
 func TestConfig_configureSelectedModels(t *testing.T) {
 	t.Run("reload mode should not persist fallback defaults", func(t *testing.T) {
 		dir := t.TempDir()
 		globalPath := filepath.Join(dir, "crux.json")
 		require.NoError(t, os.WriteFile(globalPath, []byte(`{"models":{"large":{"provider":"ghost","model":"missing"}}}`), 0o600))
 
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "abc",
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{ID: "large-model", DefaultMaxTokens: 1000},
 					{ID: "small-model", DefaultMaxTokens: 500},
 				},
@@ -1653,15 +2029,10 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		err := cfg.configureProviders(context.Background(), store, env, resolver, knownProviders)
 		require.NoError(t, err)
 
-		resolved, resolveErr := resolveSelectedModels(cfg, knownProviders)
-		require.NoError(t, resolveErr)
-		cfg.Models[SelectedModelTypeLarge] = resolved.Large
-		cfg.Models[SelectedModelTypeSmall] = resolved.Small
-
-		// In-memory falls back to default.
-		require.True(t, resolved.LargeFallback)
-		require.Equal(t, "openai", cfg.Models[SelectedModelTypeLarge].Provider)
-		require.Equal(t, "large-model", cfg.Models[SelectedModelTypeLarge].Model)
+		_, resolveErr := resolveSelectedModels(cfg, knownProviders)
+		require.ErrorContains(t, resolveErr, "selected provider ghost is not available")
+		require.Equal(t, "ghost", cfg.Models[SelectedModelTypeLarge].Provider)
+		require.Equal(t, "missing", cfg.Models[SelectedModelTypeLarge].Model)
 
 		// Disk remains unchanged (resolveSelectedModels never persists).
 		data, readErr := os.ReadFile(globalPath)
@@ -1669,14 +2040,140 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		require.Contains(t, string(data), `"provider":"ghost"`)
 		require.Contains(t, string(data), `"model":"missing"`)
 	})
+	t.Run("unavailable known provider is not selected as default", func(t *testing.T) {
+		knownProviders := []catalog.Provider{
+			{ID: "alpha", DefaultLargeModelID: "alpha-model", DefaultSmallModelID: "alpha-model", Models: []catalog.Model{{ID: "alpha-model"}}},
+			{ID: "beta", DefaultLargeModelID: "beta-model", DefaultSmallModelID: "beta-model", Models: []catalog.Model{{ID: "beta-model"}}},
+		}
+		cfg := &Config{Providers: csync.NewMapFrom(map[string]ProviderConfig{
+			"alpha": {
+				ID: "alpha", Models: knownProviders[0].Models,
+				Plugin: &ProviderPluginReference{ID: "unavailable", Version: "1"},
+			},
+			"beta": {ID: "beta", Models: knownProviders[1].Models},
+		})}
+
+		large, small, err := cfg.defaultModelSelection(knownProviders)
+		require.NoError(t, err)
+		require.Equal(t, "beta", large.Provider)
+		require.Equal(t, "beta", small.Provider)
+	})
+	t.Run("invalid explicit model falls back within selected provider", func(t *testing.T) {
+		knownProviders := []catalog.Provider{
+			{
+				ID: "alpha", DefaultLargeModelID: "alpha-large", DefaultSmallModelID: "alpha-small",
+				Models: []catalog.Model{{ID: "alpha-large"}, {ID: "alpha-small"}},
+			},
+			{
+				ID: "beta", DefaultLargeModelID: "beta-large", DefaultSmallModelID: "beta-small",
+				Models: []catalog.Model{{ID: "beta-large", DefaultMaxTokens: 2048}, {ID: "beta-small", DefaultMaxTokens: 1024}},
+			},
+		}
+		cfg := &Config{
+			Providers: csync.NewMapFrom(map[string]ProviderConfig{
+				"alpha": {ID: "alpha", Models: knownProviders[0].Models},
+				"beta":  {ID: "beta", Models: knownProviders[1].Models},
+			}),
+			Models: map[SelectedModelType]SelectedModel{
+				SelectedModelTypeLarge: {Provider: "beta", Model: "missing"},
+				SelectedModelTypeSmall: {Provider: "beta", Model: "missing"},
+			},
+		}
+
+		resolved, err := resolveSelectedModels(cfg, knownProviders)
+		require.NoError(t, err)
+		require.True(t, resolved.LargeFallback)
+		require.True(t, resolved.SmallFallback)
+		require.Equal(t, SelectedModel{Provider: "beta", Model: "beta-large", MaxTokens: 2048}, resolved.Large)
+		require.Equal(t, SelectedModel{Provider: "beta", Model: "beta-small", MaxTokens: 1024}, resolved.Small)
+	})
+	t.Run("implicit small follows the resolved large provider", func(t *testing.T) {
+		knownProviders := []catalog.Provider{
+			{
+				ID: "alpha", DefaultLargeModelID: "alpha-large", DefaultSmallModelID: "alpha-small",
+				Models: []catalog.Model{{ID: "alpha-large"}, {ID: "alpha-small"}},
+			},
+			{
+				ID: "beta", DefaultLargeModelID: "beta-large", DefaultSmallModelID: "beta-small",
+				Models: []catalog.Model{{ID: "beta-large", DefaultMaxTokens: 2048}, {ID: "beta-small", DefaultMaxTokens: 1024}},
+			},
+		}
+		cfg := &Config{
+			Providers: csync.NewMapFrom(map[string]ProviderConfig{
+				"alpha": {ID: "alpha", Models: knownProviders[0].Models},
+				"beta":  {ID: "beta", Models: knownProviders[1].Models},
+			}),
+			Models: map[SelectedModelType]SelectedModel{
+				SelectedModelTypeLarge: {Provider: "beta", Model: "beta-large"},
+			},
+		}
+
+		resolved, err := resolveSelectedModels(cfg, knownProviders)
+		require.NoError(t, err)
+		require.Equal(t, "beta", resolved.Large.Provider)
+		require.Equal(t, SelectedModel{Provider: "beta", Model: "beta-small", MaxTokens: 1024}, resolved.Small)
+		require.False(t, resolved.SmallFallback)
+	})
+	t.Run("provider-omitted small follows the resolved large provider", func(t *testing.T) {
+		knownProviders := []catalog.Provider{
+			{
+				ID: "alpha", DefaultLargeModelID: "alpha-large", DefaultSmallModelID: "shared-small",
+				Models: []catalog.Model{{ID: "alpha-large"}, {ID: "shared-small"}},
+			},
+			{
+				ID: "beta", DefaultLargeModelID: "beta-large", DefaultSmallModelID: "beta-small",
+				Models: []catalog.Model{{ID: "beta-large"}, {ID: "beta-small", DefaultMaxTokens: 1024}, {ID: "shared-small"}},
+			},
+		}
+		cfg := &Config{
+			Providers: csync.NewMapFrom(map[string]ProviderConfig{
+				"alpha": {ID: "alpha", Models: knownProviders[0].Models},
+				"beta":  {ID: "beta", Models: knownProviders[1].Models},
+			}),
+			Models: map[SelectedModelType]SelectedModel{
+				SelectedModelTypeLarge: {Provider: "beta", Model: "beta-large"},
+				SelectedModelTypeSmall: {Model: "beta-small", MaxTokens: 777},
+			},
+		}
+
+		resolved, err := resolveSelectedModels(cfg, knownProviders)
+		require.NoError(t, err)
+		require.Equal(t, SelectedModel{Provider: "beta", Model: "beta-small", MaxTokens: 777}, resolved.Small)
+		require.False(t, resolved.SmallFallback)
+	})
+	t.Run("implicit small mirrors an unavailable large owner", func(t *testing.T) {
+		large := SelectedModel{Provider: "retained", Model: "retained-large", MaxTokens: 8192, ReasoningEffort: "high", Think: true}
+		knownProviders := []catalog.Provider{{
+			ID: "available", DefaultLargeModelID: "available-large", DefaultSmallModelID: "available-small",
+			Models: []catalog.Model{{ID: "available-large"}, {ID: "available-small"}},
+		}}
+		cfg := &Config{
+			Providers: csync.NewMapFrom(map[string]ProviderConfig{
+				"available": {ID: "available", Models: knownProviders[0].Models},
+				"retained": {
+					ID: "retained", Models: []catalog.Model{{ID: "retained-large"}, {ID: "retained-small"}},
+					Plugin: &ProviderPluginReference{ID: "missing.plugin", Version: "1"},
+				},
+			}),
+			Models: map[SelectedModelType]SelectedModel{SelectedModelTypeLarge: large},
+		}
+
+		resolved, err := resolveSelectedModels(cfg, knownProviders)
+		require.NoError(t, err)
+		require.Equal(t, large, resolved.Large)
+		require.Equal(t, large, resolved.Small)
+		require.False(t, resolved.LargeFallback)
+		require.False(t, resolved.SmallFallback)
+	})
+
 	t.Run("should override defaults", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "abc",
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID:               "larger-model",
 						DefaultMaxTokens: 2000,
@@ -1720,13 +2217,13 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		require.Equal(t, int64(500), small.MaxTokens)
 	})
 	t.Run("should be possible to use multiple providers", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "abc",
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID:               "large-model",
 						DefaultMaxTokens: 1000,
@@ -1742,7 +2239,7 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 				APIKey:              "abc",
 				DefaultLargeModelID: "a-large-model",
 				DefaultSmallModelID: "a-small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID:               "a-large-model",
 						DefaultMaxTokens: 1000,
@@ -1785,13 +2282,13 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 	})
 
 	t.Run("should override the max tokens only", func(t *testing.T) {
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "abc",
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{
 						ID:               "large-model",
 						DefaultMaxTokens: 1000,
@@ -1831,13 +2328,13 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 		globalPath := filepath.Join(dir, "crux.json")
 		require.NoError(t, os.WriteFile(globalPath, []byte(`{}`), 0o600))
 
-		knownProviders := []catwalk.Provider{
+		knownProviders := []catalog.Provider{
 			{
 				ID:                  "openai",
 				APIKey:              "abc",
 				DefaultLargeModelID: "large-model",
 				DefaultSmallModelID: "small-model",
-				Models: []catwalk.Model{
+				Models: []catalog.Model{
 					{ID: "large-model", DefaultMaxTokens: 1000},
 					{ID: "small-model", DefaultMaxTokens: 500},
 				},
@@ -1909,12 +2406,12 @@ func TestConfig_configureSelectedModels(t *testing.T) {
 // with a clear message that names the offending header. Provider
 // headers share the MCP error contract.
 func TestConfig_configureProviders_ProviderHeaderResolveError(t *testing.T) {
-	knownProviders := []catwalk.Provider{
+	knownProviders := []catalog.Provider{
 		{
 			ID:          "openai",
 			APIKey:      "$OPENAI_API_KEY",
 			APIEndpoint: "https://api.openai.com/v1",
-			Models:      []catwalk.Model{{ID: "test-model"}},
+			Models:      []catalog.Model{{ID: "test-model"}},
 		},
 	}
 
@@ -1948,12 +2445,12 @@ func TestConfig_configureProviders_ProviderHeaderResolveError(t *testing.T) {
 // nounset (unset → "" → header dropped), and does not fail the load
 // or leave the literal template on the wire.
 func TestConfig_configureProviders_CatwalkDefaultWithUnsetVarLoads(t *testing.T) {
-	knownProviders := []catwalk.Provider{
+	knownProviders := []catalog.Provider{
 		{
 			ID:          "openai",
 			APIKey:      "$OPENAI_API_KEY",
 			APIEndpoint: "https://api.openai.com/v1",
-			Models:      []catwalk.Model{{ID: "test-model"}},
+			Models:      []catalog.Model{{ID: "test-model"}},
 			DefaultHeaders: map[string]string{
 				"OpenAI-Organization": "$OPENAI_ORG_ID",
 			},
@@ -1989,8 +2486,8 @@ func TestConfig_configureProviders_LiteralEmptyHeaderDropped(t *testing.T) {
 			"my-llm": {
 				APIKey:  "test-key",
 				BaseURL: "https://my-llm.example.com/v1",
-				Type:    catwalk.TypeOpenAICompat,
-				Models:  []catwalk.Model{{ID: "m"}},
+				Type:    catalog.TypeOpenAICompat,
+				Models:  []catalog.Model{{ID: "m"}},
 				ExtraHeaders: map[string]string{
 					"X-Custom": "",
 					"X-Kept":   "present",
@@ -2005,7 +2502,7 @@ func TestConfig_configureProviders_LiteralEmptyHeaderDropped(t *testing.T) {
 	})
 	resolver := NewShellVariableResolver(testEnv)
 
-	err := cfg.configureProviders(context.Background(), testStore(cfg), testEnv, resolver, []catwalk.Provider{})
+	err := cfg.configureProviders(context.Background(), testStore(cfg), testEnv, resolver, []catalog.Provider{})
 	require.NoError(t, err)
 
 	pc, ok := cfg.Providers.Get("my-llm")
@@ -2020,12 +2517,12 @@ func TestConfig_configureProviders_LiteralEmptyHeaderDropped(t *testing.T) {
 // empty output, resolves cleanly to "", and must be dropped the same
 // way an unset bare $VAR is. Exercises the known-provider loop.
 func TestConfig_configureProviders_EchoEmptyHeaderDropped(t *testing.T) {
-	knownProviders := []catwalk.Provider{
+	knownProviders := []catalog.Provider{
 		{
 			ID:          "openai",
 			APIKey:      "$OPENAI_API_KEY",
 			APIEndpoint: "https://api.openai.com/v1",
-			Models:      []catwalk.Model{{ID: "test-model"}},
+			Models:      []catalog.Model{{ID: "test-model"}},
 			DefaultHeaders: map[string]string{
 				"X-Empty": "$(echo)",
 				"X-Kept":  "present",
@@ -2065,12 +2562,12 @@ func TestConfig_configureProviders_EchoEmptyHeaderDropped(t *testing.T) {
 // what downstream code — model picker, agent wiring — actually reads,
 // so that's what we pin.
 func TestConfig_configureProviders_UnsetAPIKeySkipsProvider(t *testing.T) {
-	knownProviders := []catwalk.Provider{
+	knownProviders := []catalog.Provider{
 		{
 			ID:          "openai",
 			APIKey:      "$SOMETHING_UNSET",
 			APIEndpoint: "https://api.openai.com/v1",
-			Models:      []catwalk.Model{{ID: "test-model"}},
+			Models:      []catalog.Model{{ID: "test-model"}},
 		},
 	}
 
@@ -2098,6 +2595,94 @@ func TestConfig_configureProviders_UnsetAPIKeySkipsProvider(t *testing.T) {
 	require.False(t, exists)
 }
 
+func TestConfigureProvidersAnonymousPlugin(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		credentialKind  string
+		apiKey          string
+		disabled        bool
+		disableDefaults bool
+		requireConfig   bool
+		configured      bool
+	}{
+		{name: "no credentials", configured: true},
+		{name: "explicit anonymous", credentialKind: "none", configured: true},
+		{name: "API key required", credentialKind: "api-key"},
+		{name: "bearer required", credentialKind: "bearer"},
+		{name: "OAuth required", credentialKind: "oauth2"},
+		{name: "API key supplied", credentialKind: "api-key", apiKey: "test-key", configured: true},
+		{name: "disabled provider", disabled: true, configured: true},
+		{name: "disabled default catalog", disableDefaults: true},
+		{name: "required configuration", requireConfig: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := os.ReadFile("../../docs/provider-plugins/examples/minimal.plugin/manifest.json")
+			require.NoError(t, err)
+			var declaration manifest.Manifest
+			require.NoError(t, json.Unmarshal(data, &declaration))
+			if test.credentialKind != "" {
+				declaration.Capabilities.Credentials = []manifest.Credential{{ID: "access", Kind: test.credentialKind, Audience: []string{"api"}}}
+				declaration.Capabilities.Endpoints[0].Credential = "access"
+			}
+			if test.requireConfig {
+				declaration.Configuration.Schema["properties"] = map[string]any{"region": map[string]any{"type": "string"}}
+				declaration.Configuration.Schema["required"] = []string{"region"}
+			}
+			registration, err := providerregistry.FromManifest(declaration)
+			require.NoError(t, err)
+			registry, err := providerregistry.New(registration)
+			require.NoError(t, err)
+			providerID := declaration.Provider.ID
+			knownProviders := []catalog.Provider{{
+				ID: catalog.ProviderID(providerID), Name: declaration.Provider.Name,
+				APIKey: test.apiKey, APIEndpoint: declaration.Capabilities.Endpoints[0].BaseURL,
+				Type: catalog.Type(registration.Construction), Models: []catalog.Model{{ID: "echo-1", Name: "Echo 1"}},
+			}}
+			cfg := &Config{}
+			cfg.setDefaults(t.TempDir(), "")
+			cfg.Options.DisableDefaultProviders = test.disableDefaults
+			cfg.bindProviderScan(ProviderScan{Providers: knownProviders, Registry: registry})
+			if test.disabled {
+				cfg.Providers.Set(providerID, ProviderConfig{
+					Disable: true, Owner: providerOwnerReferenceForRegistration(registration),
+					Plugin: &ProviderPluginReference{ID: declaration.ID, Version: declaration.Version},
+				})
+			}
+			testEnv := env.NewFromMap(map[string]string{})
+			store := NewTestStore(cfg)
+			load := func() error {
+				return cfg.configureProvidersWithMigration(t.Context(), store, testEnv, NewShellVariableResolver(testEnv), knownProviders, nil)
+			}
+			err = load()
+			if test.disableDefaults {
+				require.ErrorContains(t, err, "default providers are disabled")
+				require.Zero(t, cfg.Providers.Len())
+				return
+			}
+			if test.requireConfig {
+				require.ErrorContains(t, err, "configuration is invalid")
+				require.ErrorContains(t, err, "region")
+				return
+			}
+			require.NoError(t, err)
+			provider, ok := cfg.Providers.Get(providerID)
+			require.Equal(t, test.configured, ok)
+			if !ok {
+				return
+			}
+			require.Equal(t, test.apiKey, provider.APIKey)
+			require.Equal(t, test.disabled, provider.Disable)
+			require.Equal(t, ProviderOwnerPlugin, provider.Owner.Type)
+			require.Equal(t, declaration.ID, provider.Plugin.ID)
+			require.Equal(t, declaration.Version, provider.Plugin.Version)
+			require.NoError(t, load())
+			reloaded, ok := cfg.Providers.Get(providerID)
+			require.True(t, ok)
+			require.Equal(t, provider, reloaded)
+		})
+	}
+}
+
 // TestConfig_configureProviders_FailingAPIKeyCmdSkipsProvider pins
 // that the two failure modes for APIKey — ("", nil) from an unset var
 // under lenient nounset and ("", err) from a failing $(cmd) — are
@@ -2107,12 +2692,12 @@ func TestConfig_configureProviders_UnsetAPIKeySkipsProvider(t *testing.T) {
 // paths doesn't accidentally start propagating $(false) as a load
 // error while keeping unset-var as a silent skip (or vice versa).
 func TestConfig_configureProviders_FailingAPIKeyCmdSkipsProvider(t *testing.T) {
-	knownProviders := []catwalk.Provider{
+	knownProviders := []catalog.Provider{
 		{
 			ID:          "openai",
 			APIKey:      "$(false)",
 			APIEndpoint: "https://api.openai.com/v1",
-			Models:      []catwalk.Model{{ID: "test-model"}},
+			Models:      []catalog.Model{{ID: "test-model"}},
 		},
 	}
 

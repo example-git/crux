@@ -215,6 +215,10 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 		return resp, nil
 	}
 
+	if err := checkpointFile(edit.ctx, edit.files, edit.permissions, sessionID, call.ID, params.FilePath, "", false, 0); err != nil {
+		return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
+	}
+
 	// Create parent directories and write the file
 	if err := os.MkdirAll(filepath.Dir(params.FilePath), 0o755); err != nil {
 		return fantasy.ToolResponse{}, fmt.Errorf("failed to create parent directories: %w", err)
@@ -328,7 +332,7 @@ func processMultiEditExistingFile(edit editContext, params MultiEditParams, call
 		writeContent, _ = fsext.ToWindowsLineEndings(writeContent)
 	}
 
-	if err := commitFileChange(edit, sessionID, params.FilePath, oldContent, writeContent); err != nil {
+	if err := commitFileChange(edit, sessionID, call.ID, params.FilePath, oldContent, writeContent); err != nil {
 		return fantasy.ToolResponse{}, err
 	}
 

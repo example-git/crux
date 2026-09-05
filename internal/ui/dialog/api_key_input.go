@@ -1,6 +1,7 @@
 package dialog
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -10,10 +11,11 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/exp/charmtone"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/example-git/crux/internal/ui/util"
@@ -36,12 +38,14 @@ type APIKeyInput struct {
 	com          *common.Common
 	isOnboarding bool
 
-	provider  catwalk.Provider
+	provider  catalog.Provider
 	model     config.SelectedModel
 	modelType config.SelectedModelType
 
-	width int
-	state APIKeyInputState
+	width    int
+	state    APIKeyInputState
+	owner    providerregistry.RegistrationOwner
+	ownerSet bool
 
 	keyMap struct {
 		Submit key.Binding
@@ -58,18 +62,18 @@ var _ Dialog = (*APIKeyInput)(nil)
 func NewAPIKeyInput(
 	com *common.Common,
 	isOnboarding bool,
-	provider catwalk.Provider,
-	model config.SelectedModel,
-	modelType config.SelectedModelType,
+	selection ActionSelectModel,
 ) (*APIKeyInput, tea.Cmd) {
 	t := com.Styles
 
 	m := APIKeyInput{}
 	m.com = com
 	m.isOnboarding = isOnboarding
-	m.provider = provider
-	m.model = model
-	m.modelType = modelType
+	m.provider = selection.Provider
+	m.model = selection.Model
+	m.modelType = selection.ModelType
+	m.owner = selection.ProviderOwner
+	m.ownerSet = selection.ProviderOwnerSet
 	m.width = 0 // Set dynamically in Draw().
 
 	m.input = textinput.New()
@@ -107,6 +111,11 @@ func (m *APIKeyInput) HandleMsg(msg tea.Msg) Action {
 		m.state = msg.State
 		switch m.state {
 		case APIKeyInputStateVerifying:
+			current, ok := m.com.Config().ProviderOwner(string(m.provider.ID))
+			if !m.ownerSet || !ok || current != m.owner {
+				m.state = APIKeyInputStateError
+				return ActionCmd{util.ReportError(fmt.Errorf("provider owner changed before API key verification"))}
+			}
 			cmd := tea.Batch(m.spinner.Tick, m.verifyAPIKey)
 			return ActionCmd{cmd}
 		}
@@ -283,6 +292,20 @@ func (m *APIKeyInput) ShortHelp() []key.Binding {
 
 func (m *APIKeyInput) verifyAPIKey() tea.Msg {
 	start := time.Now()
+	validateOwner := func() error {
+		cfg := m.com.Config()
+		if !m.ownerSet || cfg == nil {
+			return fmt.Errorf("provider owner changed during API key verification")
+		}
+		current, ok := cfg.ProviderOwner(string(m.provider.ID))
+		if !ok || current != m.owner {
+			return fmt.Errorf("provider owner changed during API key verification")
+		}
+		return nil
+	}
+	if err := validateOwner(); err != nil {
+		return ActionChangeAPIKeyState{APIKeyInputStateError}
+	}
 
 	providerConfig := config.ProviderConfig{
 		ID:      string(m.provider.ID),
@@ -291,7 +314,23 @@ func (m *APIKeyInput) verifyAPIKey() tea.Msg {
 		Type:    m.provider.Type,
 		BaseURL: m.provider.APIEndpoint,
 	}
-	err := providerConfig.TestConnection(m.com.Workspace.Resolver())
+	if cfg := m.com.Config(); cfg != nil {
+		if configured, ok := cfg.Providers.Get(providerConfig.ID); ok {
+			providerConfig.Owner = configured.Owner
+			providerConfig.Plugin = configured.Plugin
+			providerConfig.Preset = configured.Preset
+		} else if preset, ok := cfg.ProviderPreset(providerConfig.ID); ok {
+			providerConfig.Owner = &config.ProviderOwnerReference{
+				Type:         config.ProviderOwnerPreset,
+				Construction: providerregistry.ConstructionOpenAICompat,
+			}
+			providerConfig.Preset = &preset
+		}
+	}
+	err := providerConfig.TestConnection(context.Background(), m.com.Workspace.Resolver(), validateOwner)
+	if ownerErr := validateOwner(); ownerErr != nil {
+		err = ownerErr
+	}
 
 	// intentionally wait for at least 750ms to make sure the user sees the spinner
 	elapsed := time.Since(start)
@@ -307,14 +346,21 @@ func (m *APIKeyInput) verifyAPIKey() tea.Msg {
 }
 
 func (m *APIKeyInput) saveKeyAndContinue() Action {
-	err := m.com.Workspace.SetProviderAPIKey(config.ScopeGlobal, string(m.provider.ID), m.input.Value())
+	current, ok := m.com.Config().ProviderOwner(string(m.provider.ID))
+	if !ok || current != m.owner {
+		return ActionCmd{util.ReportError(fmt.Errorf("provider owner changed before the API key could be saved"))}
+	}
+	credential := config.ProviderAPIKeyCredential{Owner: m.owner, APIKey: m.input.Value()}
+	err := m.com.Workspace.SetProviderAPIKey(config.ScopeGlobal, string(m.provider.ID), credential)
 	if err != nil {
 		return ActionCmd{util.ReportError(fmt.Errorf("failed to save API key: %w", err))}
 	}
 
 	return ActionSelectModel{
-		Provider:  m.provider,
-		Model:     m.model,
-		ModelType: m.modelType,
+		Provider:         m.provider,
+		Model:            m.model,
+		ModelType:        m.modelType,
+		ProviderOwner:    m.owner,
+		ProviderOwnerSet: m.ownerSet,
 	}
 }

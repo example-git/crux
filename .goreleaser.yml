@@ -50,13 +50,15 @@ archives:
       - LICENSE.md
       - THIRD_PARTY_NOTICES.md
       - SECURITY.md
-      - CODE_OF_CONDUCT.md
       - RELEASES.md
       - BRANDING.md
       - schema.json
       - provider-plugin.schema.json
       - provider-preset-plugin.schema.json
+      - image-provider-plugin.schema.json
       - docs/provider-plugins/**/*
+      - docs/compatibility/**/*
+      - plugins/provider-presets/**/*
       - completions/*
       - manpages/*
     format_overrides:

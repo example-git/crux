@@ -32,7 +32,8 @@ type modelMatch struct {
 	modelID  string
 }
 
-func findModels(providers map[string]config.ProviderConfig, largeModel, smallModel string) ([]modelMatch, []modelMatch, error) {
+func findModels(cfg *config.Config, largeModel, smallModel string) ([]modelMatch, []modelMatch, error) {
+	providers := cfg.Providers.Copy()
 	largeProviderFilter, largeModelID := parseModelStr(providers, largeModel)
 	smallProviderFilter, smallModelID := parseModelStr(providers, smallModel)
 
@@ -47,13 +48,16 @@ func findModels(providers map[string]config.ProviderConfig, largeModel, smallMod
 			if _, ok := providers[pf.filter]; !ok {
 				return nil, nil, fmt.Errorf("%s model: provider %q not found in configuration. Use 'crux models' to list available models", pf.label, pf.filter)
 			}
+			if !cfg.IsProviderAvailable(pf.filter) {
+				return nil, nil, fmt.Errorf("%s model: provider %q is not available", pf.label, pf.filter)
+			}
 		}
 	}
 
 	// Find matching models in a single pass.
 	var largeMatches, smallMatches []modelMatch
 	for name, provider := range providers {
-		if provider.Disable {
+		if !cfg.IsProviderAvailable(name) {
 			continue
 		}
 		for _, m := range provider.Models {

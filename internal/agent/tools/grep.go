@@ -3,12 +3,9 @@ package tools
 import (
 	"bufio"
 	"bytes"
-	"cmp"
 	"context"
-	_ "embed"
 	"encoding/json"
 	"fmt"
-	"html/template"
 	"io"
 	"net/http"
 	"os"
@@ -19,12 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/x/ansi"
-	fantasy "github.com/example-git/crux/foundation"
-	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/fsext"
-	"github.com/example-git/crux/internal/permission"
 )
 
 // regexCache provides thread-safe caching of compiled regex patterns
@@ -67,13 +60,6 @@ var (
 	globBraceRegex = regexp.MustCompile(`\{([^}]+)\}`)
 )
 
-type GrepParams struct {
-	Pattern     string `json:"pattern" description:"The regex pattern to search for in file contents"`
-	Path        string `json:"path,omitempty" description:"The directory to search in. Defaults to the current working directory."`
-	Include     string `json:"include,omitempty" description:"File pattern to include in the search (e.g. \"*.js\", \"*.{ts,tsx}\")"`
-	LiteralText bool   `json:"literal_text,omitempty" description:"If true, the pattern will be treated as literal text with special regex characters escaped. Default is false."`
-}
-
 type grepMatch struct {
 	path     string
 	modTime  time.Time
@@ -82,33 +68,7 @@ type grepMatch struct {
 	lineText string
 }
 
-type GrepResponseMetadata struct {
-	NumberOfMatches int  `json:"number_of_matches"`
-	Truncated       bool `json:"truncated"`
-}
-
-const (
-	GrepToolName        = "grep"
-	maxGrepContentWidth = 500
-)
-
-//go:embed grep.md.tpl
-var grepDescriptionTmpl []byte
-
-var grepDescriptionTpl = template.Must(
-	template.New("grepDescription").
-		Parse(string(grepDescriptionTmpl)),
-)
-
-type grepDescriptionData struct {
-	MaxResults int
-}
-
-func grepDescription() string {
-	return renderTemplate(grepDescriptionTpl, grepDescriptionData{
-		MaxResults: 100,
-	})
-}
+const maxSearchContentWidth = 500
 
 // escapeRegexPattern escapes special regex characters so they're treated as literal characters
 func escapeRegexPattern(pattern string) string {
@@ -120,86 +80,6 @@ func escapeRegexPattern(pattern string) string {
 	}
 
 	return escaped
-}
-
-func NewGrepTool(permissions permission.Service, workingDir string, config config.ToolGrep) fantasy.AgentTool {
-	return fantasy.NewAgentTool(
-		GrepToolName,
-		grepDescription(),
-		func(ctx context.Context, params GrepParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			if params.Pattern == "" {
-				return fantasy.NewTextErrorResponse("pattern is required"), nil
-			}
-
-			searchPattern := params.Pattern
-			if params.LiteralText {
-				searchPattern = escapeRegexPattern(params.Pattern)
-			}
-
-			searchPath, err := canonicalToolPath(workingDir, cmp.Or(params.Path, workingDir))
-			if err != nil {
-				return fantasy.NewTextErrorResponse(err.Error()), nil
-			}
-			granted, err := authorizeExternalPath(ctx, permissions, workingDir, searchPath, call.ID, GrepToolName, "read", fmt.Sprintf("Search file contents outside working directory: %s", searchPath), params)
-			if err != nil {
-				return fantasy.ToolResponse{}, err
-			}
-			if !granted {
-				return NewPermissionDeniedResponse(), nil
-			}
-
-			searchCtx, cancel := context.WithTimeout(ctx, config.GetTimeout())
-			defer cancel()
-
-			matches, truncated, err := searchFiles(searchCtx, searchPattern, searchPath, params.Include, 100)
-			if err != nil {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("error searching files: %v", err)), nil
-			}
-
-			var output strings.Builder
-			if len(matches) == 0 {
-				output.WriteString("No files found")
-			} else {
-				fmt.Fprintf(&output, "Found %d matches\n", len(matches))
-
-				currentFile := ""
-				for _, match := range matches {
-					if currentFile != match.path {
-						if currentFile != "" {
-							output.WriteString("\n")
-						}
-						currentFile = match.path
-						fmt.Fprintf(&output, "%s:\n", filepath.ToSlash(match.path))
-					}
-					if match.lineNum > 0 {
-						lineText := match.lineText
-						if ansi.StringWidth(lineText) > maxGrepContentWidth {
-							lineText = ansi.Truncate(lineText, maxGrepContentWidth, "...")
-						}
-						if match.charNum > 0 {
-							fmt.Fprintf(&output, "  Line %d, Char %d: %s\n", match.lineNum, match.charNum, lineText)
-						} else {
-							fmt.Fprintf(&output, "  Line %d: %s\n", match.lineNum, lineText)
-						}
-					} else {
-						fmt.Fprintf(&output, "  %s\n", match.path)
-					}
-				}
-
-				if truncated {
-					output.WriteString("\n(Results are truncated. Consider using a more specific path or pattern.)")
-				}
-			}
-
-			return fantasy.WithResponseMetadata(
-				fantasy.NewTextResponse(output.String()),
-				GrepResponseMetadata{
-					NumberOfMatches: len(matches),
-					Truncated:       truncated,
-				},
-			), nil
-		},
-	)
 }
 
 func searchFiles(ctx context.Context, pattern, rootPath, include string, limit int) ([]grepMatch, bool, error) {
@@ -229,7 +109,7 @@ func searchFiles(ctx context.Context, pattern, rootPath, include string, limit i
 func searchWithRipgrep(ctx context.Context, pattern, path, include string) ([]grepMatch, error) {
 	cmd := getRgSearchCmd(ctx, pattern, path, include)
 	if cmd == nil {
-		return nil, fmt.Errorf("ripgrep not found in $PATH")
+		return nil, fmt.Errorf("embedded ripgrep is unavailable on this platform")
 	}
 
 	// Only add ignore files if they exist

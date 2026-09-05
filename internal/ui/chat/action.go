@@ -208,10 +208,16 @@ func taskOutputActionResult(sty *styles.Styles, content string, width int, expan
 	if result.OutputTruncated {
 		status += " · truncated"
 	}
-	if strings.TrimSpace(result.Output) == "" {
+	output := result.Output
+	if result.Task.Type == managedtask.TypeImage {
+		if formatted, ok := FormatImagegenResult(output); ok {
+			output = formatted
+		}
+	}
+	if strings.TrimSpace(output) == "" {
 		return sty.Tool.StateWaiting.Render(status + " · no output")
 	}
-	return toolOutputPlainContent(sty, status+"\n"+result.Output, width, expanded)
+	return toolOutputPlainContent(sty, status+"\n"+output, width, expanded)
 }
 
 func taskMutationActionResult(sty *styles.Styles, content string, width int) string {

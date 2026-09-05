@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/example-git/crux/internal/providertransport"
 )
 
 // Static fallback versions, used when live detection fails and no persisted
@@ -68,6 +70,14 @@ func Gemini() string {
 	return fmt.Sprintf("antigravity/cli/%s %s/%s", GeminiVersion(), runtime.GOOS, runtime.GOARCH)
 }
 
+func GeminiForContext(ctx context.Context) (string, error) {
+	version, err := GeminiVersionForContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("antigravity/cli/%s %s/%s", version, runtime.GOOS, runtime.GOARCH), nil
+}
+
 // GeminiVersion resolves the Antigravity CLI version: env override, then the
 // official release manifest, then a live probe of installed binaries, then
 // the last persisted answer, then the static fallback.
@@ -89,6 +99,26 @@ func GeminiVersion() string {
 		})
 	})
 	return geminiVersion
+}
+
+func GeminiVersionForContext(ctx context.Context) (string, error) {
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if value := os.Getenv("ANTIGRAVITY_CLI_VERSION"); value != "" {
+		return value, nil
+	}
+	return resolveForContext(ctx, "gemini", staticGeminiVersion, func(ctx context.Context) string {
+		if value := fetchAntigravityManifestVersionForContext(ctx); value != "" {
+			return value
+		}
+		for _, tool := range []string{"antigravity", "agy", "gemini"} {
+			if value := runToolVersionForContext(ctx, tool); value != "" {
+				return value
+			}
+		}
+		return ""
+	})
 }
 
 // antigravityPlatform reproduces the platform detection in the official
@@ -123,17 +153,21 @@ func isMuslLinux() bool {
 // current platform and returns its "version" field. Returns "" on any
 // failure.
 func fetchAntigravityManifestVersion() string {
+	return fetchAntigravityManifestVersionForContext(context.Background())
+}
+
+func fetchAntigravityManifestVersionForContext(ctx context.Context) string {
 	platform := antigravityPlatform()
 	if platform == "" {
 		return ""
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, antigravityManifestBase+"/"+platform+".json", nil)
 	if err != nil {
 		return ""
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
 	if err != nil {
 		return ""
 	}
@@ -167,6 +201,28 @@ func resolve(key, fallback string, detect func() string) string {
 	return fallback
 }
 
+func resolveForContext(ctx context.Context, key, fallback string, detect func(context.Context) string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if value := detect(ctx); fullVersionRe.MatchString(value) {
+		if err := providertransport.ValidateContextOwner(ctx); err != nil {
+			return "", err
+		}
+		return value, nil
+	}
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if value := persisted(key); value != "" {
+		return value, nil
+	}
+	return fallback, nil
+}
+
 // runToolVersion runs `tool --version` and parses the first semver-like
 // token. Returns "" on any failure.
 func runToolVersion(tool string) string {
@@ -178,6 +234,19 @@ func runToolVersion(tool string) string {
 	}
 	if m := versionRe.FindStringSubmatch(string(out)); m != nil {
 		return m[1]
+	}
+	return ""
+}
+
+func runToolVersionForContext(ctx context.Context, tool string) string {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, tool, "--version").Output()
+	if err != nil {
+		return ""
+	}
+	if match := versionRe.FindStringSubmatch(string(out)); match != nil {
+		return match[1]
 	}
 	return ""
 }
@@ -329,6 +398,43 @@ func Copilot() CopilotIdentity {
 	}
 }
 
+func CopilotForContext(ctx context.Context) (CopilotIdentity, error) {
+	if CopilotAdvertisementMode() == CopilotModeVSCode {
+		extension, err := CopilotExtensionVersionForContext(ctx)
+		if err != nil {
+			return CopilotIdentity{}, err
+		}
+		return CopilotIdentity{
+			Mode:                CopilotModeVSCode,
+			IntegrationID:       envOr("COPILOT_VSCODE_INTEGRATION_ID", "vscode-chat"),
+			UserAgent:           "GitHubCopilotChat/" + extension,
+			EditorVersion:       envOr("COPILOT_VSCODE_EDITOR_VERSION", copilotVSCodeEditorVersion),
+			EditorPluginVersion: envOr("COPILOT_VSCODE_EDITOR_PLUGIN_VERSION", "copilot-chat/"+extension),
+		}, nil
+	}
+	version, err := CopilotCLIVersionForContext(ctx)
+	if err != nil {
+		return CopilotIdentity{}, err
+	}
+	osRelease, err := osVersionForContext(ctx)
+	if err != nil {
+		return CopilotIdentity{}, err
+	}
+	terminal := os.Getenv("TERM_PROGRAM")
+	if terminal == "" {
+		terminal = os.Getenv("TERM")
+	}
+	if terminal == "" {
+		terminal = "terminal"
+	}
+	return CopilotIdentity{
+		Mode:          CopilotModeCLI,
+		IntegrationID: "copilot-developer-cli",
+		UserAgent: fmt.Sprintf("copilot/%s (%s v%s) term/%s",
+			version, runtime.GOOS, osRelease, terminal),
+	}, nil
+}
+
 // CopilotCLIVersion resolves the Copilot CLI version: env override, then
 // the GitHub release feed for the native CLI, then the versions.json GitHub
 // Copilot config, then a live probe of installed binaries, then the last
@@ -356,6 +462,29 @@ func CopilotCLIVersion() string {
 	return copilotVersion
 }
 
+func CopilotCLIVersionForContext(ctx context.Context) (string, error) {
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if value := os.Getenv("COPILOT_CLI_VERSION"); value != "" {
+		return value, nil
+	}
+	return resolveForContext(ctx, "copilot-cli", staticCopilotCLIVersion, func(ctx context.Context) string {
+		if value := fetchCopilotCLILatestForContext(ctx); value != "" {
+			return value
+		}
+		if value := readCopilotVersionsJSON(); value != "" {
+			return value
+		}
+		for _, tool := range []string{"github-copilot-cli", "copilot"} {
+			if value := runToolVersionForContext(ctx, tool); value != "" {
+				return value
+			}
+		}
+		return ""
+	})
+}
+
 // CopilotExtensionVersion resolves the VS Code Copilot Chat extension
 // version presented in vscode mode: env override, then the VS Code
 // Marketplace, then versions.json, then the last persisted answer, then the
@@ -375,10 +504,29 @@ func CopilotExtensionVersion() string {
 	return copilotExtVersion
 }
 
+func CopilotExtensionVersionForContext(ctx context.Context) (string, error) {
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if value := os.Getenv("COPILOT_VSCODE_EXTENSION_VERSION"); value != "" {
+		return value, nil
+	}
+	return resolveForContext(ctx, "copilot-extension", staticCopilotExtensionVersion, func(ctx context.Context) string {
+		if value := fetchCopilotChatMarketplaceVersionForContext(ctx); value != "" {
+			return value
+		}
+		return readCopilotVersionsJSON()
+	})
+}
+
 // fetchCopilotCLILatest reads the latest native Copilot CLI release from the
 // github/copilot-cli release feed. Returns "" on any failure.
 func fetchCopilotCLILatest() string {
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	return fetchCopilotCLILatestForContext(context.Background())
+}
+
+func fetchCopilotCLILatestForContext(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"https://api.github.com/repos/github/copilot-cli/releases/latest", nil)
@@ -386,7 +534,7 @@ func fetchCopilotCLILatest() string {
 		return ""
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
 	if err != nil {
 		return ""
 	}
@@ -411,7 +559,11 @@ func fetchCopilotCLILatest() string {
 // extension version from the VS Code Marketplace gallery API. Returns "" on
 // any failure.
 func fetchCopilotChatMarketplaceVersion() string {
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	return fetchCopilotChatMarketplaceVersionForContext(context.Background())
+}
+
+func fetchCopilotChatMarketplaceVersionForContext(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	body := `{"filters":[{"criteria":[{"filterType":7,"value":"GitHub.copilot-chat"}]}],"flags":914}`
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
@@ -422,7 +574,7 @@ func fetchCopilotChatMarketplaceVersion() string {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json;api-version=3.0-preview.1")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
 	if err != nil {
 		return ""
 	}
@@ -492,6 +644,26 @@ func osVersion() string {
 	return "14.0"
 }
 
+func osVersionForContext(ctx context.Context) (string, error) {
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if runtime.GOOS != "darwin" {
+		return "14.0", nil
+	}
+	output, err := exec.CommandContext(ctx, "sw_vers", "-productVersion").Output()
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if err != nil {
+		return "14.0", nil
+	}
+	if value := strings.TrimSpace(string(output)); value != "" {
+		return value, nil
+	}
+	return "14.0", nil
+}
+
 // envOr returns the environment value for key, or fallback when unset.
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
@@ -509,6 +681,17 @@ func CopilotGitHubUserAgent() string {
 		return id.UserAgent
 	}
 	return id.IntegrationID
+}
+
+func CopilotGitHubUserAgentForContext(ctx context.Context) (string, error) {
+	identity, err := CopilotForContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	if identity.Mode == CopilotModeVSCode {
+		return identity.UserAgent, nil
+	}
+	return identity.IntegrationID, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -559,6 +742,20 @@ func Codex() string {
 		runtime.GOARCH, codexTerminalToken())
 }
 
+func CodexForContext(ctx context.Context) (string, error) {
+	version, err := CodexVersionForContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	osRelease, err := osVersionForContext(ctx)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s/%s (%s %s; %s) %s",
+		CodexOriginator(), version, codexOSType(), osRelease,
+		runtime.GOARCH, codexTerminalToken()), nil
+}
+
 // CodexOriginator returns the originator value presented in the UA and the
 // "originator" header, honoring the same override env var as the Codex CLI.
 func CodexOriginator() string {
@@ -588,10 +785,29 @@ func CodexVersion() string {
 	return codexVersion
 }
 
+func CodexVersionForContext(ctx context.Context) (string, error) {
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if value := os.Getenv("CODEX_VERSION"); value != "" {
+		return value, nil
+	}
+	return resolveForContext(ctx, "codex", staticCodexVersion, func(ctx context.Context) string {
+		if value := fetchCodexLatestForContext(ctx); value != "" {
+			return value
+		}
+		return runToolVersionForContext(ctx, "codex")
+	})
+}
+
 // fetchCodexLatest reads the newest non-prerelease tag from the openai/codex
 // release feed (tags look like "rust-v0.148.0"). Returns "" on any failure.
 func fetchCodexLatest() string {
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	return fetchCodexLatestForContext(context.Background())
+}
+
+func fetchCodexLatestForContext(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		"https://api.github.com/repos/openai/codex/releases?per_page=10", nil)
@@ -599,7 +815,7 @@ func fetchCodexLatest() string {
 		return ""
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
 	if err != nil {
 		return ""
 	}
@@ -619,11 +835,11 @@ func fetchCodexLatest() string {
 	if err := json.Unmarshal(data, &releases); err != nil {
 		return ""
 	}
-	for _, r := range releases {
-		if r.Prerelease || r.Draft {
+	for _, release := range releases {
+		if release.Prerelease || release.Draft {
 			continue
 		}
-		return strings.TrimPrefix(strings.TrimSpace(r.TagName), "rust-v")
+		return strings.TrimPrefix(strings.TrimSpace(release.TagName), "rust-v")
 	}
 	return ""
 }

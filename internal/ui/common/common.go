@@ -30,6 +30,16 @@ func (c *Common) Config() *config.Config {
 	return c.Workspace.Config()
 }
 
+func (c *Common) SetupAgents() {
+	workspace, ok := c.Workspace.(interface {
+		Store() *config.ConfigStore
+	})
+	if !ok {
+		return
+	}
+	workspace.Store().SetupAgents()
+}
+
 // DefaultCommon returns the default common UI configurations. When the
 // workspace has a large model selected, the theme is chosen based on its
 // provider; otherwise the default theme is used.

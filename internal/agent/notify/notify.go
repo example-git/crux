@@ -3,6 +3,8 @@
 // events without importing UI packages.
 package notify
 
+import "github.com/example-git/crux/internal/providerregistry"
+
 // Type identifies the kind of agent notification.
 type Type string
 
@@ -23,6 +25,7 @@ type Notification struct {
 	SessionTitle string
 	Type         Type
 	ProviderID   string
+	Owner        providerregistry.RegistrationOwner
 	// RunID, when non-empty, is the caller-supplied correlator
 	// (proto.AgentMessage.RunID) for the run that produced this
 	// notification. It lets observers attribute a TypeAgentError to a

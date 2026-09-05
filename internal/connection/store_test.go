@@ -127,6 +127,74 @@ func TestConnectionStoreRestoresPreviousFileWhenReplacementFails(t *testing.T) {
 	require.Equal(t, original, actual)
 }
 
+func TestNormalizeConnectionAddress(t *testing.T) {
+	for _, test := range []struct {
+		address string
+		want    string
+	}{
+		{address: "tcp://SERVER.EXAMPLE:9443", want: "tcp://server.example:9443"},
+		{address: "tcp://[2001:db8::1]:9443", want: "tcp://[2001:db8::1]:9443"},
+	} {
+		normalized, err := NormalizeConnectionAddress(test.address)
+		require.NoError(t, err)
+		require.Equal(t, test.want, normalized)
+	}
+	for _, address := range []string{
+		"tcp://server.example",
+		"tcp://server.example:0",
+		"tcp://server.example:65536",
+		"tcp://0.0.0.0:9443",
+		"tcp://[::]:9443",
+		"tcp://user@server.example:9443",
+		"tcp://server.example:9443/path",
+		"tcp://server.example:9443?query=1",
+		"tcp://server.example:9443#fragment",
+		" tcp://server.example:9443",
+	} {
+		_, err := NormalizeConnectionAddress(address)
+		require.Error(t, err, address)
+	}
+}
+
+func TestAuthorizedClientsCanBeListedAndRevoked(t *testing.T) {
+	setConnectionRoot(t, t.TempDir())
+	serverCode, err := EnsureServerIdentity(t.Context())
+	require.NoError(t, err)
+	revoked, revokedCode, err := Add(t.Context(), "revoked", "tcp://server.example:9443", serverCode)
+	require.NoError(t, err)
+	_, retainedCode, err := Add(t.Context(), "retained", "tcp://server.example:9443", serverCode)
+	require.NoError(t, err)
+	require.NoError(t, AuthorizeClient(t.Context(), "revoked", revokedCode))
+	require.NoError(t, AuthorizeClient(t.Context(), "retained", retainedCode))
+	require.ErrorContains(t, AuthorizeClient(t.Context(), "duplicate", retainedCode), "already authorized as retained")
+
+	clients, err := ListAuthorizedClients(t.Context())
+	require.NoError(t, err)
+	require.Len(t, clients, 2)
+	require.Equal(t, "retained", clients[0].Name)
+	require.NotEmpty(t, clients[0].Fingerprint)
+	require.NoError(t, RevokeClient(t.Context(), "revoked"))
+	require.ErrorContains(t, RevokeClient(t.Context(), "revoked"), "not found")
+
+	serverTLS, err := ServerTLSConfig(t.Context())
+	require.NoError(t, err)
+	testServer := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	testServer.TLS = serverTLS
+	testServer.StartTLS()
+	t.Cleanup(testServer.Close)
+	clientTLS, err := ClientTLSConfig(revoked)
+	require.NoError(t, err)
+	transport := &http.Transport{TLSClientConfig: clientTLS}
+	t.Cleanup(transport.CloseIdleConnections)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, testServer.URL, nil)
+	require.NoError(t, err)
+	response, err := (&http.Client{Transport: transport}).Do(request)
+	if response != nil {
+		require.NoError(t, response.Body.Close())
+	}
+	require.Error(t, err)
+}
+
 func setConnectionRoot(t *testing.T, root string) {
 	t.Helper()
 	t.Setenv("CRUX_GLOBAL_DATA", root)

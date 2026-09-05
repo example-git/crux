@@ -83,10 +83,18 @@ func TestSkillToolsListAndLoadActiveSkill(t *testing.T) {
 	require.Contains(t, response.Content, `"loaded": true`)
 }
 
+func TestGitInspectDescriptionDiscouragesRoutineRepositoryScans(t *testing.T) {
+	description := string(gitInspectDescription)
+	require.Contains(t, description, "Do not use it for routine repository discovery")
+	require.Contains(t, description, "prefer a relevant path-scoped status or diff")
+}
+
 func TestGitInspectArgsAreBoundedAndReadOnly(t *testing.T) {
 	args, err := gitInspectArgs(GitInspectParams{Action: "status", Path: "internal/agent"})
 	require.NoError(t, err)
 	require.Contains(t, args, "status")
+	require.Contains(t, args, "--untracked-files=normal")
+	require.NotContains(t, args, "--untracked-files=all")
 	require.Contains(t, args, "--")
 
 	args, err = gitInspectArgs(GitInspectParams{Action: "diff", Staged: true})

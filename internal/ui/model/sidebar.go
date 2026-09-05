@@ -35,15 +35,15 @@ func (m *UI) modelInfo(width int) string {
 			providerName = providerConfig.Name
 
 			// Only check reasoning if model can reason
-			if model.CatwalkCfg.CanReason {
-				if len(model.CatwalkCfg.ReasoningLevels) == 0 {
+			if model.CatalogModel.CanReason {
+				if len(model.CatalogModel.ReasoningLevels) == 0 {
 					if model.ModelCfg.Think {
 						reasoningInfo = "Thinking On"
 					} else {
 						reasoningInfo = "Thinking Off"
 					}
 				} else {
-					reasoningEffort := cmp.Or(model.ModelCfg.ReasoningEffort, model.CatwalkCfg.DefaultReasoningEffort)
+					reasoningEffort := cmp.Or(model.ModelCfg.ReasoningEffort, model.CatalogModel.DefaultReasoningEffort)
 					reasoningInfo = fmt.Sprintf("Reasoning %s", common.FormatReasoningEffort(reasoningEffort))
 				}
 			}
@@ -55,13 +55,13 @@ func (m *UI) modelInfo(width int) string {
 		modelContext = &common.ModelContextInfo{
 			ContextUsed:    m.session.CompletionTokens + m.session.PromptTokens,
 			Cost:           m.session.Cost,
-			ModelContext:   model.CatwalkCfg.ContextWindow,
+			ModelContext:   model.CatalogModel.ContextWindow,
 			EstimatedUsage: m.session.EstimatedUsage,
 		}
 	}
 	var modelName string
 	if model != nil {
-		modelName = model.CatwalkCfg.Name
+		modelName = model.CatalogModel.Name
 	}
 	return common.ModelInfo(m.com.Styles, modelName, providerID, providerName, reasoningInfo, modelContext, width)
 }
@@ -256,12 +256,11 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 	}
 }
 
-// fileChangeCount returns the number of session files with non-zero additions
-// or deletions.
+// fileChangeCount returns the number of changed session files.
 func fileChangeCount(files []SessionFile) int {
 	count := 0
 	for _, f := range files {
-		if f.Additions == 0 && f.Deletions == 0 {
+		if !f.Created && f.Additions == 0 && f.Deletions == 0 {
 			continue
 		}
 		count++

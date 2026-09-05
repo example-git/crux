@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
@@ -65,8 +65,8 @@ func TestCruxInfo_Providers(t *testing.T) {
 	t.Parallel()
 
 	providers := csync.NewMap[string, config.ProviderConfig]()
-	providers.Set("openai", config.ProviderConfig{Models: make([]catwalk.Model, 8)})
-	providers.Set("anthropic", config.ProviderConfig{Models: make([]catwalk.Model, 12)})
+	providers.Set("openai", config.ProviderConfig{Models: make([]catalog.Model, 8)})
+	providers.Set("anthropic", config.ProviderConfig{Models: make([]catalog.Model, 12)})
 
 	cfg := config.NewTestStore(&config.Config{Providers: providers})
 	output := buildCruxInfo(cfg, nil, nil, nil, nil)
@@ -84,8 +84,8 @@ func TestCruxInfo_DisabledProvidersOmitted(t *testing.T) {
 	t.Parallel()
 
 	providers := csync.NewMap[string, config.ProviderConfig]()
-	providers.Set("openai", config.ProviderConfig{Disable: true, Models: make([]catwalk.Model, 8)})
-	providers.Set("anthropic", config.ProviderConfig{Models: make([]catwalk.Model, 12)})
+	providers.Set("openai", config.ProviderConfig{Disable: true, Models: make([]catalog.Model, 8)})
+	providers.Set("anthropic", config.ProviderConfig{Models: make([]catalog.Model, 12)})
 
 	cfg := config.NewTestStore(&config.Config{Providers: providers})
 	output := buildCruxInfo(cfg, nil, nil, nil, nil)
@@ -157,7 +157,7 @@ func TestCruxInfo_YoloMode(t *testing.T) {
 		Providers:   csync.NewMap[string, config.ProviderConfig](),
 		Permissions: &config.Permissions{},
 	})
-	cfg.Overrides().SkipPermissionRequests = true
+	cfg.SetRuntimeOverrides(true, nil)
 
 	output := buildCruxInfo(cfg, nil, nil, nil, nil)
 	require.Contains(t, output, "[permissions]")
@@ -234,7 +234,7 @@ func TestCruxInfo_NoSecrets(t *testing.T) {
 	providers := csync.NewMap[string, config.ProviderConfig]()
 	providers.Set("openai", config.ProviderConfig{
 		APIKey: "sk-super-secret-key-12345",
-		Models: make([]catwalk.Model, 8),
+		Models: make([]catalog.Model, 8),
 	})
 
 	cfg := config.NewTestStore(&config.Config{Providers: providers})
@@ -248,9 +248,9 @@ func TestCruxInfo_DeterministicOrdering(t *testing.T) {
 	t.Parallel()
 
 	providers := csync.NewMap[string, config.ProviderConfig]()
-	providers.Set("zebra", config.ProviderConfig{Models: make([]catwalk.Model, 1)})
-	providers.Set("alpha", config.ProviderConfig{Models: make([]catwalk.Model, 2)})
-	providers.Set("middle", config.ProviderConfig{Models: make([]catwalk.Model, 3)})
+	providers.Set("zebra", config.ProviderConfig{Models: make([]catalog.Model, 1)})
+	providers.Set("alpha", config.ProviderConfig{Models: make([]catalog.Model, 2)})
+	providers.Set("middle", config.ProviderConfig{Models: make([]catalog.Model, 3)})
 
 	states := map[string]mcp.ClientInfo{
 		"z-mcp": {Name: "z-mcp", State: mcp.StateConnected, Counts: mcp.Counts{Tools: 1}},
@@ -264,7 +264,7 @@ func TestCruxInfo_DeterministicOrdering(t *testing.T) {
 			AllowedTools: []string{"z-perm", "a-perm"},
 		},
 	})
-	cfg.Overrides().SkipPermissionRequests = true
+	cfg.SetRuntimeOverrides(true, nil)
 
 	// Test MCP ordering via writeMCP directly.
 	var mcpBuf strings.Builder

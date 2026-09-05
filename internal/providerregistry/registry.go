@@ -21,7 +21,6 @@ import (
 	"github.com/example-git/crux/internal/oauth/copilot"
 	"github.com/example-git/crux/internal/oauth/gemini"
 	"github.com/example-git/crux/internal/oauth/gemini/antigravity"
-	"github.com/example-git/crux/internal/oauth/manifestflow"
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providertransport"
@@ -31,6 +30,8 @@ import (
 // with "integrated-" are temporary compatibility adapters; protocol values are
 // generic core transports selected from declarative manifests.
 type Construction string
+
+type QuotaCredential string
 
 // OwnerMode is an explicit host rollout choice for one logical provider.
 // Bundle discovery never changes this value.
@@ -50,6 +51,10 @@ const (
 	ConstructionGeminiContent     Construction = "gemini-generate-content"
 	ConstructionGeminiInteraction Construction = "gemini-interactions"
 	ConstructionGenericJSON       Construction = "generic-json"
+	ConstructionOpenAICompat      Construction = "openai-compat"
+
+	QuotaCredentialAccessToken  QuotaCredential = "access-token"
+	QuotaCredentialRefreshToken QuotaCredential = "refresh-token"
 )
 
 // LoginAdapter identifies a host-owned interactive flow implementation.
@@ -94,15 +99,17 @@ type Identity func(context.Context, string) (id, display string, raw json.RawMes
 // InstructionCapability contains resolved, immutable UTF-8 profile text. Bundle
 // paths are consumed during secure validation and never reopened by consumers.
 type InstructionCapability struct {
-	Default  string
-	Profiles map[string]string
+	Default          string
+	SelectionDefault string
+	Profiles         map[string]string
+	HiddenSkills     []string
 }
 
 // ReasoningCapability binds generic fallback state to provider-neutral option
 // conversion selected by a registered protocol policy.
 type ReasoningCapability struct {
 	FallbackOnUnsupported bool
-	Options               func(modelID, effort string, canReason bool, merged map[string]any) fantasy.ProviderOptions
+	Options               func(modelID, effort string, canReason bool, merged map[string]any) (fantasy.ProviderOptions, error)
 	Disable               func(fantasy.ProviderOptions) fantasy.ProviderOptions
 }
 
@@ -120,6 +127,47 @@ type RuntimeCapability struct {
 	Apply     func(RuntimeValues, fantasy.ProviderOptions) fantasy.ProviderOptions
 }
 
+type RegistrationOwner struct {
+	ProviderID           string       `json:"provider_id"`
+	AccountNamespace     string       `json:"account_namespace,omitempty"`
+	Construction         Construction `json:"construction,omitempty"`
+	CompatibilityAdapter Construction `json:"compatibility_adapter,omitempty"`
+	HasOAuth             bool         `json:"has_oauth,omitempty"`
+	OAuthAdapter         LoginAdapter `json:"oauth_adapter,omitempty"`
+	OAuthFlowID          string       `json:"oauth_flow_id,omitempty"`
+	HasManifest          bool         `json:"has_manifest,omitempty"`
+	ManifestID           string       `json:"manifest_id,omitempty"`
+	ManifestVersion      string       `json:"manifest_version,omitempty"`
+	HasPreset            bool         `json:"has_preset,omitempty"`
+	PresetID             string       `json:"preset_id,omitempty"`
+	PresetVersion        string       `json:"preset_version,omitempty"`
+	PresetDigest         string       `json:"preset_digest,omitempty"`
+}
+
+func (r Registration) Owner() RegistrationOwner {
+	owner := RegistrationOwner{
+		ProviderID:           r.ProviderID,
+		AccountNamespace:     r.AccountNamespace,
+		Construction:         r.Construction,
+		CompatibilityAdapter: r.CompatibilityAdapter,
+		HasOAuth:             r.OAuth != nil,
+		HasManifest:          r.Manifest != nil,
+	}
+	if r.OAuth != nil {
+		owner.OAuthAdapter = r.OAuth.Adapter
+		owner.OAuthFlowID = r.OAuth.FlowID
+	}
+	if r.Manifest != nil {
+		owner.ManifestID = r.Manifest.ID
+		owner.ManifestVersion = r.Manifest.Version
+	}
+	return owner
+}
+
+func (o RegistrationOwner) Matches(registration Registration) bool {
+	return o == registration.Owner()
+}
+
 // Registration is one immutable logical provider capability registration.
 type Registration struct {
 	ProviderID           string
@@ -135,10 +183,12 @@ type Registration struct {
 	OAuth                *OAuthCapability
 	Identity             Identity
 	Quota                oauthusage.Fetcher
+	QuotaCredential      QuotaCredential
 	Usage                *manifest.UsagePolicy
 	Images               *manifest.ImagePolicy
 	Instructions         *InstructionCapability
 	RuntimeControls      []manifest.RuntimeControl
+	Metadata             []manifest.MetadataContract
 	Runtime              *RuntimeCapability
 	Reasoning            *ReasoningCapability
 	Errors               []manifest.ErrorMapping
@@ -147,6 +197,10 @@ type Registration struct {
 	AccountOrder         int
 }
 
+// Clone returns a detached registration so consumers cannot mutate manifest
+// operations, identity policy, OAuth behavior, runtime controls, or error
+// mappings held by the active registry. Shallow copies here create cross-client
+// behavior changes that are extremely difficult to attribute to a plugin.
 func (r Registration) Clone() Registration {
 	r.Aliases = slices.Clone(r.Aliases)
 	if r.Brand != nil {
@@ -156,8 +210,9 @@ func (r Registration) Clone() Registration {
 	r.AccountAliases = slices.Clone(r.AccountAliases)
 	r.Operation = r.Operation.Clone()
 	if r.Operations != nil {
-		r.Operations = make(map[string]*providertransport.Operation, len(r.Operations))
-		for id, operation := range r.Operations {
+		operations := r.Operations
+		r.Operations = make(map[string]*providertransport.Operation, len(operations))
+		for id, operation := range operations {
 			r.Operations[id] = operation.Clone()
 		}
 	}
@@ -176,9 +231,11 @@ func (r Registration) Clone() Registration {
 	if r.Instructions != nil {
 		value := *r.Instructions
 		value.Profiles = maps.Clone(r.Instructions.Profiles)
+		value.HiddenSkills = slices.Clone(r.Instructions.HiddenSkills)
 		r.Instructions = &value
 	}
 	r.RuntimeControls = cloneJSON(r.RuntimeControls)
+	r.Metadata = cloneJSON(r.Metadata)
 	if r.Runtime != nil {
 		value := *r.Runtime
 		r.Runtime = &value
@@ -201,25 +258,26 @@ type Registry struct {
 	aliases   map[string]string
 }
 
+// New builds an immutable provider registry without publishing any runtime
+// account or refresh state. Candidate registries remain private until the
+// configuration generation that owns them is committed.
 func New(registrations ...Registration) (*Registry, error) {
 	registry := &Registry{providers: make(map[string]Registration), aliases: make(map[string]string)}
 	for _, registration := range registrations {
-		if err := registry.add(registration); err != nil {
+		if err := ValidateActivation(registration); err != nil {
 			return nil, err
 		}
-	}
-	for _, registration := range registry.providers {
-		if registration.AccountNamespace == "" {
-			continue
-		}
-		accounts.RegisterProvider(registration.ProviderID, registration.AccountNamespace, registration.AccountOrder, registration.AccountAliases...)
-		if registration.OAuth != nil && registration.OAuth.Refresh != nil {
-			accounts.RegisterRefresher(registration.AccountNamespace, registration.OAuth.Refresh)
+		if err := registry.add(registration); err != nil {
+			return nil, err
 		}
 	}
 	return registry, nil
 }
 
+// add enforces one canonical owner per provider ID, alias, and account
+// namespace before cloning the registration into registry state. These checks
+// prevent one plugin from shadowing another provider's construction or OAuth
+// identity.
 func (r *Registry) add(registration Registration) error {
 	if registration.ProviderID == "" {
 		return fmt.Errorf("provider registration has no ID")
@@ -249,6 +307,10 @@ func (r *Registry) add(registration Registration) error {
 	return nil
 }
 
+// Lookup resolves an exact canonical provider or declared alias and returns a
+// clone. It must not guess nearby provider IDs or fall back to another
+// registration, because callers use the result to select constructors,
+// transports, identity policy, and credentials.
 func (r *Registry) Lookup(providerOrAlias string) (Registration, bool) {
 	if r == nil {
 		return Registration{}, false
@@ -262,7 +324,9 @@ func (r *Registry) Lookup(providerOrAlias string) (Registration, bool) {
 }
 
 // HasAccountNamespace reports whether an active registration owns the stored
-// account namespace, including a declared legacy alias.
+// account namespace, including a declared legacy alias. Keep this tied to
+// active registration ownership so credentials are never handed to a provider
+// selected merely by a similar ID.
 func (r *Registry) HasAccountNamespace(namespace string) bool {
 	if r == nil || namespace == "" {
 		return false
@@ -273,6 +337,33 @@ func (r *Registry) HasAccountNamespace(namespace string) bool {
 		}
 	}
 	return false
+}
+
+// Registrations returns sorted detached registrations for UI and runtime
+// projection. Returning registry-owned values would let presentation code
+// mutate active plugin behavior.
+func (r *Registry) AccountRegistrations() []accounts.ProviderRegistration {
+	if r == nil {
+		return nil
+	}
+	result := make([]accounts.ProviderRegistration, 0, len(r.providers))
+	for _, registration := range r.providers {
+		if registration.AccountNamespace == "" {
+			continue
+		}
+		var refresher accounts.Refresher
+		if registration.OAuth != nil {
+			refresher = registration.OAuth.Refresh
+		}
+		result = append(result, accounts.ProviderRegistration{
+			ProviderID: registration.ProviderID,
+			Namespace:  registration.AccountNamespace,
+			Aliases:    slices.Clone(registration.AccountAliases),
+			Order:      registration.AccountOrder,
+			Refresher:  refresher,
+		})
+	}
+	return result
 }
 
 func (r *Registry) Registrations() []Registration {
@@ -292,6 +383,9 @@ func (r *Registry) Registrations() []Registration {
 	return result
 }
 
+// Clone snapshots the full active registry for configuration and workspace
+// boundaries. Operations and manifest policy must remain deep-cloned so reloads
+// cannot mutate providers already serving requests.
 func (r *Registry) Clone() *Registry {
 	if r == nil {
 		return nil
@@ -314,7 +408,6 @@ func Integrated() []Registration {
 			Construction: ConstructionGeminiAntigravity, LoginOrder: 20, AccountOrder: 40,
 			Images:    integratedImagePolicy(0, 0, 0, "", "none"),
 			Reasoning: &ReasoningCapability{FallbackOnUnsupported: true, Options: geminiReasoningOptions, Disable: disableGeminiReasoning},
-			Quota:     oauthusage.FetchGemini,
 			OAuth: &OAuthCapability{
 				Adapter: LoginHostedPaste, FlowID: "gemini-antigravity",
 				Authorize: func(ctx context.Context, open OpenURL, read ReadCode) (*oauth.Token, error) {
@@ -366,6 +459,7 @@ func Integrated() []Registration {
 			Brand:   &Brand{Label: "GitHub Copilot", ShortName: "COPILOT", Color: "#C9A8FF", GradientA: "#C9A8FF", GradientB: "#C9A8FF"},
 			Aliases: []string{"github", "github-copilot"}, AccountNamespace: accounts.ProviderCopilot,
 			Construction: ConstructionCopilot, LoginOrder: 40, AccountOrder: 30,
+			Quota: oauthusage.FetchCopilot, QuotaCredential: QuotaCredentialRefreshToken,
 			OAuth: &OAuthCapability{
 				Adapter: LoginDeviceCode, FlowID: "github-copilot", Refresh: copilot.RefreshToken,
 				Import: func(ctx context.Context) (*oauth.Token, bool, error) {
@@ -395,10 +489,12 @@ func Integrated() []Registration {
 	}
 }
 
-// SelectOwners resolves at most one registration per logical provider. The
+// SelectOwners resolves exactly one runtime owner per logical provider. The
 // default is integrated ownership for integrated providers and plugin ownership
 // for non-conflicting plugins. Explicit disabled, compatibility, and native
-// modes fail closed rather than selecting another implementation.
+// modes fail closed. Never substitute a different owner when the requested
+// plugin mode is unavailable; ownership controls construction, OAuth, identity,
+// transport, usage, runtime options, and reasoning behavior as one unit.
 func SelectOwners(integrated, plugins []Registration, modes map[string]OwnerMode) ([]Registration, error) {
 	pluginByID := make(map[string]Registration, len(plugins))
 	for _, plugin := range plugins {
@@ -470,7 +566,12 @@ func SelectOwners(integrated, plugins []Registration, modes map[string]OwnerMode
 	return result, nil
 }
 
-// FromManifest projects one trusted declarative manifest into runtime metadata.
+// FromManifest is the complete trusted-manifest-to-runtime projection. It
+// compiles every operation and carries construction, OAuth, identity, usage,
+// images, instructions, runtime controls, reasoning, errors, and ordering into
+// one registration. Do not project only the fields a current built-in provider
+// happens to need; private plugins rely on host capabilities independently of
+// the public provider catalog.
 func FromManifest(value manifest.Manifest, staticFiles ...map[string]string) (Registration, error) {
 	var inference *manifest.Operation
 	for i := range value.Capabilities.Operations {
@@ -491,6 +592,33 @@ func FromManifest(value manifest.Manifest, staticFiles ...map[string]string) (Re
 		operations[declaration.ID] = compiled
 	}
 	compiledOperation := operations[inference.ID]
+	var instructionProfiles map[string]string
+	if policy := value.Capabilities.Instructions; policy != nil {
+		files := map[string]string(nil)
+		if len(staticFiles) > 0 {
+			files = staticFiles[0]
+		}
+		instructionProfiles = make(map[string]string, len(policy.Profiles))
+		for id, path := range policy.Profiles {
+			text, ok := files[path]
+			if !ok {
+				return Registration{}, fmt.Errorf("provider %q instruction profile %q has no validated static text", value.Provider.ID, id)
+			}
+			instructionProfiles[id] = text
+		}
+	}
+	if policy := value.Capabilities.Anthropic; policy != nil && policy.InstructionBlock != nil {
+		text, ok := instructionProfiles[policy.InstructionBlock.Profile]
+		if !ok {
+			return Registration{}, fmt.Errorf("provider %q Anthropic instruction block references unresolved profile %q", value.Provider.ID, policy.InstructionBlock.Profile)
+		}
+		var cache *manifest.AnthropicCacheControl
+		if policy.InstructionBlock.CacheControl != nil {
+			value := cloneJSON(*policy.InstructionBlock.CacheControl)
+			cache = &value
+		}
+		compiledOperation.SystemInstruction = &providertransport.ResolvedSystemInstruction{Text: text, CacheControl: cache}
+	}
 	registration := Registration{
 		ProviderID: value.Provider.ID, Name: value.Provider.Name,
 		Aliases:          slices.Clone(value.Provider.Aliases),
@@ -500,6 +628,7 @@ func FromManifest(value manifest.Manifest, staticFiles ...map[string]string) (Re
 		Operation:        compiledOperation,
 		Operations:       operations,
 		RuntimeControls:  cloneJSON(value.Capabilities.RuntimeControls),
+		Metadata:         cloneJSON(value.Capabilities.Metadata),
 		Errors:           cloneJSON(value.Capabilities.Errors),
 		Manifest:         ptr(cloneManifest(value)),
 		LoginOrder:       value.Provider.LoginOrder,
@@ -515,8 +644,7 @@ func FromManifest(value manifest.Manifest, staticFiles ...map[string]string) (Re
 		policy := cloneJSON(*value.Capabilities.Usage)
 		registration.Usage = &policy
 		if policy.Source == "operation" {
-			operation := operations[policy.Operation]
-			fetcher, err := oauthusage.ManifestFetcher(operation, policy)
+			fetcher, err := oauthusage.ManifestFetcher(operations, policy)
 			if err != nil {
 				return Registration{}, fmt.Errorf("compile provider %q usage: %w", value.Provider.ID, err)
 			}
@@ -530,42 +658,32 @@ func FromManifest(value manifest.Manifest, staticFiles ...map[string]string) (Re
 		policy := cloneJSON(*value.Capabilities.Images)
 		registration.Images = &policy
 	}
+	for _, declaration := range value.Capabilities.Operations {
+		if declaration.Kind == "account" {
+			registration.Identity = providertransport.AccountIdentity(operations[declaration.ID], value.Capabilities.Credentials)
+			break
+		}
+	}
+	if len(value.Capabilities.RuntimeControls) > 0 {
+		registration.Runtime = declarativeRuntimeCapability(value.Provider.ID, registration.Construction, value.Capabilities.RuntimeControls)
+	}
+	if registration.Reasoning == nil && len(value.Capabilities.RuntimeControls) > 0 {
+		registration.Reasoning = declarativeReasoningCapability(value.Provider.ID, registration.Construction, value.Capabilities.RuntimeControls)
+	}
 	if policy := value.Capabilities.Instructions; policy != nil {
-		files := map[string]string(nil)
-		if len(staticFiles) > 0 {
-			files = staticFiles[0]
+		registration.Instructions = &InstructionCapability{
+			Default:          policy.Default,
+			SelectionDefault: policy.SelectionDefault,
+			Profiles:         instructionProfiles,
+			HiddenSkills:     slices.Clone(policy.HiddenSkills),
 		}
-		profiles := make(map[string]string, len(policy.Profiles))
-		for id, path := range policy.Profiles {
-			text, ok := files[path]
-			if !ok {
-				return Registration{}, fmt.Errorf("provider %q instruction profile %q has no validated static text", value.Provider.ID, id)
-			}
-			profiles[id] = text
-		}
-		registration.Instructions = &InstructionCapability{Default: policy.Default, Profiles: profiles}
 	}
 	if len(value.Capabilities.OAuth) > 0 {
-		flow := value.Capabilities.OAuth[0]
-		adapter := LoginBrowser
-		switch flow.Redirect.Mode {
-		case "hosted-paste":
-			adapter = LoginHostedPaste
-		case "device-code":
-			adapter = LoginDeviceCode
+		oauthCapability, oauthErr := manifestOAuthCapability(value, value.Capabilities.OAuth[0])
+		if oauthErr != nil {
+			return Registration{}, oauthErr
 		}
-		executor, err := manifestflow.New(value, flow)
-		if err != nil {
-			return Registration{}, fmt.Errorf("compile provider %q OAuth flow: %w", value.Provider.ID, err)
-		}
-		registration.OAuth = &OAuthCapability{
-			Adapter: adapter,
-			FlowID:  flow.ID,
-			Authorize: func(ctx context.Context, open OpenURL, read ReadCode) (*oauth.Token, error) {
-				return executor.Authorize(ctx, open, read)
-			},
-			Refresh: executor.Refresh,
-		}
+		registration.OAuth = oauthCapability
 	}
 	if compatibility := value.Capabilities.Compatibility; compatibility != nil {
 		if err := attachCompatibilityAdapter(&registration, *compatibility); err != nil {
@@ -575,6 +693,10 @@ func FromManifest(value manifest.Manifest, staticFiles ...map[string]string) (Re
 	return registration, nil
 }
 
+// attachCompatibilityAdapter delegates only explicitly named capabilities to
+// an integrated adapter owned by the same provider and account namespace. Do
+// not wholesale replace the plugin registration or infer delegation: undeclared
+// manifest operation and identity policy must remain plugin-owned.
 func attachCompatibilityAdapter(registration *Registration, declaration manifest.CompatibilityAdapter) error {
 	adapterID := Construction(declaration.ID)
 	var adapter *Registration
@@ -632,7 +754,9 @@ func codexRuntimeControls() []manifest.RuntimeControl {
 
 func codexRuntimeCapability() *RuntimeCapability {
 	return &RuntimeCapability{
-		Available: func(modelID string) bool { return modelID == "gpt-5.6" || strings.HasPrefix(modelID, "gpt-5.6-") },
+		Available: func(modelID string) bool {
+			return modelID == "gpt-5.6" || strings.HasPrefix(modelID, "gpt-5.6-") || modelID == "gpt-6-astra"
+		},
 		Apply: func(values RuntimeValues, options fantasy.ProviderOptions) fantasy.ProviderOptions {
 			result := maps.Clone(options)
 			if result == nil {
@@ -658,17 +782,17 @@ func codexRuntimeCapability() *RuntimeCapability {
 	}
 }
 
-func codexReasoningOptions(_ string, effort string, canReason bool, merged map[string]any) fantasy.ProviderOptions {
+func codexReasoningOptions(_ string, effort string, canReason bool, merged map[string]any) (fantasy.ProviderOptions, error) {
 	if configured, ok := merged["reasoning_effort"].(string); ok && configured != "" {
 		effort = configured
 	}
 	if !canReason || effort == "" {
-		return fantasy.ProviderOptions{}
+		return fantasy.ProviderOptions{}, nil
 	}
-	return fantasy.ProviderOptions{codexresponses.Name: &codexresponses.ProviderOptions{ReasoningEffort: effort}}
+	return fantasy.ProviderOptions{codexresponses.Name: &codexresponses.ProviderOptions{ReasoningEffort: effort}}, nil
 }
 
-func geminiReasoningOptions(modelID, effort string, canReason bool, merged map[string]any) fantasy.ProviderOptions {
+func geminiReasoningOptions(modelID, effort string, canReason bool, merged map[string]any) (fantasy.ProviderOptions, error) {
 	if _, exists := merged["thinking_config"]; !exists && canReason {
 		if strings.HasPrefix(modelID, "gemini-3") {
 			merged["thinking_config"] = map[string]any{"thinking_level": effort, "include_thoughts": true}
@@ -678,9 +802,9 @@ func geminiReasoningOptions(modelID, effort string, canReason bool, merged map[s
 	}
 	parsed, err := antigravity.ParseOptions(merged)
 	if err != nil {
-		return fantasy.ProviderOptions{}
+		return nil, fmt.Errorf("parse Gemini provider options: %w", err)
 	}
-	return fantasy.ProviderOptions{antigravity.Name: parsed}
+	return fantasy.ProviderOptions{antigravity.Name: parsed}, nil
 }
 
 func disableAnthropicReasoning(options fantasy.ProviderOptions) fantasy.ProviderOptions {

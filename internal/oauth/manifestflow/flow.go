@@ -9,10 +9,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -24,18 +26,26 @@ import (
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/callback"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providertransport"
+	"github.com/google/uuid"
 )
 
 const defaultMaxBodyBytes int64 = 1 << 20
+
+type Bindings struct {
+	Configuration map[string]any
+	Credentials   map[string]string
+}
 
 type Executor struct {
 	providerName string
 	flow         manifest.OAuthFlow
 	endpoints    map[string]manifest.Endpoint
+	bindings     Bindings
 	client       *http.Client
 }
 
-func New(value manifest.Manifest, flow manifest.OAuthFlow) (*Executor, error) {
+func New(value manifest.Manifest, flow manifest.OAuthFlow, bindings ...Bindings) (*Executor, error) {
 	endpoints := make(map[string]manifest.Endpoint, len(value.Capabilities.Endpoints))
 	for _, endpoint := range value.Capabilities.Endpoints {
 		endpoints[endpoint.ID] = endpoint
@@ -46,7 +56,12 @@ func New(value manifest.Manifest, flow manifest.OAuthFlow) (*Executor, error) {
 	if _, ok := endpoints[flow.TokenEndpoint]; !ok {
 		return nil, fmt.Errorf("OAuth flow %q references missing token endpoint", flow.ID)
 	}
-	return &Executor{providerName: value.Provider.Name, flow: flow, endpoints: endpoints}, nil
+	resolved := Bindings{}
+	if len(bindings) > 0 {
+		resolved.Configuration = maps.Clone(bindings[0].Configuration)
+		resolved.Credentials = maps.Clone(bindings[0].Credentials)
+	}
+	return &Executor{providerName: value.Provider.Name, flow: flow, endpoints: endpoints, bindings: resolved}, nil
 }
 
 func (e *Executor) httpClient(endpoint manifest.Endpoint) *http.Client {
@@ -94,11 +109,13 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 	if e.flow.Redirect.Mode != "loopback-dynamic" && e.flow.Redirect.Mode != "loopback-fixed" {
 		return nil, fmt.Errorf("OAuth redirect mode %q requires another host adapter", e.flow.Redirect.Mode)
 	}
-	address := "localhost:0"
+	network := "tcp4"
+	address := net.JoinHostPort("127.0.0.1", "0")
 	if e.flow.Redirect.Mode == "loopback-fixed" {
+		network = "tcp"
 		address = net.JoinHostPort("localhost", strconv.Itoa(e.flow.Redirect.Port))
 	}
-	listener, err := new(net.ListenConfig).Listen(ctx, "tcp", address)
+	listener, err := new(net.ListenConfig).Listen(ctx, network, address)
 	if err != nil {
 		return nil, fmt.Errorf("start OAuth callback server: %w", err)
 	}
@@ -108,7 +125,7 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 		path = "/callback"
 	}
 	port := listener.Addr().(*net.TCPAddr).Port
-	redirectURI := fmt.Sprintf("http://localhost:%d%s", port, path)
+	redirectURI := fmt.Sprintf("http://%s%s", net.JoinHostPort("localhost", strconv.Itoa(port)), path)
 	authorizationURL, err := e.authorizationURL(redirectURI, challenge, state)
 	if err != nil {
 		return nil, err
@@ -274,7 +291,14 @@ func parseHostedCallback(input string) (code, state, providerError string, err e
 }
 
 func (e *Executor) Refresh(ctx context.Context, refreshToken string) (*oauth.Token, error) {
-	return e.exchange(ctx, e.flow.TokenRequest.Refresh, map[string]string{"oauth.refresh_token": refreshToken}, refreshToken)
+	scopes := e.flow.RefreshScopes
+	if len(scopes) == 0 {
+		scopes = e.flow.Scopes
+	}
+	return e.exchange(ctx, e.flow.TokenRequest.Refresh, map[string]string{
+		"oauth.refresh_token": refreshToken,
+		"oauth.scopes":        strings.Join(scopes, " "),
+	}, refreshToken)
 }
 
 func (e *Executor) authorizationURL(redirectURI, challenge, state string) (string, error) {
@@ -283,7 +307,7 @@ func (e *Executor) authorizationURL(redirectURI, challenge, state string) (strin
 		return "", err
 	}
 	values := u.Query()
-	clientID, err := eval(e.flow.ClientID, nil)
+	clientID, err := e.eval(e.flow.ClientID, nil)
 	if err != nil {
 		return "", err
 	}
@@ -300,7 +324,7 @@ func (e *Executor) authorizationURL(redirectURI, challenge, state string) (strin
 	}
 	contextValues := map[string]string{"oauth.redirect_uri": redirectURI, "oauth.pkce_challenge": challenge, "oauth.state": state}
 	for _, rule := range e.flow.AuthorizationParams {
-		value, err := eval(rule.Value, contextValues)
+		value, err := e.eval(rule.Value, contextValues)
 		if err != nil {
 			return "", fmt.Errorf("authorization parameter %q: %w", rule.Name, err)
 		}
@@ -320,9 +344,22 @@ func (e *Executor) exchange(ctx context.Context, rules []manifest.FieldRule, val
 	if err != nil {
 		return nil, err
 	}
-	fields := make(map[string]string, len(rules))
+	clientID, err := e.eval(e.flow.ClientID, values)
+	if err != nil {
+		return nil, fmt.Errorf("OAuth client ID: %w", err)
+	}
+	clientSecret := ""
+	if e.flow.ClientSecret != nil {
+		clientSecret, err = e.eval(*e.flow.ClientSecret, values)
+		if err != nil {
+			return nil, fmt.Errorf("OAuth client secret: %w", err)
+		}
+	}
+	values["oauth.client_id"] = clientID
+	values["oauth.client_secret"] = clientSecret
+	fields := make(map[string]string, len(rules)+2)
 	for _, rule := range rules {
-		value, err := eval(rule.Value, values)
+		value, err := e.eval(rule.Value, values)
 		if err != nil {
 			return nil, fmt.Errorf("token field %q: %w", rule.Name, err)
 		}
@@ -330,6 +367,16 @@ func (e *Executor) exchange(ctx context.Context, rules []manifest.FieldRule, val
 			continue
 		}
 		fields[rule.Name] = value
+	}
+	switch e.flow.TokenRequest.AuthStyle {
+	case "params":
+		fields["client_id"] = clientID
+		if clientSecret != "" {
+			fields["client_secret"] = clientSecret
+		}
+	case "basic", "none":
+	default:
+		return nil, fmt.Errorf("unsupported OAuth token auth style %q", e.flow.TokenRequest.AuthStyle)
 	}
 	var body io.Reader
 	contentType := "application/json"
@@ -352,12 +399,18 @@ func (e *Executor) exchange(ctx context.Context, rules []manifest.FieldRule, val
 		return nil, err
 	}
 	request.Header.Set("Content-Type", contentType)
+	if e.flow.TokenRequest.AuthStyle == "basic" {
+		if clientSecret == "" {
+			return nil, errors.New("OAuth basic token authentication requires a client secret")
+		}
+		request.SetBasicAuth(clientID, clientSecret)
+	}
 	for _, rule := range e.flow.TokenRequest.Headers {
-		if err := applyHeader(request.Header, rule, values); err != nil {
+		if err := e.applyHeader(request.Header, rule, values); err != nil {
 			return nil, err
 		}
 	}
-	response, err := e.httpClient(endpoint).Do(request)
+	response, err := providertransport.ClientWithContextOwnerValidator(ctx, e.httpClient(endpoint)).Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -393,14 +446,13 @@ func (e *Executor) exchange(ctx context.Context, rules []manifest.FieldRule, val
 	if expires <= 0 {
 		expires = e.flow.TokenResponse.DefaultExpiresIn
 	}
-	clientID, _ := eval(e.flow.ClientID, nil)
 	_, authorizationURL, _ := e.endpoint(e.flow.AuthorizationEndpoint)
 	token := &oauth.Token{AccessToken: access, RefreshToken: refresh, ExpiresIn: int(expires), Client: &oauth.OAuthClient{ClientID: clientID, AuthURL: authorizationURL.String(), TokenURL: target.String()}}
 	token.SetExpiresAt()
 	return token, nil
 }
 
-func applyHeader(headers http.Header, rule manifest.HeaderRule, values map[string]string) error {
+func (e *Executor) applyHeader(headers http.Header, rule manifest.HeaderRule, values map[string]string) error {
 	if rule.Operation == "delete" {
 		headers.Del(rule.Name)
 		return nil
@@ -408,7 +460,7 @@ func applyHeader(headers http.Header, rule manifest.HeaderRule, values map[strin
 	if rule.Value == nil {
 		return fmt.Errorf("header %q has no value", rule.Name)
 	}
-	value, err := eval(*rule.Value, values)
+	value, err := e.eval(*rule.Value, values)
 	if err != nil {
 		return err
 	}
@@ -438,32 +490,60 @@ func applyHeader(headers http.Header, rule manifest.HeaderRule, values map[strin
 	return nil
 }
 
-func eval(value manifest.Template, contextValues map[string]string) (string, error) {
+func (e *Executor) eval(value manifest.Template, contextValues map[string]string) (string, error) {
+	var raw any
 	switch value.Kind {
 	case "literal":
-		switch typed := value.Value.(type) {
-		case string:
-			return typed, nil
-		case nil:
-			return "", nil
-		default:
-			data, err := json.Marshal(typed)
-			return string(data), err
+		raw = value.Value
+	case "config":
+		var ok bool
+		raw, ok = e.bindings.Configuration[value.Ref]
+		if !ok {
+			return "", fmt.Errorf("configuration value %q is unavailable", value.Ref)
+		}
+	case "credential":
+		var ok bool
+		raw, ok = e.bindings.Credentials[value.Ref]
+		if !ok || raw == "" {
+			return "", fmt.Errorf("credential %q is unavailable", value.Ref)
 		}
 	case "context":
-		return contextValues[value.Ref], nil
+		var ok bool
+		raw, ok = contextValues[value.Ref]
+		if !ok {
+			return "", fmt.Errorf("OAuth context value %q is unavailable", value.Ref)
+		}
 	case "concat":
 		var result strings.Builder
 		for _, part := range value.Parts {
-			text, err := eval(part, contextValues)
+			text, err := e.eval(part, contextValues)
 			if err != nil {
 				return "", err
 			}
 			result.WriteString(text)
 		}
 		return result.String(), nil
+	case "uuid":
+		return uuid.NewString(), nil
+	case "unix-time":
+		return strconv.FormatInt(time.Now().Unix(), 10), nil
+	case "random-hex":
+		data := make([]byte, value.Bytes)
+		if _, err := rand.Read(data); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(data), nil
 	default:
 		return "", fmt.Errorf("template kind %q is unavailable in OAuth context", value.Kind)
+	}
+	switch typed := raw.(type) {
+	case string:
+		return typed, nil
+	case nil:
+		return "", nil
+	default:
+		data, err := json.Marshal(typed)
+		return string(data), err
 	}
 }
 

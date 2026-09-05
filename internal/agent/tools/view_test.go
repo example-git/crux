@@ -14,6 +14,7 @@ import (
 	"github.com/example-git/crux/internal/filetracker"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/skills"
 	"github.com/stretchr/testify/require"
 )
 
@@ -303,6 +304,18 @@ func TestReadBuiltinFile(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, resp.Content)
 		require.Contains(t, resp.Content, "Crux Configuration")
+	})
+
+	t.Run("rejects inactive skill", func(t *testing.T) {
+		t.Parallel()
+
+		tracker := skills.NewTracker([]*skills.Skill{{Name: "crux-config"}})
+		resp, err := readBuiltinFile(ViewParams{
+			FilePath: "crux://skills/imagegen/SKILL.md",
+		}, tracker)
+		require.NoError(t, err)
+		require.True(t, resp.IsError)
+		require.Contains(t, resp.Content, "Builtin skill is not active: imagegen")
 	})
 
 	t.Run("not found", func(t *testing.T) {

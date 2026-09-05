@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 
+	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/config"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
@@ -45,6 +47,73 @@ func jsonEncodeTest(t *testing.T, writer http.ResponseWriter, value any) {
 	require.NoError(t, json.NewEncoder(writer).Encode(value))
 }
 
+func TestWorkspaceResponsesBindExactProviderOwners(t *testing.T) {
+	owner := providerregistry.RegistrationOwner{
+		ProviderID:           "same",
+		AccountNamespace:     "same-account",
+		Construction:         providerregistry.ConstructionGenericJSON,
+		CompatibilityAdapter: providerregistry.ConstructionOpenAICompat,
+		HasManifest:          true,
+		ManifestID:           "plugin.same",
+		ManifestVersion:      "1.2.3",
+	}
+	workspace := proto.Workspace{
+		ID:     "workspace",
+		Config: &config.Config{},
+		ProviderSurfaces: []providerregistry.Surface{
+			{ID: owner.ProviderID, Owner: &owner},
+			{ID: "unavailable"},
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/workspaces":
+			jsonEncodeTest(t, writer, []proto.Workspace{workspace})
+		case request.Method == http.MethodGet && request.URL.Path == "/v1/workspaces/workspace":
+			jsonEncodeTest(t, writer, workspace)
+		case request.Method == http.MethodPost && request.URL.Path == "/v1/workspaces":
+			jsonEncodeTest(t, writer, workspace)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+	client := captureClient(t, server)
+
+	listed, err := client.ListWorkspaces(t.Context())
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	created, err := client.CreateWorkspace(t.Context(), proto.Workspace{})
+	require.NoError(t, err)
+	got, err := client.GetWorkspace(t.Context(), workspace.ID)
+	require.NoError(t, err)
+	for _, cfg := range []*config.Config{listed[0].Config, created.Config, got.Config} {
+		bound, ok := cfg.ProviderOwner(owner.ProviderID)
+		require.True(t, ok)
+		require.Equal(t, owner, bound)
+		_, ok = cfg.ProviderOwner("unavailable")
+		require.False(t, ok)
+	}
+}
+
+func TestWorkspaceResponsesRejectMismatchedProviderOwners(t *testing.T) {
+	workspace := proto.Workspace{
+		ID:     "workspace",
+		Config: &config.Config{},
+		ProviderSurfaces: []providerregistry.Surface{{
+			ID:    "same",
+			Owner: &providerregistry.RegistrationOwner{ProviderID: "other"},
+		}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		jsonEncodeTest(t, writer, workspace)
+	}))
+	defer server.Close()
+
+	_, err := captureClient(t, server).GetWorkspace(t.Context(), workspace.ID)
+	require.ErrorContains(t, err, "mismatched owner")
+}
+
 func TestCreateWorkspaceMarksForwardedProviderStateAsEphemeral(t *testing.T) {
 	var received proto.Workspace
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -56,14 +125,29 @@ func TestCreateWorkspaceMarksForwardedProviderStateAsEphemeral(t *testing.T) {
 	defer server.Close()
 	client := captureClient(t, server)
 
+	owner := providerregistry.RegistrationOwner{
+		ProviderID:           "codex",
+		AccountNamespace:     "codex",
+		Construction:         providerregistry.ConstructionCodex,
+		CompatibilityAdapter: providerregistry.ConstructionCodex,
+		HasOAuth:             true,
+		OAuthAdapter:         providerregistry.LoginBrowser,
+		OAuthFlowID:          "codex",
+		HasManifest:          true,
+		ManifestID:           "plugin.codex",
+		ManifestVersion:      "1.2.3",
+	}
 	created, err := client.CreateWorkspace(t.Context(), proto.Workspace{
 		ForwardedProviders: map[string]config.ProviderConfig{"remote": {ID: "remote", APIKey: "secret"}},
-		ForwardedAccounts:  map[string]accounts.Entry{"codex": {ID: "account", AccessToken: "token"}},
+		ForwardedAccounts: map[string]config.ForwardedAccount{
+			owner.AccountNamespace: {Owner: owner, Entry: accounts.Entry{ID: "account", AccessToken: "token"}},
+		},
 	})
 	require.NoError(t, err)
 	require.Equal(t, "workspace", created.ID)
 	require.Equal(t, "secret", received.ForwardedProviders["remote"].APIKey)
-	require.Equal(t, "token", received.ForwardedAccounts["codex"].AccessToken)
+	require.Equal(t, owner, received.ForwardedAccounts[owner.AccountNamespace].Owner)
+	require.Equal(t, "token", received.ForwardedAccounts[owner.AccountNamespace].Entry.AccessToken)
 }
 
 func TestSendEventAfterContextCancelIsIdempotent(t *testing.T) {
@@ -213,6 +297,40 @@ func TestCreateAgentDefinitionSendsConfigurationAndReturnsPath(t *testing.T) {
 	require.Equal(t, "/project/.ai-cli/agents/reviewer.md", path)
 }
 
+func TestGetAgentInstructionsReturnsTypedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	want := agent.InstructionSnapshot{
+		ProviderID: "anthropic",
+		ModelID:    "claude-test",
+		Policy:     fantasy.InstructionPolicyAnthropic,
+		Sections: []agent.InstructionSnapshotSection{
+			{
+				Kind:          fantasy.InstructionKindTooling,
+				Stability:     fantasy.InstructionStabilityStatic,
+				Text:          "tooling",
+				CacheBoundary: true,
+			},
+			{
+				Kind:      fantasy.InstructionKindProviderContext,
+				Stability: fantasy.InstructionStabilityDynamic,
+				Text:      "provider context",
+			},
+		},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/v1/workspaces/ws1/agent/instructions", r.URL.Path)
+		jsonEncodeTest(t, w, want)
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	got, err := c.GetAgentInstructions(t.Context(), "ws1")
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+}
+
 func TestCreateAgentDefinitionReturnsServerValidationError(t *testing.T) {
 	t.Parallel()
 
@@ -253,6 +371,38 @@ func TestSendMessagePropagatesSubmissionID(t *testing.T) {
 	ctx := agent.WithSubmissionID(context.Background(), "submission-id")
 	require.NoError(t, c.SendMessage(ctx, "ws1", "sess1", "", "hello"))
 	require.Equal(t, "submission-id", received.SubmissionID)
+}
+
+func TestSendMessagePropagatesPermissionMode(t *testing.T) {
+	t.Parallel()
+
+	var received proto.AgentMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	require.NoError(t, c.SendMessageWithPermissionMode(context.Background(), "ws1", "sess1", "", "hello", proto.AgentPermissionDeny))
+	require.Equal(t, proto.AgentPermissionDeny, received.PermissionMode)
+}
+
+func TestForkSessionPreservesEstimatedUsageMetadata(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/v1/workspaces/ws1/sessions/source/fork", r.URL.Path)
+		_ = json.NewEncoder(w).Encode(proto.Session{ID: "forked", EstimatedUsage: true})
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	forked, err := c.ForkSession(context.Background(), "ws1", "source")
+	require.NoError(t, err)
+	require.Equal(t, "forked", forked.ID)
+	require.True(t, forked.EstimatedUsage)
 }
 
 func TestSendMessageAcceptsStatusOK(t *testing.T) {

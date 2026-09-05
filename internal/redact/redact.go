@@ -51,6 +51,46 @@ func Register(values ...string) {
 	registry.snapshot.Store(&valuesSnapshot)
 }
 
+func RegisterJSONValue(value any) {
+	var values []string
+	collectJSONStrings(value, &values)
+	Register(values...)
+}
+
+func RegisterJSONBytes(value []byte) {
+	if len(value) == 0 {
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return
+	}
+	RegisterJSONValue(decoded)
+}
+
+func collectJSONStrings(value any, values *[]string) {
+	switch typed := value.(type) {
+	case string:
+		*values = append(*values, typed)
+	case map[string]any:
+		for _, item := range typed {
+			collectJSONStrings(item, values)
+		}
+	case map[string]string:
+		for _, item := range typed {
+			collectJSONStrings(item, values)
+		}
+	case []any:
+		for _, item := range typed {
+			collectJSONStrings(item, values)
+		}
+	case []string:
+		*values = append(*values, typed...)
+	}
+}
+
 func String(value string) string {
 	snapshot := registry.snapshot.Load()
 	if snapshot == nil || value == "" {

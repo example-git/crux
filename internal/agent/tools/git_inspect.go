@@ -28,7 +28,11 @@ type GitInspectParams struct {
 	Limit    int    `json:"limit,omitempty" description:"For log, maximum commits from 1 to 100 (default 20)"`
 }
 
-func NewGitInspectTool(workingDir string) fantasy.AgentTool {
+func NewGitInspectTool(workingDir string, environments ...[]string) fantasy.AgentTool {
+	environment := os.Environ()
+	if len(environments) > 0 {
+		environment = append([]string(nil), environments[0]...)
+	}
 	return fantasy.NewAgentTool(
 		GitInspectToolName,
 		gitInspectDescription,
@@ -39,7 +43,7 @@ func NewGitInspectTool(workingDir string) fantasy.AgentTool {
 			}
 			command := exec.CommandContext(ctx, "git", args...)
 			command.Dir = workingDir
-			command.Env = append(os.Environ(), "GIT_PAGER=cat", "GIT_TERMINAL_PROMPT=0")
+			command.Env = append(append([]string(nil), environment...), "GIT_PAGER=cat", "GIT_TERMINAL_PROMPT=0")
 			output, err := command.CombinedOutput()
 			text := strings.TrimSpace(string(output))
 			if err != nil {
@@ -64,7 +68,7 @@ func gitInspectArgs(params GitInspectParams) ([]string, error) {
 	base := []string{"-c", "core.pager=cat", "-c", "diff.external=", "-c", "diff.trustExitCode=false"}
 	switch strings.TrimSpace(params.Action) {
 	case "status":
-		args := append(base, "status", "--short", "--branch", "--untracked-files=all")
+		args := append(base, "status", "--short", "--branch", "--untracked-files=normal")
 		if path != "" {
 			args = append(args, "--", path)
 		}

@@ -9,9 +9,30 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/redact"
 	"github.com/stretchr/testify/require"
 )
+
+func registerOpaqueAccountSecret(t *testing.T, secret string) {
+	t.Helper()
+	directory := t.TempDir()
+	t.Setenv("AI_CLI_DIR", directory)
+	content := `{"active":{"synthetic":"one"},"accounts":{"synthetic":[{"id":"one","displayName":"One","accessToken":"access","raw":{"metadata":{"tenant":"` + secret + `"}}}]}}`
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "accounts.json"), []byte(content), 0o600))
+	_, err := accounts.List(t.Context(), "synthetic")
+	require.NoError(t, err)
+}
+
+func TestRedactingHandlerScrubsOpaqueAccountMaterial(t *testing.T) {
+	secret := "handler-account-raw-secret-value"
+	registerOpaqueAccountSecret(t, secret)
+	var output bytes.Buffer
+	handler := redactingHandler{handler: slog.NewJSONHandler(&output, nil)}
+	slog.New(handler).InfoContext(t.Context(), "account metadata", "value", secret)
+	require.NotContains(t, output.String(), secret)
+	require.Contains(t, output.String(), redact.Replacement)
+}
 
 func TestRedactingHandlerScrubsMessagesAttributesGroupsAndErrors(t *testing.T) {
 	secret := "handler-secret-value"

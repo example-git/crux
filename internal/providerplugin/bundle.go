@@ -26,6 +26,7 @@ type validatedBundle struct {
 	pluginType string
 	manifest   *manifest.Manifest
 	preset     *manifest.PresetManifest
+	image      *manifest.ImageManifest
 	files      map[string]bundleFile
 	staticText map[string]string
 	digest     string
@@ -35,12 +36,18 @@ func (b validatedBundle) id() string {
 	if b.manifest != nil {
 		return b.manifest.ID
 	}
+	if b.image != nil {
+		return b.image.ID
+	}
 	return b.preset.ID
 }
 
 func (b validatedBundle) providerID() string {
 	if b.manifest != nil {
 		return b.manifest.Provider.ID
+	}
+	if b.image != nil {
+		return b.image.Backend
 	}
 	return string(b.preset.Preset.ID)
 }
@@ -49,12 +56,18 @@ func (b validatedBundle) name() string {
 	if b.manifest != nil {
 		return b.manifest.Name
 	}
+	if b.image != nil {
+		return b.image.Name
+	}
 	return b.preset.Name
 }
 
 func (b validatedBundle) version() string {
 	if b.manifest != nil {
 		return b.manifest.Version
+	}
+	if b.image != nil {
+		return b.image.Version
 	}
 	return b.preset.Version
 }
@@ -63,6 +76,9 @@ func (b validatedBundle) publisherID() string {
 	if b.manifest != nil {
 		return b.manifest.Publisher.ID
 	}
+	if b.image != nil {
+		return b.image.Publisher.ID
+	}
 	return b.preset.Publisher.ID
 }
 
@@ -70,12 +86,22 @@ func (b validatedBundle) compatibility() manifest.Compatibility {
 	if b.manifest != nil {
 		return b.manifest.Compatibility
 	}
+	if b.image != nil {
+		return b.image.Compatibility
+	}
 	return b.preset.Compatibility
 }
 
 func (b validatedBundle) capabilityIDs() []string {
 	if b.manifest != nil {
 		return capabilityIDs(*b.manifest)
+	}
+	if b.image != nil {
+		capabilities := []string{"image-generate"}
+		if b.image.Edit != "" {
+			capabilities = append(capabilities, "image-edit")
+		}
+		return capabilities
 	}
 	return []string{"provider-preset"}
 }
@@ -138,6 +164,12 @@ func validateSnapshot(root string, snapshot snapshotResult) (validatedBundle, []
 			return validatedBundle{}, []Diagnostic{safeDiagnostic("manifest-invalid", err.Error())}
 		}
 		validated.preset = &value
+	case manifest.PluginTypeImageProvider:
+		value, err := manifest.DecodeImageStrict(data)
+		if err != nil {
+			return validatedBundle{}, []Diagnostic{safeDiagnostic("manifest-invalid", err.Error())}
+		}
+		validated.image = &value
 	default:
 		return validatedBundle{}, []Diagnostic{safeDiagnostic("manifest-invalid", fmt.Sprintf("unsupported plugin type %q", pluginType))}
 	}

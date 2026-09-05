@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,7 +31,7 @@ func TestOmlxEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-omlx", BaseURL: srv.URL + "/v1"}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "qwen3:latest", Name: "qwen3:latest"},
 			{ID: "llama3:latest", Name: "llama3:latest"},
 			{ID: "unknown:latest", Name: "unknown:latest"},
@@ -61,7 +61,7 @@ func TestOmlxEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-omlx", BaseURL: srv.URL}
-		models := []catwalk.Model{
+		models := []catalog.Model{
 			{ID: "m1", ContextWindow: 65536, DefaultMaxTokens: 8192},
 		}
 
@@ -80,7 +80,7 @@ func TestOmlxEnricher(t *testing.T) {
 		defer srv.Close()
 
 		cfg := Config{ID: "test-omlx", BaseURL: srv.URL}
-		models := []catwalk.Model{{ID: "m1"}}
+		models := []catalog.Model{{ID: "m1"}}
 
 		e := &omlxEnricher{}
 		result, err := e.EnrichModels(context.Background(), cfg, &mockResolver{}, models)

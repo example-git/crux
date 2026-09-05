@@ -20,12 +20,10 @@ option auto-lsp false`)
 }
 
 func TestShellConfigOptionPromptControls(t *testing.T) {
-	store := loadCruxSh(t, `option system-prompt-override true
-option response-verbosity high
+	store := loadCruxSh(t, `option response-verbosity high
 option analysis-effort max`)
 
 	opts := store.Config().Options
-	require.True(t, opts.SystemPromptOverride)
 	require.Equal(t, "high", opts.ResponseVerbosity)
 	require.Equal(t, "max", opts.AnalysisEffort)
 }
@@ -65,9 +63,9 @@ func TestShellConfigOptionUIRejectsInvalidValue(t *testing.T) {
 
 func TestShellConfigOptionListAppends(t *testing.T) {
 	store := loadCruxSh(t, `option disable-skill crux-config
-option disable-skill jq`)
+option disable-skill custom-agents`)
 
-	require.Subset(t, store.Config().Options.DisabledSkills, []string{"crux-config", "jq"})
+	require.Subset(t, store.Config().Options.DisabledSkills, []string{"crux-config", "custom-agents"})
 }
 
 // reset wipes values added earlier (or via source) while keeping anything

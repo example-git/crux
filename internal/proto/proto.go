@@ -5,10 +5,9 @@ import (
 	"errors"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/lsp"
-	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
 )
 
@@ -38,10 +37,10 @@ type Workspace struct {
 	Skills []SkillState `json:"skills,omitempty"`
 	// ProviderSurfaces is the execution host's redacted registry-generated
 	// provider presentation metadata.
-	ProviderSurfaces      []ProviderSurface                `json:"provider_surfaces,omitempty"`
-	ForwardedProviders    map[string]config.ProviderConfig `json:"forwarded_providers,omitempty"`
-	ForwardedAccounts     map[string]accounts.Entry        `json:"forwarded_accounts,omitempty"`
-	AllowedWorkspaceRoots []string                         `json:"-"`
+	ProviderSurfaces      []ProviderSurface                  `json:"provider_surfaces,omitempty"`
+	ForwardedProviders    map[string]config.ProviderConfig   `json:"forwarded_providers,omitempty"`
+	ForwardedAccounts     map[string]config.ForwardedAccount `json:"forwarded_accounts,omitempty"`
+	AllowedWorkspaceRoots []string                           `json:"-"`
 }
 
 type BrowserListing struct {
@@ -148,7 +147,7 @@ type SkillReadResult struct {
 type AgentInfo struct {
 	IsBusy   bool                 `json:"is_busy"`
 	IsReady  bool                 `json:"is_ready"`
-	Model    catwalk.Model        `json:"model"`
+	Model    catalog.Model        `json:"model"`
 	ModelCfg config.SelectedModel `json:"model_cfg"`
 }
 
@@ -171,12 +170,21 @@ func (a AgentInfo) IsZero() bool {
 // callers must fall back to SessionID-only filtering, which
 // remains correct only when no other turns are in flight for the
 // same session.
+type AgentPermissionMode string
+
+const (
+	AgentPermissionInteractive AgentPermissionMode = ""
+	AgentPermissionDeny        AgentPermissionMode = "deny"
+	AgentPermissionBypass      AgentPermissionMode = "bypass"
+)
+
 type AgentMessage struct {
-	SessionID    string       `json:"session_id"`
-	SubmissionID string       `json:"submission_id,omitempty"`
-	RunID        string       `json:"run_id,omitempty"`
-	Prompt       string       `json:"prompt"`
-	Attachments  []Attachment `json:"attachments,omitempty"`
+	SessionID      string              `json:"session_id"`
+	SubmissionID   string              `json:"submission_id,omitempty"`
+	RunID          string              `json:"run_id,omitempty"`
+	Prompt         string              `json:"prompt"`
+	Attachments    []Attachment        `json:"attachments,omitempty"`
+	PermissionMode AgentPermissionMode `json:"permission_mode,omitempty"`
 }
 
 type QueuedPrompt struct {

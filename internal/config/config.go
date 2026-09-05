@@ -10,11 +10,14 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/discover"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/copilot"
+	"github.com/example-git/crux/internal/providerplugin"
+	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providertransport"
 )
 
 const (
@@ -91,9 +94,74 @@ type SelectedModel struct {
 	ProviderOptions map[string]any `json:"provider_options,omitempty" jsonschema:"description=Additional provider-specific options for the model"`
 }
 
+type OwnedSelectedModel struct {
+	Model SelectedModel                      `json:"model"`
+	Owner providerregistry.RegistrationOwner `json:"owner"`
+}
+
+type AgentModelState struct {
+	Large *OwnedSelectedModel `json:"large,omitempty"`
+	Small *OwnedSelectedModel `json:"small,omitempty"`
+}
+
+type ProviderOwnerType string
+
+const (
+	ProviderOwnerCore   ProviderOwnerType = "core"
+	ProviderOwnerCustom ProviderOwnerType = "custom"
+	ProviderOwnerPlugin ProviderOwnerType = "plugin"
+	ProviderOwnerPreset ProviderOwnerType = "preset"
+)
+
+type ProviderOwnerReference struct {
+	Type                 ProviderOwnerType             `json:"type" jsonschema:"required,description=Provider owner class,enum=core,enum=custom,enum=plugin,enum=preset"`
+	Construction         providerregistry.Construction `json:"construction" jsonschema:"required,description=Exact host construction selected for this provider owner"`
+	CompatibilityAdapter providerregistry.Construction `json:"compatibility_adapter,omitempty" jsonschema:"description=Exact compatibility adapter delegated by a plugin owner"`
+}
+
 type ProviderPluginReference struct {
 	ID      string `json:"id" jsonschema:"required,description=Stable provider-plugin identity"`
 	Version string `json:"version,omitempty" jsonschema:"description=Plugin version that last owned this configuration"`
+}
+
+type ProviderPresetReference struct {
+	ID      string `json:"id" jsonschema:"required,description=Stable provider-preset identity"`
+	Version string `json:"version,omitempty" jsonschema:"description=Preset version that last supplied this provider catalog"`
+	Digest  string `json:"digest,omitempty" jsonschema:"description=Canonical digest of the provider-preset bundle"`
+}
+
+type ProviderAPIKeyCredential struct {
+	Owner  providerregistry.RegistrationOwner
+	APIKey string
+}
+
+type ProviderOAuthCredential struct {
+	Owner providerregistry.RegistrationOwner
+	Token *oauth.Token
+}
+
+func ProviderCredentialOwner(providerID string, credential any) (providerregistry.RegistrationOwner, error) {
+	switch value := credential.(type) {
+	case string:
+		return providerregistry.RegistrationOwner{}, fmt.Errorf("API key for provider %s is missing its initiating owner", providerID)
+	case ProviderAPIKeyCredential:
+		if value.Owner.ProviderID != providerID {
+			return providerregistry.RegistrationOwner{}, fmt.Errorf("API key owner provider %s does not match credential provider %s", value.Owner.ProviderID, providerID)
+		}
+		return value.Owner, nil
+	case ProviderOAuthCredential:
+		if value.Token == nil {
+			return providerregistry.RegistrationOwner{}, fmt.Errorf("OAuth token is nil")
+		}
+		if value.Owner.ProviderID != providerID {
+			return providerregistry.RegistrationOwner{}, fmt.Errorf("OAuth owner provider %s does not match credential provider %s", value.Owner.ProviderID, providerID)
+		}
+		return value.Owner, nil
+	case *oauth.Token:
+		return providerregistry.RegistrationOwner{}, fmt.Errorf("OAuth token for provider %s is missing its initiating owner", providerID)
+	default:
+		return providerregistry.RegistrationOwner{}, fmt.Errorf("unsupported API key type %T", credential)
+	}
 }
 
 type ProviderConfig struct {
@@ -105,7 +173,7 @@ type ProviderConfig struct {
 	BaseURL string `json:"base_url,omitempty" jsonschema:"description=Base URL for the provider's API,format=uri,example=https://api.openai.com/v1"`
 	// The provider type. Empty custom-provider types default to openai-compat;
 	// registered local aliases use the same protocol.
-	Type catwalk.Type `json:"type,omitempty" jsonschema:"description=OpenAI-compatible provider type,default=openai-compat"`
+	Type catalog.Type `json:"type,omitempty" jsonschema:"description=OpenAI-compatible provider type,default=openai-compat"`
 	// The provider's API key.
 	APIKey string `json:"api_key,omitempty" jsonschema:"description=API key for authentication with the provider,example=$OPENAI_API_KEY"`
 	// The original API key template before resolution (for re-resolution on auth errors).
@@ -115,7 +183,9 @@ type ProviderConfig struct {
 	// Plugin records durable ownership so configuration and selections remain
 	// unavailable rather than falling through to a generic provider when the
 	// bundle is missing, disabled, invalid, incompatible, or untrusted.
+	Owner  *ProviderOwnerReference  `json:"owner,omitempty" jsonschema:"description=Exact provider ownership and construction reference"`
 	Plugin *ProviderPluginReference `json:"plugin,omitempty" jsonschema:"description=Provider-plugin ownership reference"`
+	Preset *ProviderPresetReference `json:"preset,omitempty" jsonschema:"description=Provider-preset catalog ownership reference"`
 	// Marks the provider as disabled.
 	Disable bool `json:"disable,omitempty" jsonschema:"description=Whether this provider is disabled,default=false"`
 
@@ -163,21 +233,21 @@ type ProviderConfig struct {
 	AutoDiscoverModels *bool `json:"discover_models,omitempty" jsonschema:"description=Auto-discover models from /v1/models endpoint. When true with existing models they are merged (yours win),default=true"`
 
 	// The provider models
-	Models []catwalk.Model `json:"models,omitempty" jsonschema:"description=List of models available from this provider"`
+	Models []catalog.Model `json:"models,omitempty" jsonschema:"description=List of models available from this provider"`
 }
 
-// ToProvider converts the [ProviderConfig] to a [catwalk.Provider].
-func (c *ProviderConfig) ToProvider() catwalk.Provider {
+// ToProvider converts the [ProviderConfig] to a [catalog.Provider].
+func (c *ProviderConfig) ToProvider() catalog.Provider {
 	// Convert config provider to provider.Provider format
-	provider := catwalk.Provider{
+	provider := catalog.Provider{
 		Name:   c.Name,
-		ID:     catwalk.InferenceProvider(c.ID),
-		Models: make([]catwalk.Model, len(c.Models)),
+		ID:     catalog.ProviderID(c.ID),
+		Models: make([]catalog.Model, len(c.Models)),
 	}
 
 	// Convert models
 	for i, model := range c.Models {
-		provider.Models[i] = catwalk.Model{
+		provider.Models[i] = catalog.Model{
 			ID:                     model.ID,
 			Name:                   model.Name,
 			CostPer1MIn:            model.CostPer1MIn,
@@ -318,29 +388,28 @@ type Options struct {
 	// the SQLite database and workspace overrides. Relative paths are
 	// resolved against the working directory; absolute paths are used
 	// verbatim. After defaulting the stored value is always absolute.
-	DataDirectory             string   `json:"data_directory,omitempty" jsonschema:"description=Directory for storing application data. Relative paths are resolved against the working directory; absolute paths are used as-is.,default=.crux,example=.crux"`
-	DisabledTools             []string `json:"disabled_tools,omitempty" jsonschema:"description=List of built-in tools to disable and hide from the agent,example=bash,example=sourcegraph"`
-	DisableProviderAutoUpdate bool     `json:"disable_provider_auto_update,omitempty" jsonschema:"description=Disable providers auto-update,default=false"`
-	DisableDefaultProviders   bool     `json:"disable_default_providers,omitempty" jsonschema:"description=Ignore all default/embedded providers. When enabled\\, providers must be fully specified in the config file with base_url\\, models\\, and api_key - no merging with defaults occurs,default=false"`
-	InitializeAs              string   `json:"initialize_as,omitempty" jsonschema:"description=Context file to create or update during project initialization. Defaults to the per-project ~/.ai-cli/project-prompts path.,example=AGENTS.md,example=CRUX.md,example=CLAUDE.md,example=docs/LLMs.md"`
-	AutoLSP                   *bool    `json:"auto_lsp,omitempty" jsonschema:"description=Automatically setup LSPs based on root markers,default=true"`
-	Progress                  *bool    `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
-	Notifications             string   `json:"notifications,omitempty" jsonschema:"description=Notification style to use. Options: auto (default)\\, native\\, osc\\, bell\\, disabled. Auto selects based on environment: native for local sessions\\, osc for SSH (with automatic OSC 99/777 detection).,enum=auto,enum=native,enum=osc,enum=bell,enum=disabled,default=auto"`
-	DisabledSkills            []string `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crux-config"`
+	DataDirectory           string   `json:"data_directory,omitempty" jsonschema:"description=Directory for storing application data. Relative paths are resolved against the working directory; absolute paths are used as-is.,default=.crux,example=.crux"`
+	DisabledTools           []string `json:"disabled_tools,omitempty" jsonschema:"description=List of built-in tools to disable and hide from the agent,example=bash,example=sourcegraph"`
+	DisableDefaultProviders bool     `json:"disable_default_providers,omitempty" jsonschema:"description=Ignore core and installed provider catalogs. When enabled\\, providers must be fully specified in the config file with base_url\\, models\\, and api_key - no merging with defaults occurs,default=false"`
+	InitializeAs            string   `json:"initialize_as,omitempty" jsonschema:"description=Context file to create or update during project initialization. Defaults to the per-project ~/.ai-cli/project-prompts path.,example=AGENTS.md,example=CRUX.md,example=CLAUDE.md,example=docs/LLMs.md"`
+	AutoLSP                 *bool    `json:"auto_lsp,omitempty" jsonschema:"description=Automatically setup LSPs based on root markers,default=true"`
+	Progress                *bool    `json:"progress,omitempty" jsonschema:"description=Show indeterminate progress updates during long operations,default=true"`
+	Notifications           string   `json:"notifications,omitempty" jsonschema:"description=Notification style to use. Options: auto (default)\\, native\\, osc\\, bell\\, disabled. Auto selects based on environment: native for local sessions\\, osc for SSH (with automatic OSC 99/777 detection).,enum=auto,enum=native,enum=osc,enum=bell,enum=disabled,default=auto"`
+	DisabledSkills          []string `json:"disabled_skills,omitempty" jsonschema:"description=List of skill names to disable and hide from the agent,example=crux-config"`
 
-	// InstructionMode controls which instruction sources are active:
-	//   "all"     — native sections + project context (default)
-	//   "project" — project context files only (skip native instruction sections)
-	//   "native"  — native instruction sections only (skip project context files)
-	InstructionMode      string `json:"instruction_mode,omitempty" jsonschema:"description=Which instruction sources are active: all (default)\\, project\\, or native,enum=all,enum=project,enum=native,default=all"`
-	SystemPromptOverride bool   `json:"system_prompt_override,omitempty" jsonschema:"description=Replace the generated coder system prompt with ~/.ai-cli/instructions/<provider-id>.txt and initialize a missing file from the generated prompt,default=false"`
-	ResponseVerbosity    string `json:"response_verbosity,omitempty" jsonschema:"description=GPT-5.6 final response verbosity sent through the ChatGPT Codex wire adapter,enum=low,enum=medium,enum=high"`
-	AnalysisEffort       string `json:"analysis_effort,omitempty" jsonschema:"description=GPT-5.6 reasoning effort sent through the ChatGPT Codex wire adapter,enum=none,enum=low,enum=medium,enum=high,enum=xhigh,enum=max"`
+	// InstructionMode controls which optional instruction sources are active:
+	//   "all"     - tooling and project context (default)
+	//   "project" - project context without tooling
+	//   "native"  - tooling without project context
+	// Dynamic runtime, memory, MCP, and provider context remain independent.
+	InstructionMode   string `json:"instruction_mode,omitempty" jsonschema:"description=Which optional instruction sources are active: all (default)\\, project without tooling\\, or native for tooling without project context. Dynamic runtime\\, memory\\, MCP\\, and provider context remain active.,enum=all,enum=project,enum=native,default=all"`
+	ResponseVerbosity string `json:"response_verbosity,omitempty" jsonschema:"description=GPT-5.6 final response verbosity sent through the ChatGPT Codex wire adapter,enum=low,enum=medium,enum=high"`
+	AnalysisEffort    string `json:"analysis_effort,omitempty" jsonschema:"description=GPT-5.6 reasoning effort sent through the ChatGPT Codex wire adapter,enum=none,enum=low,enum=medium,enum=high,enum=xhigh,enum=max"`
 
-	// DisabledInstructionSections lists native instruction section IDs to
+	// DisabledInstructionSections lists Crux tooling instruction section IDs to
 	// skip when building the system prompt. Section IDs match the file
 	// names in internal/agent/templates/sections/ without the .md extension.
-	DisabledInstructionSections []string `json:"disabled_instruction_sections,omitempty" jsonschema:"description=List of native instruction section IDs to disable,example=whitespace,example=memory"`
+	DisabledInstructionSections []string `json:"disabled_instruction_sections,omitempty" jsonschema:"description=List of Crux tooling instruction section IDs to disable,example=whitespace,example=memory"`
 }
 
 func (o *Options) validatePromptOptions() error {
@@ -607,8 +676,7 @@ type Agent struct {
 
 type Tools struct {
 	Ls             ToolLs             `json:"ls,omitzero"`
-	Grep           ToolGrep           `json:"grep,omitzero"`
-	Glob           ToolGlob           `json:"glob,omitzero"`
+	Search         ToolSearch         `json:"search,omitzero"`
 	CodebaseSearch ToolCodebaseSearch `json:"codebase_search,omitzero"`
 }
 
@@ -622,22 +690,17 @@ func (t ToolLs) Limits() (depth, items int) {
 	return ptrValOr(t.MaxDepth, 0), ptrValOr(t.MaxItems, 0)
 }
 
-type ToolGrep struct {
-	Timeout *time.Duration `json:"timeout,omitempty" jsonschema:"description=Timeout for the grep tool call,default=5s,example=10s"`
+type ToolSearch struct {
+	FilesTimeout   *time.Duration `json:"files_timeout,omitempty" jsonschema:"description=Timeout for file path search calls,default=30s,example=10s"`
+	ContentTimeout *time.Duration `json:"content_timeout,omitempty" jsonschema:"description=Timeout for file content search calls,default=5s,example=10s"`
 }
 
-// GetTimeout returns the user-defined timeout or the default.
-func (t ToolGrep) GetTimeout() time.Duration {
-	return ptrValOr(t.Timeout, 5*time.Second)
+func (t ToolSearch) GetFilesTimeout() time.Duration {
+	return ptrValOr(t.FilesTimeout, 30*time.Second)
 }
 
-type ToolGlob struct {
-	Timeout *time.Duration `json:"timeout,omitempty" jsonschema:"description=Timeout for the glob tool call,default=30s,example=10s"`
-}
-
-// GetTimeout returns the user-defined timeout or the default.
-func (t ToolGlob) GetTimeout() time.Duration {
-	return ptrValOr(t.Timeout, 30*time.Second)
+func (t ToolSearch) GetContentTimeout() time.Duration {
+	return ptrValOr(t.ContentTimeout, 5*time.Second)
 }
 
 type ToolCodebaseSearch struct {
@@ -706,6 +769,8 @@ type Config struct {
 	// The providers that are configured
 	Providers *csync.Map[string, ProviderConfig] `json:"providers,omitempty" jsonschema:"description=AI provider configurations"`
 
+	Images *ImageConfiguration `json:"images,omitempty" jsonschema:"description=Installed image provider selection and execution-host configuration"`
+
 	MCP MCPs `json:"mcp,omitempty" jsonschema:"description=Model Context Protocol server configurations"`
 
 	LSP LSPs `json:"lsp,omitempty" jsonschema:"description=Language Server Protocol configurations"`
@@ -722,6 +787,10 @@ type Config struct {
 	Env map[string]string `json:"env,omitempty" jsonschema:"description=Environment variables to set on startup"`
 
 	Agents map[string]Agent `json:"-"`
+
+	providerScan            *ProviderScan
+	transportProviderOwners map[string]providerregistry.RegistrationOwner
+	explicitModels          map[SelectedModelType]bool
 }
 
 // cloneForWrite returns a copy of c that the store's typed field mutators
@@ -731,14 +800,23 @@ type Config struct {
 // mutator must never write through the live pointer. Instead it clones,
 // mutates the clone, and atomically swaps it in. The clone gives fresh
 // copies of every field a typed mutator touches in place — Models,
-// RecentModels, MCP, and Options (with its nested TUI pointer). Providers
-// is a *csync.Map (internally synchronized) and is shared by reference;
-// the remaining fields are immutable after load from the mutators'
-// standpoint and are likewise shared.
+// RecentModels, Providers, MCP, and Options (with its nested TUI pointer).
+// The remaining fields are immutable after load from the mutators' standpoint
+// and are shared.
 func (c *Config) cloneForWrite() *Config {
 	nc := *c
+	nc.Images = cloneImageConfiguration(c.Images)
 	nc.Models = maps.Clone(c.Models)
+	nc.transportProviderOwners = maps.Clone(c.transportProviderOwners)
+	nc.explicitModels = maps.Clone(c.explicitModels)
 	nc.RecentModels = maps.Clone(c.RecentModels)
+	if c.Providers != nil {
+		providers := make(map[string]ProviderConfig, c.Providers.Len())
+		for id, provider := range c.Providers.Seq2() {
+			providers[id] = cloneProviderConfig(provider)
+		}
+		nc.Providers = csync.NewMapFrom(providers)
+	}
 	nc.MCP = maps.Clone(c.MCP)
 	if c.Options != nil {
 		opts := *c.Options
@@ -749,6 +827,52 @@ func (c *Config) cloneForWrite() *Config {
 		nc.Options = &opts
 	}
 	return &nc
+}
+
+func cloneProviderConfig(provider ProviderConfig) ProviderConfig {
+	provider.OAuthToken = cloneOAuthToken(provider.OAuthToken)
+	provider.Owner = clonePointer(provider.Owner)
+	provider.Plugin = clonePointer(provider.Plugin)
+	provider.Preset = clonePointer(provider.Preset)
+	provider.ExtraHeaders = maps.Clone(provider.ExtraHeaders)
+	provider.ExtraBody = cloneProviderOptions(provider.ExtraBody)
+	provider.ProviderOptions = cloneProviderOptions(provider.ProviderOptions)
+	provider.Configuration = cloneProviderOptions(provider.Configuration)
+	provider.ExtraParams = maps.Clone(provider.ExtraParams)
+	provider.AutoDiscoverModels = clonePointer(provider.AutoDiscoverModels)
+	provider.Models = cloneProvider(catalog.Provider{Models: provider.Models}).Models
+	return provider
+}
+
+func cloneOAuthToken(token *oauth.Token) *oauth.Token {
+	if token == nil {
+		return nil
+	}
+	clone := *token
+	clone.Client = clonePointer(token.Client)
+	return &clone
+}
+
+func (c *Config) captureExplicitModels() {
+	c.explicitModels = make(map[SelectedModelType]bool, len(c.Models))
+	for modelType := range c.Models {
+		c.explicitModels[modelType] = true
+	}
+}
+
+func (c *Config) markModelExplicit(modelType SelectedModelType) {
+	if c.explicitModels == nil {
+		c.explicitModels = make(map[SelectedModelType]bool)
+	}
+	c.explicitModels[modelType] = true
+}
+
+func (c *Config) modelExplicit(modelType SelectedModelType) bool {
+	if c.explicitModels == nil {
+		_, ok := c.Models[modelType]
+		return ok
+	}
+	return c.explicitModels[modelType]
 }
 
 // ensureTUI returns c.Options.TUI, allocating Options and TUI as needed so
@@ -763,6 +887,10 @@ func (c *Config) ensureTUI() *TUIOptions {
 	return c.Options.TUI
 }
 
+// EnabledProviders returns only providers this process can actually construct.
+// Retained plugin-owned providers remain in Config.Providers when unavailable,
+// but must not be reclassified as enabled generic providers or chosen as new
+// defaults merely because their durable configuration still exists.
 func (c *Config) EnabledProviders() []ProviderConfig {
 	var enabled []ProviderConfig
 	for id, p := range c.Providers.Seq2() {
@@ -774,15 +902,18 @@ func (c *Config) EnabledProviders() []ProviderConfig {
 }
 
 // IsConfigured returns true if at least one provider is configured and
-// available. It is used before selected models have necessarily been resolved.
+// available. It is a broad process-readiness check used before selected models
+// have necessarily been resolved. It does not authorize replacing a retained
+// unavailable plugin selection with whichever provider made this return true.
 func (c *Config) IsConfigured() bool {
 	return len(c.EnabledProviders()) > 0
 }
 
-// CanInitializeAgent returns true when both selected models can be constructed
-// by this host generation. Unavailable plugin-backed selections remain
-// persisted, but must not make application startup fail while their plugin is
-// absent or excluded by the active provider profile.
+// CanInitializeAgent returns true only when both selected models can be
+// constructed by this host generation. It is deliberately separate from
+// IsConfigured: another available provider must not make an unavailable
+// plugin-backed selection appear constructible. Callers must surface that
+// selected integration's unavailability rather than silently changing models.
 func (c *Config) CanInitializeAgent() bool {
 	large, largeOK := c.Models[SelectedModelTypeLarge]
 	small, smallOK := c.Models[SelectedModelTypeSmall]
@@ -793,12 +924,23 @@ func (c *Config) CanInitializeAgent() bool {
 
 // RedactedForTransport returns a snapshot safe to send to a frontend. Provider
 // credentials and manifest fields marked secret are removed while selections,
-// catalogs, and non-secret presentation configuration remain available.
+// catalogs, and non-secret presentation configuration remain available. Plugin
+// configuration is private by default: do not expose secret manifest fields or
+// OAuth values merely to diagnose registration or retained-selection behavior.
 func (c *Config) RedactedForTransport() *Config {
 	if c == nil {
 		return nil
 	}
 	result := *c
+	result.Images = cloneImageConfiguration(c.Images)
+	if result.Images != nil {
+		for backend, provider := range result.Images.Providers {
+			provider.Configuration = nil
+			provider.Credentials = nil
+			provider.BrowserProfiles = nil
+			result.Images.Providers[backend] = provider
+		}
+	}
 	providers := csync.NewMap[string, ProviderConfig]()
 	if c.Providers != nil {
 		for id, provider := range c.Providers.Seq2() {
@@ -807,7 +949,17 @@ func (c *Config) RedactedForTransport() *Config {
 			provider.OAuthToken = nil
 			provider.ExtraHeaders = nil
 			provider.Configuration = maps.Clone(provider.Configuration)
-			if registration, ok := ProviderCapabilities().Lookup(id); ok && registration.Manifest != nil {
+			registration, registered := c.ProviderRegistration(id)
+			if provider.Preset != nil {
+				provider.BaseURL = ""
+				provider.SystemPromptPrefix = ""
+				provider.ExtraBody = nil
+				provider.ProviderOptions = nil
+				provider.Configuration = nil
+				provider.ExtraParams = nil
+			} else if provider.Plugin != nil && (!registered || registration.Manifest == nil) {
+				provider.Configuration = nil
+			} else if registered && registration.Manifest != nil {
 				for field, display := range registration.Manifest.Configuration.Fields {
 					if display.Secret {
 						delete(provider.Configuration, field)
@@ -821,7 +973,10 @@ func (c *Config) RedactedForTransport() *Config {
 	return &result
 }
 
-func (c *Config) GetModel(provider, model string) *catwalk.Model {
+// GetModel resolves a model only inside its configured provider catalog. Do not
+// make this search other providers: a matching model ID elsewhere is not an
+// equivalent selection and must never enable cross-provider substitution.
+func (c *Config) GetModel(provider, model string) *catalog.Model {
 	if providerConfig, ok := c.Providers.Get(provider); ok {
 		for _, m := range providerConfig.Models {
 			if m.ID == model {
@@ -832,10 +987,284 @@ func (c *Config) GetModel(provider, model string) *catwalk.Model {
 	return nil
 }
 
+func providerOwnerReferenceForRegistration(registration providerregistry.Registration) *ProviderOwnerReference {
+	ownerType := ProviderOwnerCore
+	if registration.Manifest != nil {
+		ownerType = ProviderOwnerPlugin
+	}
+	return &ProviderOwnerReference{
+		Type:                 ownerType,
+		Construction:         registration.Construction,
+		CompatibilityAdapter: registration.CompatibilityAdapter,
+	}
+}
+
+func providerPresetOwnerReference() *ProviderOwnerReference {
+	return &ProviderOwnerReference{Type: ProviderOwnerPreset, Construction: providerregistry.ConstructionOpenAICompat}
+}
+
+func pluginReferenceMatches(reference *ProviderPluginReference, registration providerregistry.Registration) bool {
+	if reference == nil || registration.Manifest == nil || registration.Manifest.ID != reference.ID {
+		return false
+	}
+	return reference.Version != "" && registration.Manifest.Version == reference.Version
+}
+
+func presetReferenceMatches(configured *ProviderPresetReference, active ProviderPresetReference) bool {
+	if configured == nil || configured.ID != active.ID {
+		return false
+	}
+	return configured.Version != "" && configured.Version == active.Version &&
+		configured.Digest != "" && configured.Digest == active.Digest
+}
+
+func providerPresetReferenceMatches(providerID string, configured *ProviderPresetReference, active ProviderPresetReference) bool {
+	if _, _, migrated := providerplugin.MigratedProviderPreset(providerID); migrated {
+		return configured != nil && configured.Digest != "" && configured.Digest == active.Digest &&
+			providerplugin.IsCanonicalMigratedProviderPreset(providerID, configured.ID, configured.Version) &&
+			providerplugin.IsCanonicalMigratedProviderPresetBundle(providerID, active.ID, active.Version, active.Digest)
+	}
+	return presetReferenceMatches(configured, active)
+}
+
+func providerRegistrationForProvider(registry *providerregistry.Registry, providerID string, provider ProviderConfig) (providerregistry.Registration, bool) {
+	if registry == nil || providerID == "" || provider.ID != "" && provider.ID != providerID ||
+		provider.Owner == nil || provider.Owner.Type == "" || provider.Owner.Construction == "" || provider.Preset != nil {
+		return providerregistry.Registration{}, false
+	}
+	checked := provider
+	owner := *provider.Owner
+	checked.Owner = &owner
+	if err := validateConfiguredProviderOwner(providerID, checked); err != nil {
+		return providerregistry.Registration{}, false
+	}
+	registration, ok := registry.Lookup(providerID)
+	if !ok || registration.ProviderID != providerID {
+		return providerregistry.Registration{}, false
+	}
+	switch owner.Type {
+	case ProviderOwnerPlugin:
+		if provider.Plugin == nil || !pluginReferenceMatches(provider.Plugin, registration) ||
+			registration.Manifest == nil || owner.Construction != registration.Construction ||
+			owner.CompatibilityAdapter != registration.CompatibilityAdapter {
+			return providerregistry.Registration{}, false
+		}
+	case ProviderOwnerCore:
+		if provider.Plugin != nil || registration.Manifest != nil ||
+			owner.Construction != registration.Construction || owner.CompatibilityAdapter != "" {
+			return providerregistry.Registration{}, false
+		}
+	default:
+		return providerregistry.Registration{}, false
+	}
+	if registration.Manifest != nil {
+		bound, err := providerregistry.BindRegistrationConfiguration(registration, provider.Configuration)
+		if err != nil {
+			return providerregistry.Registration{}, false
+		}
+		registration = bound
+	}
+	return registration, true
+}
+
+func (c *Config) providerRegistration(registry *providerregistry.Registry, providerID string) (providerregistry.Registration, bool) {
+	if c == nil || registry == nil {
+		return providerregistry.Registration{}, false
+	}
+	provider, configured := ProviderConfig{}, false
+	if c.Providers != nil {
+		provider, configured = c.Providers.Get(providerID)
+	}
+	if configured && provider.Owner != nil {
+		return providerRegistrationForProvider(registry, providerID, provider)
+	}
+	if configured && provider.Preset != nil {
+		return providerregistry.Registration{}, false
+	}
+	registration, ok := registry.Lookup(providerID)
+	if !ok || registration.ProviderID != providerID {
+		return providerregistry.Registration{}, false
+	}
+	if configured {
+		if provider.Plugin != nil {
+			if !pluginReferenceMatches(provider.Plugin, registration) {
+				return providerregistry.Registration{}, false
+			}
+		} else {
+			construction, core := coreProviderConstruction(providerID)
+			if !core || registration.Manifest != nil || registration.Construction != construction || registration.CompatibilityAdapter != "" {
+				return providerregistry.Registration{}, false
+			}
+		}
+	}
+	if configured && registration.Manifest != nil {
+		bound, err := providerregistry.BindRegistrationConfiguration(registration, provider.Configuration)
+		if err != nil {
+			return providerregistry.Registration{}, false
+		}
+		registration = bound
+	}
+	return registration, true
+}
+
+func (c *Config) ProviderRegistration(providerID string) (providerregistry.Registration, bool) {
+	return c.providerRegistration(c.providerCapabilities(), providerID)
+}
+
+func (c *Config) ProviderOwner(providerID string) (providerregistry.RegistrationOwner, bool) {
+	if c != nil && c.providerCapabilities() == nil && c.transportProviderOwners != nil {
+		owner, ok := c.transportProviderOwners[providerID]
+		return owner, ok
+	}
+	return providerOwnerForConfig(c, c.providerCapabilities(), providerID)
+}
+
+func (c *Config) BindProviderSurfaceOwners(surfaces []providerregistry.Surface) error {
+	if c == nil {
+		return fmt.Errorf("cannot bind provider owners to a nil configuration")
+	}
+	owners := make(map[string]providerregistry.RegistrationOwner)
+	for _, surface := range surfaces {
+		if surface.Owner == nil {
+			continue
+		}
+		if surface.ID == "" || surface.Owner.ProviderID != surface.ID {
+			return fmt.Errorf("provider surface %q has mismatched owner %q", surface.ID, surface.Owner.ProviderID)
+		}
+		if _, exists := owners[surface.ID]; exists {
+			return fmt.Errorf("provider surface %q has duplicate owners", surface.ID)
+		}
+		owners[surface.ID] = *surface.Owner
+	}
+	c.transportProviderOwners = owners
+	return nil
+}
+
+func (c *Config) ProviderRegistrationError(providerID string) error {
+	return c.providerRegistrationError(c.providerCapabilities(), providerID)
+}
+
+func (c *Config) providerRegistrationError(registry *providerregistry.Registry, providerID string) error {
+	if c == nil || c.Providers == nil || registry == nil {
+		return nil
+	}
+	provider, configured := c.Providers.Get(providerID)
+	if !configured || provider.Plugin == nil {
+		return nil
+	}
+	registration, ok := registry.Lookup(providerID)
+	if !ok || registration.ProviderID != providerID || !pluginReferenceMatches(provider.Plugin, registration) {
+		return nil
+	}
+	_, err := providerregistry.BindRegistrationConfiguration(registration, provider.Configuration)
+	return err
+}
+
+func activeProviderPresetForRegistry(cfg *Config, registry *providerregistry.Registry, providerID string) (ProviderPresetReference, bool) {
+	var reference ProviderPresetReference
+	var active bool
+	if cfg == nil {
+		reference, active = ActiveProviderPreset(providerID)
+	} else {
+		reference, active = cfg.activeProviderPreset(providerID)
+	}
+	if !active {
+		return ProviderPresetReference{}, false
+	}
+	if registry != nil {
+		if registration, registered := registry.Lookup(providerID); registered && registration.ProviderID == providerID {
+			return ProviderPresetReference{}, false
+		}
+	}
+	return reference, true
+}
+
+func (c *Config) providerPreset(registry *providerregistry.Registry, providerID string) (ProviderPresetReference, bool) {
+	if c == nil {
+		return ProviderPresetReference{}, false
+	}
+	reference, active := activeProviderPresetForRegistry(c, registry, providerID)
+	if !active {
+		return ProviderPresetReference{}, false
+	}
+	if c.Providers != nil {
+		provider, configured := c.Providers.Get(providerID)
+		if configured {
+			if provider.Owner != nil && (provider.Owner.Type != ProviderOwnerPreset ||
+				provider.Owner.Construction != providerregistry.ConstructionOpenAICompat ||
+				provider.Owner.CompatibilityAdapter != "") {
+				return ProviderPresetReference{}, false
+			}
+			if !providerPresetReferenceMatches(providerID, provider.Preset, reference) {
+				return ProviderPresetReference{}, false
+			}
+			return reference, true
+		}
+	}
+	return reference, true
+}
+
+func (c *Config) ProviderPreset(providerID string) (ProviderPresetReference, bool) {
+	return c.providerPreset(c.providerCapabilities(), providerID)
+}
+
+func (c *Config) ProviderRegistrations() []providerregistry.Registration {
+	var result []providerregistry.Registration
+	for _, registration := range c.providerCapabilities().Registrations() {
+		if exact, ok := c.ProviderRegistration(registration.ProviderID); ok {
+			result = append(result, exact)
+		}
+	}
+	return result
+}
+
+func (c *Config) ProviderAccountNamespaces() []string {
+	if c == nil {
+		return nil
+	}
+	registrations := c.ProviderRegistrations()
+	slices.SortFunc(registrations, func(a, b providerregistry.Registration) int {
+		if a.AccountOrder != b.AccountOrder {
+			return cmp.Compare(a.AccountOrder, b.AccountOrder)
+		}
+		return strings.Compare(a.AccountNamespace, b.AccountNamespace)
+	})
+	result := make([]string, 0, len(registrations))
+	for _, registration := range registrations {
+		if registration.AccountNamespace != "" {
+			result = append(result, registration.AccountNamespace)
+		}
+	}
+	return result
+}
+
+func (c *Config) ProviderRegistrationForAccount(name string) (providerregistry.Registration, bool) {
+	registry := c.providerCapabilities()
+	if registration, ok := registry.Lookup(name); ok {
+		if exact, active := c.ProviderRegistration(registration.ProviderID); active && exact.AccountNamespace != "" {
+			return exact, true
+		}
+	}
+	for _, registration := range registry.Registrations() {
+		if registration.AccountNamespace != name && !slices.Contains(registration.AccountAliases, name) {
+			continue
+		}
+		if exact, ok := c.ProviderRegistration(registration.ProviderID); ok && exact.AccountNamespace != "" {
+			return exact, true
+		}
+	}
+	return providerregistry.Registration{}, false
+}
+
+func (c *Config) ProviderBehaviorRegistration(providerID string) (providerregistry.Registration, bool) {
+	return c.providerRegistration(c.providerCapabilities(), providerID)
+}
+
 // IsProviderIntegrationAvailable returns false when a configured provider's
 // durable plugin or non-compat OAuth owner is not active in this host
 // generation. It intentionally ignores the user's disable flag so disabled
-// providers can remain visible in controls that allow re-enabling them.
+// providers can remain visible in controls that allow re-enabling them. A false
+// result means "retain but cannot construct," not "replace with a default."
 func (c *Config) IsProviderIntegrationAvailable(provider string) bool {
 	_, ok := c.Providers.Get(provider)
 	return ok && !c.isUnavailableRegisteredProvider(provider)
@@ -843,14 +1272,17 @@ func (c *Config) IsProviderIntegrationAvailable(provider string) bool {
 
 // IsProviderAvailable returns false for disabled providers and for providers
 // whose durable plugin or non-compat OAuth owner is not active in this host
-// generation.
+// generation. Availability controls construction only; it does not own or
+// rewrite the user's persisted provider and model selection.
 func (c *Config) IsProviderAvailable(provider string) bool {
 	providerConfig, ok := c.Providers.Get(provider)
 	return ok && !providerConfig.Disable && c.IsProviderIntegrationAvailable(provider)
 }
 
-// IsModelAvailable returns true if the provider is available and the model
-// exists in its catalog.
+// IsModelAvailable returns true if the exact provider integration is available
+// and the model exists in that provider's catalog. Keep both checks exact: a
+// same-named model or an available default from another provider is not a valid
+// substitute for an explicit plugin-backed selection.
 func (c *Config) IsModelAvailable(provider, model string) bool {
 	providerConfig, ok := c.Providers.Get(provider)
 	if !ok || !c.IsProviderAvailable(provider) {
@@ -864,6 +1296,10 @@ func (c *Config) IsModelAvailable(provider, model string) bool {
 	return false
 }
 
+// GetProviderForModel returns the provider named by the selected model slot.
+// It must not fall through to another configured provider when the selected
+// plugin is unavailable; construction should fail clearly while selection and
+// provider-specific values remain intact.
 func (c *Config) GetProviderForModel(modelType SelectedModelType) *ProviderConfig {
 	model, ok := c.Models[modelType]
 	if !ok {
@@ -875,7 +1311,7 @@ func (c *Config) GetProviderForModel(modelType SelectedModelType) *ProviderConfi
 	return nil
 }
 
-func (c *Config) GetModelByType(modelType SelectedModelType) *catwalk.Model {
+func (c *Config) GetModelByType(modelType SelectedModelType) *catalog.Model {
 	model, ok := c.Models[modelType]
 	if !ok {
 		return nil
@@ -883,7 +1319,7 @@ func (c *Config) GetModelByType(modelType SelectedModelType) *catwalk.Model {
 	return c.GetModel(model.Provider, model.Model)
 }
 
-func (c *Config) LargeModel() *catwalk.Model {
+func (c *Config) LargeModel() *catalog.Model {
 	model, ok := c.Models[SelectedModelTypeLarge]
 	if !ok {
 		return nil
@@ -891,7 +1327,7 @@ func (c *Config) LargeModel() *catwalk.Model {
 	return c.GetModel(model.Provider, model.Model)
 }
 
-func (c *Config) SmallModel() *catwalk.Model {
+func (c *Config) SmallModel() *catalog.Model {
 	model, ok := c.Models[SelectedModelTypeSmall]
 	if !ok {
 		return nil
@@ -905,9 +1341,12 @@ func allToolNames() []string {
 	return []string{
 		"agent",
 		"bash",
+		"imagegen",
+		"jq",
 		"crux_info",
 		"crux_logs",
 		"traffic_logs",
+		"traffic_capture",
 		"git_inspect",
 		"job_list",
 		"job_output",
@@ -931,8 +1370,7 @@ func allToolNames() []string {
 		"agentic_fetch",
 		"codebase_search",
 		"complete_plan",
-		"glob",
-		"grep",
+		"search",
 		"ls",
 		"memory_list",
 		"memory_upsert",
@@ -966,7 +1404,7 @@ func resolveAllowedTools(allTools []string, disabledTools []string) []string {
 }
 
 func resolveReadOnlyTools(tools []string) []string {
-	readOnlyTools := []string{"codebase_search", "git_inspect", "glob", "grep", "job_list", "job_output", "ls", "lsp_call_hierarchy", "lsp_definition", "lsp_symbols", "memory_list", "project_status", "skill_list", "skill_load", "sourcegraph", "task_list", "task_output", "view"}
+	readOnlyTools := []string{"codebase_search", "git_inspect", "job_list", "job_output", "jq", "ls", "lsp_call_hierarchy", "lsp_definition", "lsp_symbols", "memory_list", "project_status", "search", "skill_list", "skill_load", "sourcegraph", "task_list", "task_output", "view"}
 	// filter to only include tools that are in allowedtools (include mode)
 	return filterSlice(tools, readOnlyTools, true)
 }
@@ -1010,23 +1448,37 @@ func (c *Config) SetupAgents() {
 	c.Agents = agents
 }
 
-func (c *ProviderConfig) TestConnection(resolver VariableResolver) error {
-	providerID := catwalk.InferenceProvider(c.ID)
-	apiKey, _ := resolver.ResolveValue(c.APIKey)
+func (c *ProviderConfig) TestConnection(ctx context.Context, resolver VariableResolver, validate providertransport.OwnerValidator) error {
+	if validate == nil {
+		return fmt.Errorf("provider owner validator is unavailable")
+	}
+	ctx = providertransport.ContextWithOwnerValidator(ctx, validate)
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return err
+	}
+	if err := validateConfiguredProviderOwner(c.ID, *c); err != nil {
+		return err
+	}
 
-	switch providerID {
-	case catwalk.InferenceProviderMiniMax, catwalk.InferenceProviderMiniMaxChina:
-		// MiniMax has no reliable endpoint for validating an API key.
+	providerID := catalog.ProviderID(c.ID)
+	apiKey, _ := resolver.ResolveValue(c.APIKey)
+	exactPreset := c.Owner.Type == ProviderOwnerPreset
+	if exactPreset && (c.Preset.ID == "" || c.Preset.Version == "" || c.Preset.Digest == "") {
+		return fmt.Errorf("provider preset for provider %s has an incomplete owner reference", c.ID)
+	}
+
+	switch {
+	case exactPreset && (providerID == catalog.ProviderMiniMax || providerID == catalog.ProviderMiniMaxChina):
 		return nil
-	case catwalk.InferenceProviderAlibabaSingapore:
+	case exactPreset && providerID == catalog.ProviderAlibabaSingapore:
 		if !strings.HasPrefix(apiKey, "sk-") {
 			return fmt.Errorf("invalid API key format for provider %s", c.ID)
 		}
 		return nil
 	}
 
-	providerType := cmp.Or(c.Type, catwalk.TypeOpenAICompat)
-	if providerType != catwalk.TypeOpenAICompat && !discover.IsKnownCustomProvider(string(providerType)) {
+	providerType := cmp.Or(c.Type, catalog.TypeOpenAICompat)
+	if providerType != catalog.TypeOpenAICompat && !discover.IsKnownCustomProvider(string(providerType)) {
 		return fmt.Errorf("unsupported provider type %q", providerType)
 	}
 	baseURL, err := resolver.ResolveValue(c.BaseURL)
@@ -1037,11 +1489,11 @@ func (c *ProviderConfig) TestConnection(resolver VariableResolver) error {
 		return fmt.Errorf("provider %s is missing an API endpoint", c.ID)
 	}
 	testURL := strings.TrimRight(baseURL, "/") + "/models"
-	if providerID == catwalk.InferenceProviderOpenCodeGo {
+	if exactPreset && providerID == catalog.ProviderOpenCodeGo {
 		testURL = strings.TrimRight(strings.Replace(baseURL, "/go", "", 1), "/") + "/models"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
@@ -1055,13 +1507,19 @@ func (c *ProviderConfig) TestConnection(resolver VariableResolver) error {
 		req.Header.Set(key, value)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
+	if ownerErr := providertransport.ValidateContextOwner(ctx); ownerErr != nil {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return ownerErr
+	}
 	if err != nil {
 		return fmt.Errorf("failed to connect to provider %s: %w", c.ID, err)
 	}
 	defer resp.Body.Close()
 
-	if providerID == catwalk.InferenceProviderZAI {
+	if exactPreset && providerID == catalog.ProviderZAI {
 		if resp.StatusCode == http.StatusUnauthorized {
 			return fmt.Errorf("failed to connect to provider %s: %s", c.ID, resp.Status)
 		}

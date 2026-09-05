@@ -3,21 +3,26 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/example-git/crux/internal/env"
 )
 
 var slugRe = regexp.MustCompile(`[^a-z0-9]+`)
 
 // aiCliDir returns ~/.ai-cli, the root of the ai-mux-tui instruction store.
 func aiCliDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
+	return aiCliDirFromEnvironment(env.New())
+}
+
+func aiCliDirFromEnvironment(environment env.Env) string {
+	homeDir := homeDirFromEnvironment(environment)
+	if homeDir == "" {
 		return ""
 	}
-	return filepath.Join(home, ".ai-cli")
+	return filepath.Join(homeDir, ".ai-cli")
 }
 
 // AiCliProjectInstructionsPath computes the per-project instructions path
@@ -26,7 +31,11 @@ func aiCliDir() string {
 //
 //	~/.ai-cli/project-prompts/<slug>-<hash>/instructions.txt
 func AiCliProjectInstructionsPath(workingDir string) string {
-	root := aiCliDir()
+	return aiCliProjectInstructionsPathFromEnvironment(workingDir, env.New())
+}
+
+func aiCliProjectInstructionsPathFromEnvironment(workingDir string, environment env.Env) string {
+	root := aiCliDirFromEnvironment(environment)
 	if root == "" || workingDir == "" {
 		return ""
 	}

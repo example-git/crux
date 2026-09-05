@@ -38,6 +38,14 @@ const (
 	ProviderGemini  = "gemini"
 )
 
+type ProviderRegistration struct {
+	ProviderID string
+	Namespace  string
+	Aliases    []string
+	Order      int
+	Refresher  Refresher
+}
+
 type providerRegistration struct {
 	providerID string
 	namespace  string
@@ -48,7 +56,52 @@ type providerRegistration struct {
 var (
 	providerMu    sync.RWMutex
 	providersByID = map[string]providerRegistration{}
+	refreshers    = map[string]Refresher{}
 )
+
+func PublishProviders(registrations []ProviderRegistration) {
+	PublishProvidersWith(registrations, nil)
+}
+
+func PublishProvidersWith(registrations []ProviderRegistration, publish func()) {
+	_ = PublishProvidersTransaction(registrations, func() error {
+		if publish != nil {
+			publish()
+		}
+		return nil
+	})
+}
+
+func PublishProvidersTransaction(registrations []ProviderRegistration, publish func() error) error {
+	providers := make(map[string]providerRegistration, len(registrations))
+	providerRefreshers := make(map[string]Refresher, len(registrations))
+	for _, registration := range registrations {
+		if registration.ProviderID == "" || registration.Namespace == "" {
+			continue
+		}
+		cleanAliases := make([]string, 0, len(registration.Aliases))
+		for _, alias := range registration.Aliases {
+			alias = strings.TrimSpace(alias)
+			if alias != "" && alias != registration.Namespace && !slices.Contains(cleanAliases, alias) {
+				cleanAliases = append(cleanAliases, alias)
+			}
+		}
+		providers[registration.ProviderID] = providerRegistration{providerID: registration.ProviderID, namespace: registration.Namespace, aliases: cleanAliases, order: registration.Order}
+		if registration.Refresher != nil {
+			providerRefreshers[registration.Namespace] = registration.Refresher
+		}
+	}
+	providerMu.Lock()
+	defer providerMu.Unlock()
+	if publish != nil {
+		if err := publish(); err != nil {
+			return err
+		}
+	}
+	providersByID = providers
+	refreshers = providerRefreshers
+	return nil
+}
 
 // RegisterProvider registers the stable account namespace for one logical
 // provider. Re-registering the same mapping is idempotent; conflicting claims
@@ -75,6 +128,16 @@ func RegisterProvider(providerID, namespace string, order int, aliases ...string
 		}
 	}
 	providersByID[providerID] = providerRegistration{providerID: providerID, namespace: namespace, aliases: cleanAliases, order: order}
+}
+
+func ProviderSnapshot(providerID string) (string, Refresher, bool) {
+	providerMu.RLock()
+	defer providerMu.RUnlock()
+	registration, ok := providersByID[providerID]
+	if !ok {
+		return "", nil, false
+	}
+	return registration.namespace, refreshers[registration.namespace], true
 }
 
 // StoreKey maps a Crux provider ID to its registered accounts.json namespace.
@@ -278,9 +341,10 @@ func readStore() (*store, error) {
 
 func registerSecrets(entry Entry) {
 	redact.Register(entry.AccessToken, entry.RefreshToken)
+	redact.RegisterJSONBytes(entry.Raw)
 }
 
-func writeStore(s *store) error {
+func writeStore(s *store, validate Validator) error {
 	path, err := dbPath()
 	if err != nil {
 		return err
@@ -296,34 +360,84 @@ func writeStore(s *store) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
+	if validate != nil {
+		if err := validate(); err != nil {
+			if removeErr := os.Remove(tmp); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return errors.Join(err, fmt.Errorf("remove rejected account store temporary file: %w", removeErr))
+			}
+			return err
+		}
+	}
 	return os.Rename(tmp, path)
 }
 
-// Save upserts an account and makes it the active account for the provider.
-func Save(ctx context.Context, provider string, entry Entry) error {
-	registerSecrets(entry)
+func mutateStore(ctx context.Context, validate Validator, mutate func(*store) error) error {
+	if validate != nil {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
 	return withLock(ctx, func() error {
+		if validate != nil {
+			if err := validate(); err != nil {
+				return err
+			}
+		}
 		s, err := readStore()
 		if err != nil {
 			return err
 		}
+		if err := mutate(s); err != nil {
+			return err
+		}
+		if validate != nil {
+			if err := validate(); err != nil {
+				return err
+			}
+		}
+		return writeStore(s, validate)
+	})
+}
+
+// Save upserts an account and makes it the active account for the provider.
+func Save(ctx context.Context, provider string, entry Entry) error {
+	return save(ctx, provider, entry, nil)
+}
+
+func SaveForOwner(ctx context.Context, provider string, entry Entry, validate Validator) error {
+	if validate == nil {
+		return errors.New("account owner validator is required")
+	}
+	return save(ctx, provider, entry, validate)
+}
+
+func save(ctx context.Context, provider string, entry Entry, validate Validator) error {
+	registerSecrets(entry)
+	return mutateStore(ctx, validate, func(s *store) error {
 		s.Accounts[provider] = upsert(s.Accounts[provider], entry)
 		s.Active[provider] = entry.ID
-		return writeStore(s)
+		return nil
 	})
 }
 
 // SaveWithoutActivating upserts an account without changing which account is
 // active. Used for background refreshes of inactive accounts.
 func SaveWithoutActivating(ctx context.Context, provider string, entry Entry) error {
+	return saveWithoutActivating(ctx, provider, entry, nil)
+}
+
+func SaveWithoutActivatingForOwner(ctx context.Context, provider string, entry Entry, validate Validator) error {
+	if validate == nil {
+		return errors.New("account owner validator is required")
+	}
+	return saveWithoutActivating(ctx, provider, entry, validate)
+}
+
+func saveWithoutActivating(ctx context.Context, provider string, entry Entry, validate Validator) error {
 	registerSecrets(entry)
-	return withLock(ctx, func() error {
-		s, err := readStore()
-		if err != nil {
-			return err
-		}
+	return mutateStore(ctx, validate, func(s *store) error {
 		s.Accounts[provider] = upsert(s.Accounts[provider], entry)
-		return writeStore(s)
+		return nil
 	})
 }
 
@@ -347,6 +461,14 @@ func List(ctx context.Context, provider string) ([]Entry, error) {
 // Providers returns the provider keys that have at least one stored account,
 // in preference order followed by any unknown keys.
 func Providers(ctx context.Context) ([]string, error) {
+	return providers(ctx, providerOrder())
+}
+
+func ProvidersFor(ctx context.Context, preferred []string) ([]string, error) {
+	return providers(ctx, preferred)
+}
+
+func providers(ctx context.Context, preferred []string) ([]string, error) {
 	var out []string
 	err := withLock(ctx, func() error {
 		s, err := readStore()
@@ -354,17 +476,23 @@ func Providers(ctx context.Context) ([]string, error) {
 			return err
 		}
 		seen := map[string]bool{}
-		for _, p := range providerOrder() {
-			if len(s.Accounts[p]) > 0 {
-				out = append(out, p)
-				seen[p] = true
+		for _, provider := range preferred {
+			if provider == "" || seen[provider] {
+				continue
+			}
+			seen[provider] = true
+			if len(s.Accounts[provider]) > 0 {
+				out = append(out, provider)
 			}
 		}
-		for p, list := range s.Accounts {
-			if !seen[p] && len(list) > 0 {
-				out = append(out, p)
+		var remaining []string
+		for provider, entries := range s.Accounts {
+			if !seen[provider] && len(entries) > 0 {
+				remaining = append(remaining, provider)
 			}
 		}
+		slices.Sort(remaining)
+		out = append(out, remaining...)
 		return nil
 	})
 	return out, err
@@ -389,40 +517,61 @@ func Active(ctx context.Context, provider string) (*Entry, error) {
 
 // SetActive marks the account with the given id active for the provider.
 func SetActive(ctx context.Context, provider, id string) error {
-	return withLock(ctx, func() error {
-		s, err := readStore()
-		if err != nil {
-			return err
-		}
+	return setActive(ctx, provider, id, nil)
+}
+
+func SetActiveForOwner(ctx context.Context, provider, id string, validate Validator) error {
+	if validate == nil {
+		return errors.New("account owner validator is required")
+	}
+	return setActive(ctx, provider, id, validate)
+}
+
+func setActive(ctx context.Context, provider, id string, validate Validator) error {
+	return mutateStore(ctx, validate, func(s *store) error {
 		if find(s.Accounts[provider], id) == nil {
 			return fmt.Errorf("account %q not found for provider %q", id, provider)
 		}
 		s.Active[provider] = id
-		return writeStore(s)
+		return nil
 	})
 }
 
 // RemoveProvider deletes every account and active selection for a provider.
 func RemoveProvider(ctx context.Context, provider string) error {
-	return withLock(ctx, func() error {
-		s, err := readStore()
-		if err != nil {
-			return err
-		}
+	return removeProvider(ctx, provider, nil)
+}
+
+func RemoveProviderForOwner(ctx context.Context, provider string, validate Validator) error {
+	if validate == nil {
+		return errors.New("account owner validator is required")
+	}
+	return removeProvider(ctx, provider, validate)
+}
+
+func removeProvider(ctx context.Context, provider string, validate Validator) error {
+	return mutateStore(ctx, validate, func(s *store) error {
 		delete(s.Accounts, provider)
 		delete(s.Active, provider)
-		return writeStore(s)
+		return nil
 	})
 }
 
 // Remove deletes an account. If it was active, the first remaining account
 // becomes active (or the active key is cleared).
 func Remove(ctx context.Context, provider, id string) error {
-	return withLock(ctx, func() error {
-		s, err := readStore()
-		if err != nil {
-			return err
-		}
+	return remove(ctx, provider, id, nil)
+}
+
+func RemoveForOwner(ctx context.Context, provider, id string, validate Validator) error {
+	if validate == nil {
+		return errors.New("account owner validator is required")
+	}
+	return remove(ctx, provider, id, validate)
+}
+
+func remove(ctx context.Context, provider, id string, validate Validator) error {
+	return mutateStore(ctx, validate, func(s *store) error {
 		list := s.Accounts[provider]
 		filtered := list[:0:0]
 		for _, e := range list {
@@ -438,7 +587,7 @@ func Remove(ctx context.Context, provider, id string) error {
 				delete(s.Active, provider)
 			}
 		}
-		return writeStore(s)
+		return nil
 	})
 }
 

@@ -16,7 +16,9 @@ import (
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/app"
 	"github.com/example-git/crux/internal/backend"
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
@@ -68,11 +70,18 @@ type scriptedCoordinator struct {
 	runStarts atomic.Int32
 
 	release chan struct{}
+
+	permissionResults chan permissionRunResult
 }
 
 type sessionCancel struct {
 	sessionID string
 	cancel    context.CancelFunc
+}
+
+type permissionRunResult struct {
+	granted bool
+	err     error
 }
 
 func newScriptedCoordinator(a *app.App) *scriptedCoordinator {
@@ -152,6 +161,19 @@ func (c *scriptedCoordinator) Run(ctx context.Context, sessionID, prompt string,
 	userID := fmt.Sprintf("u-%s-%d", sessionID, id)
 	asstID := fmt.Sprintf("a-%s-%d", sessionID, id)
 
+	if c.permissionResults != nil {
+		granted, err := c.app.Permissions.Request(runCtx, permission.CreatePermissionRequest{
+			SessionID:   sessionID,
+			ToolCallID:  fmt.Sprintf("permission-%d", id),
+			ToolName:    "bash",
+			Action:      "execute",
+			Description: "test command",
+			Path:        "/outside",
+		})
+		c.permissionResults <- permissionRunResult{granted: granted, err: err}
+		return nil, err
+	}
+
 	c.emitUser(sessionID, userID)
 
 	// Cancellation takes priority: if the run was already canceled it
@@ -220,6 +242,9 @@ func (c *scriptedCoordinator) ClearQueue(string)                             {}
 func (c *scriptedCoordinator) Summarize(context.Context, string) error       { return nil }
 func (c *scriptedCoordinator) Model() agent.Model                            { return agent.Model{} }
 func (c *scriptedCoordinator) UpdateModels(context.Context) error            { return nil }
+func (c *scriptedCoordinator) UpdateModelsForState(context.Context, config.AgentModelState) error {
+	return nil
+}
 func (c *scriptedCoordinator) GenerateTitle(context.Context, string, string) {}
 
 func (c *scriptedCoordinator) SuggestPrompt(context.Context, string) (string, error) { return "", nil }
@@ -265,8 +290,12 @@ func newAgentE2EHarness(t *testing.T) *agentE2EHarness {
 // postAgentHTTP drives POST /v1/workspaces/{id}/agent over the harness's
 // httptest server and returns the status code.
 func (h *agentE2EHarness) postAgentHTTP(t *testing.T, ctx context.Context, sessionID string) int {
+	return h.postAgentHTTPWithPermissionMode(t, ctx, sessionID, proto.AgentPermissionInteractive)
+}
+
+func (h *agentE2EHarness) postAgentHTTPWithPermissionMode(t *testing.T, ctx context.Context, sessionID string, mode proto.AgentPermissionMode) int {
 	t.Helper()
-	body, err := json.Marshal(proto.AgentMessage{SessionID: sessionID, Prompt: "hi"})
+	body, err := json.Marshal(proto.AgentMessage{SessionID: sessionID, Prompt: "hi", PermissionMode: mode})
 	require.NoError(t, err)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		h.httpSrv.URL+"/v1/workspaces/"+h.workspace.ID+"/agent", bytes.NewReader(body))
@@ -316,6 +345,36 @@ func finishReason(m proto.Message) (proto.FinishReason, bool) {
 		}
 	}
 	return "", false
+}
+
+func TestE2E_PermissionBypassIsScopedToOneAgentRequest(t *testing.T) {
+	h := newAgentE2EHarness(t)
+	h.coord.permissionResults = make(chan permissionRunResult, 3)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	requests := h.app.Permissions.Subscribe(ctx)
+
+	const sessionID = "permission-scope"
+	require.Equal(t, http.StatusAccepted, h.postAgentHTTPWithPermissionMode(t, ctx, sessionID, proto.AgentPermissionBypass))
+	bypass := <-h.coord.permissionResults
+	require.NoError(t, bypass.err)
+	require.True(t, bypass.granted)
+
+	require.Equal(t, http.StatusAccepted, h.postAgentHTTPWithPermissionMode(t, ctx, sessionID, proto.AgentPermissionInteractive))
+	select {
+	case request := <-requests:
+		require.True(t, h.app.Permissions.Deny(request.Payload))
+	case <-ctx.Done():
+		t.Fatal("interactive request was not published after bypass run")
+	}
+	interactive := <-h.coord.permissionResults
+	require.NoError(t, interactive.err)
+	require.False(t, interactive.granted)
+
+	require.Equal(t, http.StatusAccepted, h.postAgentHTTPWithPermissionMode(t, ctx, sessionID, proto.AgentPermissionDeny))
+	denied := <-h.coord.permissionResults
+	require.False(t, denied.granted)
+	require.ErrorIs(t, denied.err, permission.ErrInteractivePermissionUnavailable)
 }
 
 // TestE2E_CancelByOtherClientDoesNotErrorPrompter covers PLAN Tests ->

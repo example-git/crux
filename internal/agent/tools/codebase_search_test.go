@@ -10,18 +10,34 @@ import (
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/codebaseindex"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/permission"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCodebaseSearchDescriptionPrefersReadyIndexForConceptualDiscovery(t *testing.T) {
+	require.Contains(t, codebaseSearchDescription, "Prefer this over search")
 	require.Contains(t, codebaseSearchDescription, "first repository-discovery tool")
-	require.Contains(t, codebaseSearchDescription, "when the background index is ready")
-	require.Contains(t, codebaseSearchDescription, "Do not use it while the index is being built or refreshed")
-	require.Contains(t, codebaseSearchDescription, "use LSP or grep for known exact symbols and literals")
+	require.Contains(t, codebaseSearchDescription, "when a completed index is available and the relevant files are indexed")
+	require.Contains(t, codebaseSearchDescription, "Background refreshes keep serving the last completed index")
+	require.Contains(t, codebaseSearchDescription, "Use LSP or search in content mode for known exact symbols and literals")
+}
+
+func TestCodebaseSearchToolRejectsSubagentsBeforeOpeningIndex(t *testing.T) {
+	tool := NewCodebaseSearchTool(t.TempDir(), config.ToolCodebaseSearch{}, nil, nil)
+	input, err := json.Marshal(CodebaseSearchParams{Query: "query"})
+	require.NoError(t, err)
+	response, err := tool.Run(permission.WithSubagent(t.Context()), fantasy.ToolCall{
+		ID:    "test-call",
+		Name:  CodebaseSearchToolName,
+		Input: string(input),
+	})
+	require.NoError(t, err)
+	require.True(t, response.IsError)
+	require.Equal(t, permission.ErrSubagentCodebaseSearch.Error(), response.Content)
 }
 
 func TestCodebaseSearchToolValidatesInput(t *testing.T) {
-	tool := NewCodebaseSearchTool(t.TempDir(), config.ToolCodebaseSearch{}, nil)
+	tool := NewCodebaseSearchTool(t.TempDir(), config.ToolCodebaseSearch{}, nil, nil)
 
 	response := runCodebaseSearchTool(t, tool, CodebaseSearchParams{})
 	require.True(t, response.IsError)
@@ -52,10 +68,27 @@ func TestCodebaseSearchToolReportsActiveIndexingStates(t *testing.T) {
 	require.Equal(t, "Semantic code index is currently being refreshed in the background. Try again shortly.", formatCodebaseIndexUnavailable(&codebaseindex.StoreUnavailableError{State: codebaseindex.StoreStateStale}))
 }
 
+func TestCodebaseSearchToolRequestsBackgroundReconciliation(t *testing.T) {
+	workingDirectory := t.TempDir()
+	enabled := true
+	requested := make(chan struct{}, 1)
+	tool := NewCodebaseSearchTool(workingDirectory, config.ToolCodebaseSearch{StoreDirectory: t.TempDir(), Enabled: &enabled}, nil, func() {
+		requested <- struct{}{}
+	})
+
+	response := runCodebaseSearchTool(t, tool, CodebaseSearchParams{Query: "query"})
+	require.True(t, response.IsError)
+	select {
+	case <-requested:
+	default:
+		t.Fatal("semantic search did not request background reconciliation")
+	}
+}
+
 func TestCodebaseSearchToolReportsUnavailableIndex(t *testing.T) {
 	workingDirectory := t.TempDir()
 	enabled := true
-	tool := NewCodebaseSearchTool(workingDirectory, config.ToolCodebaseSearch{StoreDirectory: t.TempDir(), Enabled: &enabled}, nil)
+	tool := NewCodebaseSearchTool(workingDirectory, config.ToolCodebaseSearch{StoreDirectory: t.TempDir(), Enabled: &enabled}, nil, nil)
 
 	response := runCodebaseSearchTool(t, tool, CodebaseSearchParams{Query: "query"})
 	require.True(t, response.IsError)

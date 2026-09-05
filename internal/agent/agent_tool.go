@@ -13,6 +13,7 @@ import (
 	"github.com/example-git/crux/internal/agent/prompt"
 	"github.com/example-git/crux/internal/agent/tools"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/permission"
 	managedtask "github.com/example-git/crux/internal/task"
 )
 
@@ -37,176 +38,324 @@ const (
 )
 
 type presetSubagent struct {
-	agent SessionAgent
-	title string
-	err   error
+	agent            SessionAgent
+	title            string
+	tools            []string
+	requiresApproval bool
 }
 
-func (c *coordinator) agentTool(ctx context.Context) (fantasy.AgentTool, error) {
-	cfg := c.cfg.Config()
+func (c *coordinator) agentTool(ctx context.Context, promptTemplate *prompt.Prompt) (fantasy.AgentTool, error) {
+	return c.agentToolWithSnapshot(ctx, promptTemplate, c.cfg.RuntimeSnapshot())
+}
+
+func (c *coordinator) agentToolWithSnapshot(ctx context.Context, promptTemplate *prompt.Prompt, snapshot config.RuntimeSnapshot) (fantasy.AgentTool, error) {
+	cfg := snapshot.Config()
 	taskCfg, ok := cfg.Agents[config.AgentTask]
 	if !ok {
 		return nil, errors.New("task agent not configured")
 	}
-	taskPromptTemplate, err := taskPrompt(prompt.WithWorkingDir(c.cfg.WorkingDir()))
+	taskAgent, err := c.buildAgentWithSnapshot(ctx, promptTemplate, taskCfg, true, snapshot)
 	if err != nil {
 		return nil, err
 	}
-	taskAgent, err := c.buildAgent(ctx, taskPromptTemplate, taskCfg, true)
-	if err != nil {
-		return nil, err
+	taskPreset := presetSubagent{
+		agent: taskAgent,
+		title: "New Agent Session",
 	}
-
-	presets := map[string]presetSubagent{
-		config.AgentTask: {agent: taskAgent, title: "New Agent Session"},
-	}
-	var definitions []agentDefinition
-	if c.loadAgentDefinitions != nil {
-		definitions, err = c.loadAgentDefinitions(c.cfg.WorkingDir(), cfg)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	descriptionLines := []string{
-		fmt.Sprintf("- %s: %s (model: configured large model; tools: %s)", config.AgentTask, taskCfg.Description, strings.Join(taskCfg.AllowedTools, ", ")),
-	}
-	for _, definition := range definitions {
-		if definition.ValidationErr != nil {
-			presets[definition.Name] = presetSubagent{
-				title: "Agent: " + definition.Name,
-				err:   definition.ValidationErr,
-			}
-			descriptionLines = append(descriptionLines, fmt.Sprintf("- %s: invalid definition at %s", definition.Name, definition.Path))
-			continue
-		}
-		allowedTools := slices.Clone(definition.Tools)
-		if definition.AllTools {
-			allowedTools = c.customWildcardTools()
-			if definition.Script == nil {
-				allowedTools = slices.DeleteFunc(allowedTools, func(name string) bool {
-					return name == tools.ScriptToolName
-				})
-			}
-		}
-		model := definition.Model
-		agentCfg := config.Agent{
-			ID:                   definition.Name,
-			Name:                 definition.Name,
-			Description:          definition.Description,
-			Model:                config.SelectedModelTypeLarge,
-			PrimaryModelOverride: &model,
-			Instructions:         definition.Instructions,
-			DefinitionPath:       definition.Path,
-			AllowAllTools:        definition.AllTools,
-			Script:               definition.Script,
-			AllowedTools:         allowedTools,
-			AllowedMCP:           map[string][]string{},
-		}
-		customPromptTemplate, err := customAgentPrompt(definition.Instructions, prompt.WithWorkingDir(c.cfg.WorkingDir()))
-		if err != nil {
-			presets[definition.Name] = presetSubagent{
-				title: "Agent: " + definition.Name,
-				err:   fmt.Errorf("building custom agent prompt for %q: %w", definition.Path, err),
-			}
-			descriptionLines = append(descriptionLines, fmt.Sprintf("- %s: invalid definition at %s", definition.Name, definition.Path))
-			continue
-		}
-		customAgent, err := c.buildAgent(ctx, customPromptTemplate, agentCfg, true)
-		if err != nil {
-			presets[definition.Name] = presetSubagent{
-				title: "Agent: " + definition.Name,
-				err:   fmt.Errorf("building custom agent from %q: %w", definition.Path, err),
-			}
-			descriptionLines = append(descriptionLines, fmt.Sprintf("- %s: invalid definition at %s", definition.Name, definition.Path))
-			continue
-		}
-		presets[definition.Name] = presetSubagent{
-			agent: customAgent,
-			title: "Agent: " + definition.Name,
-		}
-		toolSummary := "none"
-		if len(allowedTools) > 0 {
-			toolSummary = strings.Join(allowedTools, ", ")
-		}
-		descriptionLines = append(descriptionLines, fmt.Sprintf(
-			"- %s: %s (model: %s/%s; tools: %s)",
-			definition.Name,
-			definition.Description,
-			definition.Model.Provider,
-			definition.Model.Model,
-			toolSummary,
-		))
-	}
-
-	availableTypes := make([]string, 0, len(presets))
-	for name := range presets {
-		availableTypes = append(availableTypes, name)
-	}
-	slices.Sort(availableTypes)
-	description := strings.TrimSpace(agentToolDescription) + "\n\nAvailable subagent types:\n" + strings.Join(descriptionLines, "\n")
-
-	return fantasy.NewParallelAgentTool(
-		AgentToolName,
-		description,
-		func(ctx context.Context, params AgentParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			if params.Prompt == "" {
-				return fantasy.NewTextErrorResponse("prompt is required"), nil
-			}
-
-			sessionID := tools.GetSessionFromContext(ctx)
-			if sessionID == "" {
-				return fantasy.ToolResponse{}, errors.New("session id missing from context")
-			}
-			agentMessageID := tools.GetMessageFromContext(ctx)
-			if agentMessageID == "" {
-				return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
-			}
-
-			var continuation *BackgroundAgentTask
-			effectiveAgentType := params.SubagentType
-			if params.ContinueTaskID != "" {
-				if !params.RunInBackground {
-					return fantasy.NewTextErrorResponse("continue_task_id requires run_in_background=true"), nil
-				}
-				continuation, effectiveAgentType, err = c.resolveBackgroundAgentContinuation(ctx, params.ContinueTaskID, effectiveAgentType)
-				if err != nil {
-					return fantasy.NewTextErrorResponse(err.Error()), nil
-				}
-			}
-
-			selected, err := selectPresetSubagent(presets, effectiveAgentType, availableTypes)
-			if err != nil {
-				return fantasy.NewTextErrorResponse(err.Error()), nil
-			}
-			params.SubagentType = effectiveAgentType
-			runParams := subAgentParams{
-				Agent:          selected.agent,
-				SessionID:      sessionID,
-				AgentMessageID: agentMessageID,
-				ToolCallID:     call.ID,
-				Prompt:         params.Prompt,
-				SessionTitle:   selected.title,
-			}
-			if continuation != nil {
-				return c.continueBackgroundSubAgent(ctx, params, call, selected, runParams, continuation)
-			}
-			if !params.RunInBackground {
-				return c.runSubAgent(ctx, runParams)
-			}
-			return c.startBackgroundSubAgent(ctx, params, call, selected, runParams)
-		},
-	), nil
+	return newRefreshingAgentTool(c, taskCfg, taskPreset), nil
 }
 
-func (c *coordinator) buildContinuationAgent(ctx context.Context, agentType string) (presetSubagent, error) {
+type refreshingAgentTool struct {
+	coordinator *coordinator
+	taskConfig  config.Agent
+	inner       fantasy.AgentTool
+}
+
+func newRefreshingAgentTool(
+	c *coordinator,
+	taskCfg config.Agent,
+	taskPreset presetSubagent,
+) fantasy.AgentTool {
+	tool := &refreshingAgentTool{
+		coordinator: c,
+		taskConfig:  taskCfg,
+	}
+	tool.inner = fantasy.NewParallelAgentTool(
+		AgentToolName,
+		"",
+		func(ctx context.Context, params AgentParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			return c.runAgentTool(ctx, params, call, taskPreset)
+		},
+	)
+	return tool
+}
+
+func (t *refreshingAgentTool) Info() fantasy.ToolInfo {
+	info := t.inner.Info()
+	info.Description = t.coordinator.currentAgentToolDescription(t.taskConfig)
+	return info
+}
+
+func (t *refreshingAgentTool) Run(
+	ctx context.Context,
+	call fantasy.ToolCall,
+) (fantasy.ToolResponse, error) {
+	return t.inner.Run(ctx, call)
+}
+
+func (t *refreshingAgentTool) ProviderOptions() fantasy.ProviderOptions {
+	return t.inner.ProviderOptions()
+}
+
+func (t *refreshingAgentTool) SetProviderOptions(options fantasy.ProviderOptions) {
+	t.inner.SetProviderOptions(options)
+}
+
+func (c *coordinator) currentAgentDefinitions() ([]agentDefinition, error) {
+	if c.loadAgentDefinitions == nil {
+		return nil, nil
+	}
+	return c.loadAgentDefinitions(c.cfg.WorkingDir(), c.cfg.Config())
+}
+
+func (c *coordinator) currentAgentToolDescription(taskCfg config.Agent) string {
+	descriptionLines := []string{
+		fmt.Sprintf(
+			"- %s: %s (model: configured large model; tools: %s)",
+			config.AgentTask,
+			taskCfg.Description,
+			strings.Join(resolveSubagentTools(taskCfg, c.disabledTools()), ", "),
+		),
+	}
+	definitions, err := c.currentAgentDefinitions()
+	if err != nil {
+		descriptionLines = append(
+			descriptionLines,
+			fmt.Sprintf("- custom agent definitions unavailable: %v", err),
+		)
+	} else {
+		for _, definition := range definitions {
+			descriptionLines = append(
+				descriptionLines,
+				c.agentDefinitionDescription(definition),
+			)
+		}
+	}
+	return strings.TrimSpace(agentToolDescription) +
+		"\n\nAvailable subagent types:\n" +
+		strings.Join(descriptionLines, "\n")
+}
+
+func (c *coordinator) agentDefinitionDescription(definition agentDefinition) string {
+	if definition.ValidationErr != nil {
+		return fmt.Sprintf(
+			"- %s: invalid definition at %s",
+			definition.Name,
+			definition.Path,
+		)
+	}
+	allowedTools := c.customAgentTools(definition)
+	toolSummary := "none"
+	if len(allowedTools) > 0 {
+		toolSummary = strings.Join(allowedTools, ", ")
+	}
+	return fmt.Sprintf(
+		"- %s: %s (model: %s/%s; tools: %s)",
+		definition.Name,
+		definition.Description,
+		definition.Model.Provider,
+		definition.Model.Model,
+		toolSummary,
+	)
+}
+
+func (c *coordinator) customAgentTools(definition agentDefinition) []string {
+	allowedTools := slices.Clone(definition.Tools)
+	if definition.AllTools {
+		allowedTools = c.customWildcardTools()
+		if definition.Script == nil {
+			allowedTools = slices.DeleteFunc(allowedTools, func(name string) bool {
+				return name == tools.ScriptToolName
+			})
+		}
+	}
+	return resolveSubagentTools(config.Agent{AllowedTools: allowedTools}, c.disabledTools())
+}
+
+func (c *coordinator) disabledTools() []string {
+	if c.cfg == nil || c.cfg.Config().Options == nil {
+		return nil
+	}
+	return c.cfg.Config().Options.DisabledTools
+}
+
+func availableAgentTypes(definitions []agentDefinition) []string {
+	available := make([]string, 0, len(definitions)+1)
+	available = append(available, config.AgentTask)
+	for _, definition := range definitions {
+		available = append(available, definition.Name)
+	}
+	slices.Sort(available)
+	return available
+}
+
+func (c *coordinator) resolveAgentToolPreset(
+	ctx context.Context,
+	taskPreset presetSubagent,
+	requested string,
+) (presetSubagent, error) {
+	definitions, err := c.currentAgentDefinitions()
+	if err != nil {
+		return presetSubagent{}, err
+	}
+	selectedType := requested
+	if selectedType == "" {
+		selectedType = config.AgentTask
+	}
+	if selectedType == config.AgentTask {
+		return taskPreset, nil
+	}
+	for _, definition := range definitions {
+		if definition.Name != selectedType {
+			continue
+		}
+		if definition.ValidationErr != nil {
+			return presetSubagent{}, definition.ValidationErr
+		}
+		return c.buildCustomAgentPreset(ctx, definition)
+	}
+	return presetSubagent{}, fmt.Errorf(
+		"unknown subagent type %q; available types: %s",
+		requested,
+		strings.Join(availableAgentTypes(definitions), ", "),
+	)
+}
+
+func (c *coordinator) buildCustomAgentPreset(
+	ctx context.Context,
+	definition agentDefinition,
+) (presetSubagent, error) {
+	allowedTools := c.customAgentTools(definition)
+	model := definition.Model
+	agentCfg := config.Agent{
+		ID:                   definition.Name,
+		Name:                 definition.Name,
+		Description:          definition.Description,
+		Model:                config.SelectedModelTypeLarge,
+		PrimaryModelOverride: &model,
+		Instructions:         definition.Instructions,
+		DefinitionPath:       definition.Path,
+		AllowAllTools:        definition.AllTools,
+		Script:               definition.Script,
+		AllowedTools:         allowedTools,
+		AllowedMCP:           map[string][]string{},
+	}
+	promptTemplate, err := c.currentSubagentPromptTemplate()
+	if err != nil {
+		return presetSubagent{}, err
+	}
+	customAgent, err := c.buildAgent(ctx, promptTemplate, agentCfg, true)
+	if err != nil {
+		return presetSubagent{}, fmt.Errorf(
+			"building custom agent from %q: %w",
+			definition.Path,
+			err,
+		)
+	}
+	return presetSubagent{
+		agent:            customAgent,
+		title:            "Agent: " + definition.Name,
+		tools:            allowedTools,
+		requiresApproval: subagentRequiresApproval(allowedTools),
+	}, nil
+}
+
+func (c *coordinator) runAgentTool(
+	ctx context.Context,
+	params AgentParams,
+	call fantasy.ToolCall,
+	taskPreset presetSubagent,
+) (fantasy.ToolResponse, error) {
+	if permission.IsSubagent(ctx) {
+		return fantasy.NewTextErrorResponse(permission.ErrSubagentLaunch.Error()), nil
+	}
+	if params.Prompt == "" {
+		return fantasy.NewTextErrorResponse("prompt is required"), nil
+	}
+	sessionID := tools.GetSessionFromContext(ctx)
+	if sessionID == "" {
+		return fantasy.ToolResponse{}, errors.New("session id missing from context")
+	}
+	agentMessageID := tools.GetMessageFromContext(ctx)
+	if agentMessageID == "" {
+		return fantasy.ToolResponse{}, errors.New("agent message id missing from context")
+	}
+	var continuation *BackgroundAgentTask
+	effectiveAgentType := params.SubagentType
+	var err error
+	if params.ContinueTaskID != "" {
+		if !params.RunInBackground {
+			return fantasy.NewTextErrorResponse("continue_task_id requires run_in_background=true"), nil
+		}
+		continuation, effectiveAgentType, err = c.resolveBackgroundAgentContinuation(
+			ctx,
+			params.ContinueTaskID,
+			effectiveAgentType,
+		)
+		if err != nil {
+			return fantasy.NewTextErrorResponse(err.Error()), nil
+		}
+	}
+	selected, err := c.resolveAgentToolPreset(
+		ctx,
+		taskPreset,
+		effectiveAgentType,
+	)
+	if err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
+	params.SubagentType = effectiveAgentType
+	runParams := subAgentParams{
+		Agent:          selected.agent,
+		SessionID:      sessionID,
+		AgentMessageID: agentMessageID,
+		ToolCallID:     call.ID,
+		Prompt:         params.Prompt,
+		SessionTitle:   selected.title,
+	}
+	if continuation != nil {
+		return c.continueBackgroundSubAgent(
+			ctx,
+			params,
+			call,
+			selected,
+			runParams,
+			continuation,
+		)
+	}
+	if !params.RunInBackground {
+		return c.runSubAgent(ctx, runParams)
+	}
+	return c.startBackgroundSubAgent(
+		ctx,
+		params,
+		call,
+		selected,
+		runParams,
+	)
+}
+
+func (c *coordinator) buildContinuationAgent(
+	ctx context.Context,
+	agentType string,
+) (presetSubagent, error) {
 	cfg := c.cfg.Config()
 	if agentType == config.AgentTask {
 		taskCfg, ok := cfg.Agents[config.AgentTask]
 		if !ok {
 			return presetSubagent{}, errors.New("task agent not configured")
 		}
-		template, err := taskPrompt(prompt.WithWorkingDir(c.cfg.WorkingDir()))
+		template, err := c.currentSubagentPromptTemplate()
 		if err != nil {
 			return presetSubagent{}, err
 		}
@@ -214,12 +363,12 @@ func (c *coordinator) buildContinuationAgent(ctx context.Context, agentType stri
 		if err != nil {
 			return presetSubagent{}, err
 		}
-		return presetSubagent{agent: built, title: "New Agent Session"}, nil
+		return presetSubagent{
+			agent: built,
+			title: "New Agent Session",
+		}, nil
 	}
-	if c.loadAgentDefinitions == nil {
-		return presetSubagent{}, fmt.Errorf("unknown subagent_type %q", agentType)
-	}
-	definitions, err := c.loadAgentDefinitions(c.cfg.WorkingDir(), cfg)
+	definitions, err := c.currentAgentDefinitions()
 	if err != nil {
 		return presetSubagent{}, err
 	}
@@ -230,43 +379,18 @@ func (c *coordinator) buildContinuationAgent(ctx context.Context, agentType stri
 		if definition.ValidationErr != nil {
 			return presetSubagent{}, definition.ValidationErr
 		}
-		allowedTools := slices.Clone(definition.Tools)
-		if definition.AllTools {
-			allowedTools = c.customWildcardTools()
-			if definition.Script == nil {
-				allowedTools = slices.DeleteFunc(allowedTools, func(name string) bool {
-					return name == tools.ScriptToolName
-				})
-			}
-		}
-		model := definition.Model
-		agentCfg := config.Agent{
-			ID:                   definition.Name,
-			Name:                 definition.Name,
-			Description:          definition.Description,
-			Model:                config.SelectedModelTypeLarge,
-			PrimaryModelOverride: &model,
-			Instructions:         definition.Instructions,
-			DefinitionPath:       definition.Path,
-			AllowAllTools:        definition.AllTools,
-			Script:               definition.Script,
-			AllowedTools:         allowedTools,
-			AllowedMCP:           map[string][]string{},
-		}
-		template, err := customAgentPrompt(definition.Instructions, prompt.WithWorkingDir(c.cfg.WorkingDir()))
-		if err != nil {
-			return presetSubagent{}, fmt.Errorf("building custom agent prompt for %q: %w", definition.Path, err)
-		}
-		built, err := c.buildAgent(ctx, template, agentCfg, true)
-		if err != nil {
-			return presetSubagent{}, fmt.Errorf("building custom agent from %q: %w", definition.Path, err)
-		}
-		return presetSubagent{agent: built, title: "Agent: " + definition.Name}, nil
+		return c.buildCustomAgentPreset(ctx, definition)
 	}
-	return presetSubagent{}, fmt.Errorf("unknown subagent_type %q", agentType)
+	return presetSubagent{}, fmt.Errorf(
+		"unknown subagent_type %q",
+		agentType,
+	)
 }
 
 func (c *coordinator) ContinueTask(ctx context.Context, taskID, parentSessionID, continuationPrompt, originToolCallID string) (managedtask.View, error) {
+	if permission.IsSubagent(ctx) {
+		return managedtask.View{}, permission.ErrSubagentBackgroundTask
+	}
 	if continuationPrompt == "" {
 		return managedtask.View{}, errors.New("prompt is required")
 	}
@@ -285,13 +409,18 @@ func (c *coordinator) ContinueTask(ctx context.Context, taskID, parentSessionID,
 	if err != nil {
 		return managedtask.View{}, err
 	}
-	backgroundTask, err := c.startBackgroundAgentContinuation(continuationPrompt, originToolCallID, selected, subAgentParams{
+	approved, err := c.approveBackgroundSubagent(ctx, selected, parentSessionID, originToolCallID)
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	backgroundTask, err := c.startBackgroundAgentContinuation(ctx, continuationPrompt, originToolCallID, selected, subAgentParams{
 		Agent:          selected.agent,
 		SessionID:      parentSessionID,
 		ToolCallID:     originToolCallID,
 		Prompt:         continuationPrompt,
 		SessionTitle:   selected.title,
 		ChildSessionID: info.ChildSessionID,
+		RunApproved:    approved,
 	}, continuation)
 	if err != nil {
 		return managedtask.View{}, err
@@ -324,10 +453,10 @@ func (c *coordinator) resolveBackgroundAgentContinuation(ctx context.Context, ta
 	return continuation, info.AgentType, nil
 }
 
-func (c *coordinator) startBackgroundAgentContinuation(continuationPrompt, originToolCallID string, selected presetSubagent, runParams subAgentParams, continuation *BackgroundAgentTask) (*BackgroundAgentTask, error) {
+func (c *coordinator) startBackgroundAgentContinuation(ctx context.Context, continuationPrompt, originToolCallID string, selected presetSubagent, runParams subAgentParams, continuation *BackgroundAgentTask) (*BackgroundAgentTask, error) {
 	info := continuation.Info()
 	usageBaseline := c.backgroundAgentUsage(info.ChildSessionID)
-	backgroundTask, err := c.backgroundAgents.ReserveContinuation(continuationPrompt, info.AgentType, selected.title, info.ID, usageBaseline, managedtask.Ownership{
+	backgroundTask, err := c.backgroundAgents.ReserveContinuationContext(ctx, continuationPrompt, info.AgentType, selected.title, info.ID, usageBaseline, managedtask.Ownership{
 		ParentSessionID:  runParams.SessionID,
 		OriginToolCallID: originToolCallID,
 	})
@@ -335,7 +464,11 @@ func (c *coordinator) startBackgroundAgentContinuation(continuationPrompt, origi
 		return nil, err
 	}
 	runParams.ChildSessionID = info.ChildSessionID
-	if err := c.backgroundAgents.Start(backgroundTask, info.ChildSessionID, func(runCtx context.Context) backgroundAgentResult {
+	start := c.backgroundAgents.Start
+	if runParams.RunApproved {
+		start = c.backgroundAgents.StartApproved
+	}
+	if err := start(backgroundTask, info.ChildSessionID, func(runCtx context.Context) backgroundAgentResult {
 		response, runErr := c.runSubAgent(runCtx, runParams)
 		result := backgroundAgentResult{Err: runErr}
 		if runErr == nil {
@@ -353,8 +486,13 @@ func (c *coordinator) startBackgroundAgentContinuation(continuationPrompt, origi
 	return backgroundTask, nil
 }
 
-func (c *coordinator) continueBackgroundSubAgent(_ context.Context, params AgentParams, call fantasy.ToolCall, selected presetSubagent, runParams subAgentParams, continuation *BackgroundAgentTask) (fantasy.ToolResponse, error) {
-	backgroundTask, err := c.startBackgroundAgentContinuation(params.Prompt, call.ID, selected, runParams, continuation)
+func (c *coordinator) continueBackgroundSubAgent(ctx context.Context, params AgentParams, call fantasy.ToolCall, selected presetSubagent, runParams subAgentParams, continuation *BackgroundAgentTask) (fantasy.ToolResponse, error) {
+	approved, err := c.approveBackgroundSubagent(ctx, selected, runParams.SessionID, call.ID)
+	if err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
+	runParams.RunApproved = approved
+	backgroundTask, err := c.startBackgroundAgentContinuation(ctx, params.Prompt, call.ID, selected, runParams, continuation)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}
@@ -368,14 +506,22 @@ func (c *coordinator) continueBackgroundSubAgent(_ context.Context, params Agent
 }
 
 func (c *coordinator) startBackgroundSubAgent(ctx context.Context, params AgentParams, call fantasy.ToolCall, selected presetSubagent, runParams subAgentParams) (fantasy.ToolResponse, error) {
+	approved, err := c.approveBackgroundSubagent(ctx, selected, runParams.SessionID, call.ID)
+	if err != nil {
+		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
+	runParams.RunApproved = approved
 	if c.backgroundAgents == nil {
-		c.backgroundAgents = NewBackgroundAgentManager(c.cfg.WorkingDir(), c.backgroundShells)
+		c.backgroundAgents, err = NewBackgroundAgentManagerWithStore(c.cfg.WorkingDir(), c.backgroundShells, nil)
+		if err != nil {
+			return fantasy.NewTextErrorResponse(fmt.Sprintf("initialize global background agent admission: %v", err)), nil
+		}
 	}
 	agentType := params.SubagentType
 	if agentType == "" {
 		agentType = config.AgentTask
 	}
-	backgroundTask, err := c.backgroundAgents.Reserve(params.Prompt, agentType, selected.title, managedtask.Ownership{
+	backgroundTask, err := c.backgroundAgents.ReserveContext(ctx, params.Prompt, agentType, selected.title, managedtask.Ownership{
 		ParentSessionID:  runParams.SessionID,
 		OriginToolCallID: call.ID,
 	})
@@ -389,7 +535,11 @@ func (c *coordinator) startBackgroundSubAgent(ctx context.Context, params AgentP
 		return fantasy.ToolResponse{}, fmt.Errorf("create session: %w", err)
 	}
 	runParams.ChildSessionID = childSession.ID
-	if err := c.backgroundAgents.Start(backgroundTask, childSession.ID, func(runCtx context.Context) backgroundAgentResult {
+	start := c.backgroundAgents.Start
+	if runParams.RunApproved {
+		start = c.backgroundAgents.StartApproved
+	}
+	if err := start(backgroundTask, childSession.ID, func(runCtx context.Context) backgroundAgentResult {
 		response, runErr := c.runSubAgent(runCtx, runParams)
 		result := backgroundAgentResult{Err: runErr}
 		if runErr == nil {
@@ -437,23 +587,43 @@ func agentUsageSince(usage, baseline managedtask.AgentUsage) managedtask.AgentUs
 	}
 }
 
-func selectPresetSubagent(presets map[string]presetSubagent, requested string, availableTypes []string) (presetSubagent, error) {
-	selectedType := requested
-	if selectedType == "" {
-		selectedType = config.AgentTask
+func (c *coordinator) approveBackgroundSubagent(ctx context.Context, selected presetSubagent, sessionID, toolCallID string) (bool, error) {
+	if !selected.requiresApproval {
+		return false, nil
 	}
-	selected, ok := presets[selectedType]
-	if !ok {
-		return presetSubagent{}, fmt.Errorf(
-			"unknown subagent type %q; available types: %s",
-			requested,
-			strings.Join(availableTypes, ", "),
-		)
+	if c.permissions == nil {
+		return false, errors.New("permission service is unavailable")
 	}
-	if selected.err != nil {
-		return presetSubagent{}, selected.err
+	granted, err := c.permissions.Request(ctx, permission.CreatePermissionRequest{
+		SessionID:   sessionID,
+		ToolCallID:  toolCallID,
+		ToolName:    AgentToolName,
+		Action:      "delegate",
+		Description: fmt.Sprintf("Allow %s to use its declared tools for this background run", selected.title),
+		Params: map[string]any{
+			"agent": selected.title,
+			"tools": selected.tools,
+		},
+		Path: c.cfg.WorkingDir(),
+	})
+	if err != nil {
+		return false, err
 	}
-	return selected, nil
+	if !granted {
+		return false, fmt.Errorf("permission denied for %s", selected.title)
+	}
+	return true, nil
+}
+
+func subagentRequiresApproval(allowedTools []string) bool {
+	for _, name := range allowedTools {
+		switch name {
+		case "codebase_search", "crux_info", "crux_logs", "git_inspect", "job_list", "job_output", "lsp_call_hierarchy", "lsp_definition", "lsp_diagnostics", "lsp_references", "lsp_symbols", "ls", "memory_list", "project_status", "search", "skill_list", "sourcegraph", "task_list", "task_output", "traffic_logs", "view":
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func (c *coordinator) customWildcardTools() []string {

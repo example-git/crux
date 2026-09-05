@@ -93,6 +93,45 @@ func TestNetworkTraceCapturesOutboundHTTPInTypedTables(t *testing.T) {
 	require.Contains(t, events[0].Body, `"hello"`)
 	require.Contains(t, events[1].Body, `"world"`)
 	require.Equal(t, os.Getpid(), events[0].ProcessID)
+	require.Equal(t, events[0].ID, events[1].ID)
+
+	selected, err := QueryTraffic(t.Context(), database, TrafficQuery{
+		ID:          events[1].ID,
+		Protocol:    "http",
+		Phase:       "response",
+		Limit:       1,
+		IncludeBody: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, selected, 1)
+	require.Equal(t, "response", selected[0].Phase)
+	require.Contains(t, selected[0].Body, `"world"`)
+	require.NotContains(t, selected[0].Body, `"hello"`)
+}
+
+func TestNetworkTraceRedactsOpaqueAccountMaterial(t *testing.T) {
+	secret := "traffic-account-raw-secret-value"
+	registerOpaqueAccountSecret(t, secret)
+	trace, database := testTrafficTrace(t)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		require.Equal(t, "payload "+secret, readTestBody(t, request.Body))
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/"+secret, strings.NewReader("payload "+secret))
+	require.NoError(t, err)
+	response, err := (&http.Client{Transport: WrapHTTPTransport(server.Client().Transport)}).Do(request)
+	require.NoError(t, err)
+	require.NoError(t, response.Body.Close())
+	trace.flush()
+
+	events, err := QueryTraffic(t.Context(), database, TrafficQuery{Sort: "asc", Limit: 10, IncludeBody: true})
+	require.NoError(t, err)
+	require.NotEmpty(t, events)
+	for _, event := range events {
+		require.NotContains(t, event.URL, secret)
+		require.NotContains(t, event.Body, secret)
+	}
 }
 
 func TestNetworkTraceRedactsCopiesWithoutChangingProviderRequest(t *testing.T) {

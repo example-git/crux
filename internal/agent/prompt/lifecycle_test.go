@@ -65,24 +65,23 @@ func TestBuildLifecycleRebuildsFromCurrentState(t *testing.T) {
 	require.NotContains(t, execution, "First plan")
 }
 
-func TestBuildLifecycleBypassesNormalProviderOverride(t *testing.T) {
-	overrideDir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(overrideDir, "codex.txt"), []byte("normal provider override"), 0o600))
-	store := config.NewTestStore(&config.Config{Options: &config.Options{
-		InstructionMode:      "all",
-		SystemPromptOverride: true,
-	}})
-	builder, err := NewPrompt("coder", lifecycleTestTemplate, withSystemPromptOverrideDir(overrideDir), WithWorkingDir(t.TempDir()))
+func TestBuildLifecycleAppendsProviderInstructionsWithoutReplacingLifecycle(t *testing.T) {
+	providerDirectory := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(providerDirectory, "codex.txt"), []byte("provider context"), 0o600))
+	store := config.NewTestStore(&config.Config{Options: &config.Options{InstructionMode: "all"}})
+	builder, err := NewPrompt("coder", lifecycleTestTemplate, withProviderInstructionsDir(providerDirectory), WithWorkingDir(t.TempDir()))
 	require.NoError(t, err)
 
 	normal, err := builder.Build(t.Context(), "codex", "model", store)
 	require.NoError(t, err)
-	require.Contains(t, normal, "normal provider override")
+	require.Contains(t, normal, "<critical_rules>")
+	require.Contains(t, normal, "provider context")
 
 	draft, err := builder.BuildLifecycle(t.Context(), "codex", "model", store, Lifecycle{Stage: LifecycleDraft})
 	require.NoError(t, err)
 	require.Contains(t, draft, `stage="draft"`)
-	require.NotContains(t, draft, "normal provider override")
+	require.Contains(t, draft, "<critical_rules>")
+	require.Contains(t, draft, "provider context")
 }
 
 func TestBuildLifecycleRejectsInvalidState(t *testing.T) {

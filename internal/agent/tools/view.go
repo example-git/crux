@@ -438,7 +438,12 @@ func isInSkillsPath(filePath string, skillsPaths []string) bool {
 
 // readBuiltinFile reads a file from the embedded builtin skills filesystem.
 func readBuiltinFile(params ViewParams, skillTracker *skills.Tracker) (fantasy.ToolResponse, error) {
-	embeddedPath := "builtin/" + strings.TrimPrefix(params.FilePath, skills.BuiltinPrefix)
+	relativePath := strings.TrimPrefix(params.FilePath, skills.BuiltinPrefix)
+	skillName, _, _ := strings.Cut(relativePath, "/")
+	if skillTracker != nil && !skillTracker.IsActive(skillName) {
+		return fantasy.NewTextErrorResponse(fmt.Sprintf("Builtin skill is not active: %s", skillName)), nil
+	}
+	embeddedPath := "builtin/" + relativePath
 	builtinFS := skills.BuiltinFS()
 
 	data, err := fs.ReadFile(builtinFS, embeddedPath)

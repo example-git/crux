@@ -3,6 +3,7 @@ package backend
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -14,10 +15,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/redact"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -410,7 +415,75 @@ func TestConcurrentAttachDetach(t *testing.T) {
 	require.Contains(t, ws.clients, cid)
 }
 
+func TestCreateWorkspaceRejectsUnownedReservedForwardedProvider(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	b := New(context.Background(), nil, func() {})
+	request := protoWS(t.TempDir(), t.TempDir(), uuid.New().String())
+	request.ForwardedProviders = map[string]config.ProviderConfig{
+		"deepseek": {ID: "deepseek", Type: "openai-compat"},
+	}
+
+	workspace, response, err := b.CreateWorkspace(request)
+	require.Nil(t, workspace)
+	require.Empty(t, response.ID)
+	require.ErrorContains(t, err, "failed to apply forwarded provider state: validate ephemeral provider state: forwarded provider \"deepseek\" must use canonical preset crux.catwalk.deepseek version 0.51.23")
+	require.Zero(t, b.workspaces.Len())
+}
+
+func TestCreateWorkspaceRejectsInvalidForwardedAccountOwnerBeforePublication(t *testing.T) {
+	t.Setenv("CRUX_PROVIDER_PROFILE", string(config.ProviderProfileIntegrated))
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	require.NoError(t, err)
+	registration, ok := registry.Lookup("codex")
+	require.True(t, ok)
+	exact := registration.Owner()
+	mismatched := exact
+	mismatched.Construction = providerregistry.ConstructionGenericJSON
+
+	for _, test := range []struct {
+		name      string
+		owner     providerregistry.RegistrationOwner
+		errorText string
+	}{
+		{name: "missing owner", errorText: "missing its exact provider owner"},
+		{name: "mismatched owner", owner: mismatched, errorText: "does not match the active exact owner"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := New(context.Background(), nil, func() {})
+			request := protoWS(t.TempDir(), t.TempDir(), uuid.New().String())
+			request.ForwardedProviders = map[string]config.ProviderConfig{
+				"codex": {
+					ID:    "codex",
+					Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: exact.Construction},
+				},
+			}
+			request.ForwardedAccounts = map[string]config.ForwardedAccount{
+				exact.AccountNamespace: {
+					Owner: test.owner,
+					Entry: accounts.Entry{ID: "account", AccessToken: "account-secret"},
+				},
+			}
+
+			workspace, response, err := backend.CreateWorkspace(request)
+			require.Nil(t, workspace)
+			require.Empty(t, response.ID)
+			require.ErrorContains(t, err, "failed to apply forwarded provider state: validate ephemeral account state")
+			require.ErrorContains(t, err, test.errorText)
+			require.Zero(t, backend.workspaces.Len())
+		})
+	}
+}
+
 func TestCreateWorkspaceAppliesForwardedStateWithoutReturningOrPersistingIt(t *testing.T) {
+	t.Setenv("CRUX_PROVIDER_PROFILE", string(config.ProviderProfileIntegrated))
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -424,9 +497,18 @@ func TestCreateWorkspaceAppliesForwardedStateWithoutReturningOrPersistingIt(t *t
 	request := protoWS(cwd, dataDir, uuid.New().String())
 	request.ForwardedProviders = map[string]config.ProviderConfig{
 		"remote": {ID: "remote", Type: "openai-compat", APIKey: "provider-secret"},
+		"codex": {
+			ID:    "codex",
+			Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionCodex},
+		},
 	}
-	request.ForwardedAccounts = map[string]accounts.Entry{
-		"codex": {ID: "account", AccessToken: "account-secret"},
+	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	require.NoError(t, err)
+	registration, ok := registry.Lookup("codex")
+	require.True(t, ok)
+	owner := registration.Owner()
+	request.ForwardedAccounts = map[string]config.ForwardedAccount{
+		owner.AccountNamespace: {Owner: owner, Entry: accounts.Entry{ID: "account", AccessToken: "account-secret", Raw: []byte(`{"metadata":{"tenant":"account-raw-secret"}}`)}},
 	}
 
 	workspace, response, err := b.CreateWorkspace(request)
@@ -434,9 +516,10 @@ func TestCreateWorkspaceAppliesForwardedStateWithoutReturningOrPersistingIt(t *t
 	provider, ok := workspace.Cfg.Config().Providers.Get("remote")
 	require.True(t, ok)
 	require.Equal(t, "provider-secret", provider.APIKey)
-	account, ok := workspace.Cfg.EphemeralAccount("codex")
+	account, ok := workspace.Cfg.EphemeralAccount(owner)
 	require.True(t, ok)
 	require.Equal(t, "account-secret", account.AccessToken)
+	require.Equal(t, redact.Replacement, redact.String("account-raw-secret"))
 	require.Empty(t, response.ForwardedProviders)
 	require.Empty(t, response.ForwardedAccounts)
 
@@ -447,6 +530,115 @@ func TestCreateWorkspaceAppliesForwardedStateWithoutReturningOrPersistingIt(t *t
 	} else {
 		require.ErrorIs(t, readErr, os.ErrNotExist)
 	}
+}
+
+func TestWorkspaceToProtoRedactsPresetMaterialAndPreservesPublicOwner(t *testing.T) {
+	const providerID = "preset-provider"
+	owner := &config.ProviderOwnerReference{
+		Type:         config.ProviderOwnerPreset,
+		Construction: providerregistry.ConstructionOpenAICompat,
+	}
+	preset := &config.ProviderPresetReference{
+		ID:      "preset.owner",
+		Version: "1.0.0",
+		Digest:  "sha256:public-preset-digest",
+	}
+	privateValues := []string{
+		"https://preset-private.invalid/v1",
+		"preset-api-key-secret",
+		"preset-api-key-template-secret",
+		"preset-access-token-secret",
+		"preset-refresh-token-secret",
+		"preset-system-prompt-secret",
+		"preset-header-secret",
+		"preset-body-secret",
+		"preset-option-secret",
+		"preset-configuration-secret",
+		"preset-parameter-secret",
+	}
+	configured := config.ProviderConfig{
+		ID:                 providerID,
+		Name:               "Preset Provider",
+		BaseURL:            privateValues[0],
+		Type:               catalog.TypeOpenAICompat,
+		APIKey:             privateValues[1],
+		APIKeyTemplate:     privateValues[2],
+		OAuthToken:         &oauth.Token{AccessToken: privateValues[3], RefreshToken: privateValues[4]},
+		Owner:              owner,
+		Preset:             preset,
+		SystemPromptPrefix: privateValues[5],
+		ExtraHeaders:       map[string]string{"X-Preset-Private": privateValues[6]},
+		ExtraBody:          map[string]any{"nested": []any{privateValues[7]}},
+		ProviderOptions:    map[string]any{"nested": privateValues[8]},
+		Configuration:      map[string]any{"nested": map[string]any{"value": privateValues[9]}},
+		ExtraParams:        map[string]string{"private": privateValues[10]},
+		FlatRate:           true,
+		Models:             []catalog.Model{{ID: "preset-model", Name: "Preset Model"}},
+	}
+	cfg := &config.Config{
+		Options: &config.Options{DisableDefaultProviders: true},
+		Providers: csync.NewMapFrom(map[string]config.ProviderConfig{
+			providerID: configured,
+		}),
+		Models: map[config.SelectedModelType]config.SelectedModel{
+			config.SelectedModelTypeLarge: {Provider: providerID, Model: "preset-model"},
+		},
+	}
+	workspace := &Workspace{
+		ID:      "workspace-id",
+		Path:    "/workspace",
+		Cfg:     config.NewTestStore(cfg),
+		clients: make(map[string]*clientState),
+	}
+
+	response := workspaceToProto(workspace)
+	require.NotSame(t, cfg, response.Config)
+	provider, ok := response.Config.Providers.Get(providerID)
+	require.True(t, ok)
+	require.Empty(t, provider.BaseURL)
+	require.Empty(t, provider.APIKey)
+	require.Empty(t, provider.APIKeyTemplate)
+	require.Nil(t, provider.OAuthToken)
+	require.Empty(t, provider.SystemPromptPrefix)
+	require.Nil(t, provider.ExtraHeaders)
+	require.Nil(t, provider.ExtraBody)
+	require.Nil(t, provider.ProviderOptions)
+	require.Nil(t, provider.Configuration)
+	require.Nil(t, provider.ExtraParams)
+	require.Equal(t, "Preset Provider", provider.Name)
+	require.Equal(t, catalog.TypeOpenAICompat, provider.Type)
+	require.Equal(t, owner, provider.Owner)
+	require.Equal(t, preset, provider.Preset)
+	require.True(t, provider.FlatRate)
+	require.Equal(t, configured.Models, provider.Models)
+	require.Equal(t, cfg.Models, response.Config.Models)
+
+	surface, ok := providerregistry.LookupSurface(response.ProviderSurfaces, providerID)
+	require.True(t, ok)
+	require.False(t, surface.Available)
+	require.Equal(t, "missing", surface.Availability)
+	require.Equal(t, "Preset Provider", surface.Name)
+	require.Equal(t, configured.Models, surface.Models)
+	require.Empty(t, surface.Authentication)
+	require.Nil(t, surface.Configuration)
+	require.Nil(t, surface.ConfigurationUI)
+	require.Nil(t, surface.Brand)
+	require.Nil(t, surface.Images)
+	require.Nil(t, surface.Instructions)
+	require.Empty(t, surface.RuntimeControls)
+
+	encoded, err := json.Marshal(response)
+	require.NoError(t, err)
+	for _, value := range privateValues {
+		require.NotContains(t, string(encoded), value)
+	}
+	for _, value := range []string{providerID, configured.Name, preset.ID, preset.Version, preset.Digest, configured.Models[0].ID} {
+		require.Contains(t, string(encoded), value)
+	}
+
+	original, ok := cfg.Providers.Get(providerID)
+	require.True(t, ok)
+	require.Equal(t, configured, original)
 }
 
 // TestPathDedupe_FullCreate exercises CreateWorkspace end-to-end
@@ -621,6 +813,38 @@ func TestCreateWorkspace_IdempotentSameClient(t *testing.T) {
 	ws1.clientsMu.Unlock()
 }
 
+func TestBackendWorkspaceInitializationUsesCapturedHostEnvironment(t *testing.T) {
+	const hostKey = "CRUX_T4_4_4_CAPTURED_HOST"
+	const workspaceKey = "CRUX_T4_4_4_CAPTURED_WORKSPACE"
+	root := t.TempDir()
+	globalConfig := filepath.Join(root, "global-config")
+	globalData := filepath.Join(root, "global-data")
+	t.Setenv("CRUX_GLOBAL_CONFIG", globalConfig)
+	t.Setenv("CRUX_GLOBAL_DATA", globalData)
+	t.Setenv("CRUX_CACHE_DIR", filepath.Join(root, "cache"))
+	t.Setenv("CRUX_PROVIDER_PROFILE", "core-only")
+	t.Setenv(hostKey, "captured")
+	require.NoError(t, os.MkdirAll(globalConfig, 0o755))
+	require.NoError(t, os.MkdirAll(globalData, 0o755))
+
+	backend := New(context.Background(), nil, func() {})
+	t.Setenv(hostKey, "replacement")
+	workingDir := filepath.Join(root, "workspace")
+	dataDir := filepath.Join(root, "workspace-data")
+	require.NoError(t, os.MkdirAll(workingDir, 0o755))
+	require.NoError(t, os.MkdirAll(dataDir, 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dataDir, "crux.json"),
+		[]byte(`{"env":{"`+workspaceKey+`":"$`+hostKey+`"}}`),
+		0o600,
+	))
+
+	store, err := backend.initWorkspaceConfig(workingDir, dataDir, false)
+	require.NoError(t, err)
+	require.Equal(t, "captured", store.RuntimeSnapshot().Getenv(workspaceKey))
+	require.Equal(t, "replacement", os.Getenv(hostKey))
+}
+
 // TestPathDedupe_ParallelCreates ensures two simultaneous CreateWorkspace
 // calls at the same path produce the same workspace and the clients map
 // contains both client IDs.
@@ -636,6 +860,16 @@ func TestPathDedupe_ParallelCreates(t *testing.T) {
 	b := New(context.Background(), nil, func() {})
 	b.SetCreateGrace(2 * time.Second)
 	t.Cleanup(func() { drainBackend(t, b) })
+	realInit := b.initConfig
+	initStarted := make(chan struct{})
+	releaseInit := make(chan struct{})
+	var initCount atomic.Int32
+	b.initConfig = func(path, dataDir string, debug bool) (*config.ConfigStore, error) {
+		initCount.Add(1)
+		close(initStarted)
+		<-releaseInit
+		return realInit(path, dataDir, debug)
+	}
 
 	cidA := uuid.New().String()
 	cidB := uuid.New().String()
@@ -646,22 +880,27 @@ func TestPathDedupe_ParallelCreates(t *testing.T) {
 		err   error
 	}
 	ch := make(chan result, 2)
-	start := make(chan struct{})
 	go func() {
-		<-start
 		ws, p, err := b.CreateWorkspace(protoWS(cwd, dataDir, cidA))
 		ch <- result{ws, p, err}
 	}()
+	<-initStarted
 	go func() {
-		<-start
 		ws, p, err := b.CreateWorkspace(protoWS(cwd, dataDir, cidB))
 		ch <- result{ws, p, err}
 	}()
-	close(start)
+	require.Eventually(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.pending == 2
+	}, 5*time.Second, time.Millisecond)
+	close(releaseInit)
+
 	r1 := <-ch
 	r2 := <-ch
 	require.NoError(t, r1.err)
 	require.NoError(t, r2.err)
+	require.Equal(t, int32(1), initCount.Load())
 	require.Equal(t, r1.ws.ID, r2.ws.ID, "both creates must converge on one workspace ID")
 
 	ws := r1.ws
@@ -669,6 +908,286 @@ func TestPathDedupe_ParallelCreates(t *testing.T) {
 	defer ws.clientsMu.Unlock()
 	require.Contains(t, ws.clients, cidA)
 	require.Contains(t, ws.clients, cidB)
+}
+
+func TestPathDedupe_ParallelCreateFailureFansOutAndCleansFlight(t *testing.T) {
+	b := New(context.Background(), nil, func() {})
+	initStarted := make(chan struct{})
+	releaseInit := make(chan struct{})
+	initErr := errors.New("initialize failed")
+	var initCount atomic.Int32
+	b.initConfig = func(string, string, bool) (*config.ConfigStore, error) {
+		initCount.Add(1)
+		close(initStarted)
+		<-releaseInit
+		return nil, initErr
+	}
+
+	cwd := t.TempDir()
+	dataDir := t.TempDir()
+	errs := make(chan error, 2)
+	go func() {
+		_, _, err := b.CreateWorkspace(protoWS(cwd, dataDir, uuid.New().String()))
+		errs <- err
+	}()
+	<-initStarted
+	go func() {
+		_, _, err := b.CreateWorkspace(protoWS(cwd, dataDir, uuid.New().String()))
+		errs <- err
+	}()
+	require.Eventually(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.pending == 2
+	}, 5*time.Second, time.Millisecond)
+	close(releaseInit)
+
+	require.ErrorIs(t, <-errs, initErr)
+	require.ErrorIs(t, <-errs, initErr)
+	require.Equal(t, int32(1), initCount.Load())
+	b.mu.Lock()
+	require.Zero(t, b.pending)
+	require.Empty(t, b.creationFlights)
+	b.mu.Unlock()
+	require.Zero(t, b.workspaces.Len())
+}
+
+func TestPathDedupe_ChannelMismatchWaiterDoesNotDuplicateInitialization(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	b := New(context.Background(), nil, func() {})
+	b.SetCreateGrace(time.Hour)
+	t.Cleanup(func() { drainBackend(t, b) })
+	realInit := b.initConfig
+	initStarted := make(chan struct{})
+	releaseInit := make(chan struct{})
+	var initCount atomic.Int32
+	b.initConfig = func(path, dataDir string, debug bool) (*config.ConfigStore, error) {
+		initCount.Add(1)
+		close(initStarted)
+		<-releaseInit
+		return realInit(path, dataDir, debug)
+	}
+
+	cwd := t.TempDir()
+	dataDir := t.TempDir()
+	leaderID := uuid.New().String()
+	waiterID := uuid.New().String()
+	type result struct {
+		clientID string
+		ws       *Workspace
+		err      error
+	}
+	results := make(chan result, 2)
+	go func() {
+		ws, _, err := b.CreateWorkspace(protoWS(cwd, dataDir, leaderID))
+		results <- result{clientID: leaderID, ws: ws, err: err}
+	}()
+	<-initStarted
+	go func() {
+		args := protoWS(cwd, dataDir, waiterID)
+		args.Channels = []string{"explicit"}
+		ws, _, err := b.CreateWorkspace(args)
+		results <- result{clientID: waiterID, ws: ws, err: err}
+	}()
+	require.Eventually(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.pending == 2
+	}, 5*time.Second, time.Millisecond)
+	close(releaseInit)
+
+	outcomes := map[string]result{}
+	for range 2 {
+		outcome := <-results
+		outcomes[outcome.clientID] = outcome
+	}
+	require.NoError(t, outcomes[leaderID].err)
+	require.ErrorIs(t, outcomes[waiterID].err, ErrChannelOptInMismatch)
+	require.Nil(t, outcomes[waiterID].ws)
+	require.Equal(t, int32(1), initCount.Load())
+	outcomes[leaderID].ws.clientsMu.Lock()
+	require.Contains(t, outcomes[leaderID].ws.clients, leaderID)
+	require.NotContains(t, outcomes[leaderID].ws.clients, waiterID)
+	outcomes[leaderID].ws.clientsMu.Unlock()
+}
+
+func TestPathDedupe_RetiredWaiterDoesNotRegister(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	b := New(context.Background(), nil, func() {})
+	b.SetCreateGrace(time.Hour)
+	t.Cleanup(func() { drainBackend(t, b) })
+	realInit := b.initConfig
+	initStarted := make(chan struct{})
+	releaseInit := make(chan struct{})
+	var initCount atomic.Int32
+	b.initConfig = func(path, dataDir string, debug bool) (*config.ConfigStore, error) {
+		initCount.Add(1)
+		close(initStarted)
+		<-releaseInit
+		return realInit(path, dataDir, debug)
+	}
+
+	cwd := t.TempDir()
+	dataDir := t.TempDir()
+	leaderID := uuid.New().String()
+	waiterID := uuid.New().String()
+	type result struct {
+		ws  *Workspace
+		err error
+	}
+	leaderResult := make(chan result, 1)
+	waiterResult := make(chan result, 1)
+	go func() {
+		ws, _, err := b.CreateWorkspace(protoWS(cwd, dataDir, leaderID))
+		leaderResult <- result{ws: ws, err: err}
+	}()
+	<-initStarted
+	go func() {
+		ws, _, err := b.CreateWorkspace(protoWS(cwd, dataDir, waiterID))
+		waiterResult <- result{ws: ws, err: err}
+	}()
+	require.Eventually(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.pending == 2
+	}, 5*time.Second, time.Millisecond)
+	require.NoError(t, b.RetireClient(waiterID))
+	close(releaseInit)
+
+	leader := <-leaderResult
+	waiter := <-waiterResult
+	require.NoError(t, leader.err)
+	require.ErrorIs(t, waiter.err, ErrClientRetired)
+	require.Nil(t, waiter.ws)
+	require.Equal(t, int32(1), initCount.Load())
+	leader.ws.clientsMu.Lock()
+	require.Contains(t, leader.ws.clients, leaderID)
+	require.NotContains(t, leader.ws.clients, waiterID)
+	leader.ws.clientsMu.Unlock()
+}
+
+func TestPathDedupe_RetriesAfterSharedFailure(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	b := New(context.Background(), nil, func() {})
+	b.SetCreateGrace(time.Hour)
+	t.Cleanup(func() { drainBackend(t, b) })
+	realInit := b.initConfig
+	initStarted := make(chan struct{})
+	releaseInit := make(chan struct{})
+	initErr := errors.New("shared initialization failed")
+	var initCount atomic.Int32
+	b.initConfig = func(string, string, bool) (*config.ConfigStore, error) {
+		initCount.Add(1)
+		close(initStarted)
+		<-releaseInit
+		return nil, initErr
+	}
+
+	cwd := t.TempDir()
+	dataDir := t.TempDir()
+	failures := make(chan error, 2)
+	go func() {
+		_, _, err := b.CreateWorkspace(protoWS(cwd, dataDir, uuid.New().String()))
+		failures <- err
+	}()
+	<-initStarted
+	go func() {
+		_, _, err := b.CreateWorkspace(protoWS(cwd, dataDir, uuid.New().String()))
+		failures <- err
+	}()
+	require.Eventually(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.pending == 2
+	}, 5*time.Second, time.Millisecond)
+	close(releaseInit)
+	require.ErrorIs(t, <-failures, initErr)
+	require.ErrorIs(t, <-failures, initErr)
+
+	b.initConfig = realInit
+	ws, _, err := b.CreateWorkspace(protoWS(cwd, dataDir, uuid.New().String()))
+	require.NoError(t, err)
+	require.NotNil(t, ws)
+	require.Equal(t, int32(1), initCount.Load())
+	b.mu.Lock()
+	require.Zero(t, b.pending)
+	require.Empty(t, b.creationFlights)
+	b.mu.Unlock()
+}
+
+func TestPathDedupe_RetiredLeaderDoesNotVetoLiveWaiter(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	b := New(context.Background(), nil, func() {})
+	b.SetCreateGrace(time.Hour)
+	t.Cleanup(func() { drainBackend(t, b) })
+	realInit := b.initConfig
+	initStarted := make(chan struct{})
+	releaseInit := make(chan struct{})
+	var initCount atomic.Int32
+	b.initConfig = func(path, dataDir string, debug bool) (*config.ConfigStore, error) {
+		if initCount.Add(1) == 1 {
+			close(initStarted)
+			<-releaseInit
+		}
+		return realInit(path, dataDir, debug)
+	}
+
+	cwd := t.TempDir()
+	dataDir := t.TempDir()
+	leaderID := uuid.New().String()
+	waiterID := uuid.New().String()
+	leaderResult := make(chan error, 1)
+	type result struct {
+		ws  *Workspace
+		err error
+	}
+	waiterResult := make(chan result, 1)
+	go func() {
+		_, _, err := b.CreateWorkspace(protoWS(cwd, dataDir, leaderID))
+		leaderResult <- err
+	}()
+	<-initStarted
+	go func() {
+		ws, _, err := b.CreateWorkspace(protoWS(cwd, dataDir, waiterID))
+		waiterResult <- result{ws: ws, err: err}
+	}()
+	require.Eventually(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.pending == 2
+	}, 5*time.Second, time.Millisecond)
+	require.NoError(t, b.RetireClient(leaderID))
+	close(releaseInit)
+
+	require.ErrorIs(t, <-leaderResult, ErrClientRetired)
+	waiter := <-waiterResult
+	require.NoError(t, waiter.err)
+	require.NotNil(t, waiter.ws)
+	require.Equal(t, int32(2), initCount.Load())
+	waiter.ws.clientsMu.Lock()
+	require.NotContains(t, waiter.ws.clients, leaderID)
+	require.Contains(t, waiter.ws.clients, waiterID)
+	waiter.ws.clientsMu.Unlock()
+	b.mu.Lock()
+	require.Zero(t, b.pending)
+	require.Empty(t, b.creationFlights)
+	b.mu.Unlock()
 }
 
 // TestCreateWorkspace_RejectsBadClientID covers the 400 path from the
@@ -695,6 +1214,48 @@ func TestCreateWorkspaceForResponseStartsGraceAfterCompletion(t *testing.T) {
 
 	complete()
 	complete() // Completion is safe to call from both explicit and deferred paths.
+	require.Eventually(t, func() bool {
+		_, err := b.GetWorkspace(ws.ID)
+		return errors.Is(err, ErrWorkspaceNotFound)
+	}, time.Second, 5*time.Millisecond)
+}
+
+func TestCreateWorkspaceForResponseFinalFailureArmsEarlierSuccessfulClaim(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	b := New(context.Background(), nil, func() {})
+	b.SetCreateGrace(20 * time.Millisecond)
+	t.Cleanup(func() { drainBackend(t, b) })
+
+	clientID := uuid.New().String()
+	ws, _, completeSuccess, err := b.CreateWorkspaceForResponse(protoWS(t.TempDir(), t.TempDir(), clientID))
+	require.NoError(t, err)
+
+	initStarted := make(chan struct{})
+	releaseInit := make(chan struct{})
+	initErr := errors.New("later initialization failed")
+	b.initConfig = func(string, string, bool) (*config.ConfigStore, error) {
+		close(initStarted)
+		<-releaseInit
+		return nil, initErr
+	}
+	failureResult := make(chan error, 1)
+	go func() {
+		_, _, _, err := b.CreateWorkspaceForResponse(protoWS(t.TempDir(), t.TempDir(), clientID))
+		failureResult <- err
+	}()
+	<-initStarted
+
+	completeSuccess()
+	time.Sleep(60 * time.Millisecond)
+	_, err = b.GetWorkspace(ws.ID)
+	require.NoError(t, err, "an unfinished response for the same client must keep successful claims unarmed")
+
+	close(releaseInit)
+	require.ErrorIs(t, <-failureResult, initErr)
 	require.Eventually(t, func() bool {
 		_, err := b.GetWorkspace(ws.ID)
 		return errors.Is(err, ErrWorkspaceNotFound)
@@ -1526,7 +2087,6 @@ func TestServer_CreateCancelsPendingIdleShutdown(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("CRUX_DISABLE_PROVIDER_AUTO_UPDATE", "1")
 
 	b, shutdownCount := newTestBackend(t)
 	b.SetIdleShutdownDelay(10 * time.Second) // long enough not to fire mid-test

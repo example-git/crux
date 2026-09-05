@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ type IndexProgress struct {
 
 type StoreStatus struct {
 	State            StoreState
+	Serving          bool
 	ProjectRoot      string
 	DatabasePath     string
 	StoreDirectory   string
@@ -114,36 +116,55 @@ func OpenReadyProject(projectRoot, storeDirectory string) (*Reader, error) {
 }
 
 func OpenReadyProjectWithFilters(projectRoot, storeDirectory string, filters ProjectFilters) (*Reader, error) {
-	options := ProjectIndexOptions{
-		ProjectRoot:    projectRoot,
-		StoreDirectory: storeDirectory,
-		Enabled:        true,
-		Filters:        filters,
-	}
-	status := inspectProjectIndexStatus(options, false)
-	if status.State != StoreStateReady {
-		return nil, &StoreUnavailableError{
-			ProjectRoot: projectRoot,
-			State:       status.State,
-			Err:         status.Err,
-		}
-	}
 	directory, err := resolveStoreDirectory(storeDirectory)
 	if err != nil {
 		return nil, err
 	}
 	filters = NormalizeProjectFilters(filters)
-	catalog, err := loadProjectCatalog(directory, projectRoot)
-	if err != nil {
-		return nil, err
+	filter := filterDigest(filters)
+	options := ProjectIndexOptions{
+		ProjectRoot:    projectRoot,
+		StoreDirectory: directory,
+		Enabled:        true,
+		Filters:        filters,
 	}
-	return &Reader{
-		path:         catalog.Source.DatabasePath,
-		annDirectory: directory,
-		catalog:      &catalog,
-		filters:      filters,
-		filterDigest: filterDigest(filters),
-	}, nil
+	var lastErr error
+	for range 3 {
+		catalog, loadErr := loadProjectCatalog(directory, projectRoot)
+		if loadErr != nil {
+			lastErr = loadErr
+			continue
+		}
+		if catalog.Source.FilterDigest != filter {
+			status := inspectProjectIndexStatus(options, false)
+			return nil, &StoreUnavailableError{ProjectRoot: projectRoot, State: status.State, Err: status.Err}
+		}
+		releaseLease, leaseErr := acquireGenerationLease(context.Background(), catalog.Directory)
+		if leaseErr != nil {
+			return nil, leaseErr
+		}
+		leasedCatalog, loadErr := loadStoreCatalog(filepath.Join(catalog.Directory, "migration.json"))
+		if loadErr == nil && leasedCatalog.Complete && leasedCatalog.ProjectRoot == projectRoot && leasedCatalog.Source.FilterDigest == filter && filepath.Clean(leasedCatalog.Directory) == filepath.Clean(catalog.Directory) {
+			return &Reader{
+				path:         leasedCatalog.Source.DatabasePath,
+				annDirectory: directory,
+				catalog:      &leasedCatalog,
+				filters:      filters,
+				filterDigest: filter,
+				releaseLease: releaseLease,
+			}, nil
+		}
+		releaseLease()
+		if loadErr == nil {
+			loadErr = fmt.Errorf("leased codebase index generation does not match active catalog")
+		}
+		lastErr = loadErr
+	}
+	status := inspectProjectIndexStatus(options, false)
+	if status.Serving && lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, &StoreUnavailableError{ProjectRoot: projectRoot, State: status.State, Err: status.Err}
 }
 
 func StartProjectIndexing(ctx context.Context, projectRoot, configuredDatabasePath, storeDirectory string) StoreStatus {
@@ -172,6 +193,7 @@ func ReconcileProjectIndexing(ctx context.Context, options ProjectIndexOptions) 
 	}
 	options.StoreDirectory = directory
 	options.Filters = NormalizeProjectFilters(options.Filters)
+	runStoreMaintenance(directory)
 	digest := projectIndexOptionsDigest(options)
 	key := projectIndexKey(options.ProjectRoot, directory)
 
@@ -237,6 +259,11 @@ func ReconcileProjectIndexing(ctx context.Context, options ProjectIndexOptions) 
 			backgroundIndexes.Unlock()
 		}
 		err := runProjectIndexing(workerContext, options.ProjectRoot, options.ConfiguredDatabasePath, directory, options.Filters, report)
+		if err == nil {
+			if _, pruneErr := pruneStoreGenerations(directory); pruneErr != nil {
+				slog.Warn("Could not prune codebase index store after indexing", "store_directory", directory, "error", pruneErr)
+			}
+		}
 		backgroundIndexes.RLock()
 		finished := backgroundIndexes.jobs[key].status
 		backgroundIndexes.RUnlock()
@@ -308,16 +335,22 @@ func inspectProjectIndexStatus(options ProjectIndexOptions, checkNativeSource bo
 	job, exists := backgroundIndexes.jobs[key]
 	backgroundIndexes.RUnlock()
 	jobMatches := exists && (job.digest == digest || options.ConfiguredDatabasePath == "" && strings.HasPrefix(job.digest, filter+"\x00"))
-	if jobMatches && (job.status.State == StoreStateIndexing || job.status.State == StoreStateFailed) {
-		return job.status
-	}
 
 	catalog, catalogErr := loadProjectCatalog(directory, options.ProjectRoot)
 	if catalogErr == nil {
 		status := statusWithCatalog(options, directory, catalog, StoreStatus{State: StoreStateReady})
 		if catalog.Source.FilterDigest != filter {
 			status.State = StoreStateMissing
+			status.Serving = false
+			if jobMatches && (job.status.State == StoreStateIndexing || job.status.State == StoreStateFailed) {
+				job.status.Serving = false
+				return job.status
+			}
 			return status
+		}
+		if jobMatches && (job.status.State == StoreStateIndexing || job.status.State == StoreStateFailed) {
+			job.status.Serving = true
+			return job.status
 		}
 		if (catalog.Source.Mode != "native" || checkNativeSource) && !sourceFilesCurrent(catalog.Source) {
 			status.State = StoreStateStale
@@ -328,6 +361,10 @@ func inspectProjectIndexStatus(options ProjectIndexOptions, checkNativeSource bo
 			return job.status
 		}
 		return status
+	}
+	if jobMatches && (job.status.State == StoreStateIndexing || job.status.State == StoreStateFailed) {
+		job.status.Serving = false
+		return job.status
 	}
 	if errors.Is(catalogErr, os.ErrNotExist) {
 		checkpoint, checkpointErr := loadLatestProjectCheckpoint(directory, options.ProjectRoot, options.ConfiguredDatabasePath, filter)
@@ -370,6 +407,7 @@ func statusWithDetails(options ProjectIndexOptions, directory string, status Sto
 
 func statusWithCatalog(options ProjectIndexOptions, directory string, catalog storeCatalog, status StoreStatus) StoreStatus {
 	status = statusWithDetails(options, directory, status)
+	status.Serving = catalog.Complete
 	status.SourceMode = catalog.Source.Mode
 	status.Model = catalog.Model
 	status.ChunksCreated = catalog.Chunks

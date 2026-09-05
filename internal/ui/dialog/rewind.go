@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/ui/chat"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/list"
 	"github.com/example-git/crux/internal/ui/styles"
@@ -35,10 +36,11 @@ const (
 
 // ActionRewind is sent when the user confirms a rewind.
 type ActionRewind struct {
-	SessionID string
-	MessageID string
-	Text      string
-	Summarize bool
+	SessionID    string
+	MessageID    string
+	Text         string
+	Summarize    bool
+	RestoreFiles bool
 }
 
 // Rewind is a dialog for rewinding a session to a prior user message.
@@ -76,13 +78,14 @@ type RewindItem struct {
 // rewindActionItem represents one of the two rewind actions.
 type rewindActionItem struct {
 	*list.Versioned
-	id        string
-	title     string
-	summarize bool
-	t         *styles.Styles
-	m         fuzzy.Match
-	cache     map[int]string
-	focused   bool
+	id           string
+	title        string
+	summarize    bool
+	restoreFiles bool
+	t            *styles.Styles
+	m            fuzzy.Match
+	cache        map[int]string
+	focused      bool
 }
 
 var (
@@ -106,7 +109,10 @@ func NewRewind(com *common.Common, sessionID string) (*Rewind, error) {
 		if text == "" {
 			continue
 		}
-		title, _, _ := strings.Cut(text, "\n")
+		title, ok := chat.TaskNotificationTitle(&msg)
+		if !ok {
+			title, _, _ = strings.Cut(text, "\n")
+		}
 		items = append(items, &RewindItem{
 			Versioned: list.NewVersioned(),
 			msg:       msg,
@@ -200,10 +206,11 @@ func (r *Rewind) HandleMsg(msg tea.Msg) Action {
 				r.showActionList()
 			case *rewindActionItem:
 				return ActionRewind{
-					SessionID: r.sessionID,
-					MessageID: r.selected.ID,
-					Text:      r.selected.Content().Text,
-					Summarize: it.summarize,
+					SessionID:    r.sessionID,
+					MessageID:    r.selected.ID,
+					Text:         r.selected.Content().Text,
+					Summarize:    it.summarize,
+					RestoreFiles: it.restoreFiles,
 				}
 			}
 		default:
@@ -228,8 +235,15 @@ func (r *Rewind) showActionList() {
 		&rewindActionItem{
 			Versioned: list.NewVersioned(),
 			id:        "rewind",
-			title:     "Rewind (delete messages)",
+			title:     "Rewind messages",
 			t:         r.com.Styles,
+		},
+		&rewindActionItem{
+			Versioned:    list.NewVersioned(),
+			id:           "rewind-restore",
+			title:        "Rewind messages and restore files",
+			restoreFiles: true,
+			t:            r.com.Styles,
 		},
 		&rewindActionItem{
 			Versioned: list.NewVersioned(),
@@ -237,6 +251,14 @@ func (r *Rewind) showActionList() {
 			title:     "Summarize, then rewind",
 			summarize: true,
 			t:         r.com.Styles,
+		},
+		&rewindActionItem{
+			Versioned:    list.NewVersioned(),
+			id:           "summarize-restore",
+			title:        "Summarize, rewind, and restore files",
+			summarize:    true,
+			restoreFiles: true,
+			t:            r.com.Styles,
 		},
 	)
 	r.list.SetSelected(0)

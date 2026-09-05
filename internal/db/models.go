@@ -51,4 +51,5 @@ type Session struct {
 	Todos            sql.NullString `json:"todos"`
 	Mode             string         `json:"mode"`
 	Plan             string         `json:"plan"`
+	EstimatedUsage   int64          `json:"estimated_usage"`
 }

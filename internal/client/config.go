@@ -9,15 +9,16 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
 )
 
 // SetConfigField sets a config key/value pair on the server.
 func (c *Client) SetConfigField(ctx context.Context, id string, scope config.Scope, key string, value any) error {
-	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/set", id), nil, jsonBody(struct {
-		Scope config.Scope `json:"scope"`
-		Key   string       `json:"key"`
-		Value any          `json:"value"`
-	}{Scope: scope, Key: key, Value: value}), http.Header{"Content-Type": []string{"application/json"}})
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/set", id), nil, jsonBody(proto.ConfigSetRequest{
+		Scope: scope,
+		Key:   key,
+		Value: value,
+	}), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
 		return fmt.Errorf("failed to set config field: %w", err)
 	}
@@ -44,21 +45,56 @@ func (c *Client) RemoveConfigField(ctx context.Context, id string, scope config.
 	return nil
 }
 
-// UpdatePreferredModel updates the preferred model on the server.
-func (c *Client) UpdatePreferredModel(ctx context.Context, id string, scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel) error {
-	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/model", id), nil, jsonBody(struct {
-		Scope     config.Scope             `json:"scope"`
-		ModelType config.SelectedModelType `json:"model_type"`
-		Model     config.SelectedModel     `json:"model"`
-	}{Scope: scope, ModelType: modelType, Model: model}), http.Header{"Content-Type": []string{"application/json"}})
+func (c *Client) SetProviderDisabled(ctx context.Context, id string, scope config.Scope, owner providerregistry.RegistrationOwner, disabled bool) error {
+	if owner.ProviderID == "" {
+		return fmt.Errorf("failed to set provider disabled state: initiating owner is required")
+	}
+	key := fmt.Sprintf("providers.%s.disable", owner.ProviderID)
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/set", id), nil, jsonBody(proto.ConfigSetRequest{
+		Scope: scope,
+		Key:   key,
+		Value: disabled,
+		Owner: &owner,
+	}), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
-		return fmt.Errorf("failed to update preferred model: %w", err)
+		return fmt.Errorf("failed to set provider disabled state: %w", err)
 	}
 	defer rsp.Body.Close()
 	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to update preferred model: status code %d", rsp.StatusCode)
+		return fmt.Errorf("failed to set provider disabled state: status code %d", rsp.StatusCode)
 	}
 	return nil
+}
+
+// UpdatePreferredModel updates the preferred model on the server.
+func (c *Client) UpdatePreferredModel(ctx context.Context, id string, scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel, owner providerregistry.RegistrationOwner) (config.AgentModelState, error) {
+	if owner.ProviderID == "" {
+		return config.AgentModelState{}, fmt.Errorf("failed to update preferred model: initiating owner is required")
+	}
+	if owner.ProviderID != model.Provider {
+		return config.AgentModelState{}, fmt.Errorf("failed to update preferred model: initiating owner provider %s does not match model provider %s", owner.ProviderID, model.Provider)
+	}
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/model", id), nil, jsonBody(proto.ConfigModelRequest{
+		Scope:     scope,
+		ModelType: modelType,
+		Model:     model,
+		Owner:     owner,
+	}), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return config.AgentModelState{}, fmt.Errorf("failed to update preferred model: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return config.AgentModelState{}, fmt.Errorf("failed to update preferred model: status code %d", rsp.StatusCode)
+	}
+	var state config.AgentModelState
+	if err := json.NewDecoder(rsp.Body).Decode(&state); err != nil {
+		return config.AgentModelState{}, fmt.Errorf("failed to decode preferred model state: %w", err)
+	}
+	if err := state.Validate(); err != nil {
+		return config.AgentModelState{}, fmt.Errorf("failed to validate preferred model state: %w", err)
+	}
+	return state, nil
 }
 
 // SetCompactMode sets compact mode on the server.
@@ -83,27 +119,40 @@ func (c *Client) SetCompactMode(ctx context.Context, id string, scope config.Sco
 // information across the socket.
 func (c *Client) SetProviderAPIKey(ctx context.Context, id string, scope config.Scope, providerID string, apiKey any) error {
 	var (
-		kind proto.APIKeyKind
-		raw  json.RawMessage
+		kind  proto.APIKeyKind
+		raw   json.RawMessage
+		owner *providerregistry.RegistrationOwner
 	)
 	switch v := apiKey.(type) {
 	case string:
+		return fmt.Errorf("API key for provider %s is missing its initiating owner", providerID)
+	case config.ProviderAPIKeyCredential:
+		if v.Owner.ProviderID != providerID {
+			return fmt.Errorf("API key owner provider %s does not match credential provider %s", v.Owner.ProviderID, providerID)
+		}
 		kind = proto.APIKeyKindString
-		b, err := json.Marshal(v)
+		b, err := json.Marshal(v.APIKey)
 		if err != nil {
 			return fmt.Errorf("failed to marshal api key string: %w", err)
 		}
 		raw = b
-	case *oauth.Token:
-		if v == nil {
+		owner = &v.Owner
+	case config.ProviderOAuthCredential:
+		if v.Token == nil {
 			return fmt.Errorf("oauth token is nil")
 		}
+		if v.Owner.ProviderID != providerID {
+			return fmt.Errorf("oauth owner provider %s does not match credential provider %s", v.Owner.ProviderID, providerID)
+		}
 		kind = proto.APIKeyKindOAuth
-		b, err := json.Marshal(v)
+		b, err := json.Marshal(v.Token)
 		if err != nil {
 			return fmt.Errorf("failed to marshal oauth token: %w", err)
 		}
 		raw = b
+		owner = &v.Owner
+	case *oauth.Token:
+		return fmt.Errorf("oauth token for provider %s is missing its initiating owner", providerID)
 	default:
 		return fmt.Errorf("unsupported api key type %T", apiKey)
 	}
@@ -113,6 +162,7 @@ func (c *Client) SetProviderAPIKey(ctx context.Context, id string, scope config.
 		ProviderID: providerID,
 		Kind:       kind,
 		APIKey:     raw,
+		Owner:      owner,
 	}), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
 		return fmt.Errorf("failed to set provider API key: %w", err)
@@ -120,6 +170,23 @@ func (c *Client) SetProviderAPIKey(ctx context.Context, id string, scope config.
 	defer rsp.Body.Close()
 	if rsp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to set provider API key: status code %d", rsp.StatusCode)
+	}
+	return nil
+}
+
+func (c *Client) RemoveProviderCredentials(ctx context.Context, id string, scope config.Scope, owner providerregistry.RegistrationOwner) error {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/provider-key", id), nil, jsonBody(proto.ConfigProviderKeyRequest{
+		Scope:      scope,
+		ProviderID: owner.ProviderID,
+		Kind:       proto.APIKeyKindRemove,
+		Owner:      &owner,
+	}), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return fmt.Errorf("failed to remove provider credentials: %w", err)
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to remove provider credentials: status code %d", rsp.StatusCode)
 	}
 	return nil
 }
@@ -147,11 +214,14 @@ func (c *Client) ImportCopilot(ctx context.Context, id string) (*oauth.Token, bo
 
 // RefreshOAuthToken refreshes an OAuth token for a provider on the
 // server.
-func (c *Client) RefreshOAuthToken(ctx context.Context, id string, scope config.Scope, providerID string) error {
-	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/refresh-oauth", id), nil, jsonBody(struct {
-		Scope      config.Scope `json:"scope"`
-		ProviderID string       `json:"provider_id"`
-	}{Scope: scope, ProviderID: providerID}), http.Header{"Content-Type": []string{"application/json"}})
+func (c *Client) RefreshOAuthToken(ctx context.Context, id string, scope config.Scope, owner providerregistry.RegistrationOwner) error {
+	if owner.ProviderID == "" {
+		return fmt.Errorf("failed to refresh OAuth token: initiating owner is required")
+	}
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/refresh-oauth", id), nil, jsonBody(proto.ConfigRefreshOAuthRequest{
+		Scope: scope,
+		Owner: owner,
+	}), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
 		return fmt.Errorf("failed to refresh OAuth token: %w", err)
 	}

@@ -791,6 +791,10 @@ func toPrompt(prompt fantasy.Prompt, sendReasoningData bool) ([]anthropic.TextBl
 					if cacheControl == nil && isLastPart {
 						cacheControl = GetCacheControl(msg.ProviderOptions)
 					}
+					cacheBoundary := false
+					if options := fantasy.InstructionPartOptionsFrom(part.Options()); options != nil {
+						cacheBoundary = options.Stability == fantasy.InstructionStabilityStatic && options.CacheBoundary
+					}
 					text, ok := fantasy.AsMessagePart[fantasy.TextPart](part)
 					if !ok {
 						continue
@@ -798,7 +802,7 @@ func toPrompt(prompt fantasy.Prompt, sendReasoningData bool) ([]anthropic.TextBl
 					textBlock := anthropic.TextBlockParam{
 						Text: text.Text,
 					}
-					if cacheControl != nil {
+					if cacheControl != nil || cacheBoundary {
 						textBlock.CacheControl = anthropic.NewCacheControlEphemeralParam()
 					}
 					systemBlocks = append(systemBlocks, textBlock)
@@ -1042,16 +1046,14 @@ func toPrompt(prompt fantasy.Prompt, sendReasoningData bool) ([]anthropic.TextBl
 							continue
 						}
 						if result.ProviderExecuted {
-							// Reconstruct web_search_tool_result blocks,
-							// including encrypted content and errors, for
-							// round-tripping.
-							searchMeta := &WebSearchResultMetadata{}
-							if webMeta, ok := result.ProviderOptions[Name]; ok {
-								if typed, ok := webMeta.(*WebSearchResultMetadata); ok {
-									searchMeta = typed
-								}
+							switch metadata := result.ProviderOptions[Name].(type) {
+							case *ToolSearchResultMetadata:
+								anthropicContent = append(anthropicContent, buildToolSearchResultBlock(result.ToolCallID, metadata))
+							case *WebSearchResultMetadata:
+								anthropicContent = append(anthropicContent, buildWebSearchToolResultBlock(result.ToolCallID, metadata))
+							default:
+								anthropicContent = append(anthropicContent, buildWebSearchToolResultBlock(result.ToolCallID, nil))
 							}
-							anthropicContent = append(anthropicContent, buildWebSearchToolResultBlock(result.ToolCallID, searchMeta))
 							continue
 						}
 					case fantasy.ContentTypeSource: // Source content from web search results is not a
@@ -1084,7 +1086,7 @@ func hasVisibleUserContent(content []anthropic.ContentBlockParamUnion) bool {
 
 func hasVisibleAssistantContent(content []anthropic.ContentBlockParamUnion) bool {
 	for _, block := range content {
-		if block.OfText != nil || block.OfToolUse != nil || block.OfServerToolUse != nil || block.OfWebSearchToolResult != nil {
+		if block.OfText != nil || block.OfToolUse != nil || block.OfServerToolUse != nil || block.OfWebSearchToolResult != nil || block.OfToolSearchToolResult != nil {
 			return true
 		}
 	}
@@ -1175,6 +1177,38 @@ func buildWebSearchToolResultBlock(toolCallID string, searchMeta *WebSearchResul
 	}
 }
 
+func buildToolSearchResultBlock(toolCallID string, metadata *ToolSearchResultMetadata) anthropic.ContentBlockParamUnion {
+	var content anthropic.ToolSearchToolResultBlockParamContentUnion
+	switch {
+	case metadata != nil && len(metadata.ToolNames) > 0:
+		references := make([]anthropic.ToolReferenceBlockParam, 0, len(metadata.ToolNames))
+		for _, name := range metadata.ToolNames {
+			references = append(references, anthropic.ToolReferenceBlockParam{ToolName: name})
+		}
+		content.OfRequestToolSearchToolSearchResultBlock = &anthropic.ToolSearchToolSearchResultBlockParam{
+			ToolReferences: references,
+		}
+	case metadata != nil && metadata.ErrorCode != "":
+		errorResult := &anthropic.ToolSearchToolResultErrorParam{
+			ErrorCode: anthropic.ToolSearchToolResultErrorCode(metadata.ErrorCode),
+		}
+		if metadata.ErrorMessage != "" {
+			errorResult.ErrorMessage = param.NewOpt(metadata.ErrorMessage)
+		}
+		content.OfRequestToolSearchToolResultError = errorResult
+	default:
+		content.OfRequestToolSearchToolSearchResultBlock = &anthropic.ToolSearchToolSearchResultBlockParam{
+			ToolReferences: []anthropic.ToolReferenceBlockParam{},
+		}
+	}
+	return anthropic.ContentBlockParamUnion{
+		OfToolSearchToolResult: &anthropic.ToolSearchToolResultBlockParam{
+			ToolUseID: toolCallID,
+			Content:   content,
+		},
+	}
+}
+
 func mapFinishReason(finishReason string) fantasy.FinishReason {
 	switch finishReason {
 	case "end_turn", "pause_turn", "stop_sequence":
@@ -1210,6 +1244,7 @@ func (a languageModel) Generate(ctx context.Context, call fantasy.Call) (*fantas
 	}
 
 	var content []fantasy.Content
+	serverToolNames := map[string]string{}
 	for _, block := range response.Content {
 		switch block.Type {
 		case "text":
@@ -1266,9 +1301,11 @@ func (a languageModel) Generate(ctx context.Context, call fantasy.Call) (*fantas
 			if b, err := json.Marshal(serverToolUse.Input); err == nil {
 				inputStr = string(b)
 			}
+			toolName := string(serverToolUse.Name)
+			serverToolNames[serverToolUse.ID] = toolName
 			content = append(content, fantasy.ToolCallContent{
 				ToolCallID:       serverToolUse.ID,
-				ToolName:         string(serverToolUse.Name),
+				ToolName:         toolName,
 				Input:            inputStr,
 				ProviderExecuted: true,
 			})
@@ -1313,6 +1350,24 @@ func (a languageModel) Generate(ctx context.Context, call fantasy.Call) (*fantas
 				}
 			}
 			content = append(content, toolResult)
+		case "tool_search_tool_result":
+			searchResult, ok := block.AsAny().(anthropic.ToolSearchToolResultBlock)
+			if !ok {
+				continue
+			}
+			metadata := &ToolSearchResultMetadata{
+				ErrorCode:    string(searchResult.Content.ErrorCode),
+				ErrorMessage: searchResult.Content.ErrorMessage,
+			}
+			for _, reference := range searchResult.Content.ToolReferences {
+				metadata.ToolNames = append(metadata.ToolNames, reference.ToolName)
+			}
+			content = append(content, fantasy.ToolResultContent{
+				ToolCallID:       searchResult.ToolUseID,
+				ToolName:         serverToolNames[searchResult.ToolUseID],
+				ProviderExecuted: true,
+				ProviderMetadata: fantasy.ProviderMetadata{Name: metadata},
+			})
 		}
 	}
 
@@ -1353,6 +1408,8 @@ func (a languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.S
 		}
 
 		sawMessageStop := false
+		serverToolNames := map[string]string{}
+		toolSearchResults := map[int64]fantasy.StreamPart{}
 
 		for stream.Next() {
 			chunk := stream.Current()
@@ -1393,6 +1450,7 @@ func (a languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.S
 						return
 					}
 				case "server_tool_use":
+					serverToolNames[chunk.ContentBlock.ID] = chunk.ContentBlock.Name
 					if !yield(fantasy.StreamPart{
 						Type:             fantasy.StreamPartTypeToolInputStart,
 						ID:               chunk.ContentBlock.ID,
@@ -1401,6 +1459,22 @@ func (a languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.S
 						ProviderExecuted: true,
 					}) {
 						return
+					}
+				case "tool_search_tool_result":
+					searchResult := chunk.ContentBlock.AsToolSearchToolResult()
+					metadata := &ToolSearchResultMetadata{
+						ErrorCode:    string(searchResult.Content.ErrorCode),
+						ErrorMessage: searchResult.Content.ErrorMessage,
+					}
+					for _, reference := range searchResult.Content.ToolReferences {
+						metadata.ToolNames = append(metadata.ToolNames, reference.ToolName)
+					}
+					toolSearchResults[chunk.Index] = fantasy.StreamPart{
+						Type:             fantasy.StreamPartTypeToolResult,
+						ID:               searchResult.ToolUseID,
+						ToolCallName:     serverToolNames[searchResult.ToolUseID],
+						ProviderExecuted: true,
+						ProviderMetadata: fantasy.ProviderMetadata{Name: metadata},
 					}
 				}
 			case "content_block_stop":
@@ -1514,6 +1588,12 @@ func (a languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.S
 					}) {
 						return
 					}
+				case "tool_search_tool_result":
+					result, ok := toolSearchResults[chunk.Index]
+					if ok && !yield(result) {
+						return
+					}
+					delete(toolSearchResults, chunk.Index)
 				}
 			case "content_block_delta":
 				switch chunk.Delta.Type {

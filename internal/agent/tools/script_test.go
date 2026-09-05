@@ -45,7 +45,7 @@ func TestScriptToolExecutesFixedPythonScript(t *testing.T) {
 	}
 	workingDir := t.TempDir()
 	scriptPath := filepath.Join(t.TempDir(), "script.py")
-	require.NoError(t, os.WriteFile(scriptPath, []byte("import json, os, sys\nprint(json.dumps({'args': sys.argv[1:], 'cwd': os.getcwd()}))\n"), 0o600))
+	require.NoError(t, os.WriteFile(scriptPath, []byte("import json, os, sys\nprint(json.dumps({'args': sys.argv[1:], 'cwd': os.getcwd(), 'env': os.environ.get('CRUX_T4_4_4_SCRIPT_ENV')}))\n"), 0o600))
 	preset := "fixed"
 	script := config.AgentScript{
 		Path:    scriptPath,
@@ -56,7 +56,7 @@ func TestScriptToolExecutesFixedPythonScript(t *testing.T) {
 		},
 	}
 	permissions := &recordingPermissionService{Broker: pubsub.NewBroker[permission.PermissionRequest](), allow: true}
-	tool := NewScriptTool(permissions, workingDir, script)
+	tool := NewScriptTool(permissions, workingDir, script, []string{"CRUX_T4_4_4_SCRIPT_ENV=workspace"})
 	response := runScriptTool(t, tool, ScriptParams{Variables: map[string]string{"input": "sample.txt"}})
 
 	require.False(t, response.IsError)
@@ -64,9 +64,11 @@ func TestScriptToolExecutesFixedPythonScript(t *testing.T) {
 	var output struct {
 		Args []string `json:"args"`
 		CWD  string   `json:"cwd"`
+		Env  string   `json:"env"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(response.Content), &output))
 	require.Equal(t, []string{"--input", "sample.txt", "--preset", "fixed"}, output.Args)
+	require.Equal(t, "workspace", output.Env)
 	expectedDirectory, err := os.Stat(workingDir)
 	require.NoError(t, err)
 	actualDirectory, err := os.Stat(output.CWD)

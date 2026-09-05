@@ -18,6 +18,67 @@ func (b *Backend) CreateSession(ctx context.Context, workspaceID, title string) 
 	return ws.Sessions.Create(ctx, title)
 }
 
+// ForkSession creates a new top-level session containing an independent copy
+// of the source session's persisted messages and metadata.
+func (b *Backend) ForkSession(ctx context.Context, workspaceID, sessionID string) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if err := ws.Messages.FlushAll(ctx); err != nil {
+		return session.Session{}, err
+	}
+	source, err := ws.Sessions.Get(ctx, sessionID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	messages, err := ws.Messages.List(ctx, sessionID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	forked, err := ws.Sessions.Create(ctx, source.Title)
+	if err != nil {
+		return session.Session{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = ws.Sessions.Delete(context.Background(), forked.ID)
+		}
+	}()
+	messageIDs := make(map[string]string, len(messages))
+	for _, original := range messages {
+		cloned, createErr := ws.Messages.Create(ctx, forked.ID, message.CreateMessageParams{
+			Role: original.Role, Parts: original.Clone().Parts, Model: original.Model,
+			Provider: original.Provider, IsSummaryMessage: original.IsSummaryMessage,
+			PreserveParts: true,
+		})
+		if createErr != nil {
+			return session.Session{}, createErr
+		}
+		messageIDs[original.ID] = cloned.ID
+	}
+	forked.PromptTokens = source.PromptTokens
+	forked.CompletionTokens = source.CompletionTokens
+	forked.EstimatedUsage = source.EstimatedUsage
+	forked.Cost = source.Cost
+	forked.Todos = append([]session.Todo(nil), source.Todos...)
+	forked.SummaryMessageID = messageIDs[source.SummaryMessageID]
+	forked, err = ws.Sessions.Save(ctx, forked)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if err := ws.Sessions.SetPlanState(ctx, forked.ID, source.Mode, source.Plan); err != nil {
+		return session.Session{}, err
+	}
+	forked, err = ws.Sessions.Get(ctx, forked.ID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	committed = true
+	return forked, nil
+}
+
 // GetSession retrieves a session by workspace and session ID.
 func (b *Backend) GetSession(ctx context.Context, workspaceID, sessionID string) (session.Session, error) {
 	ws, err := b.GetWorkspace(workspaceID)
@@ -52,8 +113,8 @@ func (b *Backend) GetAgentSession(ctx context.Context, workspaceID, sessionID st
 	}
 
 	var isSessionBusy bool
-	if ws.AgentCoordinator != nil {
-		isSessionBusy = ws.AgentCoordinator.IsSessionBusy(sessionID)
+	if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil {
+		isSessionBusy = coordinator.IsSessionBusy(sessionID)
 	}
 
 	return proto.AgentSession{
@@ -90,7 +151,7 @@ func (b *Backend) ListSessionHistory(ctx context.Context, workspaceID, sessionID
 		return nil, err
 	}
 
-	return ws.History.ListBySession(ctx, sessionID)
+	return ws.History.ListLatestCheckpointFiles(ctx, sessionID)
 }
 
 // SaveSession updates a session in the given workspace.
@@ -121,7 +182,11 @@ func (b *Backend) DeleteSession(ctx context.Context, workspaceID, sessionID stri
 		return err
 	}
 
-	return ws.Sessions.Delete(ctx, sessionID)
+	if err := ws.Sessions.Delete(ctx, sessionID); err != nil {
+		return err
+	}
+	ws.ResetAgentSession(sessionID)
+	return nil
 }
 
 // ListUserMessages returns user-role messages for a session.

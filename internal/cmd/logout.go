@@ -57,7 +57,7 @@ crux logout copilot
 			}
 		} else {
 			var ok bool
-			registration, ok = config.ProviderCapabilities().Lookup(args[0])
+			registration, ok = ws.Config.ProviderRegistrationForAccount(args[0])
 			if !ok || registration.OAuth == nil {
 				return fmt.Errorf("unknown OAuth platform: %s", args[0])
 			}
@@ -79,18 +79,29 @@ crux logout copilot
 
 func logoutProvider(client *client.Client, workspaceID string, registration providerregistry.Registration) error {
 	ctx := getLogoutContext()
-	var firstErr error
-	for _, field := range []string{"api_key", "oauth"} {
-		key := fmt.Sprintf("providers.%s.%s", registration.ProviderID, field)
-		if err := client.RemoveConfigField(ctx, workspaceID, config.ScopeGlobal, key); err != nil && firstErr == nil {
-			firstErr = err
+	owner := registration.Owner()
+	validate := func() error {
+		cfg, err := client.GetConfig(ctx, workspaceID)
+		if err != nil {
+			return err
 		}
+		current, ok := cfg.ProviderOwner(owner.ProviderID)
+		if !ok || current != owner {
+			return fmt.Errorf("provider account owner %s changed", owner.ProviderID)
+		}
+		return nil
 	}
-	if firstErr != nil {
-		return firstErr
+	if err := validate(); err != nil {
+		return err
+	}
+	if err := client.RemoveProviderCredentials(ctx, workspaceID, config.ScopeGlobal, owner); err != nil {
+		return err
 	}
 	if registration.AccountNamespace != "" {
-		if err := accounts.RemoveProvider(ctx, registration.AccountNamespace); err != nil {
+		if err := validate(); err != nil {
+			return err
+		}
+		if err := accounts.RemoveProviderForOwner(ctx, registration.AccountNamespace, validate); err != nil {
 			return err
 		}
 	}
@@ -106,7 +117,7 @@ func pickLoggedInProvider(client *client.Client, workspaceID string) (providerre
 	}
 
 	var loggedIn []providerregistry.Registration
-	for _, registration := range oauthRegistrations() {
+	for _, registration := range oauthRegistrations(cfg) {
 		if provider, ok := cfg.Providers.Get(registration.ProviderID); ok && provider.OAuthToken != nil {
 			loggedIn = append(loggedIn, registration)
 		}

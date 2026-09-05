@@ -574,6 +574,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	notificationLabel := "Notification Style"
 	commands = append(commands, NewCommandItem(c.com.Styles, "select_notifications", notificationLabel, "", ActionOpenDialog{DialogID: NotificationsID}))
 	commands = append(commands, NewCommandItem(c.com.Styles, "projects", "Projects", "", ActionOpenDialog{DialogID: ProjectsID}).WithAliases("project"))
+	commands = append(commands, NewCommandItem(c.com.Styles, "tmux_sessions", "Crux tmux Sessions", "", ActionOpenDialog{DialogID: TmuxSessionsID}).WithAliases("tmux", "captures"))
 	commands = append(commands, NewCommandItem(c.com.Styles, "codebase_index", "Codebase Index", "", ActionOpenDialog{DialogID: CodebaseIndexID}).WithAliases("index", "semantic_index"))
 	commands = append(commands, NewCommandItem(c.com.Styles, "mcp_servers", "MCP Servers", "", ActionOpenDialog{DialogID: MCPServersID}).WithAliases("mcp", "mcp_config", "servers"))
 	commands = append(commands, NewCommandItem(c.com.Styles, "create_agent", "Create Agent Definition", "", ActionOpenDialog{DialogID: AgentDefinitionsID}).WithAliases("agent_definition", "new_agent"))

@@ -121,6 +121,31 @@ const docTemplate = `{
                 }
             }
         },
+        "/plugins": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "system"
+                ],
+                "summary": "Get provider plugins",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.PluginSnapshot"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/version": {
             "get": {
                 "produces": [
@@ -856,6 +881,9 @@ const docTemplate = `{
         },
         "/workspaces/{id}/agent/update": {
             "post": {
+                "consumes": [
+                    "application/json"
+                ],
                 "tags": [
                     "agent"
                 ],
@@ -867,11 +895,26 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "description": "Agent update request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.AgentUpdateRequest"
+                        }
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK"
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
                     },
                     "404": {
                         "description": "Not Found",
@@ -1049,7 +1092,10 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK"
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/config.AgentModelState"
+                        }
                     },
                     "400": {
                         "description": "Bad Request",
@@ -3355,7 +3401,7 @@ const docTemplate = `{
                 }
             }
         },
-        "catwalk.Model": {
+        "catalog.Model": {
             "type": "object",
             "properties": {
                 "can_reason": {
@@ -3389,7 +3435,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "options": {
-                    "$ref": "#/definitions/catwalk.ModelOptions"
+                    "$ref": "#/definitions/catalog.ModelOptions"
                 },
                 "reasoning_levels": {
                     "type": "array",
@@ -3402,7 +3448,7 @@ const docTemplate = `{
                 }
             }
         },
-        "catwalk.ModelOptions": {
+        "catalog.ModelOptions": {
             "type": "object",
             "properties": {
                 "frequency_penalty": {
@@ -3426,7 +3472,7 @@ const docTemplate = `{
                 }
             }
         },
-        "catwalk.Type": {
+        "catalog.Type": {
             "type": "string",
             "enum": [
                 "openai",
@@ -3451,6 +3497,17 @@ const docTemplate = `{
                 "TypeVertexAI"
             ]
         },
+        "config.AgentModelState": {
+            "type": "object",
+            "properties": {
+                "large": {
+                    "$ref": "#/definitions/config.OwnedSelectedModel"
+                },
+                "small": {
+                    "$ref": "#/definitions/config.OwnedSelectedModel"
+                }
+            }
+        },
         "config.Completions": {
             "type": "object",
             "properties": {
@@ -3459,6 +3516,17 @@ const docTemplate = `{
                 },
                 "max_items": {
                     "type": "integer"
+                }
+            }
+        },
+        "config.ForwardedAccount": {
+            "type": "object",
+            "properties": {
+                "entry": {
+                    "$ref": "#/definitions/accounts.Entry"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
                 }
             }
         },
@@ -3480,6 +3548,47 @@ const docTemplate = `{
                 "timeout": {
                     "description": "Timeout in seconds. Default 30.",
                     "type": "integer"
+                }
+            }
+        },
+        "config.ImageConfiguration": {
+            "type": "object",
+            "properties": {
+                "preferred": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerplugin.ImageOwner"
+                    }
+                },
+                "providers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/config.ImageProviderConfiguration"
+                    }
+                }
+            }
+        },
+        "config.ImageProviderConfiguration": {
+            "type": "object",
+            "properties": {
+                "browser_profiles": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "configuration": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "credentials": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                    }
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerplugin.ImageOwner"
                 }
             }
         },
@@ -3629,6 +3738,17 @@ const docTemplate = `{
                 "$ref": "#/definitions/config.MCPConfig"
             }
         },
+        "config.OwnedSelectedModel": {
+            "type": "object",
+            "properties": {
+                "model": {
+                    "$ref": "#/definitions/config.SelectedModel"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                }
+            }
+        },
         "config.Permissions": {
             "type": "object",
             "properties": {
@@ -3688,7 +3808,7 @@ const docTemplate = `{
                     "description": "The provider models",
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/catwalk.Model"
+                        "$ref": "#/definitions/catalog.Model"
                     }
                 },
                 "name": {
@@ -3703,13 +3823,19 @@ const docTemplate = `{
                         }
                     ]
                 },
-                "plugin": {
+                "owner": {
                     "description": "Plugin records durable ownership so configuration and selections remain\nunavailable rather than falling through to a generic provider when the\nbundle is missing, disabled, invalid, incompatible, or untrusted.",
                     "allOf": [
                         {
-                            "$ref": "#/definitions/config.ProviderPluginReference"
+                            "$ref": "#/definitions/config.ProviderOwnerReference"
                         }
                     ]
+                },
+                "plugin": {
+                    "$ref": "#/definitions/config.ProviderPluginReference"
+                },
+                "preset": {
+                    "$ref": "#/definitions/config.ProviderPresetReference"
                 },
                 "provider_options": {
                     "type": "object",
@@ -3727,15 +3853,58 @@ const docTemplate = `{
                     "description": "The provider type. Empty custom-provider types default to openai-compat;\nregistered local aliases use the same protocol.",
                     "allOf": [
                         {
-                            "$ref": "#/definitions/catwalk.Type"
+                            "$ref": "#/definitions/catalog.Type"
                         }
                     ]
                 }
             }
         },
+        "config.ProviderOwnerReference": {
+            "type": "object",
+            "properties": {
+                "compatibility_adapter": {
+                    "$ref": "#/definitions/providerregistry.Construction"
+                },
+                "construction": {
+                    "$ref": "#/definitions/providerregistry.Construction"
+                },
+                "type": {
+                    "$ref": "#/definitions/config.ProviderOwnerType"
+                }
+            }
+        },
+        "config.ProviderOwnerType": {
+            "type": "string",
+            "enum": [
+                "core",
+                "custom",
+                "plugin",
+                "preset"
+            ],
+            "x-enum-varnames": [
+                "ProviderOwnerCore",
+                "ProviderOwnerCustom",
+                "ProviderOwnerPlugin",
+                "ProviderOwnerPreset"
+            ]
+        },
         "config.ProviderPluginReference": {
             "type": "object",
             "properties": {
+                "id": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "config.ProviderPresetReference": {
+            "type": "object",
+            "properties": {
+                "digest": {
+                    "type": "string"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -3849,22 +4018,6 @@ const docTemplate = `{
                 }
             }
         },
-        "config.ToolGlob": {
-            "type": "object",
-            "properties": {
-                "timeout": {
-                    "$ref": "#/definitions/time.Duration"
-                }
-            }
-        },
-        "config.ToolGrep": {
-            "type": "object",
-            "properties": {
-                "timeout": {
-                    "$ref": "#/definitions/time.Duration"
-                }
-            }
-        },
         "config.ToolLs": {
             "type": "object",
             "properties": {
@@ -3876,20 +4029,28 @@ const docTemplate = `{
                 }
             }
         },
+        "config.ToolSearch": {
+            "type": "object",
+            "properties": {
+                "content_timeout": {
+                    "$ref": "#/definitions/time.Duration"
+                },
+                "files_timeout": {
+                    "$ref": "#/definitions/time.Duration"
+                }
+            }
+        },
         "config.Tools": {
             "type": "object",
             "properties": {
                 "codebase_search": {
                     "$ref": "#/definitions/config.ToolCodebaseSearch"
                 },
-                "glob": {
-                    "$ref": "#/definitions/config.ToolGlob"
-                },
-                "grep": {
-                    "$ref": "#/definitions/config.ToolGrep"
-                },
                 "ls": {
                     "$ref": "#/definitions/config.ToolLs"
+                },
+                "search": {
+                    "$ref": "#/definitions/config.ToolSearch"
                 }
             }
         },
@@ -3917,6 +4078,9 @@ const docTemplate = `{
                             "$ref": "#/definitions/config.HookConfig"
                         }
                     }
+                },
+                "images": {
+                    "$ref": "#/definitions/config.ImageConfiguration"
                 },
                 "lsp": {
                     "$ref": "#/definitions/config.LSPs"
@@ -3991,11 +4155,8 @@ const docTemplate = `{
                 "disable_default_providers": {
                     "type": "boolean"
                 },
-                "disable_provider_auto_update": {
-                    "type": "boolean"
-                },
                 "disabled_instruction_sections": {
-                    "description": "DisabledInstructionSections lists native instruction section IDs to\nskip when building the system prompt. Section IDs match the file\nnames in internal/agent/templates/sections/ without the .md extension.",
+                    "description": "DisabledInstructionSections lists Crux tooling instruction section IDs to\nskip when building the system prompt. Section IDs match the file\nnames in internal/agent/templates/sections/ without the .md extension.",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -4023,7 +4184,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "instruction_mode": {
-                    "description": "InstructionMode controls which instruction sources are active:\n  \"all\"     — native sections + project context (default)\n  \"project\" — project context files only (skip native instruction sections)\n  \"native\"  — native instruction sections only (skip project context files)",
+                    "description": "InstructionMode controls which optional instruction sources are active:\n  \"all\"     - tooling and project context (default)\n  \"project\" - project context without tooling\n  \"native\"  - tooling without project context\nDynamic runtime, memory, MCP, and provider context remain independent.",
                     "type": "string"
                 },
                 "notifications": {
@@ -4040,9 +4201,6 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
-                },
-                "system_prompt_override": {
-                    "type": "boolean"
                 },
                 "tui": {
                     "$ref": "#/definitions/config.TUIOptions"
@@ -4207,11 +4365,13 @@ const docTemplate = `{
             "type": "string",
             "enum": [
                 "string",
-                "oauth"
+                "oauth",
+                "remove"
             ],
             "x-enum-varnames": [
                 "APIKeyKindString",
-                "APIKeyKindOAuth"
+                "APIKeyKindOAuth",
+                "APIKeyKindRemove"
             ]
         },
         "proto.AgentInfo": {
@@ -4224,7 +4384,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "model": {
-                    "$ref": "#/definitions/catwalk.Model"
+                    "$ref": "#/definitions/catalog.Model"
                 },
                 "model_cfg": {
                     "$ref": "#/definitions/config.SelectedModel"
@@ -4240,6 +4400,9 @@ const docTemplate = `{
                         "$ref": "#/definitions/proto.Attachment"
                     }
                 },
+                "permission_mode": {
+                    "$ref": "#/definitions/proto.AgentPermissionMode"
+                },
                 "prompt": {
                     "type": "string"
                 },
@@ -4253,6 +4416,19 @@ const docTemplate = `{
                     "type": "string"
                 }
             }
+        },
+        "proto.AgentPermissionMode": {
+            "type": "string",
+            "enum": [
+                "",
+                "deny",
+                "bypass"
+            ],
+            "x-enum-varnames": [
+                "AgentPermissionInteractive",
+                "AgentPermissionDeny",
+                "AgentPermissionBypass"
+            ]
         },
         "proto.AgentSession": {
             "type": "object",
@@ -4268,6 +4444,9 @@ const docTemplate = `{
                 },
                 "created_at": {
                     "type": "integer"
+                },
+                "estimated_usage": {
+                    "type": "boolean"
                 },
                 "id": {
                     "type": "string"
@@ -4304,6 +4483,14 @@ const docTemplate = `{
                 },
                 "updated_at": {
                     "type": "integer"
+                }
+            }
+        },
+        "proto.AgentUpdateRequest": {
+            "type": "object",
+            "properties": {
+                "state": {
+                    "$ref": "#/definitions/config.AgentModelState"
                 }
             }
         },
@@ -4347,6 +4534,9 @@ const docTemplate = `{
                 "model_type": {
                     "$ref": "#/definitions/config.SelectedModelType"
                 },
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                },
                 "scope": {
                     "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
                 }
@@ -4364,6 +4554,9 @@ const docTemplate = `{
                 "kind": {
                     "$ref": "#/definitions/proto.APIKeyKind"
                 },
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                },
                 "provider_id": {
                     "type": "string"
                 },
@@ -4375,8 +4568,8 @@ const docTemplate = `{
         "proto.ConfigRefreshOAuthRequest": {
             "type": "object",
             "properties": {
-                "provider_id": {
-                    "type": "string"
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
                 },
                 "scope": {
                     "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
@@ -4399,6 +4592,9 @@ const docTemplate = `{
             "properties": {
                 "key": {
                     "type": "string"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
                 },
                 "scope": {
                     "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
@@ -4430,6 +4626,9 @@ const docTemplate = `{
                 },
                 "created_at": {
                     "type": "integer"
+                },
+                "exists": {
+                    "type": "boolean"
                 },
                 "id": {
                     "type": "string"
@@ -4757,6 +4956,102 @@ const docTemplate = `{
                 }
             }
         },
+        "proto.PluginDiagnostic": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.PluginSnapshot": {
+            "type": "object",
+            "properties": {
+                "enabled_providers": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "plugins": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/proto.PluginStatus"
+                    }
+                },
+                "profile": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "scanned_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.PluginStatus": {
+            "type": "object",
+            "properties": {
+                "bundle_name": {
+                    "type": "string"
+                },
+                "capabilities": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "compatibility": {
+                    "type": "string"
+                },
+                "diagnostics": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/proto.PluginDiagnostic"
+                    }
+                },
+                "digest": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "installed_at": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "plugin_type": {
+                    "type": "string"
+                },
+                "provider_id": {
+                    "type": "string"
+                },
+                "publisher_id": {
+                    "type": "string"
+                },
+                "source_commit": {
+                    "type": "string"
+                },
+                "source_kind": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                },
+                "trust": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
         "proto.ProjectInitPromptResponse": {
             "type": "object",
             "properties": {
@@ -4828,7 +5123,7 @@ const docTemplate = `{
                 "models": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/catwalk.Model"
+                        "$ref": "#/definitions/catalog.Model"
                     }
                 },
                 "name": {
@@ -4836,6 +5131,9 @@ const docTemplate = `{
                 },
                 "order": {
                     "type": "integer"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
                 },
                 "runtime_controls": {
                     "type": "array",
@@ -4951,6 +5249,9 @@ const docTemplate = `{
                 },
                 "created_at": {
                     "type": "integer"
+                },
+                "estimated_usage": {
+                    "type": "boolean"
                 },
                 "id": {
                     "type": "string"
@@ -5151,7 +5452,7 @@ const docTemplate = `{
                 "forwarded_accounts": {
                     "type": "object",
                     "additionalProperties": {
-                        "$ref": "#/definitions/accounts.Entry"
+                        "$ref": "#/definitions/config.ForwardedAccount"
                     }
                 },
                 "forwarded_providers": {
@@ -5185,6 +5486,23 @@ const docTemplate = `{
                 },
                 "yolo": {
                     "type": "boolean"
+                }
+            }
+        },
+        "providerplugin.ImageOwner": {
+            "type": "object",
+            "properties": {
+                "backend": {
+                    "type": "string"
+                },
+                "digest": {
+                    "type": "string"
+                },
+                "plugin_id": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
                 }
             }
         },
@@ -5228,17 +5546,51 @@ const docTemplate = `{
                 }
             }
         },
+        "providerregistry.Construction": {
+            "type": "string",
+            "enum": [
+                "integrated-codex",
+                "integrated-gemini-antigravity",
+                "integrated-copilot",
+                "anthropic-messages",
+                "openai-responses",
+                "gemini-generate-content",
+                "gemini-interactions",
+                "generic-json",
+                "openai-compat"
+            ],
+            "x-enum-varnames": [
+                "ConstructionCodex",
+                "ConstructionGeminiAntigravity",
+                "ConstructionCopilot",
+                "ConstructionAnthropicMessages",
+                "ConstructionOpenAIResponses",
+                "ConstructionGeminiContent",
+                "ConstructionGeminiInteraction",
+                "ConstructionGenericJSON",
+                "ConstructionOpenAICompat"
+            ]
+        },
         "providerregistry.InstructionSurface": {
             "type": "object",
             "properties": {
                 "default": {
                     "type": "string"
                 },
+                "hidden_skills": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "profiles": {
                     "type": "object",
                     "additionalProperties": {
                         "type": "string"
                     }
+                },
+                "selection_default": {
+                    "type": "string"
                 }
             }
         },
@@ -5254,6 +5606,53 @@ const docTemplate = `{
                 "LoginHostedPaste",
                 "LoginDeviceCode"
             ]
+        },
+        "providerregistry.RegistrationOwner": {
+            "type": "object",
+            "properties": {
+                "account_namespace": {
+                    "type": "string"
+                },
+                "compatibility_adapter": {
+                    "$ref": "#/definitions/providerregistry.Construction"
+                },
+                "construction": {
+                    "$ref": "#/definitions/providerregistry.Construction"
+                },
+                "has_manifest": {
+                    "type": "boolean"
+                },
+                "has_oauth": {
+                    "type": "boolean"
+                },
+                "has_preset": {
+                    "type": "boolean"
+                },
+                "manifest_id": {
+                    "type": "string"
+                },
+                "manifest_version": {
+                    "type": "string"
+                },
+                "oauth_adapter": {
+                    "$ref": "#/definitions/providerregistry.LoginAdapter"
+                },
+                "oauth_flow_id": {
+                    "type": "string"
+                },
+                "preset_digest": {
+                    "type": "string"
+                },
+                "preset_id": {
+                    "type": "string"
+                },
+                "preset_version": {
+                    "type": "string"
+                },
+                "provider_id": {
+                    "type": "string"
+                }
+            }
         },
         "providerregistry.RuntimeControlSurface": {
             "type": "object",

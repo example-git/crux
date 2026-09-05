@@ -1,25 +1,89 @@
 package usage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providertransport"
+	"github.com/example-git/crux/internal/providertransport/clientidentity"
 )
 
 // ManifestFetcher builds a host-owned usage executor from a compiled operation.
-func ManifestFetcher(operation *providertransport.Operation, policy manifest.UsagePolicy) (Fetcher, error) {
-	if operation == nil {
-		return nil, fmt.Errorf("usage operation is missing")
+type manifestUsageOperation struct {
+	operation        *providertransport.Operation
+	target           *url.URL
+	client           *http.Client
+	identityMu       sync.Mutex
+	identityResolved bool
+	userAgent        string
+}
+
+type manifestUsageSetup struct {
+	declaration manifest.UsageSetup
+	operation   *manifestUsageOperation
+}
+
+type usageConnectTransport struct {
+	base    http.RoundTripper
+	timeout time.Duration
+}
+
+type usageCancelReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelCauseFunc
+}
+
+func (transport usageConnectTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	base := transport.base
+	if base == nil {
+		base = http.DefaultTransport
 	}
+	if transport.timeout <= 0 {
+		return base.RoundTrip(request)
+	}
+	ctx, cancel := context.WithCancelCause(request.Context())
+	timeoutErr := fmt.Errorf("connect timeout after %s", transport.timeout)
+	timer := time.AfterFunc(transport.timeout, func() { cancel(timeoutErr) })
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { timer.Stop() },
+	})
+	response, err := base.RoundTrip(request.Clone(ctx))
+	timer.Stop()
+	if err != nil {
+		cause := context.Cause(ctx)
+		cancel(nil)
+		if cause == timeoutErr {
+			return response, timeoutErr
+		}
+		return response, err
+	}
+	if response == nil || response.Body == nil {
+		cancel(nil)
+		return response, nil
+	}
+	response.Body = &usageCancelReadCloser{ReadCloser: response.Body, cancel: cancel}
+	return response, nil
+}
+
+func (body *usageCancelReadCloser) Close() error {
+	err := body.ReadCloser.Close()
+	body.cancel(nil)
+	return err
+}
+
+func compileManifestUsageOperation(operation *providertransport.Operation) (*manifestUsageOperation, error) {
+	operation = operation.Clone()
 	base, err := url.Parse(operation.Endpoint.BaseURL)
 	if err != nil {
 		return nil, err
@@ -32,77 +96,188 @@ func ManifestFetcher(operation *providertransport.Operation, policy manifest.Usa
 	if !containsFoldUsage(operation.Endpoint.AllowedSchemes, target.Scheme) || !containsFoldUsage(operation.Endpoint.AllowedHosts, target.Hostname()) {
 		return nil, fmt.Errorf("usage endpoint violates its allowlist")
 	}
-	userAgent := "Crux"
-	return func(ctx context.Context, token string) (*Usage, error) {
-		requestCtx := ctx
-		if operation.RequestTimeout > 0 {
-			var cancel context.CancelFunc
-			requestCtx, cancel = context.WithTimeout(ctx, operation.RequestTimeout)
-			defer cancel()
+	client := &http.Client{Transport: usageConnectTransport{base: http.DefaultTransport, timeout: operation.ConnectTimeout}}
+	if !operation.Endpoint.FollowRedirects {
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	}
+	return &manifestUsageOperation{operation: operation, target: target, client: client}, nil
+}
+
+func (operation *manifestUsageOperation) execute(ctx context.Context, token string, values providertransport.TemplateValues) (result any, err error) {
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return nil, err
+	}
+	started := time.Now()
+	diagnostic := providertransport.OperationDiagnostic{ID: operation.operation.ID, Kind: operation.operation.Kind}
+	defer func() {
+		diagnostic.Duration = time.Since(started)
+		diagnostic.Failed = err != nil
+		providertransport.RecordOperationDiagnostic(ctx, diagnostic)
+	}()
+	operation.identityMu.Lock()
+	if !operation.identityResolved {
+		identity := operation.operation.ClientIdentity
+		if identity == nil && operation.operation.Anthropic != nil {
+			identity = operation.operation.Anthropic.ClientIdentity
 		}
-		request, err := http.NewRequestWithContext(requestCtx, operation.Method, target.String(), nil)
+		_, resolved, err := clientidentity.ResolveForContext(ctx, identity)
 		if err != nil {
+			operation.identityMu.Unlock()
 			return nil, err
 		}
-		request.Header.Set("Authorization", "Bearer "+token)
-		request.Header.Set("Accept", "application/json")
-		for _, rule := range operation.Headers {
-			if rule.Value == nil || rule.Operation == "delete" {
-				if rule.Operation == "delete" {
-					request.Header.Del(rule.Name)
-				}
-				continue
-			}
-			value, ok := rule.Value.Value.(string)
-			if rule.Value.Kind == "context" && rule.Value.Ref == "client.user_agent" {
-				value = userAgent
-				ok = true
-			}
-			if !ok {
-				continue
-			}
-			switch rule.Operation {
-			case "set":
-				request.Header.Set(rule.Name, value)
-			case "set-if-absent":
-				if request.Header.Get(rule.Name) == "" {
-					request.Header.Set(rule.Name, value)
-				}
-			case "append":
-				request.Header.Add(rule.Name, value)
-			case "append-unique":
-				appendUniqueUsage(request.Header, rule.Name, value)
-			}
-		}
-		client := &http.Client{}
-		if !operation.Endpoint.FollowRedirects {
-			client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-		}
-		response, err := client.Do(request)
-		if err != nil {
+		if err := providertransport.ValidateContextOwner(ctx); err != nil {
+			operation.identityMu.Unlock()
 			return nil, err
 		}
-		defer response.Body.Close()
-		data, err := io.ReadAll(io.LimitReader(response.Body, maxBody+1))
+		operation.userAgent = resolved
+		operation.identityResolved = true
+	}
+	userAgent := operation.userAgent
+	operation.identityMu.Unlock()
+	contextValues := make(map[string]string, len(values.Context)+1)
+	for name, value := range values.Context {
+		contextValues[name] = value
+	}
+	if userAgent != "" {
+		contextValues["client.user_agent"] = userAgent
+	}
+	values.Context = contextValues
+	credentialValues := make(map[string]string, len(values.Credentials)+1)
+	for name, value := range values.Credentials {
+		credentialValues[name] = value
+	}
+	if operation.operation.Endpoint.Credential != "" {
+		credentialValues[operation.operation.Endpoint.Credential] = token
+	}
+	values.Credentials = credentialValues
+
+	document := map[string]any{}
+	var body io.Reader
+	if operation.operation.RequestTransform != nil {
+		if err := providertransport.ApplyJSONPipeline(document, operation.operation.RequestTransform, values); err != nil {
+			return nil, fmt.Errorf("request transform: %w", err)
+		}
+		data, err := json.Marshal(document)
 		if err != nil {
 			return nil, err
 		}
 		if len(data) > maxBody {
-			return nil, fmt.Errorf("usage response exceeds %d bytes", maxBody)
+			return nil, fmt.Errorf("usage request exceeds %d bytes", maxBody)
 		}
-		if response.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("usage: %s returned HTTP %d", target, response.StatusCode)
+		body = bytes.NewReader(data)
+	}
+	requestCtx := ctx
+	if operation.operation.RequestTimeout > 0 {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithTimeout(ctx, operation.operation.RequestTimeout)
+		defer cancel()
+	}
+	request, err := http.NewRequestWithContext(requestCtx, operation.operation.Method, operation.target.String(), body)
+	if err != nil {
+		return nil, err
+	}
+	headers := map[string]string{"Authorization": "Bearer " + token, "Accept": "application/json"}
+	if body != nil {
+		headers["Content-Type"] = "application/json"
+	}
+	headers, err = operation.operation.ApplyHeadersWithValues(headers, values)
+	if err != nil {
+		return nil, err
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	response, err := providertransport.ClientWithContextOwnerValidator(requestCtx, operation.client).Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	diagnostic.StatusCode = response.StatusCode
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxBody {
+		return nil, fmt.Errorf("usage response exceeds %d bytes", maxBody)
+	}
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("usage: %s returned HTTP %d", operation.target, response.StatusCode)
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	if err := providertransport.ApplyJSONPipeline(result, operation.operation.ResponseTransform, values); err != nil {
+		return nil, fmt.Errorf("response transform: %w", err)
+	}
+	return result, nil
+}
+
+func usageStringAt(document any, pointers []string) string {
+	for _, pointer := range pointers {
+		value, ok := providertransport.JSONPointer(document, pointer).(string)
+		if ok && strings.TrimSpace(value) != "" {
+			return value
 		}
-		var document any
-		if err := json.Unmarshal(data, &document); err != nil {
+	}
+	return ""
+}
+
+func ManifestFetcher(operations map[string]*providertransport.Operation, policy manifest.UsagePolicy) (Fetcher, error) {
+	operation, ok := operations[policy.Operation]
+	if !ok || operation == nil {
+		return nil, fmt.Errorf("usage operation %q is missing", policy.Operation)
+	}
+	final, err := compileManifestUsageOperation(operation)
+	if err != nil {
+		return nil, err
+	}
+	setup := make([]manifestUsageSetup, 0, len(policy.Setup))
+	for _, declaration := range policy.Setup {
+		operation, ok := operations[declaration.Operation]
+		if !ok || operation == nil {
+			return nil, fmt.Errorf("usage setup operation %q is missing", declaration.Operation)
+		}
+		compiled, err := compileManifestUsageOperation(operation)
+		if err != nil {
 			return nil, err
 		}
+		setup = append(setup, manifestUsageSetup{declaration: declaration, operation: compiled})
+	}
+	return func(ctx context.Context, token string) (*Usage, error) {
+		values := providertransport.TemplateValues{Context: map[string]string{}}
 		result := &Usage{}
+		for _, item := range setup {
+			document, err := item.operation.execute(ctx, token, values)
+			if err != nil {
+				return nil, fmt.Errorf("usage setup operation %q: %w", item.operation.operation.ID, err)
+			}
+			if result.Plan == "" {
+				result.Plan = usageStringAt(document, item.declaration.PlanPointers)
+			}
+			for _, extraction := range item.declaration.Extract {
+				value, ok := providertransport.JSONPointer(document, extraction.Pointer).(string)
+				if !ok || strings.TrimSpace(value) == "" {
+					return nil, fmt.Errorf("usage setup operation %q did not produce context %q", item.operation.operation.ID, extraction.Context)
+				}
+				values.Context[extraction.Context] = value
+			}
+		}
+		document, err := final.execute(ctx, token, values)
+		if err != nil {
+			return nil, fmt.Errorf("usage operation %q: %w", final.operation.ID, err)
+		}
+		if result.Plan == "" {
+			result.Plan = usageStringAt(document, policy.PlanPointers)
+		}
 		for _, window := range policy.Windows {
 			used, usedOK := numberAt(document, window.UsedPointer)
 			limit, limitOK := numberAt(document, window.LimitPointer)
 			remaining, remainingOK := numberAt(document, window.RemainingPointer)
-			if !usedOK && remainingOK && limitOK {
+			remainingFraction, remainingFractionOK := numberAt(document, window.RemainingFractionPointer)
+			if remainingFractionOK {
+				used = (1 - remainingFraction) * 100
+				usedOK = true
+			} else if !usedOK && remainingOK && limitOK {
 				used = limit - remaining
 				usedOK = true
 			}
@@ -110,11 +285,11 @@ func ManifestFetcher(operation *providertransport.Operation, policy manifest.Usa
 				continue
 			}
 			percent := used
-			if limitOK && limit > 0 {
+			if !remainingFractionOK && limitOK && limit > 0 {
 				percent = used / limit * 100
 			}
 			item := Window{Name: window.ID, Percent: clampPct(percent)}
-			reset := valueAt(document, window.ResetPointer)
+			reset := providertransport.JSONPointer(document, window.ResetPointer)
 			switch window.ResetFormat {
 			case "rfc3339":
 				if text, ok := reset.(string); ok {
@@ -152,22 +327,10 @@ func appendUniqueUsage(headers http.Header, name, value string) {
 	}
 }
 
-func valueAt(document any, path string) any {
-	if path == "" {
-		return nil
-	}
-	current := document
-	for _, raw := range strings.Split(strings.TrimPrefix(path, "/"), "/") {
-		object, ok := current.(map[string]any)
-		if !ok {
-			return nil
-		}
-		key := strings.ReplaceAll(strings.ReplaceAll(raw, "~1", "/"), "~0", "~")
-		current = object[key]
-	}
-	return current
+func numberAt(document any, path string) (float64, bool) {
+	return number(providertransport.JSONPointer(document, path))
 }
-func numberAt(document any, path string) (float64, bool) { return number(valueAt(document, path)) }
+
 func number(value any) (float64, bool) {
 	switch typed := value.(type) {
 	case float64:

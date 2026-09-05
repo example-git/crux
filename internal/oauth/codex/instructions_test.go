@@ -26,12 +26,15 @@ func TestStandardToolingInstructions(t *testing.T) {
 		"view",
 		"edit",
 		"write",
-		"glob",
-		"grep",
+		"search with files mode",
+		"search with content mode",
 		"bash",
-		"When codebase_search is available and its background index is ready",
+		"The main agent must prefer codebase_search over search",
+		"the relevant files are indexed",
 		"Do not use it while the index is being built or refreshed",
-		"use LSP or grep for known exact symbols and literals",
+		"use LSP or search in content mode for known exact symbols and literals",
+		"Do not inspect Git as a routine start/end step",
+		"prefer path-scoped inspection in large repositories",
 	} {
 		if !strings.Contains(instructions, expected) {
 			t.Fatalf("standard tooling instructions missing %q", expected)

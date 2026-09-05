@@ -1,59 +1,310 @@
 package config
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
+	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/oauth/copilot"
+	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/stretchr/testify/require"
 )
 
 func resetProviderState() {
+	providerStateMu.Lock()
+	defer providerStateMu.Unlock()
 	providerOnce = sync.Once{}
 	providerList = nil
 	providerRegistry = nil
 	providerPluginStatuses = nil
+	providerPresetReferences = nil
 	providerOwnerModes = nil
 	providerErr = nil
-	catwalkSyncer = &catwalkSync{}
 }
 
 func TestProviderRolloutPolicyProfilesAndIndependentGates(t *testing.T) {
-	integrated := []providerregistry.Registration{{ProviderID: "compat", Construction: "integrated-compat"}, {ProviderID: "copilot", Construction: providerregistry.ConstructionCopilot}}
-	plugins := []providerregistry.Registration{
-		{ProviderID: "compat", CompatibilityAdapter: "integrated-compat"},
-		{ProviderID: "native"},
+	integratedConstruction := providerregistry.Construction("integrated-protected")
+	integrated := []providerregistry.Registration{
+		{ProviderID: "protected", Construction: integratedConstruction},
+		{ProviderID: "copilot", Construction: providerregistry.ConstructionCopilot},
 	}
+	compatibility := providerregistry.Registration{ProviderID: "protected", Construction: integratedConstruction, CompatibilityAdapter: integratedConstruction}
+	native := providerregistry.Registration{ProviderID: "protected", Construction: providerregistry.ConstructionGenericJSON}
+	ordinary := providerregistry.Registration{ProviderID: "ordinary", Construction: providerregistry.ConstructionGenericJSON}
+	copilotPlugin := providerregistry.Registration{ProviderID: "copilot", Construction: providerregistry.ConstructionGenericJSON}
 
-	policy := providerRolloutPolicy{Profile: ProviderProfilePluginCompat, ExplicitProfile: true, Enabled: map[string]bool{"compat": true}}
-	modes := rolloutOwnerModes(policy, integrated, plugins)
-	require.Equal(t, providerregistry.OwnerPluginCompat, modes["compat"])
-	require.Equal(t, providerregistry.OwnerIntegrated, modes["copilot"])
-	require.Equal(t, providerregistry.OwnerDisabled, modes["native"])
-
-	modes = rolloutOwnerModes(providerRolloutPolicy{Profile: ProviderProfilePluginCompat}, integrated, nil)
-	require.Equal(t, providerregistry.OwnerDisabled, modes["compat"], "compatibility targets require an active plugin")
-	require.Equal(t, providerregistry.OwnerIntegrated, modes["copilot"], "core-owned Copilot remains active")
-
-	policy = providerRolloutPolicy{Profile: ProviderProfilePluginNative}
-	modes = rolloutOwnerModes(policy, integrated, plugins)
-	require.Equal(t, providerregistry.OwnerDisabled, modes["compat"])
-	require.Equal(t, providerregistry.OwnerPluginNative, modes["native"])
-
-	policy = providerRolloutPolicy{Profile: ProviderProfileCoreOnly}
-	modes = rolloutOwnerModes(policy, integrated, plugins)
-	require.Equal(t, providerregistry.OwnerDisabled, modes["compat"])
-	require.Equal(t, providerregistry.OwnerDisabled, modes["native"])
+	for _, test := range []struct {
+		name     string
+		profile  ProviderProfile
+		enabled  map[string]bool
+		plugin   providerregistry.Registration
+		expected map[string]providerregistry.OwnerMode
+	}{
+		{
+			name: "core only", profile: ProviderProfileCoreOnly, plugin: compatibility,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerDisabled, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerDisabled},
+		},
+		{
+			name: "core only explicit allowlist", profile: ProviderProfileCoreOnly, enabled: map[string]bool{"protected": true, "copilot": true, "ordinary": true}, plugin: compatibility,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerDisabled, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerDisabled},
+		},
+		{
+			name: "integrated", profile: ProviderProfileIntegrated, plugin: compatibility,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerIntegrated, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerDisabled},
+		},
+		{
+			name: "integrated explicit allowlist", profile: ProviderProfileIntegrated, enabled: map[string]bool{"protected": true, "copilot": true, "ordinary": true}, plugin: compatibility,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerIntegrated, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerDisabled},
+		},
+		{
+			name: "plugin compat empty allowlist", profile: ProviderProfilePluginCompat, plugin: compatibility,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerPluginCompat, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerPluginNative},
+		},
+		{
+			name: "plugin compat includes protected", profile: ProviderProfilePluginCompat, enabled: map[string]bool{"protected": true}, plugin: compatibility,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerPluginCompat, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerDisabled},
+		},
+		{
+			name: "plugin compat includes copilot", profile: ProviderProfilePluginCompat, enabled: map[string]bool{"copilot": true}, plugin: compatibility,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerDisabled, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerDisabled},
+		},
+		{
+			name: "plugin compat includes ordinary", profile: ProviderProfilePluginCompat, enabled: map[string]bool{"ordinary": true}, plugin: compatibility,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerDisabled, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerPluginNative},
+		},
+		{
+			name: "plugin compat accepts native", profile: ProviderProfilePluginCompat, plugin: native,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerPluginNative, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerPluginNative},
+		},
+		{
+			name: "plugin native rejects compatibility", profile: ProviderProfilePluginNative, plugin: compatibility,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerDisabled, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerPluginNative},
+		},
+		{
+			name: "plugin native empty allowlist", profile: ProviderProfilePluginNative, plugin: native,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerPluginNative, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerPluginNative},
+		},
+		{
+			name: "plugin native includes protected", profile: ProviderProfilePluginNative, enabled: map[string]bool{"protected": true}, plugin: native,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerPluginNative, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerDisabled},
+		},
+		{
+			name: "plugin native includes copilot", profile: ProviderProfilePluginNative, enabled: map[string]bool{"copilot": true}, plugin: native,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerDisabled, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerDisabled},
+		},
+		{
+			name: "plugin native includes ordinary", profile: ProviderProfilePluginNative, enabled: map[string]bool{"ordinary": true}, plugin: native,
+			expected: map[string]providerregistry.OwnerMode{"protected": providerregistry.OwnerDisabled, "copilot": providerregistry.OwnerIntegrated, "ordinary": providerregistry.OwnerPluginNative},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			policy := providerRolloutPolicy{Profile: test.profile, Enabled: test.enabled, ExplicitProfile: true}
+			modes := rolloutOwnerModes(policy, integrated, []providerregistry.Registration{test.plugin, ordinary, copilotPlugin})
+			require.Equal(t, test.expected, modes)
+		})
+	}
 }
 
 func TestParseProviderRolloutPolicyRejectsUnknownProfile(t *testing.T) {
 	t.Setenv("CRUX_PROVIDER_PROFILE", "surprise")
 	_, err := parseProviderRolloutPolicy()
 	require.EqualError(t, err, `unknown provider rollout profile "surprise"`)
+}
+
+func TestParseProviderRolloutPolicyProfilesAndAllowlist(t *testing.T) {
+	previous := DefaultProviderProfile
+	DefaultProviderProfile = string(ProviderProfilePluginCompat)
+	t.Cleanup(func() { DefaultProviderProfile = previous })
+
+	for _, profile := range []ProviderProfile{
+		ProviderProfileCoreOnly,
+		ProviderProfileIntegrated,
+		ProviderProfilePluginCompat,
+		ProviderProfilePluginNative,
+	} {
+		t.Run(string(profile), func(t *testing.T) {
+			policy, err := parseProviderRolloutPolicyFromEnvironment(env.NewFromMap(map[string]string{
+				"CRUX_PROVIDER_PROFILE": string(profile),
+				"CRUX_PROVIDER_PLUGINS": " codex, gemini-ag, codex ",
+			}))
+			require.NoError(t, err)
+			require.Equal(t, profile, policy.Profile)
+			require.True(t, policy.ExplicitProfile)
+			require.Equal(t, map[string]bool{"codex": true, "gemini-ag": true}, policy.Enabled)
+		})
+	}
+}
+
+func TestParseProviderRolloutPolicyRejectsLegacyCompatAllowlist(t *testing.T) {
+	_, err := parseProviderRolloutPolicyFromEnvironment(env.NewFromMap(map[string]string{
+		"CRUX_PROVIDER_PLUGIN_COMPAT": "codex",
+	}))
+	require.EqualError(t, err, "CRUX_PROVIDER_PLUGIN_COMPAT is unsupported; use CRUX_PROVIDER_PROFILE=plugin-compat with CRUX_PROVIDER_PLUGINS")
+}
+
+func TestPublishedProviderStatusIsDetached(t *testing.T) {
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+	status := providerplugin.Status{
+		ID:           "plugin",
+		ProviderID:   "provider",
+		Capabilities: []string{"inference"},
+		Diagnostics:  []providerplugin.Diagnostic{{Code: "ready", Message: "ready"}},
+	}
+	publishProviderScan(ProviderScan{
+		pluginStatuses: map[string]providerplugin.Status{"plugin": status},
+		ownerModes:     map[string]providerregistry.OwnerMode{"provider": providerregistry.OwnerPluginNative},
+	}, nil)
+	status.Capabilities[0] = "mutated-candidate"
+	status.Diagnostics[0].Code = "mutated-candidate"
+
+	published, _, found := ProviderPluginAvailability("plugin")
+	require.True(t, found)
+	require.Equal(t, []string{"inference"}, published.Capabilities)
+	require.Equal(t, "ready", published.Diagnostics[0].Code)
+	published.Capabilities[0] = "mutated-caller"
+	published.Diagnostics[0].Code = "mutated-caller"
+	retained, _, found := ProviderPluginAvailability("plugin")
+	require.True(t, found)
+	require.Equal(t, []string{"inference"}, retained.Capabilities)
+	require.Equal(t, "ready", retained.Diagnostics[0].Code)
+}
+
+func TestFailedLazyProviderScanRetainsPublishedGeneration(t *testing.T) {
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+	priorRegistry, err := providerregistry.New(providerregistry.Registration{ProviderID: "prior"})
+	require.NoError(t, err)
+	providerStateMu.Lock()
+	providerList = []catalog.Provider{{ID: "prior", Name: "Prior"}}
+	providerRegistry = priorRegistry
+	providerPluginStatuses = map[string]providerplugin.Status{"prior.plugin": {ID: "prior.plugin", ProviderID: "prior"}}
+	providerPresetReferences = map[string]ProviderPresetReference{"prior": {ID: "prior.preset", Version: "1.0.0", Digest: strings.Repeat("a", 64)}}
+	providerOwnerModes = map[string]providerregistry.OwnerMode{"prior": providerregistry.OwnerPluginNative}
+	providerStateMu.Unlock()
+	t.Setenv("CRUX_PROVIDER_PROFILE", "invalid-profile")
+
+	providers, err := Providers(&Config{Options: &Options{}})
+	require.ErrorContains(t, err, `unknown provider rollout profile "invalid-profile"`)
+	require.Equal(t, []catalog.Provider{{ID: "prior", Name: "Prior"}}, providers)
+	registration, found := ProviderRegistry().Lookup("prior")
+	require.True(t, found)
+	require.Equal(t, "prior", registration.ProviderID)
+	status, mode, found := ProviderPluginAvailability("prior.plugin")
+	require.True(t, found)
+	require.Equal(t, "prior", status.ProviderID)
+	require.Equal(t, providerregistry.OwnerPluginNative, mode)
+	preset, found := ActiveProviderPreset("prior")
+	require.True(t, found)
+	require.Equal(t, "prior.preset", preset.ID)
+}
+
+func TestFreshProviderScanUsesHostEnvironmentWithoutMutatingProcess(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CRUX_PROVIDER_PROFILE", string(ProviderProfileCoreOnly))
+	host := env.NewFromMap(map[string]string{
+		"CRUX_GLOBAL_DATA":      filepath.Join(root, "data"),
+		"CRUX_CACHE_DIR":        filepath.Join(root, "cache"),
+		"CRUX_PROVIDER_PROFILE": "invalid-host",
+	})
+
+	_, err := freshProviderScan(t.Context(), &Config{Options: &Options{}}, host)
+	require.ErrorContains(t, err, `unknown provider rollout profile "invalid-host"`)
+	require.Equal(t, string(ProviderProfileCoreOnly), os.Getenv("CRUX_PROVIDER_PROFILE"))
+}
+
+func TestFreshProviderScanValidatesHostProfileWhenDefaultsDisabled(t *testing.T) {
+	host := env.NewFromMap(map[string]string{"CRUX_PROVIDER_PROFILE": "invalid-host"})
+
+	_, err := freshProviderScan(t.Context(), &Config{Options: &Options{DisableDefaultProviders: true}}, host)
+	require.ErrorContains(t, err, `unknown provider rollout profile "invalid-host"`)
+}
+
+func TestFreshProviderScanUsesCapturedHostPaths(t *testing.T) {
+	root := t.TempDir()
+	dataRoot := filepath.Join(root, "captured-data")
+	cacheRoot := filepath.Join(root, "captured-cache")
+	source, err := filepath.Abs(filepath.Join("..", "..", "docs", "provider-plugins", "examples", "minimal.plugin"))
+	require.NoError(t, err)
+	installTrustedProviderBundle(t, dataRoot, cacheRoot, source)
+	host := env.NewFromMap(map[string]string{
+		"CRUX_GLOBAL_DATA":      dataRoot,
+		"CRUX_CACHE_DIR":        cacheRoot,
+		"CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginNative),
+	})
+	t.Setenv("CRUX_GLOBAL_DATA", filepath.Join(root, "replacement-data"))
+	t.Setenv("CRUX_CACHE_DIR", filepath.Join(root, "replacement-cache"))
+	t.Setenv("CRUX_PROVIDER_PROFILE", string(ProviderProfileCoreOnly))
+
+	scan, err := freshProviderScan(t.Context(), &Config{Options: &Options{}}, host)
+	require.NoError(t, err)
+	require.True(t, containsProvider(scan.Providers, "example-echo"))
+}
+
+func TestBuildEnvironmentResolvesCandidateValuesWithoutMutatingProcess(t *testing.T) {
+	t.Setenv("T3_9_ENV_FIRST", "published-first")
+	t.Setenv("T3_9_ENV_SECOND", "published-second")
+	cfg := &Config{Env: map[string]string{
+		"T3_9_ENV_FIRST":  "candidate-first",
+		"T3_9_ENV_SECOND": "$T3_9_ENV_FIRST-second",
+	}}
+
+	candidate, resolver, resolved, err := cfg.buildEnvironment()
+	require.NoError(t, err)
+	require.Equal(t, "candidate-first", candidate.Get("T3_9_ENV_FIRST"))
+	require.Equal(t, "candidate-first-second", candidate.Get("T3_9_ENV_SECOND"))
+	value, err := resolver.ResolveValue("$T3_9_ENV_SECOND")
+	require.NoError(t, err)
+	require.Equal(t, "candidate-first-second", value)
+	require.Equal(t, "candidate-first", resolved["T3_9_ENV_FIRST"])
+	require.Equal(t, "candidate-first-second", resolved["T3_9_ENV_SECOND"])
+	require.Equal(t, "published-first", os.Getenv("T3_9_ENV_FIRST"))
+	require.Equal(t, "published-second", os.Getenv("T3_9_ENV_SECOND"))
+}
+
+func TestBuildEnvironmentRejectsInvalidValueWithoutMutatingProcess(t *testing.T) {
+	t.Setenv("T3_9_INVALID_ENV", "published")
+	cfg := &Config{Env: map[string]string{"T3_9_INVALID_ENV": "$"}}
+
+	_, _, _, err := cfg.buildEnvironment()
+	require.EqualError(t, err, `resolve environment variable "T3_9_INVALID_ENV"`)
+	require.Equal(t, "published", os.Getenv("T3_9_INVALID_ENV"))
+}
+
+func TestApplyEnvironmentRollsBackEarlierValuesOnFailure(t *testing.T) {
+	const key = "T3_9_ENV_APPLIED"
+	const failingKey = "T3_9_ENV_ROLLBACK_FAILURE"
+	t.Setenv(key, "published")
+	setenv := func(name, value string) error {
+		if name == failingKey {
+			return fmt.Errorf("set blocked")
+		}
+		return os.Setenv(name, value)
+	}
+
+	err := applyEnvironmentWith(env.NewFromMap(nil), nil, map[string]string{
+		key:        "candidate",
+		failingKey: "invalid",
+	}, setenv, os.Unsetenv)
+	require.ErrorContains(t, err, `apply environment variable "T3_9_ENV_ROLLBACK_FAILURE"`)
+	require.Equal(t, "published", os.Getenv(key))
+}
+
+func TestBuildEnvironmentRejectsStartupOnlyHostSettings(t *testing.T) {
+	for key := range immutableHostEnvironmentVariables {
+		t.Run(key, func(t *testing.T) {
+			cfg := &Config{Env: map[string]string{key: "candidate"}}
+			_, _, _, err := cfg.buildEnvironment()
+			require.EqualError(t, err, fmt.Sprintf("environment variable %q is a startup-only host setting", key))
+		})
+	}
 }
 
 func TestCompiledProviderProfileIsACeiling(t *testing.T) {
@@ -65,184 +316,43 @@ func TestCompiledProviderProfileIsACeiling(t *testing.T) {
 	require.EqualError(t, err, `provider rollout profile "plugin-native" exceeds compiled release profile "core-only"`)
 }
 
-func TestProviderBehaviorCapabilitiesPreserveInactiveIntegratedBehavior(t *testing.T) {
+func TestProvidersIgnoreHistoricalCatalog(t *testing.T) {
+	root := t.TempDir()
+	xdgData := filepath.Join(root, "xdg")
+	dataRoot := filepath.Join(root, "data")
+	cacheRoot := filepath.Join(root, "cache")
+	t.Setenv("XDG_DATA_HOME", xdgData)
+	t.Setenv("CRUX_GLOBAL_DATA", dataRoot)
+	t.Setenv("CRUX_CACHE_DIR", cacheRoot)
+
+	historical := []catalog.Provider{
+		{ID: "historical", Name: "Historical", Type: catalog.TypeOpenAICompat},
+		{ID: catalog.ProviderCopilot, Name: "Historical Copilot", Type: catalog.TypeOpenAICompat},
+	}
+	data, err := json.Marshal(historical)
+	require.NoError(t, err)
+	catalogPath := filepath.Join(xdgData, "crux", "providers.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(catalogPath), 0o755))
+	require.NoError(t, os.WriteFile(catalogPath, data, 0o644))
+
 	resetProviderState()
 	t.Cleanup(resetProviderState)
-	t.Setenv("CRUX_PROVIDER_PROFILE", string(ProviderProfileCoreOnly))
-
-	_, active := ProviderCapabilities().Lookup("codex")
-	require.False(t, active)
-	registration, ok := ProviderBehaviorCapabilities("codex")
-	require.True(t, ok)
-	require.NotNil(t, registration.Runtime)
-	require.NotNil(t, registration.Instructions)
-	require.NotNil(t, registration.Images)
-}
-
-func TestProviders_Integration_AutoUpdateDisabled(t *testing.T) {
-	tmpDir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", tmpDir)
-
-	originalCatwalkSyncer := catwalkSyncer
-	defer func() {
-		catwalkSyncer = originalCatwalkSyncer
-	}()
-	catwalkSyncer = &catwalkSync{}
-
-	resetProviderState()
-	defer resetProviderState()
-
-	providers, err := Providers(&Config{
-		Options: &Options{DisableProviderAutoUpdate: true},
-	})
-	require.NoError(t, err)
-	require.NotNil(t, providers)
-	require.Greater(t, len(providers), 3, "expected embedded providers")
-}
-
-func TestCache_StoreAndGet(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	cachePath := tmpDir + "/test.json"
-
-	cache := newCache[[]catwalk.Provider](cachePath)
-
-	providers := []catwalk.Provider{
-		{Name: "Provider1", ID: "p1"},
-		{Name: "Provider2", ID: "p2"},
-	}
-
-	err := cache.Store(providers)
-	require.NoError(t, err)
-
-	result, etag, err := cache.Get()
-	require.NoError(t, err)
-	require.Len(t, result, 2)
-	require.Equal(t, "Provider1", result[0].Name)
-	require.NotEmpty(t, etag)
-}
-
-func TestCache_GetNonExistent(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	cachePath := tmpDir + "/nonexistent.json"
-
-	cache := newCache[[]catwalk.Provider](cachePath)
-
-	_, _, err := cache.Get()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "failed to read provider cache file")
-}
-
-func TestCache_GetInvalidJSON(t *testing.T) {
-	t.Parallel()
-
-	tmpDir := t.TempDir()
-	cachePath := tmpDir + "/invalid.json"
-
-	require.NoError(t, os.WriteFile(cachePath, []byte("invalid json"), 0o644))
-
-	cache := newCache[[]catwalk.Provider](cachePath)
-
-	_, _, err := cache.Get()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "failed to unmarshal provider data from cache")
-}
-
-func TestCachePathFor(t *testing.T) {
-	tests := []struct {
-		name        string
-		xdgDataHome string
-		expected    string
-	}{
-		{
-			name:        "with XDG_DATA_HOME",
-			xdgDataHome: "/custom/data",
-			expected:    "/custom/data/crux/providers.json",
-		},
-		{
-			name:        "without XDG_DATA_HOME",
-			xdgDataHome: "",
-			expected:    "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.xdgDataHome != "" {
-				t.Setenv("XDG_DATA_HOME", tt.xdgDataHome)
-			} else {
-				t.Setenv("XDG_DATA_HOME", "")
-			}
-
-			result := cachePathFor("providers")
-			if tt.expected != "" {
-				require.Equal(t, tt.expected, filepath.ToSlash(result))
-			} else {
-				require.Contains(t, result, "crux")
-				require.Contains(t, result, "providers.json")
-			}
-		})
-	}
-}
-
-func TestProvidersUsesCachedCatalog(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-
-	cached := []catwalk.Provider{{Name: "Provider1", ID: "p1", Type: catwalk.TypeOpenAICompat}}
-	require.NoError(t, newCache[[]catwalk.Provider](cachePathFor("providers")).Store(cached))
-
-	resetProviderState()
-	defer resetProviderState()
-
 	providers, err := Providers(&Config{Options: &Options{}})
 	require.NoError(t, err)
-	require.Len(t, providers, 1, "plugin-compat must not add Codex or Gemini without their plugins")
-	require.Equal(t, catwalk.InferenceProvider("p1"), providers[0].ID)
+	require.Equal(t, []catalog.ProviderID{catalog.ProviderCopilot}, providerIDs(providers))
+	require.Equal(t, copilot.CatalogProvider().Name, providers[0].Name)
 }
 
 func TestProviders_HonorsDisableDefaultProviders(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("CRUX_GLOBAL_DATA", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("CRUX_CACHE_DIR", filepath.Join(t.TempDir(), "cache"))
 
 	resetProviderState()
-	defer resetProviderState()
+	t.Cleanup(resetProviderState)
 
 	providers, err := Providers(&Config{
 		Options: &Options{DisableDefaultProviders: true},
 	})
 	require.NoError(t, err)
 	require.Empty(t, providers)
-}
-
-func TestCacheStore_ReplacesFileInsteadOfRewritingIt(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	path := filepath.Join(dir, "providers.json")
-	c := newCache[[]catwalk.Provider](path)
-
-	require.NoError(t, c.Store([]catwalk.Provider{{ID: "first", Name: "First"}}))
-	before, err := os.Stat(path)
-	require.NoError(t, err)
-
-	require.NoError(t, c.Store([]catwalk.Provider{{ID: "second", Name: "Second"}}))
-	after, err := os.Stat(path)
-	require.NoError(t, err)
-
-	if runtime.GOOS != "windows" {
-		require.False(t, os.SameFile(before, after),
-			"the cache should be replaced by a rename, not rewritten in place")
-	}
-
-	got, _, err := c.Get()
-	require.NoError(t, err)
-	require.Len(t, got, 1)
-	require.Equal(t, catwalk.InferenceProvider("second"), got[0].ID)
-
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	require.Len(t, entries, 1, "only the cache file should remain")
-	require.Equal(t, "providers.json", entries[0].Name())
 }

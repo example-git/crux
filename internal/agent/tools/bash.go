@@ -191,11 +191,18 @@ func blockFuncs() []shell.BlockFunc {
 	}
 }
 
-func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions permission.Service, workingDir string) fantasy.AgentTool {
+func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions permission.Service, workingDir string, environments ...[]string) fantasy.AgentTool {
+	var environment []string
+	if len(environments) > 0 {
+		environment = append([]string(nil), environments[0]...)
+	}
 	return fantasy.NewAgentTool(
 		BashToolName,
 		string(bashDescription()),
 		func(ctx context.Context, params BashParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if params.RunInBackground && permission.IsSubagent(ctx) {
+				return fantasy.NewTextErrorResponse(permission.ErrSubagentBackgroundTask.Error()), nil
+			}
 			if params.Command == "" {
 				return fantasy.NewTextErrorResponse("missing command"), nil
 			}
@@ -253,7 +260,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 				bgManager := backgroundShells
 				bgManager.Cleanup()
 				// Use background context so it continues after tool returns
-				bgShell, err := bgManager.StartOwned(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description, shellOwnership)
+				bgShell, err := bgManager.StartOwnedWithEnvironment(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description, shellOwnership, environment)
 				if err != nil {
 					return fantasy.ToolResponse{}, fmt.Errorf("error starting background shell: %w", err)
 				}
@@ -310,7 +317,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 			// sends it to the background.
 			bgManager := backgroundShells
 			bgManager.Cleanup()
-			bgShell, err := bgManager.StartOwned(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description, shellOwnership)
+			bgShell, err := bgManager.StartOwnedWithEnvironment(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description, shellOwnership, environment)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error starting shell: %w", err)
 			}

@@ -13,15 +13,95 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/commands"
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/skills"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClientWorkspaceRefreshRejectsReverseOrderOwnerSnapshot(t *testing.T) {
+	ownerA := providerregistry.RegistrationOwner{
+		ProviderID:      "same",
+		Construction:    providerregistry.ConstructionGenericJSON,
+		HasManifest:     true,
+		ManifestID:      "plugin.same",
+		ManifestVersion: "1.0.0",
+	}
+	ownerB := ownerA
+	ownerB.ManifestVersion = "2.0.0"
+	workspaceSnapshot := func(owner providerregistry.RegistrationOwner, model string) proto.Workspace {
+		return proto.Workspace{
+			ID: "ws-1",
+			Config: &config.Config{
+				Models: map[config.SelectedModelType]config.SelectedModel{
+					config.SelectedModelTypeLarge: {Provider: owner.ProviderID, Model: model},
+				},
+				Options: &config.Options{},
+			},
+			ProviderSurfaces: []providerregistry.Surface{{ID: owner.ProviderID, Owner: &owner}},
+		}
+	}
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	secondStarted := make(chan struct{})
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/v1/workspaces/ws-1", r.URL.Path)
+		switch requests.Add(1) {
+		case 1:
+			close(firstStarted)
+			<-releaseFirst
+			require.NoError(t, json.NewEncoder(w).Encode(workspaceSnapshot(ownerA, "model-a")))
+		case 2:
+			close(secondStarted)
+			require.NoError(t, json.NewEncoder(w).Encode(workspaceSnapshot(ownerB, "model-b")))
+		default:
+			http.Error(w, "unexpected refresh", http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	remote, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	workspace := NewClientWorkspace(remote, workspaceSnapshot(ownerA, "initial"))
+
+	firstDone := make(chan struct{})
+	go func() {
+		workspace.refreshWorkspace()
+		close(firstDone)
+	}()
+	<-firstStarted
+
+	secondDone := make(chan struct{})
+	go func() {
+		workspace.refreshWorkspace()
+		close(secondDone)
+	}()
+	<-secondStarted
+	<-secondDone
+
+	bound, ok := workspace.Config().ProviderOwner(ownerB.ProviderID)
+	require.True(t, ok)
+	require.Equal(t, ownerB, bound)
+	require.Equal(t, "model-b", workspace.Config().Models[config.SelectedModelTypeLarge].Model)
+
+	close(releaseFirst)
+	<-firstDone
+	bound, ok = workspace.Config().ProviderOwner(ownerB.ProviderID)
+	require.True(t, ok)
+	require.Equal(t, ownerB, bound)
+	require.Equal(t, "model-b", workspace.Config().Models[config.SelectedModelTypeLarge].Model)
+}
 
 // TestProtoToMessageToolResult ensures that ToolResult metadata,
 // data, and MIME type survive the conversion from proto on the
@@ -291,6 +371,32 @@ func TestProtoToSkillStates(t *testing.T) {
 // is converted into pubsub.Event[skills.Event] and that the
 // client-process skill cache is updated as a side effect, so callers
 // reading skills.GetLatestStates see fresh data after each delta.
+func TestTranslateEventPreservesAgentProvider(t *testing.T) {
+	t.Parallel()
+
+	owner := providerregistry.RegistrationOwner{
+		ProviderID:      "provider",
+		Construction:    providerregistry.ConstructionGenericJSON,
+		HasManifest:     true,
+		ManifestID:      "plugin.provider",
+		ManifestVersion: "2.0.0",
+	}
+	w := NewClientWorkspace(nil, proto.Workspace{})
+	out := w.translateEvent(pubsub.Event[proto.AgentEvent]{
+		Type: pubsub.CreatedEvent,
+		Payload: proto.AgentEvent{
+			Type:       proto.AgentEventType("re_authenticate"),
+			ProviderID: owner.ProviderID,
+			Owner:      &owner,
+		},
+	})
+	got, ok := out.(pubsub.Event[notify.Notification])
+	require.True(t, ok)
+	require.Equal(t, notify.TypeReAuthenticate, got.Payload.Type)
+	require.Equal(t, owner.ProviderID, got.Payload.ProviderID)
+	require.Equal(t, owner, got.Payload.Owner)
+}
+
 func TestTranslateEvent_Skills(t *testing.T) {
 	// Not parallel - touches the package-level skills cache via the
 	// manager constructed with WithGlobalMirror.

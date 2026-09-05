@@ -12,6 +12,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,14 +40,15 @@ func TestSetProviderAPIKeyStringSendsKind(t *testing.T) {
 	defer srv.Close()
 
 	c := captureClient(t, srv)
-	require.NoError(t, c.SetProviderAPIKey(context.Background(), "ws1", config.ScopeGlobal, "openai", "sk-xyz"))
+	owner := providerregistry.RegistrationOwner{ProviderID: "openai"}
+	require.NoError(t, c.SetProviderAPIKey(context.Background(), "ws1", config.ScopeGlobal, "openai", config.ProviderAPIKeyCredential{Owner: owner, APIKey: "sk-xyz"}))
 
 	require.Equal(t, proto.APIKeyKindString, got.Kind)
 	require.Equal(t, "openai", got.ProviderID)
 	require.Equal(t, config.ScopeGlobal, got.Scope)
 	decoded, err := got.DecodeAPIKey()
 	require.NoError(t, err)
-	require.Equal(t, "sk-xyz", decoded)
+	require.Equal(t, config.ProviderAPIKeyCredential{Owner: owner, APIKey: "sk-xyz"}, decoded)
 }
 
 func TestSetProviderAPIKeyOAuthSendsKind(t *testing.T) {
@@ -62,13 +64,169 @@ func TestSetProviderAPIKeyOAuthSendsKind(t *testing.T) {
 	defer srv.Close()
 
 	tok := &oauth.Token{AccessToken: "a", RefreshToken: "r", ExpiresIn: 60, ExpiresAt: 1234567890}
+	owner := providerregistry.Registration{ProviderID: "codex", Construction: providerregistry.ConstructionCodex, OAuth: &providerregistry.OAuthCapability{}}.Owner()
+	credential := config.ProviderOAuthCredential{Owner: owner, Token: tok}
 	c := captureClient(t, srv)
-	require.NoError(t, c.SetProviderAPIKey(context.Background(), "ws1", config.ScopeGlobal, "codex", tok))
+	require.NoError(t, c.SetProviderAPIKey(context.Background(), "ws1", config.ScopeGlobal, "codex", credential))
 
 	require.Equal(t, proto.APIKeyKindOAuth, got.Kind)
+	require.Equal(t, owner, *got.Owner)
 	decoded, err := got.DecodeAPIKey()
 	require.NoError(t, err)
-	require.Equal(t, tok, decoded.(*oauth.Token))
+	require.Equal(t, credential, decoded.(config.ProviderOAuthCredential))
+}
+
+func TestRemoveProviderCredentialsSendsExactOwner(t *testing.T) {
+	t.Parallel()
+
+	var got proto.ConfigProviderKeyRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/v1/workspaces/ws1/config/provider-key", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	owner := providerregistry.Registration{ProviderID: "codex", Construction: providerregistry.ConstructionCodex, OAuth: &providerregistry.OAuthCapability{}}.Owner()
+	require.NoError(t, captureClient(t, srv).RemoveProviderCredentials(t.Context(), "ws1", config.ScopeGlobal, owner))
+	require.Equal(t, proto.APIKeyKindRemove, got.Kind)
+	require.Equal(t, "codex", got.ProviderID)
+	require.Equal(t, owner, *got.Owner)
+}
+
+func TestRefreshOAuthTokenSendsCompleteOwner(t *testing.T) {
+	t.Parallel()
+
+	var got proto.ConfigRefreshOAuthRequest
+	var topLevel map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/v1/workspaces/ws1/config/refresh-oauth", r.URL.Path)
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(body, &got))
+		require.NoError(t, json.Unmarshal(body, &topLevel))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	owner := providerregistry.RegistrationOwner{
+		ProviderID:           "same-id",
+		AccountNamespace:     "same-id.accounts",
+		Construction:         providerregistry.ConstructionOpenAIResponses,
+		CompatibilityAdapter: providerregistry.ConstructionCodex,
+		HasOAuth:             true,
+		OAuthAdapter:         providerregistry.LoginBrowser,
+		OAuthFlowID:          "same-id-flow",
+		HasManifest:          true,
+		ManifestID:           "plugin.same-id",
+		ManifestVersion:      "1.2.3",
+	}
+	require.NoError(t, captureClient(t, srv).RefreshOAuthToken(t.Context(), "ws1", config.ScopeWorkspace, owner))
+	require.Equal(t, config.ScopeWorkspace, got.Scope)
+	require.Equal(t, owner, got.Owner)
+	require.Contains(t, topLevel, "owner")
+	require.NotContains(t, topLevel, "provider_id")
+}
+
+func TestRefreshOAuthTokenRejectsMissingOwnerLocally(t *testing.T) {
+	t.Parallel()
+
+	called := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	err := captureClient(t, srv).RefreshOAuthToken(t.Context(), "ws1", config.ScopeGlobal, providerregistry.RegistrationOwner{})
+	require.ErrorContains(t, err, "initiating owner is required")
+	select {
+	case <-called:
+		t.Fatal("server should not have been reached")
+	default:
+	}
+}
+
+func TestUpdatePreferredModelSendsCompleteOwner(t *testing.T) {
+	t.Parallel()
+
+	var got proto.ConfigModelRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/v1/workspaces/ws1/config/model", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		state := config.AgentModelState{
+			Large: &config.OwnedSelectedModel{Model: got.Model, Owner: got.Owner},
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(state))
+	}))
+	defer srv.Close()
+
+	owner := providerregistry.RegistrationOwner{
+		ProviderID:           "same-id",
+		AccountNamespace:     "same-id.accounts",
+		Construction:         providerregistry.ConstructionOpenAIResponses,
+		CompatibilityAdapter: providerregistry.ConstructionCodex,
+		HasOAuth:             true,
+		OAuthAdapter:         providerregistry.LoginBrowser,
+		OAuthFlowID:          "same-id-flow",
+		HasManifest:          true,
+		ManifestID:           "plugin.same-id",
+		ManifestVersion:      "1.2.3",
+	}
+	model := config.SelectedModel{Provider: owner.ProviderID, Model: "model-1"}
+	state, err := captureClient(t, srv).UpdatePreferredModel(t.Context(), "ws1", config.ScopeWorkspace, config.SelectedModelTypeLarge, model, owner)
+	require.NoError(t, err)
+	require.Equal(t, &config.OwnedSelectedModel{Model: model, Owner: owner}, state.Large)
+	require.Equal(t, config.ScopeWorkspace, got.Scope)
+	require.Equal(t, config.SelectedModelTypeLarge, got.ModelType)
+	require.Equal(t, model, got.Model)
+	require.Equal(t, owner, got.Owner)
+}
+
+func TestUpdatePreferredModelRejectsInvalidOwnerLocally(t *testing.T) {
+	t.Parallel()
+
+	called := make(chan struct{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	client := captureClient(t, srv)
+	model := config.SelectedModel{Provider: "same-id", Model: "model-1"}
+
+	_, err := client.UpdatePreferredModel(t.Context(), "ws1", config.ScopeGlobal, config.SelectedModelTypeLarge, model, providerregistry.RegistrationOwner{})
+	require.ErrorContains(t, err, "initiating owner is required")
+	_, err = client.UpdatePreferredModel(t.Context(), "ws1", config.ScopeGlobal, config.SelectedModelTypeLarge, model, providerregistry.RegistrationOwner{ProviderID: "replacement"})
+	require.ErrorContains(t, err, "does not match model provider")
+	select {
+	case <-called:
+		t.Fatal("server should not have been reached")
+	default:
+	}
+}
+
+func TestSetProviderDisabledSendsCompleteOwner(t *testing.T) {
+	t.Parallel()
+
+	var got proto.ConfigSetRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/v1/workspaces/ws1/config/set", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&got))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	owner := providerregistry.Registration{ProviderID: "codex", Construction: providerregistry.ConstructionCodex, OAuth: &providerregistry.OAuthCapability{}}.Owner()
+	require.NoError(t, captureClient(t, srv).SetProviderDisabled(t.Context(), "ws1", config.ScopeGlobal, owner, true))
+	require.Equal(t, config.ScopeGlobal, got.Scope)
+	require.Equal(t, "providers.codex.disable", got.Key)
+	require.Equal(t, true, got.Value)
+	require.Equal(t, owner, *got.Owner)
 }
 
 func TestSetProviderAPIKeyUnsupportedTypeFailsLocally(t *testing.T) {

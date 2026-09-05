@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/stretchr/testify/require"
 )
 
@@ -114,6 +115,7 @@ func TestUpdatePreferredModel_PersistsModelAndRecents(t *testing.T) {
 	dir := t.TempDir()
 	cfg := &Config{}
 	cfg.setDefaults(dir, "")
+	cfg.Providers.Set("openai", ProviderConfig{ID: "openai", Models: []catalog.Model{{ID: "gpt-4o"}}})
 	store := testStoreWithPath(cfg, dir)
 
 	sel := SelectedModel{Provider: "openai", Model: "gpt-4o"}
@@ -134,12 +136,70 @@ func TestUpdatePreferredModel_PersistsModelAndRecents(t *testing.T) {
 	require.Equal(t, "gpt-4o", item["model"])
 }
 
+func TestUpdatePreferredModel_ImplicitSmallTracksLargeProvider(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	alphaLarge := SelectedModel{Provider: "alpha", Model: "alpha-large"}
+	alphaSmall := SelectedModel{Provider: "alpha", Model: "alpha-small"}
+	betaLarge := SelectedModel{Provider: "beta", Model: "beta-large"}
+	betaSmall := SelectedModel{Provider: "beta", Model: "beta-small", MaxTokens: 512}
+	cfg := &Config{}
+	cfg.setDefaults(dir, "")
+	cfg.Providers.Set("alpha", ProviderConfig{ID: "alpha", Models: []catalog.Model{{ID: "alpha-large"}, {ID: "alpha-small"}}})
+	cfg.Providers.Set("beta", ProviderConfig{ID: "beta", Models: []catalog.Model{{ID: "beta-large"}, {ID: "beta-small", DefaultMaxTokens: 512}}})
+	cfg.Models[SelectedModelTypeLarge] = alphaLarge
+	cfg.captureExplicitModels()
+	cfg.Models[SelectedModelTypeSmall] = alphaSmall
+	store := testStoreWithPath(cfg, dir)
+	store.knownProviders = []catalog.Provider{
+		{ID: "alpha", DefaultSmallModelID: "alpha-small"},
+		{ID: "beta", DefaultSmallModelID: "beta-small"},
+	}
+
+	require.NoError(t, store.UpdatePreferredModel(ScopeGlobal, SelectedModelTypeLarge, betaLarge))
+	require.Equal(t, betaLarge, store.Config().Models[SelectedModelTypeLarge])
+	require.Equal(t, betaSmall, store.Config().Models[SelectedModelTypeSmall])
+	require.False(t, store.Config().modelExplicit(SelectedModelTypeSmall))
+	require.Equal(t, betaLarge, store.overrides.Models[SelectedModelTypeLarge])
+	_, pinnedSmall := store.overrides.Models[SelectedModelTypeSmall]
+	require.False(t, pinnedSmall)
+
+	persisted := readConfigJSON(t, store.globalDataPath)
+	models := persisted["models"].(map[string]any)
+	require.NotContains(t, models, string(SelectedModelTypeSmall))
+}
+
+func TestOverridePreferredModel_ImplicitSmallTracksLargeProvider(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{}
+	cfg.setDefaults(t.TempDir(), "")
+	cfg.Providers.Set("alpha", ProviderConfig{ID: "alpha", Models: []catalog.Model{{ID: "alpha-large"}, {ID: "alpha-small"}}})
+	cfg.Providers.Set("beta", ProviderConfig{ID: "beta", Models: []catalog.Model{{ID: "beta-small"}, {ID: "beta-large"}}})
+	cfg.Models[SelectedModelTypeLarge] = SelectedModel{Provider: "alpha", Model: "alpha-large"}
+	cfg.captureExplicitModels()
+	cfg.Models[SelectedModelTypeSmall] = SelectedModel{Provider: "alpha", Model: "alpha-small"}
+	store := NewTestStore(cfg)
+
+	betaLarge := SelectedModel{Provider: "beta", Model: "beta-large"}
+	require.NoError(t, store.OverridePreferredModel(SelectedModelTypeLarge, betaLarge))
+	require.Equal(t, SelectedModel{Provider: "beta", Model: "beta-small"}, store.Config().Models[SelectedModelTypeSmall])
+	require.False(t, store.Config().modelExplicit(SelectedModelTypeSmall))
+	_, pinnedSmall := store.overrides.Models[SelectedModelTypeSmall]
+	require.False(t, pinnedSmall)
+}
+
 func TestUpdatePreferredModel_TypeIsolation(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	cfg := &Config{}
 	cfg.setDefaults(dir, "")
+	cfg.Providers.Set("openai", ProviderConfig{ID: "openai", Models: []catalog.Model{{ID: "gpt-4o"}}})
+	cfg.Providers.Set("anthropic", ProviderConfig{ID: "anthropic", Models: []catalog.Model{{ID: "claude"}}})
+	cfg.Providers.Set("google", ProviderConfig{ID: "google", Models: []catalog.Model{{ID: "gemini"}}})
+	cfg.captureExplicitModels()
 	store := testStoreWithPath(cfg, dir)
 
 	largeModel := SelectedModel{Provider: "openai", Model: "gpt-4o"}
@@ -155,4 +215,53 @@ func TestUpdatePreferredModel_TypeIsolation(t *testing.T) {
 	require.Equal(t, anotherLarge, store.Config().RecentModels[SelectedModelTypeLarge][0])
 	require.Len(t, store.Config().RecentModels[SelectedModelTypeSmall], 1)
 	require.Equal(t, smallModel, store.Config().RecentModels[SelectedModelTypeSmall][0])
+}
+
+func TestPreferredModelMutationsRejectUnavailableSelections(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{}
+	cfg.setDefaults(dir, "")
+	available := SelectedModel{Provider: "available", Model: "available-model"}
+	cfg.Providers.Set("available", ProviderConfig{ID: "available", Models: []catalog.Model{{ID: "available-model"}}})
+	cfg.Providers.Set("unavailable", ProviderConfig{
+		ID: "unavailable", Models: []catalog.Model{{ID: "unavailable-model"}},
+		Plugin: &ProviderPluginReference{ID: "missing.plugin", Version: "1"},
+	})
+	cfg.Models[SelectedModelTypeLarge] = available
+	cfg.Models[SelectedModelTypeSmall] = available
+	cfg.RecentModels[SelectedModelTypeLarge] = []SelectedModel{available}
+	cfg.RecentModels[SelectedModelTypeSmall] = []SelectedModel{available}
+	store := testStoreWithPath(cfg, dir)
+	originalDisk := []byte(`{"models":{"large":{"provider":"available","model":"available-model"}}}`)
+	require.NoError(t, os.WriteFile(store.globalDataPath, originalDisk, 0o600))
+
+	for _, test := range []struct {
+		name      string
+		modelType SelectedModelType
+		model     SelectedModel
+	}{
+		{name: "large unavailable owner", modelType: SelectedModelTypeLarge, model: SelectedModel{Provider: "unavailable", Model: "unavailable-model"}},
+		{name: "small missing model", modelType: SelectedModelTypeSmall, model: SelectedModel{Provider: "available", Model: "missing-model"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.ErrorContains(t, store.UpdatePreferredModel(ScopeGlobal, test.modelType, test.model), "is not available")
+			require.Equal(t, available, store.Config().Models[test.modelType])
+			require.Equal(t, []SelectedModel{available}, store.Config().RecentModels[test.modelType])
+			require.Empty(t, store.overrides.Models)
+			disk, err := os.ReadFile(store.globalDataPath)
+			require.NoError(t, err)
+			require.Equal(t, originalDisk, disk)
+		})
+	}
+
+	require.ErrorContains(t, store.OverridePreferredModel(SelectedModelTypeLarge, SelectedModel{
+		Provider: "unavailable",
+		Model:    "unavailable-model",
+	}), "is not available")
+	require.Equal(t, available, store.Config().Models[SelectedModelTypeLarge])
+	require.Equal(t, []SelectedModel{available}, store.Config().RecentModels[SelectedModelTypeLarge])
+	require.Empty(t, store.overrides.Models)
+	disk, err := os.ReadFile(store.globalDataPath)
+	require.NoError(t, err)
+	require.Equal(t, originalDisk, disk)
 }

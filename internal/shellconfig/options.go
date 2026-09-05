@@ -138,16 +138,14 @@ type optionSpec struct {
 // handled as special cases in handleOption above and do not appear here.
 var optionSpecs = map[string]optionSpec{
 	// Boolean fields (stored as-is).
-	"debug":                  {jsonKey: "debug", kind: optBool},
-	"debug-lsp":              {jsonKey: "debug_lsp", kind: optBool},
-	"auto-lsp":               {jsonKey: "auto_lsp", kind: optBool},
-	"progress":               {jsonKey: "progress", kind: optBool},
-	"system-prompt-override": {jsonKey: "system_prompt_override", kind: optBool},
+	"debug":     {jsonKey: "debug", kind: optBool},
+	"debug-lsp": {jsonKey: "debug_lsp", kind: optBool},
+	"auto-lsp":  {jsonKey: "auto_lsp", kind: optBool},
+	"progress":  {jsonKey: "progress", kind: optBool},
 
 	// Boolean fields exposed positively but stored as their negation.
-	"auto-summarize":       {jsonKey: "disable_auto_summarize", kind: optBool, inverted: true},
-	"provider-auto-update": {jsonKey: "disable_provider_auto_update", kind: optBool, inverted: true},
-	"default-providers":    {jsonKey: "disable_default_providers", kind: optBool, inverted: true},
+	"auto-summarize":    {jsonKey: "disable_auto_summarize", kind: optBool, inverted: true},
+	"default-providers": {jsonKey: "disable_default_providers", kind: optBool, inverted: true},
 
 	// String fields.
 	"notifications":  {jsonKey: "notifications", kind: optString},

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/catwalk/pkg/catwalk"
 	"github.com/charmbracelet/x/ansi"
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/stringext"
 )
 
@@ -97,9 +97,9 @@ type BinaryContent struct {
 	Data     []byte
 }
 
-func (bc BinaryContent) String(p catwalk.InferenceProvider) string {
+func (bc BinaryContent) String(p catalog.ProviderID) string {
 	base64Encoded := base64.StdEncoding.EncodeToString(bc.Data)
-	if p == catwalk.InferenceProviderOpenAI {
+	if p == catalog.ProviderOpenAI {
 		return "data:" + bc.MIMEType + ";base64," + base64Encoded
 	}
 	return base64Encoded
@@ -140,6 +140,10 @@ type Finish struct {
 }
 
 func (Finish) isPart() {}
+
+type RetryingContent struct{}
+
+func (RetryingContent) isPart() {}
 
 // ShellCommand stores a bang-mode shell command and its output as a
 // distinct content part so it can be reconstructed on session restore.
@@ -316,6 +320,7 @@ func (m *Message) IsThinking() bool {
 }
 
 func (m *Message) AppendContent(delta string) {
+	m.ClearRetrying()
 	found := false
 	for i, part := range m.Parts {
 		if c, ok := part.(TextContent); ok {
@@ -330,6 +335,7 @@ func (m *Message) AppendContent(delta string) {
 }
 
 func (m *Message) AppendReasoningContent(delta string) {
+	m.ClearRetrying()
 	found := false
 	for i, part := range m.Parts {
 		if c, ok := part.(ReasoningContent); ok {
@@ -413,6 +419,7 @@ func (m *Message) AppendToolCallInput(toolCallID string, inputDelta string) {
 }
 
 func (m *Message) AddToolCall(tc ToolCall) {
+	m.ClearRetrying()
 	for i, part := range m.Parts {
 		if c, ok := part.(ToolCall); ok {
 			if c.ID == tc.ID {
@@ -497,7 +504,31 @@ func (m *Message) ResetStreamedContent() {
 	m.Parts = kept
 }
 
+func (m *Message) SetRetrying() {
+	m.ClearRetrying()
+	m.Parts = append(m.Parts, RetryingContent{})
+}
+
+func (m *Message) ClearRetrying() {
+	for i, part := range m.Parts {
+		if _, ok := part.(RetryingContent); ok {
+			m.Parts = slices.Delete(m.Parts, i, i+1)
+			return
+		}
+	}
+}
+
+func (m *Message) Retrying() (RetryingContent, bool) {
+	for _, part := range m.Parts {
+		if c, ok := part.(RetryingContent); ok {
+			return c, true
+		}
+	}
+	return RetryingContent{}, false
+}
+
 func (m *Message) AddFinish(reason FinishReason, message, details string) {
+	m.ClearRetrying()
 	// remove any existing finish part
 	for i, part := range m.Parts {
 		if _, ok := part.(Finish); ok {
@@ -538,6 +569,38 @@ func PromptWithTextAttachments(prompt string, attachments []Attachment) string {
 		sb.WriteString("\n</file>\n")
 	}
 	return sb.String()
+}
+
+func toolResultToAIMessagePart(result ToolResult) fantasy.ToolResultPart {
+	var content fantasy.ToolResultOutputContent
+	if result.IsError {
+		content = fantasy.ToolResultOutputContentError{
+			Error: errors.New(result.Content),
+		}
+	} else if result.Data != "" {
+		if stringext.IsValidBase64(result.Data) {
+			content = fantasy.ToolResultOutputContentMedia{
+				Data:      result.Data,
+				MediaType: result.MIMEType,
+				Text:      result.Content,
+			}
+		} else {
+			content = fantasy.ToolResultOutputContentText{
+				Text: mediaLoadFailedPlaceholder,
+			}
+		}
+	} else {
+		content = fantasy.ToolResultOutputContentText{
+			Text: result.Content,
+		}
+	}
+	return fantasy.ToolResultPart{
+		ToolCallID:       result.ToolCallID,
+		Output:           content,
+		ProviderExecuted: result.ProviderExecuted,
+		ProviderOptions:  result.ProviderMetadata.FantasyOptions(ProviderMetadataScopeToolResult),
+		ClientMetadata:   result.Metadata,
+	}
 }
 
 func (m *Message) ToAIMessage() []fantasy.Message {
@@ -613,6 +676,11 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 				ProviderOptions:  providerOptions,
 			})
 		}
+		for _, result := range m.ToolResults() {
+			if result.ProviderExecuted {
+				parts = append(parts, toolResultToAIMessagePart(result))
+			}
+		}
 		messages = append(messages, fantasy.Message{
 			Role:            fantasy.MessageRoleAssistant,
 			Content:         parts,
@@ -621,33 +689,7 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 	case Tool:
 		var parts []fantasy.MessagePart
 		for _, result := range m.ToolResults() {
-			var content fantasy.ToolResultOutputContent
-			if result.IsError {
-				content = fantasy.ToolResultOutputContentError{
-					Error: errors.New(result.Content),
-				}
-			} else if result.Data != "" {
-				if stringext.IsValidBase64(result.Data) {
-					content = fantasy.ToolResultOutputContentMedia{
-						Data:      result.Data,
-						MediaType: result.MIMEType,
-					}
-				} else {
-					content = fantasy.ToolResultOutputContentText{
-						Text: mediaLoadFailedPlaceholder,
-					}
-				}
-			} else {
-				content = fantasy.ToolResultOutputContentText{
-					Text: result.Content,
-				}
-			}
-			parts = append(parts, fantasy.ToolResultPart{
-				ToolCallID:       result.ToolCallID,
-				Output:           content,
-				ProviderExecuted: result.ProviderExecuted,
-				ProviderOptions:  result.ProviderMetadata.FantasyOptions(ProviderMetadataScopeToolResult),
-			})
+			parts = append(parts, toolResultToAIMessagePart(result))
 		}
 		messages = append(messages, fantasy.Message{
 			Role:            fantasy.MessageRoleTool,

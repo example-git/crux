@@ -22,6 +22,8 @@ import (
 type (
 	hookApprovalKey          struct{}
 	planExecutionApprovalKey struct{}
+	runApprovalKey           struct{}
+	subagentKey              struct{}
 	detachedAgentKey         struct{}
 )
 
@@ -51,7 +53,33 @@ func planExecutionApproved(ctx context.Context) bool {
 	return approved
 }
 
-var ErrInteractivePermissionUnavailable = errors.New("interactive_permission_unavailable")
+// WithRunApproval scopes permission bypass to the lifetime of ctx. Callers must
+// derive this context independently for each accepted top-level run; unlike
+// AutoApproveSession, the approval is never retained by the permission service.
+func WithRunApproval(ctx context.Context) context.Context {
+	return context.WithValue(ctx, runApprovalKey{}, true)
+}
+
+func runApproved(ctx context.Context) bool {
+	approved, _ := ctx.Value(runApprovalKey{}).(bool)
+	return approved
+}
+
+var (
+	ErrInteractivePermissionUnavailable = errors.New("interactive_permission_unavailable")
+	ErrSubagentCodebaseSearch           = errors.New("subagents cannot use codebase_search")
+	ErrSubagentLaunch                   = errors.New("subagents cannot launch subagents")
+	ErrSubagentBackgroundTask           = errors.New("subagents cannot start background tasks")
+)
+
+func WithSubagent(ctx context.Context) context.Context {
+	return context.WithValue(ctx, subagentKey{}, true)
+}
+
+func IsSubagent(ctx context.Context) bool {
+	subagent, _ := ctx.Value(subagentKey{}).(bool)
+	return subagent
+}
 
 func WithDetachedAgent(ctx context.Context) context.Context {
 	return context.WithValue(ctx, detachedAgentKey{}, true)
@@ -63,13 +91,15 @@ func IsDetachedAgent(ctx context.Context) bool {
 }
 
 type CreatePermissionRequest struct {
-	SessionID   string `json:"session_id"`
-	ToolCallID  string `json:"tool_call_id"`
-	ToolName    string `json:"tool_name"`
-	Description string `json:"description"`
-	Action      string `json:"action"`
-	Params      any    `json:"params"`
-	Path        string `json:"path"`
+	SessionID               string `json:"session_id"`
+	ToolCallID              string `json:"tool_call_id"`
+	ToolName                string `json:"tool_name"`
+	Description             string `json:"description"`
+	Action                  string `json:"action"`
+	Params                  any    `json:"params"`
+	Path                    string `json:"path"`
+	RequireExplicitApproval bool   `json:"-"`
+	AllowDetachedPrompt     bool   `json:"-"`
 }
 
 type PermissionNotification struct {
@@ -197,12 +227,12 @@ func (s *permissionService) Deny(permission PermissionRequest) bool {
 }
 
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) (bool, error) {
-	if s.skip.Load() || planExecutionApproved(ctx) {
+	if s.skip.Load() || (!opts.RequireExplicitApproval && (planExecutionApproved(ctx) || runApproved(ctx))) {
 		return true, nil
 	}
 
 	commandKey := opts.ToolName + ":" + opts.Action
-	if slices.Contains(s.allowedTools, commandKey) || slices.Contains(s.allowedTools, opts.ToolName) {
+	if !opts.RequireExplicitApproval && (slices.Contains(s.allowedTools, commandKey) || slices.Contains(s.allowedTools, opts.ToolName)) {
 		return true, nil
 	}
 	if opts.Path != "" {
@@ -212,11 +242,11 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		}
 		opts.Path = resolvedPath
 	}
-	if s.isTrustedFileRequest(opts) {
+	if !opts.RequireExplicitApproval && s.isTrustedFileRequest(opts) {
 		return true, nil
 	}
 
-	if hookApproved(ctx, opts.ToolCallID) {
+	if !opts.RequireExplicitApproval && hookApproved(ctx, opts.ToolCallID) {
 		s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 			ToolCallID: opts.ToolCallID,
 			Granted:    true,
@@ -248,7 +278,7 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 	}
 
 	s.autoApproveSessionsMu.RLock()
-	autoApprove := s.autoApproveSessions[opts.SessionID]
+	autoApprove := !opts.RequireExplicitApproval && s.autoApproveSessions[opts.SessionID]
 	s.autoApproveSessionsMu.RUnlock()
 	_, persistentlyGranted := s.sessionPermissions.Get(PermissionKey{
 		SessionID: permission.SessionID,
@@ -257,7 +287,7 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 		Path:      permission.Path,
 	})
 
-	if IsDetachedAgent(ctx) {
+	if IsDetachedAgent(ctx) && !opts.AllowDetachedPrompt {
 		if autoApprove || persistentlyGranted {
 			s.notificationBroker.Publish(pubsub.CreatedEvent, PermissionNotification{
 				ToolCallID: opts.ToolCallID,

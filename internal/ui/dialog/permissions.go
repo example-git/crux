@@ -60,8 +60,10 @@ type Permissions struct {
 	windowHeight int
 	fullscreen   bool // true when dialog is fullscreen
 
-	permission     permission.PermissionRequest
-	selectedOption int // 0: Allow, 1: Allow for session, 2: Deny
+	permission       permission.PermissionRequest
+	selectedOption   int // 0: Allow, 1: Allow for session, 2: Deny
+	hoveredButton    int
+	buttonCompositor *lipgloss.Compositor
 
 	viewport      viewport.Model
 	viewportDirty bool // true when viewport content needs to be re-rendered
@@ -278,6 +280,18 @@ func (p *Permissions) HandleMsg(msg tea.Msg) Action {
 				p.viewport, _ = p.viewport.Update(msg)
 			}
 		}
+	case tea.MouseClickMsg:
+		if msg.Button != uv.MouseLeft {
+			return nil
+		}
+		index := common.HitButtonIndex(p.buttonCompositor, msg.X, msg.Y)
+		if index < 0 || index > 2 {
+			return nil
+		}
+		p.selectedOption = index
+		return p.selectCurrentOption()
+	case tea.MouseMotionMsg:
+		p.hoveredButton = common.HitButtonIndex(p.buttonCompositor, msg.X, msg.Y) + 1
 	case common.CoalescedWheelMsg:
 		if p.hasDiffView() {
 			if msg.DeltaX < 0 {
@@ -391,7 +405,8 @@ func (p *Permissions) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 	contentWidth := p.calculateContentWidth(width)
 	header := p.renderHeader(contentWidth)
-	buttons := p.renderButtons(contentWidth, fullscreen)
+	buttonOpts := p.buttonOptions()
+	buttons := p.renderButtons(buttonOpts, contentWidth, fullscreen)
 	// Pack the hints to the content width so they truncate cleanly instead
 	// of overflowing. The dialog frame supplies the padding, so this renders
 	// the hint line without the extra help view inset that renderDialogHelp
@@ -441,7 +456,11 @@ func (p *Permissions) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	parts = append(parts, "", buttons, "", helpView)
 
 	innerContent := lipgloss.JoinVertical(lipgloss.Left, parts...)
-	DrawCenterCursor(scr, area, dialogStyle.Render(innerContent), nil)
+	view := dialogStyle.Render(innerContent)
+	viewWidth, viewHeight := lipgloss.Size(view)
+	center := common.CenterRect(area, min(viewWidth, area.Dx()), min(viewHeight, area.Dy()))
+	p.buttonCompositor = common.ButtonHitCompositorForView(t, buttonOpts, view, center.Min.X, center.Min.Y)
+	DrawCenterCursor(scr, area, view, nil)
 	return nil
 }
 
@@ -760,13 +779,15 @@ func (p *Permissions) renderContentPanel(content string, width int) string {
 	return panelStyle.Width(width).Render(content)
 }
 
-func (p *Permissions) renderButtons(contentWidth int, fullscreen bool) string {
-	buttons := []common.ButtonOpts{
-		{Text: "Allow", UnderlineIndex: 0, Selected: p.selectedOption == 0},
-		{Text: "Allow for Session", UnderlineIndex: 10, Selected: p.selectedOption == 1},
-		{Text: "Deny", UnderlineIndex: 0, Selected: p.selectedOption == 2},
+func (p *Permissions) buttonOptions() []common.ButtonOpts {
+	return []common.ButtonOpts{
+		{Text: "Allow", UnderlineIndex: 0, Selected: p.selectedOption == 0, Hovered: p.hoveredButton == 1},
+		{Text: "Allow for Session", UnderlineIndex: 10, Selected: p.selectedOption == 1, Hovered: p.hoveredButton == 2},
+		{Text: "Deny", UnderlineIndex: 0, Selected: p.selectedOption == 2, Hovered: p.hoveredButton == 3},
 	}
+}
 
+func (p *Permissions) renderButtons(buttons []common.ButtonOpts, contentWidth int, fullscreen bool) string {
 	content := common.ButtonGroup(p.com.Styles, buttons, "  ")
 
 	// Center when stacked or when the dialog fills the screen; otherwise

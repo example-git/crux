@@ -137,6 +137,7 @@ type (
 
 type agentSettings struct {
 	systemPrompt     string
+	systemMessage    Message
 	maxOutputTokens  *int64
 	temperature      *float64
 	topP             *float64
@@ -1257,7 +1258,13 @@ func (a *agent) createPrompt(system, prompt string, messages []Message, files ..
 	var preparedPrompt Prompt
 
 	if system != "" {
-		preparedPrompt = append(preparedPrompt, NewSystemMessage(system))
+		if system == a.settings.systemPrompt && a.settings.systemMessage.Role == MessageRoleSystem && len(a.settings.systemMessage.Content) > 0 {
+			message := a.settings.systemMessage
+			message.Content = append([]MessagePart(nil), message.Content...)
+			preparedPrompt = append(preparedPrompt, message)
+		} else {
+			preparedPrompt = append(preparedPrompt, NewSystemMessage(system))
+		}
 	}
 	preparedPrompt = append(preparedPrompt, messages...)
 	if prompt != "" {
@@ -1270,6 +1277,14 @@ func (a *agent) createPrompt(system, prompt string, messages []Message, files ..
 func WithSystemPrompt(prompt string) AgentOption {
 	return func(s *agentSettings) {
 		s.systemPrompt = prompt
+		s.systemMessage = Message{}
+	}
+}
+
+func WithInstructions(instructions Instructions, policy InstructionPolicy) AgentOption {
+	return func(s *agentSettings) {
+		s.systemPrompt = instructions.String()
+		s.systemMessage = instructions.Message(policy)
 	}
 }
 

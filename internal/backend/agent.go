@@ -3,11 +3,12 @@ package backend
 import (
 	"context"
 	"errors"
-	"os"
+	"fmt"
 
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/shell"
@@ -33,7 +34,8 @@ func (b *Backend) SendMessage(workspaceID string, msg proto.AgentMessage) error 
 		return err
 	}
 
-	if ws.AgentCoordinator == nil {
+	coordinator := ws.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return ErrAgentNotInitialized
 	}
 
@@ -44,8 +46,10 @@ func (b *Backend) SendMessage(workspaceID string, msg proto.AgentMessage) error 
 	}); err != nil {
 		return err
 	}
-
-	accept := ws.AgentCoordinator.BeginAccepted(msg.SessionID)
+	if msg.PermissionMode != proto.AgentPermissionInteractive && msg.PermissionMode != proto.AgentPermissionDeny && msg.PermissionMode != proto.AgentPermissionBypass {
+		return fmt.Errorf("invalid agent permission mode %q", msg.PermissionMode)
+	}
+	accept := coordinator.BeginAccepted(msg.SessionID)
 
 	ws.runMu.Lock()
 	if ws.closing {
@@ -56,7 +60,7 @@ func (b *Backend) SendMessage(workspaceID string, msg proto.AgentMessage) error 
 	ws.runWG.Add(1)
 	ws.runMu.Unlock()
 
-	go b.runAgent(ws, msg, accept)
+	go b.runAgent(ws, coordinator, msg, accept)
 	return nil
 }
 
@@ -84,11 +88,17 @@ func (b *Backend) SendMessage(workspaceID string, msg proto.AgentMessage) error 
 // notify.RunComplete event with that correlator. A run-complete marker
 // is also attached so the coordinator can report whether it published
 // the terminal event, letting runAgent avoid a duplicate fallback.
-func (b *Backend) runAgent(ws *Workspace, msg proto.AgentMessage, accept *agent.AcceptedRun) {
+func (b *Backend) runAgent(ws *Workspace, coordinator agent.Coordinator, msg proto.AgentMessage, accept *agent.AcceptedRun) {
 	defer ws.runWG.Done()
 	defer accept.Close()
 
 	ctx := ws.ctx
+	switch msg.PermissionMode {
+	case proto.AgentPermissionBypass:
+		ctx = permission.WithRunApproval(ctx)
+	case proto.AgentPermissionDeny:
+		ctx = permission.WithDetachedAgent(ctx)
+	}
 	if msg.SubmissionID != "" {
 		ctx = agent.WithSubmissionID(ctx, msg.SubmissionID)
 	}
@@ -97,7 +107,7 @@ func (b *Backend) runAgent(ws *Workspace, msg proto.AgentMessage, accept *agent.
 	}
 	ctx = agent.WithRunCompleteMarker(ctx)
 
-	_, err := ws.AgentCoordinator.RunAccepted(ctx, accept, msg.SessionID, msg.Prompt, proto.AttachmentsToMessage(msg.Attachments)...)
+	_, err := coordinator.RunAccepted(ctx, accept, msg.SessionID, msg.Prompt, proto.AttachmentsToMessage(msg.Attachments)...)
 	if err == nil || errors.Is(err, context.Canceled) {
 		return
 	}
@@ -132,16 +142,28 @@ func (b *Backend) GetAgentInfo(workspaceID string) (proto.AgentInfo, error) {
 	}
 
 	var agentInfo proto.AgentInfo
-	if ws.AgentCoordinator != nil {
-		m := ws.AgentCoordinator.Model()
+	if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil {
+		m := coordinator.Model()
 		agentInfo = proto.AgentInfo{
-			Model:    m.CatwalkCfg,
+			Model:    m.CatalogModel,
 			ModelCfg: m.ModelCfg,
-			IsBusy:   ws.AgentCoordinator.IsBusy(),
+			IsBusy:   coordinator.IsBusy(),
 			IsReady:  true,
 		}
 	}
 	return agentInfo, nil
+}
+
+func (b *Backend) GetAgentInstructions(ctx context.Context, workspaceID string) (agent.InstructionSnapshot, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return agent.InstructionSnapshot{}, err
+	}
+	coordinator := ws.CurrentAgentCoordinator()
+	if coordinator == nil {
+		return agent.InstructionSnapshot{}, ErrAgentNotInitialized
+	}
+	return agent.CurrentInstructionSnapshot(ctx, coordinator)
 }
 
 // InitAgent initializes the coder agent for the workspace.
@@ -158,13 +180,13 @@ func (b *Backend) InitAgent(ctx context.Context, workspaceID string, interactive
 }
 
 // UpdateAgent reloads the agent model configuration.
-func (b *Backend) UpdateAgent(ctx context.Context, workspaceID string) error {
+func (b *Backend) UpdateAgent(ctx context.Context, workspaceID string, expected config.AgentModelState) error {
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {
 		return err
 	}
 
-	return ws.UpdateAgentModel(ctx)
+	return ws.UpdateAgentModel(ctx, expected)
 }
 
 func (b *Backend) CreateAgentDefinition(workspaceID string, request proto.CreateAgentDefinitionRequest) (string, error) {
@@ -206,8 +228,8 @@ func (b *Backend) CancelSession(workspaceID, sessionID string) error {
 		return err
 	}
 
-	if ws.AgentCoordinator != nil {
-		ws.AgentCoordinator.Cancel(sessionID)
+	if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil {
+		coordinator.Cancel(sessionID)
 	}
 	return nil
 }
@@ -219,22 +241,23 @@ func (b *Backend) SummarizeSession(ctx context.Context, workspaceID, sessionID s
 		return err
 	}
 
-	if ws.AgentCoordinator == nil {
+	coordinator := ws.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return ErrAgentNotInitialized
 	}
 
-	return ws.AgentCoordinator.Summarize(ctx, sessionID)
+	return coordinator.Summarize(ctx, sessionID)
 }
 
 // RewindSession rewinds a session to a given message, optionally
 // summarizing the conversation first.
-func (b *Backend) RewindSession(ctx context.Context, workspaceID, sessionID, messageID string, summarize bool) error {
+func (b *Backend) RewindSession(ctx context.Context, workspaceID, sessionID, messageID string, summarize, restoreFiles bool) error {
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {
 		return err
 	}
 
-	return ws.RewindSession(ctx, sessionID, messageID, summarize)
+	return ws.RewindSession(ctx, sessionID, messageID, summarize, restoreFiles)
 }
 
 // SuggestPrompt predicts the user's likely next message for a session.
@@ -244,11 +267,12 @@ func (b *Backend) SuggestPrompt(ctx context.Context, workspaceID, sessionID stri
 		return "", err
 	}
 
-	if ws.AgentCoordinator == nil {
+	coordinator := ws.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return "", ErrAgentNotInitialized
 	}
 
-	return ws.AgentCoordinator.SuggestPrompt(ctx, sessionID)
+	return coordinator.SuggestPrompt(ctx, sessionID)
 }
 
 // DetachForegroundJobs sends commands a bash tool call is waiting on
@@ -268,11 +292,12 @@ func (b *Backend) QueuedPrompts(workspaceID, sessionID string) (int, error) {
 		return 0, err
 	}
 
-	if ws.AgentCoordinator == nil {
+	coordinator := ws.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return 0, nil
 	}
 
-	return ws.AgentCoordinator.QueuedPrompts(sessionID), nil
+	return coordinator.QueuedPrompts(sessionID), nil
 }
 
 // ClearQueue clears the prompt queue for the session.
@@ -282,8 +307,8 @@ func (b *Backend) ClearQueue(workspaceID, sessionID string) error {
 		return err
 	}
 
-	if ws.AgentCoordinator != nil {
-		ws.AgentCoordinator.ClearQueue(sessionID)
+	if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil {
+		coordinator.ClearQueue(sessionID)
 	}
 	return nil
 }
@@ -296,11 +321,12 @@ func (b *Backend) QueuedPromptsList(workspaceID, sessionID string) ([]proto.Queu
 		return nil, err
 	}
 
-	if ws.AgentCoordinator == nil {
+	coordinator := ws.CurrentAgentCoordinator()
+	if coordinator == nil {
 		return nil, nil
 	}
 
-	queued := ws.AgentCoordinator.QueuedPromptsList(sessionID)
+	queued := coordinator.QueuedPromptsList(sessionID)
 	prompts := make([]proto.QueuedPrompt, len(queued))
 	for i, prompt := range queued {
 		prompts[i] = proto.QueuedPrompt{
@@ -318,7 +344,7 @@ func (b *Backend) GetDefaultSmallModel(workspaceID, providerID string) (config.S
 		return config.SelectedModel{}, err
 	}
 
-	return ws.GetDefaultSmallModel(providerID), nil
+	return ws.GetDefaultSmallModel(providerID)
 }
 
 // RunShellCommand runs a shell command in the workspace directory and
@@ -339,7 +365,7 @@ func (b *Backend) RunShellCommand(ctx context.Context, workspaceID string, req p
 	result, err := shell.RunAndPersist(ctx, shell.RunOptions{
 		Command:   req.Command,
 		Cwd:       ws.Path,
-		Env:       append(os.Environ(), ws.Env...),
+		Env:       append(ws.Cfg.Environment(), ws.Env...),
 		TermWidth: req.TermWidth,
 	}, persist)
 	if err != nil {

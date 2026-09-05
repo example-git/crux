@@ -433,10 +433,11 @@ func (s *Service) listUnlocked() ([]Document, error) {
 	var documents []Document
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".md") || strings.HasSuffix(name, ".notes.md") {
+		slug := strings.TrimSuffix(name, ".md")
+		if entry.IsDir() || !strings.HasSuffix(name, ".md") || !projectSlugPattern.MatchString(slug) {
 			continue
 		}
-		document, err := s.getUnlocked(strings.TrimSuffix(name, ".md"))
+		document, err := s.getUnlocked(slug)
 		if err != nil {
 			return nil, err
 		}

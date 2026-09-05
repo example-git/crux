@@ -166,6 +166,10 @@ func createNewFile(edit editContext, filePath, content string, call fantasy.Tool
 		return resp, nil
 	}
 
+	if err := checkpointFile(edit.ctx, edit.files, edit.permissions, sessionID, call.ID, filePath, "", false, 0); err != nil {
+		return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
+	}
+
 	err = os.MkdirAll(dir, 0o755)
 	if err != nil {
 		return fantasy.ToolResponse{}, fmt.Errorf("failed to create parent directories: %w", err)
@@ -253,7 +257,14 @@ func notFoundError(content, old string) error {
 // commitFileChange writes newContent to filePath, updates the file history,
 // and records the read in the file tracker. Callers must convert line endings
 // before calling this function.
-func commitFileChange(edit editContext, sessionID, filePath, oldContent, newContent string) error {
+func commitFileChange(edit editContext, sessionID, toolCallID, filePath, oldContent, newContent string) error {
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return fmt.Errorf("inspect file before checkpoint: %w", err)
+	}
+	if err := checkpointFile(edit.ctx, edit.files, edit.permissions, sessionID, toolCallID, filePath, oldContent, true, info.Mode()); err != nil {
+		return fmt.Errorf("create file checkpoint: %w", err)
+	}
 	if err := os.WriteFile(filePath, []byte(newContent), 0o644); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
@@ -376,7 +387,7 @@ func deleteContent(edit editContext, filePath, oldString string, replaceAll bool
 		writeContent, _ = fsext.ToWindowsLineEndings(writeContent)
 	}
 
-	if err := commitFileChange(edit, sessionID, filePath, oldContent, writeContent); err != nil {
+	if err := commitFileChange(edit, sessionID, call.ID, filePath, oldContent, writeContent); err != nil {
 		return fantasy.ToolResponse{}, err
 	}
 
@@ -449,7 +460,7 @@ func replaceContent(edit editContext, filePath, oldString, newString string, rep
 		writeContent, _ = fsext.ToWindowsLineEndings(writeContent)
 	}
 
-	if err := commitFileChange(edit, sessionID, filePath, oldContent, writeContent); err != nil {
+	if err := commitFileChange(edit, sessionID, call.ID, filePath, oldContent, writeContent); err != nil {
 		return fantasy.ToolResponse{}, err
 	}
 

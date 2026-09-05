@@ -13,6 +13,7 @@ import (
 
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/useragent"
+	"github.com/example-git/crux/internal/providertransport"
 )
 
 const (
@@ -45,9 +46,13 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", useragent.CopilotGitHubUserAgent())
+	userAgent, err := useragent.CopilotGitHubUserAgentForContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := providertransport.ClientWithContextOwnerValidator(ctx, &http.Client{Timeout: 30 * time.Second})
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -115,9 +120,13 @@ func tryGetToken(ctx context.Context, deviceCode string) (*oauth.Token, error) {
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("User-Agent", useragent.CopilotGitHubUserAgent())
+	userAgent, err := useragent.CopilotGitHubUserAgentForContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := providertransport.ClientWithContextOwnerValidator(ctx, &http.Client{Timeout: 30 * time.Second})
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -154,11 +163,15 @@ func getCopilotToken(ctx context.Context, githubToken string) (*oauth.Token, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", githubToken))
-	for k, v := range Headers() {
+	headers, err := HeadersForContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := providertransport.ClientWithContextOwnerValidator(ctx, &http.Client{Timeout: 30 * time.Second})
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

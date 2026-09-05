@@ -11,6 +11,7 @@ type Type string
 const (
 	TypeShell Type = "shell"
 	TypeAgent Type = "agent"
+	TypeImage Type = "image"
 )
 
 const (
@@ -63,6 +64,8 @@ func ParseID(id string) (Type, error) {
 		taskType = TypeShell
 	case 'a':
 		taskType = TypeAgent
+	case 'i':
+		taskType = TypeImage
 	default:
 		return "", fmt.Errorf("invalid task ID %q", id)
 	}
@@ -80,6 +83,8 @@ func prefixForType(taskType Type) (byte, error) {
 		return 'b', nil
 	case TypeAgent:
 		return 'a', nil
+	case TypeImage:
+		return 'i', nil
 	default:
 		return 0, fmt.Errorf("invalid task type %q", taskType)
 	}

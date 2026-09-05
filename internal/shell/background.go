@@ -242,6 +242,10 @@ func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, b
 }
 
 func (m *BackgroundShellManager) StartOwned(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command string, description string, ownership managedtask.Ownership) (*BackgroundShell, error) {
+	return m.StartOwnedWithEnvironment(ctx, workingDir, blockFuncs, command, description, ownership, nil)
+}
+
+func (m *BackgroundShellManager) StartOwnedWithEnvironment(ctx context.Context, workingDir string, blockFuncs []BlockFunc, command string, description string, ownership managedtask.Ownership, environment []string) (*BackgroundShell, error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -275,7 +279,7 @@ func (m *BackgroundShellManager) StartOwned(ctx context.Context, workingDir stri
 		return nil, fmt.Errorf("creating background task output: %w", err)
 	}
 	ownership.WorkspaceID = m.workspaceID
-	shell := NewShell(&Options{WorkingDir: workingDir, BlockFuncs: blockFuncs})
+	shell := NewShell(&Options{WorkingDir: workingDir, Env: environment, BlockFuncs: blockFuncs})
 	shellCtx, cancel := context.WithCancel(ctx)
 	output.SetLimitHandler(cancel)
 	backgroundShell := &BackgroundShell{

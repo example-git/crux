@@ -48,6 +48,32 @@ func TestEstimatedUsageStateSurvivesFetchModifySave(t *testing.T) {
 	require.True(t, refetched.EstimatedUsage)
 }
 
+func TestEstimatedUsageStateSurvivesServiceRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	sessions := NewService(db.New(conn), conn)
+
+	created, err := sessions.Create(t.Context(), "test")
+	require.NoError(t, err)
+	created.EstimatedUsage = true
+	_, err = sessions.Save(t.Context(), created)
+	require.NoError(t, err)
+
+	require.NoError(t, db.Release(dataDir))
+	db.ResetPool()
+
+	reopened, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Release(dataDir))
+		db.ResetPool()
+	})
+	restored, err := NewService(db.New(reopened), reopened).Get(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.True(t, restored.EstimatedUsage)
+}
+
 func TestUpdateTitleAndCostPreservesActiveOccupancy(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Cleanup(func() {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,24 +19,29 @@ import (
 const (
 	TrafficLogsToolName      = "traffic_logs"
 	defaultTrafficLogLimit   = 20
-	maxTrafficLogLimit       = 100
-	trafficOutputSnippetSize = 1200
-	maxTrafficBodyOutput     = 20 * 1024
+	maxTrafficLogLimit       = 50
+	trafficListSnippetSize   = 300
+	trafficOutputSnippetSize = 400
+	maxTrafficListOutput     = 24 * 1024
+	maxTrafficDetailOutput   = 12 * 1024
+	maxTrafficBodyOutput     = 6 * 1024
+	maxTrafficHeaders        = 8
+	maxTrafficHeaderValues   = 2
+	maxTrafficSummaryValues  = 2
 )
 
 //go:embed traffic_logs.md
 var trafficLogsDescription string
 
 type TrafficLogsParams struct {
-	Search      string `json:"search,omitempty" description:"Case-insensitive substring search across method, URL, headers, bodies, and errors"`
-	Protocol    string `json:"protocol,omitempty" description:"Filter by protocol: http or websocket"`
-	Direction   string `json:"direction,omitempty" description:"Filter by direction: inbound or outbound"`
-	Phase       string `json:"phase,omitempty" description:"Filter by phase: request, response, handshake, or frame"`
-	Since       string `json:"since,omitempty" description:"Only records at or after this RFC3339 timestamp"`
-	Until       string `json:"until,omitempty" description:"Only records at or before this RFC3339 timestamp"`
-	Sort        string `json:"sort,omitempty" description:"Timestamp sort order: asc or desc (default desc)"`
-	Limit       int    `json:"limit,omitempty" description:"Maximum records to return (default 20, max 100)"`
-	IncludeBody bool   `json:"include_body,omitempty" description:"Include truncated raw bodies in addition to compact summaries"`
+	Search    string `json:"search,omitempty" description:"Case-insensitive substring search across method, URL, headers, bodies, and errors"`
+	Protocol  string `json:"protocol,omitempty" description:"Filter by protocol: http or websocket"`
+	Direction string `json:"direction,omitempty" description:"Filter by direction: inbound or outbound"`
+	Phase     string `json:"phase,omitempty" description:"Filter by phase: request, response, handshake, or frame"`
+	Since     string `json:"since,omitempty" description:"Only records at or after this RFC3339 timestamp"`
+	Until     string `json:"until,omitempty" description:"Only records at or before this RFC3339 timestamp"`
+	Sort      string `json:"sort,omitempty" description:"Timestamp sort order: asc or desc (default desc)"`
+	Limit     int    `json:"limit,omitempty" description:"Maximum records to return (default 20, max 50)"`
 }
 
 type TrafficLogsResponseMetadata struct {
@@ -43,27 +49,28 @@ type TrafficLogsResponseMetadata struct {
 }
 
 type TrafficLogRecord struct {
-	ID                int64              `json:"id"`
+	RecordID          string             `json:"record_id"`
+	ID                int64              `json:"id,omitempty"`
 	Timestamp         time.Time          `json:"timestamp"`
-	ProcessID         int                `json:"process_id"`
-	TraceID           string             `json:"trace_id"`
+	ProcessID         int                `json:"process_id,omitempty"`
+	TraceID           string             `json:"trace_id,omitempty"`
 	Protocol          string             `json:"protocol"`
 	Direction         string             `json:"direction"`
 	Phase             string             `json:"phase"`
-	Method            string             `json:"method"`
-	URL               string             `json:"url"`
-	StatusCode        int                `json:"status_code"`
-	Headers           []TrafficLogHeader `json:"headers"`
-	BodyEncoding      string             `json:"body_encoding"`
-	ContentLength     int64              `json:"content_length"`
-	DurationMS        int64              `json:"duration_ms"`
-	MessageType       int                `json:"message_type"`
-	Error             string             `json:"error"`
-	Shape             string             `json:"shape"`
-	Instructions      []string           `json:"instructions"`
-	UserMessages      []string           `json:"user_messages"`
-	AssistantMessages []string           `json:"assistant_messages"`
-	Body              string             `json:"body"`
+	Method            string             `json:"method,omitempty"`
+	URL               string             `json:"url,omitempty"`
+	StatusCode        int                `json:"status_code,omitempty"`
+	Headers           []TrafficLogHeader `json:"headers,omitempty"`
+	BodyEncoding      string             `json:"body_encoding,omitempty"`
+	ContentLength     int64              `json:"content_length,omitempty"`
+	DurationMS        int64              `json:"duration_ms,omitempty"`
+	MessageType       int                `json:"message_type,omitempty"`
+	Error             string             `json:"error,omitempty"`
+	Shape             string             `json:"shape,omitempty"`
+	Instructions      []string           `json:"instructions,omitempty"`
+	UserMessages      []string           `json:"user_messages,omitempty"`
+	AssistantMessages []string           `json:"assistant_messages,omitempty"`
+	Body              string             `json:"body,omitempty"`
 }
 
 type TrafficLogHeader struct {
@@ -115,10 +122,10 @@ func runTrafficLogs(ctx context.Context, params TrafficLogsParams) (string, Traf
 	entries := make([]string, 0, len(events))
 	metadata := TrafficLogsResponseMetadata{Records: make([]TrafficLogRecord, 0, len(events))}
 	for _, event := range events {
-		entries = append(entries, formatTrafficEvent(event, params.IncludeBody))
-		metadata.Records = append(metadata.Records, trafficLogRecord(event, params.IncludeBody))
+		entries = append(entries, formatTrafficEvent(event))
+		metadata.Records = append(metadata.Records, trafficLogListRecord(event))
 	}
-	return strings.Join(entries, "\n"), metadata, nil
+	return boundTrafficOutput(strings.Join(entries, "\n"), maxTrafficListOutput), metadata, nil
 }
 
 func trafficQuery(params TrafficLogsParams) (cruxlog.TrafficQuery, error) {
@@ -178,18 +185,18 @@ func trafficQuery(params TrafficLogsParams) (cruxlog.TrafficQuery, error) {
 		Until:       until,
 		Sort:        params.Sort,
 		Limit:       limit,
-		IncludeBody: true,
+		IncludeBody: false,
 	}, nil
 }
 
-func formatTrafficEvent(event cruxlog.TrafficEvent, includeBody bool) string {
+func formatTrafficEvent(event cruxlog.TrafficEvent) string {
 	var line strings.Builder
-	fmt.Fprintf(&line, "%s id=%d pid=%d trace=%s %s %s %s", event.Timestamp.Format(time.RFC3339Nano), event.ID, event.ProcessID, event.TraceID, event.Protocol, event.Direction, event.Phase)
+	fmt.Fprintf(&line, "%s id=%s pid=%d trace=%s %s %s %s", event.Timestamp.Format(time.RFC3339Nano), trafficRecordID(event), event.ProcessID, compactTrafficListText(event.TraceID), event.Protocol, event.Direction, event.Phase)
 	if event.Method != "" {
-		fmt.Fprintf(&line, " %s", event.Method)
+		fmt.Fprintf(&line, " %s", compactTrafficListText(event.Method))
 	}
 	if event.URL != "" {
-		fmt.Fprintf(&line, " %s", event.URL)
+		fmt.Fprintf(&line, " %s", compactTrafficListText(event.URL))
 	}
 	if event.StatusCode != 0 {
 		fmt.Fprintf(&line, " status=%d", event.StatusCode)
@@ -204,58 +211,61 @@ func formatTrafficEvent(event cruxlog.TrafficEvent, includeBody bool) string {
 		fmt.Fprintf(&line, " duration_ms=%d", event.DurationMS)
 	}
 	if event.Error != "" {
-		fmt.Fprintf(&line, " error=%q", compactTrafficText(event.Error))
-	}
-	if event.Body == "" {
-		return line.String()
-	}
-	shape, instructions, userMessages, assistantMessages := summarizeTrafficBody(event.Body, event.BodyEncoding)
-	if shape != "" {
-		fmt.Fprintf(&line, "\n  shape: %s", shape)
-	}
-	appendTrafficValues(&line, "instructions", instructions)
-	appendTrafficValues(&line, "user", userMessages)
-	appendTrafficValues(&line, "assistant", assistantMessages)
-	if includeBody {
-		body := event.Body
-		if len(body) > maxTrafficBodyOutput {
-			body = body[:maxTrafficBodyOutput] + fmt.Sprintf("\n[truncated %d bytes]", len(event.Body)-maxTrafficBodyOutput)
-		}
-		fmt.Fprintf(&line, "\n  body(%s): %s", event.BodyEncoding, body)
+		fmt.Fprintf(&line, " error=%q", compactTrafficListText(event.Error))
 	}
 	return line.String()
 }
 
-func trafficLogRecord(event cruxlog.TrafficEvent, includeBody bool) TrafficLogRecord {
-	record := TrafficLogRecord{
+func trafficLogListRecord(event cruxlog.TrafficEvent) TrafficLogRecord {
+	return TrafficLogRecord{
+		RecordID:      trafficRecordID(event),
 		ID:            event.ID,
 		Timestamp:     event.Timestamp,
 		ProcessID:     event.ProcessID,
-		TraceID:       event.TraceID,
+		TraceID:       compactTrafficListText(event.TraceID),
 		Protocol:      event.Protocol,
 		Direction:     event.Direction,
 		Phase:         event.Phase,
-		Method:        event.Method,
-		URL:           event.URL,
+		Method:        compactTrafficListText(event.Method),
+		URL:           compactTrafficListText(event.URL),
 		StatusCode:    event.StatusCode,
-		BodyEncoding:  event.BodyEncoding,
 		ContentLength: event.ContentLength,
 		DurationMS:    event.DurationMS,
 		MessageType:   event.MessageType,
-		Error:         compactTrafficText(event.Error),
+		Error:         compactTrafficListText(event.Error),
 	}
+}
+
+func trafficLogRecord(event cruxlog.TrafficEvent, includeBody bool) TrafficLogRecord {
+	record := trafficLogListRecord(event)
+	record.BodyEncoding = compactTrafficListText(event.BodyEncoding)
 	headerNames := make([]string, 0, len(event.Headers))
 	for name := range event.Headers {
 		headerNames = append(headerNames, name)
 	}
 	sort.Strings(headerNames)
+	if len(headerNames) > maxTrafficHeaders {
+		headerNames = headerNames[:maxTrafficHeaders]
+	}
 	for _, name := range headerNames {
-		record.Headers = append(record.Headers, TrafficLogHeader{Name: name, Values: event.Headers[name]})
+		values := event.Headers[name]
+		if len(values) > maxTrafficHeaderValues {
+			values = values[:maxTrafficHeaderValues]
+		}
+		boundedValues := make([]string, 0, len(values))
+		for _, value := range values {
+			boundedValues = append(boundedValues, compactTrafficListText(value))
+		}
+		record.Headers = append(record.Headers, TrafficLogHeader{Name: compactTrafficListText(name), Values: boundedValues})
 	}
 	if event.Body == "" {
 		return record
 	}
 	record.Shape, record.Instructions, record.UserMessages, record.AssistantMessages = summarizeTrafficBody(event.Body, event.BodyEncoding)
+	record.Shape = compactTrafficListText(record.Shape)
+	record.Instructions = boundTrafficValues(record.Instructions)
+	record.UserMessages = boundTrafficValues(record.UserMessages)
+	record.AssistantMessages = boundTrafficValues(record.AssistantMessages)
 	if includeBody {
 		record.Body = event.Body
 		if len(record.Body) > maxTrafficBodyOutput {
@@ -388,9 +398,94 @@ func uniqueTrafficValues(values []string) []string {
 }
 
 func compactTrafficText(value string) string {
-	value = strings.Join(strings.Fields(value), " ")
-	if len(value) > trafficOutputSnippetSize {
-		return value[:trafficOutputSnippetSize] + fmt.Sprintf("... [%d more bytes]", len(value)-trafficOutputSnippetSize)
+	return compactTrafficTextLimit(value, trafficOutputSnippetSize)
+}
+
+func compactTrafficListText(value string) string {
+	return compactTrafficTextLimit(value, trafficListSnippetSize)
+}
+
+func compactTrafficTextLimit(value string, limit int) string {
+	value = strings.ToValidUTF8(strings.Join(strings.Fields(value), " "), "�")
+	if len(value) > limit {
+		return value[:limit] + fmt.Sprintf("... [%d more bytes]", len(value)-limit)
 	}
 	return value
+}
+
+func boundTrafficValues(values []string) []string {
+	if len(values) > maxTrafficSummaryValues {
+		values = values[:maxTrafficSummaryValues]
+	}
+	bounded := make([]string, 0, len(values))
+	for _, value := range values {
+		bounded = append(bounded, compactTrafficText(value))
+	}
+	return bounded
+}
+
+func boundTrafficOutput(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	return value[:limit] + fmt.Sprintf("\n[output truncated %d bytes]", len(value)-limit)
+}
+
+func trafficRecordID(event cruxlog.TrafficEvent) string {
+	return fmt.Sprintf("%s/%s/%d", event.Protocol, event.Phase, event.ID)
+}
+
+func parseTrafficRecordID(value string) (string, string, int64, error) {
+	parts := strings.Split(value, "/")
+	if len(parts) != 3 {
+		return "", "", 0, fmt.Errorf("record_id must use protocol/phase/id, for example http/request/17")
+	}
+	protocol, phase := parts[0], parts[1]
+	valid := (protocol == "http" && (phase == "request" || phase == "response")) ||
+		(protocol == "websocket" && (phase == "handshake" || phase == "frame"))
+	if !valid {
+		return "", "", 0, fmt.Errorf("record_id has an invalid protocol/phase pair")
+	}
+	id, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || id < 1 {
+		return "", "", 0, fmt.Errorf("record_id must end with a positive integer")
+	}
+	return protocol, phase, id, nil
+}
+
+func loadTrafficRecord(ctx context.Context, recordID string, bodyLimit int) (cruxlog.TrafficEvent, error) {
+	protocol, phase, id, err := parseTrafficRecordID(recordID)
+	if err != nil {
+		return cruxlog.TrafficEvent{}, err
+	}
+	path, err := cruxlog.TrafficDatabasePath()
+	if err != nil {
+		return cruxlog.TrafficEvent{}, err
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return cruxlog.TrafficEvent{}, fmt.Errorf("no traffic database found")
+		}
+		return cruxlog.TrafficEvent{}, fmt.Errorf("access traffic database: %w", err)
+	}
+	database, err := cruxlog.OpenTrafficDatabaseReadOnly()
+	if err != nil {
+		return cruxlog.TrafficEvent{}, err
+	}
+	defer database.Close()
+	events, err := cruxlog.QueryTraffic(ctx, database, cruxlog.TrafficQuery{
+		ID:          id,
+		Protocol:    protocol,
+		Phase:       phase,
+		Limit:       1,
+		BodyLimit:   bodyLimit,
+		IncludeBody: true,
+	})
+	if err != nil {
+		return cruxlog.TrafficEvent{}, fmt.Errorf("query traffic database: %w", err)
+	}
+	if len(events) == 0 {
+		return cruxlog.TrafficEvent{}, fmt.Errorf("traffic record %q not found", recordID)
+	}
+	return events[0], nil
 }

@@ -75,6 +75,7 @@ type TrafficEvent struct {
 }
 
 type TrafficQuery struct {
+	ID          int64
 	Search      string
 	Protocol    string
 	Direction   string
@@ -541,6 +542,10 @@ func QueryTraffic(ctx context.Context, database *sql.DB, query TrafficQuery) ([]
 	}
 	conditions := []string{"1 = 1"}
 	arguments := make([]any, 0, 8)
+	if query.ID > 0 {
+		conditions = append(conditions, "id = ?")
+		arguments = append(arguments, query.ID)
+	}
 	if query.Search != "" {
 		conditions = append(conditions, `(method LIKE ? OR url LIKE ? OR headers_json LIKE ? OR CAST(body AS TEXT) LIKE ? OR error LIKE ?)`)
 		search := "%" + query.Search + "%"

@@ -9,10 +9,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
+	"time"
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/foundation/object"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 )
 
 // Name is the name of the Codex provider adapter.
@@ -23,15 +26,25 @@ type provider struct {
 }
 
 type options struct {
-	name         string
-	url          string
-	token        TokenSource
-	accountID    AccountIDSource
-	userAgent    string
-	originator   string
-	version      string
-	headers      map[string]string
-	sessionStore *SessionStore
+	name           string
+	url            string
+	token          TokenSource
+	accountID      AccountIDSource
+	userAgent      string
+	originator     string
+	version        string
+	headers        map[string]string
+	sessionStore   *SessionStore
+	ownerValidator func() error
+	connectTimeout time.Duration
+	requestTimeout time.Duration
+	readTimeout    time.Duration
+	maxEventBytes  int64
+	retry          manifest.RetryPolicy
+	errors         []manifest.ErrorMapping
+	compaction     executionProfile
+	requestBudget  requestBudget
+	imagePolicy    *manifest.ImagePolicy
 }
 
 // Option configures the Codex provider.
@@ -39,11 +52,20 @@ type Option = func(*options)
 
 // New creates a new Codex fantasy provider.
 func New(opts ...Option) (fantasy.Provider, error) {
-	options := options{headers: map[string]string{}}
+	options := options{
+		headers:     map[string]string{},
+		retry:       defaultRetryPolicy(),
+		imagePolicy: defaultImagePolicyDeclaration(),
+	}
 	for _, o := range opts {
 		o(&options)
 	}
 	options.name = cmp.Or(options.name, Name)
+	requestBudget, err := compileRequestBudget(options.imagePolicy)
+	if err != nil {
+		return nil, err
+	}
+	options.requestBudget = requestBudget
 	return &provider{options: options}, nil
 }
 
@@ -97,6 +119,72 @@ func WithSessionStore(store *SessionStore) Option {
 	return func(o *options) { o.sessionStore = store }
 }
 
+func WithOwnerValidator(validate func() error) Option {
+	return func(o *options) { o.ownerValidator = validate }
+}
+
+func WithTimeouts(connect, request, idle time.Duration) Option {
+	return func(o *options) {
+		o.connectTimeout = connect
+		o.requestTimeout = request
+		o.readTimeout = idle
+	}
+}
+
+func WithMaxEventBytes(maxEventBytes int64) Option {
+	return func(o *options) { o.maxEventBytes = maxEventBytes }
+}
+
+func WithRetryPolicy(policy manifest.RetryPolicy) Option {
+	return func(o *options) {
+		policy.Statuses = slices.Clone(policy.Statuses)
+		policy.Codes = slices.Clone(policy.Codes)
+		o.retry = policy
+	}
+}
+
+func WithErrorMappings(mappings []manifest.ErrorMapping) Option {
+	return func(o *options) {
+		o.errors = cloneErrorMappings(mappings)
+	}
+}
+
+func WithImagePolicy(value *manifest.ImagePolicy) Option {
+	return func(o *options) {
+		o.imagePolicy = cloneImagePolicy(value)
+	}
+}
+
+func cloneImagePolicy(value *manifest.ImagePolicy) *manifest.ImagePolicy {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	cloned.AcceptedMediaTypes = slices.Clone(value.AcceptedMediaTypes)
+	cloned.QualitySteps = slices.Clone(value.QualitySteps)
+	if value.HistoryBudget != nil {
+		history := *value.HistoryBudget
+		history.PerImageTargets = slices.Clone(value.HistoryBudget.PerImageTargets)
+		cloned.HistoryBudget = &history
+	}
+	return &cloned
+}
+
+func WithCompactionPolicy(connect, request, idle time.Duration, maxEventBytes int64, policy manifest.RetryPolicy, errorMappings ...[]manifest.ErrorMapping) Option {
+	return func(o *options) {
+		o.compaction = executionProfile{
+			connectTimeout: connect,
+			requestTimeout: request,
+			readTimeout:    idle,
+			maxEventBytes:  maxEventBytes,
+			retry:          cloneRetryPolicy(policy),
+		}
+		if len(errorMappings) > 0 {
+			o.compaction.errors = cloneErrorMappings(errorMappings[0])
+		}
+	}
+}
+
 // Name implements fantasy.Provider.
 func (p *provider) Name() string { return p.options.name }
 
@@ -106,14 +194,23 @@ func (p *provider) LanguageModel(_ context.Context, modelID string) (fantasy.Lan
 		modelID:  modelID,
 		provider: p.options.name,
 		client: &client{
-			url:          p.options.url,
-			token:        p.options.token,
-			accountID:    p.options.accountID,
-			userAgent:    p.options.userAgent,
-			originator:   cmp.Or(p.options.originator, "codex_cli_rs"),
-			version:      p.options.version,
-			headers:      p.options.headers,
-			sessionStore: p.options.sessionStore,
+			url:            p.options.url,
+			token:          p.options.token,
+			accountID:      p.options.accountID,
+			userAgent:      p.options.userAgent,
+			originator:     cmp.Or(p.options.originator, "codex_cli_rs"),
+			version:        p.options.version,
+			headers:        p.options.headers,
+			sessionStore:   p.options.sessionStore,
+			ownerValidator: p.options.ownerValidator,
+			connectTimeout: p.options.connectTimeout,
+			requestTimeout: p.options.requestTimeout,
+			readTimeout:    p.options.readTimeout,
+			maxEventBytes:  p.options.maxEventBytes,
+			retry:          cloneRetryPolicy(p.options.retry),
+			errors:         cloneErrorMappings(p.options.errors),
+			compaction:     p.options.compaction.clone(),
+			requestBudget:  p.options.requestBudget.clone(),
 		},
 	}, nil
 }
@@ -156,6 +253,10 @@ func (g *languageModel) Model() string { return g.modelID }
 // Provider implements fantasy.LanguageModel.
 func (g *languageModel) Provider() string { return g.provider }
 
+func (g *languageModel) ResetConversationChain(conversationID string) {
+	g.clearCompactionChain(conversationID)
+}
+
 // prepareRequest builds the response.create frame from a fantasy call.
 func (g *languageModel) prepareRequest(call fantasy.Call) (*requestFrame, []fantasy.CallWarning, error) {
 	providerOptions := &ProviderOptions{}
@@ -169,8 +270,7 @@ func (g *languageModel) prepareRequest(call fantasy.Call) (*requestFrame, []fant
 		}
 	}
 
-	instructions, input, warnings := toInput(g.modelID, call.Prompt)
-	instructions, dynamicContext := splitDynamicEnvironment(instructions)
+	instructions, dynamicContext, input, warnings := toInputWithDynamic(g.modelID, call.Prompt)
 	tools, toolWarnings := toWireTools(call.Tools)
 	warnings = append(warnings, toolWarnings...)
 
@@ -553,7 +653,7 @@ func (g *languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.
 				}
 				yield(fantasy.StreamPart{
 					Type:  fantasy.StreamPartTypeError,
-					Error: codexProviderError(responseError, "codex response did not complete"),
+					Error: resolvedCodexEventError(event, responseError, "codex response did not complete"),
 				})
 				return
 			case "response.completed":
@@ -564,7 +664,7 @@ func (g *languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.
 				if event.Response.Error != nil {
 					yield(fantasy.StreamPart{
 						Type:  fantasy.StreamPartTypeError,
-						Error: codexProviderError(event.Response.Error, "codex response failed"),
+						Error: resolvedCodexEventError(event, event.Response.Error, "codex response failed"),
 					})
 					return
 				}
@@ -598,11 +698,25 @@ func (g *languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.
 				})
 				return
 			case "error":
+				responseError := event.Error
+				if responseError == nil && (event.Code != "" || event.Message != "") {
+					responseError = &wireError{Code: event.Code, Message: event.Message}
+				}
 				yield(fantasy.StreamPart{
 					Type:  fantasy.StreamPartTypeError,
-					Error: codexProviderError(event.Error, "unknown codex error"),
+					Error: resolvedCodexEventError(event, responseError, "unknown codex error"),
 				})
 				return
+			default:
+				if !yield(fantasy.StreamPart{
+					Type: fantasy.StreamPartTypeWarnings,
+					Warnings: []fantasy.CallWarning{{
+						Type:    fantasy.CallWarningTypeOther,
+						Message: "unrecognized Codex stream event: " + event.Type,
+					}},
+				}) {
+					return
+				}
 			}
 		}
 
@@ -615,7 +729,18 @@ func (g *languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.
 	}, nil
 }
 
+func resolvedCodexEventError(event *eventFrame, responseError *wireError, fallbackMessage string) error {
+	if event != nil && event.mappedError != nil {
+		return event.mappedError
+	}
+	return codexProviderError(responseError, fallbackMessage)
+}
+
 func codexProviderError(responseError *wireError, fallbackMessage string) *fantasy.ProviderError {
+	return codexProviderErrorWithBody(responseError, fallbackMessage, nil)
+}
+
+func codexProviderErrorWithBody(responseError *wireError, fallbackMessage string, body []byte) *fantasy.ProviderError {
 	message := fallbackMessage
 	code := ""
 	if responseError != nil {
@@ -624,12 +749,24 @@ func codexProviderError(responseError *wireError, fallbackMessage string) *fanta
 		}
 		code = responseError.Code
 	}
-	return &fantasy.ProviderError{
-		Title:              "codex error",
-		Message:            message,
-		ContextTooLargeErr: code == "context_length_exceeded",
-		TransientError:     fantasy.TransientStreamErrorTypes[code],
+	var providerErr *fantasy.ProviderError
+	switch {
+	case code == "overloaded_error" || message == fantasy.ServerOverloadMessage:
+		providerErr = fantasy.NewServerOverloadError()
+	case code == "websocket_connection_limit_reached" ||
+		code == "connection_limit_reached" ||
+		message == fantasy.ConnectionLimitMessage:
+		providerErr = fantasy.NewConnectionLimitError()
+	default:
+		providerErr = &fantasy.ProviderError{
+			Title:              "codex error",
+			Message:            message,
+			ContextTooLargeErr: code == "context_length_exceeded",
+			TransientError:     fantasy.TransientStreamErrorTypes[code],
+		}
 	}
+	providerErr.ResponseBody = append([]byte(nil), body...)
+	return providerErr
 }
 
 // GenerateObject implements fantasy.LanguageModel.

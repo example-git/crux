@@ -10,8 +10,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/catwalk/pkg/catwalk"
 	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/util"
@@ -78,7 +78,7 @@ type Models struct {
 	isOnboarding bool
 
 	modelType ModelType
-	providers []catwalk.Provider
+	providers []catalog.Provider
 
 	keyMap struct {
 		Tab      key.Binding
@@ -203,10 +203,12 @@ func (m *Models) HandleMsg(msg tea.Msg) Action {
 			isEdit := key.Matches(msg, m.keyMap.Edit)
 
 			return ActionSelectModel{
-				Provider:       modelItem.prov,
-				Model:          modelItem.SelectedModel(),
-				ModelType:      modelItem.SelectedModelType(),
-				ReAuthenticate: isEdit,
+				Provider:         modelItem.prov,
+				Model:            modelItem.SelectedModel(),
+				ModelType:        modelItem.SelectedModelType(),
+				ProviderOwner:    modelItem.providerOwner,
+				ProviderOwnerSet: modelItem.providerOwnerSet,
+				ReAuthenticate:   isEdit,
 			}
 		case key.Matches(msg, m.keyMap.Tab):
 			if m.isOnboarding {
@@ -361,9 +363,9 @@ func (m *Models) setProviderItems() error {
 		return fmt.Errorf("failed to get providers: %w", err)
 	}
 
-	containsProviderFunc := func(id string) func(p catwalk.Provider) bool {
-		return func(p catwalk.Provider) bool {
-			return p.ID == catwalk.InferenceProvider(id)
+	containsProviderFunc := func(id string) func(p catalog.Provider) bool {
+		return func(p catalog.Provider) bool {
+			return p.ID == catalog.ProviderID(id)
 		}
 	}
 
@@ -387,7 +389,7 @@ func (m *Models) setProviderItems() error {
 
 			group := NewModelGroup(t, name, true)
 			for _, model := range p.Models {
-				item := NewModelItem(t, provider, model, m.modelType, false)
+				item := newModelItemForConfig(t, cfg, provider, model, m.modelType, false)
 				group.AppendItems(item)
 				itemsMap[item.ID()] = item
 				if model.ID == currentModel.Model && string(provider.ID) == currentModel.Provider {
@@ -408,7 +410,7 @@ func (m *Models) setProviderItems() error {
 		}
 
 		providerConfig, providerConfigured := cfg.Providers.Get(providerID)
-		if providerConfigured && providerConfig.Disable {
+		if !modelProviderSelectable(cfg, providerID) {
 			continue
 		}
 
@@ -439,7 +441,7 @@ func (m *Models) setProviderItems() error {
 
 		group := NewModelGroup(t, name, providerConfigured)
 		for _, model := range displayProvider.Models {
-			item := NewModelItem(t, provider, model, m.modelType, false)
+			item := newModelItemForConfig(t, cfg, provider, model, m.modelType, false)
 			group.AppendItems(item)
 			itemsMap[item.ID()] = item
 			if model.ID == currentModel.Model && string(provider.ID) == currentModel.Provider {
@@ -461,7 +463,7 @@ func (m *Models) setProviderItems() error {
 			}
 
 			// Show provider for recent items
-			item = NewModelItem(t, item.prov, item.model, m.modelType, true)
+			item = newModelItemForConfig(t, cfg, item.prov, item.model, m.modelType, true)
 			item.showProvider = true
 
 			recentGroup.AppendItems(item)
@@ -493,6 +495,11 @@ func (m *Models) setProviderItems() error {
 	}
 
 	return nil
+}
+
+func modelProviderSelectable(cfg *config.Config, providerID string) bool {
+	_, configured := cfg.Providers.Get(providerID)
+	return !configured || cfg.IsProviderAvailable(providerID)
 }
 
 func modelKey(providerID, modelID string) string {

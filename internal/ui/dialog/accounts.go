@@ -22,6 +22,7 @@ import (
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providertransport"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/list"
 	"github.com/example-git/crux/internal/ui/styles"
@@ -39,18 +40,15 @@ const (
 	accountsDialogMaxHeight = 16
 )
 
-// cruxIDForStoreKey maps an accounts store key back to its registered provider.
-func cruxIDForStoreKey(key string) string { return accounts.ProviderID(key) }
-
 // oauthProviderChoice is one selectable provider in the login/logout lists.
 type oauthProviderChoice struct {
 	cruxID string
 	label  string
 }
 
-func oauthProviderChoices() []oauthProviderChoice {
+func oauthProviderChoices(cfg *config.Config) []oauthProviderChoice {
 	var choices []oauthProviderChoice
-	for _, registration := range config.ProviderCapabilities().Registrations() {
+	for _, registration := range cfg.ProviderRegistrations() {
 		if registration.OAuth != nil {
 			choices = append(choices, oauthProviderChoice{cruxID: registration.ProviderID, label: registration.Name})
 		}
@@ -270,11 +268,15 @@ func (s *AccountSwitcher) ID() string { return AccountSwitcherID }
 func (s *AccountSwitcher) setItems() {
 	ctx := context.Background()
 	var items []list.FilterableItem
-	providers, err := accounts.Providers(ctx)
+	cfg := s.com.Config()
+	providers, err := accounts.ProvidersFor(ctx, cfg.ProviderAccountNamespaces())
 	if err != nil {
 		return
 	}
-	providers = activeAccountProviders(providers, config.ProviderCapabilities())
+	providers = activeAccountProviders(providers, func(provider string) bool {
+		_, ok := cfg.ProviderRegistrationForAccount(provider)
+		return ok
+	})
 	for _, provider := range providers {
 		entries, err := accounts.List(ctx, provider)
 		if err != nil {
@@ -298,10 +300,10 @@ func (s *AccountSwitcher) setItems() {
 	s.list.SetSelected(0)
 }
 
-func activeAccountProviders(stored []string, registry *providerregistry.Registry) []string {
+func activeAccountProviders(stored []string, active func(string) bool) []string {
 	result := make([]string, 0, len(stored))
 	for _, provider := range stored {
-		if registry.HasAccountNamespace(provider) {
+		if active(provider) {
 			result = append(result, provider)
 		}
 	}
@@ -367,20 +369,57 @@ func SwitchAccountCmd(com *common.Common, action ActionSwitchAccount) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		cruxID := cruxIDForStoreKey(action.Provider)
+		registration, ok := com.Config().ProviderRegistrationForAccount(action.Provider)
+		if !ok {
+			return AccountSwitchedMsg{DisplayName: action.DisplayName, Err: fmt.Errorf("provider account owner %s is not active", action.Provider)}
+		}
+		cruxID := registration.ProviderID
+		accountNamespace := registration.AccountNamespace
+		owner := registration.Owner()
 
-		if err := accounts.SetActive(ctx, action.Provider, action.AccountID); err != nil {
-			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
-		}
-		entry, err := accounts.Active(ctx, action.Provider)
-		if err != nil || entry == nil {
-			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: fmt.Errorf("account not found after switch: %v", err)}
-		}
-		fresh, err := accounts.EnsureFresh(ctx, action.Provider, entry)
+		entries, err := accounts.List(ctx, accountNamespace)
 		if err != nil {
 			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
 		}
-		if err := com.Workspace.SetProviderAPIKey(config.ScopeGlobal, cruxID, fresh.Token()); err != nil {
+		var entry *accounts.Entry
+		for index := range entries {
+			if entries[index].ID == action.AccountID {
+				entry = &entries[index]
+				break
+			}
+		}
+		if entry == nil {
+			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: fmt.Errorf("account %q not found for provider %q", action.AccountID, accountNamespace)}
+		}
+		validate := func() error {
+			current, ok := com.Config().ProviderOwner(cruxID)
+			if !ok || current != owner {
+				return fmt.Errorf("provider account owner changed for %s", action.Provider)
+			}
+			return nil
+		}
+		if err := validate(); err != nil {
+			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
+		}
+		var refresher accounts.Refresher
+		if registration.OAuth != nil {
+			refresher = registration.OAuth.Refresh
+		}
+		fresh, err := accounts.EnsureFreshForOwner(ctx, accountNamespace, entry, refresher, validate)
+		if err != nil {
+			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
+		}
+		if err := validate(); err != nil {
+			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
+		}
+		credential := config.ProviderOAuthCredential{Owner: owner, Token: fresh.Token()}
+		if err := com.Workspace.SetProviderAPIKey(config.ScopeGlobal, cruxID, credential); err != nil {
+			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
+		}
+		if err := validate(); err != nil {
+			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
+		}
+		if err := accounts.SetActiveForOwner(ctx, accountNamespace, action.AccountID, validate); err != nil {
 			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
 		}
 		return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName}
@@ -412,7 +451,7 @@ func (l *Logout) ID() string { return LogoutID }
 func (l *Logout) setItems() {
 	cfg := l.com.Config()
 	var items []list.FilterableItem
-	for _, choice := range oauthProviderChoices() {
+	for _, choice := range oauthProviderChoices(cfg) {
 		if cfg == nil {
 			continue
 		}
@@ -435,7 +474,11 @@ func (l *Logout) HandleMsg(msg tea.Msg) Action {
 			if pick == nil {
 				return nil
 			}
-			return ActionLogout{CruxProviderID: pick.id, Label: pick.label}
+			registration, ok := l.com.Config().ProviderRegistration(pick.id)
+			if !ok || registration.OAuth == nil {
+				return nil
+			}
+			return ActionLogout{Owner: registration.Owner(), AccountNamespace: registration.AccountNamespace, Label: pick.label}
 		}
 		return l.handleFilter(kp)
 	}
@@ -460,8 +503,9 @@ func (l *Logout) FullHelp() [][]key.Binding { return l.fullHelp() }
 
 // ActionLogout is emitted when the user picks a provider to log out from.
 type ActionLogout struct {
-	CruxProviderID string
-	Label          string
+	Owner            providerregistry.RegistrationOwner
+	AccountNamespace string
+	Label            string
 }
 
 // LogoutDoneMsg reports the result of a logout.
@@ -473,21 +517,25 @@ type LogoutDoneMsg struct {
 // LogoutCmd removes the stored credentials for a provider.
 func LogoutCmd(com *common.Common, action ActionLogout) tea.Cmd {
 	return func() tea.Msg {
-		var firstErr error
-		for _, field := range []string{"api_key", "oauth"} {
-			key := fmt.Sprintf("providers.%s.%s", action.CruxProviderID, field)
-			if err := com.Workspace.RemoveConfigField(config.ScopeGlobal, key); err != nil && firstErr == nil {
-				firstErr = err
+		if err := validateAccountOwner(com, action.Owner); err != nil {
+			return LogoutDoneMsg{Label: action.Label, Err: err}
+		}
+		if err := com.Workspace.RemoveProviderCredentials(config.ScopeGlobal, action.Owner); err != nil {
+			return LogoutDoneMsg{Label: action.Label, Err: err}
+		}
+		if action.AccountNamespace != "" {
+			if err := validateAccountOwner(com, action.Owner); err != nil {
+				return LogoutDoneMsg{Label: action.Label, Err: err}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := accounts.RemoveProviderForOwner(ctx, action.AccountNamespace, func() error {
+				return validateAccountOwner(com, action.Owner)
+			}); err != nil {
+				return LogoutDoneMsg{Label: action.Label, Err: err}
 			}
 		}
-		if firstErr == nil {
-			if registration, ok := config.ProviderCapabilities().Lookup(action.CruxProviderID); ok && registration.AccountNamespace != "" {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				firstErr = accounts.RemoveProvider(ctx, registration.AccountNamespace)
-			}
-		}
-		return LogoutDoneMsg{Label: action.Label, Err: firstErr}
+		return LogoutDoneMsg{Label: action.Label}
 	}
 }
 
@@ -547,7 +595,7 @@ func NewLogin(com *common.Common) (*Login, tea.Cmd) {
 	l.keyEnter = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "submit"))
 
 	var items []list.FilterableItem
-	for _, choice := range oauthProviderChoices() {
+	for _, choice := range oauthProviderChoices(com.Config()) {
 		items = append(items, newAccountPickItem(com.Styles, choice.cruxID, choice.label, ""))
 	}
 	l.list.SetItems(items...)
@@ -558,7 +606,7 @@ func NewLogin(com *common.Common) (*Login, tea.Cmd) {
 // NewLoginForProvider starts the registered OAuth flow for one provider without
 // presenting the provider picker. It is used by request-time reauthentication.
 func NewLoginForProvider(com *common.Common, providerID string) (*Login, tea.Cmd, error) {
-	registration, ok := config.ProviderCapabilities().Lookup(providerID)
+	registration, ok := com.Config().ProviderRegistration(providerID)
 	if !ok || registration.OAuth == nil {
 		return nil, nil, fmt.Errorf("provider %s has no registered OAuth capability", providerID)
 	}
@@ -569,6 +617,9 @@ func NewLoginForProvider(com *common.Common, providerID string) (*Login, tea.Cmd
 // NewLoginForModel starts registered OAuth and resumes the selected model after
 // the credential and account record have been persisted.
 func NewLoginForModel(com *common.Common, selection ActionSelectModel) (*Login, tea.Cmd, error) {
+	if err := selection.ValidateProviderOwner(com.Config()); err != nil {
+		return nil, nil, err
+	}
 	login, cmd, err := NewLoginForProvider(com, string(selection.Provider.ID))
 	if err != nil {
 		return nil, nil, err
@@ -582,9 +633,9 @@ func (l *Login) ID() string { return LoginID }
 
 // loginTokenMsg carries a finished OAuth flow result.
 type loginTokenMsg struct {
-	providerID string
-	token      *oauth.Token
-	err        error
+	registration providerregistry.Registration
+	token        *oauth.Token
+	err          error
 }
 
 // loginDeviceCodeMsg carries device-flow display values.
@@ -597,9 +648,17 @@ type loginDeviceCodeMsg struct {
 
 // LoginDoneMsg reports a completed login to the UI for persistence.
 type LoginDoneMsg struct {
-	CruxProviderID string
-	Token          *oauth.Token
-	Continuation   *ActionSelectModel
+	Registration providerregistry.Registration
+	Token        *oauth.Token
+	Continuation *ActionSelectModel
+}
+
+func validateAccountOwner(com *common.Common, owner providerregistry.RegistrationOwner) error {
+	current, ok := com.Config().ProviderOwner(owner.ProviderID)
+	if !ok || current != owner {
+		return fmt.Errorf("provider account owner changed for %s", owner.ProviderID)
+	}
+	return nil
 }
 
 // start kicks off the provider-specific flow.
@@ -609,13 +668,21 @@ func (l *Login) start(providerID, label string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	l.cancel = cancel
 
-	registration, ok := config.ProviderCapabilities().Lookup(providerID)
+	registration, ok := l.com.Config().ProviderRegistration(providerID)
 	if !ok || registration.OAuth == nil {
 		l.state = loginStateError
 		l.errMsg = "unsupported OAuth provider: " + providerID
 		return nil
 	}
 	capability := registration.OAuth
+	owner := registration.Owner()
+	validate := func() error { return validateAccountOwner(l.com, owner) }
+	ctx = providertransport.ContextWithOwnerValidator(ctx, validate)
+	if err := validate(); err != nil {
+		l.state = loginStateError
+		l.errMsg = err.Error()
+		return nil
+	}
 	switch capability.Adapter {
 	case providerregistry.LoginBrowser:
 		if capability.Authorize == nil {
@@ -625,8 +692,16 @@ func (l *Login) start(providerID, label string) tea.Cmd {
 		}
 		l.state = loginStateBrowser
 		return tea.Batch(l.spinner.Tick, func() tea.Msg {
-			token, err := capability.Authorize(ctx, browser.OpenURL, nil)
-			return loginTokenMsg{providerID: providerID, token: token, err: err}
+			if err := validateAccountOwner(l.com, owner); err != nil {
+				return loginTokenMsg{registration: registration, err: err}
+			}
+			token, err := capability.Authorize(ctx, func(rawURL string) error {
+				return providertransport.OpenURLWithContextOwnerValidator(ctx, browser.OpenURL, rawURL)
+			}, nil)
+			if err == nil {
+				err = validateAccountOwner(l.com, owner)
+			}
+			return loginTokenMsg{registration: registration, token: token, err: err}
 		})
 	case providerregistry.LoginHostedPaste:
 		if capability.Authorize == nil {
@@ -641,7 +716,12 @@ func (l *Login) start(providerID, label string) tea.Cmd {
 		l.codeCh = make(chan string, 1)
 		codeCh := l.codeCh
 		return tea.Batch(l.spinner.Tick, func() tea.Msg {
-			token, err := capability.Authorize(ctx, browser.OpenURL, func() (string, error) {
+			if err := validateAccountOwner(l.com, owner); err != nil {
+				return loginTokenMsg{registration: registration, err: err}
+			}
+			token, err := capability.Authorize(ctx, func(rawURL string) error {
+				return providertransport.OpenURLWithContextOwnerValidator(ctx, browser.OpenURL, rawURL)
+			}, func() (string, error) {
 				select {
 				case code := <-codeCh:
 					return code, nil
@@ -649,7 +729,10 @@ func (l *Login) start(providerID, label string) tea.Cmd {
 					return "", ctx.Err()
 				}
 			})
-			return loginTokenMsg{providerID: providerID, token: token, err: err}
+			if err == nil {
+				err = validateAccountOwner(l.com, owner)
+			}
+			return loginTokenMsg{registration: registration, token: token, err: err}
 		})
 	case providerregistry.LoginDeviceCode:
 		if capability.RequestDeviceCode == nil || capability.PollDeviceCode == nil {
@@ -659,18 +742,32 @@ func (l *Login) start(providerID, label string) tea.Cmd {
 		}
 		l.state = loginStateBrowser
 		return tea.Batch(l.spinner.Tick, func() tea.Msg {
+			if err := validateAccountOwner(l.com, owner); err != nil {
+				return loginTokenMsg{registration: registration, err: err}
+			}
 			authorization, err := capability.RequestDeviceCode(ctx)
 			if err != nil {
-				return loginTokenMsg{providerID: providerID, err: err}
+				return loginTokenMsg{registration: registration, err: err}
 			}
-			_ = browser.OpenURL(authorization.VerificationURL)
+			if err := validateAccountOwner(l.com, owner); err != nil {
+				return loginTokenMsg{registration: registration, err: err}
+			}
+			if err := providertransport.OpenURLWithContextOwnerValidator(ctx, browser.OpenURL, authorization.VerificationURL); err != nil {
+				return loginTokenMsg{registration: registration, err: err}
+			}
 			return loginDeviceCodeMsg{
 				providerID:      providerID,
 				userCode:        authorization.UserCode,
 				verificationURL: authorization.VerificationURL,
 				poll: func() tea.Msg {
+					if err := validateAccountOwner(l.com, owner); err != nil {
+						return loginTokenMsg{registration: registration, err: err}
+					}
 					token, err := capability.PollDeviceCode(ctx, authorization)
-					return loginTokenMsg{providerID: providerID, token: token, err: err}
+					if err == nil {
+						err = validateAccountOwner(l.com, owner)
+					}
+					return loginTokenMsg{registration: registration, token: token, err: err}
 				},
 			}
 		})
@@ -705,12 +802,7 @@ func (l *Login) HandleMsg(msg tea.Msg) Action {
 			return nil
 		}
 		l.state = loginStateSaving
-		token := msg.token
-		providerID := msg.providerID
-		continuation := l.continuation
-		return ActionCmd{func() tea.Msg {
-			return LoginDoneMsg{CruxProviderID: providerID, Token: token, Continuation: continuation}
-		}}
+		return LoginDoneMsg{Registration: msg.registration, Token: msg.token, Continuation: l.continuation}
 	case tea.KeyPressMsg:
 		switch l.state {
 		case loginStatePick:
@@ -868,18 +960,38 @@ func SaveLoginCmd(com *common.Common, msg LoginDoneMsg) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		if err := com.Workspace.SetProviderAPIKey(config.ScopeGlobal, msg.CruxProviderID, msg.Token); err != nil {
-			return LogoutDoneMsg{Label: msg.CruxProviderID, Err: err}
+		registration := msg.Registration
+		owner := registration.Owner()
+		validate := func() error { return validateAccountOwner(com, owner) }
+		ctx = providertransport.ContextWithOwnerValidator(ctx, validate)
+		if err := validate(); err != nil {
+			return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
 		}
 
-		displayName := msg.CruxProviderID
-		registration, ok := config.ProviderCapabilities().Lookup(msg.CruxProviderID)
-		if ok && registration.AccountNamespace != "" {
-			accountID := ""
-			var raw []byte
-			if registration.Identity != nil {
-				accountID, displayName, raw = registration.Identity(ctx, msg.Token.AccessToken)
+		displayName := registration.ProviderID
+		accountID := ""
+		var raw []byte
+		if registration.AccountNamespace != "" && registration.Identity != nil {
+			if err := validateAccountOwner(com, owner); err != nil {
+				return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
 			}
+			accountID, displayName, raw = registration.Identity(ctx, msg.Token.AccessToken)
+			if err := validateAccountOwner(com, owner); err != nil {
+				return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
+			}
+		}
+		credential := config.ProviderOAuthCredential{Owner: owner, Token: msg.Token}
+		if err := validateAccountOwner(com, owner); err != nil {
+			return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
+		}
+		if err := com.Workspace.SetProviderAPIKey(config.ScopeGlobal, registration.ProviderID, credential); err != nil {
+			return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
+		}
+		if err := validateAccountOwner(com, owner); err != nil {
+			return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
+		}
+
+		if registration.AccountNamespace != "" {
 			if accountID == "" {
 				accountID = "default"
 			}
@@ -888,10 +1000,18 @@ func SaveLoginCmd(com *common.Common, msg LoginDoneMsg) tea.Cmd {
 			}
 			entry := accounts.FromToken(accountID, displayName, msg.Token, nil)
 			entry.Raw = raw
-			if err := accounts.Save(ctx, registration.AccountNamespace, entry); err != nil {
-				return AccountSwitchedMsg{CruxProviderID: msg.CruxProviderID, DisplayName: displayName, Err: err}
+			if err := validateAccountOwner(com, owner); err != nil {
+				return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
+			}
+			if err := accounts.SaveForOwner(ctx, registration.AccountNamespace, entry, func() error {
+				return validateAccountOwner(com, owner)
+			}); err != nil {
+				return AccountSwitchedMsg{CruxProviderID: registration.ProviderID, DisplayName: displayName, Err: err}
+			}
+			if err := validateAccountOwner(com, owner); err != nil {
+				return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
 			}
 		}
-		return AccountSwitchedMsg{CruxProviderID: msg.CruxProviderID, DisplayName: displayName, Continuation: msg.Continuation}
+		return AccountSwitchedMsg{CruxProviderID: registration.ProviderID, DisplayName: displayName, Continuation: msg.Continuation}
 	}
 }

@@ -41,6 +41,9 @@ type Manager struct {
 	events     *pubsub.Broker[Event]
 }
 
+// NewManager initializes private storage, loads trust and provenance, and
+// performs a full secure rescan before exposing any plugin state. Do not create
+// a manager that skips Rescan or treats files present on disk as registered.
 func NewManager(ctx context.Context, paths Paths) (*Manager, error) {
 	if err := initializePaths(paths); err != nil {
 		return nil, err
@@ -61,6 +64,9 @@ func NewManager(ctx context.Context, paths Paths) (*Manager, error) {
 	return manager, nil
 }
 
+// initializePaths requires absolute host-owned directories for bundles, cache,
+// and state. Relative or plugin-controlled roots would make trust and snapshot
+// checks depend on process working directory.
 func initializePaths(paths Paths) error {
 	for label, path := range map[string]string{"plugin directory": paths.Bundles, "plugin cache": paths.Cache, "plugin state": paths.State} {
 		if !filepath.IsAbs(path) {
@@ -73,6 +79,9 @@ func initializePaths(paths Paths) error {
 	return nil
 }
 
+// ensurePrivateDirectory creates a non-symlink directory with private
+// permissions. Do not relax either condition: installed manifests can contain
+// private OAuth identity and endpoint policy.
 func ensurePrivateDirectory(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
@@ -87,12 +96,18 @@ func ensurePrivateDirectory(path string) error {
 	return os.Chmod(path, 0o700)
 }
 
+// Close terminates the manager event broker and must remain paired with every
+// manager lifecycle to avoid leaking subscribers.
 func (m *Manager) Close() { m.events.Shutdown() }
 
+// Subscribe publishes immutable revision notifications only; consumers must
+// read a fresh Snapshot rather than retaining mutable internal plugin state.
 func (m *Manager) Subscribe(ctx context.Context) <-chan pubsub.Event[Event] {
 	return m.events.Subscribe(ctx)
 }
 
+// Snapshot returns a detached point-in-time view. Returning internal state
+// would let UI or configuration code mutate trust and registration status.
 func (m *Manager) Snapshot() Snapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -106,8 +121,11 @@ type RegisteredBundle struct {
 	StaticText map[string]string
 }
 
-// RegisteredBundles returns deep copies of trusted, compatible,
-// non-quarantined declarative bundles in deterministic registry order.
+// RegisteredBundles is the only handoff from installed files to active
+// provider-plugin registration. It returns deep copies only for exact-digest
+// trusted, compatible, non-quarantined bundles and never exposes bundle paths.
+// Do not include discovered, untrusted, invalid, or stale bytes to make a
+// provider appear available.
 func (m *Manager) RegisteredBundles() []RegisteredBundle {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -130,8 +148,12 @@ func (m *Manager) RegisteredBundles() []RegisteredBundle {
 
 type RegisteredPresetBundle struct {
 	Manifest manifest.PresetManifest
+	Digest   string
 }
 
+// RegisteredPresetBundles keeps data-only presets separate from provider
+// plugins. A preset must never acquire OAuth, identity, transport, or executable
+// registration behavior through this projection.
 func (m *Manager) RegisteredPresetBundles() []RegisteredPresetBundle {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -146,13 +168,15 @@ func (m *Manager) RegisteredPresetBundles() []RegisteredPresetBundle {
 		}
 		var value manifest.PresetManifest
 		if json.Unmarshal(data, &value) == nil {
-			result = append(result, RegisteredPresetBundle{Manifest: value})
+			result = append(result, RegisteredPresetBundle{Manifest: value, Digest: status.Digest})
 		}
 	}
 	return result
 }
 
-// RegisteredManifests retains the manifest-only projection for catalog callers.
+// RegisteredManifests retains the manifest-only projection for legacy catalog
+// callers. Runtime registration should use RegisteredBundles so validated
+// static instruction text is not discarded.
 func (m *Manager) RegisteredManifests() []manifest.Manifest {
 	bundles := m.RegisteredBundles()
 	result := make([]manifest.Manifest, 0, len(bundles))
@@ -162,6 +186,10 @@ func (m *Manager) RegisteredManifests() []manifest.Manifest {
 	return result
 }
 
+// Rescan atomically rebuilds plugin state from canonical bytes, current exact-
+// digest trust, provenance, compatibility, and duplicate policy. Keep the file
+// lock, revision check, and state swap together; partial refresh can pair trust
+// from one bundle version with manifest bytes from another.
 func (m *Manager) Rescan(ctx context.Context, expectedRevision uint64) (Snapshot, error) {
 	lockContext, cancel := context.WithTimeout(ctx, managerLockTimeout)
 	defer cancel()
@@ -198,6 +226,10 @@ func (m *Manager) Rescan(ctx context.Context, expectedRevision uint64) (Snapshot
 	return result, nil
 }
 
+// scanLocked snapshots each direct non-symlink bundle before validation and
+// derives registration eligibility from those immutable bytes. Never parse an
+// installed bundle in place or trust by ID, path, publisher, or previous state;
+// only the validated canonical digest may become registered.
 func (m *Manager) scanLocked(ctx context.Context, trust trustStore, provenance provenanceStore) ([]Status, error) {
 	directory, err := os.Open(m.paths.Bundles)
 	if err != nil {
@@ -275,6 +307,7 @@ func (m *Manager) scanLocked(ctx context.Context, trust trustStore, provenance p
 		}
 		status.manifest = validated.manifest
 		status.preset = validated.preset
+		status.image = validated.image
 		status.staticText = maps.Clone(validated.staticText)
 		status.path = filepath.Join(m.paths.Bundles, name)
 		if name != status.ID+bundleSuffix {
@@ -300,37 +333,79 @@ func (m *Manager) scanLocked(ctx context.Context, trust trustStore, provenance p
 				status.Diagnostics = []Diagnostic{safeDiagnostic("trust-revoked", "trust for this exact plugin digest was revoked")}
 			}
 		} else {
-			status.State = StateRegistered
+			applyTrustedRegistrationPolicy(&status)
 		}
 		statuses = append(statuses, status)
 	}
 	return statuses, nil
 }
 
+// applyDuplicatePolicy quarantines ambiguous duplicate plugin or provider
+// ownership while preserving an exact canonical migrated preset. Canonical
+// selection uses its built-in identity and digest, never scan order.
 func (m *Manager) applyDuplicatePolicy(statuses []Status) {
 	pluginIDs := map[string][]int{}
 	providerIDs := map[string][]int{}
+	imageIDs := map[string][]int{}
 	for i, status := range statuses {
 		if status.ID != "" {
 			pluginIDs[status.ID] = append(pluginIDs[status.ID], i)
 		}
 		if status.ProviderID != "" {
-			providerIDs[status.ProviderID] = append(providerIDs[status.ProviderID], i)
+			if status.PluginType == manifest.PluginTypeImageProvider {
+				imageIDs[status.ProviderID] = append(imageIDs[status.ProviderID], i)
+			} else {
+				providerIDs[status.ProviderID] = append(providerIDs[status.ProviderID], i)
+			}
 		}
+	}
+	quarantineOne := func(index int, code, message string) {
+		statuses[index].State = StateQuarantined
+		statuses[index].Diagnostics = append(statuses[index].Diagnostics, safeDiagnostic(code, message))
 	}
 	quarantine := func(indexes []int, code, message string) {
 		if len(indexes) < 2 {
 			return
 		}
 		for _, index := range indexes {
-			statuses[index].State = StateQuarantined
-			statuses[index].Diagnostics = append(statuses[index].Diagnostics, safeDiagnostic(code, message))
+			quarantineOne(index, code, message)
 		}
 	}
 	for id, indexes := range pluginIDs {
 		quarantine(indexes, "duplicate-plugin-id", fmt.Sprintf("multiple bundles claim plugin ID %q", id))
 	}
+	for id, indexes := range imageIDs {
+		quarantine(indexes, "duplicate-image-backend", fmt.Sprintf("multiple bundles claim image backend ID %q", id))
+	}
 	for id, indexes := range providerIDs {
-		quarantine(indexes, "duplicate-provider-id", fmt.Sprintf("multiple bundles claim provider ID %q", id))
+		if len(indexes) < 2 {
+			continue
+		}
+		canonical := -1
+		for _, index := range indexes {
+			status := statuses[index]
+			if status.preset == nil || !IsCanonicalMigratedProviderPresetBundle(id, status.preset.ID, status.preset.Version, status.Digest) {
+				continue
+			}
+			if canonical >= 0 {
+				canonical = -1
+				break
+			}
+			canonical = index
+		}
+		if canonical < 0 {
+			quarantine(indexes, "duplicate-provider-id", fmt.Sprintf("multiple bundles claim provider ID %q", id))
+			continue
+		}
+		for _, index := range indexes {
+			if index == canonical {
+				continue
+			}
+			if statuses[index].preset != nil {
+				quarantineOne(index, "migrated-preset-canonical-mismatch", "installed migrated provider preset does not match the canonical bundled version")
+				continue
+			}
+			quarantineOne(index, "migrated-provider-plugin-conflict", "provider plugin cannot claim an ID reserved for its canonical migrated preset")
+		}
 	}
 }

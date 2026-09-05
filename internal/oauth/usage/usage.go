@@ -10,13 +10,12 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/oauth/copilot"
 	"github.com/example-git/crux/internal/oauth/useragent"
+	"github.com/example-git/crux/internal/providertransport"
 )
 
 // Window is one normalized usage window.
@@ -46,16 +45,51 @@ const maxBody = 1 << 20
 // Fetch returns the current usage snapshot using the registered account
 // namespace and core-owned fetcher. Missing credentials return no snapshot.
 func Fetch(ctx context.Context, providerID, accountNamespace string, fetcher Fetcher) (*Usage, error) {
+	return FetchForOwner(ctx, providerID, accountNamespace, fetcher, nil, nil)
+}
+
+func FetchForOwner(ctx context.Context, providerID, accountNamespace string, fetcher Fetcher, refresher accounts.Refresher, validate accounts.Validator) (*Usage, error) {
 	if accountNamespace == "" || fetcher == nil {
 		return nil, nil
 	}
-	token, err := accounts.AccessToken(ctx, accountNamespace)
+	if validate != nil {
+		if err := validate(); err != nil {
+			return nil, err
+		}
+	}
+	var token string
+	var err error
+	if validate == nil && refresher == nil {
+		token, err = accounts.AccessToken(ctx, accountNamespace)
+	} else {
+		token, err = accounts.AccessTokenForOwner(ctx, accountNamespace, refresher, validate)
+	}
 	if err != nil || token == "" {
 		return nil, err
+	}
+	return FetchWithTokenForOwner(ctx, providerID, token, fetcher, validate)
+}
+
+func FetchWithTokenForOwner(ctx context.Context, providerID, token string, fetcher Fetcher, validate accounts.Validator) (*Usage, error) {
+	if token == "" || fetcher == nil {
+		return nil, nil
+	}
+	if validate != nil {
+		if err := validate(); err != nil {
+			return nil, err
+		}
+	}
+	if validate != nil {
+		ctx = providertransport.ContextWithOwnerValidator(ctx, providertransport.OwnerValidator(validate))
 	}
 	u, err := fetcher(ctx, token)
 	if err != nil || u == nil {
 		return nil, err
+	}
+	if validate != nil {
+		if err := validate(); err != nil {
+			return nil, err
+		}
 	}
 	u.ProviderID = providerID
 	u.FetchedAt = time.Now()
@@ -73,7 +107,7 @@ func getJSON(ctx context.Context, method, url, token string, body io.Reader, hea
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
 	if err != nil {
 		return err
 	}
@@ -168,108 +202,88 @@ func codexWindowLabel(limitWindowSeconds int64) string {
 	return ""
 }
 
-// --- Gemini / Antigravity ---
+var copilotUsageURL = "https://api.github.com/copilot_internal/user"
 
-var (
-	geminiLoadCodeAssistURL = "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
-	geminiUserQuotaURL      = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
-)
-
-func FetchGemini(ctx context.Context, token string) (*Usage, error) {
-	ua := map[string]string{"User-Agent": useragent.Gemini()}
-
-	var assist struct {
-		CurrentTier *struct {
-			Name string `json:"name"`
-		} `json:"currentTier"`
-		PaidTier *struct {
-			Name string `json:"name"`
-		} `json:"paidTier"`
-		Project string `json:"cloudaicompanionProject"`
-	}
-	if err := getJSON(ctx, http.MethodPost, geminiLoadCodeAssistURL, token, strings.NewReader("{}"), ua, &assist); err != nil {
-		return nil, err
-	}
-
-	body, _ := json.Marshal(map[string]string{"project": assist.Project})
-	var quota struct {
-		Buckets []struct {
-			RemainingAmount   string   `json:"remainingAmount"`
-			RemainingFraction *float64 `json:"remainingFraction"`
-			ResetTime         string   `json:"resetTime"`
-			ModelID           string   `json:"modelId"`
-		} `json:"buckets"`
-	}
-	if err := getJSON(ctx, http.MethodPost, geminiUserQuotaURL, token, strings.NewReader(string(body)), ua, &quota); err != nil {
-		return nil, err
-	}
-
-	u := &Usage{}
-	if assist.CurrentTier != nil {
-		u.Plan = assist.CurrentTier.Name
-	} else if assist.PaidTier != nil {
-		u.Plan = assist.PaidTier.Name
-	}
-
-	// Merge buckets by window name keeping the highest utilization and the
-	// earliest reset.
-	merged := map[string]Window{}
-	for _, b := range quota.Buckets {
-		if b.ModelID == "" || b.RemainingFraction == nil {
-			continue
-		}
-		used, limit := 0.0, 100.0
-		if b.RemainingAmount != "" {
-			remaining, err := strconv.ParseFloat(b.RemainingAmount, 64)
-			if err == nil && *b.RemainingFraction > 0 {
-				limit = math.Round(remaining / *b.RemainingFraction)
-				used = limit - remaining
-			} else {
-				used = (1 - *b.RemainingFraction) * 100
-			}
-		} else {
-			used = (1 - *b.RemainingFraction) * 100
-		}
-		pct := 0
-		if limit > 0 {
-			pct = clampPct(used / limit * 100)
-		}
-		win := Window{Name: geminiWindowName(b.ModelID), Percent: pct}
-		if t, err := time.Parse(time.RFC3339, b.ResetTime); err == nil {
-			win.ResetsAt = t
-		}
-		if prev, ok := merged[win.Name]; ok {
-			if prev.Percent > win.Percent {
-				win.Percent = prev.Percent
-			}
-			if !prev.ResetsAt.IsZero() && (win.ResetsAt.IsZero() || prev.ResetsAt.Before(win.ResetsAt)) {
-				win.ResetsAt = prev.ResetsAt
-			}
-		}
-		merged[win.Name] = win
-	}
-	names := make([]string, 0, len(merged))
-	for name := range merged {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		u.Windows = append(u.Windows, merged[name])
-	}
-	return u, nil
+type copilotQuotaSnapshot struct {
+	Entitlement      *float64 `json:"entitlement"`
+	OverageCount     *float64 `json:"overage_count"`
+	PercentRemaining *float64 `json:"percent_remaining"`
+	QuotaRemaining   *float64 `json:"quota_remaining"`
+	Remaining        *float64 `json:"remaining"`
+	Unlimited        bool     `json:"unlimited"`
+	TimestampUTC     string   `json:"timestamp_utc"`
 }
 
-func geminiWindowName(modelID string) string {
-	id := strings.ToLower(modelID)
-	switch {
-	case strings.Contains(id, "flash-lite"):
-		return "flash-lite"
-	case strings.Contains(id, "flash"):
-		return "flash"
-	case strings.Contains(id, "pro"):
-		return "pro"
+func FetchCopilot(ctx context.Context, token string) (*Usage, error) {
+	var payload struct {
+		Plan              string `json:"copilot_plan"`
+		QuotaResetDate    string `json:"quota_reset_date"`
+		QuotaResetDateUTC string `json:"quota_reset_date_utc"`
+		QuotaSnapshots    *struct {
+			PremiumInteractions *copilotQuotaSnapshot `json:"premium_interactions"`
+		} `json:"quota_snapshots"`
 	}
-	return id
+	if err := getJSON(ctx, http.MethodGet, copilotUsageURL, token, nil, copilot.Headers(), &payload); err != nil {
+		return nil, err
+	}
+	u := &Usage{Plan: payload.Plan}
+	if payload.QuotaSnapshots == nil || payload.QuotaSnapshots.PremiumInteractions == nil {
+		return u, nil
+	}
+	snapshot := payload.QuotaSnapshots.PremiumInteractions
+	overage := 0.0
+	if snapshot.OverageCount != nil {
+		overage = *snapshot.OverageCount
+	}
+	remaining := snapshot.QuotaRemaining
+	if remaining == nil {
+		remaining = snapshot.Remaining
+	}
+	var percent *float64
+	switch {
+	case snapshot.Unlimited:
+		value := 0.0
+		percent = &value
+	case snapshot.Entitlement != nil && *snapshot.Entitlement > 0:
+		entitlement := *snapshot.Entitlement
+		used := 0.0
+		calculated := false
+		switch {
+		case snapshot.PercentRemaining != nil:
+			used = math.Round(max(0, entitlement*(1-*snapshot.PercentRemaining/100)))
+			calculated = true
+		case remaining != nil:
+			used = max(0, entitlement-*remaining)
+			calculated = true
+		case overage > 0:
+			used = entitlement
+			calculated = true
+		}
+		if calculated {
+			value := max(0, used+overage) / entitlement * 100
+			percent = &value
+		}
+	case remaining != nil && snapshot.PercentRemaining != nil && *snapshot.PercentRemaining > 0 && *snapshot.PercentRemaining <= 100:
+		limit := math.Round(*remaining / (*snapshot.PercentRemaining / 100))
+		if limit > 0 {
+			value := max(0, limit-*remaining+overage) / limit * 100
+			percent = &value
+		}
+	}
+	if percent == nil {
+		return u, nil
+	}
+	window := Window{Name: "premium_requests", Percent: clampPct(*percent)}
+	resetAt := payload.QuotaResetDateUTC
+	if resetAt == "" {
+		resetAt = payload.QuotaResetDate
+	}
+	if resetAt == "" {
+		resetAt = snapshot.TimestampUTC
+	}
+	window.ResetsAt, _ = time.Parse(time.RFC3339, resetAt)
+	u.Windows = append(u.Windows, window)
+	return u, nil
 }
 
 func clampPct(v float64) int {

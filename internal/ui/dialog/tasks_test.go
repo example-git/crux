@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/example-git/crux/internal/message"
@@ -198,7 +199,7 @@ func TestTasksDialogRendersBackgroundAgentTranscript(t *testing.T) {
 			Role:      message.Assistant,
 			Parts: []message.ContentPart{
 				message.TextContent{Text: "Inspecting the coordinator"},
-				message.ToolCall{ID: "tool-call", Name: "grep", Input: `{"pattern":"background"}`, Finished: true},
+				message.ToolCall{ID: "tool-call", Name: "search", Input: `{"mode":"content","pattern":"background"}`, Finished: true},
 			},
 		}},
 	}
@@ -208,7 +209,52 @@ func TestTasksDialogRendersBackgroundAgentTranscript(t *testing.T) {
 	detail := ansi.Strip(dialog.drawDetail(70, 18))
 	require.Contains(t, detail, "Agent activity")
 	require.Contains(t, detail, "Inspecting the coordinator")
-	require.Contains(t, detail, "Grep")
+	require.Contains(t, detail, "Search")
+}
+
+func TestTasksDialogTruncatesImageDescriptionToOneLine(t *testing.T) {
+	dialog := newTasksTestDialog(&tasksTestWorkspace{})
+	dialog.tasks = []managedtask.View{{
+		ID:          "i12345678",
+		Type:        managedtask.TypeImage,
+		Description: "generate image: first line\nsecond line " + strings.Repeat("more detail ", 20),
+		State:       managedtask.State{Status: managedtask.StatusRunning},
+	}}
+
+	const width = 48
+	list := ansi.Strip(dialog.drawList(width, 1))
+	var contentLines []string
+	for line := range strings.SplitSeq(list, "\n") {
+		if strings.TrimSpace(line) != "" {
+			contentLines = append(contentLines, strings.TrimRight(line, " "))
+		}
+	}
+	require.Len(t, contentLines, 1)
+	require.LessOrEqual(t, lipgloss.Width(contentLines[0]), width)
+	require.True(t, strings.HasSuffix(contentLines[0], "..."))
+	require.NotContains(t, contentLines[0], "…")
+}
+
+func TestTasksDialogRendersReadableImageResult(t *testing.T) {
+	completed := managedtask.View{
+		ID:          "i12345678",
+		Type:        managedtask.TypeImage,
+		Description: "generate image: a paper fox",
+		State:       managedtask.State{Status: managedtask.StatusCompleted, StartedAt: time.Now().Add(-time.Second), EndedAt: time.Now()},
+		OutputRef:   "file:/workspace/generated.png",
+	}
+	dialog := newTasksTestDialog(&tasksTestWorkspace{})
+	dialog.tasks = []managedtask.View{completed}
+	dialog.mode = taskDialogDetail
+	dialog.output = managedtask.OutputResult{Task: completed, Output: `{"success":true,"mode":"generate","outputs":["/workspace/generated.png"],"auth_mode":"codex","model":"gpt-image-2"}`}
+
+	require.Equal(t, "Image details", dialog.dialogTitle())
+	detail := ansi.Strip(dialog.drawDetail(70, 18))
+	require.Contains(t, detail, "Image generated")
+	require.Contains(t, detail, "/workspace/generated.png")
+	require.Contains(t, detail, "Account: Codex")
+	require.NotContains(t, detail, `{"success"`)
+	require.NotContains(t, detail, "Usage:")
 }
 
 func TestTasksDialogStopsAndContinuesSupportedTasks(t *testing.T) {

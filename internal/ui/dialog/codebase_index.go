@@ -339,17 +339,24 @@ func codebaseIndexStatusLabel(status proto.CodebaseIndexStatus, now time.Time) s
 	case "missing":
 		return "Index not built"
 	case "indexing":
+		activity := "Indexing"
+		if status.Serving {
+			activity = "Refreshing"
+		}
 		if status.FilesTotal > 0 {
-			label := fmt.Sprintf("Indexing: %d/%d files, %d chunks", status.FilesProcessed, status.FilesTotal, status.ChunksCreated)
+			label := fmt.Sprintf("%s: %d/%d files, %d chunks", activity, status.FilesProcessed, status.FilesTotal, status.ChunksCreated)
 			if status.FilesSkipped > 0 {
 				label += fmt.Sprintf(", %d skipped", status.FilesSkipped)
 			}
 			return label
 		}
 		if status.Stage != "" {
+			if status.Serving {
+				return activity + ": " + status.Stage + "…"
+			}
 			return status.Stage + "…"
 		}
-		return "Indexing…"
+		return activity + "…"
 	case "ready":
 		label := "Ready"
 		if status.FilesTotal > 0 {
@@ -366,8 +373,14 @@ func codebaseIndexStatusLabel(status proto.CodebaseIndexStatus, now time.Time) s
 		}
 		return label
 	case "stale":
+		if status.Serving {
+			return "Serving current index; refresh pending"
+		}
 		return "Index changed; update recommended"
 	case "failed":
+		if status.Serving {
+			return "Serving current index; refresh failed"
+		}
 		return "Index failed; retry available"
 	default:
 		return "Checking index…"

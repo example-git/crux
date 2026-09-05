@@ -329,43 +329,41 @@ func TestToInputToolOutputTypesRemainValidAndBounded(t *testing.T) {
 	}
 }
 
-func TestSplitDynamicEnvironment(t *testing.T) {
-	instructions := "native\n\n<env>\nWorking directory: /workspace\nIs directory a git repo: yes\nPlatform: darwin\nToday's date: 8/21/2026\n\nGit status (snapshot at conversation start - may be outdated):\nCurrent branch: main\nStatus: clean\n</env>\n\n<skills>stable</skills>"
-	stable, dynamic := splitDynamicEnvironment(instructions)
-	if stable != "native\n\n<env>\nWorking directory: /workspace\nIs directory a git repo: yes\nPlatform: darwin\n</env>\n\n<skills>stable</skills>" {
+func TestToInputWithDynamicUsesTypedRuntimeSection(t *testing.T) {
+	instructions := fantasy.NewInstructions(
+		fantasy.StaticInstruction(fantasy.InstructionKindTooling, "native"),
+		fantasy.StaticInstruction(fantasy.InstructionKindEnvironment, "<env>\nWorking directory: /workspace\nPlatform: darwin\n</env>"),
+		fantasy.DynamicInstruction(fantasy.InstructionKindLifecycle, "lifecycle state"),
+		fantasy.DynamicInstruction(fantasy.InstructionKindRuntime, "Today's date: 8/21/2026"),
+		fantasy.DynamicInstruction(fantasy.InstructionKindProviderContext, "user provider context"),
+		fantasy.DynamicInstruction(fantasy.InstructionKindMemory, "relevant memory"),
+	)
+	stable, dynamic, items, warnings := toInputWithDynamic("gpt-test", fantasy.Prompt{
+		instructions.Message(fantasy.InstructionPolicyCodex),
+		fantasy.NewUserMessage("inspect"),
+	})
+	if stable != "native\n\n<env>\nWorking directory: /workspace\nPlatform: darwin\n</env>\n\nlifecycle state\n\nuser provider context\n\nrelevant memory" {
 		t.Fatalf("stable instructions = %q", stable)
 	}
-	if dynamic != "Today's date: 8/21/2026\n\nGit status (snapshot at conversation start - may be outdated):\nCurrent branch: main\nStatus: clean" {
-		t.Fatalf("dynamic environment = %q", dynamic)
+	if dynamic != "Today's date: 8/21/2026" {
+		t.Fatalf("dynamic context = %q", dynamic)
 	}
-
-	withoutGit := "<env>\nWorking directory: /workspace\nIs directory a git repo: no\nPlatform: linux\nToday's date: 8/22/2026\n</env>"
-	stable, dynamic = splitDynamicEnvironment(withoutGit)
-	if stable != "<env>\nWorking directory: /workspace\nIs directory a git repo: no\nPlatform: linux\n</env>" {
-		t.Fatalf("stable instructions without git = %q", stable)
-	}
-	if dynamic != "Today's date: 8/22/2026" {
-		t.Fatalf("dynamic environment without git = %q", dynamic)
+	if len(items) != 1 || len(warnings) != 0 {
+		t.Fatalf("items=%+v warnings=%+v", items, warnings)
 	}
 }
 
-func TestSplitDynamicEnvironmentFailsClosed(t *testing.T) {
-	valid := "<env>\nWorking directory: /workspace\nIs directory a git repo: no\nPlatform: linux\nToday's date: 8/21/2026\n</env>"
-	tests := map[string]string{
-		"missing close":       strings.TrimSuffix(valid, "</env>"),
-		"duplicate blocks":    valid + "\n" + valid,
-		"invalid date":        strings.Replace(valid, "8/21/2026", "2026-08-21", 1),
-		"task environment":    "<env>\nWorking directory: /workspace\nPlatform: linux\nToday's date: 8/21/2026\n</env>",
-		"embedded close":      strings.Replace(valid, "/workspace", "/work</env>space", 1),
-		"unexpected git data": strings.Replace(valid, "Today's date: 8/21/2026\n", "Today's date: 8/21/2026\n\nStatus: clean\n", 1),
+func TestToInputWithDynamicLeavesUntypedSystemTextUnchanged(t *testing.T) {
+	untyped := "<env>\nWorking directory: /workspace\nPlatform: linux\nToday's date: 8/21/2026\n</env>"
+	stable, dynamic, items, warnings := toInputWithDynamic("gpt-test", fantasy.Prompt{
+		fantasy.NewSystemMessage(untyped),
+		fantasy.NewUserMessage("inspect"),
+	})
+	if stable != untyped || dynamic != "" {
+		t.Fatalf("untyped instructions changed: stable=%q dynamic=%q", stable, dynamic)
 	}
-	for name, instructions := range tests {
-		t.Run(name, func(t *testing.T) {
-			stable, dynamic := splitDynamicEnvironment(instructions)
-			if stable != instructions || dynamic != "" {
-				t.Fatalf("split malformed environment: stable=%q dynamic=%q", stable, dynamic)
-			}
-		})
+	if len(items) != 1 || len(warnings) != 0 {
+		t.Fatalf("items=%+v warnings=%+v", items, warnings)
 	}
 }
 
@@ -479,9 +477,15 @@ func TestPrepareRequestWarnsForUnsupportedOutputLimitWithoutSerializingIt(t *tes
 }
 
 func TestPrepareRequestKeepsDynamicEnvironmentOutOfFrameMetadata(t *testing.T) {
+	instructions := fantasy.NewInstructions(
+		fantasy.StaticInstruction(fantasy.InstructionKindTooling, "native"),
+		fantasy.StaticInstruction(fantasy.InstructionKindEnvironment, "<env>\nWorking directory: /workspace\nIs directory a git repo: no\nPlatform: linux\n</env>"),
+		fantasy.StaticInstruction(fantasy.InstructionKindSkills, "skills"),
+		fantasy.DynamicInstruction(fantasy.InstructionKindRuntime, "Today's date: 8/21/2026"),
+	)
 	g := &languageModel{modelID: "gpt-5.5", provider: Name, client: &client{}}
 	frame, _, err := g.prepareRequest(fantasy.Call{Prompt: fantasy.Prompt{
-		fantasy.NewSystemMessage("native\n\n<env>\nWorking directory: /workspace\nIs directory a git repo: no\nPlatform: linux\nToday's date: 8/21/2026\n</env>\n\nskills"),
+		instructions.Message(fantasy.InstructionPolicyCodex),
 		fantasy.NewUserMessage("hi"),
 	}})
 	if err != nil {
@@ -503,7 +507,16 @@ func TestPrepareRequestKeepsDynamicEnvironmentOutOfFrameMetadata(t *testing.T) {
 }
 
 func TestPrepareRequestSerializesRuntimeControls(t *testing.T) {
-	g := &languageModel{modelID: "gpt-5.6-sol", provider: Name, client: &client{}}
+	for _, modelID := range []string{"gpt-5.6-sol", "gpt-6-astra"} {
+		t.Run(modelID, func(t *testing.T) {
+			testPrepareRequestSerializesRuntimeControls(t, modelID)
+		})
+	}
+}
+
+func testPrepareRequestSerializesRuntimeControls(t *testing.T, modelID string) {
+	t.Helper()
+	g := &languageModel{modelID: modelID, provider: Name, client: &client{}}
 	frame, _, err := g.prepareRequest(fantasy.Call{
 		Prompt: fantasy.Prompt{fantasy.NewUserMessage("hi")},
 		ProviderOptions: fantasy.ProviderOptions{

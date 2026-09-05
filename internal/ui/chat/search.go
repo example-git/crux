@@ -10,101 +10,38 @@ import (
 )
 
 // -----------------------------------------------------------------------------
-// Glob Tool
+// Search Tool
 // -----------------------------------------------------------------------------
 
-// GlobToolMessageItem is a message item that represents a glob tool call.
-type GlobToolMessageItem struct {
+type SearchToolMessageItem struct {
 	*baseToolMessageItem
 }
 
-var _ ToolMessageItem = (*GlobToolMessageItem)(nil)
+var _ ToolMessageItem = (*SearchToolMessageItem)(nil)
 
-// NewGlobToolMessageItem creates a new [GlobToolMessageItem].
-func NewGlobToolMessageItem(
+func NewSearchToolMessageItem(
 	sty *styles.Styles,
 	toolCall message.ToolCall,
 	result *message.ToolResult,
 	canceled bool,
 ) ToolMessageItem {
-	return newBaseToolMessageItem(sty, toolCall, result, &GlobToolRenderContext{}, canceled)
+	return newBaseToolMessageItem(sty, toolCall, result, &SearchToolRenderContext{}, canceled)
 }
 
-// GlobToolRenderContext renders glob tool messages.
-type GlobToolRenderContext struct{}
+type SearchToolRenderContext struct{}
 
-// RenderTool implements the [ToolRenderer] interface.
-func (g *GlobToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
+func (s *SearchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	cappedWidth := cappedMessageWidth(width)
 	if opts.IsPending() {
-		return pendingTool(sty, "Glob", opts.Anim, opts.Compact)
+		return pendingTool(sty, "Search", opts.Anim, opts.Compact)
 	}
 
-	var params tools.GlobParams
+	var params tools.SearchParams
 	if err := json.Unmarshal([]byte(opts.ToolCall.Input), &params); err != nil {
 		return toolErrorContent(sty, &message.ToolResult{Content: "Invalid parameters"}, cappedWidth)
 	}
 
-	toolParams := []string{params.Pattern}
-	if params.Path != "" {
-		toolParams = append(toolParams, "path", params.Path)
-	}
-
-	header := toolHeader(sty, opts.Status, "Glob", cappedWidth, opts, toolParams...)
-	if opts.Compact {
-		return header
-	}
-
-	if earlyState, ok := toolEarlyStateContent(sty, opts, cappedWidth); ok {
-		return joinToolParts(header, earlyState)
-	}
-
-	if !opts.HasResult() || opts.Result.Content == "" {
-		return header
-	}
-
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
-	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
-	return joinToolParts(header, body)
-}
-
-// -----------------------------------------------------------------------------
-// Grep Tool
-// -----------------------------------------------------------------------------
-
-// GrepToolMessageItem is a message item that represents a grep tool call.
-type GrepToolMessageItem struct {
-	*baseToolMessageItem
-}
-
-var _ ToolMessageItem = (*GrepToolMessageItem)(nil)
-
-// NewGrepToolMessageItem creates a new [GrepToolMessageItem].
-func NewGrepToolMessageItem(
-	sty *styles.Styles,
-	toolCall message.ToolCall,
-	result *message.ToolResult,
-	canceled bool,
-) ToolMessageItem {
-	return newBaseToolMessageItem(sty, toolCall, result, &GrepToolRenderContext{}, canceled)
-}
-
-// GrepToolRenderContext renders grep tool messages.
-type GrepToolRenderContext struct{}
-
-// RenderTool implements the [ToolRenderer] interface.
-func (g *GrepToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
-	if opts.IsPending() {
-		return pendingTool(sty, "Grep", opts.Anim, opts.Compact)
-	}
-
-	var params tools.GrepParams
-	if err := json.Unmarshal([]byte(opts.ToolCall.Input), &params); err != nil {
-		return toolErrorContent(sty, &message.ToolResult{Content: "Invalid parameters"}, cappedWidth)
-	}
-
-	toolParams := []string{params.Pattern}
+	toolParams := []string{params.Mode, params.Pattern}
 	if params.Path != "" {
 		toolParams = append(toolParams, "path", params.Path)
 	}
@@ -115,7 +52,7 @@ func (g *GrepToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *
 		toolParams = append(toolParams, "literal", "true")
 	}
 
-	header := toolHeader(sty, opts.Status, "Grep", cappedWidth, opts, toolParams...)
+	header := toolHeader(sty, opts.Status, "Search", cappedWidth, opts, toolParams...)
 	if opts.Compact {
 		return header
 	}

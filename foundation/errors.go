@@ -36,6 +36,7 @@ type ProviderError struct {
 	Message string
 	Title   string
 	Cause   error
+	Class   ProviderErrorClass
 
 	URL             string
 	StatusCode      int
@@ -58,7 +59,35 @@ type ProviderError struct {
 	// events ride inside an already-successful 200 response, so the status
 	// code alone cannot signal that a retry may succeed.
 	TransientError bool
+
+	// UnlimitedRetry identifies the small set of structured provider failures
+	// that should keep retrying until recovery or context cancellation. It must
+	// only be set by a transport after decoding a genuine protocol error event.
+	UnlimitedRetry UnlimitedRetryReason
 }
+
+type ProviderErrorClass string
+
+const (
+	ProviderErrorClassAuthentication  ProviderErrorClass = "authentication"
+	ProviderErrorClassAuthorization   ProviderErrorClass = "authorization"
+	ProviderErrorClassRateLimit       ProviderErrorClass = "rate-limit"
+	ProviderErrorClassCapacity        ProviderErrorClass = "capacity"
+	ProviderErrorClassContextOverflow ProviderErrorClass = "context-overflow"
+	ProviderErrorClassInvalidRequest  ProviderErrorClass = "invalid-request"
+	ProviderErrorClassContentFilter   ProviderErrorClass = "content-filter"
+	ProviderErrorClassServer          ProviderErrorClass = "server"
+	ProviderErrorClassTransport       ProviderErrorClass = "transport"
+	ProviderErrorClassUnknown         ProviderErrorClass = "unknown"
+)
+
+type UnlimitedRetryReason string
+
+const (
+	UnlimitedRetryNone            UnlimitedRetryReason = ""
+	UnlimitedRetryServerOverload  UnlimitedRetryReason = "server_overload"
+	UnlimitedRetryConnectionLimit UnlimitedRetryReason = "connection_limit"
+)
 
 func (m *ProviderError) Error() string {
 	if m.Title == "" {
@@ -183,6 +212,51 @@ func NewTransportError(err error) *ProviderError {
 		Title:   "stream transport error",
 		Message: extractHTTP2ErrorMessage(err),
 		Cause:   err,
+	}
+}
+
+const ServerOverloadMessage = "Our servers are currently overloaded. Please try again later"
+
+const ConnectionLimitMessage = "Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue."
+
+func IsServerOverloadError(err error) bool {
+	var providerErr *ProviderError
+	return errors.As(err, &providerErr) && providerErr.UnlimitedRetry == UnlimitedRetryServerOverload
+}
+
+func IsConnectionLimitError(err error) bool {
+	var providerErr *ProviderError
+	return errors.As(err, &providerErr) && providerErr.UnlimitedRetry == UnlimitedRetryConnectionLimit
+}
+
+func IsIndefinitelyRetryable(err error) bool {
+	var providerErr *ProviderError
+	if !errors.As(err, &providerErr) {
+		return false
+	}
+	switch providerErr.UnlimitedRetry {
+	case UnlimitedRetryServerOverload, UnlimitedRetryConnectionLimit:
+		return true
+	default:
+		return false
+	}
+}
+
+func NewServerOverloadError() *ProviderError {
+	return &ProviderError{
+		Title:          "provider overloaded",
+		Message:        ServerOverloadMessage,
+		TransientError: true,
+		UnlimitedRetry: UnlimitedRetryServerOverload,
+	}
+}
+
+func NewConnectionLimitError() *ProviderError {
+	return &ProviderError{
+		Title:          "connection limit reached",
+		Message:        ConnectionLimitMessage,
+		TransientError: true,
+		UnlimitedRetry: UnlimitedRetryConnectionLimit,
 	}
 }
 

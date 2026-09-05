@@ -132,6 +132,9 @@ func newRealCreateHarness(t *testing.T) *e2eHarness {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("CRUX_GLOBAL_CONFIG", t.TempDir())
+	t.Setenv("CRUX_GLOBAL_DATA", t.TempDir())
+	t.Setenv("CRUX_CACHE_DIR", t.TempDir())
 
 	h := &e2eHarness{}
 	h.installServer(t)

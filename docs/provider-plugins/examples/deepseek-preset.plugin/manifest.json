@@ -4,8 +4,8 @@
   "manifest_version": 1,
   "id": "example.deepseek-preset",
   "version": "1.0.0",
-  "name": "DeepSeek Provider Preset",
-  "description": "Data-only DeepSeek provider and model catalog preset derived from Catwalk v0.51.23.",
+  "name": "Example DeepSeek Provider Preset",
+  "description": "Data-only preset example using an independent provider ID and DeepSeek catalog metadata derived from Catwalk v0.51.23.",
   "publisher": {
     "id": "example.docs",
     "name": "Example Documentation"
@@ -17,8 +17,8 @@
     }
   },
   "preset": {
-    "name": "DeepSeek",
-    "id": "deepseek",
+    "name": "Example DeepSeek",
+    "id": "example-deepseek",
     "type": "openai-compat",
     "api_key": "$DEEPSEEK_API_KEY",
     "api_endpoint": "https://api.deepseek.com/v1",

@@ -198,10 +198,14 @@ func TestCodebaseIndexStatusLabels(t *testing.T) {
 		{proto.CodebaseIndexStatus{State: "missing"}, "Index not built"},
 		{proto.CodebaseIndexStatus{State: "indexing", Stage: "Preparing files"}, "Preparing files…"},
 		{proto.CodebaseIndexStatus{State: "indexing", FilesProcessed: 3, FilesTotal: 10, ChunksCreated: 24, FilesSkipped: 1}, "Indexing: 3/10 files, 24 chunks, 1 skipped"},
+		{proto.CodebaseIndexStatus{State: "indexing", Serving: true, FilesProcessed: 3, FilesTotal: 10, ChunksCreated: 24}, "Refreshing: 3/10 files, 24 chunks"},
+		{proto.CodebaseIndexStatus{State: "indexing", Serving: true, Stage: "Preparing files"}, "Refreshing: Preparing files…"},
 		{proto.CodebaseIndexStatus{State: "ready", FilesTotal: 10, ChunksCreated: 24, FinishedAt: now.Add(-5 * time.Minute)}, "Ready: 10 files, 24 chunks (5m ago)"},
 		{proto.CodebaseIndexStatus{State: "ready", FilesTotal: 10, FilesProcessed: 10, ChunksCreated: 24, FilesSkipped: 2}, "Ready: 10 files, 24 chunks, 2 skipped"},
 		{proto.CodebaseIndexStatus{State: "stale"}, "Index changed; update recommended"},
+		{proto.CodebaseIndexStatus{State: "stale", Serving: true}, "Serving current index; refresh pending"},
 		{proto.CodebaseIndexStatus{State: "failed"}, "Index failed; retry available"},
+		{proto.CodebaseIndexStatus{State: "failed", Serving: true}, "Serving current index; refresh failed"},
 		{proto.CodebaseIndexStatus{}, "Checking index…"},
 	}
 	for _, test := range cases {

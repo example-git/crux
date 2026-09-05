@@ -71,10 +71,7 @@ func assertHookFilters(t *testing.T, store *config.ConfigStore) {
 	require.Equal(t, 1, match.HookCount, "bash must match ^bash$ matcher")
 }
 
-// TestSetConfigField_AutoReload_PreservesHookMatcherFiltering verifies the
-// dominant real-world trigger path: config writes call autoReload,
-// autoReload calls ReloadFromDisk, and hook matching must remain correct.
-func TestSetConfigField_AutoReload_PreservesHookMatcherFiltering(t *testing.T) {
+func TestSetConfigFieldReloadPreservesHookMatcherFiltering(t *testing.T) {
 	isolated := t.TempDir()
 	t.Setenv("HOME", isolated)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(isolated, ".config"))

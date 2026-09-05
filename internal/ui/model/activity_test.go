@@ -40,6 +40,7 @@ func TestActivityStatusLabel(t *testing.T) {
 		MemoryActivity: "updating",
 	}))
 	require.Equal(t, "index ready", activityStatusLabel(proto.CodebaseIndexStatus{State: "ready"}))
+	require.Equal(t, "index ready, refreshing 12/40", activityStatusLabel(proto.CodebaseIndexStatus{State: "indexing", Serving: true, FilesProcessed: 12, FilesTotal: 40}))
 }
 
 func TestActivityRefreshFetchesOffThreadAndPollsWhileActive(t *testing.T) {

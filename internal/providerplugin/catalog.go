@@ -5,20 +5,22 @@ import (
 	"maps"
 	"slices"
 
-	"charm.land/catwalk/pkg/catwalk"
 	"github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 )
 
 // CatalogProviders projects registered declarative manifests into the legacy
 // catalog shape consumed by configuration and model-selection surfaces. Only
-// trusted, compatible, non-quarantined registrations are included, in the
-// manager snapshot's deterministic order.
-func (m *Manager) CatalogProviders() ([]catwalk.Provider, error) {
+// trusted, compatible, non-quarantined registrations are included. This catalog
+// is presentation and model metadata, not runtime ownership: callers must still
+// use the matching registry operation and must never construct a generic
+// provider from catalog shape alone.
+func (m *Manager) CatalogProviders() ([]catalog.Provider, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	providers := make([]catwalk.Provider, 0, len(m.state.Plugins))
+	providers := make([]catalog.Provider, 0, len(m.state.Plugins))
 	for _, status := range m.state.Plugins {
 		if status.State != StateRegistered || status.manifest == nil {
 			continue
@@ -32,11 +34,11 @@ func (m *Manager) CatalogProviders() ([]catwalk.Provider, error) {
 	return providers, nil
 }
 
-func (m *Manager) CatalogPresets() []catwalk.Provider {
+func (m *Manager) CatalogPresets() []catalog.Provider {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	providers := make([]catwalk.Provider, 0, len(m.state.Plugins))
+	providers := make([]catalog.Provider, 0, len(m.state.Plugins))
 	for _, status := range m.state.Plugins {
 		if status.State != StateRegistered || status.preset == nil {
 			continue
@@ -46,10 +48,10 @@ func (m *Manager) CatalogPresets() []catwalk.Provider {
 	return providers
 }
 
-func catalogPreset(preset foundation.ProviderPreset) catwalk.Provider {
-	models := make([]catwalk.Model, len(preset.Models))
+func catalogPreset(preset foundation.ProviderPreset) catalog.Provider {
+	models := make([]catalog.Model, len(preset.Models))
 	for i, model := range preset.Models {
-		models[i] = catwalk.Model{
+		models[i] = catalog.Model{
 			ID:                     model.ID,
 			Name:                   model.Name,
 			CostPer1MIn:            model.CostPer1MIn,
@@ -62,7 +64,7 @@ func catalogPreset(preset foundation.ProviderPreset) catwalk.Provider {
 			ReasoningLevels:        slices.Clone(model.ReasoningLevels),
 			DefaultReasoningEffort: model.DefaultReasoningEffort,
 			SupportsImages:         model.SupportsImages,
-			Options: catwalk.ModelOptions{
+			Options: catalog.ModelOptions{
 				Temperature:      model.Options.Temperature,
 				TopP:             model.Options.TopP,
 				TopK:             model.Options.TopK,
@@ -72,12 +74,12 @@ func catalogPreset(preset foundation.ProviderPreset) catwalk.Provider {
 			},
 		}
 	}
-	return catwalk.Provider{
+	return catalog.Provider{
 		Name:                preset.Name,
-		ID:                  catwalk.InferenceProvider(preset.ID),
+		ID:                  catalog.ProviderID(preset.ID),
 		APIKey:              preset.APIKey,
 		APIEndpoint:         preset.APIEndpoint,
-		Type:                catwalk.Type(preset.Type),
+		Type:                catalog.Type(preset.Type),
 		DefaultLargeModelID: preset.DefaultLargeModelID,
 		DefaultSmallModelID: preset.DefaultSmallModelID,
 		Models:              models,
@@ -85,7 +87,7 @@ func catalogPreset(preset foundation.ProviderPreset) catwalk.Provider {
 	}
 }
 
-func catalogProvider(value manifest.Manifest) (catwalk.Provider, error) {
+func catalogProvider(value manifest.Manifest) (catalog.Provider, error) {
 	var inference *manifest.Operation
 	for i := range value.Capabilities.Operations {
 		operation := &value.Capabilities.Operations[i]
@@ -93,12 +95,12 @@ func catalogProvider(value manifest.Manifest) (catwalk.Provider, error) {
 			continue
 		}
 		if inference != nil {
-			return catwalk.Provider{}, fmt.Errorf("multiple inference operations")
+			return catalog.Provider{}, fmt.Errorf("multiple inference operations")
 		}
 		inference = operation
 	}
 	if inference == nil {
-		return catwalk.Provider{}, fmt.Errorf("missing inference operation")
+		return catalog.Provider{}, fmt.Errorf("missing inference operation")
 	}
 
 	var endpoint *manifest.Endpoint
@@ -109,16 +111,16 @@ func catalogProvider(value manifest.Manifest) (catwalk.Provider, error) {
 		}
 	}
 	if endpoint == nil {
-		return catwalk.Provider{}, fmt.Errorf("inference endpoint %q is missing", inference.Endpoint)
+		return catalog.Provider{}, fmt.Errorf("inference endpoint %q is missing", inference.Endpoint)
 	}
 
-	models := make([]catwalk.Model, len(value.Models))
+	models := make([]catalog.Model, len(value.Models))
 	for i, model := range value.Models {
 		models[i] = catalogModel(model)
 	}
-	return catwalk.Provider{
+	return catalog.Provider{
 		Name:                value.Provider.Name,
-		ID:                  catwalk.InferenceProvider(value.Provider.ID),
+		ID:                  catalog.ProviderID(value.Provider.ID),
 		APIEndpoint:         endpoint.BaseURL,
 		Type:                catalogProviderType(inference.Protocol),
 		DefaultLargeModelID: value.Provider.DefaultLargeModel,
@@ -127,16 +129,16 @@ func catalogProvider(value manifest.Manifest) (catwalk.Provider, error) {
 	}, nil
 }
 
-func catalogProviderType(protocol string) catwalk.Type {
+func catalogProviderType(protocol string) catalog.Type {
 	if protocol == "openai-responses" {
-		return catwalk.TypeOpenAI
+		return catalog.TypeOpenAI
 	}
 	return ""
 }
 
-func catalogModel(model manifest.Model) catwalk.Model {
+func catalogModel(model manifest.Model) catalog.Model {
 	options := maps.Clone(model.DefaultOptions)
-	result := catwalk.Model{
+	result := catalog.Model{
 		ID:                 model.ID,
 		Name:               model.Name,
 		CostPer1MIn:        model.CostPer1MIn,

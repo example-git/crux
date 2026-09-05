@@ -32,20 +32,33 @@ func Install(ctx context.Context, manager Manager, executable, host string, work
 	if runtime.GOOS != "linux" {
 		return Result{}, errors.New("server daemon installation is only supported on Linux")
 	}
+	if _, err := loadServiceMetadata(); err == nil {
+		return Result{}, errors.New("Crux server service is already installed")
+	} else if !errors.Is(err, ErrServiceNotInstalled) {
+		return Result{}, err
+	}
 	resolvedManager, err := detectManager(manager)
 	if err != nil {
 		return Result{}, err
 	}
+	var result Result
 	switch resolvedManager {
 	case ManagerSystemd:
-		return installSystemd(ctx, executable, host, workspaceRoots)
+		result, err = installSystemd(ctx, executable, host, workspaceRoots)
 	case ManagerOpenRC:
-		return installOpenRC(ctx, executable, host, workspaceRoots)
+		result, err = installOpenRC(ctx, executable, host, workspaceRoots)
 	case ManagerRunit:
-		return installRunit(ctx, executable, host, workspaceRoots)
+		result, err = installRunit(ctx, executable, host, workspaceRoots)
 	default:
 		return Result{}, fmt.Errorf("unsupported service manager: %s", resolvedManager)
 	}
+	if err != nil {
+		return Result{}, err
+	}
+	if err := saveServiceMetadata(result, host, workspaceRoots); err != nil {
+		return Result{}, fmt.Errorf("save service metadata: %w", err)
+	}
+	return result, nil
 }
 
 func detectManager(requested Manager) (Manager, error) {

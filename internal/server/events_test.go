@@ -9,6 +9,7 @@ import (
 	"github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/skills"
 	managedtask "github.com/example-git/crux/internal/task"
@@ -230,10 +231,11 @@ func TestAgentErrorToProto_PreservesRunID(t *testing.T) {
 	src := pubsub.Event[notify.Notification]{
 		Type: pubsub.CreatedEvent,
 		Payload: notify.Notification{
-			SessionID: "S",
-			RunID:     "run-99",
-			Type:      notify.TypeAgentError,
-			Message:   "boom",
+			SessionID:  "S",
+			RunID:      "run-99",
+			Type:       notify.TypeAgentError,
+			Message:    "boom",
+			ProviderID: "provider",
 		},
 	}
 
@@ -247,8 +249,40 @@ func TestAgentErrorToProto_PreservesRunID(t *testing.T) {
 	require.Equal(t, "S", decoded.Payload.SessionID)
 	require.Equal(t, "run-99", decoded.Payload.RunID,
 		"RunID must survive so observers can attribute the error to its run")
+	require.Equal(t, "provider", decoded.Payload.ProviderID)
+	require.Nil(t, decoded.Payload.Owner)
+	require.NotContains(t, string(env.Payload), `"owner"`)
 	require.NotNil(t, decoded.Payload.Error)
 	require.Equal(t, "boom", decoded.Payload.Error.Error())
+}
+
+func TestReAuthenticateToProtoPreservesExactOwner(t *testing.T) {
+	t.Parallel()
+
+	owner := providerregistry.RegistrationOwner{
+		ProviderID:      "provider",
+		Construction:    providerregistry.ConstructionGenericJSON,
+		HasManifest:     true,
+		ManifestID:      "plugin.provider",
+		ManifestVersion: "2.0.0",
+	}
+	env := wrapEvent(pubsub.Event[notify.Notification]{
+		Type: pubsub.CreatedEvent,
+		Payload: notify.Notification{
+			Type:       notify.TypeReAuthenticate,
+			ProviderID: owner.ProviderID,
+			Owner:      owner,
+		},
+	})
+	require.NotNil(t, env)
+	require.Equal(t, pubsub.PayloadTypeAgentEvent, env.Type)
+
+	var decoded pubsub.Event[proto.AgentEvent]
+	require.NoError(t, json.Unmarshal(env.Payload, &decoded))
+	require.Equal(t, proto.AgentEventType(notify.TypeReAuthenticate), decoded.Payload.Type)
+	require.Equal(t, owner.ProviderID, decoded.Payload.ProviderID)
+	require.NotNil(t, decoded.Payload.Owner)
+	require.Equal(t, owner, *decoded.Payload.Owner)
 }
 
 // TestRunCompleteToProto_Error verifies that error- and cancel-shaped

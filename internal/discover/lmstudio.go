@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 )
 
 func init() {
@@ -51,7 +51,7 @@ type lmstudioInstanceConfig struct {
 // and vision support on discovered models.
 type lmstudioEnricher struct{}
 
-func (e *lmstudioEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catwalk.Model) ([]catwalk.Model, error) {
+func (e *lmstudioEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catalog.Model) ([]catalog.Model, error) {
 	resp, err := doRequest(ctx, http.MethodGet, stripV1Suffix(cfg.BaseURL), "/api/v1/models", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
 	if err != nil {
 		return models, nil

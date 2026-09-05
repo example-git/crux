@@ -15,7 +15,7 @@ func TestDecodePresetStrictAcceptsDataOnlyCatwalkShape(t *testing.T) {
 	value, err := DecodePresetStrict(data)
 	require.NoError(t, err)
 	require.Equal(t, PluginTypeProviderPreset, value.PluginType)
-	require.Equal(t, "deepseek", string(value.Preset.ID))
+	require.Equal(t, "example-deepseek", string(value.Preset.ID))
 	require.Equal(t, "openai-compat", string(value.Preset.Type))
 	require.Len(t, value.Preset.Models, 2)
 }

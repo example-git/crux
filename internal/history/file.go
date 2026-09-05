@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"strings"
 
 	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
 )
@@ -20,6 +22,7 @@ type File struct {
 	SessionID string
 	Path      string
 	Content   string
+	Exists    bool
 	Version   int64
 	CreatedAt int64
 	UpdatedAt int64
@@ -37,14 +40,18 @@ type Service interface {
 	GetByPathAndSession(ctx context.Context, path, sessionID string) (File, error)
 	ListBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
+	ListLatestCheckpointFiles(ctx context.Context, sessionID string) ([]File, error)
 	Delete(ctx context.Context, id string) error
 	DeleteSessionFiles(ctx context.Context, sessionID string) error
+	Checkpoint(ctx context.Context, sessionID, messageID, path, content string, exists bool, mode fs.FileMode) error
+	RewindCheckpoints(ctx context.Context, sessionID string, messageIDs []string, restore bool) error
 }
 
 type service struct {
 	*pubsub.Broker[File]
-	db *sql.DB
-	q  *db.Queries
+	db        *sql.DB
+	q         *db.Queries
+	snapshots *snapshotStore
 }
 
 func NewService(q *db.Queries, db *sql.DB) Service {
@@ -53,6 +60,16 @@ func NewService(q *db.Queries, db *sql.DB) Service {
 		q:      q,
 		db:     db,
 	}
+}
+
+func NewServiceWithSnapshots(q *db.Queries, db *sql.DB, root, workingDir string) (Service, error) {
+	service := NewService(q, db).(*service)
+	store, err := newSnapshotStore(root, workingDir)
+	if err != nil {
+		return nil, err
+	}
+	service.snapshots = store
+	return service, nil
 }
 
 func (s *service) Create(ctx context.Context, sessionID, path, content string) (File, error) {
@@ -177,6 +194,56 @@ func (s *service) ListLatestSessionFiles(ctx context.Context, sessionID string) 
 	return files, nil
 }
 
+func (s *service) ListLatestCheckpointFiles(ctx context.Context, sessionID string) ([]File, error) {
+	if s.snapshots == nil {
+		return nil, nil
+	}
+	messages, err := s.q.ListMessagesBySession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	turnID := ""
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].Role == "user" {
+			turnID = messages[index].ID
+			break
+		}
+	}
+	if turnID == "" {
+		return nil, nil
+	}
+	baselines, err := s.snapshots.baselines(sessionID, turnID)
+	if err != nil || len(baselines) == 0 {
+		return nil, err
+	}
+	latestFiles, err := s.ListLatestSessionFiles(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	latestByPath := make(map[string]File, len(latestFiles))
+	for _, file := range latestFiles {
+		path, err := fsext.CanonicalPath(file.Path)
+		if err != nil {
+			return nil, err
+		}
+		latestByPath[path] = file
+	}
+	result := make([]File, 0, len(baselines)*2)
+	for _, baseline := range baselines {
+		latest, ok := latestByPath[baseline.Path]
+		if !ok {
+			continue
+		}
+		first := latest
+		first.ID = ""
+		first.Content = baseline.Content
+		first.Exists = baseline.Exists
+		first.Version = latest.Version - 1
+		result = append(result, first, latest)
+	}
+	return result, nil
+}
+
 func (s *service) Delete(ctx context.Context, id string) error {
 	file, err := s.Get(ctx, id)
 	if err != nil {
@@ -196,12 +263,47 @@ func (s *service) DeleteSessionFiles(ctx context.Context, sessionID string) erro
 		return err
 	}
 	for _, file := range files {
-		err = s.Delete(ctx, file.ID)
-		if err != nil {
+		if err := s.Delete(ctx, file.ID); err != nil {
 			return err
 		}
 	}
+	if s.snapshots != nil {
+		return s.snapshots.deleteSession(sessionID)
+	}
 	return nil
+}
+
+func (s *service) Checkpoint(ctx context.Context, sessionID, messageID, path, content string, exists bool, mode fs.FileMode) error {
+	if s.snapshots == nil {
+		return nil
+	}
+	messages, err := s.q.ListMessagesBySession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	turnID := ""
+	for index := len(messages) - 1; index >= 0; index-- {
+		if messages[index].ID == messageID {
+			for turnIndex := index; turnIndex >= 0; turnIndex-- {
+				if messages[turnIndex].Role == "user" {
+					turnID = messages[turnIndex].ID
+					break
+				}
+			}
+			break
+		}
+	}
+	if turnID == "" {
+		return fmt.Errorf("find user turn for message %q", messageID)
+	}
+	return s.snapshots.capture(ctx, sessionID, turnID, path, content, exists, mode)
+}
+
+func (s *service) RewindCheckpoints(ctx context.Context, sessionID string, messageIDs []string, restore bool) error {
+	if s.snapshots == nil {
+		return nil
+	}
+	return s.snapshots.rewind(ctx, sessionID, messageIDs, restore)
 }
 
 func (s *service) fromDBItem(item db.File) File {
@@ -210,6 +312,7 @@ func (s *service) fromDBItem(item db.File) File {
 		SessionID: item.SessionID,
 		Path:      item.Path,
 		Content:   item.Content,
+		Exists:    true,
 		Version:   item.Version,
 		CreatedAt: item.CreatedAt,
 		UpdatedAt: item.UpdatedAt,

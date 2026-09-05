@@ -14,6 +14,7 @@ import (
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providertransport"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
@@ -44,7 +45,7 @@ crux login --force copilot
 		}
 		defer cleanup()
 
-		registration, err := resolveOAuthRegistration(args)
+		registration, err := resolveOAuthRegistration(args, ws.Config())
 		if err != nil {
 			return err
 		}
@@ -57,9 +58,11 @@ func init() {
 	loginCmd.Flags().BoolP("force", "f", false, "Force re-authentication even if already logged in")
 }
 
-func oauthRegistrations() []providerregistry.Registration {
-	registry := config.ProviderCapabilities()
-	registrations := registry.Registrations()
+func oauthRegistrations(cfg *config.Config) []providerregistry.Registration {
+	registrations := config.ProviderCapabilities().Registrations()
+	if cfg != nil {
+		registrations = cfg.ProviderRegistrations()
+	}
 	result := registrations[:0]
 	for _, registration := range registrations {
 		if registration.OAuth != nil {
@@ -71,7 +74,7 @@ func oauthRegistrations() []providerregistry.Registration {
 
 func oauthProviderCompletions() []cobra.Completion {
 	var result []cobra.Completion
-	for _, registration := range oauthRegistrations() {
+	for _, registration := range oauthRegistrations(nil) {
 		result = append(result, cobra.Completion(registration.ProviderID))
 		for _, alias := range registration.Aliases {
 			result = append(result, cobra.Completion(alias))
@@ -80,21 +83,27 @@ func oauthProviderCompletions() []cobra.Completion {
 	return result
 }
 
-func resolveOAuthRegistration(args []string) (providerregistry.Registration, error) {
-	registry := config.ProviderCapabilities()
+func resolveOAuthRegistration(args []string, cfg *config.Config) (providerregistry.Registration, error) {
 	if len(args) == 0 {
-		for _, registration := range registry.Registrations() {
-			if registration.OAuth != nil {
-				return registration, nil
-			}
+		registrations := oauthRegistrations(cfg)
+		if len(registrations) > 0 {
+			return registrations[0], nil
 		}
 		return providerregistry.Registration{}, fmt.Errorf("no OAuth provider is registered")
 	}
-	registration, ok := registry.Lookup(args[0])
+	registration, ok := cfg.ProviderRegistrationForAccount(args[0])
 	if !ok || registration.OAuth == nil {
 		return providerregistry.Registration{}, fmt.Errorf("unknown OAuth platform: %s", args[0])
 	}
 	return registration, nil
+}
+
+func validateLoginOwner(ws workspace.Workspace, owner providerregistry.RegistrationOwner) error {
+	current, ok := ws.Config().ProviderOwner(owner.ProviderID)
+	if !ok || current != owner {
+		return fmt.Errorf("provider account owner %s changed", owner.ProviderID)
+	}
+	return nil
 }
 
 func loginProvider(ws workspace.Workspace, registration providerregistry.Registration, force bool) error {
@@ -109,15 +118,47 @@ func loginProvider(ws workspace.Workspace, registration providerregistry.Registr
 		}
 	}
 
+	owner := registration.Owner()
+	validate := func() error { return validateLoginOwner(ws, owner) }
+	ctx = providertransport.ContextWithOwnerValidator(ctx, validate)
+	if err := validate(); err != nil {
+		return err
+	}
 	token, err := authorizeProvider(ctx, registration)
 	if err != nil {
 		return err
 	}
-	if err := ws.SetProviderAPIKey(config.ScopeGlobal, registration.ProviderID, token); err != nil {
+	if err := validateLoginOwner(ws, owner); err != nil {
+		return err
+	}
+	if err := validateLoginOwner(ws, owner); err != nil {
 		return err
 	}
 	accountID, displayName, raw := providerAccountIdentity(ctx, registration, token)
-	saveOAuthAccount(ctx, registration, accountID, displayName, raw, token)
+	if err := validateLoginOwner(ws, owner); err != nil {
+		return err
+	}
+	credential := config.ProviderOAuthCredential{Owner: owner, Token: token}
+	if err := validateLoginOwner(ws, owner); err != nil {
+		return err
+	}
+	if err := ws.SetProviderAPIKey(config.ScopeGlobal, registration.ProviderID, credential); err != nil {
+		return err
+	}
+	if err := validateLoginOwner(ws, owner); err != nil {
+		return err
+	}
+	if err := validateLoginOwner(ws, owner); err != nil {
+		return err
+	}
+	if err := saveOAuthAccount(ctx, registration, accountID, displayName, raw, token, func() error {
+		return validateLoginOwner(ws, owner)
+	}); err != nil {
+		return err
+	}
+	if err := validateLoginOwner(ws, owner); err != nil {
+		return err
+	}
 
 	fmt.Println()
 	if displayName != "default" {
@@ -151,12 +192,15 @@ func authorizeProvider(ctx context.Context, registration providerregistry.Regist
 		}
 		fmt.Printf("Opening browser for %s authorization...\n", registration.Name)
 		open := func(url string) error {
+			if err := providertransport.ValidateContextOwner(ctx); err != nil {
+				return err
+			}
 			fmt.Println()
 			fmt.Println("If the browser doesn't open, visit:")
 			fmt.Println()
 			lipgloss.Println(lipgloss.NewStyle().Hyperlink(url, "id="+registration.ProviderID).Render(url))
 			fmt.Println()
-			return browser.OpenURL(url)
+			return providertransport.OpenURLWithContextOwnerValidator(ctx, browser.OpenURL, url)
 		}
 		var read providerregistry.ReadCode
 		if capability.Adapter == providerregistry.LoginHostedPaste {
@@ -191,8 +235,14 @@ func authorizeProvider(ctx context.Context, registration providerregistry.Regist
 		lipgloss.Println(lipgloss.NewStyle().Hyperlink(authorization.VerificationURL, "id="+registration.ProviderID).Render(authorization.VerificationURL))
 		fmt.Println()
 		waitEnter()
-		if err := browser.OpenURL(authorization.VerificationURL); err != nil {
+		if err := providertransport.OpenURLWithContextOwnerValidator(ctx, browser.OpenURL, authorization.VerificationURL); err != nil {
+			if ownerErr := providertransport.ValidateContextOwner(ctx); ownerErr != nil {
+				return nil, ownerErr
+			}
 			fmt.Println("Could not open the URL. You'll need to manually open it in your browser.")
+		}
+		if err := providertransport.ValidateContextOwner(ctx); err != nil {
+			return nil, err
 		}
 		fmt.Println("Waiting for authorization...")
 		return capability.PollDeviceCode(ctx, authorization)
@@ -218,15 +268,13 @@ func providerAccountIdentity(ctx context.Context, registration providerregistry.
 
 // saveOAuthAccount stores the credential in the multi-account store. Provider
 // configuration remains the inference credential source during migration.
-func saveOAuthAccount(ctx context.Context, registration providerregistry.Registration, accountID, displayName string, raw []byte, token *oauth.Token) {
+func saveOAuthAccount(ctx context.Context, registration providerregistry.Registration, accountID, displayName string, raw []byte, token *oauth.Token, validate accounts.Validator) error {
 	if registration.AccountNamespace == "" || token == nil {
-		return
+		return nil
 	}
 	entry := accounts.FromToken(accountID, displayName, token, nil)
 	entry.Raw = raw
-	if err := accounts.Save(ctx, registration.AccountNamespace, entry); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not save account to multi-account store: %v\n", err)
-	}
+	return accounts.SaveForOwner(ctx, registration.AccountNamespace, entry, validate)
 }
 
 func getLoginContext() context.Context {

@@ -741,6 +741,27 @@ func TestBackgroundShellManagerStopCompletionRace(t *testing.T) {
 	}
 }
 
+func TestBackgroundShellManagerUsesExplicitEnvironment(t *testing.T) {
+	t.Parallel()
+	manager := NewBackgroundShellManager("workspace")
+	backgroundShell, err := manager.StartOwnedWithEnvironment(
+		t.Context(),
+		t.TempDir(),
+		nil,
+		`printf '%s' "$CRUX_T4_4_4_SHELL_ENV"`,
+		"environment",
+		task.Ownership{},
+		[]string{"CRUX_T4_4_4_SHELL_ENV=workspace"},
+	)
+	require.NoError(t, err)
+	backgroundShell.Wait()
+	stdout, stderr, done, execErr := backgroundShell.GetOutput()
+	require.True(t, done)
+	require.NoError(t, execErr)
+	require.Empty(t, stderr)
+	require.Equal(t, "workspace", stdout)
+}
+
 func TestBackgroundShellManagerStopValidation(t *testing.T) {
 	t.Parallel()
 

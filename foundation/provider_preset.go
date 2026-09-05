@@ -13,15 +13,17 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/example-git/crux/foundation/catalog"
 )
 
 const MaxProviderPresetBytes = 1 << 20
 
-type ProviderType string
+type ProviderType = catalog.Type
 
-const ProviderTypeOpenAICompat ProviderType = "openai-compat"
+const ProviderTypeOpenAICompat = catalog.TypeOpenAICompat
 
-type ProviderID string
+type ProviderID = catalog.ProviderID
 
 type ProviderPreset struct {
 	Name                string            `json:"name" jsonschema:"required,minLength=1,maxLength=128"`

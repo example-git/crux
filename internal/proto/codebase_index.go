@@ -5,6 +5,7 @@ import "time"
 type CodebaseIndexStatus struct {
 	Enabled          bool      `json:"enabled"`
 	State            string    `json:"state"`
+	Serving          bool      `json:"serving,omitempty"`
 	ProjectRoot      string    `json:"project_root,omitempty"`
 	DatabasePath     string    `json:"database_path,omitempty"`
 	StoreDirectory   string    `json:"store_directory,omitempty"`

@@ -21,10 +21,30 @@ func TestPlanModeKeepsApplicationServicesAndBlocksMutators(t *testing.T) {
 	for _, name := range []string{"enter_plan", "exit_plan", "memory_list", "memory_upsert", "memory_remove", "skill_list", "skill_load", "todos", "git_inspect", "job_list", "job_output", "task_list", "task_output"} {
 		require.Contains(t, allowed, name)
 	}
-	for _, name := range []string{"bash", "download", "edit", "multiedit", "write", "lsp_rename", "lsp_replace_symbol", "lsp_restart", "job_kill", "task_stop", "task_continue", "agent", "complete_plan"} {
+	for _, name := range []string{"bash", "jq", "download", "edit", "multiedit", "write", "lsp_rename", "lsp_replace_symbol", "lsp_restart", "job_kill", "task_stop", "task_continue", "agent", "complete_plan"} {
 		require.NotContains(t, allowed, name)
 	}
 	require.False(t, IsToolAllowedInPlanMode("unknown_dynamic_tool"))
+}
+
+func TestSearchUsesWorkspaceReadCapabilityInPlanMode(t *testing.T) {
+	capabilities, ok := ToolCapabilities("search")
+	require.True(t, ok)
+	require.Equal(t, []string{capabilityWorkspaceRead}, capabilities)
+	require.True(t, IsToolAllowedInPlanMode("search"))
+	_, hasGlob := ToolCapabilities("glob")
+	_, hasGrep := ToolCapabilities("grep")
+	require.False(t, hasGlob)
+	require.False(t, hasGrep)
+	require.NotContains(t, allToolNames(), "glob")
+	require.NotContains(t, allToolNames(), "grep")
+}
+
+func TestJQUsesWorkspaceReadCapabilityOutsidePlanMode(t *testing.T) {
+	capabilities, ok := ToolCapabilities("jq")
+	require.True(t, ok)
+	require.Equal(t, []string{capabilityWorkspaceRead}, capabilities)
+	require.False(t, IsToolAllowedInPlanMode("jq"))
 }
 
 func TestProjectToolsUseApplicationStateCapabilities(t *testing.T) {

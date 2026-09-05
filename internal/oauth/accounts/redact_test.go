@@ -14,7 +14,8 @@ func TestAccountReadsRegisterStoredCredentials(t *testing.T) {
 	t.Setenv("AI_CLI_DIR", directory)
 	access := "stored-account-access-value"
 	refresh := "stored-account-refresh-value"
-	content := `{"active":{"codex":"one"},"accounts":{"codex":[{"id":"one","displayName":"One","accessToken":"` + access + `","refreshToken":"` + refresh + `"}]}}`
+	raw := "stored-account-raw-value"
+	content := `{"active":{"codex":"one"},"accounts":{"codex":[{"id":"one","displayName":"One","accessToken":"` + access + `","refreshToken":"` + refresh + `","raw":{"metadata":{"tenant":"` + raw + `"}}}]}}`
 	require.NoError(t, os.WriteFile(filepath.Join(directory, "accounts.json"), []byte(content), 0o600))
 	entries, err := List(t.Context(), "codex")
 	require.NoError(t, err)
@@ -24,4 +25,6 @@ func TestAccountReadsRegisterStoredCredentials(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, active)
 	require.Equal(t, redact.Replacement, redact.String(refresh))
+	require.Equal(t, redact.Replacement, redact.String(raw))
+	require.Equal(t, "One", redact.String("One"))
 }

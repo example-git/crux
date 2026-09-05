@@ -88,6 +88,7 @@ func (c *coordinator) retrieveAutomaticCodebaseContext(ctx context.Context, user
 	if err != nil {
 		return "", err
 	}
+	c.requestCodebaseIndexReconcile()
 	reader, err := codebaseindex.OpenReadyProjectWithFilters(projectRoot, toolConfig.GetStoreDirectory(), codebaseindex.ProjectFilters{
 		IncludePaths: toolConfig.IncludePaths,
 		ExcludePaths: toolConfig.ExcludePaths,

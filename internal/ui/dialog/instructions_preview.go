@@ -106,6 +106,12 @@ func (*InstructionsPreview) ID() string { return InstructionsPreviewID }
 
 func (d *InstructionsPreview) HandleMsg(msg tea.Msg) Action {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		d.initialWidth = msg.Width
+		key := previewRenderKey{width: d.contentWidth(msg.Width), markdown: d.markdown}
+		if _, ok := d.rendered[key]; !ok {
+			return ActionCmd{Cmd: d.renderCmd(key.width, key.markdown)}
+		}
 	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, d.keyMap.Close):
@@ -178,15 +184,31 @@ func (d *InstructionsPreview) toggleSection() Action {
 }
 
 func (d *InstructionsPreview) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
+	DrawCenter(scr, area, d.renderView(area))
+	return nil
+}
+
+func (d *InstructionsPreview) renderView(area uv.Rectangle) string {
 	t := d.com.Styles
-	width := min(max(area.Dx()-4, 1), 120)
-	height := max(min(area.Dy()-4, 40), 1)
-	paneWidth := 0
-	if len(d.sections) > 1 && width >= 64 {
-		paneWidth = instructionsPreviewSectionPaneWidth
+	d.initialWidth = area.Dx()
+	dialogWidth := d.dialogWidth(area.Dx())
+	innerWidth := d.innerWidth(dialogWidth)
+	paneWidth := d.paneWidth(dialogWidth)
+	contentWidth := d.contentWidth(area.Dx())
+	targetHeight := min(max(area.Dy()-4, min(area.Dy(), 4)), 40)
+	bodyHeight := max(targetHeight-t.Dialog.View.GetVerticalFrameSize(), 0)
+	showHeader := bodyHeight >= 2
+	showHint := bodyHeight >= 3
+	fixedHeight := 0
+	if showHeader {
+		fixedHeight++
 	}
-	contentWidth := max(width-t.Dialog.View.GetHorizontalFrameSize()-2-paneWidth, 1)
-	viewportHeight := max(height-t.Dialog.View.GetVerticalFrameSize()-4, 1)
+	if showHint {
+		fixedHeight++
+	}
+	remainingHeight := max(bodyHeight-fixedHeight, 0)
+	spacerCount := min(max(remainingHeight-1, 0), 2)
+	viewportHeight := max(remainingHeight-spacerCount, 0)
 	d.viewport.SetWidth(contentWidth)
 	d.viewport.SetHeight(viewportHeight)
 	renderKey := previewRenderKey{width: contentWidth, markdown: d.markdown}
@@ -199,15 +221,26 @@ func (d *InstructionsPreview) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor
 	if !d.markdown {
 		format = "Text"
 	}
-	header := t.Dialog.TitleText.Render("Instruction Preview")
+	header := t.Dialog.TitleText.Render("Effective Instructions")
 	mode := t.Dialog.SecondaryText.Render("  " + format)
-	hint := t.Dialog.SecondaryText.Render("space: enable/disable · tab/m: format · ←/→: focus · esc: back")
+	header = ansi.Truncate(header+mode, innerWidth, "…")
+	hintText := "tab/m: format · ←/→: focus · esc: back"
+	for _, section := range d.sections {
+		if section.Toggleable {
+			hintText = "space: enable/disable · " + hintText
+			break
+		}
+	}
+	hint := ansi.Truncate(t.Dialog.SecondaryText.Render(hintText), innerWidth, "…")
 	content := d.viewport.View()
 	if _, ok := d.rendered[renderKey]; !ok {
-		content = t.Dialog.SecondaryText.Render("Rendering preview…")
+		content = ansi.Truncate(t.Dialog.SecondaryText.Render("Rendering preview…"), contentWidth, "…")
 	}
 	content = lipgloss.NewStyle().Width(contentWidth).Height(viewportHeight).MaxHeight(viewportHeight).Render(content)
-	if paneWidth > 0 {
+	if viewportHeight > 0 && d.viewport.TotalLineCount() > viewportHeight {
+		content = joinScrollbar(t, content, viewportHeight, d.viewport.TotalLineCount(), viewportHeight, d.viewport.YOffset())
+	}
+	if paneWidth > 0 && viewportHeight > 0 {
 		content = lipgloss.JoinHorizontal(
 			lipgloss.Top,
 			d.sectionsView(t, paneWidth, viewportHeight),
@@ -215,9 +248,24 @@ func (d *InstructionsPreview) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor
 			content,
 		)
 	}
-	body := lipgloss.JoinVertical(lipgloss.Left, header+mode, "", content, "", hint)
-	DrawCenter(scr, area, t.Dialog.View.Width(width).Render(body))
-	return nil
+	parts := make([]string, 0, 5)
+	if showHeader {
+		parts = append(parts, header)
+	}
+	if spacerCount > 0 {
+		parts = append(parts, "")
+	}
+	if viewportHeight > 0 {
+		parts = append(parts, content)
+	}
+	if spacerCount > 1 {
+		parts = append(parts, "")
+	}
+	if showHint {
+		parts = append(parts, hint)
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return t.Dialog.View.Width(dialogWidth).Render(body)
 }
 
 func previewViewportLines(content string, height int) []string {
@@ -243,8 +291,13 @@ func (d *InstructionsPreview) sectionsView(t *styles.Styles, width, height int) 
 			check = " "
 		}
 		label := "  [" + check + "] " + title
+		selectedLabel := "▸ [" + check + "] " + title
+		if !section.Toggleable {
+			label = "  • " + title
+			selectedLabel = "▸ • " + title
+		}
 		if index == d.sectionCursor {
-			label = "▸ [" + check + "] " + title
+			label = selectedLabel
 			if d.sectionsFocused && !section.Disabled {
 				rows = append(rows, t.Dialog.SelectedItem.Width(width).Render(label))
 				continue
@@ -267,13 +320,30 @@ func (d *InstructionsPreview) StartLoading() tea.Cmd {
 
 func (d *InstructionsPreview) StopLoading() {}
 
-func (d *InstructionsPreview) contentWidth(width int) int {
-	dialogWidth := min(max(width-4, 1), 120)
-	paneWidth := 0
-	if len(d.sections) > 1 && dialogWidth >= 64 {
-		paneWidth = instructionsPreviewSectionPaneWidth
+func (d *InstructionsPreview) dialogWidth(width int) int {
+	frameWidth := d.com.Styles.Dialog.View.GetHorizontalFrameSize()
+	return min(max(width-frameWidth-2, 1), 120)
+}
+
+func (d *InstructionsPreview) innerWidth(dialogWidth int) int {
+	return max(dialogWidth-d.com.Styles.Dialog.View.GetHorizontalFrameSize(), 0)
+}
+
+func (d *InstructionsPreview) paneWidth(dialogWidth int) int {
+	if len(d.sections) > 1 && d.innerWidth(dialogWidth) >= 64 {
+		return instructionsPreviewSectionPaneWidth
 	}
-	return max(dialogWidth-d.com.Styles.Dialog.View.GetHorizontalFrameSize()-2-paneWidth, 1)
+	return 0
+}
+
+func (d *InstructionsPreview) contentWidth(width int) int {
+	dialogWidth := d.dialogWidth(width)
+	paneWidth := d.paneWidth(dialogWidth)
+	paneGap := 0
+	if paneWidth > 0 {
+		paneGap = 2
+	}
+	return max(d.innerWidth(dialogWidth)-paneWidth-paneGap-1, 1)
 }
 
 func (d *InstructionsPreview) renderCmd(width int, markdown bool) tea.Cmd {

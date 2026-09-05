@@ -19,6 +19,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/projects"
 	"github.com/example-git/crux/internal/proto"
@@ -93,16 +94,22 @@ type ShutdownFunc func()
 // the AB/BA hazard with [CreateWorkspace], which holds [Backend.mu]
 // while calling [registerClient] so that a workspace cannot be torn
 // down beneath it.
+type workspaceCreationFlight struct {
+	done  chan struct{}
+	err   error
+	retry bool
+}
+
 type Backend struct {
 	workspaces *csync.Map[string, *Workspace]
 	// pathIndex maps a resolved absolute workspace path to its
 	// workspace ID. Reads and writes are serialised via mu so
 	// concurrent CreateWorkspace calls at the same path deduplicate
 	// deterministically.
-	pathIndex map[string]string
-	// pending counts CreateWorkspace calls that have committed to the
-	// slow initialization path (config/db/app setup) but have not yet
-	// registered their workspace in the map. It is guarded by mu.
+	pathIndex       map[string]string
+	creationFlights map[string]*workspaceCreationFlight
+	// pending counts admitted CreateWorkspace calls that are initializing
+	// or waiting for a shared initialization flight. It is guarded by mu.
 	// teardown must observe pending == 0 in addition to an empty
 	// workspace map before triggering server shutdown: otherwise a
 	// teardown of the last live workspace could race ahead of a
@@ -140,16 +147,19 @@ type Backend struct {
 	pendingResponses map[string]int
 	mu               sync.Mutex
 
-	cfg            *config.ConfigStore
-	projectService *projects.Service
-	pluginOnce     sync.Once
-	plugins        *providerplugin.Manager
-	pluginErr      error
-	ctx            context.Context
-	shutdownFn     ShutdownFunc
-	createGrace    time.Duration
-	lingerDelay    time.Duration
-	detachGrace    time.Duration
+	cfg             *config.ConfigStore
+	initConfig      func(string, string, bool) (*config.ConfigStore, error)
+	environmentOnce sync.Once
+	baseEnvironment env.Env
+	projectService  *projects.Service
+	pluginOnce      sync.Once
+	plugins         *providerplugin.Manager
+	pluginErr       error
+	ctx             context.Context
+	shutdownFn      ShutdownFunc
+	createGrace     time.Duration
+	lingerDelay     time.Duration
+	detachGrace     time.Duration
 }
 
 // clientState tracks one client's claim on a workspace.
@@ -271,8 +281,10 @@ func (w *Workspace) shutdown() {
 	if w.cancel != nil {
 		w.cancel()
 	}
-	if w.App != nil && w.AgentCoordinator != nil {
-		w.AgentCoordinator.CancelAll()
+	if w.App != nil {
+		if coordinator := w.CurrentAgentCoordinator(); coordinator != nil {
+			coordinator.CancelAll()
+		}
 	}
 	runsDone := make(chan struct{})
 	go func() {
@@ -294,12 +306,14 @@ func (w *Workspace) shutdown() {
 
 // New creates a new [Backend].
 func New(ctx context.Context, cfg *config.ConfigStore, shutdownFn ShutdownFunc) *Backend {
-	return &Backend{
+	backend := &Backend{
 		workspaces:       csync.NewMap[string, *Workspace](),
 		pathIndex:        make(map[string]string),
+		creationFlights:  make(map[string]*workspaceCreationFlight),
 		retired:          make(map[string]struct{}),
 		pendingResponses: make(map[string]int),
 		cfg:              cfg,
+		baseEnvironment:  config.SnapshotEnvironment(),
 		projectService:   projects.NewService(),
 		ctx:              ctx,
 		shutdownFn:       shutdownFn,
@@ -307,6 +321,17 @@ func New(ctx context.Context, cfg *config.ConfigStore, shutdownFn ShutdownFunc) 
 		lingerDelay:      idleShutdownDelayFromEnv(),
 		detachGrace:      durationFromEnv("CRUX_SERVER_DETACH_GRACE", DefaultDetachGrace),
 	}
+	backend.initConfig = backend.initWorkspaceConfig
+	return backend
+}
+
+func (b *Backend) initWorkspaceConfig(workingDir, dataDir string, debug bool) (*config.ConfigStore, error) {
+	b.environmentOnce.Do(func() {
+		if b.baseEnvironment == nil {
+			b.baseEnvironment = config.SnapshotEnvironment()
+		}
+	})
+	return config.LoadIsolated(workingDir, dataDir, debug, b.baseEnvironment)
 }
 
 // idleShutdownDelayFromEnv returns the idle-shutdown delay, honoring a
@@ -401,7 +426,7 @@ func (b *Backend) CreateWorkspaceForResponse(args proto.Workspace) (*Workspace, 
 	ws, result, err := b.CreateWorkspace(args)
 	var once sync.Once
 	complete := func() {
-		once.Do(func() { b.completeWorkspaceResponse(ws, clientID) })
+		once.Do(func() { b.completeWorkspaceResponse(clientID) })
 	}
 	if err != nil {
 		complete()
@@ -410,7 +435,7 @@ func (b *Backend) CreateWorkspaceForResponse(args proto.Workspace) (*Workspace, 
 	return ws, result, complete, nil
 }
 
-func (b *Backend) completeWorkspaceResponse(ws *Workspace, clientID string) {
+func (b *Backend) completeWorkspaceResponse(clientID string) {
 	b.mu.Lock()
 	remaining := b.pendingResponses[clientID] - 1
 	if remaining > 0 {
@@ -419,25 +444,18 @@ func (b *Backend) completeWorkspaceResponse(ws *Workspace, clientID string) {
 		return
 	}
 	delete(b.pendingResponses, clientID)
-	if ws == nil {
-		b.mu.Unlock()
-		return
-	}
-	current, ok := b.workspaces.Get(ws.ID)
-	if !ok || current != ws {
-		b.mu.Unlock()
-		return
-	}
-	ws.clientsMu.Lock()
-	if claim, ok := ws.clients[clientID]; ok && claim.responsePending {
-		claim.responsePending = false
-		if claim.streams == 0 && !claim.released {
-			claim.holdTimer = time.AfterFunc(b.createGrace, func() {
-				b.expireHold(ws, clientID, claim)
-			})
+	for _, ws := range b.workspaces.Seq2() {
+		ws.clientsMu.Lock()
+		if claim, ok := ws.clients[clientID]; ok && claim.responsePending {
+			claim.responsePending = false
+			if claim.streams == 0 && !claim.released {
+				claim.holdTimer = time.AfterFunc(b.createGrace, func() {
+					b.expireHold(ws, clientID, claim)
+				})
+			}
 		}
+		ws.clientsMu.Unlock()
 	}
-	ws.clientsMu.Unlock()
 	b.mu.Unlock()
 }
 
@@ -449,7 +467,7 @@ func (b *Backend) completeWorkspaceResponse(ws *Workspace, clientID string) {
 // the resulting workspace registers a creation hold on behalf of that
 // client which is released either by the first SSE attach (which
 // converts it into a stream claim) or by the grace window expiring.
-func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Workspace, error) {
+func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, response proto.Workspace, err error) {
 	if args.Path == "" {
 		return nil, proto.Workspace{}, ErrPathRequired
 	}
@@ -481,17 +499,9 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 		b.mu.Unlock()
 		return nil, proto.Workspace{}, err
 	}
-	// A client is arriving: cancel any pending idle shutdown so we never
-	// hand back a workspace on a server that is about to tear itself down.
 	b.cancelShutdownLocked()
 	if existingID, ok := b.pathIndex[key]; ok {
 		if ws, found := b.workspaces.Get(existingID); found {
-			// Hold b.mu while registering: teardown also
-			// acquires b.mu before tearing the workspace
-			// down, so this guarantees the workspace we
-			// return cannot be torn out from under us
-			// between lookup and registerClient. Lock order
-			// here is b.mu -> ws.clientsMu.
 			if !stringSlicesEqual(ws.Cfg.Overrides().EnabledChannels, args.Channels) {
 				b.mu.Unlock()
 				return nil, proto.Workspace{}, ErrChannelOptInMismatch
@@ -501,27 +511,35 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 			b.mu.Unlock()
 			return ws, workspaceToProto(ws), nil
 		}
-		// pathIndex referenced a workspace that has since been
-		// removed; clean the stale entry and fall through.
 		delete(b.pathIndex, key)
 	}
-	// Commit to the slow creation path. Mark this create as pending
-	// while mu is still held so a teardown that runs during the
-	// unlocked init below cannot observe an empty backend and shut the
-	// server down. The deferred decrement runs after the workspace has
-	// been registered (or the create has failed), keeping the invariant
-	// that pending only drops once the workspace is visible in the map.
+	if b.creationFlights == nil {
+		b.creationFlights = make(map[string]*workspaceCreationFlight)
+	}
+	flight, flightOwner := b.creationFlights[key]
+	if !flightOwner {
+		flight = &workspaceCreationFlight{done: make(chan struct{})}
+		b.creationFlights[key] = flight
+		flightOwner = true
+	} else {
+		flightOwner = false
+	}
 	b.pending++
 	b.mu.Unlock()
 	defer func() {
 		b.mu.Lock()
+		if flightOwner {
+			if errors.Is(err, ErrClientRetired) {
+				flight.retry = true
+			} else {
+				flight.err = err
+			}
+			if b.creationFlights[key] == flight {
+				delete(b.creationFlights, key)
+			}
+			close(flight.done)
+		}
 		b.pending--
-		// If this create ended up registering nothing (it failed, or
-		// deduped onto an existing workspace that has since gone) and
-		// it was holding the last teardown back, the server may now be
-		// idle with no pending work. Arm the idle-shutdown timer here so
-		// a failed create racing the last teardown does not leak an
-		// empty server that a plain teardown already declined to reap.
 		shutdownNow := b.scheduleShutdownIfIdleLocked()
 		b.mu.Unlock()
 		if shutdownNow {
@@ -530,8 +548,57 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 		}
 	}()
 
+	if !flightOwner {
+	waitForFlight:
+		<-flight.done
+		b.mu.Lock()
+		if err := b.admitLocked(clientID); err != nil {
+			b.mu.Unlock()
+			return nil, proto.Workspace{}, err
+		}
+		if flight.retry {
+			if next, exists := b.creationFlights[key]; exists {
+				flight = next
+				b.mu.Unlock()
+				goto waitForFlight
+			}
+			flight = &workspaceCreationFlight{done: make(chan struct{})}
+			b.creationFlights[key] = flight
+			flightOwner = true
+			b.mu.Unlock()
+			goto initializeWorkspace
+		}
+		if flight.err != nil {
+			b.mu.Unlock()
+			return nil, proto.Workspace{}, flight.err
+		}
+		existingID, ok := b.pathIndex[key]
+		if !ok {
+			b.mu.Unlock()
+			return nil, proto.Workspace{}, errors.New("workspace initialization completed without publication")
+		}
+		ws, found := b.workspaces.Get(existingID)
+		if !found {
+			b.mu.Unlock()
+			return nil, proto.Workspace{}, errors.New("workspace initialization completed without an active workspace")
+		}
+		if !stringSlicesEqual(ws.Cfg.Overrides().EnabledChannels, args.Channels) {
+			b.mu.Unlock()
+			return nil, proto.Workspace{}, ErrChannelOptInMismatch
+		}
+		logFirstWinsMismatch(ws, args)
+		b.registerClient(ws, clientID)
+		b.mu.Unlock()
+		return ws, workspaceToProto(ws), nil
+	}
+
+initializeWorkspace:
 	id := uuid.New().String()
-	cfg, err := config.Init(args.Path, args.DataDir, args.Debug)
+	initConfig := b.initConfig
+	if initConfig == nil {
+		initConfig = b.initWorkspaceConfig
+	}
+	cfg, err := initConfig(args.Path, args.DataDir, args.Debug)
 	if err != nil {
 		return nil, proto.Workspace{}, fmt.Errorf("failed to initialize config: %w", err)
 	}
@@ -539,8 +606,7 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (*Workspace, proto.Works
 	if err := cfg.ApplyEphemeralProviderState(args.ForwardedProviders, args.ForwardedAccounts); err != nil {
 		return nil, proto.Workspace{}, fmt.Errorf("failed to apply forwarded provider state: %w", err)
 	}
-	cfg.Overrides().SkipPermissionRequests = args.YOLO
-	cfg.Overrides().EnabledChannels = args.Channels
+	cfg.SetRuntimeOverrides(args.YOLO, args.Channels)
 
 	if err := createDotCruxDir(cfg.Config().Options.DataDirectory); err != nil {
 		return nil, proto.Workspace{}, fmt.Errorf("failed to create data directory: %w", err)

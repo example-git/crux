@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
 	"github.com/stretchr/testify/require"
 )
@@ -43,7 +43,7 @@ model large myllm/foo-1 --provider-options '{"timeout":30}'`)
 	require.Equal(t, "test", p.ProviderOptions["mode"])
 	require.True(
 		t,
-		slices.ContainsFunc(p.Models, func(m catwalk.Model) bool { return m.ID == "foo-1" }),
+		slices.ContainsFunc(p.Models, func(m catalog.Model) bool { return m.ID == "foo-1" }),
 		"custom model foo-1 should be in the provider catalog",
 	)
 	model := p.Models[0]

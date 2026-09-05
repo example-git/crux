@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 
 	"github.com/example-git/crux/internal/db"
 	"github.com/example-git/crux/internal/pubsub"
@@ -105,12 +104,6 @@ type service struct {
 	*pubsub.Broker[Session]
 	db *sql.DB
 	q  *db.Queries
-
-	// Estimated usage stays in memory so fetch-modify-save paths (e.g.,
-	// updating todos or parent-session cost) do not rebuild a session from
-	// SQLite and incorrectly clear the UI "~" marker.
-	estimatedUsageMu sync.RWMutex
-	estimatedUsage   map[string]bool
 }
 
 func (s *service) Create(ctx context.Context, title string) (Session, error) {
@@ -181,7 +174,6 @@ func (s *service) Delete(ctx context.Context, id string) error {
 	}
 
 	session := s.fromDBItem(dbSession)
-	s.clearEstimatedUsageState(dbSession.ID)
 	s.Publish(pubsub.DeletedEvent, session)
 	return nil
 }
@@ -191,9 +183,7 @@ func (s *service) Get(ctx context.Context, id string) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	session := s.fromDBItem(dbSession)
-	s.applyEstimatedUsageState(&session)
-	return session, nil
+	return s.fromDBItem(dbSession), nil
 }
 
 func (s *service) GetLast(ctx context.Context) (Session, error) {
@@ -201,9 +191,7 @@ func (s *service) GetLast(ctx context.Context) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
-	session := s.fromDBItem(dbSession)
-	s.applyEstimatedUsageState(&session)
-	return session, nil
+	return s.fromDBItem(dbSession), nil
 }
 
 func (s *service) Save(ctx context.Context, session Session) (Session, error) {
@@ -226,14 +214,12 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 			String: todosJSON,
 			Valid:  todosJSON != "",
 		},
+		EstimatedUsage: boolToInt64(session.EstimatedUsage),
 	})
 	if err != nil {
 		return Session{}, err
 	}
-	estimatedUsage := session.EstimatedUsage
-	s.setEstimatedUsageState(session.ID, estimatedUsage)
 	session = s.fromDBItem(dbSession)
-	session.EstimatedUsage = estimatedUsage
 	s.Publish(pubsub.UpdatedEvent, session)
 	return session, nil
 }
@@ -295,10 +281,12 @@ func (s *service) UpdateTitleAndCost(ctx context.Context, sessionID, title strin
 }
 
 func (s *service) PublishCompaction(ctx context.Context, sessionID string, estimatedUsage bool) error {
-	s.setEstimatedUsageState(sessionID, estimatedUsage)
 	session, err := s.Get(ctx, sessionID)
 	if err != nil {
 		return err
+	}
+	if session.EstimatedUsage != estimatedUsage {
+		return fmt.Errorf("persisted compaction estimate state does not match committed state")
 	}
 	s.Publish(pubsub.UpdatedEvent, session)
 	return nil
@@ -325,7 +313,6 @@ func (s *service) List(ctx context.Context) ([]Session, error) {
 	sessions := make([]Session, len(dbSessions))
 	for i, dbSession := range dbSessions {
 		sessions[i] = s.fromDBItem(dbSession)
-		s.applyEstimatedUsageState(&sessions[i])
 	}
 	return sessions, nil
 }
@@ -341,28 +328,6 @@ func (s *service) publishSessionUpdate(ctx context.Context, sessionID string) {
 	s.Publish(pubsub.UpdatedEvent, session)
 }
 
-func (s *service) applyEstimatedUsageState(session *Session) {
-	s.estimatedUsageMu.RLock()
-	session.EstimatedUsage = s.estimatedUsage[session.ID]
-	s.estimatedUsageMu.RUnlock()
-}
-
-func (s *service) setEstimatedUsageState(sessionID string, estimatedUsage bool) {
-	s.estimatedUsageMu.Lock()
-	defer s.estimatedUsageMu.Unlock()
-	if estimatedUsage {
-		s.estimatedUsage[sessionID] = true
-		return
-	}
-	delete(s.estimatedUsage, sessionID)
-}
-
-func (s *service) clearEstimatedUsageState(sessionID string) {
-	s.estimatedUsageMu.Lock()
-	delete(s.estimatedUsage, sessionID)
-	s.estimatedUsageMu.Unlock()
-}
-
 func (s *service) fromDBItem(item db.Session) Session {
 	todos, err := unmarshalTodos(item.Todos.String)
 	if err != nil {
@@ -375,6 +340,7 @@ func (s *service) fromDBItem(item db.Session) Session {
 		MessageCount:     item.MessageCount,
 		PromptTokens:     item.PromptTokens,
 		CompletionTokens: item.CompletionTokens,
+		EstimatedUsage:   item.EstimatedUsage != 0,
 		SummaryMessageID: item.SummaryMessageID.String,
 		Cost:             item.Cost,
 		Todos:            todos,
@@ -383,6 +349,13 @@ func (s *service) fromDBItem(item db.Session) Session {
 		CreatedAt:        item.CreatedAt,
 		UpdatedAt:        item.UpdatedAt,
 	}
+}
+
+func boolToInt64(value bool) int64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func marshalTodos(todos []Todo) (string, error) {
@@ -410,10 +383,9 @@ func unmarshalTodos(data string) ([]Todo, error) {
 func NewService(q *db.Queries, conn *sql.DB) Service {
 	broker := pubsub.NewBroker[Session]()
 	return &service{
-		Broker:         broker,
-		db:             conn,
-		q:              q,
-		estimatedUsage: make(map[string]bool),
+		Broker: broker,
+		db:     conn,
+		q:      q,
 	}
 }
 

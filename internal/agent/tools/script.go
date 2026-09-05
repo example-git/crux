@@ -65,7 +65,11 @@ func (b *limitedScriptBuffer) String() string {
 	return result
 }
 
-func NewScriptTool(permissions permission.Service, workingDir string, script config.AgentScript) fantasy.AgentTool {
+func NewScriptTool(permissions permission.Service, workingDir string, script config.AgentScript, environments ...[]string) fantasy.AgentTool {
+	environment := os.Environ()
+	if len(environments) > 0 {
+		environment = append([]string(nil), environments[0]...)
+	}
 	return fantasy.NewAgentTool(
 		ScriptToolName,
 		scriptToolDescription(script),
@@ -102,7 +106,7 @@ func NewScriptTool(permissions permission.Service, workingDir string, script con
 			}
 			command := exec.CommandContext(runCtx, interpreter, append([]string{script.Path}, args...)...)
 			command.Dir = workingDir
-			command.Env = os.Environ()
+			command.Env = environment
 			stdout := newLimitedScriptBuffer(scriptOutputLimit)
 			stderr := newLimitedScriptBuffer(scriptOutputLimit)
 			command.Stdout = stdout

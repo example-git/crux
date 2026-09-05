@@ -8,6 +8,7 @@ type Operation struct {
 	Endpoint          string              `json:"endpoint" jsonschema:"required,maxLength=64"`
 	Method            string              `json:"method,omitempty" jsonschema:"enum=GET,enum=POST,enum=PUT,enum=PATCH,enum=DELETE"`
 	Path              string              `json:"path" jsonschema:"required,pattern=^/,maxLength=1024"`
+	ClientIdentity    string              `json:"client_identity,omitempty" jsonschema:"maxLength=64"`
 	Headers           []HeaderRule        `json:"headers,omitempty" jsonschema:"maxItems=128"`
 	RequestTransform  string              `json:"request_transform,omitempty" jsonschema:"maxLength=64"`
 	ResponseTransform string              `json:"response_transform,omitempty" jsonschema:"maxLength=64"`
@@ -81,11 +82,24 @@ type TimeoutHints struct {
 }
 
 type UsagePolicy struct {
-	Operation string         `json:"operation,omitempty" jsonschema:"maxLength=64"`
-	Source    string         `json:"source" jsonschema:"required,enum=response,enum=stream,enum=operation"`
-	Mappings  []UsageMapping `json:"mappings,omitempty" jsonschema:"maxItems=64"`
-	Windows   []WindowMap    `json:"windows,omitempty" jsonschema:"maxItems=32"`
-	Fallback  string         `json:"fallback" jsonschema:"required,enum=zero,enum=estimate,enum=unavailable"`
+	Setup        []UsageSetup   `json:"setup,omitempty" jsonschema:"maxItems=8"`
+	Operation    string         `json:"operation,omitempty" jsonschema:"maxLength=64"`
+	Source       string         `json:"source" jsonschema:"required,enum=response,enum=stream,enum=operation"`
+	Mappings     []UsageMapping `json:"mappings,omitempty" jsonschema:"maxItems=64"`
+	Windows      []WindowMap    `json:"windows,omitempty" jsonschema:"maxItems=32"`
+	PlanPointers []string       `json:"plan_pointers,omitempty" jsonschema:"maxItems=8,pattern=^/,maxLength=1024"`
+	Fallback     string         `json:"fallback" jsonschema:"required,enum=zero,enum=estimate,enum=unavailable"`
+}
+
+type UsageSetup struct {
+	Operation    string                   `json:"operation" jsonschema:"required,maxLength=64"`
+	Extract      []UsageContextExtraction `json:"extract,omitempty" jsonschema:"maxItems=16"`
+	PlanPointers []string                 `json:"plan_pointers,omitempty" jsonschema:"maxItems=8,pattern=^/,maxLength=1024"`
+}
+
+type UsageContextExtraction struct {
+	Context string `json:"context" jsonschema:"required,pattern=^[a-z][a-z0-9_.-]*$,maxLength=128"`
+	Pointer string `json:"pointer" jsonschema:"required,pattern=^/,maxLength=1024"`
 }
 
 type UsageMapping struct {
@@ -95,12 +109,13 @@ type UsageMapping struct {
 }
 
 type WindowMap struct {
-	ID               string `json:"id" jsonschema:"required,maxLength=64"`
-	UsedPointer      string `json:"used_pointer,omitempty" jsonschema:"pattern=^/"`
-	LimitPointer     string `json:"limit_pointer,omitempty" jsonschema:"pattern=^/"`
-	RemainingPointer string `json:"remaining_pointer,omitempty" jsonschema:"pattern=^/"`
-	ResetPointer     string `json:"reset_pointer,omitempty" jsonschema:"pattern=^/"`
-	ResetFormat      string `json:"reset_format,omitempty" jsonschema:"enum=unix-seconds,enum=unix-milliseconds,enum=rfc3339,enum=duration-seconds"`
+	ID                       string `json:"id" jsonschema:"required,minLength=1,maxLength=64"`
+	UsedPointer              string `json:"used_pointer,omitempty" jsonschema:"pattern=^/,maxLength=1024"`
+	LimitPointer             string `json:"limit_pointer,omitempty" jsonschema:"pattern=^/,maxLength=1024"`
+	RemainingPointer         string `json:"remaining_pointer,omitempty" jsonschema:"pattern=^/,maxLength=1024"`
+	RemainingFractionPointer string `json:"remaining_fraction_pointer,omitempty" jsonschema:"pattern=^/,maxLength=1024"`
+	ResetPointer             string `json:"reset_pointer,omitempty" jsonschema:"pattern=^/,maxLength=1024"`
+	ResetFormat              string `json:"reset_format,omitempty" jsonschema:"enum=unix-seconds,enum=unix-milliseconds,enum=rfc3339,enum=duration-seconds"`
 }
 
 type ImagePolicy struct {
@@ -119,14 +134,16 @@ type ImagePolicy struct {
 type ImageHistoryBudget struct {
 	RequestBytes      int64   `json:"request_bytes" jsonschema:"required,minimum=1"`
 	RetryRequestBytes int64   `json:"retry_request_bytes,omitempty" jsonschema:"minimum=1"`
-	PerImageTargets   []int64 `json:"per_image_targets,omitempty" jsonschema:"minItems=1,uniqueItems=true,maxItems=16"`
+	PerImageTargets   []int64 `json:"per_image_targets,omitempty" jsonschema:"minimum=1,minItems=1,uniqueItems=true,maxItems=16"`
 	OmitOldImages     bool    `json:"omit_old_images,omitempty"`
 	RetainNewestImage bool    `json:"retain_newest_image,omitempty"`
 }
 
 type InstructionPolicy struct {
-	Profiles map[string]string `json:"profiles" jsonschema:"required,minProperties=1,maxProperties=32,description=Profile ID to bundle-relative UTF-8 text file"`
-	Default  string            `json:"default" jsonschema:"required,maxLength=64"`
+	Profiles         map[string]string `json:"profiles" jsonschema:"required,minProperties=1,maxProperties=32,description=Profile ID to bundle-relative UTF-8 text file"`
+	Default          string            `json:"default" jsonschema:"required,maxLength=64"`
+	SelectionDefault string            `json:"selection_default,omitempty" jsonschema:"enum=crux,enum=native"`
+	HiddenSkills     []string          `json:"hidden_skills,omitempty" jsonschema:"uniqueItems=true,maxItems=64"`
 }
 
 type RuntimeControl struct {
@@ -151,10 +168,10 @@ type MetadataContract struct {
 
 type ErrorMapping struct {
 	Class           string   `json:"class" jsonschema:"required,enum=authentication,enum=authorization,enum=rate-limit,enum=capacity,enum=context-overflow,enum=invalid-request,enum=content-filter,enum=server,enum=transport,enum=unknown"`
-	Statuses        []int    `json:"statuses,omitempty" jsonschema:"uniqueItems=true,maxItems=64"`
-	Codes           []string `json:"codes,omitempty" jsonschema:"uniqueItems=true,maxItems=128"`
-	CodePointer     string   `json:"code_pointer,omitempty" jsonschema:"pattern=^/"`
-	MessagePointer  string   `json:"message_pointer,omitempty" jsonschema:"pattern=^/"`
+	Statuses        []int    `json:"statuses,omitempty" jsonschema:"minimum=100,maximum=599,uniqueItems=true,maxItems=64"`
+	Codes           []string `json:"codes,omitempty" jsonschema:"minLength=1,maxLength=256,uniqueItems=true,maxItems=128"`
+	CodePointer     string   `json:"code_pointer,omitempty" jsonschema:"pattern=^/,maxLength=1024"`
+	MessagePointer  string   `json:"message_pointer,omitempty" jsonschema:"pattern=^/,maxLength=1024"`
 	Title           string   `json:"title,omitempty" jsonschema:"maxLength=128"`
 	Retryable       bool     `json:"retryable,omitempty"`
 	ContextOverflow bool     `json:"context_overflow,omitempty"`

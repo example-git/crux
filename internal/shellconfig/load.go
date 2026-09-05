@@ -30,7 +30,7 @@ const loadTimeout = 30 * time.Second
 //
 // Execution is bounded by loadTimeout on top of any deadline already present
 // on ctx, so a misbehaving script cannot block config loading indefinitely.
-func LoadShellConfig(ctx context.Context, path string, src []byte) ([]byte, error) {
+func LoadShellConfig(ctx context.Context, path string, src []byte, environment ...[]string) ([]byte, error) {
 	slog.Info("Loading shell config", "path", path)
 
 	ctx, cancel := context.WithTimeout(ctx, loadTimeout)
@@ -43,12 +43,16 @@ func LoadShellConfig(ctx context.Context, path string, src []byte) ([]byte, erro
 
 	// Expose the running Crux version so scripts can feature-detect, e.g.
 	// [[ "$CRUX_VERSION" == "devel" ]] or branch on the release.
-	env := append(os.Environ(), "CRUX_VERSION="+version.Version)
+	values := os.Environ()
+	if len(environment) > 0 {
+		values = append([]string(nil), environment[0]...)
+	}
+	values = append(values, "CRUX_VERSION="+version.Version)
 
 	err := shell.Run(runCtx, shell.RunOptions{
 		Command: string(src),
 		Cwd:     cwd,
-		Env:     env,
+		Env:     values,
 	})
 	if err != nil {
 		if shell.IsInterrupt(err) {

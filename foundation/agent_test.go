@@ -652,6 +652,40 @@ func TestAgent_Generate_WithSystemPrompt(t *testing.T) {
 	require.NotNil(t, result)
 }
 
+func TestAgentGenerateWithInstructionsPreservesMetadata(t *testing.T) {
+	t.Parallel()
+
+	instructions := NewInstructions(
+		StaticInstruction(InstructionKindTooling, "tooling"),
+		DynamicInstruction(InstructionKindProviderContext, "provider context"),
+	)
+	model := &mockLanguageModel{
+		generateFunc: func(ctx context.Context, call Call) (*Response, error) {
+			require.Len(t, call.Prompt, 2)
+			require.Len(t, call.Prompt[0].Content, 2)
+
+			staticPart, ok := AsMessagePart[TextPart](call.Prompt[0].Content[0])
+			require.True(t, ok)
+			require.True(t, InstructionPartOptionsFrom(staticPart.ProviderOptions).CacheBoundary)
+
+			providerPart, ok := AsMessagePart[TextPart](call.Prompt[0].Content[1])
+			require.True(t, ok)
+			providerOptions := InstructionPartOptionsFrom(providerPart.ProviderOptions)
+			require.Equal(t, []InstructionKind{InstructionKindProviderContext}, providerOptions.Kinds)
+			require.Equal(t, InstructionStabilityDynamic, providerOptions.Stability)
+			require.False(t, providerOptions.CacheBoundary)
+
+			return &Response{Content: []Content{TextContent{Text: "response"}}, FinishReason: FinishReasonStop}, nil
+		},
+	}
+
+	agent := NewAgent(model, WithInstructions(instructions, InstructionPolicyAnthropic))
+	result, err := agent.Generate(context.Background(), AgentCall{Prompt: "test prompt"})
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+}
+
 // Test options.activeTools filtering
 func TestAgent_Generate_OptionsActiveTools(t *testing.T) {
 	t.Parallel()

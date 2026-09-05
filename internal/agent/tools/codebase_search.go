@@ -12,11 +12,12 @@ import (
 
 	"github.com/example-git/crux/internal/codebaseindex"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/permission"
 )
 
 const (
 	CodebaseSearchToolName    = "codebase_search"
-	codebaseSearchDescription = "Search the current project's standalone partitioned semantic code index using GitHub-generated embeddings. Prefer this as the first repository-discovery tool for conceptual, behavioral, or implementation-path searches when the background index is ready. Do not use it while the index is being built or refreshed; use LSP or grep for known exact symbols and literals. A codebase-index GitHub login is required."
+	codebaseSearchDescription = "Search the current project's standalone partitioned semantic code index using GitHub-generated embeddings. Prefer this over search as the first repository-discovery tool for conceptual, behavioral, or implementation-path searches when a completed index is available and the relevant files are indexed. Background refreshes keep serving the last completed index until the replacement is ready. Use LSP or search in content mode for known exact symbols and literals. A codebase-index GitHub login is required."
 )
 
 type CodebaseSearchParams struct {
@@ -26,11 +27,14 @@ type CodebaseSearchParams struct {
 	PathPrefix string   `json:"path_prefix,omitempty" description:"Optional project-relative path prefix"`
 }
 
-func NewCodebaseSearchTool(workingDir string, toolConfig config.ToolCodebaseSearch, httpClient *http.Client) fantasy.AgentTool {
+func NewCodebaseSearchTool(workingDir string, toolConfig config.ToolCodebaseSearch, httpClient *http.Client, requestReconcile func()) fantasy.AgentTool {
 	return fantasy.NewParallelAgentTool(
 		CodebaseSearchToolName,
 		codebaseSearchDescription,
 		func(ctx context.Context, params CodebaseSearchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if permission.IsSubagent(ctx) {
+				return fantasy.NewTextErrorResponse(permission.ErrSubagentCodebaseSearch.Error()), nil
+			}
 			if strings.TrimSpace(params.Query) == "" {
 				return fantasy.NewTextErrorResponse("query is required"), nil
 			}
@@ -54,6 +58,9 @@ func NewCodebaseSearchTool(workingDir string, toolConfig config.ToolCodebaseSear
 			projectRoot, err := codebaseindex.CanonicalProjectRoot(ctx, workingDir)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+			if requestReconcile != nil {
+				requestReconcile()
 			}
 			reader, err := codebaseindex.OpenReadyProjectWithFilters(projectRoot, toolConfig.GetStoreDirectory(), codebaseindex.ProjectFilters{
 				IncludePaths: toolConfig.IncludePaths,

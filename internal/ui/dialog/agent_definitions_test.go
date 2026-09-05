@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/proto"
@@ -23,6 +23,7 @@ type agentDefinitionsTestWorkspace struct {
 	createErr    error
 	refreshErr   error
 	refreshCalls int
+	refreshState config.AgentModelState
 }
 
 func (w *agentDefinitionsTestWorkspace) Config() *config.Config {
@@ -34,8 +35,9 @@ func (w *agentDefinitionsTestWorkspace) CreateAgentDefinition(_ context.Context,
 	return w.path, w.createErr
 }
 
-func (w *agentDefinitionsTestWorkspace) UpdateAgentModel(context.Context) error {
+func (w *agentDefinitionsTestWorkspace) UpdateAgentModel(_ context.Context, state config.AgentModelState) error {
 	w.refreshCalls++
+	w.refreshState = state
 	return w.refreshErr
 }
 
@@ -49,16 +51,16 @@ func newAgentDefinitionsTestDialog(t *testing.T) (*AgentDefinitions, *agentDefin
 			Providers: csync.NewMapFrom(map[string]config.ProviderConfig{
 				"zeta": {
 					ID:     "zeta",
-					Models: []catwalk.Model{{ID: "small"}, {ID: "large"}},
+					Models: []catalog.Model{{ID: "small"}, {ID: "large"}},
 				},
 				"alpha": {
 					ID:     "alpha",
-					Models: []catwalk.Model{{ID: "model"}},
+					Models: []catalog.Model{{ID: "model"}},
 				},
 				"disabled": {
 					ID:      "disabled",
 					Disable: true,
-					Models:  []catwalk.Model{{ID: "hidden"}},
+					Models:  []catalog.Model{{ID: "hidden"}},
 				},
 			}),
 			Options: &config.Options{},
@@ -73,12 +75,12 @@ func TestConfiguredAgentModelsOmitInactiveIntegrations(t *testing.T) {
 	cfg := &config.Config{Providers: csync.NewMapFrom(map[string]config.ProviderConfig{
 		"available": {
 			ID:     "available",
-			Models: []catwalk.Model{{ID: "model"}},
+			Models: []catalog.Model{{ID: "model"}},
 		},
 		"inactive": {
 			ID:     "inactive",
 			Plugin: &config.ProviderPluginReference{ID: "inactive.plugin", Version: "1"},
-			Models: []catwalk.Model{{ID: "hidden"}},
+			Models: []catalog.Model{{ID: "hidden"}},
 		},
 	})}
 
@@ -100,7 +102,7 @@ func TestAgentDefinitionsBuildsSelectedConfiguration(t *testing.T) {
 	description.SetValue("Reviews changes")
 	dialog.inputs[agentDefinitionFieldDescription] = description
 	tools := dialog.inputs[agentDefinitionFieldTools]
-	tools.SetValue("view, grep")
+	tools.SetValue("view, search")
 	dialog.inputs[agentDefinitionFieldTools] = tools
 	dialog.scope = "user"
 
@@ -111,7 +113,7 @@ func TestAgentDefinitionsBuildsSelectedConfiguration(t *testing.T) {
 		Name:        "reviewer",
 		Description: "Reviews changes",
 		Model:       "zeta/large",
-		Tools:       []string{"view", "grep"},
+		Tools:       []string{"view", "search"},
 	}, request)
 }
 
@@ -242,7 +244,7 @@ func TestParseAgentDefinitionTools(t *testing.T) {
 	require.Equal(t, []string{}, mustParseAgentDefinitionTools(t, "none"))
 	require.Equal(t, []string{}, mustParseAgentDefinitionTools(t, ""))
 	require.Equal(t, []string{"*"}, mustParseAgentDefinitionTools(t, "*"))
-	require.Equal(t, []string{"view", "grep"}, mustParseAgentDefinitionTools(t, " view, grep "))
+	require.Equal(t, []string{"view", "search"}, mustParseAgentDefinitionTools(t, " view, search "))
 
 	_, err := parseAgentDefinitionTools("view,view")
 	require.ErrorContains(t, err, "more than once")

@@ -78,6 +78,42 @@ func TestManager_PublishStatesUpdatesCache(t *testing.T) {
 	require.Equal(t, "new", cached[0].Name)
 }
 
+func TestManager_ReplaceSnapshotPublishesOneCoherentGeneration(t *testing.T) {
+	t.Parallel()
+
+	manager := NewManager(nil, nil, nil)
+	t.Cleanup(manager.Shutdown)
+	installed := manager.ReplaceSnapshot(Snapshot{
+		AllSkills:     []*Skill{{Name: "new", Instructions: "new instructions"}},
+		ActiveSkills:  []*Skill{{Name: "new", Instructions: "new instructions"}},
+		States:        []*SkillState{{Name: "new", State: StateNormal}},
+		ResolvedPaths: []string{"/new/skills"},
+	})
+
+	require.Equal(t, "new", installed.AllSkills[0].Name)
+	snapshot := manager.Snapshot()
+	require.Equal(t, "new", snapshot.ActiveSkills[0].Name)
+	require.Equal(t, "new instructions", snapshot.ActiveSkills[0].Instructions)
+	require.Equal(t, "new", snapshot.States[0].Name)
+	require.Equal(t, []string{"/new/skills"}, snapshot.ResolvedPaths)
+
+	installed.AllSkills[0] = &Skill{Name: "mutated"}
+	installed.ResolvedPaths[0] = "/mutated"
+	unchanged := manager.Snapshot()
+	require.Equal(t, "new", unchanged.AllSkills[0].Name)
+	require.Equal(t, []string{"/new/skills"}, unchanged.ResolvedPaths)
+}
+
+func TestConfigKeyAffectsDiscovery(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, ConfigKeyAffectsDiscovery("options.skills_paths"))
+	require.True(t, ConfigKeyAffectsDiscovery("options.skills_paths.0"))
+	require.True(t, ConfigKeyAffectsDiscovery(" OPTIONS.DISABLED_SKILLS "))
+	require.True(t, ConfigKeyAffectsDiscovery("options.disabled_skills.0"))
+	require.False(t, ConfigKeyAffectsDiscovery("options.context_paths"))
+}
+
 func TestManager_SubscribeReceivesPublishedStates(t *testing.T) {
 	t.Parallel()
 

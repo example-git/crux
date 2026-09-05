@@ -220,6 +220,8 @@ func NewToolMessageItem(
 	switch toolCall.Name {
 	case tools.BashToolName:
 		item = NewBashToolMessageItem(sty, toolCall, result, canceled, workingDir)
+	case tools.JQToolName:
+		item = NewJQToolMessageItem(sty, toolCall, result, canceled)
 	case tools.JobOutputToolName:
 		item = NewJobOutputToolMessageItem(sty, toolCall, result, canceled)
 	case tools.JobKillToolName:
@@ -232,14 +234,14 @@ func NewToolMessageItem(
 		item = NewEditToolMessageItem(sty, toolCall, result, canceled)
 	case tools.MultiEditToolName:
 		item = NewMultiEditToolMessageItem(sty, toolCall, result, canceled)
-	case tools.GlobToolName:
-		item = NewGlobToolMessageItem(sty, toolCall, result, canceled)
-	case tools.GrepToolName:
-		item = NewGrepToolMessageItem(sty, toolCall, result, canceled)
+	case tools.SearchToolName:
+		item = NewSearchToolMessageItem(sty, toolCall, result, canceled)
 	case tools.LSToolName:
 		item = NewLSToolMessageItem(sty, toolCall, result, canceled)
 	case tools.DownloadToolName:
 		item = NewDownloadToolMessageItem(sty, toolCall, result, canceled)
+	case tools.ImagegenToolName:
+		item = newImagegenToolMessageItem(sty, toolCall, result, canceled)
 	case tools.FetchToolName:
 		item = NewFetchToolMessageItem(sty, toolCall, result, canceled)
 	case tools.SourcegraphToolName:
@@ -250,6 +252,12 @@ func NewToolMessageItem(
 		item = NewDiagnosticsToolMessageItem(sty, toolCall, result, canceled)
 	case tools.TrafficLogsToolName:
 		item = NewTrafficLogsToolMessageItem(sty, toolCall, result, canceled)
+	case tools.TrafficLogDetailToolName:
+		item = NewTrafficLogDetailToolMessageItem(sty, toolCall, result, canceled)
+	case tools.TrafficLogSearchToolName:
+		item = NewTrafficLogSearchToolMessageItem(sty, toolCall, result, canceled)
+	case tools.TrafficCaptureToolName:
+		item = NewTrafficCaptureToolMessageItem(sty, toolCall, result, canceled)
 	case agent.AgentToolName:
 		item = NewAgentToolMessageItem(sty, toolCall, result, canceled)
 	case tools.AgenticFetchToolName:
@@ -1237,11 +1245,13 @@ func (t *baseToolMessageItem) formatParametersForCopy() string {
 		if json.Unmarshal([]byte(t.toolCall.Input), &params) == nil {
 			return fmt.Sprintf("**URL:** %s", params.URL)
 		}
-	case tools.GrepToolName:
-		var params tools.GrepParams
+	case tools.SearchToolName:
+		var params tools.SearchParams
 		if json.Unmarshal([]byte(t.toolCall.Input), &params) == nil {
-			var parts []string
-			parts = append(parts, fmt.Sprintf("**Pattern:** %s", params.Pattern))
+			parts := []string{
+				fmt.Sprintf("**Mode:** %s", params.Mode),
+				fmt.Sprintf("**Pattern:** %s", params.Pattern),
+			}
 			if params.Path != "" {
 				parts = append(parts, fmt.Sprintf("**Path:** %s", params.Path))
 			}
@@ -1250,16 +1260,6 @@ func (t *baseToolMessageItem) formatParametersForCopy() string {
 			}
 			if params.LiteralText {
 				parts = append(parts, "**Literal:** true")
-			}
-			return strings.Join(parts, "\n")
-		}
-	case tools.GlobToolName:
-		var params tools.GlobParams
-		if json.Unmarshal([]byte(t.toolCall.Input), &params) == nil {
-			var parts []string
-			parts = append(parts, fmt.Sprintf("**Pattern:** %s", params.Pattern))
-			if params.Path != "" {
-				parts = append(parts, fmt.Sprintf("**Path:** %s", params.Path))
 			}
 			return strings.Join(parts, "\n")
 		}
@@ -1353,7 +1353,7 @@ func (t *baseToolMessageItem) formatResultForCopy() string {
 		return t.formatWebFetchResultForCopy()
 	case agent.AgentToolName:
 		return t.formatAgentResultForCopy()
-	case tools.DownloadToolName, tools.GrepToolName, tools.GlobToolName, tools.LSToolName, tools.SourcegraphToolName, tools.DiagnosticsToolName, tools.TodosToolName:
+	case tools.DownloadToolName, tools.SearchToolName, tools.LSToolName, tools.SourcegraphToolName, tools.DiagnosticsToolName, tools.TodosToolName:
 		return fmt.Sprintf("```\n%s\n```", t.result.Content)
 	default:
 		return t.result.Content
@@ -1691,14 +1691,14 @@ func prettifyToolName(name string) string {
 		return "Fetch"
 	case tools.WebSearchToolName:
 		return "Search"
-	case tools.GlobToolName:
-		return "Glob"
-	case tools.GrepToolName:
-		return "Grep"
+	case tools.SearchToolName:
+		return "Search"
 	case tools.LSToolName:
 		return "List"
 	case tools.SourcegraphToolName:
 		return "Sourcegraph"
+	case tools.TrafficCaptureToolName:
+		return "Traffic Capture"
 	case tools.TodosToolName:
 		return "To-Do"
 	case tools.ViewToolName:

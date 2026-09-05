@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 )
 
 func init() {
@@ -24,7 +24,7 @@ type ollamaShowResponse struct {
 // endpoint and populates context window on discovered models.
 type ollamaEnricher struct{}
 
-func (e *ollamaEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catwalk.Model) ([]catwalk.Model, error) {
+func (e *ollamaEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catalog.Model) ([]catalog.Model, error) {
 	// Collect indices that need enrichment.
 	var needEnrichment []int
 	for i := range models {

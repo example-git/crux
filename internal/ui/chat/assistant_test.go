@@ -3,6 +3,7 @@ package chat
 import (
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/ui/styles"
@@ -79,6 +80,95 @@ func TestAssistantMessageItemExpandableEmptyThinkingNoOp(t *testing.T) {
 // whose logical line count exactly equals the cap must NOT trip the
 // tail-window step (full render still fits cleanly under the cap),
 // while one logical line over the cap must trip it.
+func TestAssistantMessageItemRendersRetryStatusInRed(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	msg := &message.Message{ID: "retry", Role: message.Assistant}
+	msg.SetRetrying()
+	item := NewAssistantMessageItem(&sty, msg).(*AssistantMessageItem)
+
+	rendered := item.RawRender(100)
+	require.Contains(t, ansi.Strip(rendered), "Thinking")
+	redT := lipgloss.NewStyle().Foreground(sty.RetryLabelColor).Render("T")
+	require.Contains(t, rendered, redT)
+
+	msg.AppendReasoningContent("Trying again")
+	item.SetMessage(msg)
+	rendered = item.RawRender(100)
+	require.Contains(t, ansi.Strip(rendered), "Thinking")
+	providerT := lipgloss.NewStyle().Foreground(sty.WorkingLabelColor).Render("T")
+	require.Contains(t, rendered, providerT)
+}
+
+func TestAssistantSummaryMessageIsDistinctAndCollapsible(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	msg := &message.Message{
+		ID:               "summary",
+		Role:             message.Assistant,
+		IsSummaryMessage: true,
+		Parts: []message.ContentPart{
+			message.TextContent{Text: "# Preview heading\n\nPreview body\n\n## Hidden heading\n\nHidden body"},
+			message.Finish{Reason: message.FinishReasonEndTurn, Time: testFinishTime},
+		},
+	}
+	item := NewAssistantMessageItem(&sty, msg).(*AssistantMessageItem)
+
+	collapsed := item.Render(100)
+	collapsedPlain := ansi.Strip(collapsed)
+	require.Contains(t, collapsed, sty.Messages.SummaryHeader.Render("▸ Conversation Summary"))
+	require.Contains(t, collapsedPlain, "click or space to expand")
+	require.Contains(t, collapsedPlain, "Preview heading")
+	require.Contains(t, collapsedPlain, "Preview body")
+	require.NotContains(t, collapsedPlain, "Hidden body")
+	require.True(t, item.HandleMouseClick(ansi.MouseLeft, 0, 0))
+	require.False(t, item.HandleMouseClick(ansi.MouseLeft, 0, 1))
+	require.False(t, item.HandleMouseClick(ansi.MouseRight, 0, 0))
+
+	require.True(t, item.ToggleExpanded())
+	expandedPlain := ansi.Strip(item.Render(100))
+	require.Contains(t, expandedPlain, "▾ Conversation Summary")
+	require.Contains(t, expandedPlain, "click or space to collapse")
+	require.Contains(t, expandedPlain, "Hidden body")
+
+	require.False(t, item.ToggleExpanded())
+	recollapsedPlain := ansi.Strip(item.Render(100))
+	require.Contains(t, recollapsedPlain, "Preview body")
+	require.NotContains(t, recollapsedPlain, "Hidden body")
+}
+
+func TestAssistantSummaryPlaceholderTransitionsFromSpinnerToPreview(t *testing.T) {
+	t.Parallel()
+
+	sty := styles.CharmtonePantera()
+	pending := &message.Message{
+		ID:               "summary-placeholder",
+		Role:             message.Assistant,
+		IsSummaryMessage: true,
+	}
+	item := NewAssistantMessageItem(&sty, pending).(*AssistantMessageItem)
+
+	require.NotNil(t, item.StartAnimation())
+	pendingView := item.Render(100)
+	pendingPlain := ansi.Strip(pendingView)
+	require.Contains(t, pendingView, sty.Messages.SummaryHeader.Render("▸ Conversation Summary"))
+	require.Contains(t, pendingPlain, "Summarizing")
+	require.NotContains(t, pendingPlain, "click or space to expand")
+
+	finished := pending.Clone()
+	finished.Parts = []message.ContentPart{
+		message.TextContent{Text: "# Completed preview\n\nVisible context\n\nHidden context"},
+		message.Finish{Reason: message.FinishReasonEndTurn, Time: testFinishTime},
+	}
+	require.Nil(t, item.SetMessage(&finished))
+	finishedPlain := ansi.Strip(item.Render(100))
+	require.NotContains(t, finishedPlain, "Summarizing")
+	require.Contains(t, finishedPlain, "Completed preview")
+	require.NotContains(t, finishedPlain, "Hidden context")
+}
+
 func TestAssistantMessageItemTailWindowBoundary(t *testing.T) {
 	t.Parallel()
 

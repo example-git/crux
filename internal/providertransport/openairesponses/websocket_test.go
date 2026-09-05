@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	fantasy "github.com/example-git/crux/foundation"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
@@ -58,6 +59,42 @@ func TestWebSocketMultiplexesInterleavedStreamIDs(t *testing.T) {
 	require.Equal(t, "response.completed", event.Type)
 }
 
+func TestWebSocketErrorPhraseInOutputDoesNotDisruptMultiplexedStreams(t *testing.T) {
+	server := websocketServer(t, func(conn *websocket.Conn) {
+		ids := make([]string, 0, 2)
+		for range 2 {
+			_, data, err := conn.ReadMessage()
+			require.NoError(t, err)
+			var frame struct {
+				StreamID string `json:"stream_id"`
+			}
+			require.NoError(t, json.Unmarshal(data, &frame))
+			ids = append(ids, frame.StreamID)
+		}
+		writeEvent(t, conn, ids[0], "response.output_text.delta", `,"delta":"`+fantasy.ServerOverloadMessage+`"`)
+		writeEvent(t, conn, ids[0], "error", `,"code":"overloaded_error","message":"busy"`)
+		writeEvent(t, conn, ids[1], "response.completed", `,"response":{"id":"resp_b"}`)
+	})
+	defer server.Close()
+
+	client := dialWebSocket(t, server, WebSocketOptions{IdleTimeout: time.Second})
+	defer client.Close()
+	first, err := client.Open(context.Background(), "stream-a", json.RawMessage(`{"model":"a"}`))
+	require.NoError(t, err)
+	second, err := client.Open(context.Background(), "stream-b", json.RawMessage(`{"model":"b"}`))
+	require.NoError(t, err)
+
+	event, err := first.Recv(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, string(event.Raw), fantasy.ServerOverloadMessage)
+	_, err = first.Recv(context.Background())
+	require.True(t, fantasy.IsServerOverloadError(err))
+
+	event, err = second.Recv(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "response.completed", event.Type)
+}
+
 func TestWebSocketRejectsDuplicateStreamAndIgnoresLateUnknownStream(t *testing.T) {
 	server := websocketServer(t, func(conn *websocket.Conn) {
 		_, _, err := conn.ReadMessage()
@@ -91,6 +128,44 @@ func TestWebSocketMissingStreamIDClosesActiveStreams(t *testing.T) {
 	require.NoError(t, err)
 	_, err = stream.Recv(context.Background())
 	require.ErrorContains(t, err, "missing stream_id")
+}
+
+func TestWebSocketClassifiesServerOverloadFrames(t *testing.T) {
+	server := websocketServer(t, func(conn *websocket.Conn) {
+		_, _, err := conn.ReadMessage()
+		require.NoError(t, err)
+		payload := `{"type":"error","message":"` + fantasy.ServerOverloadMessage + `"}`
+		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(payload)))
+	})
+	defer server.Close()
+
+	client := dialWebSocket(t, server, WebSocketOptions{IdleTimeout: time.Second})
+	stream, err := client.Open(context.Background(), "stream-a", json.RawMessage(`{"model":"a"}`))
+	require.NoError(t, err)
+	_, err = stream.Recv(context.Background())
+	require.True(t, fantasy.IsServerOverloadError(err))
+	var providerError *fantasy.ProviderError
+	require.ErrorAs(t, err, &providerError)
+	require.True(t, providerError.IsRetryable())
+}
+
+func TestWebSocketClassifiesConnectionLimitFrames(t *testing.T) {
+	server := websocketServer(t, func(conn *websocket.Conn) {
+		_, _, err := conn.ReadMessage()
+		require.NoError(t, err)
+		payload := `{"type":"error","message":"` + fantasy.ConnectionLimitMessage + `"}`
+		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(payload)))
+	})
+	defer server.Close()
+
+	client := dialWebSocket(t, server, WebSocketOptions{IdleTimeout: time.Second})
+	stream, err := client.Open(context.Background(), "stream-a", json.RawMessage(`{"model":"a"}`))
+	require.NoError(t, err)
+	_, err = stream.Recv(context.Background())
+	require.True(t, fantasy.IsConnectionLimitError(err))
+	var providerError *fantasy.ProviderError
+	require.ErrorAs(t, err, &providerError)
+	require.True(t, providerError.IsRetryable())
 }
 
 func TestWebSocketEnforcesEventBound(t *testing.T) {

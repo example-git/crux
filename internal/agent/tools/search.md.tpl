@@ -1,0 +1,1 @@
+Search by file path or file contents using the required `mode`; returns at most {{ .MaxResults }} results and respects ignore files. Use `mode: "files"` with a glob pattern to find paths without reading file contents. Use `mode: "content"` with a regex or literal pattern to find text inside files, optionally restricted by `include`.

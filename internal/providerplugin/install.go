@@ -14,8 +14,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// Install snapshots a local directory or materialized HTTPS Git tree into the
-// canonical host-owned plugin directory. Source code is never run in place.
+// Install accepts only a local directory or HTTPS Git source and snapshots it
+// into the canonical host-owned plugin directory. Source bytes are never run or
+// registered in place. Do not add implicit network schemes, path fallbacks, or
+// trust based on source identity; trust belongs to committed validated bytes.
 func (m *Manager) Install(ctx context.Context, request InstallRequest) (Snapshot, error) {
 	source := strings.TrimSpace(request.Source)
 	if source == "" {
@@ -34,6 +36,10 @@ func (m *Manager) Install(ctx context.Context, request InstallRequest) (Snapshot
 	return m.installDirectory(ctx, request, source)
 }
 
+// installDirectory stages and validates an immutable snapshot, records
+// provenance, atomically commits it, rescans canonical state, and only then may
+// trust the exact validated digest from an explicit request. Reordering these
+// steps can approve bytes different from those ultimately registered.
 func (m *Manager) installDirectory(ctx context.Context, request InstallRequest, source string) (Snapshot, error) {
 	absolute, err := filepath.Abs(source)
 	if err != nil {
@@ -66,16 +72,16 @@ func (m *Manager) installDirectory(ctx context.Context, request InstallRequest, 
 			_ = os.RemoveAll(staging)
 		}
 	}()
-	validated, diagnostics := validateSnapshot(staging, snapshot)
-	if len(diagnostics) > 0 {
+	report, validated := diagnoseSnapshot(staging, snapshot)
+	if !report.Valid {
 		m.mu.Unlock()
 		release()
-		return Snapshot{}, fmt.Errorf("validate plugin bundle: %s", diagnostics[0].Message)
+		return Snapshot{}, &DiagnosticError{Report: report}
 	}
-	if diagnostics := compatibilityDiagnostics(validated.compatibility()); len(diagnostics) > 0 {
+	if request.ExpectedDigest != "" && !equalDigest(request.ExpectedDigest, validated.digest) {
 		m.mu.Unlock()
 		release()
-		return Snapshot{}, fmt.Errorf("plugin is incompatible: %s", diagnostics[0].Message)
+		return Snapshot{}, errors.New("plugin source changed after exact-digest consent")
 	}
 	provenance, err := loadProvenance(m.paths.ProvenanceFile)
 	if err != nil {
@@ -120,6 +126,9 @@ func (m *Manager) installDirectory(ctx context.Context, request InstallRequest, 
 	})
 }
 
+// commitBundle atomically installs or updates a canonical bundle with rollback
+// and directory synchronization. Do not overwrite in place: scanners must see
+// either the complete previous digest or the complete new digest, never a mix.
 func commitBundle(staging, final string, update bool) error {
 	info, err := os.Lstat(final)
 	if errors.Is(err, os.ErrNotExist) {

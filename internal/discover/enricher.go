@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 )
 
 // Enricher fills in model metadata (context window, max tokens, pricing,
@@ -15,7 +15,7 @@ type Enricher interface {
 	// EnrichModels takes a slice of bare discovered models and returns
 	// them with metadata populated. Implementations should preserve
 	// existing non-zero fields (user overrides take precedence).
-	EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catwalk.Model) ([]catwalk.Model, error)
+	EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catalog.Model) ([]catalog.Model, error)
 }
 
 // enrichers maps provider type strings to their enrichment
@@ -47,7 +47,7 @@ func IsKnownCustomProvider(providerType string) bool {
 // RegisteredProviderTypes returns the provider type strings that have a
 // registered enricher, sorted for stable output. These are the custom,
 // locally-discovered providers (e.g. ollama, omlx) that Crux accepts as
-// a `type` value even though they are not catwalk provider types. The
+// a `type` value even though they are not catalog provider types. The
 // schema generator uses this so the published enum stays in sync with the
 // registry instead of drifting from a hand-maintained list.
 func RegisteredProviderTypes() []string {

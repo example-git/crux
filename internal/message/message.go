@@ -28,13 +28,16 @@ type CreateMessageParams struct {
 	Model            string
 	Provider         string
 	IsSummaryMessage bool
+	// PreserveParts keeps an existing terminal part intact when cloning a
+	// persisted message. Normal user/tool message creation still appends its
+	// canonical stop marker.
+	PreserveParts bool
 }
 
 type CommitCompactionParams struct {
+	MessageID        string
 	SessionID        string
 	Parts            []ContentPart
-	Model            string
-	Provider         string
 	PromptTokens     int64
 	CompletionTokens int64
 	Cost             float64
@@ -185,7 +188,7 @@ func (s *service) Delete(ctx context.Context, id string) error {
 }
 
 func (s *service) Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error) {
-	if params.Role != Assistant {
+	if params.Role != Assistant && !params.PreserveParts {
 		params.Parts = append(params.Parts, Finish{
 			Reason: "stop",
 		})
@@ -224,6 +227,12 @@ func (s *service) CommitCompaction(ctx context.Context, params CommitCompactionP
 	if s.db == nil || s.sessions == nil {
 		return Message{}, fmt.Errorf("atomic compaction persistence is not configured")
 	}
+	if params.MessageID == "" {
+		return Message{}, fmt.Errorf("compaction placeholder message ID is required")
+	}
+	if err := s.Flush(ctx, params.MessageID); err != nil {
+		return Message{}, fmt.Errorf("flushing compaction placeholder: %w", err)
+	}
 	partsJSON, err := marshalParts(params.Parts)
 	if err != nil {
 		return Message{}, err
@@ -236,17 +245,18 @@ func (s *service) CommitCompaction(ctx context.Context, params CommitCompactionP
 	defer tx.Rollback() //nolint:errcheck
 
 	qtx := db.New(tx)
-	dbMessage, err := qtx.CreateMessage(ctx, db.CreateMessageParams{
-		ID:               uuid.New().String(),
-		SessionID:        params.SessionID,
-		Role:             string(Assistant),
-		Parts:            string(partsJSON),
-		Model:            sql.NullString{String: params.Model, Valid: params.Model != ""},
-		Provider:         sql.NullString{String: params.Provider, Valid: params.Provider != ""},
-		IsSummaryMessage: 1,
-	})
+	dbMessage, err := qtx.GetMessage(ctx, params.MessageID)
 	if err != nil {
-		return Message{}, fmt.Errorf("creating compacted summary: %w", err)
+		return Message{}, fmt.Errorf("loading compaction placeholder: %w", err)
+	}
+	if dbMessage.SessionID != params.SessionID {
+		return Message{}, fmt.Errorf("compaction placeholder belongs to a different session")
+	}
+	if dbMessage.Role != string(Assistant) || dbMessage.IsSummaryMessage == 0 {
+		return Message{}, fmt.Errorf("compaction placeholder is not an assistant summary message")
+	}
+	if dbMessage.FinishedAt.Valid {
+		return Message{}, fmt.Errorf("compaction placeholder is already finished")
 	}
 	if err := qtx.UpdateMessage(ctx, db.UpdateMessageParams{
 		Parts:      string(partsJSON),
@@ -260,9 +270,14 @@ func (s *service) CommitCompaction(ctx context.Context, params CommitCompactionP
 		PromptTokens:     params.PromptTokens,
 		CompletionTokens: params.CompletionTokens,
 		Cost:             params.Cost,
+		EstimatedUsage:   boolToInt64(params.EstimatedUsage),
 		ID:               params.SessionID,
 	}); err != nil {
 		return Message{}, fmt.Errorf("installing compacted checkpoint: %w", err)
+	}
+	dbMessage, err = qtx.GetMessage(ctx, params.MessageID)
+	if err != nil {
+		return Message{}, fmt.Errorf("loading completed compacted summary: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return Message{}, fmt.Errorf("committing compacted checkpoint: %w", err)
@@ -272,11 +287,18 @@ func (s *service) CommitCompaction(ctx context.Context, params CommitCompactionP
 	if err != nil {
 		return Message{}, err
 	}
-	s.PublishMustDeliver(ctx, pubsub.CreatedEvent, message.Clone())
+	s.PublishMustDeliver(ctx, pubsub.UpdatedEvent, message.Clone())
 	if err := s.sessions.PublishCompaction(ctx, params.SessionID, params.EstimatedUsage); err != nil {
 		slog.Error("Failed to publish committed compaction", "error", err, "session_id", params.SessionID)
 	}
 	return message, nil
+}
+
+func boolToInt64(value bool) int64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (s *service) DeleteSessionMessages(ctx context.Context, sessionID string) error {
@@ -638,6 +660,7 @@ const (
 	finishType           partType = "finish"
 	shellCommandType     partType = "shell_command"
 	providerMetadataType partType = "provider_metadata"
+	retryingType         partType = "retrying"
 )
 
 type partWrapper struct {
@@ -670,6 +693,8 @@ func marshalParts(parts []ContentPart) ([]byte, error) {
 			typ = shellCommandType
 		case ProviderMetadataContent:
 			typ = providerMetadataType
+		case RetryingContent:
+			typ = retryingType
 		default:
 			return nil, fmt.Errorf("unknown part type: %T", part)
 		}
@@ -761,6 +786,12 @@ func unmarshalParts(data []byte) ([]ContentPart, error) {
 			parts = append(parts, part)
 		case providerMetadataType:
 			part := ProviderMetadataContent{}
+			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+		case retryingType:
+			part := RetryingContent{}
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
 			}

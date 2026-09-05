@@ -201,6 +201,30 @@ func TestResetStreamedContent(t *testing.T) {
 	require.Len(t, msg.ToolResults(), 1, "tool results should survive")
 }
 
+func TestRetryingContentClearsWhenRetryStreams(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]func(*Message){
+		"text":      func(msg *Message) { msg.AppendContent("answer") },
+		"reasoning": func(msg *Message) { msg.AppendReasoningContent("thinking") },
+		"tool call": func(msg *Message) { msg.AddToolCall(ToolCall{ID: "call", Name: "bash"}) },
+		"finish":    func(msg *Message) { msg.AddFinish(FinishReasonEndTurn, "", "") },
+	}
+	for name, stream := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			msg := &Message{}
+			msg.SetRetrying()
+			_, retrying := msg.Retrying()
+			require.True(t, retrying)
+
+			stream(msg)
+			_, retrying = msg.Retrying()
+			require.False(t, retrying)
+		})
+	}
+}
+
 func TestResetStreamedContentEmpty(t *testing.T) {
 	t.Parallel()
 

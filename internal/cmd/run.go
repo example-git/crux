@@ -18,6 +18,7 @@ import (
 	"github.com/example-git/crux/internal/format"
 	"github.com/example-git/crux/internal/herdr"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/ui/anim"
@@ -61,17 +62,22 @@ crux run --continue "Follow up on your last response"
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var (
-			quiet, _      = cmd.Flags().GetBool("quiet")
-			verbose, _    = cmd.Flags().GetBool("verbose")
-			largeModel, _ = cmd.Flags().GetString("model")
-			smallModel, _ = cmd.Flags().GetString("small-model")
-			sessionID, _  = cmd.Flags().GetString("session")
-			useLast, _    = cmd.Flags().GetBool("continue")
+			quiet, _          = cmd.Flags().GetBool("quiet")
+			verbose, _        = cmd.Flags().GetBool("verbose")
+			largeModel, _     = cmd.Flags().GetString("model")
+			smallModel, _     = cmd.Flags().GetString("small-model")
+			sessionID, _      = cmd.Flags().GetString("session")
+			useLast, _        = cmd.Flags().GetBool("continue")
+			permissionMode, _ = cmd.Flags().GetString("compatibility-permission-mode")
 		)
 
 		// Cancel on SIGINT or SIGTERM.
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
 		defer cancel()
+
+		if permissionMode != string(proto.AgentPermissionDeny) && permissionMode != string(proto.AgentPermissionBypass) {
+			return fmt.Errorf("invalid compatibility permission mode %q", permissionMode)
+		}
 
 		prompt := strings.Join(args, " ")
 
@@ -109,7 +115,7 @@ crux run --continue "Follow up on your last response"
 				slog.SetDefault(slog.New(log.New(os.Stderr)))
 			}
 
-			return runNonInteractive(ctx, c, ws, prompt, largeModel, smallModel, quiet || verbose, sessionID, useLast)
+			return runNonInteractive(ctx, c, ws, prompt, largeModel, smallModel, quiet || verbose, sessionID, useLast, proto.AgentPermissionMode(permissionMode))
 		}
 
 		ws, cleanup, err := setupLocalWorkspace(cmd)
@@ -132,7 +138,7 @@ crux run --continue "Follow up on your last response"
 			sessionID = sess.ID
 		}
 
-		return appWs.App().RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, quiet || verbose, sessionID, useLast)
+		return appWs.App().RunNonInteractive(ctx, os.Stdout, prompt, largeModel, smallModel, quiet || verbose, sessionID, useLast, permissionMode == string(proto.AgentPermissionBypass))
 	},
 }
 
@@ -143,6 +149,8 @@ func init() {
 	runCmd.Flags().String("small-model", "", "Small model to use. If not provided, uses the default small model for the provider")
 	runCmd.Flags().StringP("session", "s", "", "Continue a previous session by ID")
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
+	runCmd.Flags().String("compatibility-permission-mode", string(proto.AgentPermissionBypass), "Set non-interactive permission behavior")
+	_ = runCmd.Flags().MarkHidden("compatibility-permission-mode")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
 }
 
@@ -156,6 +164,7 @@ func runNonInteractive(
 	hideSpinner bool,
 	continueSessionID string,
 	useLast bool,
+	permissionMode proto.AgentPermissionMode,
 ) error {
 	slog.Info("Running in non-interactive mode")
 
@@ -204,8 +213,9 @@ func runNonInteractive(
 	}
 
 	// Force-update agent models so MCP tools are loaded.
-	if err := c.UpdateAgent(ctx, ws.ID); err != nil {
-		slog.Warn("Failed to update agent", "error", err)
+	if err := c.UpdateAgent(ctx, ws.ID, ws.Config.AgentModelState()); err != nil {
+		stopSpinner()
+		return fmt.Errorf("failed to update agent: %w", err)
 	}
 
 	defer stopSpinner()
@@ -239,7 +249,7 @@ func runNonInteractive(
 	// loop would exit on whichever RunComplete arrived first for
 	// the same session and drop the queued prompt's output.
 	runID := uuid.New().String()
-	if err := c.SendMessage(ctx, ws.ID, sess.ID, runID, prompt); err != nil {
+	if err := c.SendMessageWithPermissionMode(ctx, ws.ID, sess.ID, runID, prompt, permissionMode); err != nil {
 		return fmt.Errorf("failed to send message: %w", err)
 	}
 
@@ -454,6 +464,17 @@ func waitForAgent(ctx context.Context, c *client.Client, wsID string) error {
 	}
 }
 
+func modelOwnerFromSurfaces(surfaces []providerregistry.Surface, model config.SelectedModel) (providerregistry.RegistrationOwner, error) {
+	surface, ok := providerregistry.LookupSurface(surfaces, model.Provider)
+	if !ok || !surface.Available || surface.Owner == nil {
+		return providerregistry.RegistrationOwner{}, fmt.Errorf("provider owner is unavailable for %s", model.Provider)
+	}
+	if surface.Owner.ProviderID != model.Provider {
+		return providerregistry.RegistrationOwner{}, fmt.Errorf("provider owner %s does not match model provider %s", surface.Owner.ProviderID, model.Provider)
+	}
+	return *surface.Owner, nil
+}
+
 // overrideModels resolves model strings and updates the workspace
 // configuration via the server.
 func overrideModels(
@@ -462,58 +483,83 @@ func overrideModels(
 	ws *proto.Workspace,
 	largeModel, smallModel string,
 ) error {
-	cfg, err := c.GetConfig(ctx, ws.ID)
-	if err != nil {
-		return fmt.Errorf("failed to get config: %w", err)
+	cfg := ws.Config
+	if cfg == nil {
+		return fmt.Errorf("failed to get config: workspace configuration is missing")
 	}
 
-	providers := cfg.Providers.Copy()
-
-	largeMatches, smallMatches := findModelMatches(providers, largeModel, smallModel)
-
-	var largeProviderID string
-
+	largeMatches, smallMatches := findModelMatches(cfg, largeModel, smallModel)
+	var largeMatch, smallMatch modelMatch
+	var err error
 	if largeModel != "" {
-		found, err := validateModelMatches(largeMatches, largeModel, "large")
+		largeMatch, err = validateModelMatches(largeMatches, largeModel, "large")
 		if err != nil {
 			return err
 		}
-		largeProviderID = found.provider
-		slog.Info("Overriding large model", "provider", found.provider, "model", found.modelID)
-		if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeLarge, config.SelectedModel{
-			Provider: found.provider,
-			Model:    found.modelID,
-		}); err != nil {
+	}
+	if smallModel != "" {
+		smallMatch, err = validateModelMatches(smallMatches, smallModel, "small")
+		if err != nil {
+			return err
+		}
+	}
+
+	var (
+		largeSelection config.SelectedModel
+		largeOwner     providerregistry.RegistrationOwner
+		setLarge       bool
+		smallSelection config.SelectedModel
+		smallOwner     providerregistry.RegistrationOwner
+		setSmall       bool
+		state          config.AgentModelState
+	)
+	if largeModel != "" {
+		largeSelection = config.SelectedModel{Provider: largeMatch.provider, Model: largeMatch.modelID}
+		largeOwner, err = modelOwnerFromSurfaces(ws.ProviderSurfaces, largeSelection)
+		if err != nil {
+			return err
+		}
+		setLarge = true
+	}
+	if smallModel != "" {
+		smallSelection = config.SelectedModel{Provider: smallMatch.provider, Model: smallMatch.modelID}
+		smallOwner, err = modelOwnerFromSurfaces(ws.ProviderSurfaces, smallSelection)
+		if err != nil {
+			return err
+		}
+		setSmall = true
+	} else if largeModel != "" {
+		small, smallErr := c.GetDefaultSmallModel(ctx, ws.ID, largeMatch.provider)
+		if smallErr != nil {
+			slog.Warn("Failed to get default small model", "error", smallErr)
+		} else if small != nil {
+			smallSelection = *small
+			smallOwner, err = modelOwnerFromSurfaces(ws.ProviderSurfaces, smallSelection)
+			if err != nil {
+				return err
+			}
+			setSmall = true
+		}
+	}
+
+	if setLarge {
+		slog.Info("Overriding large model", "provider", largeSelection.Provider, "model", largeSelection.Model)
+		state, err = c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeLarge, largeSelection, largeOwner)
+		if err != nil {
 			return fmt.Errorf("failed to set large model: %w", err)
 		}
 	}
-
-	switch {
-	case smallModel != "":
-		found, err := validateModelMatches(smallMatches, smallModel, "small")
-		if err != nil {
-			return err
+	if setSmall {
+		if smallModel != "" {
+			slog.Info("Overriding small model", "provider", smallSelection.Provider, "model", smallSelection.Model)
 		}
-		slog.Info("Overriding small model", "provider", found.provider, "model", found.modelID)
-		if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeSmall, config.SelectedModel{
-			Provider: found.provider,
-			Model:    found.modelID,
-		}); err != nil {
+		state, err = c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeSmall, smallSelection, smallOwner)
+		if err != nil {
 			return fmt.Errorf("failed to set small model: %w", err)
-		}
-
-	case largeModel != "":
-		sm, err := c.GetDefaultSmallModel(ctx, ws.ID, largeProviderID)
-		if err != nil {
-			slog.Warn("Failed to get default small model", "error", err)
-		} else if sm != nil {
-			if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeSmall, *sm); err != nil {
-				return fmt.Errorf("failed to set small model: %w", err)
-			}
 		}
 	}
 
-	return c.UpdateAgent(ctx, ws.ID)
+	return c.UpdateAgent(ctx, ws.ID, state)
 }
 
 // restoreModelFromSession reads the last assistant message in the
@@ -539,6 +585,9 @@ func restoreModelFromSession(ctx context.Context, c *client.Client, ws *proto.Wo
 	}
 
 	cfg := ws.Config
+	if cfg == nil {
+		return fmt.Errorf("failed to restore model: workspace configuration is missing")
+	}
 	currentLarge := cfg.Models[config.SelectedModelTypeLarge]
 	if currentLarge.Provider == lastAssistant.Provider && currentLarge.Model == lastAssistant.Model {
 		return nil
@@ -555,22 +604,40 @@ func restoreModelFromSession(ctx context.Context, c *client.Client, ws *proto.Wo
 		Provider: lastAssistant.Provider,
 		Model:    lastAssistant.Model,
 	}
-	if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeLarge, selectedModel); err != nil {
-		return fmt.Errorf("failed to set large model: %w", err)
+	owner, err := modelOwnerFromSurfaces(ws.ProviderSurfaces, selectedModel)
+	if err != nil {
+		return err
 	}
 
+	var (
+		smallModel *config.SelectedModel
+		smallOwner providerregistry.RegistrationOwner
+	)
 	if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
-		sm, err := c.GetDefaultSmallModel(ctx, ws.ID, lastAssistant.Provider)
+		smallModel, err = c.GetDefaultSmallModel(ctx, ws.ID, lastAssistant.Provider)
 		if err != nil {
 			slog.Warn("Failed to get default small model", "error", err)
-		} else if sm != nil {
-			if err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeSmall, *sm); err != nil {
-				slog.Warn("Failed to set small model during session restore", "error", err)
+			smallModel = nil
+		} else if smallModel != nil {
+			smallOwner, err = modelOwnerFromSurfaces(ws.ProviderSurfaces, *smallModel)
+			if err != nil {
+				return err
 			}
 		}
 	}
 
-	return c.UpdateAgent(ctx, ws.ID)
+	state, err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeLarge, selectedModel, owner)
+	if err != nil {
+		return fmt.Errorf("failed to set large model: %w", err)
+	}
+	if smallModel != nil {
+		state, err = c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeSmall, *smallModel, smallOwner)
+		if err != nil {
+			return fmt.Errorf("failed to set small model during session restore: %w", err)
+		}
+	}
+
+	return c.UpdateAgent(ctx, ws.ID, state)
 }
 
 type modelMatch struct {
@@ -580,13 +647,13 @@ type modelMatch struct {
 
 // findModelMatches searches providers for matching large/small model
 // strings.
-func findModelMatches(providers map[string]config.ProviderConfig, largeModel, smallModel string) ([]modelMatch, []modelMatch) {
+func findModelMatches(cfg *config.Config, largeModel, smallModel string) ([]modelMatch, []modelMatch) {
 	largeFilter, largeID := parseModelString(largeModel)
 	smallFilter, smallID := parseModelString(smallModel)
 
 	var largeMatches, smallMatches []modelMatch
-	for name, provider := range providers {
-		if provider.Disable {
+	for name, provider := range cfg.Providers.Seq2() {
+		if !cfg.IsProviderAvailable(name) {
 			continue
 		}
 		for _, m := range provider.Models {

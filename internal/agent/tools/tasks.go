@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/permission"
 	managedtask "github.com/example-git/crux/internal/task"
 )
 
@@ -18,7 +20,7 @@ const (
 	TaskContinueToolName = "task_continue"
 )
 
-const taskListDescription = "List managed background shell and agent tasks with their status, ownership, output location, and usage."
+const taskListDescription = "List active managed background tasks and the 15 most recent terminal tasks with compact status and names."
 
 const taskOutputDescription = "Read output from a managed background shell or agent task. Set wait to block for at most timeout_ms while the task is still active."
 
@@ -31,6 +33,13 @@ type TaskService interface {
 	TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error)
 	StopTask(ctx context.Context, id string) (managedtask.View, error)
 	ContinueTask(ctx context.Context, id, parentSessionID, prompt, originToolCallID string) (managedtask.View, error)
+}
+
+type taskListView struct {
+	ID          string             `json:"id"`
+	Type        managedtask.Type   `json:"type"`
+	Description string             `json:"description"`
+	Status      managedtask.Status `json:"status"`
 }
 
 type TaskOutputParams struct {
@@ -53,7 +62,7 @@ func NewTaskListTool(service TaskService) fantasy.AgentTool {
 		TaskListToolName,
 		taskListDescription,
 		func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			data, err := json.MarshalIndent(service.ListTasks(), "", "  ")
+			data, err := json.MarshalIndent(compactTaskList(service.ListTasks()), "", "  ")
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("encoding managed tasks: %w", err)
 			}
@@ -63,6 +72,45 @@ func NewTaskListTool(service TaskService) fantasy.AgentTool {
 			return fantasy.NewTextResponse(string(data)), nil
 		},
 	)
+}
+
+func compactTaskList(tasks []managedtask.View) []taskListView {
+	active := make([]managedtask.View, 0, len(tasks))
+	terminal := make([]managedtask.View, 0, len(tasks))
+	for _, task := range tasks {
+		if task.State.Status.Terminal() {
+			terminal = append(terminal, task)
+		} else {
+			active = append(active, task)
+		}
+	}
+	sort.SliceStable(active, func(i, j int) bool {
+		return taskRecency(active[i]).After(taskRecency(active[j]))
+	})
+	sort.SliceStable(terminal, func(i, j int) bool {
+		return taskRecency(terminal[i]).After(taskRecency(terminal[j]))
+	})
+	if len(terminal) > managedtask.RecentTerminalLimit {
+		terminal = terminal[:managedtask.RecentTerminalLimit]
+	}
+	selected := append(active, terminal...)
+	result := make([]taskListView, 0, len(selected))
+	for _, task := range selected {
+		result = append(result, taskListView{
+			ID:          task.ID,
+			Type:        task.Type,
+			Description: task.Description,
+			Status:      task.State.Status,
+		})
+	}
+	return result
+}
+
+func taskRecency(task managedtask.View) time.Time {
+	if !task.State.EndedAt.IsZero() {
+		return task.State.EndedAt
+	}
+	return task.State.StartedAt
 }
 
 func NewTaskOutputTool(service TaskService) fantasy.AgentTool {
@@ -102,6 +150,9 @@ func NewTaskContinueTool(service TaskService) fantasy.AgentTool {
 		TaskContinueToolName,
 		taskContinueDescription,
 		func(ctx context.Context, params TaskContinueParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if permission.IsSubagent(ctx) {
+				return fantasy.NewTextErrorResponse(permission.ErrSubagentBackgroundTask.Error()), nil
+			}
 			if params.TaskID == "" {
 				return fantasy.NewTextErrorResponse("missing task_id"), nil
 			}

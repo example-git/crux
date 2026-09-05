@@ -7,6 +7,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/oauth/codex"
+	"github.com/example-git/crux/internal/providerregistry"
 )
 
 func TestToolingInstructionsDefaultsToCrux(t *testing.T) {
@@ -24,6 +25,9 @@ func TestToolingInstructionsDefaultsToCrux(t *testing.T) {
 	expected := SectionsToString(AllSections())
 	if instructions != expected {
 		t.Fatal("default tooling instructions did not use Crux sections")
+	}
+	if !strings.Contains(instructions, "Do not inspect Git as a routine start/end step") {
+		t.Fatal("default tooling instructions did not discourage routine Git inspection")
 	}
 }
 
@@ -43,6 +47,7 @@ func TestToolingInstructionsSelectsProviderNativeProfile(t *testing.T) {
 					test.providerID: {ToolingInstructions: config.ToolingInstructionsNative},
 				}),
 			}
+			cfg = config.NewTestStoreWithRegistrations(cfg, providerregistry.Integrated()...).RuntimeSnapshot().Config()
 
 			instructions, err := toolingInstructions(test.providerID, cfg)
 			if err != nil {
@@ -52,6 +57,23 @@ func TestToolingInstructionsSelectsProviderNativeProfile(t *testing.T) {
 				t.Fatalf("native tooling instructions for %q did not match provider profile", test.providerID)
 			}
 		})
+	}
+}
+
+func TestToolingInstructionsRejectsSameIDPresetNativeProfile(t *testing.T) {
+	cfg := &config.Config{
+		Options: &config.Options{},
+		Providers: csync.NewMapFrom(map[string]config.ProviderConfig{
+			codex.ID: {
+				Preset:              &config.ProviderPresetReference{ID: "example.codex-preset", Version: "1"},
+				ToolingInstructions: config.ToolingInstructionsNative,
+			},
+		}),
+	}
+
+	_, err := toolingInstructions(codex.ID, cfg)
+	if err == nil || !strings.Contains(err.Error(), "does not provide native tooling instructions") {
+		t.Fatalf("expected same-ID preset native profile error, got %v", err)
 	}
 }
 
@@ -101,6 +123,7 @@ func TestToolingInstructionsOnlyFiltersCruxSections(t *testing.T) {
 			codex.ID: {ToolingInstructions: config.ToolingInstructionsNative},
 		}),
 	}
+	nativeConfig = config.NewTestStoreWithRegistrations(nativeConfig, providerregistry.Integrated()...).RuntimeSnapshot().Config()
 	nativeInstructions, err := toolingInstructions(codex.ID, nativeConfig)
 	if err != nil {
 		t.Fatalf("select native tooling instructions: %v", err)

@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	fantasy "github.com/example-git/crux/foundation"
@@ -120,13 +119,16 @@ type wireTextFormat struct {
 
 // eventFrame is one incoming WebSocket frame.
 type eventFrame struct {
-	Type      string          `json:"type"`
-	Delta     string          `json:"delta,omitempty"`
-	ItemID    string          `json:"item_id,omitempty"`
-	Arguments string          `json:"arguments,omitempty"`
-	Item      json.RawMessage `json:"item,omitempty"`
-	Response  *wireResponse   `json:"response,omitempty"`
-	Error     *wireError      `json:"error,omitempty"`
+	Type        string          `json:"type"`
+	Delta       string          `json:"delta,omitempty"`
+	ItemID      string          `json:"item_id,omitempty"`
+	Arguments   string          `json:"arguments,omitempty"`
+	Item        json.RawMessage `json:"item,omitempty"`
+	Response    *wireResponse   `json:"response,omitempty"`
+	Error       *wireError      `json:"error,omitempty"`
+	Code        string          `json:"code,omitempty"`
+	Message     string          `json:"message,omitempty"`
+	mappedError error           `json:"-"`
 }
 
 // outputItem is one item in a completed response's output array (also the
@@ -195,15 +197,32 @@ type CompactedHistory struct {
 // toInput converts a fantasy prompt into Responses input items plus the
 // instructions string (from system messages).
 func toInput(modelID string, prompt fantasy.Prompt) (instructions string, items []inputItem, warnings []fantasy.CallWarning) {
+	instructions, _, items, warnings = toInputWithDynamic(modelID, prompt)
+	return instructions, items, warnings
+}
+
+func toInputWithDynamic(modelID string, prompt fantasy.Prompt) (instructions, dynamicContext string, items []inputItem, warnings []fantasy.CallWarning) {
 	var systemParts []string
+	var dynamicParts []string
+	typedSystem := false
 	functionCallID := newFunctionCallIDConverter()
 	for _, msg := range prompt {
 		switch msg.Role {
 		case fantasy.MessageRoleSystem:
 			for _, part := range msg.Content {
-				if text, ok := fantasy.AsMessagePart[fantasy.TextPart](part); ok && text.Text != "" {
-					systemParts = append(systemParts, text.Text)
+				text, ok := fantasy.AsMessagePart[fantasy.TextPart](part)
+				if !ok || text.Text == "" {
+					continue
 				}
+				options := fantasy.InstructionPartOptionsFrom(part.Options())
+				if options != nil {
+					typedSystem = true
+					if options.Stability == fantasy.InstructionStabilityDynamic && slices.Contains(options.Kinds, fantasy.InstructionKindRuntime) {
+						dynamicParts = append(dynamicParts, text.Text)
+						continue
+					}
+				}
+				systemParts = append(systemParts, text.Text)
 			}
 		case fantasy.MessageRoleUser:
 			var content []messageContent
@@ -360,7 +379,11 @@ func toInput(modelID string, prompt fantasy.Prompt) (instructions string, items 
 	// rejects requests holding a call without its output or vice versa.
 	items = dropUnpairedCalls(items)
 
-	return strings.Join(systemParts, "\n"), items, warnings
+	separator := "\n"
+	if typedSystem {
+		separator = "\n\n"
+	}
+	return strings.Join(systemParts, separator), strings.Join(dynamicParts, "\n\n"), items, warnings
 }
 
 // newFunctionCallIDConverter returns a request-local converter that maps any
@@ -463,59 +486,6 @@ func toolOutputLimitBytes(modelID string) int {
 		limit *= toolOutputBytesPerToken
 	}
 	return limit
-}
-
-func splitDynamicEnvironment(instructions string) (string, string) {
-	if strings.Count(instructions, "<env>") != 1 || strings.Count(instructions, "</env>") != 1 {
-		return instructions, ""
-	}
-	start := strings.Index(instructions, "<env>\n")
-	if start < 0 || start > 0 && instructions[start-1] != '\n' {
-		return instructions, ""
-	}
-	bodyStart := start + len("<env>\n")
-	closeOffset := strings.Index(instructions[bodyStart:], "</env>")
-	if closeOffset < 0 {
-		return instructions, ""
-	}
-	closeStart := bodyStart + closeOffset
-	end := closeStart + len("</env>")
-	if end < len(instructions) && instructions[end] != '\n' {
-		return instructions, ""
-	}
-
-	lines := strings.Split(instructions[bodyStart:closeStart], "\n")
-	if len(lines) < 5 || lines[len(lines)-1] != "" {
-		return instructions, ""
-	}
-	if !strings.HasPrefix(lines[0], "Working directory: ") || lines[0] == "Working directory: " {
-		return instructions, ""
-	}
-	if lines[1] != "Is directory a git repo: yes" && lines[1] != "Is directory a git repo: no" {
-		return instructions, ""
-	}
-	if !strings.HasPrefix(lines[2], "Platform: ") || lines[2] == "Platform: " {
-		return instructions, ""
-	}
-	const datePrefix = "Today's date: "
-	if !strings.HasPrefix(lines[3], datePrefix) {
-		return instructions, ""
-	}
-	date := strings.TrimPrefix(lines[3], datePrefix)
-	parsedDate, err := time.Parse("1/2/2006", date)
-	if err != nil || parsedDate.Format("1/2/2006") != date || lines[4] != "" {
-		return instructions, ""
-	}
-	if len(lines) != 5 {
-		if len(lines) < 7 || lines[1] != "Is directory a git repo: yes" || lines[5] != "Git status (snapshot at conversation start - may be outdated):" {
-			return instructions, ""
-		}
-	}
-
-	stableBlock := "<env>\n" + strings.Join(lines[:3], "\n") + "\n</env>"
-	stable := instructions[:start] + stableBlock + instructions[end:]
-	dynamic := strings.Join(lines[3:len(lines)-1], "\n")
-	return stable, dynamic
 }
 
 func dynamicEnvironmentItem(snapshot string) inputItem {

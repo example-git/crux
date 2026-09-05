@@ -3,7 +3,7 @@ package providerregistry
 import (
 	"testing"
 
-	"charm.land/catwalk/pkg/catwalk"
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/stretchr/testify/require"
 )
@@ -20,20 +20,21 @@ func TestSurfacesProjectDeclarativeMetadataWithoutPluginBehavior(t *testing.T) {
 		},
 	}
 	registry, err := New(Registration{
-		ProviderID: "synthetic",
-		Name:       "Synthetic",
-		Manifest:   &manifestValue,
-		Brand:      &Brand{ShortName: "SYNTH", Color: "#123456"},
-		OAuth:      &OAuthCapability{FlowID: "login", Adapter: LoginBrowser},
+		ProviderID:   "synthetic",
+		Name:         "Synthetic",
+		Manifest:     &manifestValue,
+		Brand:        &Brand{ShortName: "SYNTH", Color: "#123456"},
+		OAuth:        &OAuthCapability{FlowID: "login", Adapter: LoginBrowser},
+		Instructions: &InstructionCapability{Default: "native", Profiles: map[string]string{"native": "instructions"}, HiddenSkills: []string{"imagegen"}},
 		RuntimeControls: []manifest.RuntimeControl{{
 			ID: "effort", Label: "Effort", Type: "enum", Values: []string{"low", "high"}, RequestPath: "/reasoning/effort",
 		}},
 	})
 	require.NoError(t, err)
 
-	surfaces := registry.Surfaces([]catwalk.Provider{{
+	surfaces := registry.Surfaces([]catalog.Provider{{
 		ID: "synthetic", Name: "Synthetic", DefaultLargeModelID: "large", DefaultSmallModelID: "small",
-		Models: []catwalk.Model{{ID: "large"}, {ID: "small"}},
+		Models: []catalog.Model{{ID: "large"}, {ID: "small"}},
 	}}, map[string]string{"synthetic": "large"})
 	require.Len(t, surfaces, 1)
 	surface := surfaces[0]
@@ -45,13 +46,16 @@ func TestSurfacesProjectDeclarativeMetadataWithoutPluginBehavior(t *testing.T) {
 	require.Len(t, surface.Authentication, 1)
 	require.False(t, surface.Authentication[0].Available)
 	require.Equal(t, "host OAuth interpreter unavailable", surface.Authentication[0].Diagnostic)
+	require.Equal(t, []string{"imagegen"}, surface.Instructions.HiddenSkills)
 	require.Len(t, surface.RuntimeControls, 1)
 	require.False(t, surface.RuntimeControls[0].Available)
 
 	surface.Configuration["type"] = "mutated"
+	surface.Instructions.HiddenSkills[0] = "mutated"
 	surface.RuntimeControls[0].Values[0] = "mutated"
 	again := registry.Surfaces(nil, nil)[0]
 	require.Equal(t, "object", again.Configuration["type"])
+	require.Equal(t, []string{"imagegen"}, again.Instructions.HiddenSkills)
 	require.Equal(t, "low", again.RuntimeControls[0].Values[0])
 }
 

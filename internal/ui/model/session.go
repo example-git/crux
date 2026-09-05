@@ -56,6 +56,7 @@ func (msg loadSessionMsg) lspFilePaths() []string {
 type SessionFile struct {
 	FirstVersion  history.File
 	LatestVersion history.File
+	Created       bool
 	Additions     int
 	Deletions     int
 }
@@ -141,6 +142,7 @@ func (m *UI) loadSessionFiles(sessionID string) ([]SessionFile, error) {
 		sessionFiles = append(sessionFiles, SessionFile{
 			FirstVersion:  first,
 			LatestVersion: last,
+			Created:       !first.Exists && last.Exists,
 			Additions:     additions,
 			Deletions:     deletions,
 		})
@@ -165,14 +167,18 @@ func (m *UI) handleFileEvent(file history.File) tea.Cmd {
 		return nil
 	}
 
+	sessionID := m.session.ID
+	m.sessionFilesFetchGen++
+	generation := m.sessionFilesFetchGen
 	return func() tea.Msg {
-		sessionFiles, err := m.loadSessionFiles(m.session.ID)
-		// could not load session files
+		sessionFiles, err := m.loadSessionFiles(sessionID)
 		if err != nil {
 			return util.NewErrorMsg(err)
 		}
 
 		return sessionFilesUpdatesMsg{
+			sessionID:    sessionID,
+			generation:   generation,
 			sessionFiles: sessionFiles,
 		}
 	}
@@ -197,7 +203,7 @@ func (m *UI) filesInfo(cwd string, width, maxItems int, isSection bool) string {
 	list := t.Files.EmptyMessage.Render("None")
 	var filesWithChanges []SessionFile
 	for _, f := range m.sessionFiles {
-		if f.Additions == 0 && f.Deletions == 0 {
+		if !f.Created && f.Additions == 0 && f.Deletions == 0 {
 			continue
 		}
 		filesWithChanges = append(filesWithChanges, f)
@@ -226,6 +232,9 @@ func fileList(t *styles.Styles, cwd string, filesWithChanges []SessionFile, widt
 
 		// Build stats string with colors
 		var statusParts []string
+		if f.Created {
+			statusParts = append(statusParts, t.Files.Additions.Render("new"))
+		}
 		if f.Additions > 0 {
 			statusParts = append(statusParts, t.Files.Additions.Render(fmt.Sprintf("+%d", f.Additions)))
 		}

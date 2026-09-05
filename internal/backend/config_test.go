@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -93,8 +94,17 @@ func TestUpdatePreferredModel_PublishesConfigChanged(t *testing.T) {
 	}
 	b, ws, evc := newPublishingWorkspace(t)
 
-	model := config.SelectedModel{Provider: "openai", Model: "gpt-4"}
-	require.NoError(t, b.UpdatePreferredModel(ws.ID, config.ScopeGlobal, config.SelectedModelTypeLarge, model))
+	owner, ok := ws.Cfg.RuntimeSnapshot().ProviderOwner("copilot")
+	require.True(t, ok)
+	require.NoError(t, b.SetProviderAPIKey(ws.ID, config.ScopeGlobal, "copilot", config.ProviderAPIKeyCredential{Owner: owner, APIKey: "test-key"}))
+	awaitConfigChanged(t, evc, ws.ID)
+	provider, ok := ws.Cfg.Config().Providers.Get("copilot")
+	require.True(t, ok)
+	require.NotEmpty(t, provider.Models)
+	model := config.SelectedModel{Provider: "copilot", Model: provider.Models[0].ID}
+	state, err := b.UpdatePreferredModel(ws.ID, config.ScopeGlobal, config.SelectedModelTypeLarge, model, owner)
+	require.NoError(t, err)
+	require.Equal(t, &config.OwnedSelectedModel{Model: model, Owner: owner}, state.Large)
 	awaitConfigChanged(t, evc, ws.ID)
 }
 
@@ -108,17 +118,21 @@ func TestSetCompactMode_PublishesConfigChanged(t *testing.T) {
 func TestSetProviderAPIKey_PublishesConfigChanged(t *testing.T) {
 	b, ws, evc := newPublishingWorkspace(t)
 
-	require.NoError(t, b.SetProviderAPIKey(ws.ID, config.ScopeGlobal, "copilot", "test-key"))
+	owner, ok := ws.Cfg.RuntimeSnapshot().ProviderOwner("copilot")
+	require.True(t, ok)
+	require.NoError(t, b.SetProviderAPIKey(ws.ID, config.ScopeGlobal, "copilot", config.ProviderAPIKeyCredential{Owner: owner, APIKey: "test-key"}))
 	awaitConfigChanged(t, evc, ws.ID)
 }
 
 func TestSetProviderAPIKeySignalsRemoteReauthentication(t *testing.T) {
 	b, ws, _ := newPublishingWorkspace(t)
 
-	require.NoError(t, b.SetProviderAPIKey(ws.ID, config.ScopeGlobal, "copilot", "test-key"))
+	owner, ok := ws.Cfg.RuntimeSnapshot().ProviderOwner("copilot")
+	require.True(t, ok)
+	require.NoError(t, b.SetProviderAPIKey(ws.ID, config.ScopeGlobal, "copilot", config.ProviderAPIKeyCredential{Owner: owner, APIKey: "test-key"}))
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	require.NoError(t, ws.Cfg.WaitForTokenChange(ctx, "copilot"))
+	require.NoError(t, ws.Cfg.WaitForTokenChange(ctx, owner))
 }
 
 func TestMarkProjectInitialized_PublishesConfigChanged(t *testing.T) {
@@ -164,9 +178,9 @@ func TestImportCopilot_PublishesConfigChanged(t *testing.T) {
 func TestRefreshOAuthToken_NoEventOnError(t *testing.T) {
 	b, ws, evc := newPublishingWorkspace(t)
 
-	// Provider does not exist → store returns an error → no event.
-	err := b.RefreshOAuthToken(context.Background(), ws.ID, config.ScopeGlobal, "no-such-provider")
-	require.Error(t, err)
+	owner := providerregistry.RegistrationOwner{}
+	err := b.RefreshOAuthToken(context.Background(), ws.ID, config.ScopeGlobal, owner)
+	require.ErrorContains(t, err, "initiating owner is required")
 
 	select {
 	case ev := <-evc:

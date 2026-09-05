@@ -30,6 +30,7 @@ jobs:
       - run: go run . schema > schema.json
       - run: go run . schema provider-plugin > provider-plugin.schema.json
       - run: go run . schema provider-preset-plugin > provider-preset-plugin.schema.json
+      - run: go run . schema image-provider-plugin > image-provider-plugin.schema.json
       - run: go run github.com/swaggo/swag/cmd/swag@v1.16.6 init --generalInfo main.go --dir . --output internal/swagger --packageName swagger --parseDependency --parseInternal --parseDepth 5
       - run: git diff --exit-code
 

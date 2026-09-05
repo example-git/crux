@@ -6,13 +6,15 @@ import (
 
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/providerregistry"
 )
 
 // ConfigSetRequest represents a request to set a config field.
 type ConfigSetRequest struct {
-	Scope config.Scope `json:"scope"`
-	Key   string       `json:"key"`
-	Value any          `json:"value"`
+	Scope config.Scope                        `json:"scope"`
+	Key   string                              `json:"key"`
+	Value any                                 `json:"value"`
+	Owner *providerregistry.RegistrationOwner `json:"owner,omitempty"`
 }
 
 // ConfigRemoveRequest represents a request to remove a config field.
@@ -23,9 +25,14 @@ type ConfigRemoveRequest struct {
 
 // ConfigModelRequest represents a request to update the preferred model.
 type ConfigModelRequest struct {
-	Scope     config.Scope             `json:"scope"`
-	ModelType config.SelectedModelType `json:"model_type"`
-	Model     config.SelectedModel     `json:"model"`
+	Scope     config.Scope                       `json:"scope"`
+	ModelType config.SelectedModelType           `json:"model_type"`
+	Model     config.SelectedModel               `json:"model"`
+	Owner     providerregistry.RegistrationOwner `json:"owner"`
+}
+
+type AgentUpdateRequest struct {
+	State config.AgentModelState `json:"state"`
 }
 
 // ConfigCompactRequest represents a request to set compact mode.
@@ -71,17 +78,19 @@ const (
 	// APIKeyKindString is a plain string API key.
 	APIKeyKindString APIKeyKind = "string"
 	// APIKeyKindOAuth is an oauth.Token credential.
-	APIKeyKindOAuth APIKeyKind = "oauth"
+	APIKeyKindOAuth  APIKeyKind = "oauth"
+	APIKeyKindRemove APIKeyKind = "remove"
 )
 
 // ConfigProviderKeyRequest represents a request to set a provider API
 // key. APIKey is the raw JSON for the credential; Kind selects the
 // concrete Go type APIKey should be decoded into via DecodeAPIKey.
 type ConfigProviderKeyRequest struct {
-	Scope      config.Scope    `json:"scope"`
-	ProviderID string          `json:"provider_id"`
-	Kind       APIKeyKind      `json:"kind"`
-	APIKey     json.RawMessage `json:"api_key"`
+	Scope      config.Scope                        `json:"scope"`
+	ProviderID string                              `json:"provider_id"`
+	Kind       APIKeyKind                          `json:"kind"`
+	APIKey     json.RawMessage                     `json:"api_key,omitempty"`
+	Owner      *providerregistry.RegistrationOwner `json:"owner,omitempty"`
 }
 
 // DecodeAPIKey decodes APIKey into the Go type indicated by Kind. It
@@ -91,17 +100,29 @@ type ConfigProviderKeyRequest struct {
 func (r ConfigProviderKeyRequest) DecodeAPIKey() (any, error) {
 	switch r.Kind {
 	case APIKeyKindString:
-		var s string
-		if err := json.Unmarshal(r.APIKey, &s); err != nil {
+		if r.Owner == nil {
+			return nil, fmt.Errorf("decode api key string: initiating owner is required")
+		}
+		if r.Owner.ProviderID != r.ProviderID {
+			return nil, fmt.Errorf("decode api key string: owner provider %s does not match request provider %s", r.Owner.ProviderID, r.ProviderID)
+		}
+		var apiKey string
+		if err := json.Unmarshal(r.APIKey, &apiKey); err != nil {
 			return nil, fmt.Errorf("decode api key string: %w", err)
 		}
-		return s, nil
+		return config.ProviderAPIKeyCredential{Owner: *r.Owner, APIKey: apiKey}, nil
 	case APIKeyKindOAuth:
+		if r.Owner == nil {
+			return nil, fmt.Errorf("decode api key oauth token: initiating owner is required")
+		}
+		if r.Owner.ProviderID != r.ProviderID {
+			return nil, fmt.Errorf("decode api key oauth token: owner provider %s does not match request provider %s", r.Owner.ProviderID, r.ProviderID)
+		}
 		var tok oauth.Token
 		if err := json.Unmarshal(r.APIKey, &tok); err != nil {
 			return nil, fmt.Errorf("decode api key oauth token: %w", err)
 		}
-		return &tok, nil
+		return config.ProviderOAuthCredential{Owner: *r.Owner, Token: &tok}, nil
 	default:
 		return nil, fmt.Errorf("unsupported api key kind %q", r.Kind)
 	}
@@ -109,8 +130,8 @@ func (r ConfigProviderKeyRequest) DecodeAPIKey() (any, error) {
 
 // ConfigRefreshOAuthRequest represents a request to refresh an OAuth token.
 type ConfigRefreshOAuthRequest struct {
-	Scope      config.Scope `json:"scope"`
-	ProviderID string       `json:"provider_id"`
+	Scope config.Scope                       `json:"scope"`
+	Owner providerregistry.RegistrationOwner `json:"owner"`
 }
 
 // ImportCopilotResponse represents the response from importing Copilot credentials.

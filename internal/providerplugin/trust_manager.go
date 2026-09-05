@@ -11,7 +11,10 @@ import (
 )
 
 // SetTrust approves or revokes one exact currently discovered digest. Trust is
-// never granted by plugin ID, source path, or publisher alone.
+// never granted by plugin ID, source path, publisher, ref, prior version, or
+// future update. Keep persistence before the in-memory state transition: if the
+// trust store write fails, the bundle must remain inactive rather than appearing
+// registered only for the current process.
 func (m *Manager) SetTrust(ctx context.Context, pluginID string, request TrustRequest) (Snapshot, error) {
 	if pluginID == "" || len(request.Digest) != 64 {
 		return Snapshot{}, errors.New("plugin ID and exact SHA-256 digest are required")
@@ -41,7 +44,7 @@ func (m *Manager) SetTrust(ctx context.Context, pluginID string, request TrustRe
 		return Snapshot{}, ErrPluginMissing
 	}
 	status := m.state.Plugins[index]
-	if (status.manifest == nil && status.preset == nil) || status.Compatibility != CompatibilityCompatible || status.State == StateInvalid || status.State == StateIncompatible {
+	if (status.manifest == nil && status.preset == nil && status.image == nil) || status.Compatibility != CompatibilityCompatible || status.State == StateInvalid || status.State == StateIncompatible {
 		return Snapshot{}, errors.New("plugin is not eligible for trust")
 	}
 	store, err := loadTrustStore(m.paths.TrustFile)
@@ -69,8 +72,7 @@ func (m *Manager) SetTrust(ctx context.Context, pluginID string, request TrustRe
 			len(status.Diagnostics) == 1 && status.Diagnostics[0].Code == "trust-revoked"
 		m.state.Plugins[index].Trust = TrustTrusted
 		if m.state.Plugins[index].State == StateUntrusted || revokedOnly {
-			m.state.Plugins[index].State = StateRegistered
-			m.state.Plugins[index].Diagnostics = nil
+			applyTrustedRegistrationPolicy(&m.state.Plugins[index])
 		}
 	} else {
 		m.state.Plugins[index].Trust = TrustRevoked

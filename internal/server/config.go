@@ -2,10 +2,20 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"strings"
 
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/proto"
 )
+
+func isProviderDisableConfigKey(key string) bool {
+	if !strings.HasPrefix(key, "providers.") || !strings.HasSuffix(key, ".disable") {
+		return false
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(key, "providers."), ".disable") != ""
+}
 
 // handlePostWorkspaceConfigSet sets a configuration field.
 //
@@ -29,6 +39,27 @@ func (c *controllerV1) handlePostWorkspaceConfigSet(w http.ResponseWriter, r *ht
 		return
 	}
 
+	if isProviderDisableConfigKey(req.Key) {
+		if req.Owner == nil || req.Owner.ProviderID == "" || req.Key != fmt.Sprintf("providers.%s.disable", req.Owner.ProviderID) {
+			jsonError(w, http.StatusBadRequest, "provider disabled state requires a matching initiating owner")
+			return
+		}
+		disabled, ok := req.Value.(bool)
+		if !ok {
+			jsonError(w, http.StatusBadRequest, "provider disabled state must be boolean")
+			return
+		}
+		if err := c.backend.SetProviderDisabled(id, req.Scope, *req.Owner, disabled); err != nil {
+			c.handleError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if req.Owner != nil {
+		jsonError(w, http.StatusBadRequest, "initiating owner is not valid for this config field")
+		return
+	}
 	if err := c.backend.SetConfigField(id, req.Scope, req.Key, req.Value); err != nil {
 		c.handleError(w, r, err)
 		return
@@ -72,7 +103,7 @@ func (c *controllerV1) handlePostWorkspaceConfigRemove(w http.ResponseWriter, r 
 //	@Accept			json
 //	@Param			id		path	string						true	"Workspace ID"
 //	@Param			request	body	proto.ConfigModelRequest	true	"Config model request"
-//	@Success		200
+//	@Success		200	{object}	config.AgentModelState
 //	@Failure		400	{object}	proto.Error
 //	@Failure		404	{object}	proto.Error
 //	@Failure		500	{object}	proto.Error
@@ -87,11 +118,18 @@ func (c *controllerV1) handlePostWorkspaceConfigModel(w http.ResponseWriter, r *
 		return
 	}
 
-	if err := c.backend.UpdatePreferredModel(id, req.Scope, req.ModelType, req.Model); err != nil {
+	if req.Owner.ProviderID == "" || req.Owner.ProviderID != req.Model.Provider {
+		jsonError(w, http.StatusBadRequest, "preferred model requires a matching initiating owner")
+		return
+	}
+	var state config.AgentModelState
+	state, err := c.backend.UpdatePreferredModel(id, req.Scope, req.ModelType, req.Model, req.Owner)
+	if err != nil {
 		c.handleError(w, r, err)
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("Content-Type", "application/json")
+	jsonEncode(w, state)
 }
 
 // handlePostWorkspaceConfigCompact sets compact mode.
@@ -142,6 +180,19 @@ func (c *controllerV1) handlePostWorkspaceConfigProviderKey(w http.ResponseWrite
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		c.server.logError(r, "Failed to decode request", "error", err)
 		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+
+	if req.Kind == proto.APIKeyKindRemove {
+		if req.Owner == nil || req.Owner.ProviderID != req.ProviderID {
+			jsonError(w, http.StatusBadRequest, "provider credential removal requires a matching owner")
+			return
+		}
+		if err := c.backend.RemoveProviderCredentials(id, req.Scope, *req.Owner); err != nil {
+			c.handleError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 
@@ -200,8 +251,12 @@ func (c *controllerV1) handlePostWorkspaceConfigRefreshOAuth(w http.ResponseWrit
 		jsonError(w, http.StatusBadRequest, "failed to decode request")
 		return
 	}
+	if req.Owner.ProviderID == "" {
+		jsonError(w, http.StatusBadRequest, "OAuth refresh initiating owner is required")
+		return
+	}
 
-	if err := c.backend.RefreshOAuthToken(r.Context(), id, req.Scope, req.ProviderID); err != nil {
+	if err := c.backend.RefreshOAuthToken(r.Context(), id, req.Scope, req.Owner); err != nil {
 		c.handleError(w, r, err)
 		return
 	}
