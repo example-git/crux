@@ -128,11 +128,11 @@ func globWithDoubleStar(ctx context.Context, pattern, searchPath string, limit i
 
 		isDir := d.IsDir()
 		if isDir {
-			if gitignore && walker.ShouldSkipDir(path) {
+			if gitignore && (SkipHidden(path) || walker.ShouldSkipDir(path)) {
 				return filepath.SkipDir
 			}
 		} else {
-			if gitignore && walker.ShouldSkip(path) {
+			if gitignore && (SkipHidden(path) || walker.ShouldSkip(path)) {
 				return nil
 			}
 		}

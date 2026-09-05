@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/stretchr/testify/require"
 )
 
@@ -62,6 +63,7 @@ func TestGlobFilesHonorsRootIgnoreFilesOutsideGitRepository(t *testing.T) {
 		"ignored-git.txt":    "git",
 		"ignored-crux.txt":   "crux",
 		".hidden.txt":        "hidden",
+		".hidden/secret.txt": "hidden directory",
 		".gitignore":         "ignored-git.txt\n",
 		".cruxignore":        "ignored-crux.txt\n",
 		"nested/visible.txt": "nested",
@@ -71,12 +73,20 @@ func TestGlobFilesHonorsRootIgnoreFilesOutsideGitRepository(t *testing.T) {
 		require.NoError(t, os.WriteFile(fullPath, []byte(content), 0o644))
 	}
 
-	got, _, err := globFiles(context.Background(), "**/*.txt", root, 100)
-	require.NoError(t, err)
-	require.ElementsMatch(t, []string{
-		filepath.Join(root, "visible.txt"),
-		filepath.Join(root, "nested", "visible.txt"),
-	}, got)
+	for name, search := range map[string]func(context.Context, string, string, int) ([]string, bool, error){
+		"automatic": globFiles,
+		"native":    fsext.GlobGitignoreAwareCtx,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, _, err := search(t.Context(), "**/*.txt", root, 100)
+			require.NoError(t, err)
+			require.ElementsMatch(t, []string{
+				filepath.Join(root, "visible.txt"),
+				filepath.Join(root, "nested", "visible.txt"),
+			}, got)
+		})
+	}
 }
 
 func TestGlobFilesCapsResultsOnLargeTree(t *testing.T) {

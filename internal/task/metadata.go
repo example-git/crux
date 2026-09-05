@@ -111,10 +111,17 @@ func NewStore(root string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
-	if s == nil || s.dir == nil {
+	if s == nil {
 		return nil
 	}
-	return s.dir.Close()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dir == nil {
+		return nil
+	}
+	err := s.dir.Close()
+	s.dir = nil
+	return err
 }
 
 func (s *Store) Put(record Record) error {
@@ -124,6 +131,9 @@ func (s *Store) Put(record Record) error {
 }
 
 func (s *Store) putLocked(record Record) error {
+	if s.dir == nil {
+		return os.ErrClosed
+	}
 	if record.Version == 0 {
 		record.Version = RecordVersion
 	}
@@ -183,6 +193,9 @@ func (s *Store) Get(id string) (Record, error) {
 func (s *Store) List() ([]Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.dir == nil {
+		return nil, os.ErrClosed
+	}
 	if _, err := s.dir.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("rewinding task metadata directory: %w", err)
 	}
@@ -270,6 +283,9 @@ func (s *Store) updateNotification(notificationID string, update func(*Notificat
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.dir == nil {
+		return Notification{}, os.ErrClosed
+	}
 	if _, err := s.dir.Seek(0, io.SeekStart); err != nil {
 		return Notification{}, fmt.Errorf("rewinding task metadata directory: %w", err)
 	}
@@ -305,6 +321,9 @@ func (s *Store) Remove(id string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.dir == nil {
+		return os.ErrClosed
+	}
 	if err := removeSecureFile(s.dir, s.root, recordName(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("removing task metadata: %w", err)
 	}
@@ -312,6 +331,9 @@ func (s *Store) Remove(id string) error {
 }
 
 func (s *Store) readLocked(id string) (Record, error) {
+	if s.dir == nil {
+		return Record{}, os.ErrClosed
+	}
 	file, err := openSecureFile(s.dir, s.root, recordName(id))
 	if err != nil {
 		return Record{}, fmt.Errorf("opening task metadata: %w", err)
