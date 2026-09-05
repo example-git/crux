@@ -1,4 +1,3 @@
-
 module github.com/example-git/crux
 
 go 1.26.6
