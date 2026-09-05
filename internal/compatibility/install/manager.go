@@ -1108,18 +1108,12 @@ func ensurePrivateDirectory(path string) error {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return fmt.Errorf("private compatibility path %q is not a directory", path)
 		}
-		if info.Mode().Perm()&0o077 != 0 {
-			return fmt.Errorf("private compatibility directory %q has permissions %04o; expected no group or other access", path, info.Mode().Perm())
-		}
-		return nil
+		return validatePrivateAccess(path, info)
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("inspect private compatibility path %q: %w", path, err)
 	}
-	if err := os.MkdirAll(path, 0o700); err != nil {
+	if err := createPrivateDirectory(path); err != nil {
 		return fmt.Errorf("create private compatibility directory %q: %w", path, err)
-	}
-	if err := os.Chmod(path, 0o700); err != nil {
-		return fmt.Errorf("secure private compatibility directory %q: %w", path, err)
 	}
 	return nil
 }
