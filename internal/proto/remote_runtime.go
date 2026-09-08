@@ -18,13 +18,14 @@ type UpdateRemoteRuntimeRequest struct {
 
 // RemoteRuntimeCapabilities contains no account, provider configuration or token.
 type RemoteRuntimeCapabilities struct {
-	Protocol         string `json:"protocol"`
-	RuntimeVersion   int    `json:"runtime_version"`
-	Compiler         string `json:"compiler"`
-	HostVersion      string `json:"host_version"`
-	MaxRequestBytes  int    `json:"max_request_bytes"`
-	MaxBundles       int    `json:"max_bundles"`
-	MaxProviders     int    `json:"max_providers"`
-	Principal        string `json:"principal"`
-	WorkspaceSharing string `json:"workspace_sharing"`
+	Protocol              string `json:"protocol"`
+	RuntimeVersion        int    `json:"runtime_version"`
+	Compiler              string `json:"compiler"`
+	HostVersion           string `json:"host_version"`
+	MaxRequestBytes       int    `json:"max_request_bytes"`
+	MaxBundles            int    `json:"max_bundles"`
+	MaxProviders          int    `json:"max_providers"`
+	Principal             string `json:"principal"`
+	WorkspaceSharing      string `json:"workspace_sharing"`
+	DisconnectGraceMillis int64  `json:"disconnect_grace_millis"`
 }

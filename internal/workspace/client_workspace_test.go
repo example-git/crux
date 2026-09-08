@@ -1170,3 +1170,34 @@ func TestClientWorkspace_RecoveryCreateIsBounded(t *testing.T) {
 		t.Fatal("recoverWorkspace blocked on an unresponsive server")
 	}
 }
+
+func TestAuthenticatedServerOwnedRecoveryPreservesRequestedDataRoot(t *testing.T) {
+	for _, root := range []string{"", "/original-data-root"} {
+		t.Run(root, func(t *testing.T) {
+			requests := make(chan proto.CreateWorkspaceRequest, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method != http.MethodPost {
+					writer.WriteHeader(http.StatusNoContent)
+					return
+				}
+				var args proto.CreateWorkspaceRequest
+				require.NoError(t, json.NewDecoder(request.Body).Decode(&args))
+				requests <- args
+				require.NoError(t, json.NewEncoder(writer).Encode(proto.Workspace{ID: "recovered", Path: "/workspace", DataDir: "/resolved/remote/principal", RequestedDataDir: root, Authority: &config.RemoteAuthority{Mode: "server", Principal: strings.Repeat("a", 64)}}))
+			}))
+			defer srv.Close()
+			endpoint, err := url.Parse(srv.URL)
+			require.NoError(t, err)
+			c, err := client.NewClient("/workspace", "tcp", endpoint.Host)
+			require.NoError(t, err)
+			w := NewClientWorkspace(c, proto.Workspace{ID: "old", Path: "/workspace", DataDir: "/resolved/remote/principal", RequestedDataDir: root, Authority: &config.RemoteAuthority{Mode: "server", Principal: strings.Repeat("a", 64)}})
+			defer w.Shutdown()
+			require.NoError(t, w.recoverWorkspace())
+			args := <-requests
+			require.Equal(t, root, args.DataDir)
+			require.Equal(t, "server", args.AuthorityMode)
+			require.Nil(t, args.Runtime)
+			require.Equal(t, "recovered", w.workspaceID())
+		})
+	}
+}

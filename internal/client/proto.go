@@ -116,6 +116,7 @@ func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*prot
 		return nil, errors.New("remote workspace acknowledgement does not match submitted client authority")
 	}
 	if mode == "client" {
+		created.Creation = &proto.Workspace{Path: created.Path, DataDir: created.RequestedDataDir, Debug: created.Debug, YOLO: created.YOLO, Channels: append([]string(nil), created.Channels...), Version: ws.Version}
 		// Private local state is never reconstructed from redacted discovery.
 		data, err := json.Marshal(ws.Runtime)
 		if err != nil {
@@ -244,12 +245,10 @@ func (c *Client) SubscribeEvents(ctx context.Context, id string) (<-chan any, er
 					return
 				}
 				slog.Error("Reading from events stream", "error", err)
-				select {
-				case <-time.After(time.Second * 2):
-				case <-ctx.Done():
-					return
-				}
-				continue
+				// The response body is terminal after a transport read error.
+				// Close this subscription so the workspace reconnect loop can
+				// open a new request and recover a lost workspace if needed.
+				return
 			}
 			line = bytes.TrimSpace(line)
 			if len(line) == 0 {

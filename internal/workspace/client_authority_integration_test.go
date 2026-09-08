@@ -1,6 +1,7 @@
 package workspace_test
 
 import (
+	tea "charm.land/bubbletea/v2"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -79,11 +80,16 @@ func TestClientAuthorityTransactionsThroughTLS(t *testing.T) {
 	c, err := client.NewAuthenticatedClient(t.TempDir(), connection.Connection{Address: "tcp://" + strings.TrimPrefix(hs.URL, "https://"), ServerCertificate: serverCode, Client: identity})
 	require.NoError(t, err)
 	c.SetLocalRuntimeStore(store)
-	created, err := c.CreateWorkspace(t.Context(), proto.Workspace{Path: t.TempDir(), AuthorityMode: "client", Runtime: &proposal})
+	remoteDataRoot := t.TempDir()
+	created, err := c.CreateWorkspace(t.Context(), proto.Workspace{Path: t.TempDir(), DataDir: remoteDataRoot, AuthorityMode: "client", Runtime: &proposal})
 	require.NoError(t, err)
 	w := workspace.NewClientWorkspace(c, *created)
 	t.Cleanup(w.Shutdown)
 	require.NotNil(t, created.Runtime)
+	require.Equal(t, remoteDataRoot, created.RequestedDataDir)
+	capabilities, err := c.NegotiateRemoteRuntime(t.Context())
+	require.NoError(t, err)
+	require.EqualValues(t, 10000, capabilities.DisconnectGraceMillis)
 	encoded, err := json.Marshal(created)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "synthetic-first", "retained private state must stay out of discovery")
@@ -234,5 +240,48 @@ assertNoChange:
 	localAccount, err := accounts.Active(t.Context(), registration.AccountNamespace)
 	require.NoError(t, err)
 	require.Nil(t, localAccount)
+
+	// Persist a session before actual TLS stream loss. The server's resolved
+	// certificate directory must not be treated as a fresh data root on recovery.
+	savedSession, err := w.CreateSession(t.Context(), "Retained client history")
+	require.NoError(t, err)
+	// A public config refresh drops the private SDK fields. Recovery must still
+	// use the authority controller, not the redacted cached Workspace.
+	publicEvents := make(chan any, 1)
+	publicEvents <- pubsub.Event[proto.ConfigChanged]{Payload: proto.ConfigChanged{WorkspaceID: created.ID}}
+	close(publicEvents)
+	w.ConsumeEventsForTest(publicEvents, nil)
+	require.NoError(t, store.SetProviderAPIKey(config.ScopeGlobal, additionalOwner.ProviderID, config.ProviderAPIKeyCredential{Owner: additionalOwner, APIKey: "synthetic-recollected-after-loss"}))
+	t.Cleanup(workspace.SetSSEBackoffForTest(5*time.Millisecond, 25*time.Millisecond))
+	done := make(chan struct{})
+	go func() { w.RunSubscriptionForTest(func(tea.Msg) {}); close(done) }()
+	require.Eventually(t, func() bool { return received.ConnectedClients() == 1 }, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, c.DeleteWorkspace(t.Context(), created.ID))
+	hs.CloseClientConnections()
+	require.Eventually(t, func() bool { return w.WorkspaceIDForTest() != created.ID }, 10*time.Second, 20*time.Millisecond)
+	recovered, err := c.GetWorkspace(t.Context(), w.WorkspaceIDForTest())
+	require.NoError(t, err)
+	require.Equal(t, created.DataDir, recovered.DataDir)
+	require.Equal(t, remoteDataRoot, recovered.RequestedDataDir)
+	recoveredReceiver, err := s.Backend().GetWorkspace(recovered.ID)
+	require.NoError(t, err)
+	recoveredProvider, ok := recoveredReceiver.Cfg.Config().Providers.Get(additionalOwner.ProviderID)
+	require.True(t, ok)
+	require.Equal(t, "synthetic-recollected-after-loss", recoveredProvider.APIKey)
+	history, err := w.ListSessions(t.Context())
+	require.NoError(t, err)
+	foundSession := false
+	for _, entry := range history {
+		if entry.ID == savedSession.ID {
+			foundSession = true
+		}
+	}
+	require.True(t, foundSession, "recovery must restore the same history store")
+	w.Shutdown()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("recovery subscription did not stop")
+	}
 
 }
