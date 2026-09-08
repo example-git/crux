@@ -45,8 +45,16 @@ func inferenceHTTPClient(operation *providertransport.Operation, validate provid
 }
 
 func NewProvider(baseURL string, token TokenSource, headers map[string]string, operation *providertransport.Operation, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
+	return NewProviderWithProjectSource(baseURL, token, headers, operation, validate, Project)
+}
+
+// NewProviderWithProjectSource binds project metadata to the caller's authority.
+func NewProviderWithProjectSource(baseURL string, token TokenSource, headers map[string]string, operation *providertransport.Operation, validate providertransport.OwnerValidator, project func(context.Context, string) string) (fantasy.Provider, error) {
 	if validate == nil {
 		return nil, fmt.Errorf("Gemini provider owner validator is unavailable")
+	}
+	if project == nil {
+		return nil, fmt.Errorf("Gemini project source is unavailable")
 	}
 	if baseURL == "" {
 		baseURL = APIEndpoint
@@ -59,7 +67,7 @@ func NewProvider(baseURL string, token TokenSource, headers map[string]string, o
 		antigravity.WithUserAgent(UserAgent()),
 		antigravity.WithTokenSource(token),
 		antigravity.WithProjectLoader(func(ctx context.Context, token string) string {
-			return Project(providertransport.ContextWithOwnerValidator(ctx, validate), token)
+			return project(providertransport.ContextWithOwnerValidator(ctx, validate), token)
 		}),
 	}
 	if operation != nil {

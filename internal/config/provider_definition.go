@@ -37,7 +37,7 @@ func (snapshot RuntimeSnapshot) ClientProviderDefinition(id string) (RemoteProvi
 }
 
 // Raw definitions are compared while account/config locks are held. They use
-// immutable config/scan data only and never acquire ConfigStore.writeMu.
+// immutable config/scan/environment data only and never acquire ConfigStore.writeMu.
 func (snapshot RuntimeSnapshot) clientProviderDefinitionRaw(id string) (RemoteProviderDefinition, providerregistry.RegistrationOwner, error) {
 	var zero RemoteProviderDefinition
 	var noOwner providerregistry.RegistrationOwner
@@ -57,6 +57,10 @@ func (snapshot RuntimeSnapshot) clientProviderDefinitionRaw(id string) (RemotePr
 		return zero, noOwner, errors.New("selected client provider has no active exact owner")
 	}
 	definition := RemoteProviderDefinition{Config: cloneProviderConfig(provider)}
+	if owner.Construction == providerregistry.ConstructionGeminiAntigravity {
+		project := snapshot.Getenv("GEMINI_PROJECT_ID")
+		definition.GeminiProjectID = &project
+	}
 	if provider.Plugin != nil {
 		if cfg.providerScan == nil {
 			return zero, noOwner, errors.New("selected provider scan is unavailable")
