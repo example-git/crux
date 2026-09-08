@@ -1454,6 +1454,12 @@ func (c *coordinator) buildAgentModels(ctx context.Context, agent config.Agent, 
 }
 
 func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent config.Agent, isSubAgent bool, snapshot config.RuntimeSnapshot) (Model, Model, error) {
+	return c.buildAgentModelsWithOptions(ctx, agent, isSubAgent, snapshot, snapshot.Config().Options)
+}
+
+// Refresh may replace credentials while retaining the initiating call's controls.
+// Keep that explicit override separate from the acknowledged authority snapshot.
+func (c *coordinator) buildAgentModelsWithOptions(ctx context.Context, agent config.Agent, isSubAgent bool, snapshot config.RuntimeSnapshot, options *config.Options) (Model, Model, error) {
 	cfg := snapshot.Config()
 	var primaryModelCfg config.SelectedModel
 	if agent.PrimaryModelOverride != nil {
@@ -1477,7 +1483,7 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 	if !ok {
 		return Model{}, Model{}, errLargeModelProviderNotConfigured
 	}
-	primaryProvider, err := c.buildProvider(snapshot, primaryProviderCfg, primaryModelCfg, isSubAgent)
+	primaryProvider, err := c.buildProviderWithOptions(snapshot, primaryProviderCfg, primaryModelCfg, isSubAgent, options)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
@@ -1486,7 +1492,7 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 	if !ok {
 		return Model{}, Model{}, errSmallModelProviderNotConfigured
 	}
-	smallProvider, err := c.buildProvider(snapshot, smallProviderCfg, smallModelCfg, true)
+	smallProvider, err := c.buildProviderWithOptions(snapshot, smallProviderCfg, smallModelCfg, true, options)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
@@ -1574,6 +1580,7 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 
 	primary := Model{
 		isSubAgent:          isSubAgent,
+		runtimeOptions:      options,
 		Model:               primaryLanguageModel,
 		CatalogModel:        *primaryCatalogModel,
 		ModelCfg:            primaryModelCfg,
@@ -1607,6 +1614,7 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 	)
 	small := Model{
 		isSubAgent:          true,
+		runtimeOptions:      options,
 		Model:               smallLanguageModel,
 		CatalogModel:        *smallCatalogModel,
 		ModelCfg:            smallModelCfg,
@@ -2054,6 +2062,10 @@ func openAICompatExtraBody(providerCfg config.ProviderConfig) map[string]any {
 }
 
 func (c *coordinator) buildProvider(snapshot config.RuntimeSnapshot, providerCfg config.ProviderConfig, selectedModel config.SelectedModel, isSubAgent bool) (fantasy.Provider, error) {
+	return c.buildProviderWithOptions(snapshot, providerCfg, selectedModel, isSubAgent, snapshot.Config().Options)
+}
+
+func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, providerCfg config.ProviderConfig, selectedModel config.SelectedModel, isSubAgent bool, options *config.Options) (fantasy.Provider, error) {
 	if unavailable := snapshot.ClientProviderUnavailable(selectedModel.Provider); unavailable != nil {
 		return unavailableClientProvider{id: selectedModel.Provider, err: unavailable}, nil
 	}
@@ -2150,7 +2162,7 @@ func (c *coordinator) buildProvider(snapshot config.RuntimeSnapshot, providerCfg
 			if err := registration.Operation.ValidateSelection(string(providerregistry.ConstructionOpenAIResponses), "sse"); err != nil {
 				return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
 			}
-			provider, err := c.buildOpenaiProvider(debug, cfg.Options, registration, baseURL, apiKey, headers, values, validateOwner)
+			provider, err := c.buildOpenaiProvider(debug, options, registration, baseURL, apiKey, headers, values, validateOwner)
 			if err != nil {
 				return nil, err
 			}
@@ -2166,7 +2178,7 @@ func (c *coordinator) buildProvider(snapshot config.RuntimeSnapshot, providerCfg
 			if err := registration.Operation.ValidateSelection(string(registration.Construction), "http-json", "sse"); err != nil {
 				return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
 			}
-			return c.buildDeclarativeProvider(debug, cfg.Options, registration, baseURL, headers, values, validateOwner)
+			return c.buildDeclarativeProvider(debug, options, registration, baseURL, headers, values, validateOwner)
 		default:
 			return nil, fmt.Errorf("provider %s uses unsupported construction %q", providerCfg.ID, registration.Construction)
 		}

@@ -34,7 +34,7 @@ func (c *coordinator) bindModelAuthentication(snapshot config.RuntimeSnapshot, a
 			return nil, errors.New("client refresh returned no captured model")
 		}
 		selected := captured.ModelCfg
-		model, _, err := c.buildAgentModelsWithSnapshot(ctx, config.Agent{PrimaryModelOverride: &selected}, captured.isSubAgent, c.cfg.RuntimeSnapshot())
+		model, _, err := c.buildAgentModelsWithOptions(ctx, config.Agent{PrimaryModelOverride: &selected}, captured.isSubAgent, c.cfg.RuntimeSnapshot(), captured.runtimeOptions)
 		return model.Model, err
 	})
 	return admitted
@@ -52,7 +52,7 @@ func (c *coordinator) refreshAdmittedClientModel(ctx context.Context, admitted c
 	// Build from the acknowledged snapshot and the operation's selected model.
 	// Reading the current agent here could adopt a later user account choice.
 	selected := target.admitted.ModelCfg
-	model, _, err := c.buildAgentModelsWithSnapshot(ctx, config.Agent{PrimaryModelOverride: &selected}, target.admitted.isSubAgent, snapshot)
+	model, _, err := c.buildAgentModelsWithOptions(ctx, config.Agent{PrimaryModelOverride: &selected}, target.admitted.isSubAgent, snapshot, target.admitted.runtimeOptions)
 	if err != nil {
 		return err
 	}
@@ -61,6 +61,11 @@ func (c *coordinator) refreshAdmittedClientModel(ctx context.Context, admitted c
 }
 
 func (c *coordinator) refreshAdmittedRuntime(ctx context.Context, admitted InstalledRuntime) (InstalledRuntime, error) {
+	// Native models refresh inside the captured call. Refreshing here as well
+	// would replace its controls and give a rejected fresh token another exchange.
+	if owner, ok := admitted.LargeModel.Model.(interface{ HandlesAuthenticationRefresh() bool }); ok && owner.HandlesAuthenticationRefresh() {
+		return admitted, nil
+	}
 	provider, ok := admitted.Snapshot.Config().Providers.Get(admitted.LargeModel.ModelCfg.Provider)
 	if !ok {
 		return admitted, errModelProviderNotConfigured

@@ -180,6 +180,7 @@ type SessionAgent interface {
 
 type Model struct {
 	isSubAgent          bool
+	runtimeOptions      *config.Options // Immutable options captured when this model was admitted.
 	Model               fantasy.LanguageModel
 	CatalogModel        catalog.Model
 	ModelCfg            config.SelectedModel
