@@ -1,7 +1,9 @@
 package providerplugin
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -29,6 +31,7 @@ type validatedBundle struct {
 	image      *manifest.ImageManifest
 	files      map[string]bundleFile
 	staticText map[string]string
+	rawFiles   map[string][]byte
 	digest     string
 }
 
@@ -107,6 +110,34 @@ func (b validatedBundle) capabilityIDs() []string {
 }
 
 func validateSnapshot(root string, snapshot snapshotResult) (validatedBundle, []Diagnostic) {
+	expected := make(map[string]bundleFile, len(snapshot.Files))
+	for _, file := range snapshot.Files {
+		expected[file.Path] = file
+	}
+	captured := make(map[string][]byte, len(snapshot.Files))
+	value, diagnostics := validateBundleFiles(snapshot, func(path string, limit int64) ([]byte, error) {
+		data, err := readBoundedRegularFile(filepath.Join(root, filepath.FromSlash(path)), limit)
+		if err != nil {
+			return nil, err
+		}
+		entry, ok := expected[path]
+		digest := sha256.Sum256(data)
+		if !ok || int64(len(data)) != entry.Size || hex.EncodeToString(digest[:]) != entry.SHA256 {
+			return nil, fmt.Errorf("bundle content changed after snapshot")
+		}
+		captured[path] = data
+		return data, nil
+	})
+	if len(diagnostics) == 0 {
+		value.rawFiles = captured
+	}
+	return value, diagnostics
+}
+
+// validateBundleFiles is shared by installed snapshots and detached received
+// bundles. The reader owns byte/digest validation; this function owns the exact
+// manifest, branding, declarations and static-text semantics.
+func validateBundleFiles(snapshot snapshotResult, read func(string, int64) ([]byte, error)) (validatedBundle, []Diagnostic) {
 	files := make(map[string]bundleFile, len(snapshot.Files))
 	for _, file := range snapshot.Files {
 		files[file.Path] = file
@@ -118,7 +149,7 @@ func validateSnapshot(root string, snapshot snapshotResult) (validatedBundle, []
 	if manifestFile.Size > manifest.MaxManifestBytes {
 		return validatedBundle{}, []Diagnostic{safeDiagnostic("manifest-oversized", fmt.Sprintf("manifest.json exceeds %d bytes", manifest.MaxManifestBytes))}
 	}
-	data, err := readBoundedRegularFile(filepath.Join(root, manifestFilename), manifest.MaxManifestBytes)
+	data, err := read(manifestFilename, manifest.MaxManifestBytes)
 	if err != nil {
 		return validatedBundle{}, []Diagnostic{safeDiagnostic("manifest-read-failed", err.Error())}
 	}
@@ -151,7 +182,7 @@ func validateSnapshot(root string, snapshot snapshotResult) (validatedBundle, []
 				if file.Size > MaxStaticTextBytes {
 					return validatedBundle{}, []Diagnostic{safeDiagnostic("static-text-oversized", fmt.Sprintf("declared static text %q exceeds %d bytes", path, MaxStaticTextBytes))}
 				}
-				data, err := readBoundedRegularFile(filepath.Join(root, filepath.FromSlash(path)), MaxStaticTextBytes)
+				data, err := read(path, MaxStaticTextBytes)
 				if err != nil || !utf8.Valid(data) {
 					return validatedBundle{}, []Diagnostic{safeDiagnostic("static-text-invalid", fmt.Sprintf("declared static text %q must be bounded UTF-8", path))}
 				}
@@ -174,7 +205,7 @@ func validateSnapshot(root string, snapshot snapshotResult) (validatedBundle, []
 		return validatedBundle{}, []Diagnostic{safeDiagnostic("manifest-invalid", fmt.Sprintf("unsupported plugin type %q", pluginType))}
 	}
 	if _, ok := files["branding.json"]; ok && (validated.manifest != nil || validated.preset != nil) {
-		brandingData, err := readBoundedRegularFile(filepath.Join(root, "branding.json"), manifest.MaxBrandingBytes)
+		brandingData, err := read("branding.json", manifest.MaxBrandingBytes)
 		if err != nil {
 			return validatedBundle{}, []Diagnostic{safeDiagnostic("branding-invalid", fmt.Sprintf("read branding.json: %v", err))}
 		}
