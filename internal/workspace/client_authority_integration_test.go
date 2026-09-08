@@ -4,8 +4,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,9 +28,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type refreshFixtureTransport func(*http.Request) (*http.Response, error)
+
+func (f refreshFixtureTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestClientAuthorityTransactionsThroughTLS(t *testing.T) {
 	xdgIsolate(t)
 	t.Setenv("AI_CLI_DIR", t.TempDir())
+	t.Setenv("CODEX_OAUTH_CLIENT_ID", "synthetic-client-id")
+	var exchanges atomic.Int32
+	tokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		require.Equal(t, "refresh_token", r.Form.Get("grant_type"))
+		require.Equal(t, "synthetic-second-refresh", r.Form.Get("refresh_token"))
+		exchanges.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"synthetic-rotated-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}`))
+	}))
+	t.Cleanup(tokenEndpoint.Close)
+	tokenURL, err := url.Parse(tokenEndpoint.URL)
+	require.NoError(t, err)
+	priorHTTPClient := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: refreshFixtureTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "auth.openai.com" || r.URL.Path != "/oauth/token" {
+			return nil, fmt.Errorf("unexpected HTTP destination in isolated refresh fixture: %s", r.URL.Host)
+		}
+		clone := r.Clone(r.Context())
+		clone.URL.Scheme, clone.URL.Host = tokenURL.Scheme, tokenURL.Host
+		clone.Host = tokenURL.Host
+		return tokenEndpoint.Client().Transport.RoundTrip(clone)
+	})}
+	t.Cleanup(func() { http.DefaultClient = priorHTTPClient })
 	serverCode, err := connection.EnsureServerIdentity(t.Context())
 	require.NoError(t, err)
 	identity, err := connection.NewClientIdentity("transaction-client")
@@ -228,6 +258,26 @@ assertNoChange:
 		require.Equal(t, firstAccount.ExpiresAt, entry.ExpiresAt)
 		require.JSONEq(t, string(firstAccount.Raw), string(entry.Raw))
 	}
+	beforeRefresh := puts.Load()
+	beforeRevision := oauthReceiver.Cfg.RemoteAuthority().Revision
+	loseAck.Store(true)
+	require.NoError(t, oauthWorkspace.RefreshOAuthToken(t.Context(), config.ScopeGlobal, registration.Owner()))
+	require.EqualValues(t, 1, exchanges.Load())
+	require.Equal(t, beforeRefresh+1, puts.Load())
+	require.Equal(t, beforeRevision+1, oauthReceiver.Cfg.RemoteAuthority().Revision)
+	rotated, ok := oauthReceiver.Cfg.EphemeralAccount(registration.Owner())
+	require.True(t, ok)
+	require.Equal(t, secondAccount.ID, rotated.ID)
+	require.Equal(t, "synthetic-rotated-refresh", rotated.RefreshToken)
+	require.JSONEq(t, string(secondAccount.Raw), string(rotated.Raw))
+	persisted, err := accounts.Active(t.Context(), registration.AccountNamespace)
+	require.NoError(t, err)
+	require.Equal(t, accounts.CredentialID(*rotated), accounts.CredentialID(*persisted))
+	localProvider, _ := oauthStore.Config().Providers.Get("codex")
+	require.Equal(t, rotated.Token(), localProvider.OAuthToken)
+	overlay, err := os.ReadFile(filepath.Join(oauthData, "crux.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(overlay), "synthetic-rotated-refresh")
 	loggedOut, ok := dialog.LogoutCmd(com, dialog.ActionLogout{Owner: registration.Owner(), AccountNamespace: registration.AccountNamespace, Label: "Codex"})().(dialog.LogoutDoneMsg)
 	require.True(t, ok)
 	require.NoError(t, loggedOut.Err)

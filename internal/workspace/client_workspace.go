@@ -718,6 +718,17 @@ func (w *ClientWorkspace) ImportCopilot() (*oauth.Token, bool) {
 }
 
 func (w *ClientWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Scope, owner providerregistry.RegistrationOwner) error {
+	if w.clientOwned() {
+		return w.mutateClientAuthority(ctx, func(store *config.ConfigStore) error {
+			for _, binding := range w.authority.accepted.Credentials {
+				if binding.Owner == owner && !binding.Unavailable && binding.Account != nil {
+					_, err := store.RefreshSelectedOAuthAccount(ctx, scope, owner, *binding.Account, true)
+					return err
+				}
+			}
+			return errors.New("accepted client runtime has no selected account for this provider")
+		})
+	}
 	err := w.client.RefreshOAuthToken(ctx, w.workspaceID(), scope, owner)
 	if err == nil {
 		w.refreshWorkspace()

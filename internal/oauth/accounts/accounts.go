@@ -247,8 +247,11 @@ func FromToken(id, displayName string, token *oauth.Token, prev *Entry) Entry {
 
 // store is the on-disk schema.
 type store struct {
-	Active   map[string]string  `json:"active"`
-	Accounts map[string][]Entry `json:"accounts"`
+	Active     map[string]string                `json:"active"`
+	Accounts   map[string][]Entry               `json:"accounts"`
+	Rotations  map[string]map[string][]rotation `json:"rotations,omitempty"`
+	Mutations  map[string]map[string]uint64     `json:"mutations,omitempty"`
+	Selections map[string]uint64                `json:"selections,omitempty"`
 }
 
 func emptyStore() *store {
@@ -414,6 +417,9 @@ func SaveForOwner(ctx context.Context, provider string, entry Entry, validate Va
 func save(ctx context.Context, provider string, entry Entry, validate Validator) error {
 	registerSecrets(entry)
 	return mutateStore(ctx, validate, func(s *store) error {
+		delete(s.Rotations[provider], entry.ID)
+		s.markMutation(provider, entry.ID)
+		s.markSelection(provider, entry.ID)
 		s.Accounts[provider] = upsert(s.Accounts[provider], entry)
 		s.Active[provider] = entry.ID
 		return nil
@@ -436,6 +442,8 @@ func SaveWithoutActivatingForOwner(ctx context.Context, provider string, entry E
 func saveWithoutActivating(ctx context.Context, provider string, entry Entry, validate Validator) error {
 	registerSecrets(entry)
 	return mutateStore(ctx, validate, func(s *store) error {
+		delete(s.Rotations[provider], entry.ID)
+		s.markMutation(provider, entry.ID)
 		s.Accounts[provider] = upsert(s.Accounts[provider], entry)
 		return nil
 	})
@@ -532,6 +540,7 @@ func setActive(ctx context.Context, provider, id string, validate Validator) err
 		if find(s.Accounts[provider], id) == nil {
 			return fmt.Errorf("account %q not found for provider %q", id, provider)
 		}
+		s.markSelection(provider, id)
 		s.Active[provider] = id
 		return nil
 	})
@@ -551,6 +560,11 @@ func RemoveProviderForOwner(ctx context.Context, provider string, validate Valid
 
 func removeProvider(ctx context.Context, provider string, validate Validator) error {
 	return mutateStore(ctx, validate, func(s *store) error {
+		for _, entry := range s.Accounts[provider] {
+			s.markMutation(provider, entry.ID)
+		}
+		s.markSelection(provider, "")
+		delete(s.Rotations, provider)
 		delete(s.Accounts, provider)
 		delete(s.Active, provider)
 		return nil
@@ -572,6 +586,8 @@ func RemoveForOwner(ctx context.Context, provider, id string, validate Validator
 
 func remove(ctx context.Context, provider, id string, validate Validator) error {
 	return mutateStore(ctx, validate, func(s *store) error {
+		delete(s.Rotations[provider], id)
+		s.markMutation(provider, id)
 		list := s.Accounts[provider]
 		filtered := list[:0:0]
 		for _, e := range list {
@@ -581,6 +597,7 @@ func remove(ctx context.Context, provider, id string, validate Validator) error 
 		}
 		s.Accounts[provider] = filtered
 		if s.Active[provider] == id {
+			s.markSelection(provider, "")
 			if len(filtered) > 0 {
 				s.Active[provider] = filtered[0].ID
 			} else {
