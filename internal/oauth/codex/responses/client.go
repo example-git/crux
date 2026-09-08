@@ -54,6 +54,7 @@ type client struct {
 	version        string
 	headers        map[string]string
 	sessionStore   *SessionStore
+	runtimeScope   string
 	ownerValidator func() error
 	connectTimeout time.Duration
 	requestTimeout time.Duration
@@ -412,9 +413,9 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 		}
 		accountID := c.chatGPTAccountID(token)
 		account := accountDiscriminator(accountID, token)
-		compatibilityID := compatibilityIdentity(provider, account, conversationID, purpose)
+		compatibilityID := compatibilityIdentity(provider, account, conversationID, purpose, c.runtimeScope)
 		if conversationID != "" {
-			logical.PromptCacheKey = promptCacheKey(provider, account, conversationID, purpose)
+			logical.PromptCacheKey = promptCacheKey(provider, account, conversationID, purpose, c.runtimeScope)
 		}
 		logical.ClientMetadata = requestClientMetadata(compatibilityID, logical.RequestKind)
 		requestBudget := c.effectiveRequestBudget()
@@ -428,7 +429,7 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 		reusable := c.sessionStore != nil && conversationID != ""
 		state := &sessionState{}
 		if reusable {
-			state = c.sessionStore.state(newTransportStateKey(c.url, provider, account, logical.Model, conversationID, purpose, c.transportIdentity()))
+			state = c.sessionStore.state(newTransportStateKey(c.url, provider, account, logical.Model, conversationID, purpose, c.transportIdentity(), c.runtimeScope))
 		}
 		if err := lockSessionState(ctx, state); err != nil {
 			yield(nil, err)

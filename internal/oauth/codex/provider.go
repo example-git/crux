@@ -21,7 +21,7 @@ type AccountIDSource = responses.AccountIDSource
 // NewProvider builds the Codex fantasy provider: a native Responses-over-
 // WebSocket adapter pointed at the ChatGPT Codex endpoint, presenting the
 // Codex CLI identity and authenticating with the given OAuth token source.
-func NewProvider(baseURL string, token TokenSource, accountID AccountIDSource, headers map[string]string, sessionStore *responses.SessionStore, operation, compactionOperation *providertransport.Operation, images *manifest.ImagePolicy, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
+func NewProvider(baseURL string, token TokenSource, accountID AccountIDSource, headers map[string]string, sessionStore *responses.SessionStore, operation, compactionOperation *providertransport.Operation, images *manifest.ImagePolicy, validate providertransport.OwnerValidator, runtimeScope ...string) (fantasy.Provider, error) {
 	if validate == nil {
 		return nil, fmt.Errorf("Codex provider owner validator is unavailable")
 	}
@@ -42,6 +42,12 @@ func NewProvider(baseURL string, token TokenSource, accountID AccountIDSource, h
 		responses.WithSessionStore(sessionStore),
 		responses.WithOwnerValidator(validate),
 		responses.WithImagePolicy(images),
+	}
+	if len(runtimeScope) > 1 {
+		return nil, fmt.Errorf("Codex provider accepts one runtime scope")
+	}
+	if len(runtimeScope) == 1 {
+		opts = append(opts, responses.WithRuntimeScope(runtimeScope[0]))
 	}
 	if operation != nil {
 		opts = append(opts,

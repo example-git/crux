@@ -145,6 +145,7 @@ func (g *languageModel) clearCompactionChain(conversationID string) {
 		conversationID,
 		"conversation",
 		g.client.transportIdentity(),
+		g.client.runtimeScope,
 	))
 }
 
