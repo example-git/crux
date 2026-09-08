@@ -1754,11 +1754,16 @@ func nativeResponsesContinuationOwner(snapshot config.RuntimeSnapshot, registrat
 		Owner      providerregistry.RegistrationOwner `json:"owner"`
 		ProviderID string                             `json:"provider_id"`
 		Account    string                             `json:"account"`
+		Client     *config.RemoteAuthority            `json:"client,omitempty"`
 	}{
 		Endpoint:   baseURL,
 		Owner:      owner,
 		ProviderID: providerID,
 		Account:    account,
+		// The accepted digest binds exact bundle bytes, config and credential
+		// generation. An old captured runtime keeps its own continuation chain
+		// after replacement; a new principal/revision/content cannot adopt it.
+		Client: snapshot.RemoteAuthority(),
 	})
 	if err != nil {
 		return ""
