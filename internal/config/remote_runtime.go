@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"path/filepath"
 	"reflect"
 	"slices"
 
@@ -19,12 +20,30 @@ import (
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/redact"
 )
 
 var ErrRemoteRuntimeRevision = errors.New("client runtime revision changed")
+var ErrClientRuntimeManaged = errors.New("this runtime is owned by the connected client; update or refresh it on that client and submit the next runtime revision")
+
+// RegisterRemoteRuntimeSecrets runs only after admission selects client mode.
+// Redaction outlives the workspace to protect delayed asynchronous log entries.
+func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
+	if s.RemoteAuthority() == nil {
+		return
+	}
+	registerConfigSecrets(s.Config())
+	redact.RegisterJSONValue(s.RuntimeSnapshot().clientRuntime.proposal.CredentialEnvironment)
+	for _, binding := range s.RuntimeSnapshot().clientRuntime.proposal.Credentials {
+		if binding.Account != nil {
+			registerAccountSecrets(*binding.Account)
+		}
+	}
+}
 
 const (
 	RemoteRuntimeVersion      = 1
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v1"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -35,14 +54,15 @@ const (
 // Configurations contain resolved client values; only Credentials carries the
 // provider's API/OAuth account token. Bundles retain original bytes and digests.
 type RemoteRuntimeProposal struct {
-	Version     int                                 `json:"version"`
-	Revision    uint64                              `json:"revision"`
-	Digest      string                              `json:"digest"`
-	Bundles     []providerplugin.TransportBundle    `json:"bundles"`
-	Providers   []RemoteProviderDefinition          `json:"providers"`
-	Models      map[SelectedModelType]SelectedModel `json:"models"`
-	Credentials []RemoteCredentialBinding           `json:"credentials"`
-	Images      *ImageConfiguration                 `json:"images,omitempty"`
+	Version               int                                 `json:"version"`
+	Revision              uint64                              `json:"revision"`
+	Digest                string                              `json:"digest"`
+	Bundles               []providerplugin.TransportBundle    `json:"bundles"`
+	Providers             []RemoteProviderDefinition          `json:"providers"`
+	Models                map[SelectedModelType]SelectedModel `json:"models"`
+	Credentials           []RemoteCredentialBinding           `json:"credentials"`
+	Images                *ImageConfiguration                 `json:"images,omitempty"`
+	CredentialEnvironment map[string]string                   `json:"credential_environment,omitempty"`
 }
 
 type RemoteProviderDefinition struct {
@@ -182,6 +202,7 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 		return nil, err
 	}
 	registerConfigSecrets(next)
+	redact.RegisterJSONValue(candidate.clientRuntime.proposal.CredentialEnvironment)
 	for _, account := range candidate.ephemeralAccounts {
 		registerAccountSecrets(account.Entry)
 	}
@@ -191,6 +212,7 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 	s.knownProviders = candidate.knownProviders
 	s.ephemeralAccounts = candidate.ephemeralAccounts
 	s.clientRuntime = candidate.clientRuntime
+	s.effectiveEnvironment = candidate.effectiveEnvironment
 	s.resolver = candidate.resolver
 	s.configMu.Unlock()
 	if runtimeCandidate.Commit != nil {
@@ -399,6 +421,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	if err := cfg.setDefaultsFromEnvironment(workingDir, dataDir, baseEnvironment); err != nil {
 		return nil, errors.New("client runtime defaults are invalid")
 	}
+	cfg.Tools.CodebaseSearch.StoreDirectory = filepath.Join(cfg.Options.DataDirectory, "codebase-index")
 	cfg.Options.Debug = debug
 	cfg.captureExplicitModels()
 	cfg.bindProviderScan(scan)
@@ -447,11 +470,20 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	if err := cfg.Images.Validate(); err != nil {
 		return nil, errors.New("client image configuration is invalid")
 	}
+	declaredEnvironment := map[string]bool{}
 	if cfg.Images != nil {
 		checkImage := func(owner providerplugin.ImageOwner) error {
 			bundle, ok := bundles[owner.Digest]
 			if !ok || bundle.Type() != manifest.PluginTypeImageProvider || bundle.ID() != owner.PluginID || bundle.Version() != owner.Version || bundle.ProviderID() != owner.Backend {
 				return errors.New("client image selection requires its exact received bundle")
+			}
+			for _, credential := range bundle.Image().Credentials {
+				if credential.Source == "environment" {
+					declaredEnvironment[credential.Environment] = true
+					if proposal.CredentialEnvironment[credential.Environment] == "" {
+						return errors.New("selected client image environment credential is missing")
+					}
+				}
 			}
 			return nil
 		}
@@ -470,6 +502,14 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 					return nil, errors.New("client image credential requires its exact received provider binding")
 				}
 			}
+		}
+	}
+	if len(proposal.CredentialEnvironment) > 256 {
+		return nil, errors.New("too many client image environment credentials")
+	}
+	for name, value := range proposal.CredentialEnvironment {
+		if !declaredEnvironment[name] || len(value) > 1<<20 {
+			return nil, errors.New("undeclared or oversized client image environment credential")
 		}
 	}
 	if len(cfg.Models) == 0 {
@@ -503,5 +543,5 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		}
 	}
 	cfg.SetupAgents()
-	return &ConfigStore{config: cfg, workingDir: workingDir, baseEnvironment: cloneEnvironment(baseEnvironment), effectiveEnvironment: cloneEnvironment(baseEnvironment), resolver: IdentityResolver(), providerRegistry: registry, knownProviders: cloneProviderCatalog(scan.Providers), ephemeralAccounts: forwarded, clientRuntime: &clientRuntimeState{authority: authority, proposal: proposal, bundles: bundles}}, nil
+	return &ConfigStore{config: cfg, workingDir: workingDir, baseEnvironment: cloneEnvironment(baseEnvironment), effectiveEnvironment: env.NewFromMap(maps.Clone(proposal.CredentialEnvironment)), resolver: IdentityResolver(), providerRegistry: registry, knownProviders: cloneProviderCatalog(scan.Providers), ephemeralAccounts: forwarded, clientRuntime: &clientRuntimeState{authority: authority, proposal: proposal, bundles: bundles}}, nil
 }

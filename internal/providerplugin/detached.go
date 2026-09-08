@@ -11,6 +11,7 @@ import (
 
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"golang.org/x/mod/semver"
 )
 
 // TransportBundle carries private declarative bytes, not installation paths or
@@ -35,6 +36,28 @@ func (b DetachedBundle) ProviderID() string { return b.value.providerID() }
 func (b DetachedBundle) Version() string    { return b.value.version() }
 func (b DetachedBundle) Type() string       { return b.value.pluginType }
 func (b DetachedBundle) Digest() string     { return b.value.digest }
+
+// ValidateHostVersion applies a negotiated receiver release constraint before
+// private state is encoded. Protocol/compiler negotiation covers the host API
+// and declarative feature set; the receiver independently repeats validation.
+func (b DetachedBundle) ValidateHostVersion(host string) error {
+	var compatibility manifest.Compatibility
+	switch {
+	case b.value.manifest != nil:
+		compatibility = b.value.manifest.Compatibility
+	case b.value.preset != nil:
+		compatibility = b.value.preset.Compatibility
+	case b.value.image != nil:
+		compatibility = b.value.image.Compatibility
+	}
+	if bounds := compatibility.HostVersion; bounds != nil {
+		host = "v" + strings.TrimPrefix(host, "v")
+		if !semver.IsValid(host) || bounds.Min != "" && semver.Compare(host, "v"+bounds.Min) < 0 || bounds.Max != "" && semver.Compare(host, "v"+bounds.Max) > 0 {
+			return errors.New("bundle is incompatible with the negotiated remote host version")
+		}
+	}
+	return nil
+}
 
 func (b DetachedBundle) Catalog() (catalog.Provider, error) {
 	if b.value.manifest != nil {

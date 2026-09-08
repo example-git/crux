@@ -12,7 +12,6 @@ import (
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/config"
-	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
@@ -114,40 +113,18 @@ func TestWorkspaceResponsesRejectMismatchedProviderOwners(t *testing.T) {
 	require.ErrorContains(t, err, "mismatched owner")
 }
 
-func TestCreateWorkspaceMarksForwardedProviderStateAsEphemeral(t *testing.T) {
-	var received proto.Workspace
+func TestCreateWorkspaceRejectsLegacyForwardingWithoutTransmission(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		require.Equal(t, "1", request.Header.Get(cruxlog.EphemeralStateHeader))
-		require.NoError(t, json.NewDecoder(request.Body).Decode(&received))
-		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"id":"workspace"}`))
+		t.Error("legacy private state must not be transmitted")
 	}))
 	defer server.Close()
 	client := captureClient(t, server)
-
-	owner := providerregistry.RegistrationOwner{
-		ProviderID:           "codex",
-		AccountNamespace:     "codex",
-		Construction:         providerregistry.ConstructionCodex,
-		CompatibilityAdapter: providerregistry.ConstructionCodex,
-		HasOAuth:             true,
-		OAuthAdapter:         providerregistry.LoginBrowser,
-		OAuthFlowID:          "codex",
-		HasManifest:          true,
-		ManifestID:           "plugin.codex",
-		ManifestVersion:      "1.2.3",
-	}
 	created, err := client.CreateWorkspace(t.Context(), proto.Workspace{
 		ForwardedProviders: map[string]config.ProviderConfig{"remote": {ID: "remote", APIKey: "secret"}},
-		ForwardedAccounts: map[string]config.ForwardedAccount{
-			owner.AccountNamespace: {Owner: owner, Entry: accounts.Entry{ID: "account", AccessToken: "token"}},
-		},
+		ForwardedAccounts:  map[string]config.ForwardedAccount{"remote": {Entry: accounts.Entry{ID: "account", AccessToken: "token"}}},
 	})
-	require.NoError(t, err)
-	require.Equal(t, "workspace", created.ID)
-	require.Equal(t, "secret", received.ForwardedProviders["remote"].APIKey)
-	require.Equal(t, owner, received.ForwardedAccounts[owner.AccountNamespace].Owner)
-	require.Equal(t, "token", received.ForwardedAccounts[owner.AccountNamespace].Entry.AccessToken)
+	require.ErrorContains(t, err, "legacy forwarding is unsupported")
+	require.Nil(t, created)
 }
 
 func TestSendEventAfterContextCancelIsIdempotent(t *testing.T) {

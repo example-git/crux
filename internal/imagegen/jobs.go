@@ -39,6 +39,9 @@ const (
 )
 
 type JobRequest struct {
+	// Private captured client authority is retained only in memory, never in
+	// persisted job metadata, discovery or cross-workspace recovery payloads.
+	runtime         *PluginRuntime
 	Owner           *providerplugin.ImageOwner `json:"owner,omitempty"`
 	OutputExtension string                     `json:"output_extension,omitempty"`
 	Mode            string                     `json:"mode"`
@@ -691,7 +694,11 @@ func (m *JobManager) executeRequest(ctx context.Context, request JobRequest) (*R
 				return nil, err
 			}
 		}
-		return m.pluginRuntime.Execute(ctx, *request.Owner, request, images)
+		runtime := m.pluginRuntime
+		if request.runtime != nil {
+			runtime = request.runtime
+		}
+		return runtime.Execute(ctx, *request.Owner, request, images)
 	}
 	client := m.clientFactory()
 	if client == nil {

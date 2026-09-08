@@ -295,7 +295,11 @@ func (p *Prompt) projectInstructions(store *config.ConfigStore) (string, error) 
 	if workingDir == "" {
 		return "", nil
 	}
-	document, ok, err := p.projectService.Active(workingDir)
+	projectService := p.projectService
+	if store.RemoteAuthority() != nil {
+		projectService = projects.NewServiceAt(filepath.Join(store.Config().Options.DataDirectory, "projects"))
+	}
+	document, ok, err := projectService.Active(workingDir)
 	if err != nil {
 		return "", err
 	}
@@ -341,7 +345,7 @@ func (p *Prompt) memoryInstructions(ctx context.Context, store *config.ConfigSto
 	if workingDir == "" {
 		return "", nil
 	}
-	memory, err := automemory.Load(ctx, workingDir)
+	memory, err := automemory.LoadForStore(ctx, store, workingDir)
 	if err != nil {
 		if _, ok := errors.AsType[*automemory.ConfigurationError](err); ok {
 			return "", err

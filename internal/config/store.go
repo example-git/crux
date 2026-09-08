@@ -822,6 +822,9 @@ func (s *ConfigStore) ValidateActiveProviderOwner(expected providerregistry.Regi
 }
 
 func (s *ConfigStore) SetResolvedProviderAPIKey(expected providerregistry.RegistrationOwner, template, apiKey string) error {
+	if s.RemoteAuthority() != nil {
+		return ErrClientRuntimeManaged
+	}
 	if expected.ProviderID == "" {
 		return fmt.Errorf("registration owner provider is empty")
 	}
@@ -1166,6 +1169,9 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 // (update). Both of those run under writeMu, which is what keeps the
 // snapshot map free of concurrent writers.
 func (s *ConfigStore) writeConfigFields(scope Scope, kv map[string]any) error {
+	if s.RemoteAuthority() != nil {
+		return ErrClientRuntimeManaged
+	}
 	// Sort keys for deterministic output regardless of map iteration
 	// order. This also ensures consistent results when callers pass
 	// overlapping JSONPath keys (e.g. "a" and "a.b").
@@ -1188,6 +1194,9 @@ func (s *ConfigStore) writeConfigFields(scope Scope, kv map[string]any) error {
 }
 
 func (s *ConfigStore) persistConfigFields(scope Scope, fields map[string]any) error {
+	if s.RemoteAuthority() != nil {
+		return ErrClientRuntimeManaged
+	}
 	if s.writeFields != nil {
 		return s.writeFields(scope, fields)
 	}
@@ -1573,6 +1582,9 @@ func (s *ConfigStore) providerConfigForCredentialLocked(cfg *Config, providerID 
 }
 
 func (s *ConfigStore) SetProviderOAuthToken(scope Scope, expected providerregistry.RegistrationOwner, token *oauth.Token) error {
+	if s.RemoteAuthority() != nil {
+		return ErrClientRuntimeManaged
+	}
 	if token == nil {
 		return fmt.Errorf("OAuth token is nil")
 	}
@@ -1716,6 +1728,9 @@ func (s *ConfigStore) RemoveProviderCredentials(scope Scope, expected providerre
 //     time. A process that acquires the lock after a peer rotated finds the
 //     peer's fresh token on disk and adopts it instead of exchanging.
 func (s *ConfigStore) RefreshOAuthTokenForOwner(ctx context.Context, scope Scope, expected providerregistry.RegistrationOwner) (*oauth.Token, error) {
+	if s.RemoteAuthority() != nil {
+		return nil, ErrClientRuntimeManaged
+	}
 	if expected.ProviderID == "" {
 		return nil, fmt.Errorf("OAuth owner provider is empty")
 	}
@@ -2302,6 +2317,9 @@ func (s *ConfigStore) captureStalenessSnapshot(paths []string) {
 // On failure, the store state is rolled back to its previous state.
 // Concurrent calls are serialised via writeMu.
 func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
+	if s.RemoteAuthority() != nil {
+		return ErrClientRuntimeManaged
+	}
 	if s.workingDir == "" {
 		return fmt.Errorf("cannot reload: working directory not set")
 	}

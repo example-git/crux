@@ -719,6 +719,18 @@ func QueryTraffic(ctx context.Context, database *sql.DB, query TrafficQuery) ([]
 	return events, rows.Err()
 }
 
+// Admission and replacement bodies are private even when the caller omitted
+// the required marker. Rejection must never turn malformed private input into a log.
+func isPrivateRuntimeRequest(request *http.Request) bool {
+	if request.Header.Get(EphemeralStateHeader) != "" {
+		return true
+	}
+	if request.Method == http.MethodPost && request.URL.Path == "/v1/workspaces" {
+		return true
+	}
+	return request.Method == http.MethodPut && strings.HasPrefix(request.URL.Path, "/v1/workspaces/") && strings.HasSuffix(request.URL.Path, "/runtime")
+}
+
 const EphemeralStateHeader = "X-Crux-Ephemeral-State"
 
 func WrapHTTPTransport(base http.RoundTripper) http.RoundTripper {
@@ -749,7 +761,7 @@ func (t *networkRoundTripper) RoundTrip(request *http.Request) (*http.Response, 
 	}
 	traceID := nextNetworkTraceID()
 	requestEvent := TrafficEvent{Timestamp: time.Now().UTC(), TraceID: traceID, Protocol: "http", Direction: "outbound", Phase: "request", Method: request.Method, URL: sanitizeURL(request.URL), Headers: formatHeaders(request.Header), ContentLength: request.ContentLength}
-	if request.Header.Get(EphemeralStateHeader) != "" {
+	if isPrivateRuntimeRequest(request) {
 		trace.record(requestEvent)
 	} else {
 		body, copied, copyErr := copyRequestBody(request)
@@ -861,7 +873,7 @@ func TraceHTTPHandler(next http.Handler) http.Handler {
 		started := time.Now()
 		wrapped := &networkResponseWriter{ResponseWriter: writer, statusCode: http.StatusOK}
 		requestEvent := TrafficEvent{Timestamp: started.UTC(), TraceID: traceID, Protocol: "http", Direction: "inbound", Phase: "request", Method: request.Method, URL: sanitizeURL(request.URL), Headers: formatHeaders(request.Header), ContentLength: request.ContentLength}
-		if request.Body == nil || request.Body == http.NoBody || request.Header.Get(EphemeralStateHeader) != "" {
+		if request.Body == nil || request.Body == http.NoBody || isPrivateRuntimeRequest(request) {
 			trace.record(requestEvent)
 		} else {
 			request.Body = &networkTraceBody{ReadCloser: request.Body, trace: trace, event: requestEvent}

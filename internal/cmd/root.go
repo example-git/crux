@@ -37,7 +37,6 @@ import (
 	"github.com/example-git/crux/internal/db"
 	"github.com/example-git/crux/internal/lock"
 	cruxlog "github.com/example-git/crux/internal/log"
-	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/projects"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/server"
@@ -599,22 +598,40 @@ func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection,
 	}()
 
 	var remoteWorkspace *proto.Workspace
+	debug, _ := cmd.Flags().GetBool("debug")
+	if _, err := workspaceClient.NegotiateRemoteRuntime(cmd.Context()); err != nil {
+		return err
+	}
+	request := proto.Workspace{Path: selection.Path, Debug: debug, Version: version.Version, AuthorityMode: "client"}
+	revision := uint64(1)
 	if selection.WorkspaceID != "" {
 		remoteWorkspace, err = workspaceClient.OpenWorkspace(cmd.Context(), selection.WorkspaceID)
-	} else {
-		debug, _ := cmd.Flags().GetBool("debug")
-		providers, forwardedAccounts, stateErr := forwardedProviderState(cmd.Context(), localCwd, "", debug)
-		if stateErr != nil {
-			return stateErr
+		if err != nil {
+			return err
 		}
-		remoteWorkspace, err = workspaceClient.CreateWorkspace(cmd.Context(), proto.Workspace{
-			Path:               selection.Path,
-			Debug:              debug,
-			Version:            version.Version,
-			ForwardedProviders: providers,
-			ForwardedAccounts:  forwardedAccounts,
-		})
+		request.Path = remoteWorkspace.Path
+		request.Channels = remoteWorkspace.Channels
+		request.YOLO = remoteWorkspace.YOLO
+		if remoteWorkspace.Authority == nil {
+			return errors.New("remote workspace has no accepted authority")
+		}
+		request.AuthorityMode = remoteWorkspace.Authority.Mode
+		if request.AuthorityMode == "client" {
+			revision = remoteWorkspace.Authority.Revision + 1
+		}
 	}
+	if request.AuthorityMode == "client" {
+		request.Runtime, err = collectRemoteProviderState(cmd.Context(), localCwd, "", debug, revision)
+		if err != nil {
+			return err
+		}
+		if remoteWorkspace != nil {
+			if _, err := workspaceClient.ReplaceRemoteRuntime(cmd.Context(), remoteWorkspace.ID, remoteWorkspace.Authority.Revision, *request.Runtime); err != nil {
+				return err
+			}
+		}
+	}
+	remoteWorkspace, err = workspaceClient.CreateWorkspace(cmd.Context(), request)
 	if err != nil {
 		return err
 	}
@@ -629,40 +646,16 @@ func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection,
 	return runWorkspaceTUI(cmd.Context(), clientWorkspace, "", false, false)
 }
 
-func forwardedProviderState(ctx context.Context, cwd, dataDir string, debug bool) (map[string]config.ProviderConfig, map[string]config.ForwardedAccount, error) {
-	cfg, err := config.Load(cwd, dataDir, debug)
+func collectRemoteProviderState(ctx context.Context, cwd, dataDir string, debug bool, revision uint64) (*config.RemoteRuntimeProposal, error) {
+	store, err := config.Load(cwd, dataDir, debug)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load provider state for remote server: %w", err)
+		return nil, fmt.Errorf("load selected client runtime: %w", err)
 	}
-	providers := make(map[string]config.ProviderConfig)
-	for id, provider := range cfg.Config().Providers.Seq2() {
-		providers[id] = provider
-	}
-	forwardedAccounts := make(map[string]config.ForwardedAccount)
-	namespaces, err := accounts.ProvidersFor(ctx, cfg.Config().ProviderAccountNamespaces())
+	proposal, err := store.CollectRemoteRuntime(ctx, revision)
 	if err != nil {
-		return nil, nil, fmt.Errorf("load accounts for remote server: %w", err)
+		return nil, err
 	}
-	for _, namespace := range namespaces {
-		registration, ok := cfg.Config().ProviderRegistrationForAccount(namespace)
-		if !ok || registration.AccountNamespace != namespace {
-			return nil, nil, fmt.Errorf("account namespace %q does not match an active exact provider owner for remote forwarding", namespace)
-		}
-		if registration.OAuth == nil {
-			return nil, nil, fmt.Errorf("account namespace %q active exact owner does not support OAuth account forwarding", namespace)
-		}
-		entry, err := accounts.Active(ctx, namespace)
-		if err != nil {
-			return nil, nil, fmt.Errorf("load active %s account for remote server: %w", namespace, err)
-		}
-		if entry != nil {
-			forwardedAccounts[namespace] = config.ForwardedAccount{
-				Owner: registration.Owner(),
-				Entry: *entry,
-			}
-		}
-	}
-	return providers, forwardedAccounts, nil
+	return &proposal, nil
 }
 
 // connectToServer ensures the server is running, creates a client and
@@ -725,7 +718,11 @@ func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func
 		Version:  version.Version,
 	}
 	if savedConnection != nil {
-		wsReq.ForwardedProviders, wsReq.ForwardedAccounts, err = forwardedProviderState(cmd.Context(), localCwd, "", debug)
+		if _, err := c.NegotiateRemoteRuntime(cmd.Context()); err != nil {
+			return nil, nil, nil, err
+		}
+		wsReq.AuthorityMode = "client"
+		wsReq.Runtime, err = collectRemoteProviderState(cmd.Context(), localCwd, "", debug, 1)
 		if err != nil {
 			return nil, nil, nil, err
 		}

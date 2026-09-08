@@ -1,17 +1,22 @@
 package backend
 
-import "github.com/example-git/crux/internal/proto"
+import (
+	"github.com/example-git/crux/internal/projects"
+	"github.com/example-git/crux/internal/proto"
+	"path/filepath"
+)
 
 func (b *Backend) ListProjects(workspaceID string) ([]proto.ProjectInfo, error) {
 	workspace, err := b.GetWorkspace(workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	documents, err := b.projectService.List()
+	service := b.workspaceProjectService(workspace)
+	documents, err := service.List()
 	if err != nil {
 		return nil, err
 	}
-	active, hasActive, err := b.projectService.Active(workspace.Path)
+	active, hasActive, err := service.Active(workspace.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -40,9 +45,17 @@ func (b *Backend) SelectProject(workspaceID, slug string) error {
 	if err != nil {
 		return err
 	}
+	service := b.workspaceProjectService(workspace)
 	if slug == "" {
-		return b.projectService.Disable(workspace.Path)
+		return service.Disable(workspace.Path)
 	}
-	_, err = b.projectService.Activate(slug, workspace.Path)
+	_, err = service.Activate(slug, workspace.Path)
 	return err
+}
+
+func (b *Backend) workspaceProjectService(workspace *Workspace) *projects.Service {
+	if workspace.Cfg != nil && workspace.Cfg.RemoteAuthority() != nil {
+		return projects.NewServiceAt(filepath.Join(workspace.Cfg.Config().Options.DataDirectory, "projects"))
+	}
+	return b.projectService
 }

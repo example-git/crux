@@ -69,8 +69,8 @@ func TestRemoteTLSAdmissionBaseline(t *testing.T) {
 	for _, kind := range []string{"providers", "accounts", "mixed"} {
 		for _, marked := range []bool{false, true} {
 			t.Run(kind+"/marked="+map[bool]string{false: "false", true: "true"}[marked], func(t *testing.T) {
-				// A missing client ID intentionally stops this probe immediately
-				// after the forwarding boundary, before config or DB initialization.
+				// Legacy forwarding is now rejected at the boundary, before
+				// config or DB initialization, even for an authenticated peer.
 				args := proto.Workspace{Path: t.TempDir()}
 				if kind != "accounts" {
 					args.ForwardedProviders = map[string]config.ProviderConfig{"example": {ID: "example", APIKey: "synthetic-private-key"}}
@@ -92,7 +92,7 @@ func TestRemoteTLSAdmissionBaseline(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, http.StatusBadRequest, response.StatusCode)
 				if marked {
-					require.Contains(t, string(content), "client_id")
+					require.Contains(t, string(content), "legacy provider forwarding is unsupported")
 				} else {
 					require.Contains(t, string(content), "must be marked ephemeral")
 				}

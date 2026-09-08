@@ -118,6 +118,14 @@ func NewBackgroundAgentManagerWithStore(workspaceID string, backgroundShells *sh
 	return newBackgroundAgentManager(workspaceID, backgroundShells, recordStore, admission)
 }
 
+func NewBackgroundAgentManagerWithAdmissionDirectory(workspaceID string, backgroundShells *shell.BackgroundShellManager, recordStore *managedtask.Store, directory string) (*BackgroundAgentManager, error) {
+	admission, err := newBackgroundAgentAdmission(directory, defaultMaxActiveBackgroundAgents)
+	if err != nil {
+		return nil, err
+	}
+	return newBackgroundAgentManager(workspaceID, backgroundShells, recordStore, admission)
+}
+
 func newBackgroundAgentManager(workspaceID string, backgroundShells *shell.BackgroundShellManager, recordStore *managedtask.Store, admission *backgroundAgentAdmission) (*BackgroundAgentManager, error) {
 	if admission == nil {
 		return nil, fmt.Errorf("global background agent admission tracker is required")

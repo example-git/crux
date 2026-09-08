@@ -16,14 +16,26 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providerregistry"
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/stretchr/testify/require"
 )
 
 func TestHostImageRuntimeUsesInstalledOwnerAndCapturedEnvironment(t *testing.T) {
+	testImageRuntimeUsesCapturedEnvironment(t, false)
+}
+
+func TestClientImageRuntimeRunsWithoutServerInstallation(t *testing.T) {
+	testImageRuntimeUsesCapturedEnvironment(t, true)
+}
+
+func testImageRuntimeUsesCapturedEnvironment(t *testing.T, clientOwned bool) {
+	var clientProposal *config.RemoteRuntimeProposal
 	root := t.TempDir()
 	t.Setenv("CRUX_GLOBAL_DATA", filepath.Join(root, "host"))
 	t.Setenv("CRUX_CACHE_DIR", filepath.Join(root, "cache"))
@@ -72,10 +84,71 @@ func TestHostImageRuntimeUsesInstalledOwnerAndCapturedEnvironment(t *testing.T) 
 	owner, err := runtime.Manager.CaptureImageOwner(value.Backend)
 	require.NoError(t, err)
 	cfg.Images = &config.ImageConfiguration{Preferred: []providerplugin.ImageOwner{owner}, Providers: map[string]config.ImageProviderConfiguration{owner.Backend: {Owner: owner}}}
-	jobs, err := NewJobManagerWithStore("fixture-host", nil, JobManagerOptions{PluginRuntime: runtime})
+	if clientOwned {
+		manager := runtime.Manager
+		generation := manager.Snapshot()
+		bundles, err := manager.ExportRegisteredBundles(generation.Revision, map[string]string{owner.PluginID: owner.Digest})
+		require.NoError(t, err)
+		proposal := config.RemoteRuntimeProposal{Version: 1, Revision: 1, Bundles: bundles, Images: cfg.Images, CredentialEnvironment: map[string]string{"FIXTURE_IMAGE_KEY": "captured-image-key"},
+			Providers:   []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: "fixture-inference", Type: catalog.TypeOpenAICompat, BaseURL: "https://example.invalid/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model"}}}}},
+			Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "fixture-inference", Model: "model"}},
+			Credentials: []config.RemoteCredentialBinding{{Owner: providerregistry.RegistrationOwner{ProviderID: "fixture-inference"}, Generation: 1, APIKey: "synthetic-inference-key"}},
+		}
+		clientProposal = &proposal
+		proposal.Digest, err = config.RemoteRuntimeDigest(proposal)
+		require.NoError(t, err)
+		receiver := t.TempDir()
+		serverEnvironment := env.NewFromMap(map[string]string{"FIXTURE_IMAGE_KEY": "wrong-server-key", "UNRELATED_SERVER_SECRET": "private-host-key", "HOME": receiver})
+		store, err = config.CompileRemoteRuntime(receiver, filepath.Join(receiver, "data"), false, proposal, strings.Repeat("a", 64), serverEnvironment)
+		require.NoError(t, err)
+		require.Empty(t, store.RuntimeSnapshot().Getenv("UNRELATED_SERVER_SECRET"))
+		runtime, err = NewHostPluginRuntime(t.Context(), store, PluginCredentialBindings{})
+		require.NoError(t, err)
+		require.Nil(t, runtime.Manager)
+		runtime.Client = server.Client()
+		entries, err := os.ReadDir(receiver)
+		require.NoError(t, err)
+		require.Empty(t, entries, "receiver must not install or scan image bundles")
+		missing := proposal
+		missing.CredentialEnvironment = nil
+		missing.Digest, err = config.RemoteRuntimeDigest(missing)
+		require.NoError(t, err)
+		_, err = config.CompileRemoteRuntime(receiver, filepath.Join(receiver, "data"), false, missing, strings.Repeat("a", 64), serverEnvironment)
+		require.ErrorContains(t, err, "client image environment credential is missing")
+		undeclared := proposal
+		undeclared.CredentialEnvironment = map[string]string{"FIXTURE_IMAGE_KEY": "captured-image-key", "UNRELATED_SERVER_SECRET": "client-value"}
+		undeclared.Digest, err = config.RemoteRuntimeDigest(undeclared)
+		require.NoError(t, err)
+		_, err = config.CompileRemoteRuntime(receiver, filepath.Join(receiver, "data"), false, undeclared, strings.Repeat("a", 64), serverEnvironment)
+		require.ErrorContains(t, err, "undeclared")
+	}
+
+	options := JobManagerOptions{PluginRuntime: runtime}
+	if clientOwned {
+		options.Setup = &SetupService{Runtime: runtime, Store: store}
+	}
+	jobs, err := NewJobManagerWithStore("fixture-host", nil, options)
 	require.NoError(t, err)
 	defer jobs.StopAll(context.Background())
 	request := JobRequest{Mode: ModeGenerate, Prompt: "paper bird", Count: 1, OutputPaths: []string{filepath.Join(root, "placeholder.png")}}
+	if clientOwned {
+		request, err = jobs.PrepareToolRequest(t.Context(), request, SetupRequest{})
+		require.NoError(t, err)
+		require.NoError(t, jobs.AuthenticateToolRequest(t.Context(), request, SetupRequest{}))
+		clientProposal.Revision = 2
+		clientProposal.CredentialEnvironment = map[string]string{"FIXTURE_IMAGE_KEY": "replacement-client-key"}
+		clientProposal.Digest, err = config.RemoteRuntimeDigest(*clientProposal)
+		require.NoError(t, err)
+		_, err = store.ReplaceRemoteRuntime(t.Context(), *clientProposal, strings.Repeat("a", 64), 1)
+		require.NoError(t, err)
+		current := runtime.Capture()
+		bundle, err := current.source().ImageBundleForOwner(owner)
+		require.NoError(t, err)
+		credentials, err := current.ResolveCredentials(t.Context(), bundle)
+		require.NoError(t, err)
+		require.Equal(t, "replacement-client-key", credentials.Values["key"])
+	}
+
 	view, paths, err := jobs.EnqueueNumbered(request, t.TempDir(), "fixture", managedtask.Ownership{ParentSessionID: "parent"})
 	require.NoError(t, err)
 	_, err = jobs.Output(t.Context(), view.ID, true, 10*time.Second)
@@ -83,6 +156,10 @@ func TestHostImageRuntimeUsesInstalledOwnerAndCapturedEnvironment(t *testing.T) 
 	saved, err := os.ReadFile(paths[0])
 	require.NoError(t, err)
 	require.Equal(t, pixels.Bytes(), saved)
+	if clientOwned {
+		require.Equal(t, int64(1), calls.Load())
+		return
+	}
 	wrong := owner
 	wrong.Digest = strings.Repeat("b", 64)
 	cfg.Images = &config.ImageConfiguration{Preferred: []providerplugin.ImageOwner{wrong}, Providers: map[string]config.ImageProviderConfiguration{wrong.Backend: {Owner: wrong}}}

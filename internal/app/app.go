@@ -106,7 +106,11 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	if err != nil {
 		return nil, fmt.Errorf("resolve snapshot home directory: %w", err)
 	}
-	files, err := history.NewServiceWithSnapshots(q, conn, filepath.Join(homeDirectory, ".ai-cli", "file-snapshots"), store.WorkingDir())
+	snapshotRoot := filepath.Join(homeDirectory, ".ai-cli", "file-snapshots")
+	if store.RemoteAuthority() != nil {
+		snapshotRoot = filepath.Join(store.Config().Options.DataDirectory, "file-snapshots")
+	}
+	files, err := history.NewServiceWithSnapshots(q, conn, snapshotRoot, store.WorkingDir())
 	if err != nil {
 		return nil, fmt.Errorf("initialize file snapshots: %w", err)
 	}
@@ -117,7 +121,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		allowedTools = cfg.Permissions.AllowedTools
 	}
 	var trustedPaths []string
-	memory, memoryErr := automemory.Load(ctx, store.WorkingDir())
+	memory, memoryErr := automemory.LoadForStore(ctx, store)
 	if memoryErr != nil {
 		var configurationError *automemory.ConfigurationError
 		if errors.As(memoryErr, &configurationError) {
@@ -143,7 +147,12 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		_ = outputStore.Close()
 		return nil, fmt.Errorf("recover background shells: %w", err)
 	}
-	backgroundAgents, err := agent.NewBackgroundAgentManagerWithStore(store.WorkingDir(), backgroundShells, recordStore)
+	var backgroundAgents *agent.BackgroundAgentManager
+	if store.RemoteAuthority() != nil {
+		backgroundAgents, err = agent.NewBackgroundAgentManagerWithAdmissionDirectory(store.WorkingDir(), backgroundShells, recordStore, filepath.Join(cfg.Options.DataDirectory, "locks", "background-agents"))
+	} else {
+		backgroundAgents, err = agent.NewBackgroundAgentManagerWithStore(store.WorkingDir(), backgroundShells, recordStore)
+	}
 	if err != nil {
 		_ = recordStore.Close()
 		_ = outputStore.Close()
@@ -161,7 +170,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		Setup:         &imagegen.SetupService{Runtime: imageRuntime, Store: store, Questions: questions},
 	})
 	if err != nil {
-		imageRuntime.Manager.Close()
+		imageRuntime.Close()
 		_ = recordStore.Close()
 		_ = outputStore.Close()
 		return nil, fmt.Errorf("recover background image jobs: %w", err)
@@ -222,7 +231,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	app.cleanupFuncs = append(
 		app.cleanupFuncs,
 		func(context.Context) error {
-			imageRuntime.Manager.Close()
+			imageRuntime.Close()
 			return nil
 		},
 		func(context.Context) error { return db.Release(dataDir) },

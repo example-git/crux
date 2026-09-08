@@ -48,6 +48,30 @@ type Memory struct {
 	UserContent    string
 }
 
+type workspaceRootKey struct{}
+
+func LoadForStore(ctx context.Context, store *config.ConfigStore, workingDirs ...string) (Memory, error) {
+	workingDir := store.WorkingDir()
+	if len(workingDirs) > 0 {
+		workingDir = workingDirs[0]
+	}
+	return Load(contextForStore(ctx, store), workingDir)
+}
+
+func contextForStore(ctx context.Context, store *config.ConfigStore) context.Context {
+	if store.RemoteAuthority() != nil {
+		return context.WithValue(ctx, workspaceRootKey{}, filepath.Join(store.Config().Options.DataDirectory, "memory"))
+	}
+	return ctx
+}
+
+func userDirectoryForContext(ctx context.Context) string {
+	if root, ok := ctx.Value(workspaceRootKey{}).(string); ok {
+		return filepath.Join(root, "user")
+	}
+	return UserDirectory()
+}
+
 func Load(ctx context.Context, workingDir string) (Memory, error) {
 	disabled, err := disabled()
 	if err != nil {
@@ -70,7 +94,7 @@ func Load(ctx context.Context, workingDir string) (Memory, error) {
 	if err != nil {
 		return Memory{}, err
 	}
-	userDirectory := UserDirectory()
+	userDirectory := userDirectoryForContext(ctx)
 	if err := os.MkdirAll(userDirectory, 0o700); err != nil {
 		return Memory{}, fmt.Errorf("creating user memory directory %q: %w", userDirectory, err)
 	}
@@ -92,6 +116,9 @@ func Load(ctx context.Context, workingDir string) (Memory, error) {
 }
 
 func Directory(ctx context.Context, workingDir string) (string, bool, error) {
+	if root, ok := ctx.Value(workspaceRootKey{}).(string); ok {
+		return filepath.Join(root, "project"), true, nil
+	}
 	if override := os.Getenv("CRUX_AUTO_MEMORY_DIR"); override != "" {
 		if strings.IndexByte(override, 0) >= 0 || !filepath.IsAbs(override) {
 			return "", false, &ConfigurationError{Err: fmt.Errorf("CRUX_AUTO_MEMORY_DIR must be a safe absolute path")}

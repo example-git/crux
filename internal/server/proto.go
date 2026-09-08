@@ -8,6 +8,7 @@ import (
 
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/backend"
+	"github.com/example-git/crux/internal/config"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/redact"
@@ -100,7 +101,7 @@ func (c *controllerV1) handleGetWorkspaces(w http.ResponseWriter, r *http.Reques
 		jsonError(w, http.StatusForbidden, "workspace management requires authenticated TLS")
 		return
 	}
-	jsonEncode(w, c.backend.ListWorkspaces())
+	jsonEncode(w, c.backend.ListWorkspacesForPrincipal(requestPrincipal(r)))
 }
 
 // handleGetWorkspace returns a single workspace by ID.
@@ -143,11 +144,18 @@ func (c *controllerV1) handlePostWorkspaces(w http.ResponseWriter, r *http.Reque
 		jsonError(w, http.StatusForbidden, "workspace management requires authenticated TLS")
 		return
 	}
-	var args proto.Workspace
-	if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
-		c.server.logError(r, "Failed to decode request", "error", err)
+	var request proto.CreateWorkspaceRequest
+	if err := decodeRuntimeRequest(w, r, &request); err != nil {
 		jsonError(w, http.StatusBadRequest, "failed to decode request")
 		return
+	}
+	args := request.Workspace
+	args.Runtime, args.AuthorityMode = request.Runtime, request.AuthorityMode
+	args.AuthenticatedPrincipal = requestPrincipal(r)
+	if args.Runtime != nil || args.AuthorityMode == "client" {
+		if !requireRuntimeProtocol(w, r) {
+			return
+		}
 	}
 	if c.server.remoteManagement() {
 		path, dataDir, err := c.server.validateRemoteWorkspace(args.Path, args.DataDir)
@@ -164,10 +172,12 @@ func (c *controllerV1) handlePostWorkspaces(w http.ResponseWriter, r *http.Reque
 			jsonError(w, http.StatusBadRequest, "forwarded provider state must be marked ephemeral")
 			return
 		}
-		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-			jsonError(w, http.StatusForbidden, "forwarded provider state requires an authenticated TLS connection")
+		if requestPrincipal(r) == "" {
+			jsonError(w, http.StatusForbidden, "forwarded provider state requires verified client TLS")
 			return
 		}
+		jsonError(w, http.StatusBadRequest, "legacy provider forwarding is unsupported; negotiate the client runtime protocol")
+		return
 	}
 
 	_, result, complete, err := c.backend.CreateWorkspaceForResponse(args)
@@ -1417,6 +1427,12 @@ func (c *controllerV1) handleGetWorkspacePermissionsSkip(w http.ResponseWriter, 
 func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err error) {
 	status := http.StatusInternalServerError
 	switch {
+	case errors.Is(err, backend.ErrInvalidClientRuntime), errors.Is(err, config.ErrClientRuntimeManaged):
+		status = http.StatusBadRequest
+	case errors.Is(err, backend.ErrWorkspaceAuthority):
+		status = http.StatusForbidden
+	case errors.Is(err, backend.ErrRuntimeConflict), errors.Is(err, config.ErrRemoteRuntimeRevision):
+		status = http.StatusConflict
 	case errors.Is(err, backend.ErrWorkspaceNotFound):
 		status = http.StatusNotFound
 	case errors.Is(err, backend.ErrLSPClientNotFound):
