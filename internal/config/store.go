@@ -100,6 +100,7 @@ type RuntimeSnapshot struct {
 	registry          *providerregistry.Registry
 	environment       env.Env
 	ephemeralAccounts map[string]ForwardedAccount
+	clientRuntime     *clientRuntimeState
 }
 
 type RuntimeGenerationCandidate struct {
@@ -329,6 +330,7 @@ func (s RuntimeSnapshot) EphemeralAccount(expected providerregistry.Registration
 
 type ConfigStore struct {
 	config                   *Config
+	clientRuntime            *clientRuntimeState
 	ephemeralAccounts        map[string]ForwardedAccount
 	ephemeralProviderConfigs map[string]ProviderConfig
 	ephemeralProviders       map[string]struct{}
@@ -423,6 +425,7 @@ func (s *ConfigStore) runtimeSnapshotLocked(cfg *Config, resolver VariableResolv
 		resolver:          resolver,
 		environment:       cloneEnvironment(environment),
 		ephemeralAccounts: make(map[string]ForwardedAccount, len(s.ephemeralAccounts)),
+		clientRuntime:     s.clientRuntime,
 	}
 	for namespace, forwarded := range s.ephemeralAccounts {
 		forwarded.Entry.Raw = slices.Clone(forwarded.Entry.Raw)

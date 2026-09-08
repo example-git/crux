@@ -52,6 +52,8 @@ type EnrollmentListener struct {
 	outcome         enrollmentOutcome
 	terminal        bool
 	done            chan struct{}
+	closed          chan struct{}
+	shutdownErr     error
 	mu              sync.Mutex
 	attempts        int
 	tokenState      enrollmentTokenState
@@ -141,6 +143,7 @@ func StartEnrollment(ctx context.Context, listenAddress, advertisedAddress strin
 		listener:        listener,
 		ctx:             ctx,
 		done:            make(chan struct{}),
+		closed:          make(chan struct{}),
 		expiresAt:       expiresAt,
 		authorizeClient: authorizeClientWithCommit,
 	}
@@ -204,13 +207,10 @@ func (e *EnrollmentListener) Wait(ctx context.Context) (EnrollmentResult, error)
 
 func (e *EnrollmentListener) Close() error {
 	e.finish(enrollmentOutcome{err: errEnrollmentClosed})
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	err := e.server.Shutdown(shutdownCtx)
-	if err != nil {
-		_ = e.server.Close()
-	}
-	return err
+	<-e.closed
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.shutdownErr
 }
 
 func (e *EnrollmentListener) handleEnrollment(response http.ResponseWriter, request *http.Request) {
@@ -370,9 +370,14 @@ func (e *EnrollmentListener) publishLocked(outcome enrollmentOutcome) {
 	go func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		if e.server.Shutdown(shutdownCtx) != nil {
+		err := e.server.Shutdown(shutdownCtx)
+		if err != nil {
 			_ = e.server.Close()
 		}
+		e.mu.Lock()
+		e.shutdownErr = err
+		close(e.closed)
+		e.mu.Unlock()
 	}()
 }
 

@@ -1,9 +1,11 @@
 package connection
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"sync"
 	"testing"
@@ -11,6 +13,83 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+type enrollmentDecodeBarrier struct {
+	reader  *bytes.Reader
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *enrollmentDecodeBarrier) Read(value []byte) (int, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return b.reader.Read(value)
+}
+
+func TestEnrollmentClosureDuringDecodeCannotAuthorize(t *testing.T) {
+	setConnectionRoot(t, t.TempDir())
+	_, err := EnsureServerIdentity(t.Context())
+	require.NoError(t, err)
+	e, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+	identity, err := NewClientIdentity("decoding")
+	require.NoError(t, err)
+	body, err := json.Marshal(enrollmentRequest{Name: "decoding", Certificate: identity.Certificate})
+	require.NoError(t, err)
+	barrier := &enrollmentDecodeBarrier{reader: bytes.NewReader(body), entered: make(chan struct{}), release: make(chan struct{})}
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, enrollmentPath, barrier)
+	request.Header.Set("Authorization", "Crux-Enrollment "+e.setup.Token)
+	response := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { e.handleEnrollment(response, request); close(done) }()
+	<-barrier.entered
+	require.NoError(t, e.Close())
+	_, err = e.Wait(t.Context())
+	require.ErrorIs(t, err, errEnrollmentClosed)
+	close(barrier.release)
+	<-done
+	require.NotEqual(t, http.StatusCreated, response.Code)
+	authorized, err := ListAuthorizedClients(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, authorized)
+}
+
+func TestEnrollmentForcedClosePreventsReservedLateCommit(t *testing.T) {
+	setConnectionRoot(t, t.TempDir())
+	_, err := EnsureServerIdentity(t.Context())
+	require.NoError(t, err)
+	e, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = e.Close() })
+	entered, release, settled := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	e.authorizeClient = func(ctx context.Context, name, certificate string, commit authorizationCommit) error {
+		defer close(settled)
+		return authorizeClientWithCommit(ctx, name, certificate, func(persist func() error) error {
+			close(entered)
+			<-release
+			return commit(persist)
+		})
+	}
+	identity, err := NewClientIdentity("slow-commit")
+	require.NoError(t, err)
+	body, err := json.Marshal(enrollmentRequest{Name: "slow-commit", Certificate: identity.Certificate})
+	require.NoError(t, err)
+	status := make(chan int, 1)
+	go func() { code, _ := enrollmentRequestStatus(t.Context(), e.setup, body); status <- code }()
+	<-entered
+	err = e.Close()
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	_, err = e.Wait(t.Context())
+	require.ErrorIs(t, err, errEnrollmentClosed)
+	require.NotEqual(t, http.StatusCreated, <-status)
+	close(release)
+	<-settled
+	authorized, err := ListAuthorizedClients(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, authorized)
+}
 
 func TestEnrollmentTerminalStateFencesReservedPersistence(t *testing.T) {
 	for _, terminal := range []string{"parent-cancel", "waiter-cancel", "expiry", "close", "attempt-limit"} {
