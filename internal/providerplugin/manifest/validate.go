@@ -257,6 +257,11 @@ func validateConfiguration(c Configuration, add func(string, ...any)) {
 	if c.Schema["additionalProperties"] != false {
 		add("configuration.schema must set additionalProperties to false")
 	}
+	if data, err := json.Marshal(c.Schema); err != nil {
+		add("configuration.schema cannot be encoded")
+	} else if _, err := compileLocalSchema(data); err != nil {
+		add("configuration.schema is invalid: %v", err)
+	}
 	properties, _ := c.Schema["properties"].(map[string]any)
 	for name := range c.Fields {
 		if _, ok := properties[name]; !ok {

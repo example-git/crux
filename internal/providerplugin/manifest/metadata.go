@@ -35,7 +35,7 @@ func CompileMetadataContracts(contracts []MetadataContract) (MetadataSchemas, er
 			return nil, fmt.Errorf("metadata namespace %q declares conflicting schemas", contract.Namespace)
 		}
 		schemas[contract.Namespace] = encoded
-		compiler := validator.NewCompiler()
+		compiler := newSchemaCompiler()
 		if contract.Schema != nil {
 			result, err := compiler.ValidateSchema(data)
 			if err != nil {
@@ -48,6 +48,9 @@ func CompileMetadataContracts(contracts []MetadataContract) (MetadataSchemas, er
 		schema, err := compiler.Compile(data)
 		if err != nil {
 			return nil, fmt.Errorf("metadata namespace %q schema is invalid: %w", contract.Namespace, err)
+		}
+		if len(schema.UnresolvedReferenceURIs()) != 0 {
+			return nil, fmt.Errorf("metadata namespace %q schema contains unresolved references; schemas must be self-contained", contract.Namespace)
 		}
 		compiled[contract.Namespace] = schema
 	}

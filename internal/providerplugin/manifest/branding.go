@@ -28,7 +28,7 @@ var compiledBrandingSchema = sync.OnceValues(func() (*validator.Schema, error) {
 	if err != nil {
 		return nil, err
 	}
-	return validator.NewCompiler().Compile(data)
+	return compileLocalSchema(data)
 })
 
 func BrandingSchemaJSON() ([]byte, error) {
