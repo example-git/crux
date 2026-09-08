@@ -434,7 +434,15 @@ func TestRegistryRejectsUnsupportedNativeOperationPoliciesAtActivation(t *testin
 		}, want: "native OpenAI Responses requires /id"},
 		{name: "refresh once", edit: func(value *Registration) {
 			value.Operation.Retry.Authentication = "refresh-once"
-		}, want: "refresh-once authentication is unavailable for the complete native OpenAI Responses language-model contract"},
+		}, want: "refresh-once authentication requires an OAuth refresh executor"},
+		{name: "refresh once without retry budget", edit: func(value *Registration) {
+			value.Operation.Retry.Authentication = "refresh-once"
+			value.Operation.Retry.MaxAttempts = 1
+		}, want: "refresh-once authentication requires at least two attempts"},
+		{name: "refresh once without replay", edit: func(value *Registration) {
+			value.Operation.Retry.Authentication = "refresh-once"
+			value.Operation.Retry.ReplayRequirement = "never"
+		}, want: "requests retries but forbids request replay"},
 		{name: "mixed HTTP and EOF retries", edit: func(value *Registration) {
 			value.Operation.Retry.UnexpectedEOF = true
 		}, want: "cannot share one max-attempts budget across HTTP and unexpected-EOF retries"},

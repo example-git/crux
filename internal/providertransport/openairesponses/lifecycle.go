@@ -666,6 +666,14 @@ func retryAttempts(policy manifest.RetryPolicy) int {
 
 func (m *LifecycleModel) retryable(err error, emitted bool) bool {
 	providertransport.MapError(m.errors, err)
+	if m.retry.Authentication == "refresh-once" {
+		var providerErr *fantasy.ProviderError
+		if errors.As(err, &providerErr) && (providerErr.StatusCode == 401 || providerErr.AuthError) {
+			// The model-boundary authority must refresh before another attempt;
+			// a generic status/mapping retry would reuse the rejected credential.
+			return false
+		}
+	}
 	if m.operationRetry {
 		return providertransport.RetryOperationError(m.retry, m.errors, err, emitted)
 	}

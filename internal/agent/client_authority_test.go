@@ -77,6 +77,18 @@ func TestClientProviderCapturedGenerationExecutesAfterRemoval(t *testing.T) {
 		require.NoError(t, err)
 		require.NotEmpty(t, response.Content)
 	}
+	admitted := Model{Model: first, ModelCfg: selected}
+	refresh := refreshAdmittedModel(&admitted, func() Model {
+		return Model{Model: removed, ModelCfg: selected}
+	}, func(ctx context.Context, _ *fantasy.ProviderError) error {
+		target := ctx.Value(clientAuthRefreshKey{}).(*clientAuthRefreshTarget)
+		target.refreshed = &Model{Model: second, ModelCfg: selected}
+		return nil
+	})
+	require.NoError(t, refresh(t.Context(), nil))
+	response, err := admitted.Model.Generate(t.Context(), fantasy.Call{Prompt: []fantasy.Message{fantasy.NewUserMessage("Use the captured refresh result.")}})
+	require.NoError(t, err)
+	require.NotEmpty(t, response.Content)
 	_, err = removed.Generate(t.Context(), fantasy.Call{})
 	require.ErrorContains(t, err, "has no credential")
 	_, err = removed.Stream(t.Context(), fantasy.Call{})
@@ -95,5 +107,5 @@ func TestClientProviderCapturedGenerationExecutesAfterRemoval(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	require.Equal(t, []string{"Bearer synthetic-first", "Bearer synthetic-second"}, credentials)
+	require.Equal(t, []string{"Bearer synthetic-first", "Bearer synthetic-second", "Bearer synthetic-second"}, credentials)
 }

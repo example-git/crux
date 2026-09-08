@@ -46,6 +46,9 @@ func executeWithRetry(request *http.Request, policy manifest.RetryPolicy, errorM
 		}
 	}
 	for attempt := 1; attempt <= attempts; attempt++ {
+		if !takeAttempt(request.Context()) {
+			return nil, ErrAttemptBudgetExhausted
+		}
 		current := request.Clone(request.Context())
 		if body != nil {
 			current.Body = io.NopCloser(bytes.NewReader(body))
