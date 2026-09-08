@@ -1,6 +1,7 @@
 package workspace_test
 
 import (
+	tea "charm.land/bubbletea/v2"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -29,7 +30,7 @@ import (
 )
 
 func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
-	for _, mode := range []string{"refresh-once", "expired", "never", "changed-definition", "changed-bundle", "definition-during-exchange", "bundle-during-exchange", "rejected-completion"} {
+	for _, mode := range []string{"refresh-once", "expired", "never", "changed-definition", "changed-bundle", "definition-during-exchange", "bundle-during-exchange", "rejected-completion", "account-replacement-during-exchange", "account-identical-during-exchange", "account-switchback-during-exchange", "account-logout-during-exchange", "recovery-after-rotation"} {
 		t.Run(mode, func(t *testing.T) {
 			xdgIsolate(t)
 			t.Setenv("AI_CLI_DIR", t.TempDir())
@@ -138,6 +139,24 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 				require.Equal(t, owner, newOwner, "the replacement must retain the exact registration owner")
 				require.NotEqual(t, before.BundleDigest, after.BundleDigest)
 			}
+			changeAccount := func() {
+				switch mode {
+				case "account-replacement-during-exchange":
+					replacement := entry
+					replacement.AccessToken, replacement.RefreshToken = "manual-access", "manual-refresh"
+					require.NoError(t, accounts.Save(t.Context(), "example.responses", replacement))
+				case "account-identical-during-exchange":
+					require.NoError(t, accounts.Save(t.Context(), "example.responses", entry))
+				case "account-switchback-during-exchange":
+					require.NoError(t, accounts.Save(t.Context(), "example.responses", accounts.Entry{ID: "other", AccessToken: "other-access", RefreshToken: "other-refresh"}))
+					require.NoError(t, accounts.SetActive(t.Context(), "example.responses", entry.ID))
+				case "account-logout-during-exchange":
+					require.NoError(t, accounts.RemoveProvider(t.Context(), "example.responses"))
+				}
+			}
+			if strings.HasPrefix(mode, "account-") {
+				changeDuringExchange.Store(&changeAccount)
+			}
 			switch mode {
 			case "changed-definition":
 				changeDefinition()
@@ -171,7 +190,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					if !ok || finished.Payload.RunID != "refresh-fixture" {
 						continue
 					}
-					if mode == "never" || strings.Contains(mode, "definition") || strings.Contains(mode, "bundle") || mode == "rejected-completion" {
+					if mode == "never" || strings.Contains(mode, "definition") || strings.Contains(mode, "bundle") || mode == "rejected-completion" || strings.HasPrefix(mode, "account-") {
 						require.NotEmpty(t, finished.Payload.Error)
 						expectedRefresh := "synthetic-old-refresh"
 						if strings.HasSuffix(mode, "during-exchange") || mode == "rejected-completion" {
@@ -193,7 +212,18 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 							}
 							account, err := accounts.Active(t.Context(), "example.responses")
 							require.NoError(t, err)
-							require.Equal(t, expectedRefresh, account.RefreshToken)
+							switch mode {
+							case "account-logout-during-exchange":
+								require.Nil(t, account, "a completed exchange must not recreate the removed account")
+							case "account-replacement-during-exchange":
+								require.Equal(t, "manual-refresh", account.RefreshToken)
+								require.Equal(t, "manual-access", account.AccessToken)
+							case "account-identical-during-exchange", "account-switchback-during-exchange":
+								require.Equal(t, accounts.CredentialID(entry), accounts.CredentialID(*account))
+							default:
+								require.Equal(t, expectedRefresh, account.RefreshToken)
+							}
+							require.Empty(t, receiver.Cfg.PendingClientRefreshes())
 							local, _ := store.Config().Providers.Get("example-responses")
 							if mode == "rejected-completion" {
 								require.Equal(t, "synthetic-new-access", local.APIKey)
@@ -217,6 +247,12 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					receiver, err := s.Backend().GetWorkspace(created.ID)
 					require.NoError(t, err)
 					require.Equal(t, uint64(2), receiver.Cfg.RemoteAuthority().Revision)
+					if mode == "recovery-after-rotation" {
+						cancel()
+						require.Eventually(t, func() bool { return receiver.ConnectedClients() == 0 }, 5*time.Second, 10*time.Millisecond)
+						verifyOAuthRecoveryInference(t, s, remote, c, w, created, session.ID, *persisted)
+						require.EqualValues(t, 1, exchanges.Load(), "recreation must use the persisted rotation without another exchange")
+					}
 					requestMu.Lock()
 					defer requestMu.Unlock()
 					require.Contains(t, credentials, "Bearer synthetic-new-access")
@@ -231,6 +267,72 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func verifyOAuthRecoveryInference(t *testing.T, s *server.Server, remote *httptest.Server, c *client.Client, w *workspace.ClientWorkspace, created *proto.Workspace, sessionID string, expected accounts.Entry) {
+	t.Helper()
+	// Remove private fields from the public view before exercising the actual
+	// reconnect loop. Recovery must use the client authority controller.
+	publicEvents := make(chan any, 1)
+	publicEvents <- pubsub.Event[proto.ConfigChanged]{Payload: proto.ConfigChanged{WorkspaceID: created.ID}}
+	close(publicEvents)
+	w.ConsumeEventsForTest(publicEvents, nil)
+	t.Cleanup(workspace.SetSSEBackoffForTest(5*time.Millisecond, 25*time.Millisecond))
+	done := make(chan struct{})
+	go func() { w.RunSubscriptionForTest(func(tea.Msg) {}); close(done) }()
+	receiver, err := s.Backend().GetWorkspace(created.ID)
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return receiver.ConnectedClients() == 1 }, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, c.DeleteWorkspace(t.Context(), created.ID))
+	remote.CloseClientConnections()
+	require.Eventually(t, func() bool { return w.WorkspaceIDForTest() != created.ID }, 10*time.Second, 20*time.Millisecond)
+	recovered, err := c.GetWorkspace(t.Context(), w.WorkspaceIDForTest())
+	require.NoError(t, err)
+	require.Equal(t, created.DataDir, recovered.DataDir)
+	require.Equal(t, created.Authority.Principal, recovered.Authority.Principal)
+	require.Equal(t, uint64(2), recovered.Authority.Revision)
+	receiver, err = s.Backend().GetWorkspace(recovered.ID)
+	require.NoError(t, err)
+	account, ok := receiver.Cfg.EphemeralAccount(created.Runtime.Credentials[0].Owner)
+	require.True(t, ok)
+	require.Equal(t, accounts.CredentialID(expected), accounts.CredentialID(*account))
+	history, err := w.ListSessions(t.Context())
+	require.NoError(t, err)
+	found := false
+	for _, session := range history {
+		found = found || session.ID == sessionID
+	}
+	require.True(t, found, "OAuth recovery must preserve the same principal-scoped history")
+	require.NoError(t, w.InitCoderAgentNonInteractive(t.Context()))
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	events, err := c.SubscribeEvents(ctx, recovered.ID)
+	require.NoError(t, err)
+	require.NoError(t, c.SendMessageWithPermissionMode(ctx, recovered.ID, sessionID, "after-oauth-recovery", "Return the fixture response again.", proto.AgentPermissionDeny))
+	for {
+		select {
+		case event, ok := <-events:
+			require.True(t, ok, "recovered stream ended before inference completed")
+			if w.HandleClientRefreshEvent(ctx, event) {
+				continue
+			}
+			finished, ok := event.(pubsub.Event[proto.RunComplete])
+			if !ok || finished.Payload.RunID != "after-oauth-recovery" {
+				continue
+			}
+			require.Empty(t, finished.Payload.Error)
+			require.Contains(t, finished.Payload.Text, "verified remote refresh")
+			w.Shutdown()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("recovery subscription did not stop")
+			}
+			return
+		case <-ctx.Done():
+			t.Fatal("recovered OAuth inference did not complete")
+		}
 	}
 }
 
