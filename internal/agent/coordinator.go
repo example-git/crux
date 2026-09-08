@@ -1454,205 +1454,123 @@ func (c *coordinator) buildAgentModels(ctx context.Context, agent config.Agent, 
 }
 
 func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent config.Agent, isSubAgent bool, snapshot config.RuntimeSnapshot) (Model, Model, error) {
-	return c.buildAgentModelsWithOptions(ctx, agent, isSubAgent, snapshot, snapshot.Config().Options)
-}
-
-// Refresh may replace credentials while retaining the initiating call's controls.
-// Keep that explicit override separate from the acknowledged authority snapshot.
-func (c *coordinator) buildAgentModelsWithOptions(ctx context.Context, agent config.Agent, isSubAgent bool, snapshot config.RuntimeSnapshot, options *config.Options) (Model, Model, error) {
 	cfg := snapshot.Config()
-	var primaryModelCfg config.SelectedModel
+	options := cfg.Options
+	var primary config.SelectedModel
 	if agent.PrimaryModelOverride != nil {
-		primaryModelCfg = *agent.PrimaryModelOverride
-		if !cfg.IsModelAvailable(primaryModelCfg.Provider, primaryModelCfg.Model) {
-			return Model{}, Model{}, fmt.Errorf("primary model %q for provider %q is not available", primaryModelCfg.Model, primaryModelCfg.Provider)
+		primary = *agent.PrimaryModelOverride
+		if !cfg.IsModelAvailable(primary.Provider, primary.Model) {
+			return Model{}, Model{}, fmt.Errorf("primary model %q for provider %q is not available", primary.Model, primary.Provider)
 		}
 	} else {
 		var ok bool
-		primaryModelCfg, ok = cfg.Models[agent.Model]
+		primary, ok = cfg.Models[agent.Model]
 		if !ok {
 			return Model{}, Model{}, errLargeModelNotSelected
 		}
 	}
-	smallModelCfg, ok := cfg.Models[config.SelectedModelTypeSmall]
+	small, ok := cfg.Models[config.SelectedModelTypeSmall]
 	if !ok {
 		return Model{}, Model{}, errSmallModelNotSelected
 	}
-
-	primaryProviderCfg, ok := cfg.Providers.Get(primaryModelCfg.Provider)
-	if !ok {
+	if _, ok := cfg.Providers.Get(primary.Provider); !ok {
 		return Model{}, Model{}, errLargeModelProviderNotConfigured
 	}
-	primaryProvider, err := c.buildProviderWithOptions(snapshot, primaryProviderCfg, primaryModelCfg, isSubAgent, options)
-	if err != nil {
-		return Model{}, Model{}, err
-	}
-
-	smallProviderCfg, ok := cfg.Providers.Get(smallModelCfg.Provider)
-	if !ok {
+	if _, ok := cfg.Providers.Get(small.Provider); !ok {
 		return Model{}, Model{}, errSmallModelProviderNotConfigured
 	}
-	smallProvider, err := c.buildProviderWithOptions(snapshot, smallProviderCfg, smallModelCfg, true, options)
+	largeModel, err := c.buildAdmittedModel(ctx, primary, isSubAgent, snapshot, options)
 	if err != nil {
 		return Model{}, Model{}, err
 	}
+	smallModel, err := c.buildAdmittedModel(ctx, small, true, snapshot, options)
+	if err != nil {
+		return Model{}, Model{}, err
+	}
+	return largeModel, smallModel, nil
+}
 
-	var primaryCatalogModel *catalog.Model
-	var smallCatalogModel *catalog.Model
-	for _, model := range primaryProviderCfg.Models {
-		if model.ID == primaryModelCfg.Model {
-			primaryCatalogModel = &model
+// buildAdmittedModel constructs only the selected model. An in-flight refresh
+// must not depend on a newer, unrelated primary or auxiliary model selection.
+func (c *coordinator) buildAdmittedModel(ctx context.Context, selected config.SelectedModel, isSubAgent bool, snapshot config.RuntimeSnapshot, options *config.Options) (Model, error) {
+	providerCfg, ok := snapshot.Config().Providers.Get(selected.Provider)
+	if !ok {
+		return Model{}, errModelProviderNotConfigured
+	}
+	provider, err := c.buildProviderWithOptions(snapshot, providerCfg, selected, isSubAgent, options)
+	if err != nil {
+		return Model{}, err
+	}
+	var catalogModel *catalog.Model
+	for _, model := range providerCfg.Models {
+		if model.ID == selected.Model {
+			catalogModel = &model
 			break
 		}
 	}
-	for _, model := range smallProviderCfg.Models {
-		if model.ID == smallModelCfg.Model {
-			smallCatalogModel = &model
-			break
-		}
+	if catalogModel == nil {
+		return Model{}, fmt.Errorf("model %q for provider %q is not available", selected.Model, selected.Provider)
 	}
-	if primaryCatalogModel == nil {
-		return Model{}, Model{}, errLargeModelNotFound
-	}
-	if smallCatalogModel == nil {
-		return Model{}, Model{}, errSmallModelNotFound
-	}
-
-	primaryLanguageModel, err := primaryProvider.LanguageModel(ctx, primaryModelCfg.Model)
+	languageModel, err := provider.LanguageModel(ctx, selected.Model)
 	if err != nil {
-		return Model{}, Model{}, err
+		return Model{}, err
 	}
-	smallLanguageModel, err := smallProvider.LanguageModel(ctx, smallModelCfg.Model)
+	registration, registered := snapshot.ProviderBehaviorRegistration(selected.Provider, providerCfg)
+	compaction, compactionRetry, err := manifestCompaction(registration, registered)
 	if err != nil {
-		return Model{}, Model{}, err
+		return Model{}, fmt.Errorf("provider %s compaction: %w", selected.Provider, err)
 	}
-	primaryRegistration, primaryRegistered := snapshot.ProviderBehaviorRegistration(primaryModelCfg.Provider, primaryProviderCfg)
-	primaryCompaction, primaryCompactionRetry, err := manifestCompaction(primaryRegistration, primaryRegistered)
-	if err != nil {
-		return Model{}, Model{}, fmt.Errorf("provider %s compaction: %w", primaryModelCfg.Provider, err)
-	}
-	var primaryCompactor RemoteCompactor
-	if primaryCompaction != nil && primaryCompaction.Mode == "remote-operation" {
+	var compactor RemoteCompactor
+	if compaction != nil && compaction.Mode == "remote-operation" {
 		var ok bool
-		primaryCompactor, ok = primaryLanguageModel.(RemoteCompactor)
+		compactor, ok = languageModel.(RemoteCompactor)
 		if !ok {
-			return Model{}, Model{}, fmt.Errorf("provider %s remote compaction executor is unavailable", primaryModelCfg.Provider)
+			return Model{}, fmt.Errorf("provider %s remote compaction executor is unavailable", selected.Provider)
 		}
-		primaryCompactor = mapRemoteCompactorErrors(primaryCompactor, primaryRegistration)
+		compactor = mapRemoteCompactorErrors(compactor, registration)
 	}
-	if primaryRegistered {
-		primaryLanguageModel = mapLanguageModelErrors(primaryLanguageModel, primaryRegistration)
-		if primaryRegistration.Construction == providerregistry.ConstructionOpenAIResponses {
-			continuationProvider, ok := primaryProvider.(nativeResponsesContinuationProvider)
+	if registered {
+		languageModel = mapLanguageModelErrors(languageModel, registration)
+		if registration.Construction == providerregistry.ConstructionOpenAIResponses {
+			continuationProvider, ok := provider.(nativeResponsesContinuationProvider)
 			if !ok || continuationProvider.continuationOwner() == "" {
-				return Model{}, Model{}, fmt.Errorf("provider %s native Responses continuation owner is unavailable", primaryModelCfg.Provider)
+				return Model{}, fmt.Errorf("provider %s native Responses continuation owner is unavailable", selected.Provider)
 			}
-			primaryLanguageModel = openairesponsestransport.NewLifecycleModelWithErrorMappingsAndStore(primaryLanguageModel, primaryRegistration.Operation.Retry, primaryRegistration.Operation.Continuation, primaryRegistration.Errors, c.responsesContinuations, continuationProvider.continuationOwner(), primaryRegistration.Operation.ToolCodec)
+			languageModel = openairesponsestransport.NewLifecycleModelWithErrorMappingsAndStore(languageModel, registration.Operation.Retry, registration.Operation.Continuation, registration.Errors, c.responsesContinuations, continuationProvider.continuationOwner(), registration.Operation.ToolCodec)
 		}
 	}
-	primaryImagePolicy, hasPrimaryImagePolicy := imageattachment.PolicyFromDeclaration(primaryRegistration.Images)
-
-	smallRegistration, smallRegistered := snapshot.ProviderBehaviorRegistration(smallModelCfg.Provider, smallProviderCfg)
-	smallCompaction, smallCompactionRetry, err := manifestCompaction(smallRegistration, smallRegistered)
-	if err != nil {
-		return Model{}, Model{}, fmt.Errorf("provider %s compaction: %w", smallModelCfg.Provider, err)
-	}
-	var smallCompactor RemoteCompactor
-	if smallCompaction != nil && smallCompaction.Mode == "remote-operation" {
-		var ok bool
-		smallCompactor, ok = smallLanguageModel.(RemoteCompactor)
-		if !ok {
-			return Model{}, Model{}, fmt.Errorf("provider %s remote compaction executor is unavailable", smallModelCfg.Provider)
-		}
-		smallCompactor = mapRemoteCompactorErrors(smallCompactor, smallRegistration)
-	}
-	if smallRegistered {
-		smallLanguageModel = mapLanguageModelErrors(smallLanguageModel, smallRegistration)
-		if smallRegistration.Construction == providerregistry.ConstructionOpenAIResponses {
-			continuationProvider, ok := smallProvider.(nativeResponsesContinuationProvider)
-			if !ok || continuationProvider.continuationOwner() == "" {
-				return Model{}, Model{}, fmt.Errorf("provider %s native Responses continuation owner is unavailable", smallModelCfg.Provider)
-			}
-			smallLanguageModel = openairesponsestransport.NewLifecycleModelWithErrorMappingsAndStore(smallLanguageModel, smallRegistration.Operation.Retry, smallRegistration.Operation.Continuation, smallRegistration.Errors, c.responsesContinuations, continuationProvider.continuationOwner(), smallRegistration.Operation.ToolCodec)
-		}
-	}
-	smallImagePolicy, hasSmallImagePolicy := imageattachment.PolicyFromDeclaration(smallRegistration.Images)
-
-	primary := Model{
+	model := Model{
 		isSubAgent:          isSubAgent,
 		runtimeOptions:      options,
-		Model:               primaryLanguageModel,
-		CatalogModel:        *primaryCatalogModel,
-		ModelCfg:            primaryModelCfg,
-		FlatRate:            primaryProviderCfg.FlatRate,
-		SystemPromptPrefix:  primaryProviderCfg.SystemPromptPrefix,
-		InstructionPolicy:   instructionPolicyForConstruction(primaryRegistration.Construction),
-		Compaction:          primaryCompaction,
-		Compactor:           primaryCompactor,
-		CompactionRetry:     primaryCompactionRetry,
-		Retry:               manifestOperationRetry(primaryRegistration, primaryRegistered),
-		Metadata:            slices.Clone(primaryRegistration.Metadata),
-		AnthropicEfficiency: primaryRegistration.AnthropicEfficiency,
-		OnAuthRefresh:       c.makeAuthRefreshCallback(snapshot, primaryProviderCfg),
+		Model:               languageModel,
+		CatalogModel:        *catalogModel,
+		ModelCfg:            selected,
+		FlatRate:            providerCfg.FlatRate,
+		SystemPromptPrefix:  providerCfg.SystemPromptPrefix,
+		InstructionPolicy:   instructionPolicyForConstruction(registration.Construction),
+		Compaction:          compaction,
+		Compactor:           compactor,
+		CompactionRetry:     compactionRetry,
+		Retry:               manifestOperationRetry(registration, registered),
+		Metadata:            slices.Clone(registration.Metadata),
+		AnthropicEfficiency: registration.AnthropicEfficiency,
+		OnAuthRefresh:       c.makeAuthRefreshCallback(snapshot, providerCfg),
 	}
-	if !primaryRegistered {
-		primary.InstructionPolicy = fantasy.InstructionPolicyGeneric
+	if !registered {
+		model.InstructionPolicy = fantasy.InstructionPolicyGeneric
 	}
-	if hasPrimaryImagePolicy {
-		primary.ImagePolicy = &primaryImagePolicy
+	if imagePolicy, ok := imageattachment.PolicyFromDeclaration(registration.Images); ok {
+		model.ImagePolicy = &imagePolicy
 	}
-	primaryProviderOptions, err := getProviderOptions(primary, primaryProviderCfg, primaryRegistration)
+	providerOptions, err := getProviderOptions(model, providerCfg, registration)
 	if err != nil {
-		return Model{}, Model{}, fmt.Errorf("provider %s options: %w", primaryModelCfg.Provider, err)
+		return Model{}, fmt.Errorf("provider %s options: %w", selected.Provider, err)
 	}
-	primary.ProviderOptions = c.oauthReasoningOptionsForRegistration(
-		primaryModelCfg.Provider,
-		primaryModelCfg.Model,
-		primaryRegistration,
-		primaryRegistered,
-		primaryProviderOptions,
-	)
-	small := Model{
-		isSubAgent:          true,
-		runtimeOptions:      options,
-		Model:               smallLanguageModel,
-		CatalogModel:        *smallCatalogModel,
-		ModelCfg:            smallModelCfg,
-		FlatRate:            smallProviderCfg.FlatRate,
-		SystemPromptPrefix:  smallProviderCfg.SystemPromptPrefix,
-		InstructionPolicy:   instructionPolicyForConstruction(smallRegistration.Construction),
-		Compaction:          smallCompaction,
-		Compactor:           smallCompactor,
-		CompactionRetry:     smallCompactionRetry,
-		Retry:               manifestOperationRetry(smallRegistration, smallRegistered),
-		Metadata:            slices.Clone(smallRegistration.Metadata),
-		AnthropicEfficiency: smallRegistration.AnthropicEfficiency,
-		OnAuthRefresh:       c.makeAuthRefreshCallback(snapshot, smallProviderCfg),
+	model.ProviderOptions = c.oauthReasoningOptionsForRegistration(selected.Provider, selected.Model, registration, registered, providerOptions)
+	if registered && registration.Construction == providerregistry.ConstructionOpenAIResponses {
+		model = c.bindModelAuthentication(snapshot, model, providerCfg)
 	}
-	if !smallRegistered {
-		small.InstructionPolicy = fantasy.InstructionPolicyGeneric
-	}
-	if hasSmallImagePolicy {
-		small.ImagePolicy = &smallImagePolicy
-	}
-	smallProviderOptions, err := getProviderOptions(small, smallProviderCfg, smallRegistration)
-	if err != nil {
-		return Model{}, Model{}, fmt.Errorf("provider %s options: %w", smallModelCfg.Provider, err)
-	}
-	small.ProviderOptions = c.oauthReasoningOptionsForRegistration(
-		smallModelCfg.Provider,
-		smallModelCfg.Model,
-		smallRegistration,
-		smallRegistered,
-		smallProviderOptions,
-	)
-	if primaryRegistered && primaryRegistration.Construction == providerregistry.ConstructionOpenAIResponses {
-		primary = c.bindModelAuthentication(snapshot, primary, primaryProviderCfg)
-	}
-	if smallRegistered && smallRegistration.Construction == providerregistry.ConstructionOpenAIResponses {
-		small = c.bindModelAuthentication(snapshot, small, smallProviderCfg)
-	}
-	return primary, small, nil
+	return model, nil
 }
 
 func manifestOperationRetry(registration providerregistry.Registration, registered bool) *manifest.RetryPolicy {
