@@ -3,6 +3,7 @@ package automemory
 import (
 	"context"
 	"fmt"
+	"github.com/example-git/crux/internal/config"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,6 +30,7 @@ type Entry struct {
 
 type Service struct {
 	workingDirectory string
+	store            *config.ConfigStore
 }
 
 const maxMemoryFileBytes = maxMemoryContentBytes + 4096
@@ -37,6 +39,10 @@ const ProjectMemorySlots = 50
 
 func NewService(workingDirectory string) *Service {
 	return &Service{workingDirectory: workingDirectory}
+}
+
+func NewServiceForStore(store *config.ConfigStore) *Service {
+	return &Service{workingDirectory: store.WorkingDir(), store: store}
 }
 
 func (s *Service) List(ctx context.Context, scope Scope) ([]Entry, error) {
@@ -141,6 +147,9 @@ func (s *Service) Remove(ctx context.Context, scope Scope, topic string) error {
 }
 
 func (s *Service) resolve(ctx context.Context, scope Scope, requireManaged bool) (Memory, error) {
+	if s.store != nil {
+		ctx = contextForStore(ctx, s.store)
+	}
 	disabled, err := disabled()
 	if err != nil {
 		return Memory{}, err
@@ -157,7 +166,7 @@ func (s *Service) resolve(ctx context.Context, scope Scope, requireManaged bool)
 		}
 		memory = Memory{Directory: directory, Entrypoint: filepath.Join(directory, EntrypointName), Managed: managed}
 	case ScopeUser:
-		directory := UserDirectory()
+		directory := userDirectoryForContext(ctx)
 		memory = Memory{Directory: directory, Entrypoint: filepath.Join(directory, EntrypointName), Managed: true, Scope: ScopeUser}
 	default:
 		return Memory{}, fmt.Errorf("invalid memory scope %q: expected project or user", scope)

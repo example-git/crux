@@ -59,6 +59,7 @@ type ProviderScan struct {
 	pluginStatuses   map[string]providerplugin.Status
 	presetReferences map[string]ProviderPresetReference
 	ownerModes       map[string]providerregistry.OwnerMode
+	bundles          map[string]providerplugin.TransportBundle
 }
 
 func cloneProviderScan(scan ProviderScan) ProviderScan {
@@ -67,6 +68,7 @@ func cloneProviderScan(scan ProviderScan) ProviderScan {
 		pluginStatuses:   cloneProviderStatuses(scan.pluginStatuses),
 		presetReferences: maps.Clone(scan.presetReferences),
 		ownerModes:       maps.Clone(scan.ownerModes),
+		bundles:          cloneTransportBundles(scan.bundles),
 	}
 	if scan.Registry != nil {
 		result.Registry = scan.Registry.Clone()
@@ -437,6 +439,21 @@ func scanProviders(ctx context.Context, cfg *Config, environment env.Env) (Provi
 		pluginProviders = slices.DeleteFunc(pluginProviders, func(provider catalog.Provider) bool {
 			return !acceptedPluginProviders[string(provider.ID)]
 		})
+		generation := pluginManager.Snapshot()
+		selected := make(map[string]string)
+		for _, status := range generation.Plugins {
+			if status.State == providerplugin.StateRegistered {
+				selected[status.ID] = status.Digest
+			}
+		}
+		bundles, exportErr := pluginManager.ExportRegisteredBundles(generation.Revision, selected)
+		if exportErr != nil {
+			pluginErr = errors.Join(pluginErr, exportErr)
+		}
+		scan.bundles = make(map[string]providerplugin.TransportBundle, len(bundles))
+		for _, bundle := range bundles {
+			scan.bundles[bundle.Digest] = bundle
+		}
 		pluginManager.Close()
 	}
 	if pluginErr != nil {

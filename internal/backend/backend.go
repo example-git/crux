@@ -141,7 +141,8 @@ type Backend struct {
 	// workspace this mechanism exists to prevent. The cost is one UUID per
 	// client process, and the server only outlives its clients for as long
 	// as sessions keep arriving inside the idle-shutdown window.
-	retired map[string]struct{}
+	retired          map[string]struct{}
+	clientPrincipals map[string]string
 	// pendingResponses counts HTTP create responses being delivered for each
 	// client. Their bridge claims remain unarmed until the last response is
 	// complete, so server-side serialization does not consume createGrace.
@@ -197,11 +198,13 @@ type clientState struct {
 // associated resources and state.
 type Workspace struct {
 	*app.App
-	ID     string
-	Path   string
-	Cfg    *config.ConfigStore
-	Env    []string
-	Skills *skills.Manager
+	ID            string
+	Path          string
+	Cfg           *config.ConfigStore
+	Env           []string
+	Skills        *skills.Manager
+	principal     string
+	authorityMode string
 
 	// resolvedPath is the path used as the dedup key in
 	// Backend.pathIndex. It is filepath.EvalSymlinks(filepath.Abs(Path))
@@ -417,6 +420,9 @@ func (b *Backend) CreateWorkspaceForResponse(args proto.Workspace) (*Workspace, 
 	if err != nil {
 		return nil, proto.Workspace{}, nil, err
 	}
+	if err := b.BindClientPrincipal(clientID, args.AuthenticatedPrincipal); err != nil {
+		return nil, proto.Workspace{}, nil, err
+	}
 	b.mu.Lock()
 	if b.pendingResponses == nil {
 		b.pendingResponses = make(map[string]int)
@@ -469,11 +475,20 @@ func (b *Backend) completeWorkspaceResponse(clientID string) {
 // client which is released either by the first SSE attach (which
 // converts it into a stream claim) or by the grace window expiring.
 func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, response proto.Workspace, err error) {
+	if args.AuthorityMode == "" && args.AuthenticatedPrincipal == "" && args.Runtime == nil {
+		args.AuthorityMode = "server"
+	}
+	if err := validateWorkspaceAuthority(args); err != nil {
+		return nil, proto.Workspace{}, errors.Join(ErrInvalidClientRuntime, err)
+	}
 	if args.Path == "" {
 		return nil, proto.Workspace{}, ErrPathRequired
 	}
 	clientID, err := validateClientID(args.ClientID)
 	if err != nil {
+		return nil, proto.Workspace{}, err
+	}
+	if err := b.BindClientPrincipal(clientID, args.AuthenticatedPrincipal); err != nil {
 		return nil, proto.Workspace{}, err
 	}
 
@@ -503,6 +518,10 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, r
 	b.cancelShutdownLocked()
 	if existingID, ok := b.pathIndex[key]; ok {
 		if ws, found := b.workspaces.Get(existingID); found {
+			if err := checkWorkspaceReuse(ws, args); err != nil {
+				b.mu.Unlock()
+				return nil, proto.Workspace{}, err
+			}
 			if !stringSlicesEqual(ws.Cfg.Overrides().EnabledChannels, args.Channels) {
 				b.mu.Unlock()
 				return nil, proto.Workspace{}, ErrChannelOptInMismatch
@@ -583,6 +602,10 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, r
 			b.mu.Unlock()
 			return nil, proto.Workspace{}, errors.New("workspace initialization completed without an active workspace")
 		}
+		if err := checkWorkspaceReuse(ws, args); err != nil {
+			b.mu.Unlock()
+			return nil, proto.Workspace{}, err
+		}
 		if !stringSlicesEqual(ws.Cfg.Overrides().EnabledChannels, args.Channels) {
 			b.mu.Unlock()
 			return nil, proto.Workspace{}, ErrChannelOptInMismatch
@@ -599,14 +622,27 @@ initializeWorkspace:
 	if initConfig == nil {
 		initConfig = b.initWorkspaceConfig
 	}
-	cfg, err := initConfig(args.Path, args.DataDir, args.Debug)
+	dataDir := args.DataDir
+	if args.AuthenticatedPrincipal != "" {
+		dataDir = remoteWorkspaceDataDir(key, dataDir, args.AuthenticatedPrincipal)
+	}
+	var cfg *config.ConfigStore
+	if args.AuthorityMode == "client" {
+		cfg, err = config.CompileRemoteRuntime(args.Path, dataDir, args.Debug, *args.Runtime, args.AuthenticatedPrincipal, env.New())
+	} else {
+		cfg, err = initConfig(args.Path, dataDir, args.Debug)
+	}
 	if err != nil {
+		if args.AuthorityMode == "client" {
+			return nil, proto.Workspace{}, errors.Join(ErrInvalidClientRuntime, err)
+		}
 		return nil, proto.Workspace{}, fmt.Errorf("failed to initialize config: %w", err)
 	}
 
 	if err := cfg.ApplyEphemeralProviderState(args.ForwardedProviders, args.ForwardedAccounts); err != nil {
 		return nil, proto.Workspace{}, fmt.Errorf("failed to apply forwarded provider state: %w", err)
 	}
+	cfg.RegisterRemoteRuntimeSecrets()
 	cfg.SetRuntimeOverrides(args.YOLO, args.Channels)
 
 	if err := createDotCruxDir(cfg.Config().Options.DataDirectory); err != nil {
@@ -645,16 +681,18 @@ initializeWorkspace:
 	}
 	context.AfterFunc(wsCtx, closeTraffic)
 	ws := &Workspace{
-		App:          appWorkspace,
-		ID:           id,
-		Path:         args.Path,
-		Cfg:          cfg,
-		Env:          args.Env,
-		Skills:       skillsMgr,
-		resolvedPath: key,
-		ctx:          wsCtx,
-		cancel:       wsCancel,
-		clients:      make(map[string]*clientState),
+		App:           appWorkspace,
+		ID:            id,
+		Path:          args.Path,
+		Cfg:           cfg,
+		Env:           args.Env,
+		Skills:        skillsMgr,
+		principal:     args.AuthenticatedPrincipal,
+		authorityMode: args.AuthorityMode,
+		resolvedPath:  key,
+		ctx:           wsCtx,
+		cancel:        wsCancel,
+		clients:       make(map[string]*clientState),
 	}
 
 	b.mu.Lock()
@@ -673,6 +711,11 @@ initializeWorkspace:
 	// won the race between the initial unlock and here.
 	if existingID, ok := b.pathIndex[key]; ok {
 		if existing, found := b.workspaces.Get(existingID); found {
+			if err := checkWorkspaceReuse(existing, args); err != nil {
+				b.mu.Unlock()
+				ws.invokeShutdown()
+				return nil, proto.Workspace{}, err
+			}
 			// Register under b.mu so teardown cannot run
 			// between lookup and registerClient. Lock order
 			// is b.mu -> ws.clientsMu.
@@ -1338,8 +1381,12 @@ func workspaceToProto(ws *Workspace) proto.Workspace {
 		Debug:            cfg.Options.Debug,
 		Config:           cfg.RedactedForTransport(),
 		ProviderSurfaces: config.ProviderSurfaces(cfg),
+		Authority:        ws.Cfg.RemoteAuthority(),
 		Env:              ws.Env,
 		Version:          version.Version,
+	}
+	if out.Authority == nil {
+		out.Authority = &config.RemoteAuthority{Mode: "server", Principal: ws.principal}
 	}
 	if ws.Skills != nil {
 		out.Skills = skillStatesToProto(ws.Skills.States())

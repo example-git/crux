@@ -57,6 +57,33 @@ func TestRemoteRuntimeReplacementIsAtomicAndKeepsCapturedState(t *testing.T) {
 	require.Equal(t, files, remoteBaselineTree(t, root))
 }
 
+func TestClientRuntimeCannotPersistOrReloadServerAuthority(t *testing.T) {
+	proposal := remoteRuntimeFixture(t, "minimal.plugin")
+	root := t.TempDir()
+	store, err := CompileRemoteRuntime(root, filepath.Join(root, "data"), false, proposal, strings.Repeat("a", 64), env.NewFromMap(map[string]string{"HOME": root}))
+	require.NoError(t, err)
+	before := store.RuntimeSnapshot()
+	files := remoteBaselineTree(t, root)
+	for _, action := range []func() error{
+		func() error { return store.ReloadFromDisk(t.Context()) },
+		func() error {
+			return store.SetProviderAPIKey(ScopeGlobal, proposal.Providers[0].Config.ID, ProviderAPIKeyCredential{Owner: proposal.Credentials[0].Owner, APIKey: "replacement"})
+		},
+		func() error {
+			_, err := store.RefreshOAuthTokenForOwner(t.Context(), ScopeGlobal, proposal.Credentials[0].Owner)
+			return err
+		},
+		func() error {
+			return store.writeConfigFields(ScopeGlobal, map[string]any{"providers": map[string]any{}})
+		},
+	} {
+		require.ErrorIs(t, action(), ErrClientRuntimeManaged)
+		require.Same(t, before.Config(), store.Config())
+		require.Equal(t, before.RemoteAuthority(), store.RemoteAuthority())
+		require.Equal(t, files, remoteBaselineTree(t, root))
+	}
+}
+
 func remoteRuntimeFixture(t *testing.T, name string) RemoteRuntimeProposal {
 	t.Helper()
 	root := t.TempDir()

@@ -16,7 +16,6 @@ import (
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/config"
-	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
@@ -71,11 +70,34 @@ func (c *Client) RefreshWorkspaces(ctx context.Context) ([]proto.Workspace, erro
 // CreateWorkspace creates a new workspace on the server.
 func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*proto.Workspace, error) {
 	ws.ClientID = c.clientID
-	headers := http.Header{"Content-Type": []string{"application/json"}}
 	if len(ws.ForwardedProviders) > 0 || len(ws.ForwardedAccounts) > 0 {
-		headers.Set(cruxlog.EphemeralStateHeader, "1")
+		return nil, errors.New("legacy forwarding is unsupported; collect a client runtime snapshot")
 	}
-	rsp, err := c.post(ctx, "/workspaces", nil, jsonBody(ws), headers)
+	mode := ws.AuthorityMode
+	if mode == "" && c.secure {
+		mode = "client"
+	}
+	if mode == "" {
+		mode = "server"
+	}
+	headers := http.Header{"Content-Type": []string{"application/json"}}
+	var capabilities *proto.RemoteRuntimeCapabilities
+	var err error
+	if mode == "client" {
+		capabilities, err = c.NegotiateRemoteRuntime(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateRemoteRuntimeCapabilities(capabilities, ws.Runtime); err != nil {
+			return nil, err
+		}
+		headers = runtimeHeaders()
+	}
+	body := jsonBody(proto.CreateWorkspaceRequest{Workspace: ws, AuthorityMode: mode, Runtime: ws.Runtime})
+	if capabilities != nil && body.Len() > capabilities.MaxRequestBytes {
+		return nil, errors.New("client runtime exceeds remote request byte limit")
+	}
+	rsp, err := c.post(ctx, "/workspaces", nil, body, headers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create workspace: %w", err)
 	}
@@ -89,6 +111,9 @@ func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*prot
 	}
 	if err := bindWorkspaceProviderOwners(&created); err != nil {
 		return nil, fmt.Errorf("failed to bind workspace provider owners: %w", err)
+	}
+	if capabilities != nil && (created.Authority == nil || created.Authority.Mode != "client" || created.Authority.Principal != capabilities.Principal || created.Authority.Revision != ws.Runtime.Revision || created.Authority.Digest != ws.Runtime.Digest) {
+		return nil, errors.New("remote workspace acknowledgement does not match submitted client authority")
 	}
 	return &created, nil
 }

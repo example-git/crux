@@ -52,6 +52,10 @@ type PluginCredentials struct {
 }
 
 type PluginRuntime struct {
+	// Capture freezes client authority for the entire job. Server runtimes use
+	// their installed Manager directly and preserve existing trust semantics.
+	Capture            func() *PluginRuntime
+	Source             imageBundleSource
 	UploadDirectory    string
 	Environment        []string
 	Select             func(context.Context) (providerplugin.ImageOwner, error)
@@ -62,6 +66,24 @@ type PluginRuntime struct {
 	Configuration      func(providerplugin.ImageOwner) (map[string]any, error)
 	mu                 sync.Mutex
 	sessions           map[providerplugin.ImageOwner]*imagePluginSession
+}
+
+type imageBundleSource interface {
+	ImageBundleForOwner(providerplugin.ImageOwner) (providerplugin.RegisteredImageBundle, error)
+	ValidateImageOwner(context.Context, providerplugin.ImageOwner) error
+}
+
+func (r *PluginRuntime) source() imageBundleSource {
+	if r.Source != nil {
+		return r.Source
+	}
+	return r.Manager
+}
+
+func (r *PluginRuntime) Close() {
+	if r != nil && r.Manager != nil {
+		r.Manager.Close()
+	}
 }
 
 type imagePluginSession struct {
@@ -94,10 +116,13 @@ func acquireImagePlugin(ctx context.Context, owner providerplugin.ImageOwner, co
 }
 
 func (r *PluginRuntime) Prepare(owner providerplugin.ImageOwner, request JobRequest) (JobRequest, manifest.ImageManifest, error) {
-	if r == nil || r.Manager == nil {
+	if r != nil && r.Capture != nil {
+		return r.Capture().Prepare(owner, request)
+	}
+	if r == nil || r.Source == nil && r.Manager == nil {
 		return request, manifest.ImageManifest{}, errors.New("image plugin manager is unavailable")
 	}
-	bundle, err := r.Manager.ImageBundleForOwner(owner)
+	bundle, err := r.source().ImageBundleForOwner(owner)
 	if err != nil {
 		return request, manifest.ImageManifest{}, err
 	}
@@ -169,6 +194,9 @@ func (r *PluginRuntime) Prepare(owner providerplugin.ImageOwner, request JobRequ
 }
 
 func (r *PluginRuntime) Execute(ctx context.Context, owner providerplugin.ImageOwner, request JobRequest, inputs []EditImage) (response *Response, resultErr error) {
+	if r != nil && r.Capture != nil {
+		return r.Capture().Execute(ctx, owner, request, inputs)
+	}
 	request, value, err := r.Prepare(owner, request)
 	if err != nil {
 		return nil, err
@@ -196,10 +224,10 @@ func (r *PluginRuntime) Execute(ctx context.Context, owner providerplugin.ImageO
 		return nil, err
 	}
 	defer release()
-	if err := r.Manager.ValidateImageOwner(ctx, owner); err != nil {
+	if err := r.source().ValidateImageOwner(ctx, owner); err != nil {
 		return nil, err
 	}
-	bundle, err := r.Manager.ImageBundleForOwner(owner)
+	bundle, err := r.source().ImageBundleForOwner(owner)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +278,7 @@ func (r *PluginRuntime) Execute(ctx context.Context, owner providerplugin.ImageO
 		return nil, err
 	}
 	host := &providertransport.ImageWorkflowHost{Manifest: value, Client: r.Client, Credentials: credentials.Values, CookieJars: credentials.CookieJars, ValidateOwner: func() error {
-		if err := r.Manager.ValidateImageOwner(ctx, owner); err != nil {
+		if err := r.source().ValidateImageOwner(ctx, owner); err != nil {
 			return err
 		}
 		if r.Configuration != nil {

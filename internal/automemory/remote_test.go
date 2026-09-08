@@ -1,0 +1,45 @@
+package automemory
+
+import (
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/example-git/crux/foundation/catalog"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/stretchr/testify/require"
+)
+
+func TestClientOwnedMemoryUsesScopedPromptAndToolStorage(t *testing.T) {
+	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "")
+	t.Setenv("CRUX_AUTO_MEMORY_DIR", t.TempDir())
+	root := t.TempDir()
+	proposal := config.RemoteRuntimeProposal{Version: 1, Revision: 1, Providers: []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: "fixture", Type: catalog.TypeOpenAICompat, BaseURL: "https://example.invalid/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model"}}}}}, Models: map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "fixture", Model: "model"}}}
+	proposal.Credentials = []config.RemoteCredentialBinding{{Owner: providerregistry.RegistrationOwner{ProviderID: "fixture"}, Generation: 1, APIKey: "synthetic-test-key"}}
+	var err error
+	proposal.Digest, err = config.RemoteRuntimeDigest(proposal)
+	require.NoError(t, err)
+	stores := []*config.ConfigStore{}
+	for _, name := range []string{"a", "b"} {
+		store, err := config.CompileRemoteRuntime(root, filepath.Join(root, name), false, proposal, strings.Repeat(name, 64), env.NewFromMap(nil))
+		require.NoError(t, err)
+		stores = append(stores, store)
+	}
+	for _, scope := range []Scope{ScopeProject, ScopeUser} {
+		_, err := NewServiceForStore(stores[0]).Upsert(t.Context(), scope, Entry{File: "decision", Name: "Decision", Description: "Saved by first owner", Type: "feedback", Content: "first-client-only"})
+		require.NoError(t, err)
+		entries, err := NewServiceForStore(stores[1]).List(t.Context(), scope)
+		require.NoError(t, err)
+		require.Empty(t, entries)
+	}
+	first, err := LoadForStore(t.Context(), stores[0])
+	require.NoError(t, err)
+	second, err := LoadForStore(t.Context(), stores[1])
+	require.NoError(t, err)
+	require.Contains(t, Prompt(first), "decision.md")
+	require.NotContains(t, Prompt(second), "decision.md")
+	require.Equal(t, filepath.Join(root, "a", "memory", "project"), first.Directory)
+	require.Equal(t, filepath.Join(root, "a", "memory", "user"), first.UserDirectory)
+}

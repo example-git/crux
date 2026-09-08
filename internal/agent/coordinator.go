@@ -290,7 +290,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	c.currentAgent = agent
 	c.systemPromptTemplate = prompt
 	c.agents[config.AgentCoder] = agent
-	memory, err := automemory.Load(ctx, c.cfg.WorkingDir())
+	memory, err := automemory.LoadForStore(ctx, c.cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -1284,8 +1284,11 @@ func (c *coordinator) buildToolsForSkills(ctx context.Context, agent config.Agen
 	}
 
 	logFile := filepath.Join(cfg.Options.DataDirectory, "logs", "crux.log")
-	memoryService := automemory.NewService(c.cfg.WorkingDir())
+	memoryService := automemory.NewServiceForStore(c.cfg)
 	projectService := projects.NewService()
+	if c.cfg.RemoteAuthority() != nil {
+		projectService = projects.NewServiceAt(filepath.Join(cfg.Options.DataDirectory, "projects"))
+	}
 
 	// Build hook runner if PreToolUse hooks are configured.
 	var hookRunner *hooks.Runner

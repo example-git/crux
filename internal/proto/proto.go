@@ -41,6 +41,11 @@ type Workspace struct {
 	ForwardedProviders    map[string]config.ProviderConfig   `json:"forwarded_providers,omitempty"`
 	ForwardedAccounts     map[string]config.ForwardedAccount `json:"forwarded_accounts,omitempty"`
 	AllowedWorkspaceRoots []string                           `json:"-"`
+	Authority             *config.RemoteAuthority            `json:"authority,omitempty"`
+	// Private backend admission fields are never discovery or request JSON.
+	Runtime                *config.RemoteRuntimeProposal `json:"-"`
+	AuthorityMode          string                        `json:"-"`
+	AuthenticatedPrincipal string                        `json:"-"`
 }
 
 type BrowserListing struct {

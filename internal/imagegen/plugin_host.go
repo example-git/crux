@@ -16,6 +16,9 @@ func NewHostPluginRuntime(ctx context.Context, store *config.ConfigStore, bindin
 	if store == nil {
 		return nil, errors.New("image plugin configuration is unavailable")
 	}
+	if store.RemoteAuthority() != nil {
+		return newClientPluginRuntime(store), nil
+	}
 	paths, err := store.PluginPaths()
 	if err != nil {
 		return nil, err
