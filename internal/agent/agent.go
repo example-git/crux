@@ -181,6 +181,7 @@ type SessionAgent interface {
 type Model struct {
 	isSubAgent          bool
 	runtimeOptions      *config.Options // Immutable options captured when this model was admitted.
+	authRefreshConsumed bool            // A proactive rotation already served this operation.
 	Model               fantasy.LanguageModel
 	CatalogModel        catalog.Model
 	ModelCfg            config.SelectedModel
@@ -1925,6 +1926,9 @@ func modelMaxRetries(model Model) *int {
 }
 
 func modelAuthRefresh(model Model, callback func(context.Context, *fantasy.ProviderError) error) func(context.Context, *fantasy.ProviderError) error {
+	if model.authRefreshConsumed {
+		return nil
+	}
 	if owner, ok := model.Model.(interface{ HandlesAuthenticationRefresh() bool }); ok && owner.HandlesAuthenticationRefresh() {
 		return nil
 	}

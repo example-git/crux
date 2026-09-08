@@ -34,7 +34,7 @@ func (c *coordinator) bindModelAuthentication(snapshot config.RuntimeSnapshot, a
 			return nil, errors.New("client refresh returned no captured model")
 		}
 		selected := captured.ModelCfg
-		model, _, err := c.buildAgentModelsWithOptions(ctx, config.Agent{PrimaryModelOverride: &selected}, captured.isSubAgent, c.cfg.RuntimeSnapshot(), captured.runtimeOptions)
+		model, err := c.buildAdmittedModel(ctx, selected, captured.isSubAgent, c.cfg.RuntimeSnapshot(), captured.runtimeOptions)
 		return model.Model, err
 	})
 	return admitted
@@ -52,7 +52,7 @@ func (c *coordinator) refreshAdmittedClientModel(ctx context.Context, admitted c
 	// Build from the acknowledged snapshot and the operation's selected model.
 	// Reading the current agent here could adopt a later user account choice.
 	selected := target.admitted.ModelCfg
-	model, _, err := c.buildAgentModelsWithOptions(ctx, config.Agent{PrimaryModelOverride: &selected}, target.admitted.isSubAgent, snapshot, target.admitted.runtimeOptions)
+	model, err := c.buildAdmittedModel(ctx, selected, target.admitted.isSubAgent, snapshot, target.admitted.runtimeOptions)
 	if err != nil {
 		return err
 	}
@@ -88,14 +88,22 @@ func (c *coordinator) refreshAdmittedRuntime(ctx context.Context, admitted Insta
 	if err != nil {
 		return admitted, err
 	}
-	c.updateMu.Lock()
-	defer c.updateMu.Unlock()
-	prepared, err := c.buildRuntimeGeneration(ctx, snapshot)
+	// Refresh only models using this credential. Instructions, tools, controls
+	// and selections still belong to the initiating runtime. The new models carry
+	// the acknowledged snapshot in their own credential/continuation callbacks.
+	large, err := c.buildAdmittedModel(ctx, admitted.LargeModel.ModelCfg, admitted.LargeModel.isSubAgent, snapshot, admitted.LargeModel.runtimeOptions)
 	if err != nil {
 		return admitted, err
 	}
-	if prepared.installed.LargeModel.ModelCfg.Provider != admitted.LargeModel.ModelCfg.Provider || prepared.installed.LargeModel.ModelCfg.Model != admitted.LargeModel.ModelCfg.Model {
-		return admitted, errors.New("selected model changed during client authentication refresh")
+	large.authRefreshConsumed = true
+	small := admitted.SmallModel
+	if small.ModelCfg.Provider == provider.ID {
+		small, err = c.buildAdmittedModel(ctx, small.ModelCfg, small.isSubAgent, snapshot, small.runtimeOptions)
+		if err != nil {
+			return admitted, err
+		}
+		small.authRefreshConsumed = true
 	}
-	return prepared.installed, nil
+	admitted.LargeModel, admitted.SmallModel = large, small
+	return admitted, nil
 }
