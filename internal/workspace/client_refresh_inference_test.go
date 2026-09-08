@@ -27,12 +27,13 @@ import (
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/workspace"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
 
 func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
-	for _, mode := range []string{"refresh-once", "expired", "never", "changed-definition", "changed-bundle", "definition-during-exchange", "bundle-during-exchange", "rejected-completion", "account-replacement-during-exchange", "account-identical-during-exchange", "account-switchback-during-exchange", "account-logout-during-exchange", "recovery-after-rotation", "runtime-controls"} {
+	for _, mode := range []string{"refresh-once", "expired", "never", "changed-definition", "changed-bundle", "definition-during-exchange", "bundle-during-exchange", "rejected-completion", "account-replacement-during-exchange", "account-identical-during-exchange", "account-switchback-during-exchange", "account-logout-during-exchange", "recovery-after-rotation", "runtime-controls", "controls-during-expiry", "controls-during-refresh", "expired-fresh-rejected"} {
 		t.Run(mode, func(t *testing.T) {
 			xdgIsolate(t)
 			t.Setenv("AI_CLI_DIR", t.TempDir())
@@ -62,14 +63,15 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 			t.Cleanup(func() { remote.Close(); _ = s.Close() })
 
 			var exchanges atomic.Int32
+			var capturedTitleRequests atomic.Int32
 			var changeDuringExchange atomic.Pointer[func()]
 			var requestMu sync.Mutex
 			var credentials []string
 			provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == "/token" {
 					require.NoError(t, r.ParseForm())
-					require.Equal(t, "synthetic-old-refresh", r.Form.Get("refresh_token"))
 					exchanges.Add(1)
+					assert.Equal(t, "synthetic-old-refresh", r.Form.Get("refresh_token"))
 					if change := changeDuringExchange.Load(); change != nil {
 						(*change)()
 					}
@@ -78,7 +80,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					return
 				}
 				require.Equal(t, "/v1/responses", r.URL.Path)
-				if mode == "runtime-controls" {
+				if mode == "runtime-controls" || strings.HasPrefix(mode, "controls-during-") {
 					body, err := io.ReadAll(r.Body)
 					require.NoError(t, err)
 					want := "high"
@@ -87,8 +89,11 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					} else if strings.Contains(string(body), "controls-low") {
 						want = "low"
 					}
-					require.Equal(t, want, gjson.GetBytes(body, "reasoning.effort").String(), "the native request must use the accepted client reasoning control")
-					require.Equal(t, want, gjson.GetBytes(body, "text.verbosity").String(), "the native request must use the accepted client verbosity control")
+					assert.Equal(t, want, gjson.GetBytes(body, "reasoning.effort").String(), "captured reasoning control for purpose=%s model=%s", r.Header.Get("x-request-purpose"), gjson.GetBytes(body, "model").String())
+					assert.Equal(t, want, gjson.GetBytes(body, "text.verbosity").String(), "captured verbosity control for purpose=%s model=%s", r.Header.Get("x-request-purpose"), gjson.GetBytes(body, "model").String())
+					if r.Header.Get("x-request-purpose") == "title" && r.Header.Get("Authorization") == "Bearer synthetic-new-access" {
+						capturedTitleRequests.Add(1)
+					}
 					if strings.Contains(string(body), "controls-instructions") {
 						require.Contains(t, string(body), "You are a token engine.", "enabling the client instruction section must affect inference")
 					}
@@ -98,7 +103,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 				credentials = append(credentials, credential)
 				requestID := fmt.Sprintf("fixture_%d", len(credentials))
 				requestMu.Unlock()
-				if credential != "Bearer synthetic-new-access" {
+				if credential != "Bearer synthetic-new-access" || mode == "expired-fresh-rejected" {
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusUnauthorized)
 					_, _ = w.Write([]byte(`{"error":{"message":"synthetic token expired","type":"authentication_error"}}`))
@@ -118,7 +123,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 			t.Setenv("CRUX_CACHE_DIR", cacheDir)
 			installRefreshFixture(t, provider.URL, dataDir, cacheDir, mode)
 			entry := accounts.Entry{ID: "selected", AccessToken: "synthetic-old-access", RefreshToken: "synthetic-old-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
-			if mode == "expired" {
+			if mode == "expired" || mode == "controls-during-expiry" || mode == "expired-fresh-rejected" {
 				entry.ExpiresAt = time.Now().Add(-time.Hour).UnixMilli()
 			}
 			require.NoError(t, accounts.Save(t.Context(), "example.responses", entry))
@@ -126,7 +131,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(configDir, "crux.json"), []byte(configuration), 0o600))
 			store, err := config.Load(t.TempDir(), t.TempDir(), false)
 			require.NoError(t, err)
-			if mode == "runtime-controls" {
+			if mode == "runtime-controls" || strings.HasPrefix(mode, "controls-during-") {
 				require.NoError(t, store.SetConfigFields(config.ScopeGlobal, map[string]any{
 					"options.analysis_effort": "high", "options.response_verbosity": "high",
 					"options.disable_auto_summarize": true, "options.summarization_context_cap": 8192,
@@ -183,6 +188,13 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 				changeDuringExchange.Store(&changeAccount)
 			}
 			switch mode {
+			case "controls-during-expiry", "controls-during-refresh":
+				changeControls := func() {
+					require.NoError(t, store.SetConfigFields(config.ScopeGlobal, map[string]any{
+						"options.analysis_effort": "low", "options.response_verbosity": "low",
+					}))
+				}
+				changeDuringExchange.Store(&changeControls)
 			case "changed-definition":
 				changeDefinition()
 			case "changed-bundle":
@@ -214,6 +226,16 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					finished, ok := event.(pubsub.Event[proto.RunComplete])
 					if !ok || finished.Payload.RunID != "refresh-fixture" {
 						continue
+					}
+					if mode == "expired-fresh-rejected" {
+						require.NotEmpty(t, finished.Payload.Error)
+						require.EqualValues(t, 1, exchanges.Load(), "expiry and fresh-token rejection share one refresh allowance")
+						require.EqualValues(t, 1, completions.Load())
+						requestMu.Lock()
+						defer requestMu.Unlock()
+						require.NotEmpty(t, credentials)
+						require.NotContains(t, credentials, "Bearer synthetic-old-access")
+						return
 					}
 					if mode == "never" || strings.Contains(mode, "definition") || strings.Contains(mode, "bundle") || mode == "rejected-completion" || strings.HasPrefix(mode, "account-") {
 						require.NotEmpty(t, finished.Payload.Error)
@@ -272,6 +294,14 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					receiver, err := s.Backend().GetWorkspace(created.ID)
 					require.NoError(t, err)
 					require.Equal(t, uint64(2), receiver.Cfg.RemoteAuthority().Revision)
+					if strings.HasPrefix(mode, "controls-during-") {
+						require.Eventually(t, func() bool { return capturedTitleRequests.Load() > 0 }, 5*time.Second, 10*time.Millisecond, "the captured title model must execute before checking the next request")
+						require.Equal(t, "low", receiver.Cfg.Config().Options.AnalysisEffort)
+						require.Equal(t, "low", receiver.Cfg.Config().Options.ResponseVerbosity)
+						require.NoError(t, c.SendMessageWithPermissionMode(ctx, created.ID, session.ID, "controls-low", "controls-low: return the fixture response.", proto.AgentPermissionDeny))
+						awaitRefreshFixtureRun(t, ctx, events, w, "controls-low")
+						require.EqualValues(t, 1, exchanges.Load())
+					}
 					if mode == "runtime-controls" {
 						options := receiver.Cfg.Config().Options
 						require.True(t, options.DisableAutoSummarize)
@@ -326,7 +356,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					requestMu.Lock()
 					defer requestMu.Unlock()
 					require.Contains(t, credentials, "Bearer synthetic-new-access")
-					if mode == "expired" {
+					if mode == "expired" || mode == "controls-during-expiry" || mode == "expired-fresh-rejected" {
 						require.NotContains(t, credentials, "Bearer synthetic-old-access")
 					} else {
 						require.Contains(t, credentials, "Bearer synthetic-old-access")
@@ -455,7 +485,7 @@ func installRefreshFixture(t *testing.T, endpoint, dataDir, cacheDir, mode strin
 	if mode == "replacement" {
 		value.Capabilities.Headers[1].Value.Value = "changed-responses"
 	}
-	if mode == "runtime-controls" {
+	if mode == "runtime-controls" || strings.HasPrefix(mode, "controls-during-") {
 		value.Capabilities.RuntimeControls = append(value.Capabilities.RuntimeControls, manifest.RuntimeControl{
 			ID: "response_verbosity", Label: "Response verbosity", Type: "enum", Values: []string{"low", "medium", "high"},
 			Default: "medium", Scope: "model", RequestPath: "/text/verbosity",
