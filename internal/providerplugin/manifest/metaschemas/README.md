@@ -1,0 +1,1 @@
+Draft 2020-12 JSON Schema metaschemas copied without changes from the already-installed github.com/google/jsonschema-go v0.4.3 module, jsonschema/meta-schemas/draft2020-12. The accompanying LICENSE is retained from that module. These files resolve only the canonical https://json-schema.org/draft/2020-12/ identifiers during offline provider-bundle validation.

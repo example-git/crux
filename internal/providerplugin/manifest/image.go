@@ -26,7 +26,7 @@ var compiledImageSchema = sync.OnceValues(func() (*validator.Schema, error) {
 	if err != nil {
 		return nil, err
 	}
-	return validator.NewCompiler().Compile(data)
+	return compileLocalSchema(data)
 })
 
 func ImageSchemaIssuePaths(data []byte) ([]string, error) {
@@ -269,7 +269,7 @@ func ValidateImage(value ImageManifest) error {
 	configuration, err := json.Marshal(value.Configuration.Schema)
 	if err != nil || value.Configuration.Schema == nil {
 		add("/configuration/schema")
-	} else if _, err := validator.NewCompiler().Compile(configuration); err != nil {
+	} else if _, err := compileLocalSchema(configuration); err != nil {
 		add("/configuration/schema")
 	}
 	if strings.TrimSpace(value.Name) == "" || len(value.Name) > 128 {

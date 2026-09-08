@@ -22,14 +22,14 @@ var (
 		if err != nil {
 			return nil, err
 		}
-		return validator.NewCompiler().Compile(data)
+		return compileLocalSchema(data)
 	})
 	compiledPresetSchema = sync.OnceValues(func() (*validator.Schema, error) {
 		data, err := PresetSchemaJSON()
 		if err != nil {
 			return nil, err
 		}
-		return validator.NewCompiler().Compile(data)
+		return compileLocalSchema(data)
 	})
 )
 
