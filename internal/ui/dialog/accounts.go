@@ -26,6 +26,7 @@ import (
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/list"
 	"github.com/example-git/crux/internal/ui/styles"
+	"github.com/example-git/crux/internal/workspace"
 	"github.com/pkg/browser"
 	"github.com/sahilm/fuzzy"
 )
@@ -412,14 +413,17 @@ func SwitchAccountCmd(com *common.Common, action ActionSwitchAccount) tea.Cmd {
 		if err := validate(); err != nil {
 			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
 		}
-		credential := config.ProviderOAuthCredential{Owner: owner, Token: fresh.Token()}
-		if err := com.Workspace.SetProviderAPIKey(config.ScopeGlobal, cruxID, credential); err != nil {
-			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
-		}
-		if err := validate(); err != nil {
-			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
-		}
-		if err := accounts.SetActiveForOwner(ctx, accountNamespace, action.AccountID, validate); err != nil {
+		err = workspace.TransactCredentials(ctx, com.Workspace, func(editor workspace.CredentialEditor) error {
+			if err := validate(); err != nil {
+				return err
+			}
+			credential := config.ProviderOAuthCredential{Owner: owner, Token: fresh.Token()}
+			if err := editor.SetProviderAPIKey(config.ScopeGlobal, cruxID, credential); err != nil {
+				return err
+			}
+			return accounts.SetActiveForOwner(ctx, accountNamespace, action.AccountID, validate)
+		})
+		if err != nil {
 			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
 		}
 		return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName}
@@ -517,25 +521,22 @@ type LogoutDoneMsg struct {
 // LogoutCmd removes the stored credentials for a provider.
 func LogoutCmd(com *common.Common, action ActionLogout) tea.Cmd {
 	return func() tea.Msg {
-		if err := validateAccountOwner(com, action.Owner); err != nil {
-			return LogoutDoneMsg{Label: action.Label, Err: err}
-		}
-		if err := com.Workspace.RemoveProviderCredentials(config.ScopeGlobal, action.Owner); err != nil {
-			return LogoutDoneMsg{Label: action.Label, Err: err}
-		}
-		if action.AccountNamespace != "" {
-			if err := validateAccountOwner(com, action.Owner); err != nil {
-				return LogoutDoneMsg{Label: action.Label, Err: err}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		err := workspace.TransactCredentials(ctx, com.Workspace, func(editor workspace.CredentialEditor) error {
+			validate := func() error { return validateAccountOwner(com, action.Owner) }
+			if err := validate(); err != nil {
+				return err
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			if err := accounts.RemoveProviderForOwner(ctx, action.AccountNamespace, func() error {
-				return validateAccountOwner(com, action.Owner)
-			}); err != nil {
-				return LogoutDoneMsg{Label: action.Label, Err: err}
+			if err := editor.RemoveProviderCredentials(config.ScopeGlobal, action.Owner); err != nil {
+				return err
 			}
-		}
-		return LogoutDoneMsg{Label: action.Label}
+			if action.AccountNamespace != "" {
+				return accounts.RemoveProviderForOwner(ctx, action.AccountNamespace, validate)
+			}
+			return nil
+		})
+		return LogoutDoneMsg{Label: action.Label, Err: err}
 	}
 }
 
@@ -980,18 +981,17 @@ func SaveLoginCmd(com *common.Common, msg LoginDoneMsg) tea.Cmd {
 				return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
 			}
 		}
-		credential := config.ProviderOAuthCredential{Owner: owner, Token: msg.Token}
-		if err := validateAccountOwner(com, owner); err != nil {
-			return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
-		}
-		if err := com.Workspace.SetProviderAPIKey(config.ScopeGlobal, registration.ProviderID, credential); err != nil {
-			return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
-		}
-		if err := validateAccountOwner(com, owner); err != nil {
-			return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
-		}
-
-		if registration.AccountNamespace != "" {
+		err := workspace.TransactCredentials(ctx, com.Workspace, func(editor workspace.CredentialEditor) error {
+			if err := validate(); err != nil {
+				return err
+			}
+			credential := config.ProviderOAuthCredential{Owner: owner, Token: msg.Token}
+			if err := editor.SetProviderAPIKey(config.ScopeGlobal, registration.ProviderID, credential); err != nil {
+				return err
+			}
+			if registration.AccountNamespace == "" {
+				return nil
+			}
 			if accountID == "" {
 				accountID = "default"
 			}
@@ -1000,17 +1000,10 @@ func SaveLoginCmd(com *common.Common, msg LoginDoneMsg) tea.Cmd {
 			}
 			entry := accounts.FromToken(accountID, displayName, msg.Token, nil)
 			entry.Raw = raw
-			if err := validateAccountOwner(com, owner); err != nil {
-				return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
-			}
-			if err := accounts.SaveForOwner(ctx, registration.AccountNamespace, entry, func() error {
-				return validateAccountOwner(com, owner)
-			}); err != nil {
-				return AccountSwitchedMsg{CruxProviderID: registration.ProviderID, DisplayName: displayName, Err: err}
-			}
-			if err := validateAccountOwner(com, owner); err != nil {
-				return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
-			}
+			return accounts.SaveForOwner(ctx, registration.AccountNamespace, entry, validate)
+		})
+		if err != nil {
+			return LogoutDoneMsg{Label: registration.ProviderID, Err: err}
 		}
 		return AccountSwitchedMsg{CruxProviderID: registration.ProviderID, DisplayName: displayName, Continuation: msg.Continuation}
 	}

@@ -195,6 +195,7 @@ func TestCompileRemoteRuntimeRejectsInvalidCandidateWithoutServerWrites(t *testi
 		{"embedded-token", func(p *RemoteRuntimeProposal) { p.Providers[0].Config.APIKey = "private-invalid-key" }, "separate credential bindings"},
 		{"credential-owner", func(p *RemoteRuntimeProposal) { p.Credentials[0].Owner.ManifestVersion = "99.0.0" }, "exact provider owner"},
 		{"credential-generation", func(p *RemoteRuntimeProposal) { p.Credentials[0].Generation = 0 }, "credential binding"},
+		{"unavailable-with-secret", func(p *RemoteRuntimeProposal) { p.Credentials[0].Unavailable = true }, "cannot contain a secret"},
 		{"duplicate-credential", func(p *RemoteRuntimeProposal) { p.Credentials = append(p.Credentials, p.Credentials[0]) }, "credential binding"},
 		{"missing-model", func(p *RemoteRuntimeProposal) {
 			p.Models[SelectedModelTypeLarge] = SelectedModel{Provider: p.Providers[0].Config.ID, Model: "absent"}
@@ -218,4 +219,18 @@ func TestCompileRemoteRuntimeRejectsInvalidCandidateWithoutServerWrites(t *testi
 			require.Equal(t, before, remoteBaselineTree(t, root))
 		})
 	}
+}
+
+func TestRemoteRuntimeExplicitMissingCredential(t *testing.T) {
+	proposal := remoteRuntimeFixture(t, "deepseek-preset.plugin")
+	proposal.Credentials[0].APIKey = ""
+	proposal = sealRemoteRuntime(t, proposal)
+	root := t.TempDir()
+	_, err := CompileRemoteRuntime(root, filepath.Join(root, "data"), false, proposal, strings.Repeat("a", 64), SnapshotEnvironment())
+	require.ErrorContains(t, err, "requires its client credential")
+	proposal.Credentials[0].Unavailable = true
+	proposal = sealRemoteRuntime(t, proposal)
+	store, err := CompileRemoteRuntime(root, filepath.Join(root, "data"), false, proposal, strings.Repeat("a", 64), SnapshotEnvironment())
+	require.NoError(t, err)
+	require.ErrorContains(t, store.RuntimeSnapshot().ClientProviderUnavailable(proposal.Providers[0].Config.ID), "has no credential")
 }

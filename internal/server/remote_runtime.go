@@ -13,6 +13,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/version"
 )
 
@@ -194,5 +195,7 @@ func (c *controllerV1) handlePutWorkspaceRuntime(w http.ResponseWriter, r *http.
 		jsonError(w, status, err.Error())
 		return
 	}
+	// Provider snapshots do not change process-wide MCP configuration.
+	ws.SendEvent(pubsub.Event[proto.ConfigChanged]{Type: pubsub.UpdatedEvent, Payload: proto.ConfigChanged{WorkspaceID: ws.ID}})
 	jsonEncode(w, ack)
 }

@@ -43,7 +43,7 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion      = 1
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v1"
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v2"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -71,10 +71,11 @@ type RemoteProviderDefinition struct {
 }
 
 type RemoteCredentialBinding struct {
-	Owner      providerregistry.RegistrationOwner `json:"owner"`
-	Generation uint64                             `json:"generation"`
-	APIKey     string                             `json:"api_key,omitempty"`
-	Account    *accounts.Entry                    `json:"account,omitempty"`
+	Owner       providerregistry.RegistrationOwner `json:"owner"`
+	Generation  uint64                             `json:"generation"`
+	APIKey      string                             `json:"api_key,omitempty"`
+	Unavailable bool                               `json:"unavailable,omitempty"`
+	Account     *accounts.Entry                    `json:"account,omitempty"`
 }
 
 // RemoteAuthority is the redacted acknowledgement, bound by the receiver to the
@@ -309,8 +310,8 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			return nil, errors.New("client provider owner reference is invalid")
 		}
 		endpoint, err := url.Parse(provider.BaseURL)
-		if err != nil || (endpoint.Scheme != "https" && endpoint.Scheme != "http") || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.Fragment != "" {
-			return nil, errors.New("client provider endpoint must be an explicit HTTP or HTTPS destination")
+		if err != nil || (endpoint.Scheme != "https" && endpoint.Scheme != "http" && endpoint.Scheme != "wss" && endpoint.Scheme != "ws") || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.Fragment != "" {
+			return nil, errors.New("client provider endpoint must be an explicit HTTP, HTTPS, or declared WebSocket destination")
 		}
 		var metadata catalog.Provider
 		switch provider.Owner.Type {
@@ -387,6 +388,11 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		default:
 			return nil, errors.New("client provider authority is unsupported")
 		}
+		if endpoint.Scheme == "wss" || endpoint.Scheme == "ws" {
+			if provider.Owner.Construction != providerregistry.ConstructionCodex || provider.Owner.Type == ProviderOwnerCore && endpoint.Scheme != "wss" {
+				return nil, errors.New("client endpoint scheme does not match its selected transport")
+			}
+		}
 		// The client has already resolved endpoint, header, key and model
 		// defaults. Do not merge server or manifest defaults into these values.
 		seenModels := map[string]bool{}
@@ -436,6 +442,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	authority := RemoteAuthority{Mode: "client", Principal: principal, Revision: proposal.Revision, Digest: digest}
 	forwarded := map[string]ForwardedAccount{}
 	credentialProviders := map[string]bool{}
+	unavailable := map[string]bool{}
 	for _, binding := range proposal.Credentials {
 		id := binding.Owner.ProviderID
 		provider, ok := providers.Get(id)
@@ -447,6 +454,10 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			return nil, errors.New("client credential does not match its exact provider owner")
 		}
 		credentialProviders[id] = true
+		if binding.Unavailable && (binding.APIKey != "" || binding.Account != nil) {
+			return nil, errors.New("unavailable client credential cannot contain a secret")
+		}
+		unavailable[id] = binding.Unavailable
 		identity := RemoteAccountIdentity{ProviderID: id, Generation: binding.Generation}
 		if binding.Account != nil {
 			registration, ok := cfg.ProviderRegistration(id)
@@ -520,11 +531,14 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			return nil, errors.New("unsupported client model role")
 		}
 		provider, ok := providers.Get(selected.Provider)
-		if !ok || provider.Disable {
-			return nil, fmt.Errorf("selected %s client provider is missing or disabled", kind)
+		if !ok {
+			return nil, fmt.Errorf("selected %s client provider is missing", kind)
 		}
 		if !slices.ContainsFunc(provider.Models, func(model catalog.Model) bool { return model.ID == selected.Model }) {
 			return nil, fmt.Errorf("selected %s client model is unavailable", kind)
+		}
+		if unavailable[selected.Provider] || provider.Disable {
+			continue
 		}
 		registration, registered := cfg.ProviderRegistration(selected.Provider)
 		if registered && registration.OAuth != nil && provider.OAuthToken == nil {
@@ -544,4 +558,21 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	}
 	cfg.SetupAgents()
 	return &ConfigStore{config: cfg, workingDir: workingDir, baseEnvironment: cloneEnvironment(baseEnvironment), effectiveEnvironment: env.NewFromMap(maps.Clone(proposal.CredentialEnvironment)), resolver: IdentityResolver(), providerRegistry: registry, knownProviders: cloneProviderCatalog(scan.Providers), ephemeralAccounts: forwarded, clientRuntime: &clientRuntimeState{authority: authority, proposal: proposal, bundles: bundles}}, nil
+}
+
+// ClientProviderUnavailable returns an explicit accepted client availability
+// state. A missing unmarked binding remains an admission error.
+func (s RuntimeSnapshot) ClientProviderUnavailable(id string) error {
+	if !s.IsClientOwned() {
+		return nil
+	}
+	if provider, ok := s.config.Providers.Get(id); ok && provider.Disable {
+		return fmt.Errorf("client provider %s is disabled", id)
+	}
+	for _, credential := range s.clientRuntime.proposal.Credentials {
+		if credential.Owner.ProviderID == id && credential.Unavailable {
+			return fmt.Errorf("client provider %s has no credential; sign in on the owning client", id)
+		}
+	}
+	return nil
 }
