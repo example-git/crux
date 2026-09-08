@@ -6,30 +6,15 @@ package accounts
 
 import (
 	"context"
-	"fmt"
-	"sync"
+	"errors"
 
 	"github.com/example-git/crux/internal/oauth"
-	"github.com/example-git/crux/internal/providertransport"
 )
 
 // Refresher exchanges a refresh token for a fresh token.
 type Refresher func(ctx context.Context, refreshToken string) (*oauth.Token, error)
 
 type Validator func() error
-
-var (
-	// refreshSF single-flights refreshes per provider/account so concurrent
-	// callers do not race the same rotated refresh token.
-	refreshSFMu sync.Mutex
-	refreshSF   = map[string]*refreshCall{}
-)
-
-type refreshCall struct {
-	done  chan struct{}
-	entry *Entry
-	err   error
-}
 
 // RegisterRefresher registers the token refresher for a provider store key.
 func RegisterRefresher(provider string, fn Refresher) {
@@ -101,107 +86,11 @@ func AccessTokenForOwner(ctx context.Context, provider string, refresher Refresh
 }
 
 func ensureFresh(ctx context.Context, provider string, entry *Entry, activate bool, fn Refresher, validate Validator) (*Entry, error) {
+	if entry == nil {
+		return nil, errors.New("refresh requires an exact account")
+	}
 	if !entry.Expired() || entry.RefreshToken == "" {
 		return entry, nil
 	}
-
-	if fn == nil {
-		return nil, fmt.Errorf("no token refresher registered for provider %q", provider)
-	}
-
-	key := fmt.Sprintf("%s\x00%s\x00%p", provider, entry.ID, fn)
-	if validate != nil {
-		key += fmt.Sprintf("\x00%p", validate)
-	}
-
-	refreshSFMu.Lock()
-	if call, ok := refreshSF[key]; ok {
-		refreshSFMu.Unlock()
-		select {
-		case <-call.done:
-			return call.entry, call.err
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	call := &refreshCall{done: make(chan struct{})}
-	refreshSF[key] = call
-	refreshSFMu.Unlock()
-
-	defer func() {
-		close(call.done)
-		refreshSFMu.Lock()
-		delete(refreshSF, key)
-		refreshSFMu.Unlock()
-	}()
-
-	// Re-read from disk under the single flight: another process may have
-	// already refreshed and rotated the token.
-	if current, err := findByID(ctx, provider, entry.ID); err == nil && current != nil {
-		if !current.Expired() {
-			call.entry = current
-			return current, nil
-		}
-		entry = current
-	}
-
-	if validate != nil {
-		if err := validate(); err != nil {
-			call.err = err
-			return nil, err
-		}
-	}
-	refreshCtx := ctx
-	if validate != nil {
-		refreshCtx = providertransport.ContextWithOwnerValidator(ctx, providertransport.OwnerValidator(validate))
-	}
-	token, err := fn(refreshCtx, entry.RefreshToken)
-	if err != nil {
-		call.err = err
-		return nil, err
-	}
-	if validate != nil {
-		if err := validate(); err != nil {
-			call.err = err
-			return nil, err
-		}
-	}
-	fresh := FromToken(entry.ID, entry.DisplayName, token, entry)
-	if validate != nil {
-		if err := validate(); err != nil {
-			call.err = err
-			return nil, err
-		}
-	}
-	if validate != nil {
-		if activate {
-			err = SaveForOwner(ctx, provider, fresh, validate)
-		} else {
-			err = SaveWithoutActivatingForOwner(ctx, provider, fresh, validate)
-		}
-	} else if activate {
-		err = Save(ctx, provider, fresh)
-	} else {
-		err = SaveWithoutActivating(ctx, provider, fresh)
-	}
-	if err != nil {
-		call.err = err
-		return nil, err
-	}
-	call.entry = &fresh
-	return &fresh, nil
-}
-
-// findByID returns a specific account by id, or nil.
-func findByID(ctx context.Context, provider, id string) (*Entry, error) {
-	list, err := List(ctx, provider)
-	if err != nil {
-		return nil, err
-	}
-	for i := range list {
-		if list[i].ID == id {
-			return &list[i], nil
-		}
-	}
-	return nil, nil
+	return refreshAccount(ctx, provider, entry, fn, validate, activate, false)
 }
