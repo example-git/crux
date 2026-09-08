@@ -379,8 +379,11 @@ type ConfigStore struct {
 	// channels that WaitForTokenChange blocks on. SignalAuthComplete
 	// closes the channel to unblock waiters; a new channel is created
 	// on the next wait.
-	authSignalMu sync.Mutex
-	authSignals  map[providerregistry.RegistrationOwner]chan struct{}
+	authSignalMu           sync.Mutex
+	authSignals            map[providerregistry.RegistrationOwner]chan struct{}
+	clientRefreshMu        sync.Mutex
+	clientRefreshes        map[string]*clientRefreshCall
+	clientRefreshPublisher func(context.Context, ClientRefreshRequest)
 }
 
 // Config returns the pure-data config struct (read-only after load).

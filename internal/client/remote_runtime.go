@@ -89,3 +89,18 @@ func (c *Client) ReplaceRemoteRuntime(ctx context.Context, id string, expected u
 	}
 	return &ack, nil
 }
+
+func (c *Client) CompleteClientRefresh(ctx context.Context, id string, result config.ClientRefreshCompletion) error {
+	rsp, err := c.post(ctx, "/workspaces/"+id+"/runtime/refresh-completion", nil, jsonBody(result), runtimeHeaders())
+	if err != nil {
+		return err
+	}
+	defer rsp.Body.Close()
+	err = checkStatus(rsp, http.StatusNoContent)
+	if rsp.StatusCode >= 400 && rsp.StatusCode < 500 {
+		return errors.Join(ErrClientRefreshRejected, err)
+	}
+	return err
+}
+
+var ErrClientRefreshRejected = errors.New("client refresh completion was rejected")

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,6 +13,31 @@ import (
 	"github.com/example-git/crux/internal/proto"
 	"github.com/stretchr/testify/require"
 )
+
+func TestClientRefreshCompletionAcknowledgementStatus(t *testing.T) {
+	for _, status := range []int{http.StatusNoContent, http.StatusConflict, http.StatusNotFound, http.StatusBadGateway} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, http.MethodPost, r.Method)
+				require.Equal(t, "/v1/workspaces/workspace/runtime/refresh-completion", r.URL.Path)
+				require.Equal(t, proto.RemoteRuntimeProtocol, r.Header.Get("Crux-Runtime-Protocol"))
+				w.WriteHeader(status)
+			}))
+			defer server.Close()
+			c := &Client{h: server.Client(), network: "tcp", addr: strings.TrimPrefix(server.URL, "https://"), secure: true, clientID: "test"}
+			err := c.CompleteClientRefresh(t.Context(), "workspace", config.ClientRefreshCompletion{RequestID: "request", Failed: true})
+			switch status {
+			case http.StatusNoContent:
+				require.NoError(t, err)
+			case http.StatusConflict, http.StatusNotFound:
+				require.ErrorIs(t, err, ErrClientRefreshRejected)
+			default:
+				require.Error(t, err)
+				require.NotErrorIs(t, err, ErrClientRefreshRejected)
+			}
+		})
+	}
+}
 
 func TestClientRuntimeNegotiatesBeforePrivatePost(t *testing.T) {
 	for _, kind := range []string{"missing", "old-version", "wrong-compiler", "small-limit", "compatible"} {

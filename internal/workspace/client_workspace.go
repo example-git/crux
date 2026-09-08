@@ -1183,6 +1183,9 @@ func (w *ClientWorkspace) sleepOrDone(d time.Duration) bool {
 // are translated into domain types and forwarded to send.
 func (w *ClientWorkspace) consumeEvents(evc <-chan any, send func(tea.Msg)) {
 	for ev := range evc {
+		if w.HandleClientRefreshEvent(w.subCtx, ev) {
+			continue
+		}
 		// Forward events to herdr if running inside a herdr pane.
 		if hev := herdr.Translate(ev); hev != nil {
 			w.herdrClient.HandleEvent(hev)

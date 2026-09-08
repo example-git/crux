@@ -40,10 +40,16 @@ func TestClientAuthorityTransactionsThroughTLS(t *testing.T) {
 	tokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
 		require.Equal(t, "refresh_token", r.Form.Get("grant_type"))
-		require.Equal(t, "synthetic-second-refresh", r.Form.Get("refresh_token"))
-		exchanges.Add(1)
+		exchange := exchanges.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"synthetic-rotated-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}`))
+		if exchange == 1 {
+			require.Equal(t, "synthetic-second-refresh", r.Form.Get("refresh_token"))
+			_, _ = w.Write([]byte(`{"access_token":"synthetic-rotated-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}`))
+		} else {
+			require.EqualValues(t, 2, exchange)
+			require.Equal(t, "synthetic-rotated-refresh", r.Form.Get("refresh_token"))
+			_, _ = w.Write([]byte(`{"access_token":"synthetic-auto-access","refresh_token":"synthetic-auto-refresh","expires_in":3600}`))
+		}
 	}))
 	t.Cleanup(tokenEndpoint.Close)
 	tokenURL, err := url.Parse(tokenEndpoint.URL)
@@ -70,7 +76,19 @@ func TestClientAuthorityTransactionsThroughTLS(t *testing.T) {
 	require.NoError(t, s.EnableNetworkAuth(t.Context()))
 	var loseAck, reject atomic.Bool
 	var puts atomic.Int32
+	var loseCompletion atomic.Bool
+	var completions atomic.Int32
 	hs := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/runtime/refresh-completion") {
+			completions.Add(1)
+			if loseCompletion.Swap(false) {
+				recorder := httptest.NewRecorder()
+				s.Handler().ServeHTTP(recorder, r)
+				require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+				http.Error(w, "synthetic completion acknowledgement lost", http.StatusBadGateway)
+				return
+			}
+		}
 		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
 			puts.Add(1)
 			if reject.Load() {
@@ -278,6 +296,52 @@ assertNoChange:
 	overlay, err := os.ReadFile(filepath.Join(oauthData, "crux.json"))
 	require.NoError(t, err)
 	require.Contains(t, string(overlay), "synthetic-rotated-refresh")
+	// Request before subscription so successful delivery requires replay of
+	// receiver state, then feed a duplicate event to the same client handler.
+	admitted := oauthReceiver.Cfg.RuntimeSnapshot()
+	type refreshResult struct {
+		snapshot config.RuntimeSnapshot
+		err      error
+	}
+	refreshResults := make(chan refreshResult, 1)
+	refreshCtx, cancelRefresh := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancelRefresh()
+	go func() {
+		snapshot, err := oauthReceiver.Cfg.RequestClientRefresh(refreshCtx, admitted, registration.Owner())
+		refreshResults <- refreshResult{snapshot, err}
+	}()
+	require.Eventually(t, func() bool { return len(oauthReceiver.Cfg.PendingClientRefreshes()) == 1 }, time.Second, 10*time.Millisecond)
+	refreshEvents, err := oauthClient.SubscribeEvents(refreshCtx, oauthCreated.ID)
+	require.NoError(t, err)
+	loseCompletion.Store(true)
+	for {
+		select {
+		case event := <-refreshEvents:
+			if oauthWorkspace.HandleClientRefreshEvent(refreshCtx, event) {
+				require.True(t, oauthWorkspace.HandleClientRefreshEvent(refreshCtx, event))
+				goto waitingForRefresh
+			}
+		case <-refreshCtx.Done():
+			t.Fatal("pending refresh was not replayed over TLS")
+		}
+	}
+waitingForRefresh:
+	var automatic refreshResult
+	select {
+	case automatic = <-refreshResults:
+		require.NoError(t, automatic.err)
+	case <-refreshCtx.Done():
+		t.Fatal("automatic refresh did not complete")
+	}
+	require.Eventually(t, func() bool { return completions.Load() == 2 }, 3*time.Second, 10*time.Millisecond)
+	require.EqualValues(t, 2, exchanges.Load(), "duplicate events and a lost completion response must not repeat the automatic exchange")
+	autoAccount, ok := automatic.snapshot.EphemeralAccount(registration.Owner())
+	require.True(t, ok)
+	require.Equal(t, "synthetic-auto-refresh", autoAccount.RefreshToken)
+	require.Equal(t, beforeRevision+2, automatic.snapshot.RemoteAuthority().Revision)
+	persisted, err = accounts.Active(t.Context(), registration.AccountNamespace)
+	require.NoError(t, err)
+	require.Equal(t, accounts.CredentialID(*autoAccount), accounts.CredentialID(*persisted))
 	loggedOut, ok := dialog.LogoutCmd(com, dialog.ActionLogout{Owner: registration.Owner(), AccountNamespace: registration.AccountNamespace, Label: "Codex"})().(dialog.LogoutDoneMsg)
 	require.True(t, ok)
 	require.NoError(t, loggedOut.Err)

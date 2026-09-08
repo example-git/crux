@@ -30,15 +30,16 @@ func TransactCredentials(ctx context.Context, w Workspace, mutate func(Credentia
 }
 
 type clientAuthority struct {
-	mu          sync.Mutex
-	store       *config.ConfigStore
-	view        atomic.Pointer[config.Config]
-	accepted    config.RemoteRuntimeProposal
-	principal   string
-	creation    proto.Workspace
-	pending     *config.RemoteRuntimeProposal
-	pendingView *config.Config
-	removed     map[providerregistry.RegistrationOwner]bool
+	mu            sync.Mutex
+	store         *config.ConfigStore
+	view          atomic.Pointer[config.Config]
+	accepted      config.RemoteRuntimeProposal
+	principal     string
+	creation      proto.Workspace
+	pending       *config.RemoteRuntimeProposal
+	pendingView   *config.Config
+	removed       map[providerregistry.RegistrationOwner]bool
+	refreshEvents sync.Map
 }
 
 func newClientAuthority(c *client.Client, ws proto.Workspace) *clientAuthority {
@@ -123,6 +124,10 @@ func (w *ClientWorkspace) mutateClientAuthority(ctx context.Context, mutate func
 	if err := mutate(a.store); err != nil {
 		return err
 	}
+	return w.publishClientAuthorityLocked(ctx, a)
+}
+
+func (w *ClientWorkspace) publishClientAuthorityLocked(ctx context.Context, a *clientAuthority) error {
 	proposal, err := a.store.CollectRemoteRuntimeWithUnavailable(ctx, a.accepted.Revision+1, a.removed)
 	if err != nil {
 		return fmt.Errorf("client state saved; remote runtime was not updated: %w", err)

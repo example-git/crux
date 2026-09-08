@@ -10,6 +10,7 @@ import (
 	"github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/app"
 	"github.com/example-git/crux/internal/backend"
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/history"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/permission"
@@ -27,6 +28,8 @@ import (
 // proper JSON tags. Returns nil if the event type is unrecognized.
 func wrapEvent(ev any) *pubsub.Payload {
 	switch e := ev.(type) {
+	case pubsub.Event[config.ClientRefreshRequest]:
+		return envelope(pubsub.PayloadTypeClientRefresh, e)
 	case pubsub.Event[app.LSPEvent]:
 		return envelope(pubsub.PayloadTypeLSPEvent, pubsub.Event[proto.LSPEvent]{
 			Type: e.Type,

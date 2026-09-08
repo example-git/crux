@@ -203,6 +203,11 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	}
 
 	app.setupEvents()
+	if store.RemoteAuthority() != nil {
+		store.SetClientRefreshPublisher(func(ctx context.Context, request config.ClientRefreshRequest) {
+			app.events.PublishMustDeliver(ctx, pubsub.CreatedEvent, tea.Msg(pubsub.Event[config.ClientRefreshRequest]{Type: pubsub.CreatedEvent, Payload: request}))
+		})
+	}
 
 	// Initialize clipboard support. This is best-effort; if it fails
 	// (e.g., headless environment), clipboard operations will return nil.

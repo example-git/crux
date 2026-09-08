@@ -246,6 +246,7 @@ func (s *Server) installHandler() {
 	route("GET /v1/version", c.handleGetVersion)
 	route("GET /v1/runtime-capabilities", c.handleGetRemoteRuntimeCapabilities)
 	route("PUT /v1/workspaces/{id}/runtime", c.handlePutWorkspaceRuntime)
+	route("POST /v1/workspaces/{id}/runtime/refresh-completion", c.handlePostClientRefreshCompletion)
 	route("GET /v1/plugins", c.handleGetPlugins)
 	route("GET /v1/config", c.handleGetConfig)
 	route("POST /v1/control", c.handlePostControl)
