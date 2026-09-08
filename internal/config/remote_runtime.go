@@ -29,12 +29,18 @@ var ErrClientRuntimeManaged = errors.New("this runtime is owned by the connected
 // RegisterRemoteRuntimeSecrets runs only after admission selects client mode.
 // Redaction outlives the workspace to protect delayed asynchronous log entries.
 func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
-	if s.RemoteAuthority() == nil {
+	snapshot := s.RuntimeSnapshot()
+	if !snapshot.IsClientOwned() {
 		return
 	}
-	registerConfigSecrets(s.Config())
-	redact.RegisterJSONValue(s.RuntimeSnapshot().clientRuntime.proposal.CredentialEnvironment)
-	for _, binding := range s.RuntimeSnapshot().clientRuntime.proposal.Credentials {
+	registerConfigSecrets(snapshot.Config())
+	redact.RegisterJSONValue(snapshot.clientRuntime.proposal.CredentialEnvironment)
+	for _, definition := range snapshot.clientRuntime.proposal.Providers {
+		if definition.GeminiProjectID != nil {
+			redact.RegisterJSONValue(*definition.GeminiProjectID)
+		}
+	}
+	for _, binding := range snapshot.clientRuntime.proposal.Credentials {
 		if binding.Account != nil {
 			registerAccountSecrets(*binding.Account)
 		}
@@ -43,7 +49,7 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion      = 1
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v11"
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v12"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -67,8 +73,9 @@ type RemoteRuntimeProposal struct {
 }
 
 type RemoteProviderDefinition struct {
-	Config       ProviderConfig `json:"config"`
-	BundleDigest string         `json:"bundle_digest,omitempty"`
+	Config          ProviderConfig `json:"config"`
+	BundleDigest    string         `json:"bundle_digest,omitempty"`
+	GeminiProjectID *string        `json:"gemini_project_id,omitempty"`
 }
 
 type RemoteCredentialBinding struct {
@@ -310,6 +317,13 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		}
 		if err := validateCompleteProviderOwner(id, provider); err != nil {
 			return nil, errors.New("client provider owner reference is invalid")
+		}
+		if provider.Owner.Construction == providerregistry.ConstructionGeminiAntigravity {
+			if definition.GeminiProjectID == nil {
+				return nil, errors.New("client Gemini provider requires a captured gemini_project_id string")
+			}
+		} else if definition.GeminiProjectID != nil {
+			return nil, errors.New("client project metadata does not match its provider construction")
 		}
 		endpoint, err := url.Parse(provider.BaseURL)
 		if err != nil || (endpoint.Scheme != "https" && endpoint.Scheme != "http" && endpoint.Scheme != "wss" && endpoint.Scheme != "ws") || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.Fragment != "" {
@@ -581,4 +595,17 @@ func (s RuntimeSnapshot) ClientProviderUnavailable(id string) error {
 		}
 	}
 	return nil
+}
+
+// ClientGeminiProjectID reads the admitted private definition, never server environment.
+func (s RuntimeSnapshot) ClientGeminiProjectID(id string) (string, error) {
+	if s.clientRuntime == nil {
+		return "", errors.New("client project authority is unavailable")
+	}
+	for _, definition := range s.clientRuntime.proposal.Providers {
+		if definition.Config.ID == id && definition.GeminiProjectID != nil {
+			return *definition.GeminiProjectID, nil
+		}
+	}
+	return "", errors.New("captured client Gemini project metadata is unavailable")
 }

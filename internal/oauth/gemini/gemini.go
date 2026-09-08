@@ -377,6 +377,20 @@ func Project(ctx context.Context, accessToken string) string {
 	return project
 }
 
+// ProjectForCredential resolves optional metadata without process environment
+// overrides or the unscoped cache. Empty metadata retains the provider's existing
+// empty-project behavior for accounts that do not return a project identifier.
+func ProjectForCredential(ctx context.Context, accessToken string) string {
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return ""
+	}
+	project := fetchProject(ctx, accessToken)
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return ""
+	}
+	return project
+}
+
 func fetchProject(ctx context.Context, accessToken string) string {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, loadCodeAssistURL, strings.NewReader("{}"))
 	if err != nil {

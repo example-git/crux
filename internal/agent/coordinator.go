@@ -2052,6 +2052,18 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 					return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
 				}
 			}
+			if snapshot.IsClientOwned() {
+				project, err := snapshot.ClientGeminiProjectID(providerCfg.ID)
+				if err != nil {
+					return nil, err
+				}
+				return gemini.NewProviderWithProjectSource(baseURL, func() string { return apiKey }, headers, registration.Operation, validateOwner, func(ctx context.Context, token string) string {
+					if project != "" {
+						return project
+					}
+					return gemini.ProjectForCredential(ctx, token)
+				})
+			}
 			return c.buildGeminiAntigravityProvider(registration, baseURL, apiKey, headers, validateOwner)
 		case providerregistry.ConstructionCodex:
 			if registration.Operation != nil {
