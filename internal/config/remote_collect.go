@@ -9,8 +9,6 @@ import (
 	"slices"
 
 	"github.com/example-git/crux/internal/oauth/accounts"
-	"github.com/example-git/crux/internal/oauth/codex"
-	"github.com/example-git/crux/internal/oauth/gemini"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerregistry"
 )
@@ -66,22 +64,9 @@ func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, r
 		if !ok {
 			return proposal, fmt.Errorf("selected client provider %q is unavailable", id)
 		}
-		owner, ok := snapshot.ProviderOwnerFor(id, provider)
-		if !ok {
-			return proposal, errors.New("selected client provider has no active exact owner")
-		}
-		definition := RemoteProviderDefinition{Config: provider}
-		if provider.Plugin != nil {
-			if cfg.providerScan == nil {
-				return proposal, errors.New("selected provider scan is unavailable")
-			}
-			status, ok := cfg.providerScan.pluginStatuses[provider.Plugin.ID]
-			if !ok || status.State != providerplugin.StateRegistered || status.Version != provider.Plugin.Version {
-				return proposal, errors.New("selected provider bundle generation is unavailable")
-			}
-			definition.BundleDigest = status.Digest
-		} else if provider.Preset != nil {
-			definition.BundleDigest = provider.Preset.Digest
+		definition, owner, err := snapshot.ClientProviderDefinition(id)
+		if err != nil {
+			return proposal, err
 		}
 		if definition.BundleDigest != "" {
 			wantedBundles[definition.BundleDigest] = true
@@ -110,20 +95,6 @@ func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, r
 			credential.APIKey = ""
 			credential.Account = nil
 		}
-		definition.Config.APIKey, definition.Config.APIKeyTemplate, definition.Config.OAuthToken = "", "", nil
-		definition.Config.BaseURL, err = snapshot.Resolve(provider.BaseURL)
-		if err != nil {
-			return proposal, errors.New("selected client endpoint cannot be resolved")
-		}
-		if definition.Config.BaseURL == "" && provider.Owner.Type == ProviderOwnerCore {
-			switch owner.Construction {
-			case providerregistry.ConstructionCodex:
-				definition.Config.BaseURL = codex.APIEndpoint
-			case providerregistry.ConstructionGeminiAntigravity:
-				definition.Config.BaseURL = gemini.APIEndpoint
-			}
-		}
-		definition.Config.ExtraHeaders = maps.Clone(provider.ExtraHeaders)
 		proposal.Providers = append(proposal.Providers, definition)
 		proposal.Credentials = append(proposal.Credentials, credential)
 	}

@@ -99,6 +99,41 @@ func TestClientRefreshCancellationRemovesPendingRequest(t *testing.T) {
 	require.ErrorContains(t, store.CompleteClientRefresh(request.Principal, ClientRefreshCompletion{RequestID: request.ID, Failed: true}), "not pending")
 }
 
+func TestClientRefreshCompletionRejectsChangedProviderDefinition(t *testing.T) {
+	for _, field := range []string{"endpoint", "headers"} {
+		t.Run(field, func(t *testing.T) {
+			store, proposal := clientRefreshRuntimeFixture(t)
+			requests := make(chan ClientRefreshRequest, 1)
+			store.SetClientRefreshPublisher(func(_ context.Context, request ClientRefreshRequest) { requests <- request })
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			result := make(chan error, 1)
+			go func() {
+				_, err := store.RequestClientRefresh(ctx, store.RuntimeSnapshot(), proposal.Credentials[0].Owner)
+				result <- err
+			}()
+			request := <-requests
+			fresh := *proposal.Credentials[0].Account
+			fresh.AccessToken, fresh.RefreshToken = "rotated-access", "rotated-refresh"
+			proposal.Revision, proposal.Credentials[0].Generation = 2, 2
+			proposal.Credentials[0].Account = &fresh
+			if field == "endpoint" {
+				proposal.Providers[0].Config.BaseURL = "wss://changed.invalid/responses"
+			} else {
+				proposal.Providers[0].Config.ExtraHeaders = map[string]string{"X-Workspace-Policy": "changed"}
+			}
+			proposal = sealRemoteRuntime(t, proposal)
+			_, err := store.ReplaceRemoteRuntime(t.Context(), proposal, request.Principal, 1)
+			require.NoError(t, err)
+			err = store.CompleteClientRefresh(request.Principal, ClientRefreshCompletion{RequestID: request.ID, Revision: 2, Digest: proposal.Digest, CredentialID: accounts.CredentialID(fresh)})
+			require.ErrorContains(t, err, "provider definition changed")
+			require.Equal(t, proposal.Digest, store.RemoteAuthority().Digest, "rejecting the old completion must preserve the user's new accepted runtime")
+			require.NoError(t, store.CompleteClientRefresh(request.Principal, ClientRefreshCompletion{RequestID: request.ID, Failed: true}))
+			require.Error(t, <-result)
+		})
+	}
+}
+
 func TestClientRefreshFailureAndAccountSwitch(t *testing.T) {
 	for _, action := range []string{"client-failed", "account-switched"} {
 		t.Run(action, func(t *testing.T) {

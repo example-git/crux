@@ -22,11 +22,30 @@ import (
 // and then conditionally updates its provider config. Publication to a remote
 // workspace is a separate, acknowledged transaction by the caller.
 func (s *ConfigStore) RefreshSelectedOAuthAccount(ctx context.Context, scope Scope, owner providerregistry.RegistrationOwner, expected accounts.Entry, force bool) (*accounts.Entry, error) {
+	return s.RefreshSelectedOAuthAccountForRuntime(ctx, scope, owner, expected, force, s.RuntimeSnapshot())
+}
+
+// RefreshSelectedOAuthAccountForRuntime preserves the local generation that a
+// client validated against its accepted remote provider definition.
+func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context, scope Scope, owner providerregistry.RegistrationOwner, expected accounts.Entry, force bool, admitted RuntimeSnapshot) (*accounts.Entry, error) {
 	if s.RemoteAuthority() != nil {
 		return nil, ErrClientRuntimeManaged
 	}
 	if owner.ProviderID == "" || owner.AccountNamespace == "" || expected.ID == "" {
 		return nil, errors.New("refresh requires the selected account and provider owner")
+	}
+	definition, admittedOwner, err := admitted.clientProviderDefinitionRaw(owner.ProviderID)
+	if err != nil || admittedOwner != owner {
+		return nil, errors.New("selected provider definition is unavailable in the captured runtime")
+	}
+	validateDefinition := func() error {
+		current := s.Config()
+		snapshot := RuntimeSnapshot{config: current, registry: current.providerCapabilities()}
+		actual, actualOwner, err := snapshot.clientProviderDefinitionRaw(owner.ProviderID)
+		if err != nil || actualOwner != owner || !reflect.DeepEqual(actual, definition) {
+			return errors.New("selected provider definition changed during refresh")
+		}
+		return nil
 	}
 	lockCtx, cancel := context.WithTimeout(ctx, refreshLockDeadline)
 	defer cancel()
@@ -51,7 +70,10 @@ func (s *ConfigStore) RefreshSelectedOAuthAccount(ctx context.Context, scope Sco
 	if err := validate(); err != nil {
 		return nil, err
 	}
-	cfg := s.Config()
+	if err := validateDefinition(); err != nil {
+		return nil, err
+	}
+	cfg := admitted.Config()
 	before, _ := cfg.Providers.Get(owner.ProviderID)
 	registration, ok := cfg.ProviderBehaviorRegistration(owner.ProviderID)
 	if !ok || !owner.Matches(registration) || registration.OAuth == nil || registration.OAuth.Refresh == nil {
@@ -83,6 +105,9 @@ func (s *ConfigStore) RefreshSelectedOAuthAccount(ctx context.Context, scope Sco
 		}
 	}
 	refresh := func(exchangeCtx context.Context, token string) (*oauth.Token, error) {
+		if err := validateDefinition(); err != nil {
+			return nil, err
+		}
 		// A mismatch may be a completed peer rotation, which the accounts layer
 		// can adopt without entering this callback. Never exchange on a guess.
 		if !providerHasAccount(before, expected) {
@@ -110,9 +135,12 @@ func (s *ConfigStore) RefreshSelectedOAuthAccount(ctx context.Context, scope Sco
 		if err := validate(); err != nil {
 			return err
 		}
+		if err := validateDefinition(); err != nil {
+			return err
+		}
 		current := s.Config()
 		provider, _ := current.Providers.Get(owner.ProviderID)
-		if !reflect.DeepEqual(provider, before) || !providerHasAccount(before, expected) && !providerHasAccount(before, *fresh) {
+		if !reflect.DeepEqual(provider, before) && !providerHasAccount(provider, *fresh) || !providerHasAccount(before, expected) && !providerHasAccount(before, *fresh) {
 			return accounts.ErrCredentialChanged
 		}
 		if !diskHasAccountOrAbsent(diskBefore, expected) && !diskHasAccountOrAbsent(diskBefore, *fresh) {

@@ -29,7 +29,7 @@ import (
 )
 
 func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
-	for _, mode := range []string{"refresh-once", "expired", "never"} {
+	for _, mode := range []string{"refresh-once", "expired", "never", "changed-definition", "changed-bundle", "definition-during-exchange", "bundle-during-exchange", "rejected-completion"} {
 		t.Run(mode, func(t *testing.T) {
 			xdgIsolate(t)
 			t.Setenv("AI_CLI_DIR", t.TempDir())
@@ -42,12 +42,24 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 			require.NoError(t, err)
 			s := server.NewServer(nil, "tcp", "127.0.0.1:0")
 			require.NoError(t, s.EnableNetworkAuth(t.Context()))
-			remote := httptest.NewUnstartedServer(s.Handler())
+			var completions atomic.Int32
+			handler := s.Handler()
+			remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/runtime/refresh-completion") {
+					attempt := completions.Add(1)
+					if mode == "rejected-completion" && attempt == 1 {
+						http.Error(w, "synthetic accepted runtime conflict", http.StatusConflict)
+						return
+					}
+				}
+				handler.ServeHTTP(w, r)
+			}))
 			remote.TLS = tlsConfig
 			remote.StartTLS()
 			t.Cleanup(func() { remote.Close(); _ = s.Close() })
 
 			var exchanges atomic.Int32
+			var changeDuringExchange atomic.Pointer[func()]
 			var requestMu sync.Mutex
 			var credentials []string
 			provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +67,9 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					require.NoError(t, r.ParseForm())
 					require.Equal(t, "synthetic-old-refresh", r.Form.Get("refresh_token"))
 					exchanges.Add(1)
+					if change := changeDuringExchange.Load(); change != nil {
+						(*change)()
+					}
 					w.Header().Set("Content-Type", "application/json")
 					_, _ = w.Write([]byte(`{"access_token":"synthetic-new-access","refresh_token":"synthetic-new-refresh","expires_in":3600}`))
 					return
@@ -103,6 +118,41 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 			w := workspace.NewClientWorkspace(c, *created)
 			t.Cleanup(w.Shutdown)
 			require.NoError(t, w.InitCoderAgentNonInteractive(t.Context()))
+			changeDefinition := func() {
+				var changed map[string]any
+				require.NoError(t, json.Unmarshal([]byte(configuration), &changed))
+				provider := changed["providers"].(map[string]any)["example-responses"].(map[string]any)
+				provider["extra_headers"] = map[string]string{"X-Client-Policy": "changed"}
+				data, err := json.Marshal(changed)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(filepath.Join(configDir, "crux.json"), data, 0o600))
+				require.NoError(t, store.ReloadFromDisk(t.Context()))
+			}
+			changeBundle := func() {
+				before, owner, err := store.RuntimeSnapshot().ClientProviderDefinition("example-responses")
+				require.NoError(t, err)
+				installRefreshFixture(t, provider.URL, dataDir, cacheDir, "replacement")
+				require.NoError(t, store.ReloadFromDisk(t.Context()))
+				after, newOwner, err := store.RuntimeSnapshot().ClientProviderDefinition("example-responses")
+				require.NoError(t, err)
+				require.Equal(t, owner, newOwner, "the replacement must retain the exact registration owner")
+				require.NotEqual(t, before.BundleDigest, after.BundleDigest)
+			}
+			switch mode {
+			case "changed-definition":
+				changeDefinition()
+			case "changed-bundle":
+				changeBundle()
+			case "definition-during-exchange":
+				changeDuringExchange.Store(&changeDefinition)
+			case "bundle-during-exchange":
+				changeDuringExchange.Store(&changeBundle)
+			}
+			if mode == "changed-definition" || mode == "changed-bundle" {
+				owner := proposal.Credentials[0].Owner
+				require.ErrorContains(t, w.RefreshOAuthToken(t.Context(), config.ScopeGlobal, owner), "provider definition changed")
+				require.Zero(t, exchanges.Load(), "manual refresh must apply the same accepted-definition fence")
+			}
 			session, err := c.CreateSession(t.Context(), created.ID, "Synthetic refresh acceptance")
 			require.NoError(t, err)
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
@@ -121,9 +171,39 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					if !ok || finished.Payload.RunID != "refresh-fixture" {
 						continue
 					}
-					if mode == "never" {
+					if mode == "never" || strings.Contains(mode, "definition") || strings.Contains(mode, "bundle") || mode == "rejected-completion" {
 						require.NotEmpty(t, finished.Payload.Error)
-						require.Zero(t, exchanges.Load())
+						expectedRefresh := "synthetic-old-refresh"
+						if strings.HasSuffix(mode, "during-exchange") || mode == "rejected-completion" {
+							require.EqualValues(t, 1, exchanges.Load())
+							expectedRefresh = "synthetic-new-refresh"
+						} else {
+							require.Zero(t, exchanges.Load())
+						}
+						if mode != "never" {
+							require.Contains(t, finished.Payload.Error, "owning client could not refresh")
+							receiver, err := s.Backend().GetWorkspace(created.ID)
+							require.NoError(t, err)
+							if mode == "rejected-completion" {
+								require.EqualValues(t, 2, completions.Load(), "report explicit failure after rejection without waiting for expiry")
+								require.Empty(t, receiver.Cfg.PendingClientRefreshes())
+								require.Equal(t, uint64(2), receiver.Cfg.RemoteAuthority().Revision)
+							} else {
+								require.Equal(t, uint64(1), receiver.Cfg.RemoteAuthority().Revision)
+							}
+							account, err := accounts.Active(t.Context(), "example.responses")
+							require.NoError(t, err)
+							require.Equal(t, expectedRefresh, account.RefreshToken)
+							local, _ := store.Config().Providers.Get("example-responses")
+							if mode == "rejected-completion" {
+								require.Equal(t, "synthetic-new-access", local.APIKey)
+							} else {
+								require.Equal(t, "synthetic-old-access", local.APIKey)
+							}
+							requestMu.Lock()
+							require.NotContains(t, credentials, "Bearer synthetic-new-access", "an old request must not execute the changed provider definition")
+							requestMu.Unlock()
+						}
 						return
 					}
 					require.Empty(t, finished.Payload.Error)
@@ -178,13 +258,16 @@ func installRefreshFixture(t *testing.T, endpoint, dataDir, cacheDir, mode strin
 	if mode == "never" {
 		value.Capabilities.Operations[0].Retry.Authentication = "never"
 	}
+	if mode == "replacement" {
+		value.Capabilities.Headers[1].Value.Value = "changed-responses"
+	}
 	data, err = json.Marshal(value)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(source, "manifest.json"), data, 0o600))
 	manager, err := providerplugin.NewManager(t.Context(), providerplugin.DefaultPaths(dataDir, cacheDir))
 	require.NoError(t, err)
 	defer manager.Close()
-	_, err = manager.Install(t.Context(), providerplugin.InstallRequest{Source: source, Trust: true, ExpectedRevision: manager.Snapshot().Revision})
+	_, err = manager.Install(t.Context(), providerplugin.InstallRequest{Source: source, Trust: true, Update: mode == "replacement", ExpectedRevision: manager.Snapshot().Revision})
 	require.NoError(t, err)
 }
 

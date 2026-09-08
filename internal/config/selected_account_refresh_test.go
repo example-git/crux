@@ -58,6 +58,68 @@ func TestSelectedOAuthRefreshPersistsAndAdoptsPeerRotation(t *testing.T) {
 	require.EqualValues(t, 1, calls.Load())
 }
 
+func TestSelectedOAuthRefreshCapturedRuntimeAdoptsCompletedRotation(t *testing.T) {
+	store, owner, entry := selectedRefreshFixture(t)
+	admitted := store.RuntimeSnapshot()
+	var calls atomic.Int32
+	store.exchangeToken = func(context.Context, string, string) (*oauth.Token, error) {
+		calls.Add(1)
+		return selectedRefreshToken(), nil
+	}
+	first, err := store.RefreshSelectedOAuthAccountForRuntime(t.Context(), ScopeGlobal, owner, entry, true, admitted)
+	require.NoError(t, err)
+	second, err := store.RefreshSelectedOAuthAccountForRuntime(t.Context(), ScopeGlobal, owner, entry, true, admitted)
+	require.NoError(t, err)
+	require.Equal(t, accounts.CredentialID(*first), accounts.CredentialID(*second))
+	require.EqualValues(t, 1, calls.Load())
+	provider, _ := store.Config().Providers.Get(owner.ProviderID)
+	require.Equal(t, first.Token(), provider.OAuthToken)
+}
+
+func TestSelectedOAuthRefreshFencesCapturedDefinition(t *testing.T) {
+	for _, timing := range []string{"before-exchange", "during-exchange"} {
+		t.Run(timing, func(t *testing.T) {
+			store, owner, entry := selectedRefreshFixture(t)
+			admitted := store.RuntimeSnapshot()
+			change := func() {
+				store.mutateInMemory(func(cfg *Config) {
+					provider, _ := cfg.Providers.Get(owner.ProviderID)
+					provider.ExtraHeaders = map[string]string{"X-Selected-Policy": "changed"}
+					cfg.Providers.Set(owner.ProviderID, provider)
+				})
+			}
+			var calls atomic.Int32
+			store.exchangeToken = func(context.Context, string, string) (*oauth.Token, error) {
+				calls.Add(1)
+				if timing == "during-exchange" {
+					change()
+				}
+				return selectedRefreshToken(), nil
+			}
+			if timing == "before-exchange" {
+				change()
+			}
+			fresh, err := store.RefreshSelectedOAuthAccountForRuntime(t.Context(), ScopeGlobal, owner, entry, true, admitted)
+			require.ErrorContains(t, err, "provider definition changed")
+			stored, readErr := accounts.Active(t.Context(), owner.AccountNamespace)
+			require.NoError(t, readErr)
+			if timing == "before-exchange" {
+				require.Zero(t, calls.Load())
+				require.Nil(t, fresh)
+				require.Equal(t, entry.RefreshToken, stored.RefreshToken)
+			} else {
+				require.EqualValues(t, 1, calls.Load())
+				require.ErrorContains(t, err, "account token saved; provider config was not updated")
+				require.Equal(t, "synthetic-rotated", fresh.RefreshToken)
+				require.Equal(t, fresh.RefreshToken, stored.RefreshToken)
+			}
+			provider, _ := store.Config().Providers.Get(owner.ProviderID)
+			require.Equal(t, "changed", provider.ExtraHeaders["X-Selected-Policy"])
+			require.Equal(t, entry.AccessToken, provider.APIKey)
+		})
+	}
+}
+
 func TestSelectedOAuthRefreshWithAccessTokenOnlyConfiguration(t *testing.T) {
 	store, owner, entry := selectedRefreshFixture(t)
 	store.mutateInMemory(func(cfg *Config) {
