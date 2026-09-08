@@ -33,13 +33,14 @@ type ClientRefreshCompletion struct {
 }
 
 type clientRefreshCall struct {
-	request   ClientRefreshRequest
-	done      chan struct{}
-	completed bool
-	response  ClientRefreshCompletion
-	snapshot  RuntimeSnapshot
-	err       error
-	waiters   int
+	request        ClientRefreshRequest
+	providerDigest string
+	done           chan struct{}
+	completed      bool
+	response       ClientRefreshCompletion
+	snapshot       RuntimeSnapshot
+	err            error
+	waiters        int
 }
 
 func (s *ConfigStore) SetClientRefreshPublisher(publish func(context.Context, ClientRefreshRequest)) {
@@ -73,6 +74,10 @@ func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted Runtime
 		return RuntimeSnapshot{}, errors.New("client refresh requires an admitted account runtime")
 	}
 	credentialID := accounts.CredentialID(*account)
+	providerDigest, err := admitted.clientRuntime.proposal.ProviderDefinitionDigest(owner.ProviderID)
+	if err != nil {
+		return RuntimeSnapshot{}, err
+	}
 	key := fmt.Sprintf("%s/%d/%s/%s/%#v", authority.Principal, authority.Revision, authority.Digest, credentialID, owner)
 	s.clientRefreshMu.Lock()
 	call, exists := s.clientRefreshes[key]
@@ -101,7 +106,7 @@ func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted Runtime
 			s.clientRefreshMu.Unlock()
 			return RuntimeSnapshot{}, errors.New("too many pending client refresh requests")
 		}
-		call = &clientRefreshCall{done: make(chan struct{}), request: ClientRefreshRequest{
+		call = &clientRefreshCall{done: make(chan struct{}), providerDigest: providerDigest, request: ClientRefreshRequest{
 			ID: uuid.NewString(), Principal: authority.Principal, Revision: authority.Revision, Digest: authority.Digest,
 			Owner: owner, AccountID: account.ID, CredentialID: credentialID, Deadline: time.Now().Add(3 * time.Minute).UnixMilli(),
 		}}
@@ -168,6 +173,10 @@ func (s *ConfigStore) CompleteClientRefresh(principal string, response ClientRef
 			account, ok := snapshot.EphemeralAccount(call.request.Owner)
 			if authority == nil || authority.Principal != principal || authority.Revision != response.Revision || authority.Revision <= call.request.Revision || authority.Digest != response.Digest || !ok || account.ID != call.request.AccountID || accounts.CredentialID(*account) != response.CredentialID || response.CredentialID == call.request.CredentialID {
 				return errors.New("client refresh completion does not match an accepted account rotation")
+			}
+			digest, err := snapshot.clientRuntime.proposal.ProviderDefinitionDigest(call.request.Owner.ProviderID)
+			if err != nil || digest != call.providerDigest {
+				return errors.New("provider definition changed during client refresh; the new runtime remains accepted")
 			}
 			call.snapshot = snapshot
 		}

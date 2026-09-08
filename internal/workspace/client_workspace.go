@@ -722,7 +722,11 @@ func (w *ClientWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Sc
 		return w.mutateClientAuthority(ctx, func(store *config.ConfigStore) error {
 			for _, binding := range w.authority.accepted.Credentials {
 				if binding.Owner == owner && !binding.Unavailable && binding.Account != nil {
-					_, err := store.RefreshSelectedOAuthAccount(ctx, scope, owner, *binding.Account, true)
+					runtime, err := w.authority.runtimeForRefresh(owner)
+					if err != nil {
+						return err
+					}
+					_, err = store.RefreshSelectedOAuthAccountForRuntime(ctx, scope, owner, *binding.Account, true, runtime)
 					return err
 				}
 			}

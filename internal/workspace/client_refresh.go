@@ -9,6 +9,7 @@ import (
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 )
 
@@ -56,7 +57,14 @@ func (w *ClientWorkspace) HandleClientRefreshEvent(ctx context.Context, event an
 			}
 			if errors.Is(err, client.ErrClientRefreshRejected) {
 				slog.Error("Owning client refresh completion rejected", "provider", request.Owner.ProviderID, "error", err)
-				return
+				if response.Failed {
+					return
+				}
+				// A concurrent accepted revision may no longer satisfy the
+				// initiating definition/account. End that old request explicitly;
+				// never leave it waiting after this client has stopped retrying.
+				response = config.ClientRefreshCompletion{RequestID: request.ID, Failed: true}
+				continue
 			}
 			select {
 			case <-refreshCtx.Done():
@@ -88,7 +96,11 @@ func (w *ClientWorkspace) fulfillClientRefresh(ctx context.Context, request conf
 	if expected == nil {
 		return config.ClientRefreshCompletion{}, errors.New("refresh request does not match the accepted account")
 	}
-	fresh, err := a.store.RefreshSelectedOAuthAccount(ctx, config.ScopeGlobal, request.Owner, *expected, true)
+	localRuntime, err := a.runtimeForRefresh(request.Owner)
+	if err != nil {
+		return config.ClientRefreshCompletion{}, err
+	}
+	fresh, err := a.store.RefreshSelectedOAuthAccountForRuntime(ctx, config.ScopeGlobal, request.Owner, *expected, true, localRuntime)
 	if err != nil {
 		return config.ClientRefreshCompletion{}, err
 	}
@@ -96,4 +108,23 @@ func (w *ClientWorkspace) fulfillClientRefresh(ctx context.Context, request conf
 		return config.ClientRefreshCompletion{}, err
 	}
 	return config.ClientRefreshCompletion{RequestID: request.ID, Revision: a.accepted.Revision, Digest: a.accepted.Digest, CredentialID: accounts.CredentialID(*fresh)}, nil
+}
+
+// The caller holds a.mu so the accepted definition cannot move between this
+// comparison and the local account transaction.
+func (a *clientAuthority) runtimeForRefresh(expectedOwner providerregistry.RegistrationOwner) (config.RuntimeSnapshot, error) {
+	localRuntime := a.store.RuntimeSnapshot()
+	definition, owner, err := localRuntime.ClientProviderDefinition(expectedOwner.ProviderID)
+	if err != nil {
+		return config.RuntimeSnapshot{}, err
+	}
+	currentDigest, err := definition.Digest()
+	if err != nil {
+		return config.RuntimeSnapshot{}, err
+	}
+	acceptedDigest, err := a.accepted.ProviderDefinitionDigest(expectedOwner.ProviderID)
+	if err != nil || owner != expectedOwner || currentDigest != acceptedDigest {
+		return config.RuntimeSnapshot{}, errors.New("provider definition changed on the owning client; publish its selection before refreshing")
+	}
+	return localRuntime, nil
 }
