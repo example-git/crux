@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	fantasy "github.com/example-git/crux/foundation"
+	foundationanthropic "github.com/example-git/crux/foundation/providers/anthropic"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providertransport"
 	"github.com/stretchr/testify/require"
@@ -213,6 +215,75 @@ func TestPluginPolicyRewritesRequestWithoutDroppingImages(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(metadata["user_id"].(string)), &identity))
 	require.Equal(t, "session-id", identity["device_id"])
 	require.Equal(t, "session-id", identity["session_id"])
+}
+
+func TestFoundationHTTPPreservesDynamicSystemTailAfterPluginRewrite(t *testing.T) {
+	operation := syntheticAnthropicOperation(t)
+	operation.Anthropic.Billing = nil
+	operation.Anthropic.SystemPrefixes = nil
+	operation.Anthropic.SystemBlocks = []manifest.AnthropicSystemBlock{{
+		Text: "Client identity", CacheControl: &manifest.AnthropicCacheControl{Type: "ephemeral", TTL: "1h"},
+	}}
+	operation.SystemInstruction = &providertransport.ResolvedSystemInstruction{
+		Text: "Native instructions", CacheControl: &manifest.AnthropicCacheControl{Type: "ephemeral", TTL: "1h"},
+	}
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var document map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&document); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests = append(requests, document)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"test","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+	client := &http.Client{Transport: &Client{operation: operation, version: "9.9.9", sessionID: "session", base: http.DefaultTransport}}
+	provider, err := foundationanthropic.New(
+		foundationanthropic.WithBaseURL(server.URL), foundationanthropic.WithAPIKey("test"), foundationanthropic.WithHTTPClient(client),
+		foundationanthropic.WithEfficiencyPolicy(foundationanthropic.EfficiencyPolicy{PromptCaching: true, TTL: "1h"}),
+	)
+	require.NoError(t, err)
+	model, err := provider.LanguageModel(t.Context(), "claude-test")
+	require.NoError(t, err)
+	for _, version := range []string{"original", "updated"} {
+		instructions := fantasy.NewInstructions(
+			fantasy.StaticInstruction(fantasy.InstructionKindTooling, "Native instructions"),
+			fantasy.StaticInstruction(fantasy.InstructionKindEnvironment, "Stable environment"),
+			fantasy.DynamicInstruction(fantasy.InstructionKindProviderContext, version+" provider text"),
+			fantasy.DynamicInstruction(fantasy.InstructionKindProjectContext, version+" project text"),
+			fantasy.DynamicInstruction(fantasy.InstructionKindLifecycle, version+" lifecycle"),
+			fantasy.DynamicInstruction(fantasy.InstructionKindRuntime, version+" date"),
+			fantasy.DynamicInstruction(fantasy.InstructionKindMemory, version+" memory"),
+		)
+		_, err = model.Generate(t.Context(), fantasy.Call{Prompt: fantasy.Prompt{instructions.Message(fantasy.InstructionPolicyAnthropic), fantasy.NewUserMessage("hello")}})
+		require.NoError(t, err)
+	}
+	require.Len(t, requests, 2)
+	var baseline []any
+	for index, request := range requests {
+		require.NoError(t, foundationanthropic.ValidateCacheMarkers(request))
+		blocks := request["system"].([]any)
+		require.Len(t, blocks, 8)
+		for blockIndex, raw := range blocks {
+			block := raw.(map[string]any)
+			if blockIndex < 3 {
+				require.Contains(t, block, "cache_control")
+			} else {
+				require.NotContains(t, block, "cache_control")
+			}
+		}
+		if index == 0 {
+			baseline = blocks[:3]
+		} else {
+			require.Equal(t, baseline, blocks[:3])
+			for blockIndex, suffix := range []string{"provider text", "project text", "lifecycle", "date", "memory"} {
+				require.Equal(t, "updated "+suffix, blocks[blockIndex+3].(map[string]any)["text"])
+			}
+		}
+	}
 }
 
 func TestPluginPolicyPreservesTypedStaticAndDynamicInstructionBlocks(t *testing.T) {

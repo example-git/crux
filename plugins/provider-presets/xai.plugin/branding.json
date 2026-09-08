@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "xAI",
+  "short_name": "XAI",
+  "color": "#D1D5DB",
+  "gradient_a": "#D1D5DB",
+  "gradient_b": "#FFFFFF"
+}

@@ -30,7 +30,7 @@ type GenericToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (g *GenericToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	name := humanizedToolName(opts.ToolCall.Name)
 
 	if opts.IsPending() {
@@ -61,13 +61,11 @@ func (g *GenericToolRenderContext) RenderTool(sty *styles.Styles, width int, opt
 		return header
 	}
 
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
-
 	if opts.Result.Data != "" && strings.HasPrefix(opts.Result.MIMEType, "image/") {
-		body := sty.Tool.Body.Render(toolOutputImageContent(sty, opts.Result.Data, opts.Result.MIMEType))
+		body := toolOutputImageContent(sty, opts.Result.Data, opts.Result.MIMEType)
 		return joinToolParts(header, body)
 	}
 
-	body := renderToolResultTextContent(sty, opts.Result.Content, toolResultContentWidths{Body: bodyWidth, Diff: cappedWidth}, opts.ExpandedContent)
+	body := renderToolResultTextContent(sty, opts.Result.Content, cappedWidth, opts.ExpandedContent)
 	return joinToolParts(header, body)
 }

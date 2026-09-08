@@ -36,11 +36,11 @@ func newAttachmentClickTestUI(t *testing.T) (*UI, int) {
 	u.attachments = attachments.New(renderer, attachments.Keymap{})
 	u.updateLayoutAndSize()
 	require.True(t, u.attachments.Update(message.Attachment{FileName: "test.txt"}))
-	_ = u.attachments.Render(u.layout.editor.Dx())
+	_ = u.renderEditorView(u.layout.editor.Dx())
 
 	for x := range u.layout.editor.Dx() {
 		if renderer.HitTestRemove(u.attachments.List(), x) == 0 {
-			return u, x
+			return u, x + 1
 		}
 	}
 	t.Fatal("remove button was not rendered")

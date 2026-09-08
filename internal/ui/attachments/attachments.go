@@ -167,7 +167,12 @@ func (r *Renderer) Render(attachments []message.Attachment, deleting, showRemove
 		filename := filepath.Base(att.FileName)
 		// Truncate if needed.
 		if ansi.StringWidth(filename) > maxFilename {
-			filename = ansi.Truncate(filename, maxFilename, "…")
+			extension := filepath.Ext(filename)
+			if ansi.StringWidth(extension) < maxFilename-1 {
+				filename = ansi.Truncate(strings.TrimSuffix(filename, extension), maxFilename-ansi.StringWidth(extension), "…") + extension
+			} else {
+				filename = ansi.Truncate(filename, maxFilename, "…")
+			}
 		}
 
 		iconStr := r.icon(att).String()

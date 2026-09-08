@@ -155,7 +155,7 @@ type ImageRequest struct {
 	Query              map[string]ImageValue `json:"query,omitempty" jsonschema:"maxProperties=64"`
 	Body               *ImageValue           `json:"body,omitempty"`
 	Encoding           string                `json:"encoding" jsonschema:"required,enum=none,enum=json,enum=form,enum=multipart,enum=binary"`
-	Response           string                `json:"response" jsonschema:"required,enum=json,enum=text,enum=binary,enum=framed-json"`
+	Response           string                `json:"response" jsonschema:"required,enum=json,enum=text,enum=binary,enum=framed-json,enum=line-framed-json"`
 	FramePrefix        string                `json:"frame_prefix,omitempty" jsonschema:"maxLength=128"`
 	Phase              string                `json:"phase" jsonschema:"required,enum=setup,enum=upload,enum=generation,enum=media,enum=download"`
 	MaxBytes           int64                 `json:"max_bytes" jsonschema:"required,minimum=1,maximum=536870912"`
@@ -432,13 +432,13 @@ func ValidateImage(value ImageManifest) error {
 			}
 			if request := step.Request; request != nil {
 				count++
-				if !slices.Contains([]string{"GET", "POST", "PUT"}, request.Method) || !slices.Contains([]string{"none", "json", "form", "multipart", "binary"}, request.Encoding) || !slices.Contains([]string{"json", "text", "binary", "framed-json"}, request.Response) || !slices.Contains([]string{"setup", "upload", "generation", "media", "download"}, request.Phase) {
+				if !slices.Contains([]string{"GET", "POST", "PUT"}, request.Method) || !slices.Contains([]string{"none", "json", "form", "multipart", "binary"}, request.Encoding) || !slices.Contains([]string{"json", "text", "binary", "framed-json", "line-framed-json"}, request.Response) || !slices.Contains([]string{"setup", "upload", "generation", "media", "download"}, request.Phase) {
 					add("/workflows/steps/request")
 				}
 				if request.MaxBytes < 1 || request.MaxBytes > limits.ResponseBytes || request.TimeoutSeconds < 1 || request.TimeoutSeconds > limits.TimeoutSeconds {
 					add("/workflows/steps/request/limits")
 				}
-				if (request.Encoding == "none") != (request.Body == nil) || (request.FramePrefix != "" && request.Response != "framed-json") {
+				if (request.Encoding == "none") != (request.Body == nil) || (request.FramePrefix != "" && request.Response != "framed-json" && request.Response != "line-framed-json") {
 					add("/workflows/steps/request/encoding")
 				}
 				seenMedia := map[string]bool{}

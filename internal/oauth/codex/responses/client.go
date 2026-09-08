@@ -186,7 +186,7 @@ func (c *client) dialWithProfile(ctx context.Context, token, accountID, compatib
 			return nil, fmt.Errorf("Codex provider owner changed before WebSocket dial: %w", err)
 		}
 	}
-	cruxlog.TraceWebSocketHandshake(traceID, "outbound", c.url, header, 0, 0, nil)
+	cruxlog.TraceWebSocketHandshake(ctx, traceID, "outbound", c.url, header, 0, 0, nil)
 	started := time.Now()
 	conn, resp, err := dialer.DialContext(ctx, c.url, header)
 	statusCode := 0
@@ -200,7 +200,7 @@ func (c *client) dialWithProfile(ctx context.Context, token, accountID, compatib
 			_ = resp.Body.Close()
 		}
 	}
-	cruxlog.TraceWebSocketHandshake(traceID, "inbound", c.url, responseHeaders, statusCode, time.Since(started), err)
+	cruxlog.TraceWebSocketHandshake(ctx, traceID, "inbound", c.url, responseHeaders, statusCode, time.Since(started), err)
 	if err != nil {
 		if resp != nil {
 			providerErr := &fantasy.ProviderError{
@@ -344,13 +344,13 @@ func codexTerminalProviderError(event *eventFrame, body []byte) *fantasy.Provide
 	return nil
 }
 
-func (c *client) startReadPump(conn *websocket.Conn, traceID string) (<-chan websocketReadResult, chan struct{}) {
+func (c *client) startReadPump(ctx context.Context, conn *websocket.Conn, traceID string) (<-chan websocketReadResult, chan struct{}) {
 	results := make(chan websocketReadResult, readPumpBufferSize)
 	stop := make(chan struct{})
 	go func() {
 		for {
 			messageType, data, err := conn.ReadMessage()
-			cruxlog.TraceWebSocketFrame(traceID, "inbound", c.url, messageType, data, err)
+			cruxlog.TraceWebSocketFrame(ctx, traceID, "inbound", c.url, messageType, data, err)
 			select {
 			case results <- websocketReadResult{data: data, err: err}:
 			case <-stop:
@@ -486,7 +486,7 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 					return
 				}
 				state.conn = conn
-				state.readEvents, state.readStop = c.startReadPump(conn, traceID)
+				state.readEvents, state.readStop = c.startReadPump(ctx, conn, traceID)
 				state.traceID = traceID
 				state.token = token
 				state.accountID = accountID
@@ -579,7 +579,7 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 			if writeErr == nil {
 				writeErr = conn.SetWriteDeadline(time.Time{})
 			}
-			cruxlog.TraceWebSocketFrame(state.traceID, "outbound", c.url, websocket.TextMessage, wireData, writeErr)
+			cruxlog.TraceWebSocketFrame(ctx, state.traceID, "outbound", c.url, websocket.TextMessage, wireData, writeErr)
 			if writeErr != nil {
 				close(done)
 				state.closeLocked()

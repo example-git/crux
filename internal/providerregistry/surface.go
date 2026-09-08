@@ -10,13 +10,7 @@ import (
 
 // Brand is display-only provider presentation metadata. It contains no
 // endpoint, credential, or implementation information.
-type Brand struct {
-	Label     string `json:"label,omitempty"`
-	ShortName string `json:"short_name,omitempty"`
-	Color     string `json:"color,omitempty"`
-	GradientA string `json:"gradient_a,omitempty"`
-	GradientB string `json:"gradient_b,omitempty"`
-}
+type Brand = catalog.Brand
 
 // Authentication describes one declared interactive authentication surface.
 // Available is false when the declaration is valid but its host-owned

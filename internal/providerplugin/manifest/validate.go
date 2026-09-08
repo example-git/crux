@@ -788,6 +788,11 @@ func validateAnthropicPolicy(policy *AnthropicPolicy, instructions *InstructionP
 	if !bound {
 		add("anthropic policy requires an anthropic-messages inference operation")
 	}
+	if efficiency := policy.Efficiency; efficiency != nil {
+		if efficiency.TTL != "" && efficiency.TTL != "5m" && efficiency.TTL != "1h" {
+			add("anthropic.efficiency.ttl must be 5m or 1h")
+		}
+	}
 	if policy.MaxRequestBytes <= 0 {
 		add("anthropic.max_request_bytes must be explicit")
 	}

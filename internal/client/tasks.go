@@ -49,6 +49,22 @@ func (c *Client) TaskOutput(ctx context.Context, workspaceID, taskID string, wai
 	return result, nil
 }
 
+func (c *Client) RestartTask(ctx context.Context, workspaceID, taskID string) (managedtask.View, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/tasks/%s/restart", workspaceID, url.PathEscape(taskID)), nil, nil, nil)
+	if err != nil {
+		return managedtask.View{}, fmt.Errorf("failed to restart task: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return managedtask.View{}, fmt.Errorf("failed to restart task: %w", err)
+	}
+	var result managedtask.View
+	if err := json.NewDecoder(rsp.Body).Decode(&result); err != nil {
+		return managedtask.View{}, fmt.Errorf("failed to decode restarted task: %w", err)
+	}
+	return result, nil
+}
+
 func (c *Client) StopTask(ctx context.Context, workspaceID, taskID string) (managedtask.View, error) {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/tasks/%s/stop", workspaceID, url.PathEscape(taskID)), nil, nil, nil)
 	if err != nil {

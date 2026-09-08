@@ -10,6 +10,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestTrafficLogsUseWorkspaceDatabase(t *testing.T) {
+	_, _, err := runTrafficLogs(t.Context(), TrafficLogsParams{})
+	require.ErrorContains(t, err, "network tracing is disabled")
+	ctx, cleanup, err := cruxlog.SetupTraffic(t.Context(), t.TempDir(), true)
+	require.NoError(t, err)
+	defer cleanup()
+	other, otherCleanup, err := cruxlog.SetupTraffic(t.Context(), t.TempDir(), true)
+	require.NoError(t, err)
+	defer otherCleanup()
+	cruxlog.TraceWebSocketFrame(ctx, "selected-workspace", "inbound", "wss://example.test/selected", 1, []byte(`{"delta":"private body"}`), nil)
+	cruxlog.TraceWebSocketFrame(other, "other-workspace", "inbound", "wss://example.test/other", 1, nil, nil)
+	require.Eventually(t, func() bool {
+		result, metadata, err := runTrafficLogs(ctx, TrafficLogsParams{})
+		return err == nil && len(metadata.Records) == 1 && strings.Contains(result, "/selected") && !strings.Contains(result, "/other") && !strings.Contains(result, "private body")
+	}, time.Second, 10*time.Millisecond)
+}
+
 func TestTrafficQueryDefaultsAndValidatesFilters(t *testing.T) {
 	query, err := trafficQuery(TrafficLogsParams{})
 	require.NoError(t, err)

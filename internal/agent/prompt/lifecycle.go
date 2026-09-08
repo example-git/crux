@@ -90,13 +90,13 @@ State transitions:
 - When the plan is complete, present it and call exit_plan with the same complete plan.
 - User revision feedback moves the lifecycle to revision. Improve the persisted plan and call exit_plan again.
 - Plan approval moves to approved execution. It does not restore normal instructions.
-- Only complete_plan followed by user approval that the work itself is complete restores normal instructions.
+- Successful completion requires complete_plan followed by user approval that the work itself is complete. The user can instead cancel at any stage with Shift+Tab or Cancel Plan Mode, clearing the plan and restoring normal instructions without marking work complete.
 </plan_lifecycle>`
 	case LifecycleRevision:
 		return fmt.Sprintf(`<plan_lifecycle stage="revision">
 Revise the persisted plan. Focus on understanding the reviewer feedback, resolving plan gaps, and producing the complete improved plan. Do not implement changes.
 
-Present the complete improved plan and call exit_plan with that same plan. Plan approval moves to approved execution. Only approval of completed implementation through complete_plan ends the lifecycle.
+Present the complete improved plan and call exit_plan with that same plan. Plan approval moves to approved execution. Successful completion requires approval of completed implementation through complete_plan. The user can instead cancel at any stage with Shift+Tab or Cancel Plan Mode, clearing the plan and restoring normal instructions without marking work complete.
 
 <persisted_plan>
 %s
@@ -108,7 +108,7 @@ Execute the user-approved plan below completely. Full implementation tools are a
 
 Track progress, implement every plan item end to end, preserve unrelated work, and run relevant validation. Automatic tool approval does not bypass hooks or completion review. Plan approval does not restore normal mode.
 
-When every plan item is implemented and validated, present a concise completion summary and call complete_plan with that same summary. If completion is not approved, continue the persisted plan using the user's feedback and call complete_plan again. Only user approval that the work itself is complete restores normal instructions.
+When every plan item is implemented and validated, present a concise completion summary and call complete_plan with that same summary. If completion is not approved, continue the persisted plan using the user's feedback and call complete_plan again. Successful completion requires user approval that the work itself is complete. The user can instead cancel at any stage with Shift+Tab or Cancel Plan Mode, clearing the plan and restoring normal instructions without marking work complete.
 
 <approved_plan>
 %s

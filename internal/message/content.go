@@ -69,7 +69,13 @@ func (tc ReasoningContent) String() string {
 }
 func (ReasoningContent) isPart() {}
 
+type UserTurnContext struct {
+	TodoState    string `json:"todo_state,omitempty"`
+	TodoReminder string `json:"todo_reminder,omitempty"`
+}
+
 type TextContent struct {
+	Context          UserTurnContext  `json:"context,omitzero"`
 	Text             string           `json:"text"`
 	ProviderMetadata ProviderMetadata `json:"provider_metadata,omitempty"`
 }
@@ -608,6 +614,9 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 	switch m.Role {
 	case User:
 		var parts []fantasy.MessagePart
+		if reminder := m.Content().Context.TodoReminder; reminder != "" {
+			parts = append(parts, fantasy.TextPart{Text: reminder})
+		}
 		text := strings.TrimSpace(m.Content().Text)
 		var textAttachments []Attachment
 		for _, content := range m.BinaryContent() {

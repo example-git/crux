@@ -306,7 +306,15 @@ func (s *Session) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		cur = s.Cursor()
 		rc.AddPart(inputView)
 	}
-	listView := t.Dialog.List.Height(s.list.Height()).Render(s.list.Render())
+	listContent := s.list.Render()
+	if s.list.TotalHeight() == 0 {
+		message := "No matching sessions."
+		if len(s.sessions) == 0 {
+			message = "No saved sessions."
+		}
+		listContent = t.Dialog.SecondaryText.Render(message)
+	}
+	listView := t.Dialog.List.Height(s.list.Height()).Render(listContent)
 	listView = joinScrollbar(t, listView, listHeight, listTotalHeight, listHeight, s.list.Offset())
 	rc.AddPart(listView)
 	rc.Help = renderDialogHelp(t, &s.help, s, innerWidth)

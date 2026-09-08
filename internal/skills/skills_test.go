@@ -450,6 +450,18 @@ func TestDiscoverBuiltin(t *testing.T) {
 		}
 	}
 	require.True(t, foundImagegen, "imagegen builtin skill not found")
+
+	var foundUIInfo bool
+	for _, s := range discovered {
+		if s.Name == "crux-ui-info" {
+			foundUIInfo = true
+			require.Equal(t, "crux://skills/crux-ui-info/SKILL.md", s.SkillFilePath)
+			require.Contains(t, s.Instructions, "http://127.0.0.1:8767/help")
+			require.NotEmpty(t, s.Description)
+			require.True(t, s.Builtin)
+		}
+	}
+	require.True(t, foundUIInfo, "crux-ui-info builtin skill not found")
 }
 
 func TestDeduplicate(t *testing.T) {

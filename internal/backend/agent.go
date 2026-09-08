@@ -40,9 +40,11 @@ func (b *Backend) SendMessage(workspaceID string, msg proto.AgentMessage) error 
 	}
 
 	if err := agent.ValidateCall(agent.SessionAgentCall{
-		SessionID:   msg.SessionID,
-		Prompt:      msg.Prompt,
-		Attachments: proto.AttachmentsToMessage(msg.Attachments),
+		SessionID:    msg.SessionID,
+		RunID:        msg.RunID,
+		DeliveryMode: agent.DeliveryMode(msg.DeliveryMode),
+		Prompt:       msg.Prompt,
+		Attachments:  proto.AttachmentsToMessage(msg.Attachments),
 	}); err != nil {
 		return err
 	}
@@ -92,7 +94,7 @@ func (b *Backend) runAgent(ws *Workspace, coordinator agent.Coordinator, msg pro
 	defer ws.runWG.Done()
 	defer accept.Close()
 
-	ctx := ws.ctx
+	ctx := agent.WithDeliveryMode(ws.ctx, agent.DeliveryMode(msg.DeliveryMode))
 	switch msg.PermissionMode {
 	case proto.AgentPermissionBypass:
 		ctx = permission.WithRunApproval(ctx)
@@ -277,6 +279,17 @@ func (b *Backend) SuggestPrompt(ctx context.Context, workspaceID, sessionID stri
 
 // DetachForegroundJobs sends commands a bash tool call is waiting on
 // to the background. Returns the number of commands detached.
+func (b *Backend) ForegroundTaskControl(workspaceID, sessionID string, detach bool) (int, error) {
+	workspace, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return 0, err
+	}
+	if detach {
+		return workspace.BackgroundShells.ForegroundWaits.Detach(sessionID), nil
+	}
+	return workspace.BackgroundShells.ForegroundWaits.Count(sessionID), nil
+}
+
 func (b *Backend) DetachForegroundJobs(workspaceID string) (int, error) {
 	workspace, err := b.GetWorkspace(workspaceID)
 	if err != nil {
@@ -330,6 +343,7 @@ func (b *Backend) QueuedPromptsList(workspaceID, sessionID string) ([]proto.Queu
 	prompts := make([]proto.QueuedPrompt, len(queued))
 	for i, prompt := range queued {
 		prompts[i] = proto.QueuedPrompt{
+			DeliveryMode: string(prompt.DeliveryMode),
 			SubmissionID: prompt.SubmissionID,
 			Prompt:       prompt.Prompt,
 		}

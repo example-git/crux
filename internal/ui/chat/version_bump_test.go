@@ -54,10 +54,10 @@ func TestAssistantMessageItem_MutatorsBumpVersion(t *testing.T) {
 		return &message.Message{ID: "a-mut", Role: message.Assistant, Parts: parts}
 	}
 
-	item := NewAssistantMessageItem(&sty, build("thinking", "content")).(*AssistantMessageItem)
+	item := NewAssistantMessageItem(&sty, build("thinking\nmore thinking", "content")).(*AssistantMessageItem)
 
 	requireBump(t, "SetMessage", item, func() {
-		item.SetMessage(build("thinking", "more content"))
+		item.SetMessage(build("thinking\nmore thinking", "more content"))
 	})
 	requireBump(t, "SetFocused", item, func() {
 		item.SetFocused(true)

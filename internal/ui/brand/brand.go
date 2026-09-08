@@ -24,15 +24,21 @@ func FromSurface(surface providerregistry.Surface) *Provider {
 		title = brand.Label
 	}
 	if title == "" {
-		title = surface.Name
+		title = "CRUX"
 	}
 	gradientA := brand.GradientA
 	if gradientA == "" {
 		gradientA = brand.Color
 	}
+	if gradientA == "" {
+		gradientA = "#39FF14"
+	}
 	gradientB := brand.GradientB
 	if gradientB == "" {
 		gradientB = brand.Color
+	}
+	if gradientB == "" {
+		gradientB = "#FF3B1F"
 	}
 	accent := brand.Color
 	if accent == "" {
@@ -47,29 +53,5 @@ func FromSurface(surface providerregistry.Surface) *Provider {
 }
 
 func ForProvider(providerID string) *Provider {
-	switch providerID {
-	case "openai":
-		return &Provider{
-			Title:  "CODEX",
-			GradA:  lipgloss.Color("#1B3B8B"),
-			GradB:  lipgloss.Color("#7FC4FF"),
-			Accent: lipgloss.Color("#7FC4FF"),
-		}
-	case "gemini":
-		return &Provider{
-			Title:  "GEMINI",
-			GradA:  lipgloss.Color("#1E8E3E"),
-			GradB:  lipgloss.Color("#8CE99A"),
-			Accent: lipgloss.Color("#8CE99A"),
-		}
-	case "copilot":
-		return &Provider{
-			Title:  "COPILOT",
-			GradA:  lipgloss.Color("#C9A8FF"),
-			GradB:  lipgloss.Color("#C9A8FF"),
-			Accent: lipgloss.Color("#C9A8FF"),
-		}
-	default:
-		return nil
-	}
+	return nil
 }

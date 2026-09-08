@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	foundationanthropic "github.com/example-git/crux/foundation/providers/anthropic"
 	"github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providertransport"
@@ -147,6 +148,12 @@ func (c *Client) RoundTrip(request *http.Request) (*http.Response, error) {
 			}
 			slog.Warn("Provider request transform failed; sending original body", "error", rewriteErr)
 			rewritten = body
+		}
+		if cachePolicy, ok := foundationanthropic.CachePolicyFromContext(request.Context()); ok {
+			rewritten, err = foundationanthropic.ApplyRequestCachePolicy(rewritten, cachePolicy)
+			if err != nil {
+				return nil, err
+			}
 		}
 		request.Body = io.NopCloser(bytes.NewReader(rewritten))
 		request.GetBody = func() (io.ReadCloser, error) {

@@ -3,19 +3,21 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"html/template"
-	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	md "github.com/JohannesKaufmann/html-to-markdown"
 	"github.com/PuerkitoBio/goquery"
 	fantasy "github.com/example-git/crux/foundation"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/redact"
 )
 
 const (
@@ -43,7 +45,7 @@ func fetchDescription() string {
 	})
 }
 
-func NewFetchTool(permissions permission.Service, workingDir string, client *http.Client) fantasy.AgentTool {
+func NewFetchTool(permissions permission.Service, workingDir string, client *http.Client, browser *BrowserFetchService, environment []string) fantasy.AgentTool {
 	if client == nil {
 		transport := cruxlog.CloneDefaultHTTPTransport()
 		transport.MaxIdleConns = 100
@@ -59,42 +61,74 @@ func NewFetchTool(permissions permission.Service, workingDir string, client *htt
 	return fantasy.NewParallelAgentTool(
 		FetchToolName,
 		fetchDescription(),
-		func(ctx context.Context, params FetchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, params FetchParams, call fantasy.ToolCall) (response fantasy.ToolResponse, err error) {
+			if params.Mode != "" && params.Mode != "normal" && params.Mode != "user" {
+				return fantasy.NewTextErrorResponse("Mode must be normal or user"), nil
+			}
+			defer func() {
+				if ctx.Err() != nil {
+					err = ctx.Err()
+				} else if err != nil {
+					response = fantasy.NewTextErrorResponse(err.Error())
+					err = nil
+				}
+				if params.Mode == "user" {
+					response.Content = redact.String(response.Content)
+				}
+			}()
 			if params.URL == "" {
 				return fantasy.NewTextErrorResponse("URL parameter is required"), nil
 			}
 
 			format := strings.ToLower(params.Format)
+			if format == "" {
+				format = "markdown"
+			}
 			if format != "text" && format != "markdown" && format != "html" {
 				return fantasy.NewTextErrorResponse("Format must be one of: text, markdown, html"), nil
 			}
 
-			if !strings.HasPrefix(params.URL, "http://") && !strings.HasPrefix(params.URL, "https://") {
-				return fantasy.NewTextErrorResponse("URL must start with http:// or https://"), nil
+			target, parseErr := url.Parse(params.URL)
+			if parseErr != nil || target.Hostname() == "" || (target.Scheme != "http" && target.Scheme != "https") {
+				return fantasy.NewTextErrorResponse("URL must be a valid HTTP or HTTPS URL"), nil
+			}
+			if params.Mode == "user" && target.User != nil {
+				return fantasy.NewTextErrorResponse("User-mode URLs must not contain embedded credentials"), nil
 			}
 
 			sessionID := GetSessionFromContext(ctx)
 			if sessionID == "" {
-				return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for creating a new file")
+				return fantasy.ToolResponse{}, fmt.Errorf("session ID is required for fetching a URL")
 			}
 
-			p, err := permissions.Request(
-				ctx,
-				permission.CreatePermissionRequest{
-					SessionID:   sessionID,
-					Path:        workingDir,
-					ToolCallID:  call.ID,
-					ToolName:    FetchToolName,
-					Action:      "fetch",
-					Description: fmt.Sprintf("Fetch content from URL: %s", params.URL),
-					Params:      FetchPermissionsParams(params),
-				},
-			)
-			if err != nil {
-				return fantasy.ToolResponse{}, err
-			}
-			if !p {
-				return NewPermissionDeniedResponse(), nil
+			requestClient := client
+			if params.Mode == "user" {
+				requestClient, err = browser.client(ctx, sessionID, call.ID, params.URL, environment, client)
+				if errors.Is(err, question.ErrCancelled) {
+					return NewPermissionDeniedResponse(), nil
+				}
+				if err != nil {
+					return fantasy.NewTextErrorResponse(err.Error()), nil
+				}
+			} else {
+				p, err := permissions.Request(
+					ctx,
+					permission.CreatePermissionRequest{
+						SessionID:   sessionID,
+						Path:        workingDir,
+						ToolCallID:  call.ID,
+						ToolName:    FetchToolName,
+						Action:      "fetch",
+						Description: fmt.Sprintf("Fetch content from URL: %s", params.URL),
+						Params:      FetchPermissionsParams(params),
+					},
+				)
+				if err != nil {
+					return fantasy.ToolResponse{}, err
+				}
+				if !p {
+					return NewPermissionDeniedResponse(), nil
+				}
 			}
 
 			// maxFetchTimeoutSeconds is the maximum allowed timeout for fetch requests (2 minutes)
@@ -118,7 +152,7 @@ func NewFetchTool(permissions permission.Service, workingDir string, client *htt
 
 			req.Header.Set("User-Agent", "crux/1.0")
 
-			resp, err := client.Do(req)
+			resp, err := requestClient.Do(req)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to fetch URL: %w", err)
 			}
@@ -128,22 +162,17 @@ func NewFetchTool(permissions permission.Service, workingDir string, client *htt
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("Request failed with status code: %d", resp.StatusCode)), nil
 			}
 
-			body, err := io.ReadAll(io.LimitReader(resp.Body, MaxFetchSize))
+			content, isHTML, err := readFetchContent(resp)
 			if err != nil {
-				return fantasy.NewTextErrorResponse("Failed to read response body: " + err.Error()), nil
+				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
-
-			content := string(body)
-
-			validUTF8 := utf8.ValidString(content)
-			if !validUTF8 {
-				return fantasy.NewTextErrorResponse("Response content is not valid UTF-8"), nil
+			if params.Mode == "user" {
+				content = redact.String(content)
 			}
-			contentType := resp.Header.Get("Content-Type")
 
 			switch format {
 			case "text":
-				if strings.Contains(contentType, "text/html") {
+				if isHTML {
 					text, err := extractTextFromHTML(content)
 					if err != nil {
 						return fantasy.NewTextErrorResponse("Failed to extract text from HTML: " + err.Error()), nil
@@ -152,19 +181,17 @@ func NewFetchTool(permissions permission.Service, workingDir string, client *htt
 				}
 
 			case "markdown":
-				if strings.Contains(contentType, "text/html") {
-					markdown, err := convertHTMLToMarkdown(content)
+				if isHTML {
+					markdown, err := convertFetchHTML(requestCtx, content, resp.Request.URL.String())
 					if err != nil {
 						return fantasy.NewTextErrorResponse("Failed to convert HTML to Markdown: " + err.Error()), nil
 					}
 					content = markdown
 				}
 
-				content = "```\n" + content + "\n```"
-
 			case "html":
 				// return only the body of the HTML document
-				if strings.Contains(contentType, "text/html") {
+				if isHTML {
 					doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
 					if err != nil {
 						return fantasy.NewTextErrorResponse("Failed to parse HTML: " + err.Error()), nil
@@ -179,10 +206,13 @@ func NewFetchTool(permissions permission.Service, workingDir string, client *htt
 					content = "<html>\n<body>\n" + body + "\n</body>\n</html>"
 				}
 			}
-			// truncate content if it exceeds max read size
-			if int64(len(content)) >= MaxFetchSize {
-				content = content[:MaxFetchSize]
-				content += fmt.Sprintf("\n\n[Content truncated to %d bytes]", MaxFetchSize)
+			if len(content) > MaxFetchSize {
+				notice := fmt.Sprintf("\n\n[Content truncated to %d bytes]", MaxFetchSize)
+				end := MaxFetchSize - len(notice)
+				for !utf8.RuneStart(content[end]) {
+					end--
+				}
+				content = content[:end] + notice
 			}
 
 			return fantasy.NewTextResponse(content), nil
@@ -191,7 +221,7 @@ func NewFetchTool(permissions permission.Service, workingDir string, client *htt
 }
 
 func extractTextFromHTML(html string) (string, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	doc, err := parseFetchHTML(html)
 	if err != nil {
 		return "", err
 	}
@@ -200,15 +230,4 @@ func extractTextFromHTML(html string) (string, error) {
 	text = strings.Join(strings.Fields(text), " ")
 
 	return text, nil
-}
-
-func convertHTMLToMarkdown(html string) (string, error) {
-	converter := md.NewConverter("", true, nil)
-
-	markdown, err := converter.ConvertString(html)
-	if err != nil {
-		return "", err
-	}
-
-	return markdown, nil
 }

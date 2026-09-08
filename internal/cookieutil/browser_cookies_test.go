@@ -71,6 +71,34 @@ func TestBrowserProfilesOnlyDiscoverCapturedAbsoluteRoots(t *testing.T) {
 	}
 }
 
+func TestBrowserProfilesDistinguishInstallations(t *testing.T) {
+	home := t.TempDir()
+	var roots []string
+	switch runtime.GOOS {
+	case "darwin":
+		roots = []string{filepath.Join(home, "Library", "Application Support", "Google", "Chrome"), filepath.Join(home, "Library", "Application Support", "Google", "Chrome Beta")}
+	case "linux":
+		roots = []string{filepath.Join(home, ".config", "google-chrome"), filepath.Join(home, ".config", "chromium")}
+	case "windows":
+		roots = []string{filepath.Join(home, "Google", "Chrome", "User Data"), filepath.Join(home, "Microsoft", "Edge", "User Data")}
+	default:
+		t.Skip("browser discovery is unavailable")
+	}
+	for _, root := range roots {
+		path := filepath.Join(root, "Default", "Network")
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "Cookies"), []byte("synthetic"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profiles := BrowserProfiles([]string{"HOME=" + home, "APPDATA=" + home, "LOCALAPPDATA=" + home})
+	if len(profiles) != 2 || profiles[0].Name == profiles[1].Name {
+		t.Fatalf("browser labels are not distinct: %#v", profiles)
+	}
+}
+
 func TestLoadFirefoxCookiesImportsSessionInMemory(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cookies.sqlite")
 	database, err := sql.Open("sqlite", path)
@@ -119,7 +147,7 @@ func TestLoadChromiumCookiesAcceptsPlaintextAndSkipsOtherDomains(t *testing.T) {
 		t.Fatal(err)
 	}
 	jar, _ := cookiejar.New(nil)
-	if err := loadChromiumCookies(t.Context(), browserProfile{kind: browserProfileChromium, cookiesPath: path}, jar, []string{"provider.example"}); err != nil {
+	if err := loadChromiumCookies(t.Context(), browserProfile{kind: browserProfileChromium, cookiesPath: path}, jar, []string{"provider.example"}, false); err != nil {
 		t.Fatalf("loadChromiumCookies: %v", err)
 	}
 	cookies := jar.Cookies(&url.URL{Scheme: "https", Host: "app.provider.example", Path: "/"})

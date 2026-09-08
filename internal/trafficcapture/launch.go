@@ -222,7 +222,8 @@ func tmuxSessionExists(ctx context.Context, tmux, session string) (bool, error) 
 		return true, nil
 	}
 	lowered := strings.ToLower(output)
-	if strings.Contains(lowered, "no server running") || strings.Contains(lowered, "failed to connect") || strings.Contains(lowered, "can't find session") {
+	missingSocket := strings.Contains(lowered, "error connecting to") && strings.Contains(lowered, "no such file or directory")
+	if missingSocket || strings.Contains(lowered, "no server running") || strings.Contains(lowered, "failed to connect") || strings.Contains(lowered, "can't find session") {
 		return false, nil
 	}
 	return false, fmt.Errorf("inspect tmux capture session: %w: %s", err, output)

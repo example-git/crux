@@ -3,6 +3,9 @@ package chat
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/ui/styles"
 )
 
 func TestLooksLikeDiff(t *testing.T) {
@@ -143,244 +146,28 @@ No hunk markers at all
 	}
 }
 
-func TestParseUnifiedDiff(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		input string
-		want  []parsedDiffFile
-	}{
-		{
-			name: "simple diff with additions and removals",
-			input: `diff --git a/main.go b/main.go
---- a/main.go
-+++ b/main.go
-@@ -1,5 +1,6 @@
- package main
- 
-+import "fmt"
-+
- func main() {
--    println("hello")
-+    fmt.Println("hello")
- }
-`,
-			want: []parsedDiffFile{
-				{
-					path:   "main.go",
-					before: "package main\n\nfunc main() {\n    println(\"hello\")\n}",
-					after:  "package main\n\nimport \"fmt\"\n\nfunc main() {\n    fmt.Println(\"hello\")\n}",
-				},
-			},
-		},
-		{
-			name: "new file creation",
-			input: `diff --git a/newfile.go b/newfile.go
-new file mode 100644
---- /dev/null
-+++ b/newfile.go
-@@ -0,0 +1,3 @@
-+package main
-+
-+func main() {}
-`,
-			want: []parsedDiffFile{
-				{
-					path:   "newfile.go",
-					before: "",
-					after:  "package main\n\nfunc main() {}",
-				},
-			},
-		},
-		{
-			name: "file deletion",
-			input: `diff --git a/oldfile.go b/oldfile.go
-deleted file mode 100644
---- a/oldfile.go
-+++ /dev/null
-@@ -1,3 +0,0 @@
--package main
--
--func main() {}
-`,
-			want: []parsedDiffFile{
-				{
-					path:   "oldfile.go",
-					before: "package main\n\nfunc main() {}",
-					after:  "",
-				},
-			},
-		},
-		{
-			name:  "non-diff content",
-			input: "Just some regular text",
-			want:  nil,
-		},
-		{
-			name: "diff with timestamp in header",
-			input: `diff --git a/config.yml b/config.yml
---- a/config.yml	2024-01-15 10:30:00
-+++ b/config.yml	2024-01-15 10:31:00
-@@ -1,3 +1,4 @@
- name: myapp
--version: 1.0
-+version: 1.1
-+debug: true
-`,
-			want: []parsedDiffFile{
-				{
-					path:   "config.yml",
-					before: "name: myapp\nversion: 1.0",
-					after:  "name: myapp\nversion: 1.1\ndebug: true",
-				},
-			},
-		},
-		{
-			name: "multi-file diff",
-			input: `diff --git a/one.txt b/one.txt
---- a/one.txt
-+++ b/one.txt
-@@ -1,3 +1,3 @@
- line one
--line two
-+line two updated
- line three
-diff --git a/two.txt b/two.txt
---- a/two.txt
-+++ b/two.txt
-@@ -1,2 +1,3 @@
- alpha
-+beta
- gamma
-`,
-			want: []parsedDiffFile{
-				{
-					path:   "one.txt",
-					before: "line one\nline two\nline three",
-					after:  "line one\nline two updated\nline three",
-				},
-				{
-					path:   "two.txt",
-					before: "alpha\ngamma",
-					after:  "alpha\nbeta\ngamma",
-				},
-			},
-		},
-		{
-			name: "non-git unified patch",
-			input: `--- old.c
-+++ old.c
-@@ -1,3 +1,4 @@
- #include <stdio.h>
--int main() {
-+int main(int argc, char **argv) {
-     return 0;
- }
-`,
-			want: []parsedDiffFile{
-				{
-					path:   "old.c",
-					before: "#include <stdio.h>\nint main() {\n    return 0;\n}",
-					after:  "#include <stdio.h>\nint main(int argc, char **argv) {\n    return 0;\n}",
-				},
-			},
-		},
-		{
-			name: "non-git new file from /dev/null",
-			input: `--- /dev/null
-+++ newfile.txt
-@@ -0,0 +1,2 @@
-+hello
-+world
-`,
-			want: []parsedDiffFile{
-				{
-					path:   "newfile.txt",
-					before: "",
-					after:  "hello\nworld",
-				},
-			},
-		},
-		{
-			name: "non-git new file with only +++ header",
-			input: `+++ brand_new.go
-@@ -0,0 +1,3 @@
-+package main
-+
-+func main() {}
-`,
-			want: []parsedDiffFile{
-				{
-					path:   "brand_new.go",
-					before: "",
-					after:  "package main\n\nfunc main() {}",
-				},
-			},
-		},
-		{
-			name: "multi-hunk single file",
-			input: `diff --git a/big.go b/big.go
---- a/big.go
-+++ b/big.go
-@@ -1,4 +1,5 @@
- package main
-+import "os"
- 
- func init() {
-@@ -10,3 +11,3 @@
--    println("done")
-+    fmt.Println("done")
- }
-`,
-			want: []parsedDiffFile{
-				{
-					path:   "big.go",
-					before: "package main\n\nfunc init() {\n    println(\"done\")\n}",
-					after:  "package main\nimport \"os\"\n\nfunc init() {\n    fmt.Println(\"done\")\n}",
-				},
-			},
-		},
-		{
-			name: "hunk content starting with header-like prefixes",
-			input: `diff --git a/file.txt b/file.txt
---- a/file.txt
-+++ b/file.txt
-@@ -1,3 +1,3 @@
----- tricky
-++++ newer
- keep
-`,
-			want: []parsedDiffFile{
-				{
-					path:   "file.txt",
-					before: "--- tricky\nkeep",
-					after:  "+++ newer\nkeep",
-				},
-			},
-		},
+func TestUnifiedPatchRenderingPreservesContent(t *testing.T) {
+	sty := styles.CharmtonePantera()
+	patches := []string{
+		"--- a/main.go\n+++ b/main.go\n@@ -100 +100 @@ function\n-oldValue\n+newValue\n",
+		"--- a/file.txt\n+++ b/file.txt\n@@ -100 +99,0 @@\n-movedLine\n@@ -200,0 +200 @@\n+movedLine\n",
+		"diff --git a/new.go b/new.go\nnew file mode 100644\n--- /dev/null\n+++ b/new.go\n@@ -0,0 +1 @@\n+package main\n",
+		"diff --git a/old.go b/old.go\ndeleted file mode 100644\n--- a/old.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-package main\n",
+		"--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n---- tricky\n++++ newer\n\\ No newline at end of file\n",
+		"--- a/one.txt\n+++ b/one.txt\n@@ -1 +1 @@\n-oldOne\n+newOne\n--- a/two.txt\n+++ b/two.txt\n@@ -50 +50 @@\n-oldTwo\n+newTwo\n",
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := parseUnifiedDiff(tt.input)
-			if len(got) != len(tt.want) {
-				t.Errorf("parseUnifiedDiff() returned %d files, want %d", len(got), len(tt.want))
-				return
-			}
-			for i, w := range tt.want {
-				if got[i].path != w.path {
-					t.Errorf("parseUnifiedDiff()[%d].path = %q, want %q", i, got[i].path, w.path)
+	for _, patch := range patches {
+		for _, width := range []int{80, 160} {
+			view := ansi.Strip(toolOutputDiffContentFromUnified(&sty, patch, width, true))
+			for _, line := range strings.Split(strings.TrimSuffix(patch, "\n"), "\n") {
+				if len(line) > 0 && (line[0] == '+' || line[0] == '-') && !strings.HasPrefix(line, "--- ") && !strings.HasPrefix(line, "+++ ") {
+					line = line[1:]
 				}
-				if got[i].before != w.before {
-					t.Errorf("parseUnifiedDiff()[%d].before = %q, want %q", i, got[i].before, w.before)
-				}
-				if got[i].after != w.after {
-					t.Errorf("parseUnifiedDiff()[%d].after = %q, want %q", i, got[i].after, w.after)
+				if !strings.Contains(view, line) {
+					t.Fatalf("width %d omitted %q:\n%s", width, line, view)
 				}
 			}
-		})
+		}
 	}
 }
 

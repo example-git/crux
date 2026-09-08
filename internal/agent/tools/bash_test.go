@@ -158,7 +158,7 @@ func TestBashTool_CtrlBDetachesAndNotifies(t *testing.T) {
 	parentCtx, cancelParent := context.WithCancel(context.Background())
 	ctx := context.WithValue(parentCtx, SessionIDContextKey, "child-session")
 	ctx = managedtask.WithOwnership(ctx, managedtask.Ownership{ParentSessionID: "parent-session", OwnerAgentTaskID: "a12345678", OriginToolCallID: "agent-call"})
-	input, err := json.Marshal(BashParams{Description: "detach", Command: "sleep 10"})
+	input, err := json.Marshal(BashParams{Description: "detach", Command: "sleep 2; echo survived", Timeout: 1})
 	require.NoError(t, err)
 	type toolResult struct {
 		response fantasy.ToolResponse
@@ -171,7 +171,7 @@ func TestBashTool_CtrlBDetachesAndNotifies(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		return manager.DetachForeground() == 1
+		return manager.ForegroundWaits.Detach("child-session") == 1
 	}, 2*time.Second, 20*time.Millisecond)
 	result := <-resultChannel
 	require.NoError(t, result.err)
@@ -186,15 +186,16 @@ func TestBashTool_CtrlBDetachesAndNotifies(t *testing.T) {
 	require.Equal(t, "a12345678", backgroundShell.Ownership.OwnerAgentTaskID)
 	require.Equal(t, "detach-call", backgroundShell.Ownership.OriginToolCallID)
 	cancelParent()
-	time.Sleep(25 * time.Millisecond)
+	time.Sleep(1100 * time.Millisecond)
 	require.False(t, backgroundShell.State().Status.Terminal())
-	_, err = manager.Stop(t.Context(), metadata.ShellID)
-	require.NoError(t, err)
+	require.Zero(t, manager.ForegroundWaits.Count("child-session"))
 	select {
 	case event := <-notifications:
 		require.Equal(t, metadata.ShellID, event.Payload.TaskID)
-		require.Equal(t, "killed", string(event.Payload.Status))
-	case <-time.After(2 * time.Second):
+		require.Equal(t, "completed", string(event.Payload.Status))
+		stdout, _, _, _ := backgroundShell.GetOutput()
+		require.Contains(t, stdout, "survived")
+	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for detached shell notification")
 	}
 }

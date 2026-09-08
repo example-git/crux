@@ -1,6 +1,7 @@
 package log
 
 import (
+	"context"
 	"database/sql"
 	"io"
 	"net/http"
@@ -15,6 +16,116 @@ import (
 	"github.com/example-git/crux/internal/redact"
 	"github.com/stretchr/testify/require"
 )
+
+func TestSetupTrafficDisabled(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "unused")
+	parent := context.WithValue(t.Context(), trafficContextKey{}, &networkTrace{})
+	ctx, cleanup, err := SetupTraffic(parent, dataDir, false)
+	require.NoError(t, err)
+	defer cleanup()
+	require.Nil(t, trafficFromContext(ctx))
+	_, err = TrafficDatabasePath(ctx)
+	require.ErrorContains(t, err, "network tracing is disabled")
+	_, err = OpenTrafficDatabaseReadOnly(ctx)
+	require.ErrorContains(t, err, "network tracing is disabled")
+	TraceWebSocketFrame(ctx, "disabled", "inbound", "wss://example.test", 1, []byte(`{"delta":"hello"}`), nil)
+	TraceWebSocketHandshake(ctx, "disabled", "outbound", "wss://example.test", nil, 0, 0, nil)
+	require.NoDirExists(t, dataDir)
+	require.Zero(t, testing.AllocsPerRun(100, func() {
+		TraceWebSocketFrame(ctx, "disabled", "inbound", "wss://example.test", 1, nil, nil)
+	}))
+}
+
+func TestSetupTrafficIsolatesWorkspacesAndInstances(t *testing.T) {
+	firstDir := t.TempDir()
+	paths := make(map[string]bool)
+	for index, dataDir := range []string{firstDir, firstDir, t.TempDir()} {
+		ctx, cleanup, err := SetupTraffic(t.Context(), dataDir, true)
+		require.NoError(t, err)
+		trace := trafficFromContext(ctx)
+		t.Cleanup(func() {
+			cleanup()
+			<-trace.done
+		})
+		path, err := TrafficDatabasePath(ctx)
+		require.NoError(t, err)
+		require.Equal(t, filepath.Join(dataDir, "traffic"), filepath.Dir(path))
+		require.False(t, paths[path])
+		paths[path] = true
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		requestCtx := WithTrafficContext(t.Context(), ctx)
+		TraceWebSocketFrame(requestCtx, "workspace", "inbound", "wss://example.test", index+1, []byte(`{"delta":"hello"}`), nil)
+		trace.flush()
+		reader, err := OpenTrafficDatabaseReadOnly(requestCtx)
+		require.NoError(t, err)
+		events, err := QueryTraffic(requestCtx, reader, TrafficQuery{Limit: 10})
+		require.NoError(t, err)
+		require.NoError(t, reader.Close())
+		require.Len(t, events, 1)
+		require.Equal(t, index+1, events[0].MessageType)
+	}
+	_, _, err := SetupTraffic(t.Context(), "", true)
+	require.ErrorContains(t, err, "requires a project data directory")
+}
+
+func TestNetworkTraceFullQueueDoesNotBlockDelivery(t *testing.T) {
+	trace := &networkTrace{entries: make(chan trafficWrite, 1)}
+	trace.entries <- trafficWrite{}
+	ctx := context.WithValue(t.Context(), trafficContextKey{}, trace)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 100 {
+			TraceWebSocketFrame(ctx, "full", "inbound", "wss://example.test", 1, []byte(`{"delta":"hello"}`), nil)
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("WebSocket trace calls blocked on a full queue")
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		_, _ = writer.Write([]byte("delivered"))
+	}))
+	defer server.Close()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	client := &http.Client{Transport: WrapHTTPTransport(server.Client().Transport), Timeout: time.Second}
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	bodyDone := make(chan string, 1)
+	go func() {
+		body, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		bodyDone <- string(body)
+	}()
+	select {
+	case body := <-bodyDone:
+		require.Equal(t, "delivered", body)
+	case <-time.After(time.Second):
+		t.Fatal("HTTP delivery blocked on a full trace queue")
+	}
+	dropped, failed := TrafficDropCounts(ctx)
+	require.EqualValues(t, 102, dropped)
+	require.Zero(t, failed)
+	trace.close()
+	trace.close()
+	TraceWebSocketFrame(ctx, "closed", "inbound", "wss://example.test", 1, nil, nil)
+}
+
+func TestNetworkTraceCountsFailedWrites(t *testing.T) {
+	trace, database := testTrafficTrace(t)
+	_, err := database.ExecContext(t.Context(), `DROP TABLE websocket_frames`)
+	require.NoError(t, err)
+	ctx := context.WithValue(t.Context(), trafficContextKey{}, trace)
+	TraceWebSocketFrame(ctx, "failed", "inbound", "wss://example.test", 1, nil, nil)
+	trace.flush()
+	dropped, failed := TrafficDropCounts(ctx)
+	require.Zero(t, dropped)
+	require.EqualValues(t, 1, failed)
+}
 
 func TestTrafficDatabaseFileURL(t *testing.T) {
 	testCases := map[string]struct {
@@ -41,17 +152,57 @@ func TestTrafficDatabaseFileURL(t *testing.T) {
 	}
 }
 
+func TestTrafficDatabaseReopenDoesNotAcquireWriterLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "traffic.db")
+	database, err := openTrafficDatabase(path, false)
+	require.NoError(t, err)
+	defer database.Close()
+	transaction, err := database.BeginTx(t.Context(), nil)
+	require.NoError(t, err)
+	defer transaction.Rollback()
+	_, err = transaction.ExecContext(t.Context(), `UPDATE traffic_meta SET value = value WHERE key = 'total_bytes'`)
+	require.NoError(t, err)
+
+	started := time.Now()
+	second, err := openTrafficDatabase(path, false)
+	require.NoError(t, err)
+	defer second.Close()
+	require.Less(t, time.Since(started), time.Second)
+	require.NoError(t, transaction.Rollback())
+	trace := newNetworkTrace(second)
+	defer close(trace.entries)
+	require.NoError(t, trace.insertBatch([]TrafficEvent{{TraceID: "reopened", Timestamp: time.Now().UTC(), Protocol: "http", Phase: "request", Direction: "outbound", Method: "GET", URL: "https://example.invalid"}}))
+	var count int
+	require.NoError(t, second.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM http_requests WHERE trace_id = 'reopened'`).Scan(&count))
+	require.Equal(t, 1, count)
+}
+
+func TestTrafficDatabaseReopenRepairsMissingSchemaObjects(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "traffic.db")
+	database, err := openTrafficDatabase(path, false)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `DROP VIEW traffic_events; DELETE FROM traffic_meta WHERE key = 'total_bytes'`)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+	database, err = openTrafficDatabase(path, false)
+	require.NoError(t, err)
+	defer database.Close()
+	var count int
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM traffic_events`).Scan(&count))
+	require.NoError(t, database.QueryRowContext(t.Context(), `SELECT value FROM traffic_meta WHERE key = 'total_bytes'`).Scan(&count))
+	require.Zero(t, count)
+}
+
 func testTrafficTrace(t *testing.T) (*networkTrace, *sql.DB) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "traffic.db")
 	database, err := openTrafficDatabase(path, false)
 	require.NoError(t, err)
 	trace := newNetworkTrace(database)
-	previous := networkTraceState.Swap(trace)
 	t.Cleanup(func() {
 		trace.flush()
-		networkTraceState.Store(previous)
-		require.NoError(t, database.Close())
+		trace.close()
+		<-trace.done
 	})
 	return trace, database
 }
@@ -65,7 +216,7 @@ func TestNetworkTraceCapturesOutboundHTTPInTypedTables(t *testing.T) {
 	}))
 	defer server.Close()
 
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"?access_token=secret", strings.NewReader(`{"role":"user","content":"hello"}`))
+	request, err := http.NewRequestWithContext(context.WithValue(t.Context(), trafficContextKey{}, trace), http.MethodPost, server.URL+"?access_token=secret", strings.NewReader(`{"role":"user","content":"hello"}`))
 	require.NoError(t, err)
 	request.Header.Set("Authorization", "Bearer secret")
 	client := &http.Client{Transport: WrapHTTPTransport(server.Client().Transport)}
@@ -118,7 +269,7 @@ func TestNetworkTraceRedactsOpaqueAccountMaterial(t *testing.T) {
 		writer.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/"+secret, strings.NewReader("payload "+secret))
+	request, err := http.NewRequestWithContext(context.WithValue(t.Context(), trafficContextKey{}, trace), http.MethodPost, server.URL+"/"+secret, strings.NewReader("payload "+secret))
 	require.NoError(t, err)
 	response, err := (&http.Client{Transport: WrapHTTPTransport(server.Client().Transport)}).Do(request)
 	require.NoError(t, err)
@@ -144,7 +295,7 @@ func TestNetworkTraceRedactsCopiesWithoutChangingProviderRequest(t *testing.T) {
 		writer.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/"+secret, strings.NewReader("payload "+secret))
+	request, err := http.NewRequestWithContext(context.WithValue(t.Context(), trafficContextKey{}, trace), http.MethodPost, server.URL+"/"+secret, strings.NewReader("payload "+secret))
 	require.NoError(t, err)
 	request.Header.Set("X-Custom-Credential", secret)
 	response, err := (&http.Client{Transport: WrapHTTPTransport(server.Client().Transport)}).Do(request)
@@ -171,7 +322,7 @@ func TestNetworkTraceDoesNotPersistEphemeralStateBodies(t *testing.T) {
 	})))
 	defer server.Close()
 
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, strings.NewReader(`{"forwarded_accounts":{"codex":{"accessToken":"secret"}}}`))
+	request, err := http.NewRequestWithContext(context.WithValue(t.Context(), trafficContextKey{}, trace), http.MethodPost, server.URL, strings.NewReader(`{"forwarded_accounts":{"codex":{"accessToken":"secret"}}}`))
 	require.NoError(t, err)
 	request.Header.Set(EphemeralStateHeader, "1")
 	response, err := (&http.Client{Transport: WrapHTTPTransport(server.Client().Transport)}).Do(request)
@@ -197,7 +348,7 @@ func TestNetworkTraceStreamsRequestBodiesWithoutGetBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, io.NopCloser(strings.NewReader("streamed input")))
+	request, err := http.NewRequestWithContext(context.WithValue(t.Context(), trafficContextKey{}, trace), http.MethodPost, server.URL, io.NopCloser(strings.NewReader("streamed input")))
 	require.NoError(t, err)
 	require.Nil(t, request.GetBody)
 	response, err := (&http.Client{Transport: WrapHTTPTransport(server.Client().Transport)}).Do(request)
@@ -219,7 +370,7 @@ func TestNetworkTraceCapturesInboundHTTP(t *testing.T) {
 		writer.WriteHeader(http.StatusCreated)
 		_, _ = writer.Write([]byte("output"))
 	}))
-	request := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://crux.local/test", strings.NewReader("input"))
+	request := httptest.NewRequestWithContext(context.WithValue(t.Context(), trafficContextKey{}, trace), http.MethodPost, "http://crux.local/test", strings.NewReader("input"))
 	request.Header.Set("Cookie", "session=secret")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -238,8 +389,8 @@ func TestNetworkTraceCapturesInboundHTTP(t *testing.T) {
 
 func TestNetworkTraceStoresWebSocketTypesSeparately(t *testing.T) {
 	trace, database := testTrafficTrace(t)
-	TraceWebSocketHandshake("test-trace", "outbound", "wss://example.test/responses", http.Header{"Authorization": {"Bearer secret"}}, 0, 0, nil)
-	TraceWebSocketFrame("test-trace", "outbound", "wss://example.test/responses", 1, []byte(`{"instructions":"system","input":[{"role":"user","content":"hello"}]}`), nil)
+	TraceWebSocketHandshake(context.WithValue(t.Context(), trafficContextKey{}, trace), "test-trace", "outbound", "wss://example.test/responses", http.Header{"Authorization": {"Bearer secret"}}, 0, 0, nil)
+	TraceWebSocketFrame(context.WithValue(t.Context(), trafficContextKey{}, trace), "test-trace", "outbound", "wss://example.test/responses", 1, []byte(`{"instructions":"system","input":[{"role":"user","content":"hello"}]}`), nil)
 	trace.flush()
 
 	var handshakes, frames, payloads int
@@ -360,7 +511,7 @@ func TestNetworkTraceRedactsCredentialFieldsWithoutChangingRequest(t *testing.T)
 	}))
 	defer server.Close()
 
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL, strings.NewReader(original))
+	request, err := http.NewRequestWithContext(context.WithValue(t.Context(), trafficContextKey{}, trace), http.MethodPost, server.URL, strings.NewReader(original))
 	require.NoError(t, err)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := (&http.Client{Transport: WrapHTTPTransport(server.Client().Transport)}).Do(request)
@@ -407,8 +558,8 @@ func TestNetworkResponseWriterKeepsFirstStatus(t *testing.T) {
 
 func TestWebSocketEventsShareCallerTraceID(t *testing.T) {
 	trace, database := testTrafficTrace(t)
-	TraceWebSocketHandshake("shared-trace", "outbound", "wss://example.test/responses", nil, 0, 0, nil)
-	TraceWebSocketFrame("shared-trace", "outbound", "wss://example.test/responses", 1, []byte(`{"input":"hello"}`), nil)
+	TraceWebSocketHandshake(context.WithValue(t.Context(), trafficContextKey{}, trace), "shared-trace", "outbound", "wss://example.test/responses", nil, 0, 0, nil)
+	TraceWebSocketFrame(context.WithValue(t.Context(), trafficContextKey{}, trace), "shared-trace", "outbound", "wss://example.test/responses", 1, []byte(`{"input":"hello"}`), nil)
 	trace.flush()
 
 	events, err := QueryTraffic(t.Context(), database, TrafficQuery{Sort: "asc", Limit: 10})

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +33,9 @@ type BackgroundShell struct {
 	Command             string
 	Description         string
 	Shell               *Shell
+	startOptions        *Options
+	restarting          atomic.Bool
+	retired             atomic.Bool
 	WorkingDir          string
 	Ownership           managedtask.Ownership
 	ctx                 context.Context
@@ -94,15 +98,16 @@ func (b *BackgroundShell) Status() managedtask.Status {
 }
 
 type BackgroundShellManager struct {
-	mu            sync.RWMutex
-	workspaceID   string
-	shells        map[string]*BackgroundShell
-	active        int
-	closed        bool
-	outputStore   *managedtask.OutputStore
-	recordStore   *managedtask.Store
-	notifications *pubsub.Broker[managedtask.Notification]
-	stopTimeout   time.Duration
+	ForegroundWaits managedtask.ForegroundWaits
+	mu              sync.RWMutex
+	workspaceID     string
+	shells          map[string]*BackgroundShell
+	active          int
+	closed          bool
+	outputStore     *managedtask.OutputStore
+	recordStore     *managedtask.Store
+	notifications   *pubsub.Broker[managedtask.Notification]
+	stopTimeout     time.Duration
 }
 
 func NewBackgroundShellManager(workspaceID string) *BackgroundShellManager {
@@ -219,6 +224,7 @@ func (b *BackgroundShell) record() managedtask.Record {
 		Notification: b.notification,
 		Shell: &managedtask.ShellRecord{
 			Command:             b.Command,
+			OutputID:            strings.TrimPrefix(b.outputRef, "task-output:"),
 			WorkingDirectory:    b.WorkingDir,
 			Backgrounded:        b.backgrounded,
 			NotificationEmitted: b.notificationEmitted,
@@ -227,7 +233,7 @@ func (b *BackgroundShell) record() managedtask.Record {
 }
 
 func (b *BackgroundShell) persistLocked() error {
-	if b.persist == nil {
+	if b.persist == nil || b.retired.Load() {
 		return nil
 	}
 	return b.persist(b)
@@ -273,7 +279,11 @@ func (m *BackgroundShellManager) StartOwnedWithEnvironment(ctx context.Context, 
 		return nil, fmt.Errorf("failed to allocate unique background task ID")
 	}
 
-	output, err := m.outputStore.Create(id)
+	return m.startLocked(ctx, id, id, workingDir, blockFuncs, command, description, ownership, environment, false)
+}
+
+func (m *BackgroundShellManager) startLocked(ctx context.Context, id, outputID, workingDir string, blockFuncs []BlockFunc, command, description string, ownership managedtask.Ownership, environment []string, backgrounded bool) (*BackgroundShell, error) {
+	output, err := m.outputStore.Create(outputID)
 	if err != nil {
 		m.mu.Unlock()
 		return nil, fmt.Errorf("creating background task output: %w", err)
@@ -289,6 +299,8 @@ func (m *BackgroundShellManager) StartOwnedWithEnvironment(ctx context.Context, 
 		WorkingDir:    workingDir,
 		Ownership:     ownership,
 		Shell:         shell,
+		startOptions:  &Options{WorkingDir: shell.cwd, Env: append([]string{}, shell.env...), BlockFuncs: append([]BlockFunc(nil), blockFuncs...)},
+		backgrounded:  backgrounded,
 		ctx:           shellCtx,
 		cancel:        cancel,
 		output:        output,
@@ -305,7 +317,9 @@ func (m *BackgroundShellManager) StartOwnedWithEnvironment(ctx context.Context, 
 	}
 	if err := backgroundShell.persistLocked(); err != nil {
 		m.mu.Unlock()
+		cancel()
 		_ = output.Close()
+		_ = m.outputStore.Remove(outputID)
 		return nil, fmt.Errorf("persisting background task: %w", err)
 	}
 	backgroundShell.notify = func(notification managedtask.Notification) {
@@ -459,7 +473,7 @@ func newShellNotification(id, description string, ownership managedtask.Ownershi
 }
 
 func (b *BackgroundShell) notificationLocked() *managedtask.Notification {
-	if !b.backgrounded || b.notificationEmitted || !b.state.Status.Terminal() {
+	if b.retired.Load() || !b.backgrounded || b.notificationEmitted || !b.state.Status.Terminal() {
 		return nil
 	}
 	b.notificationEmitted = true
@@ -468,7 +482,7 @@ func (b *BackgroundShell) notificationLocked() *managedtask.Notification {
 }
 
 func (b *BackgroundShell) publishNotification(notification *managedtask.Notification) {
-	if notification != nil && b.notify != nil {
+	if notification != nil && b.notify != nil && !b.retired.Load() {
 		b.notify(*notification)
 	}
 }
@@ -523,6 +537,60 @@ func (m *BackgroundShellManager) Remove(id string) error {
 		}
 	}
 	return nil
+}
+
+func (m *BackgroundShellManager) Restart(ctx context.Context, id string) (*BackgroundShell, error) {
+	previous, ok := m.Get(id)
+	if !ok {
+		return nil, fmt.Errorf("background shell not found: %s", id)
+	}
+	if previous.startOptions == nil {
+		return nil, fmt.Errorf("cannot restart recovered command %s: original execution environment and restrictions are unavailable", id)
+	}
+	if !previous.restarting.CompareAndSwap(false, true) {
+		return nil, fmt.Errorf("background shell %s is already restarting", id)
+	}
+	defer previous.restarting.Store(false)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	previous.requestStop(m.stopTimeout)
+	timer := time.NewTimer(m.stopTimeout)
+	defer timer.Stop()
+	select {
+	case <-previous.executionDone:
+	case <-timer.C:
+		return nil, fmt.Errorf("cannot restart %s: previous execution has not terminated", id)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	m.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	if m.closed || m.shells[id] != previous {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("cannot restart %s: task was removed or manager closed", id)
+	}
+	if m.active >= MaxBackgroundJobs {
+		m.mu.Unlock()
+		return nil, fmt.Errorf("maximum number of background jobs (%d) reached", MaxBackgroundJobs)
+	}
+	outputID, err := managedtask.NewID(managedtask.TypeShell)
+	if err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
+	previous.stateMu.Lock()
+	previous.retired.Store(true)
+	options := previous.startOptions
+	restarted, err := m.startLocked(context.WithoutCancel(ctx), id, outputID, options.WorkingDir, options.BlockFuncs, previous.Command, previous.Description, previous.Ownership, options.Env, true)
+	if err != nil {
+		previous.retired.Store(false)
+	}
+	previous.stateMu.Unlock()
+	return restarted, err
 }
 
 func (m *BackgroundShellManager) Stop(ctx context.Context, id string) (managedtask.State, error) {

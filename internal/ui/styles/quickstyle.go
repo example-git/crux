@@ -86,15 +86,25 @@ type quickStyleOpts struct {
 // The idea here is that you can do most of the work on a theme with quickStyle,
 // then add overrides as needed.
 func quickStyle(o quickStyleOpts) Styles {
+	o.fgSubtle = ReadableText(o.fgSubtle, o.bgLeastVisible)
+	o.fgMoreSubtle = ReadableText(o.fgMoreSubtle, o.bgLeastVisible)
+	o.fgMostSubtle = ReadableText(o.fgMostSubtle, o.bgLeastVisible)
 	var (
-		base       = lipgloss.NewStyle().Foreground(o.fgBase)
-		editorBase = base.Background(o.bgLeastVisible)
-		muted      = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
-		subtle     = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
-		s          Styles
+		base            = lipgloss.NewStyle().Foreground(o.fgBase)
+		panelBackground = o.bgLeastVisible
+		editorBase      = base.Background(o.bgBase).Foreground(lipgloss.Color("#B8B8B8"))
+		muted           = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
+		subtle          = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
+		s               Styles
 	)
 
 	s.Background = o.bgBase
+	s.PanelBackground = panelBackground
+	s.TaskPanel.OutputBackground = lipgloss.Color("#000000")
+	s.TaskPanel.OutputForeground = lipgloss.Color("#C4CAD2")
+	s.TaskPanel.ControlsBackground = lipgloss.Color("#211F28")
+	s.TaskPanel.Title = base.Foreground(lipgloss.Color("#E0E3E8")).Background(panelBackground).Bold(true)
+	s.TaskPanel.Metadata = muted.Background(panelBackground)
 
 	// Populate color fields
 	s.WorkingGradFromColor = o.primary
@@ -123,7 +133,7 @@ func quickStyle(o quickStyleOpts) Styles {
 		},
 	}
 
-	s.Editor.Background = o.bgLeastVisible
+	s.Editor.Background = o.bgBase
 	s.Editor.Textarea = textarea.Styles{
 		Focused: textarea.StyleState{
 			Base:             editorBase,
@@ -136,7 +146,7 @@ func quickStyle(o quickStyleOpts) Styles {
 		},
 		Blurred: textarea.StyleState{
 			Base:             editorBase,
-			Text:             editorBase.Foreground(o.fgMoreSubtle),
+			Text:             editorBase,
 			LineNumber:       editorBase.Foreground(o.fgMoreSubtle),
 			CursorLine:       editorBase,
 			CursorLineNumber: editorBase.Foreground(o.fgMoreSubtle),
@@ -259,13 +269,14 @@ func quickStyle(o quickStyleOpts) Styles {
 				Prefix:          " ",
 				Suffix:          " ",
 				Color:           hex(o.destructive),
-				BackgroundColor: hex(o.bgLessVisible),
+				BackgroundColor: hex(panelBackground),
 			},
 		},
 		CodeBlock: ansi.StyleCodeBlock{
 			StyleBlock: ansi.StyleBlock{
 				StylePrimitive: ansi.StylePrimitive{
-					Color: hex(o.bgLessVisible),
+					Color:           hex(o.fgSubtle),
+					BackgroundColor: hex(panelBackground),
 				},
 				Margin: new(uint(defaultMargin)),
 			},
@@ -349,7 +360,7 @@ func quickStyle(o quickStyleOpts) Styles {
 					Color: hex(o.fgMoreSubtle),
 				},
 				Background: ansi.StylePrimitive{
-					BackgroundColor: hex(o.bgLessVisible),
+					BackgroundColor: hex(panelBackground),
 				},
 			},
 		},
@@ -363,169 +374,173 @@ func quickStyle(o quickStyleOpts) Styles {
 		},
 	}
 
-	// QuietMarkdown style - muted colors on subtle background for thinking content.
-	plainBg := hex(o.bgLeastVisible)
-	plainFg := hex(o.fgMoreSubtle)
-	s.QuietMarkdown = ansi.StyleConfig{
-		Document: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-		},
-		BlockQuote: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-			// Margin (not Indent): see the Markdown BlockQuote comment.
-			Margin:      new(uint(1)),
-			IndentToken: new("│ "),
-		},
-		List: ansi.StyleList{
-			LevelIndent: defaultListIndent,
-		},
-		Heading: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				BlockSuffix:     "\n",
-				Bold:            new(true),
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-		},
-		H1: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Prefix:          " ",
-				Suffix:          " ",
-				Bold:            new(true),
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-		},
-		H2: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Prefix:          "## ",
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-		},
-		H3: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Prefix:          "### ",
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-		},
-		H4: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Prefix:          "#### ",
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-		},
-		H5: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Prefix:          "##### ",
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-		},
-		H6: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Prefix:          "###### ",
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-		},
-		Strikethrough: ansi.StylePrimitive{
-			CrossedOut:      new(true),
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
-		Emph: ansi.StylePrimitive{
-			Italic:          new(true),
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
-		Strong: ansi.StylePrimitive{
-			Bold:            new(true),
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
-		HorizontalRule: ansi.StylePrimitive{
-			Format:          "\n--------\n",
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
-		Item: ansi.StylePrimitive{
-			BlockPrefix:     "• ",
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
-		Enumeration: ansi.StylePrimitive{
-			BlockPrefix:     ". ",
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
-		Task: ansi.StyleTask{
-			StylePrimitive: ansi.StylePrimitive{
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-			Ticked:   "[✓] ",
-			Unticked: "[ ] ",
-		},
-		Link: ansi.StylePrimitive{
-			Underline:       new(true),
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
-		LinkText: ansi.StylePrimitive{
-			Bold:            new(true),
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
-		Image: ansi.StylePrimitive{
-			Underline:       new(true),
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
-		ImageText: ansi.StylePrimitive{
-			Format:          "Image: {{.text}} →",
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
-		Code: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{
-				Prefix:          " ",
-				Suffix:          " ",
-				Color:           plainFg,
-				BackgroundColor: plainBg,
-			},
-		},
-		CodeBlock: ansi.StyleCodeBlock{
-			StyleBlock: ansi.StyleBlock{
-				StylePrimitive: ansi.StylePrimitive{
-					Color:           plainFg,
-					BackgroundColor: plainBg,
-				},
-				Margin: new(uint(defaultMargin)),
-			},
-		},
-		Table: ansi.StyleTable{
-			StyleBlock: ansi.StyleBlock{
+	quietMarkdown := func(background color.Color) ansi.StyleConfig {
+		plainBg := hex(background)
+		plainFg := hex(o.fgMoreSubtle)
+		return ansi.StyleConfig{
+			Document: ansi.StyleBlock{
 				StylePrimitive: ansi.StylePrimitive{
 					Color:           plainFg,
 					BackgroundColor: plainBg,
 				},
 			},
-		},
-		DefinitionDescription: ansi.StylePrimitive{
-			BlockPrefix:     "\n ",
-			Color:           plainFg,
-			BackgroundColor: plainBg,
-		},
+			BlockQuote: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Color:           plainFg,
+					BackgroundColor: plainBg,
+				},
+				// Margin (not Indent): see the Markdown BlockQuote comment.
+				Margin:      new(uint(1)),
+				IndentToken: new("│ "),
+			},
+			List: ansi.StyleList{
+				LevelIndent: defaultListIndent,
+			},
+			Heading: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					BlockSuffix:     "\n",
+					Bold:            new(true),
+					Color:           plainFg,
+					BackgroundColor: plainBg,
+				},
+			},
+			H1: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Prefix:          " ",
+					Suffix:          " ",
+					Bold:            new(true),
+					Color:           plainFg,
+					BackgroundColor: plainBg,
+				},
+			},
+			H2: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Prefix:          "## ",
+					Color:           plainFg,
+					BackgroundColor: plainBg,
+				},
+			},
+			H3: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Prefix:          "### ",
+					Color:           plainFg,
+					BackgroundColor: plainBg,
+				},
+			},
+			H4: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Prefix:          "#### ",
+					Color:           plainFg,
+					BackgroundColor: plainBg,
+				},
+			},
+			H5: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Prefix:          "##### ",
+					Color:           plainFg,
+					BackgroundColor: plainBg,
+				},
+			},
+			H6: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Prefix:          "###### ",
+					Color:           plainFg,
+					BackgroundColor: plainBg,
+				},
+			},
+			Strikethrough: ansi.StylePrimitive{
+				CrossedOut:      new(true),
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+			Emph: ansi.StylePrimitive{
+				Italic:          new(true),
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+			Strong: ansi.StylePrimitive{
+				Bold:            new(true),
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+			HorizontalRule: ansi.StylePrimitive{
+				Format:          "\n--------\n",
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+			Item: ansi.StylePrimitive{
+				BlockPrefix:     "• ",
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+			Enumeration: ansi.StylePrimitive{
+				BlockPrefix:     ". ",
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+			Task: ansi.StyleTask{
+				StylePrimitive: ansi.StylePrimitive{
+					Color:           plainFg,
+					BackgroundColor: plainBg,
+				},
+				Ticked:   "[✓] ",
+				Unticked: "[ ] ",
+			},
+			Link: ansi.StylePrimitive{
+				Underline:       new(true),
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+			LinkText: ansi.StylePrimitive{
+				Bold:            new(true),
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+			Image: ansi.StylePrimitive{
+				Underline:       new(true),
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+			ImageText: ansi.StylePrimitive{
+				Format:          "Image: {{.text}} →",
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+			Code: ansi.StyleBlock{
+				StylePrimitive: ansi.StylePrimitive{
+					Prefix:          " ",
+					Suffix:          " ",
+					Color:           plainFg,
+					BackgroundColor: plainBg,
+				},
+			},
+			CodeBlock: ansi.StyleCodeBlock{
+				StyleBlock: ansi.StyleBlock{
+					StylePrimitive: ansi.StylePrimitive{
+						Color:           plainFg,
+						BackgroundColor: plainBg,
+					},
+					Margin: new(uint(defaultMargin)),
+				},
+			},
+			Table: ansi.StyleTable{
+				StyleBlock: ansi.StyleBlock{
+					StylePrimitive: ansi.StylePrimitive{
+						Color:           plainFg,
+						BackgroundColor: plainBg,
+					},
+				},
+			},
+			DefinitionDescription: ansi.StylePrimitive{
+				BlockPrefix:     "\n ",
+				Color:           plainFg,
+				BackgroundColor: plainBg,
+			},
+		}
+
 	}
+	s.QuietMarkdown = quietMarkdown(panelBackground)
+	s.ThinkingMarkdown = quietMarkdown(o.bgBase)
 
 	s.Help = help.Styles{
 		ShortKey:       base.Foreground(o.fgMoreSubtle),
@@ -541,24 +556,24 @@ func quickStyle(o quickStyleOpts) Styles {
 		DividerLine: diffview.LineStyle{
 			LineNumber: lipgloss.NewStyle().
 				Foreground(o.fgSubtle).
-				Background(o.bgLeastVisible),
+				Background(panelBackground),
 			Code: lipgloss.NewStyle().
 				Foreground(o.fgSubtle).
-				Background(o.bgLeastVisible),
+				Background(panelBackground),
 		},
 		MissingLine: diffview.LineStyle{
 			LineNumber: lipgloss.NewStyle().
-				Background(o.bgLeastVisible),
+				Background(panelBackground),
 			Code: lipgloss.NewStyle().
-				Background(o.bgLeastVisible),
+				Background(panelBackground),
 		},
 		EqualLine: diffview.LineStyle{
 			LineNumber: lipgloss.NewStyle().
 				Foreground(o.fgMoreSubtle).
-				Background(o.bgBase),
+				Background(panelBackground),
 			Code: lipgloss.NewStyle().
 				Foreground(o.fgMoreSubtle).
-				Background(o.bgBase),
+				Background(panelBackground),
 		},
 		InsertLine: diffview.LineStyle{
 			LineNumber: lipgloss.NewStyle().
@@ -583,10 +598,10 @@ func quickStyle(o quickStyleOpts) Styles {
 		Filename: diffview.LineStyle{
 			LineNumber: lipgloss.NewStyle().
 				Foreground(o.fgSubtle).
-				Background(o.bgLeastVisible),
+				Background(panelBackground),
 			Code: lipgloss.NewStyle().
 				Foreground(o.fgSubtle).
-				Background(o.bgLeastVisible),
+				Background(panelBackground),
 		},
 	}
 
@@ -635,17 +650,23 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Tool.ParamKey = subtle
 
 	// Content rendering - prepared styles that accept width parameter
-	s.Tool.ContentLine = muted.Background(o.bgLeastVisible)
-	s.Tool.ContentTruncation = muted.Background(o.bgLeastVisible)
-	s.Tool.ContentCodeLine = base.Background(o.bgBase).PaddingLeft(2)
-	s.Tool.ContentCodeTruncation = muted.Background(o.bgBase).PaddingLeft(2)
-	s.Tool.ContentCodeBg = o.bgBase
+	s.Tool.ContentLine = muted.Background(panelBackground)
+	s.Tool.ContentTruncation = muted.Background(panelBackground)
+	s.Tool.ContentCodeLine = base.Background(panelBackground).PaddingLeft(2)
+	s.Tool.ContentCodeTruncation = muted.Background(panelBackground).PaddingLeft(2)
+	s.Tool.ContentCodeBg = panelBackground
 	s.Tool.Body = base.PaddingLeft(2)
+	s.Tool.SummaryPanel = base.Background(panelBackground).Padding(0, 1)
+	s.Tool.SummaryText = base
+	s.Tool.SummaryTitle = base.Foreground(o.info).Bold(true)
+	s.Tool.SummaryMeta = base.Foreground(o.fgSubtle)
+	s.Tool.SummaryHint = base.Foreground(o.info)
+	s.Tool.SummaryMatch = base.Foreground(o.info).Bold(true).Underline(true)
 
 	// Deprecated - kept for backward compatibility
-	s.Tool.ContentBg = muted.Background(o.bgLeastVisible)
+	s.Tool.ContentBg = muted.Background(panelBackground)
 	s.Tool.ContentText = muted
-	s.Tool.ContentLineNumber = base.Foreground(o.fgMoreSubtle).Background(o.bgBase).PaddingRight(1).PaddingLeft(1)
+	s.Tool.ContentLineNumber = base.Foreground(o.fgMoreSubtle).Background(panelBackground).PaddingRight(1).PaddingLeft(1)
 
 	s.Tool.StateWaiting = base.Foreground(o.fgMostSubtle)
 	s.Tool.StateCancelled = base.Foreground(o.fgMostSubtle)
@@ -657,7 +678,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Tool.WarnMessage = base.Foreground(o.fgSubtle)
 
 	// Diff and multi-edit styles
-	s.Tool.DiffTruncation = muted.Background(o.bgLeastVisible).PaddingLeft(2)
+	s.Tool.DiffTruncation = muted.Background(panelBackground).PaddingLeft(2)
 	s.Tool.NoteTag = base.Padding(0, 1).Background(o.info).Foreground(o.onPrimary)
 	s.Tool.NoteMessage = base.Foreground(o.fgSubtle)
 
@@ -678,11 +699,11 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Tool.AgenticFetchPromptTag = base.Bold(true).Padding(0, 1).MarginLeft(2).Background(o.success).Foreground(o.separator)
 
 	// Todo styles
-	s.Tool.TodoRatio = base.Foreground(o.infoMostSubtle)
+	s.Tool.TodoRatio = base.Foreground(o.info).Bold(true)
 	s.Tool.TodoCompletedIcon = base.Foreground(o.success)
 	s.Tool.TodoInProgressIcon = base.Foreground(o.successMostSubtle)
 	s.Tool.TodoPendingIcon = base.Foreground(o.fgMoreSubtle)
-	s.Tool.TodoStatusNote = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
+	s.Tool.TodoStatusNote = lipgloss.NewStyle().Foreground(o.fgSubtle)
 	s.Tool.TodoItem = lipgloss.NewStyle().Foreground(o.fgBase)
 	s.Tool.TodoJustStarted = lipgloss.NewStyle().Foreground(o.fgBase)
 
@@ -720,11 +741,20 @@ func quickStyle(o quickStyleOpts) Styles {
 
 	// Buttons
 	s.Button.Focused = lipgloss.NewStyle().Foreground(o.bgBase).Background(o.fgBase)
-	s.Button.Blurred = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.bgLeastVisible)
+	s.Button.Blurred = lipgloss.NewStyle().Foreground(o.fgBase).Background(panelBackground)
 	s.Button.Hovered = lipgloss.NewStyle().Foreground(o.fgBase).Background(o.bgMostVisible)
 	s.Button.Negative = lipgloss.NewStyle().Foreground(o.onPrimary).Background(o.error)
 
 	// Editor
+	s.Editor.DeliveryBadges = make(map[string]lipgloss.Style, 6)
+	for label, background := range map[string]string{
+		"Q": "#BFBCC8", "S": "#F07178", "Yq": "#F5D67B",
+		"Ys": "#F5A35C", "Pq": "#7AA2F7", "Ps": "#BB9AF7",
+	} {
+		s.Editor.DeliveryBadges[label] = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#18171D")).Background(lipgloss.Color(background)).
+			Bold(true).Width(3).Align(lipgloss.Center).MarginRight(1).SetString(label)
+	}
 	s.Editor.PromptNormalFocused = lipgloss.NewStyle().Foreground(o.successMostSubtle).SetString("::: ")
 	s.Editor.PromptNormalBlurred = s.Editor.PromptNormalFocused.Foreground(o.fgMoreSubtle)
 	s.Editor.PromptYoloIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.fgMostSubtle).Background(o.busy).Bold(true).SetString(" Y ")
@@ -733,7 +763,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Editor.PromptYoloDotsBlurred = s.Editor.PromptYoloDotsFocused.Foreground(o.fgMoreSubtle)
 	s.Editor.PromptPlanIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.onPrimary).Background(o.info).Bold(true).SetString("PLAN")
 	s.Editor.PromptPlanIconBlurred = s.Editor.PromptPlanIconFocused.Foreground(o.bgBase).Background(o.infoMoreSubtle)
-	s.Editor.PromptPlanDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.info).SetString("::::")
+	s.Editor.PromptPlanDotsFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.info).SetString(":::")
 	s.Editor.PromptPlanDotsBlurred = s.Editor.PromptPlanDotsFocused.Foreground(o.infoMoreSubtle)
 	s.Editor.PromptBangIconFocused = lipgloss.NewStyle().MarginRight(1).Foreground(o.onPrimary).Background(o.primary).Bold(true).SetString(" ! ")
 	s.Editor.PromptBangIconBlurred = s.Editor.PromptBangIconFocused.Foreground(o.bgBase).Background(o.fgMoreSubtle)
@@ -838,6 +868,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Files.TruncationHint = lipgloss.NewStyle().Foreground(o.fgMostSubtle)
 
 	// Sidebar
+	s.Sidebar.Background = panelBackground
 	s.Sidebar.SessionTitle = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 	s.Sidebar.WorkingDir = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 
@@ -921,10 +952,10 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Messages.AssistantCanceled = lipgloss.NewStyle().Foreground(o.fgSubtle).Italic(true)
 
 	// Thinking section styles
-	s.Messages.ThinkingBox = subtle.Background(o.bgLeastVisible)
-	s.Messages.ThinkingTruncationHint = muted
-	s.Messages.ThinkingFooterTitle = muted
-	s.Messages.ThinkingFooterDuration = subtle
+	s.Messages.ThinkingBox = base.Foreground(o.fgSubtle).Background(o.bgBase).Padding(0, 1)
+	s.Messages.ThinkingTruncationHint = base.Foreground(o.info)
+	s.Messages.ThinkingFooterTitle = base.Foreground(o.fgSubtle).PaddingLeft(1)
+	s.Messages.ThinkingFooterDuration = base.Foreground(o.info)
 
 	// Text selection.
 	s.TextSelection = lipgloss.NewStyle().Foreground(o.onPrimary).Background(o.primary)
@@ -950,7 +981,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	// Dialog.Permissions
 	s.Dialog.Permissions.KeyText = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 	s.Dialog.Permissions.ValueText = lipgloss.NewStyle().Foreground(o.fgBase)
-	s.Dialog.Permissions.ParamsBg = o.bgLessVisible
+	s.Dialog.Permissions.ParamsBg = panelBackground
 
 	// Dialog.Quit
 	s.Dialog.Quit.Content = lipgloss.NewStyle().Foreground(o.fgBase)
@@ -972,9 +1003,9 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Dialog.InputPrompt = base.Margin(1, 1)
 
 	s.Dialog.List = base.Margin(0, 0, 1, 0)
-	s.Dialog.ContentPanel = base.Background(o.bgLessVisible).Foreground(o.fgBase).Padding(1, 2)
-	s.Dialog.ContentPanelBg = o.bgLessVisible
-	s.Dialog.CommandPanel = base.Background(o.bgLessVisible).Foreground(o.fgBase).Padding(0, 1)
+	s.Dialog.ContentPanel = base.Background(panelBackground).Foreground(o.fgBase).Padding(1, 2)
+	s.Dialog.ContentPanelBg = panelBackground
+	s.Dialog.CommandPanel = base.Background(panelBackground).Foreground(o.fgBase).Padding(0, 1)
 	s.Dialog.TerminalPanel = base.Background(o.ansiBlack).Foreground(o.fgBase).Border(lipgloss.NormalBorder()).BorderForeground(o.fgMostSubtle).Padding(0, 1)
 	s.Dialog.TerminalPanelFocused = s.Dialog.TerminalPanel.BorderForeground(o.primary)
 	s.Dialog.TaskStatus.Pending = base.Foreground(o.fgMoreSubtle)
@@ -1042,7 +1073,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Status.ErrorMessage = s.Status.SuccessMessage.Foreground(o.onPrimary).Background(o.error)
 
 	// Completions styles
-	s.Completions.Normal = base.Background(o.bgLessVisible).Foreground(o.fgBase)
+	s.Completions.Normal = base.Background(panelBackground).Foreground(o.fgBase)
 	s.Completions.Focused = base.Background(o.primary).Foreground(o.onPrimary)
 	s.Completions.Match = base.Underline(true)
 
@@ -1057,7 +1088,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	// shift the chips. Padding(0, 1) puts a colored cell on each side of the
 	// glyph so it isn't flush against the box edge, while MarginRight(1)
 	// keeps a transparent gap between adjacent chips.
-	s.Attachments.Remove = base.Padding(0, 1).MarginRight(1).Background(o.bgLessVisible).Foreground(o.fgSubtle).SetString(RemoveIcon)
+	s.Attachments.Remove = base.Padding(0, 1).MarginRight(1).Background(panelBackground).Foreground(o.fgSubtle).SetString(RemoveIcon)
 	s.Attachments.Deleting = base.Padding(0, 1).MarginRight(1).Bold(true).Background(o.destructive).Foreground(o.fgBase)
 
 	// Pills styles

@@ -21,6 +21,7 @@ import (
 	"github.com/example-git/crux/internal/db"
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/fsext"
+	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/projects"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerplugin"
@@ -629,12 +630,20 @@ initializeWorkspace:
 		skills.WithWorkingDir(discoveryCfg.WorkingDir),
 	)
 
-	appWorkspace, err := app.New(b.ctx, conn, cfg, skillsMgr)
+	traceCtx, closeTraffic, err := cruxlog.SetupTraffic(b.ctx, cfg.Config().Options.DataDirectory, cfg.Config().Options.NetworkTracing)
 	if err != nil {
+		_ = conn.Close()
+		return nil, proto.Workspace{}, fmt.Errorf("initialize network tracing: %w", err)
+	}
+	wsCtx, wsCancel := context.WithCancel(traceCtx)
+	appWorkspace, err := app.New(wsCtx, conn, cfg, skillsMgr)
+	if err != nil {
+		wsCancel()
+		closeTraffic()
+		_ = conn.Close()
 		return nil, proto.Workspace{}, fmt.Errorf("failed to create app workspace: %w", err)
 	}
-
-	wsCtx, wsCancel := context.WithCancel(b.ctx)
+	context.AfterFunc(wsCtx, closeTraffic)
 	ws := &Workspace{
 		App:          appWorkspace,
 		ID:           id,

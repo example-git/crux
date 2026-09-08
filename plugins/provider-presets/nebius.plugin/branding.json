@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Nebius Token Factory",
+  "short_name": "NEBIUS",
+  "color": "#A3E635",
+  "gradient_a": "#A3E635",
+  "gradient_b": "#D9F99D"
+}

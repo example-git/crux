@@ -176,11 +176,7 @@ var pluginsRescanCmd = &cobra.Command{
 			return err
 		}
 		defer manager.Close()
-		snapshot, err := manager.Rescan(cmd.Context(), manager.Snapshot().Revision)
-		if err != nil {
-			return err
-		}
-		return printPluginSnapshot(cmd, snapshot)
+		return printPluginSnapshot(cmd, manager.Snapshot())
 	},
 }
 

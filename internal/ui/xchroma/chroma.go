@@ -61,8 +61,12 @@ func Formatter(bgColor color.Color, processValue func(string) string) chroma.For
 				continue
 			}
 
+			background := bgColor
+			if background == nil && entry.Background.IsSet() {
+				background = lipgloss.Color(entry.Background.String())
+			}
 			s := lipgloss.NewStyle().
-				Background(bgColor)
+				Background(background)
 
 			if entry.Bold == chroma.Yes {
 				s = s.Bold(true)

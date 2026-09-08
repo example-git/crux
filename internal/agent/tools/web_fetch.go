@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 
 	fantasy "github.com/example-git/crux/foundation"
 	cruxlog "github.com/example-git/crux/internal/log"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/redact"
 )
 
 //go:embed web_fetch.md.tpl
@@ -24,6 +27,10 @@ var webFetchDescriptionTpl = template.Must(
 
 // NewWebFetchTool creates a simple web fetch tool for sub-agents (no permissions needed).
 func NewWebFetchTool(workingDir string, client *http.Client) fantasy.AgentTool {
+	return NewWebFetchToolWithIdentity(workingDir, client, FetchIdentity{})
+}
+
+func NewWebFetchToolWithIdentity(workingDir string, client *http.Client, identity FetchIdentity) fantasy.AgentTool {
 	if client == nil {
 		transport := cruxlog.CloneDefaultHTTPTransport()
 		transport.MaxIdleConns = 100
@@ -39,12 +46,18 @@ func NewWebFetchTool(workingDir string, client *http.Client) fantasy.AgentTool {
 	return fantasy.NewParallelAgentTool(
 		WebFetchToolName,
 		renderToolDescription(webFetchDescriptionTpl),
-		func(ctx context.Context, params WebFetchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, params WebFetchParams, call fantasy.ToolCall) (response fantasy.ToolResponse, err error) {
+			if identity.Mode == "user" {
+				defer func() { response.Content = redact.String(response.Content) }()
+			}
 			if params.URL == "" {
 				return fantasy.NewTextErrorResponse("url is required"), nil
 			}
 
-			content, err := FetchURLAndConvert(ctx, client, params.URL)
+			content, err := FetchURLAndConvertWithIdentity(ctx, client, params.URL, call.ID, identity)
+			if errors.Is(err, question.ErrCancelled) {
+				return NewPermissionDeniedResponse(), nil
+			}
 			if err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to fetch URL: %s", err)), nil
 			}

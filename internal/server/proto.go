@@ -1159,18 +1159,33 @@ func (c *controllerV1) handlePostWorkspaceAgentSessionSuggest(w http.ResponseWri
 	jsonEncode(w, map[string]string{"suggestion": suggestion})
 }
 
-// handlePostWorkspaceAgentJobsDetach sends foreground-waited commands
-// to the background.
-//
-//	@Summary		Detach foreground jobs
-//	@Tags			agent
-//	@Param			id	path	string	true	"Workspace ID"
-//	@Success		200
-//	@Failure		404	{object}	proto.Error
-//	@Failure		500	{object}	proto.Error
-//	@Router			/workspaces/{id}/agent/jobs/detach [post]
+// @Summary		Control foreground waits
+// @Description	GET requires session_id and returns the available count. POST with session_id detaches Bash, agent, and task-output waits and returns count. Legacy POST without session_id detaches foreground shells and returns detached.
+// @Tags			agent
+// @Param			id	path	string	true	"Workspace ID"
+// @Param			session_id	query	string	false	"Session ID; required for GET"
+// @Success		200	{object}	map[string]int
+// @Failure		404	{object}	proto.Error
+// @Failure		500	{object}	proto.Error
+// @Router			/workspaces/{id}/agent/jobs/detach [post]
+// @Router			/workspaces/{id}/agent/jobs/detach [get]
 func (c *controllerV1) handlePostWorkspaceAgentJobsDetach(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if r.Method == http.MethodGet || r.URL.Query().Has("session_id") {
+		sessionID := r.URL.Query().Get("session_id")
+		if sessionID == "" {
+			http.Error(w, "session_id is required", http.StatusBadRequest)
+			return
+		}
+		count, err := c.backend.ForegroundTaskControl(id, sessionID, r.Method == http.MethodPost)
+		if err != nil {
+			c.handleError(w, r, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		jsonEncode(w, map[string]int{"count": count})
+		return
+	}
 	n, err := c.backend.DetachForegroundJobs(id)
 	if err != nil {
 		c.handleError(w, r, err)

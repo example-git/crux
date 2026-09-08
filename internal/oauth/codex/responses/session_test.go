@@ -114,6 +114,53 @@ func TestSessionStateAppendsOnlyChangedDynamicEnvironment(t *testing.T) {
 	require.Equal(t, []inputItem{testMessageItem("user", "third")}, wire.Input)
 }
 
+func TestSessionStatePreservesAstraInstructionPrefixAcrossContinuation(t *testing.T) {
+	base := baseInstructionsItem("crux instructions")
+	firstUser := testMessageItem("user", "first")
+	initial := testRequestFrame(base, firstUser)
+	initial.Model = "gpt-6-astra"
+	initial.Instructions = ""
+	initial.Reasoning.Context = "all_turns"
+	initial.DynamicContext = "Today's date: 9/5/2026"
+
+	full, incremental, reason := (&sessionState{}).wireRequestLocked(initial)
+	require.False(t, incremental)
+	require.Equal(t, "no_previous_response", reason)
+	require.Len(t, full.Input, 3)
+	require.True(t, isBaseInstructionsItem(full.Input[0]))
+	require.Equal(t, dynamicEnvironmentItemForModel(initial.Model, initial.DynamicContext), full.Input[1])
+	require.Equal(t, firstUser, full.Input[2])
+
+	state := &sessionState{}
+	output := json.RawMessage(`{"type":"message","id":"msg_server","role":"assistant","content":[{"type":"output_text","text":"answer"}]}`)
+	require.True(t, state.commitLocked(initial, &wireResponse{ID: "resp_1", Output: []json.RawMessage{output}}))
+	continuation := testRequestFrame(
+		base,
+		firstUser,
+		testMessageItem("assistant", "answer"),
+		testMessageItem("user", "second"),
+	)
+	continuation.Model = initial.Model
+	continuation.Instructions = ""
+	continuation.Reasoning.Context = "all_turns"
+	continuation.DynamicContext = initial.DynamicContext
+
+	wire, incremental, reason := state.wireRequestLocked(continuation)
+	require.True(t, incremental)
+	require.Empty(t, reason)
+	require.Equal(t, "resp_1", wire.PreviousResponseID)
+	require.Equal(t, []inputItem{testMessageItem("user", "second")}, wire.Input)
+
+	continuation.DynamicContext = "Today's date: 9/6/2026"
+	wire, incremental, reason = state.wireRequestLocked(continuation)
+	require.True(t, incremental)
+	require.Empty(t, reason)
+	require.Equal(t, []inputItem{
+		dynamicEnvironmentItemForModel(continuation.Model, continuation.DynamicContext),
+		testMessageItem("user", "second"),
+	}, wire.Input)
+}
+
 func TestSessionStateFallsBackWhenContextChanges(t *testing.T) {
 	base := testRequestFrame(testMessageItem("user", "first"))
 	output := json.RawMessage(`{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}`)

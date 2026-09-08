@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func snapshotDirectory(source, destination string) (snapshotResult, error) {
+func snapshotDirectoryWithSync(source, destination string, syncFiles bool) (snapshotResult, error) {
 	if err := rejectWindowsReparse(source); err != nil {
 		return snapshotResult{}, fmt.Errorf("open plugin source root: %w", err)
 	}
@@ -73,7 +73,7 @@ func snapshotDirectory(source, destination string) (snapshotResult, error) {
 		if result.FileCount >= MaxBundleFiles || info.Size() < 0 || info.Size() > MaxFileBytes || result.TotalBytes+info.Size() > MaxBundleBytes {
 			return fmt.Errorf("plugin entry %q exceeds bundle limits", relative)
 		}
-		file, err := copyWindowsSourceFile(path, destinationPath, relative, info)
+		file, err := copyWindowsSourceFile(path, destinationPath, relative, info, syncFiles)
 		if err != nil {
 			return err
 		}
@@ -89,15 +89,15 @@ func snapshotDirectory(source, destination string) (snapshotResult, error) {
 	return result, nil
 }
 
-func copyWindowsSourceFile(sourcePath, destinationPath, relative string, before os.FileInfo) (bundleFile, error) {
+func copyWindowsSourceFile(sourcePath, destinationPath, relative string, before os.FileInfo, syncFile bool) (bundleFile, error) {
 	source, err := os.Open(sourcePath)
 	if err != nil {
 		return bundleFile{}, fmt.Errorf("open plugin entry %q", relative)
 	}
 	defer source.Close()
 	var handleInfo windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(windows.Handle(source.Fd()), &handleInfo); err != nil || handleInfo.NumberOfLinks != 1 || handleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		return bundleFile{}, fmt.Errorf("plugin entry %q is unsafe or hard-linked", relative)
+	if err := windows.GetFileInformationByHandle(windows.Handle(source.Fd()), &handleInfo); err != nil || handleInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return bundleFile{}, fmt.Errorf("plugin entry %q is unsafe", relative)
 	}
 	mode := normalizedFileMode(before.Mode())
 	output, err := os.OpenFile(destinationPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
@@ -119,8 +119,10 @@ func copyWindowsSourceFile(sourcePath, destinationPath, relative string, before 
 	if err := output.Chmod(mode); err != nil {
 		return bundleFile{}, fmt.Errorf("protect snapshot file %q", relative)
 	}
-	if err := output.Sync(); err != nil {
-		return bundleFile{}, fmt.Errorf("sync snapshot file %q", relative)
+	if syncFile {
+		if err := output.Sync(); err != nil {
+			return bundleFile{}, fmt.Errorf("sync snapshot file %q", relative)
+		}
 	}
 	if _, err := source.Seek(0, io.SeekStart); err != nil {
 		return bundleFile{}, fmt.Errorf("rewind plugin entry %q", relative)

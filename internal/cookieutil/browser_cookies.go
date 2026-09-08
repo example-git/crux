@@ -64,19 +64,18 @@ func BrowserProfiles(environment []string) []BrowserProfile {
 	result := make([]BrowserProfile, 0, len(profiles))
 	for _, profile := range profiles {
 		digest := sha256.Sum256([]byte(profile.cookiesPath))
-		name := filepath.Base(filepath.Dir(profile.cookiesPath))
-		if name == "Network" {
-			name = filepath.Base(filepath.Dir(filepath.Dir(profile.cookiesPath)))
+		profileDir := filepath.Dir(profile.cookiesPath)
+		if filepath.Base(profileDir) == "Network" {
+			profileDir = filepath.Dir(profileDir)
 		}
-		browser := profile.keyAccount
-		if browser == "" {
-			browser = profile.keyApplication
+		name := filepath.Base(profileDir)
+		root := filepath.Dir(profileDir)
+		if filepath.Base(root) == "User Data" {
+			root = filepath.Dir(root)
 		}
-		if browser == "" && profile.kind == browserProfileFirefox {
+		browser := filepath.Base(root)
+		if profile.kind == browserProfileFirefox {
 			browser = "Firefox"
-		}
-		if browser == "" {
-			browser = "Chromium"
 		}
 		result = append(result, BrowserProfile{ID: fmt.Sprintf("%x", digest), Name: browser + " / " + name, profile: profile})
 	}
@@ -144,7 +143,7 @@ func loadBrowserCookieJar(ctx context.Context, profile browserProfile, domains [
 	if profile.kind == browserProfileFirefox {
 		err = loadFirefoxCookies(ctx, profile.cookiesPath, loaded, domains)
 	} else {
-		err = loadChromiumCookies(ctx, profile, loaded, domains)
+		err = loadChromiumCookies(ctx, profile, loaded, domains, false)
 	}
 	if err != nil {
 		return nil, err
@@ -189,7 +188,7 @@ func loadFirefoxCookies(ctx context.Context, path string, jar http.CookieJar, do
 	return rows.Err()
 }
 
-func loadChromiumCookies(ctx context.Context, profile browserProfile, jar http.CookieJar, domains []string) error {
+func loadChromiumCookies(ctx context.Context, profile browserProfile, jar http.CookieJar, domains []string, failOnDecryptionError bool) error {
 	database, err := openBrowserCookieDatabase(ctx, profile.cookiesPath)
 	if err != nil {
 		return err
@@ -221,29 +220,38 @@ func loadChromiumCookies(ctx context.Context, profile browserProfile, jar http.C
 		if !MatchesDomain(host, domains) {
 			continue
 		}
+		expires := chromiumCookieExpiry(expiresRaw)
+		if !expires.IsZero() && expires.Before(time.Now()) {
+			continue
+		}
 		if value == "" && len(encrypted) > 0 {
 			if !decryptAttempted {
 				decrypt, _ = chromiumCookieDecryptor(ctx, profile)
 				decryptAttempted = true
 			}
 			if decrypt == nil {
+				if failOnDecryptionError {
+					return errors.New("selected browser cookie decryption key is unavailable")
+				}
 				continue
 			}
 			plaintext, decryptErr := decrypt(encrypted)
 			if decryptErr != nil {
+				if failOnDecryptionError {
+					return fmt.Errorf("cannot decrypt a selected browser cookie: %w", decryptErr)
+				}
 				continue
 			}
 			plaintext, decryptErr = stripChromiumHostDigest(host, plaintext, databaseVersion >= 24)
 			if decryptErr != nil {
+				if failOnDecryptionError {
+					return fmt.Errorf("cannot decrypt a selected browser cookie: %w", decryptErr)
+				}
 				continue
 			}
 			value = string(plaintext)
 		}
 		if value == "" {
-			continue
-		}
-		expires := chromiumCookieExpiry(expiresRaw)
-		if !expires.IsZero() && expires.Before(time.Now()) {
 			continue
 		}
 		setBrowserCookie(jar, host, path, name, value, secure != 0, httpOnly != 0, expires)
@@ -280,8 +288,12 @@ func setBrowserCookie(jar http.CookieJar, host, path, name, value string, secure
 	if path == "" {
 		path = "/"
 	}
+	domain := ""
+	if strings.HasPrefix(host, ".") {
+		domain = host
+	}
 	jar.SetCookies(&url.URL{Scheme: "https", Host: requestHost, Path: path}, []*http.Cookie{{
-		Name: name, Value: value, Domain: host, Path: path, Secure: secure, HttpOnly: httpOnly, Expires: expires,
+		Name: name, Value: value, Domain: domain, Path: path, Secure: secure, HttpOnly: httpOnly, Expires: expires,
 	}})
 }
 

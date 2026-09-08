@@ -43,7 +43,7 @@ type BashToolRenderContext struct {
 
 // RenderTool implements the [ToolRenderer] interface.
 func (b *BashToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Bash", opts.Anim, opts.Compact)
 	}
@@ -101,7 +101,7 @@ func (b *BashToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *
 		return header
 	}
 
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
+	bodyWidth := toolBodyWidth(sty, cappedWidth)
 	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, output, bodyWidth, opts.ExpandedContent))
 	return joinToolParts(header, body)
 }
@@ -132,7 +132,7 @@ type JobOutputToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (j *JobOutputToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Job", opts.Anim, opts.Compact)
 	}
@@ -183,7 +183,7 @@ type JobKillToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (j *JobKillToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Job", opts.Anim, opts.Compact)
 	}
@@ -224,7 +224,7 @@ func renderJobTool(sty *styles.Styles, opts *ToolRenderOpts, width int, action, 
 		return header
 	}
 
-	bodyWidth := width - toolBodyLeftPaddingTotal
+	bodyWidth := toolBodyWidth(sty, width)
 	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, content, bodyWidth, opts.ExpandedContent))
 	return joinToolParts(header, body)
 }

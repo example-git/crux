@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -898,6 +899,26 @@ func isolateReloadProviderScan(t *testing.T) {
 	t.Setenv("CRUX_CACHE_DIR", filepath.Join(root, "cache"))
 	resetProviderState()
 	t.Cleanup(resetProviderState)
+}
+
+func TestCodexCompactionV2ConfigReload(t *testing.T) {
+	isolateReloadProviderScan(t)
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "crux.json")
+	require.NoError(t, os.WriteFile(configPath, []byte(`{"options": {}}`), 0o600))
+	store, err := Load(dir, dir, false)
+	require.NoError(t, err)
+	require.False(t, store.Config().Options.CodexCompactionV2)
+	configPath = store.workspacePath
+	for _, enabled := range []bool{true, false} {
+		require.NoError(t, store.SetConfigField(ScopeWorkspace, "options.codex_compaction_v2", enabled))
+		require.Equal(t, enabled, store.Config().Options.CodexCompactionV2)
+		data, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		var persisted Config
+		require.NoError(t, json.Unmarshal(data, &persisted))
+		require.Equal(t, enabled, persisted.Options.CodexCompactionV2)
+	}
 }
 
 // TestSetConfigField_AutoReloads verifies that SetConfigField automatically

@@ -53,10 +53,10 @@ func (m *UI) modelInfo(width int) string {
 	var modelContext *common.ModelContextInfo
 	if model != nil && m.session != nil {
 		modelContext = &common.ModelContextInfo{
-			ContextUsed:    m.session.CompletionTokens + m.session.PromptTokens,
+			ContextUsed:    m.session.ContextTokens(),
 			Cost:           m.session.Cost,
 			ModelContext:   model.CatalogModel.ContextWindow,
-			EstimatedUsage: m.session.EstimatedUsage,
+			EstimatedUsage: m.session.ContextEstimated(),
 		}
 	}
 	var modelName string
@@ -64,6 +64,25 @@ func (m *UI) modelInfo(width int) string {
 		modelName = model.CatalogModel.Name
 	}
 	return common.ModelInfo(m.com.Styles, modelName, providerID, providerName, reasoningInfo, modelContext, width)
+}
+
+func sidebarSection(content string, width, height int) string {
+	if width <= 0 || height <= 0 || content == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) > height {
+		lines = lines[:height]
+		if height == 1 {
+			lines[0] = ansi.Truncate(lines[0], max(0, width-2), "") + " …"
+		} else {
+			lines[height-1] = "… more"
+		}
+	}
+	for i := range lines {
+		lines[i] = ansi.Truncate(lines[i], width, "…")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *UI) sidebarBrand() *providerBrand {
@@ -77,7 +96,7 @@ func (m *UI) handleSidebarLogoClick(msg tea.MouseClickMsg) bool {
 	if m.state != uiChat || msg.Button != uv.MouseLeft || m.brand == nil || m.sidebarBrandLogoHeight <= 0 {
 		return false
 	}
-	if point := image.Pt(msg.X, msg.Y); !point.In(m.layout.sidebar) || msg.Y >= m.layout.sidebar.Min.Y+m.sidebarBrandLogoHeight {
+	if point := image.Pt(msg.X, msg.Y); !point.In(m.layout.sidebar.Inset(1)) || msg.Y >= m.layout.sidebar.Min.Y+1+m.sidebarBrandLogoHeight {
 		return false
 	}
 	m.sidebarShowCruxLogo = !m.sidebarShowCruxLogo
@@ -89,16 +108,47 @@ func (m *UI) handleSidebarFilesClick(msg tea.MouseClickMsg) bool {
 	if m.state != uiChat || m.isCompact || msg.Button != uv.MouseLeft || m.sidebarContent == "" || m.sidebarFilesHeaderLine < 0 {
 		return false
 	}
-	if !image.Pt(msg.X, msg.Y).In(m.layout.sidebar) {
+	if !image.Pt(msg.X, msg.Y).In(m.layout.sidebar.Inset(1)) {
 		return false
 	}
-	contentTop := m.layout.sidebar.Min.Y + lipgloss.Height(m.sidebarDrawLogo)
+	logoHeight := 0
+	if m.sidebarDrawLogo != "" {
+		logoHeight = lipgloss.Height(m.sidebarDrawLogo)
+	}
+	contentTop := m.layout.sidebar.Min.Y + 1 + logoHeight
 	contentLine := msg.Y - contentTop + m.sidebarOffset
 	if contentLine != m.sidebarFilesHeaderLine {
 		return false
 	}
 	m.sidebarFilesCollapsed = !m.sidebarFilesCollapsed
 	return true
+}
+
+func (m *UI) handleSidebarSectionClick(msg tea.MouseClickMsg) bool {
+	if m.state != uiChat || m.isCompact || msg.Button != uv.MouseLeft || m.sidebarContent == "" {
+		return false
+	}
+	if !image.Pt(msg.X, msg.Y).In(m.layout.sidebar.Inset(1)) {
+		return false
+	}
+	logoHeight := 0
+	if m.sidebarDrawLogo != "" {
+		logoHeight = lipgloss.Height(m.sidebarDrawLogo)
+	}
+	contentLine := msg.Y - m.layout.sidebar.Min.Y - 1 - logoHeight + m.sidebarOffset
+	if contentLine < m.sidebarOffset || contentLine >= m.sidebarOffset+m.sidebarContentHeight {
+		return false
+	}
+	for id, line := range m.sidebarSectionHeaders {
+		if line == contentLine {
+			if m.sidebarCollapsed == nil {
+				m.sidebarCollapsed = make(map[string]bool)
+			}
+			m.sidebarCollapsed[id] = !m.sidebarCollapsed[id]
+			return true
+		}
+	}
+	return false
 }
 
 // updateSidebarScrollState renders the sidebar content and computes scroll
@@ -108,93 +158,152 @@ func (m *UI) updateSidebarScrollState() {
 	if m.session == nil || m.isCompact {
 		return
 	}
-
-	const logoHeightBreakpoint = 30
-
 	t := m.com.Styles
-	width := m.layout.sidebar.Dx()
-	height := m.layout.sidebar.Dy()
-
-	contentWidth := max(width-2, 1)
-
-	title := t.Sidebar.SessionTitle.Width(contentWidth).MaxHeight(2).Render(m.session.Title)
-	cwd := common.PrettyPath(t, m.com.Workspace.WorkingDir(), contentWidth)
+	contentWidth := max(m.layout.sidebar.Dx()-4, 1)
+	height := max(0, m.layout.sidebar.Dy()-2)
+	type section struct {
+		id    string
+		lines []string
+		rows  int
+	}
+	var sections []section
+	add := func(id, title, body string) {
+		marker := "▾ "
+		if m.sidebarCollapsed[id] {
+			marker = "▸ "
+		}
+		content := common.Section(t, t.Resource.Heading.Render(marker+title), contentWidth)
+		if !m.sidebarCollapsed[id] && body != "" {
+			content += "\n\n" + body
+		}
+		lines := strings.Split(content, "\n")
+		sections = append(sections, section{id: id, lines: lines, rows: len(lines)})
+	}
+	body := func(content string) string {
+		_, rest, _ := strings.Cut(content, "\n")
+		return strings.TrimLeft(rest, "\n")
+	}
+	add("model", "Model / Context", m.modelInfo(contentWidth))
+	if count := fileChangeCount(m.sessionFiles); count > 0 {
+		lines := strings.Split(m.filesInfo(m.com.Workspace.WorkingDir(), contentWidth, count, true), "\n")
+		sections = append(sections, section{id: "files", lines: lines, rows: len(lines)})
+	}
+	add("session", "Session", t.Sidebar.SessionTitle.Width(contentWidth).Render(m.session.Title)+"\n"+common.PrettyPath(t, m.com.Workspace.WorkingDir(), contentWidth))
+	if count := len(m.lspStates); count > 0 {
+		add("lsp", "LSPs", body(m.lspInfo(contentWidth, count, false)))
+	}
+	if count := mcpCount(m.com.Config().MCP.Sorted(), m.mcpStates); count > 0 {
+		add("mcp", "MCPs", body(m.mcpInfo(contentWidth, count, false)))
+	}
+	if count := len(m.skillStatusItems()); count > 0 {
+		add("skills", "Skills", body(m.skillsInfo(contentWidth, count, false)))
+	}
+	if usage := m.usageBars(contentWidth, false); usage != "" {
+		add("usage", "Provider Usage", usage)
+	}
+	gap := 1
+	total := func() int {
+		rows, visible := 0, 0
+		for _, section := range sections {
+			if section.rows > 0 {
+				rows += section.rows
+				visible++
+			}
+		}
+		return rows + max(0, visible-1)*gap
+	}
 	sidebarLogo := m.sidebarLogo
-	if height < logoHeightBreakpoint {
-		smallOpts := logo.Opts{}
+	logoHeight := func() int {
+		if sidebarLogo == "" {
+			return 0
+		}
+		return lipgloss.Height(sidebarLogo)
+	}
+	if total()+logoHeight() > height {
+		gap = 0
+		for i := range sections {
+			var lines []string
+			for _, line := range sections[i].lines {
+				if strings.TrimSpace(ansi.Strip(line)) != "" {
+					lines = append(lines, line)
+				}
+			}
+			sections[i].lines = lines
+			sections[i].rows = len(lines)
+		}
+	}
+	if total()+logoHeight() > height {
+		opts := logo.Opts{Sidebar: true}
 		if brand := m.sidebarBrand(); brand != nil {
-			smallOpts.Title = brand.Title
-			smallOpts.TitleColorA = brand.GradA
-			smallOpts.TitleColorB = brand.GradB
+			opts.Title, opts.TitleColorA, opts.TitleColorB = brand.Title, brand.GradA, brand.GradB
 		}
-		sidebarLogo = lipgloss.JoinVertical(lipgloss.Left, logo.SmallRender(m.com.Styles, contentWidth, smallOpts), "")
+		sidebarLogo = logo.SmallRender(t, contentWidth, opts)
 	}
-	m.sidebarBrandLogoHeight = lipgloss.Height(sidebarLogo)
-	// Pin provider quota usage right below the logo so it stays visible
-	// while the rest of the sidebar scrolls.
-	if usageBars := m.usageBars(contentWidth, false); usageBars != "" {
-		sidebarLogo = lipgloss.JoinVertical(lipgloss.Left, sidebarLogo, usageBars, "")
+	if total()+logoHeight() > height {
+		sidebarLogo = ""
 	}
-
-	var logoRect, contentRect image.Rectangle
-	layout.Vertical(
-		layout.Len(lipgloss.Height(sidebarLogo)),
-		layout.Fill(1),
-	).Split(m.layout.sidebar).Assign(&logoRect, &contentRect)
-
-	contentHeight := contentRect.Dy()
-
-	// Render all items without truncation; virtual scrolling handles overflow.
-	lspSection := m.lspInfo(contentWidth, len(m.lspStates), true)
-	mcpSection := m.mcpInfo(contentWidth, mcpCount(m.com.Config().MCP.Sorted(), m.mcpStates), true)
-	skillsSection := m.skillsInfo(contentWidth, len(m.skillStatusItems()), true)
-	filesSection := m.filesInfo(m.com.Workspace.WorkingDir(), contentWidth, fileChangeCount(m.sessionFiles), true)
-
-	// Build the scrollable content.
-	content := lipgloss.JoinVertical(
-		lipgloss.Left,
-		title,
-		"",
-		cwd,
-		"",
-		m.modelInfo(contentWidth),
-		"",
-		filesSection,
-		"",
-		lspSection,
-		"",
-		mcpSection,
-		"",
-		skillsSection,
-	)
-
+	for _, id := range []string{"skills", "mcp", "lsp", "session", "usage", "files", "model"} {
+		for i := range sections {
+			if sections[i].id != id {
+				continue
+			}
+			floor := 0
+			if id == "files" {
+				floor = min(2, sections[i].rows)
+			}
+			if id == "model" {
+				floor = min(3, sections[i].rows)
+			}
+			sections[i].rows -= min(max(0, total()+logoHeight()-height), sections[i].rows-floor)
+		}
+	}
+	for total() > height {
+		for i := len(sections) - 1; i >= 0 && total() > height; i-- {
+			if sections[i].rows > 0 {
+				sections[i].rows--
+			}
+		}
+	}
+	m.sidebarSectionHeaders = make(map[string]int)
 	m.sidebarFilesHeaderLine = -1
-	for i, line := range strings.Split(content, "\n") {
-		if strings.Contains(ansi.Strip(line), "Modified Files") {
-			m.sidebarFilesHeaderLine = i
-			break
+	var lines []string
+	for _, section := range sections {
+		if section.rows == 0 {
+			continue
+		}
+		if len(lines) > 0 && gap > 0 {
+			lines = append(lines, "")
+		}
+		if section.id == "files" {
+			m.sidebarFilesHeaderLine = len(lines)
+		} else {
+			m.sidebarSectionHeaders[section.id] = len(lines)
+		}
+		visible := append([]string(nil), section.lines[:section.rows]...)
+		if section.rows < len(section.lines) {
+			if section.id == "model" && section.rows >= 3 {
+				visible[section.rows-1] = section.lines[len(section.lines)-1]
+			} else {
+				last := section.rows - 1
+				visible[last] = ansi.Truncate(visible[last], max(0, contentWidth-2), "") + " …"
+			}
+		}
+		for _, line := range visible {
+			lines = append(lines, ansi.Truncate(line, contentWidth, "…"))
 		}
 	}
-
-	totalLines := strings.Count(content, "\n") + 1
-	m.sidebarContent = content
-	m.sidebarTotalLines = totalLines
+	m.sidebarContent = strings.Join(lines, "\n")
+	m.sidebarTotalLines = len(lines)
 	m.sidebarContentWidth = contentWidth
-	m.sidebarContentHeight = contentHeight
+	m.sidebarContentHeight = max(0, height-logoHeight())
 	m.sidebarDrawLogo = sidebarLogo
-	m.sidebarScrollable = totalLines > contentHeight
-	m.sidebarMaxOffsetVal = max(0, totalLines-contentHeight)
-
-	// If the sidebar is focused but no longer scrollable (e.g. after a
-	// resize), return focus to the chat.
-	if m.focus == uiFocusSidebar && !m.sidebarScrollable {
+	m.sidebarBrandLogoHeight = logoHeight()
+	m.sidebarScrollable = false
+	m.sidebarMaxOffsetVal = 0
+	m.sidebarOffset = 0
+	if m.focus == uiFocusSidebar {
 		m.focus = uiFocusMain
 		m.chat.Focus()
-	}
-
-	// Clamp sidebarOffset.
-	if m.sidebarOffset > m.sidebarMaxOffsetVal {
-		m.sidebarOffset = m.sidebarMaxOffsetVal
 	}
 }
 
@@ -202,10 +311,12 @@ func (m *UI) updateSidebarScrollState() {
 // virtual-scrolling content area with an auto-hiding scrollbar. While the
 // sidebar is focused, the scrollbar stays visible.
 func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
-	if m.session == nil {
+	if m.session == nil || area.Dx() < 3 || area.Dy() < 3 {
 		return
 	}
 
+	frameArea := area
+	area = area.Inset(1)
 	sidebarLogo := m.sidebarDrawLogo
 	contentWidth := m.sidebarContentWidth
 	contentHeight := m.sidebarContentHeight
@@ -213,9 +324,11 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 
 	var logoRect, contentRect image.Rectangle
 	layout.Vertical(
-		layout.Len(lipgloss.Height(sidebarLogo)),
+		layout.Len(max(0, area.Dy()-contentHeight)),
 		layout.Fill(1),
 	).Split(area).Assign(&logoRect, &contentRect)
+	logoRect.Min.X = min(logoRect.Min.X+1, logoRect.Max.X)
+	contentRect.Min.X = min(contentRect.Min.X+1, contentRect.Max.X)
 
 	// Slice visible lines.
 	end := min(m.sidebarOffset+contentHeight, totalLines)
@@ -252,6 +365,21 @@ func (m *UI) drawSidebar(scr uv.Screen, area uv.Rectangle) {
 				Max: image.Point{X: area.Max.X, Y: area.Max.Y},
 			}
 			uv.NewStyledString(scrollbar).Draw(scr, scrollbarArea)
+		}
+	}
+
+	fillSurfaceBackground(scr, area, m.com.Styles.Sidebar.Background)
+	if frameArea.Dx() >= 2 && frameArea.Dy() >= 2 {
+		frame := lipgloss.NewStyle().Foreground(m.editorAccent()).Background(m.com.Styles.Sidebar.Background)
+		uv.NewStyledString(frame.Render("╭"+strings.Repeat("─", frameArea.Dx()-2)+"╮")).Draw(scr, image.Rect(frameArea.Min.X, frameArea.Min.Y, frameArea.Max.X, frameArea.Min.Y+1))
+		uv.NewStyledString(frame.Render("╰"+strings.Repeat("─", frameArea.Dx()-2)+"╯")).Draw(scr, image.Rect(frameArea.Min.X, frameArea.Max.Y-1, frameArea.Max.X, frameArea.Max.Y))
+
+		controls := lipgloss.NewStyle().Foreground(lipgloss.Color("#000000")).Background(m.editorAccent())
+		label := " ctrl+left show ctrl+right hide "
+		uv.NewStyledString(controls.Width(frameArea.Dx()-2).Render(label)).Draw(scr, image.Rect(frameArea.Min.X+1, frameArea.Max.Y-1, frameArea.Max.X-1, frameArea.Max.Y))
+		for y := frameArea.Min.Y + 1; y < frameArea.Max.Y-1; y++ {
+			uv.NewStyledString(frame.Render("│")).Draw(scr, image.Rect(frameArea.Min.X, y, frameArea.Min.X+1, y+1))
+			uv.NewStyledString(frame.Render("│")).Draw(scr, image.Rect(frameArea.Max.X-1, y, frameArea.Max.X, y+1))
 		}
 	}
 }

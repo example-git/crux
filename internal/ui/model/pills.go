@@ -48,7 +48,7 @@ func hasInProgressTodo(todos []session.Todo) bool {
 // queuePill renders the queue count pill with gradient triangles. Pills always
 // render with a border; focus within the expanded panel is conveyed by the list
 // shown below the pills, not by hiding a pill's border.
-func queuePill(queue int, t *styles.Styles) string {
+func queuePill(queue int, t *styles.Styles, items ...agent.QueuedPrompt) string {
 	if queue <= 0 {
 		return ""
 	}
@@ -57,7 +57,20 @@ func queuePill(queue int, t *styles.Styles) string {
 		triangles = triangles[:queue]
 	}
 
-	text := t.Pills.QueueLabel.Render(fmt.Sprintf("%d Queued", queue))
+	steering := 0
+	for _, item := range items {
+		if item.DeliveryMode == agent.DeliverySteer {
+			steering++
+		}
+	}
+	var labels []string
+	if queued := queue - steering; queued > 0 {
+		labels = append(labels, fmt.Sprintf("%d Queued", queued))
+	}
+	if steering > 0 {
+		labels = append(labels, fmt.Sprintf("%d Steering", steering))
+	}
+	text := t.Pills.QueueLabel.Render(strings.Join(labels, " · "))
 	content := fmt.Sprintf("%s %s", strings.Join(triangles, ""), text)
 	return t.Pills.Focused.Render(content)
 }
@@ -106,9 +119,36 @@ func todoPill(todos []session.Todo, spinnerView string, panelFocused bool, t *st
 	return t.Pills.Focused.Render(content)
 }
 
+func visibleTodos(todos []session.Todo) []session.Todo {
+	ordered := make([]session.Todo, 0, len(todos))
+	for _, status := range []session.TodoStatus{session.TodoStatusCompleted, session.TodoStatusInProgress, session.TodoStatusPending} {
+		for _, todo := range todos {
+			if todo.Status == status {
+				ordered = append(ordered, todo)
+			}
+		}
+	}
+	anchor := len(ordered)
+	for i, todo := range ordered {
+		if todo.Status != session.TodoStatusCompleted {
+			anchor = i
+			break
+		}
+	}
+	start := max(0, min(anchor-1, len(ordered)-4))
+	return ordered[start:min(start+4, len(ordered))]
+}
+
 // todoList renders the expanded todo list.
 func todoList(sessionTodos []session.Todo, spinnerView string, t *styles.Styles, width int) string {
-	return chat.FormatTodosList(t, sessionTodos, spinnerView, width)
+	todos := append([]session.Todo(nil), sessionTodos...)
+	todos = visibleTodos(todos)
+	textWidth := max(1, min(80, width-2))
+	for i := range todos {
+		todos[i].Content = ansi.Truncate(strings.Join(strings.Fields(todos[i].Content), " "), textWidth, "…")
+		todos[i].ActiveForm = ansi.Truncate(strings.Join(strings.Fields(todos[i].ActiveForm), " "), textWidth, "…")
+	}
+	return chat.FormatTodosList(t, todos, spinnerView, width, true)
 }
 
 // queueList renders the expanded queue items list.
@@ -120,6 +160,9 @@ func queueList(queueItems []agent.QueuedPrompt, t *styles.Styles) string {
 	var lines []string
 	for _, item := range queueItems {
 		text := item.Prompt
+		if item.DeliveryMode == agent.DeliverySteer {
+			text = "Steer: " + text
+		}
 		if ansi.StringWidth(text) > maxQueueDisplayLength {
 			text = ansi.Truncate(text, maxQueueDisplayLength-1, "…")
 		}
@@ -249,6 +292,11 @@ func (m *UI) effectiveFocusedSection() pillSection {
 
 // pillsAreaHeight calculates the total height needed for the pills area.
 func (m *UI) pillsAreaHeight() int {
+	if m.taskPanel != nil {
+		if lines := m.taskPanel.PanelInfoLines(); len(lines) > 0 {
+			return len(lines) + 1
+		}
+	}
 	if !m.hasSession() {
 		return 0
 	}
@@ -269,7 +317,10 @@ func (m *UI) pillsAreaHeight() int {
 		switch m.effectiveFocusedSection() {
 		case pillSectionTodos:
 			if hasIncomplete {
-				pillsAreaHeight += len(m.session.Todos)
+				pillsAreaHeight = 3 + min(4, len(m.session.Todos))
+				if hasQueue {
+					pillsAreaHeight += pillHeightWithBorder
+				}
 			}
 		case pillSectionQueue:
 			if hasQueue {
@@ -283,6 +334,12 @@ func (m *UI) pillsAreaHeight() int {
 // renderPills renders the pills panel and stores it in m.pillsView.
 func (m *UI) renderPills() {
 	m.pillsView = ""
+	if m.taskPanel != nil {
+		if lines := m.taskPanel.PanelInfoLines(); len(lines) > 0 {
+			m.pillsView = m.taskPanel.RenderPanelInfo(m.layout.pills.Dx(), m.editorAccent())
+			return
+		}
+	}
 	if !m.hasSession() {
 		return
 	}
@@ -316,12 +373,43 @@ func (m *UI) renderPills() {
 		inProgressIcon = m.todoSpinner.View()
 	}
 
+	if todosFocused && hasIncomplete && width >= 4 {
+		background := t.Background
+		frame := lipgloss.NewStyle().Foreground(m.editorAccent()).Background(background)
+		completed := 0
+		for _, todo := range m.session.Todos {
+			if todo.Status == session.TodoStatusCompleted {
+				completed++
+			}
+		}
+		label := fmt.Sprintf(" To-Do %d/%d  ctrl+t close ", completed, len(m.session.Todos))
+		list := todoList(m.session.Todos, inProgressIcon, t, width-4)
+		contentWidth := 0
+		for _, line := range strings.Split(list, "\n") {
+			contentWidth = max(contentWidth, ansi.StringWidth(strings.TrimRight(ansi.Strip(line), " ")))
+		}
+		width = min(width, max(contentWidth+4, ansi.StringWidth(label)+2))
+		label = ansi.Truncate(label, width-2, "…")
+		rows := []string{frame.Render("╭" + label + strings.Repeat("─", max(0, width-2-ansi.StringWidth(label))) + "╮")}
+		list = todoList(m.session.Todos, inProgressIcon, t, width-4)
+		for _, line := range strings.Split(list, "\n") {
+			body := paintEditorBody(" "+line+" ", width-2, background)
+			rows = append(rows, frame.Render("│")+body+frame.Render("│"))
+		}
+		rows = append(rows, frame.Render("╰"+strings.Repeat("─", width-2)+"╯"), frame.Render(strings.Repeat(" ", width)))
+		m.pillsView = strings.Join(rows, "\n")
+		if hasQueue {
+			m.pillsView = lipgloss.JoinVertical(lipgloss.Left, queuePill(m.promptQueue, t, m.promptQueueItems...), m.pillsView)
+		}
+		return
+	}
+
 	var pills []string
 	if hasIncomplete {
 		pills = append(pills, todoPill(m.session.Todos, inProgressIcon, m.pillsExpanded, t))
 	}
 	if hasQueue {
-		pills = append(pills, queuePill(m.promptQueue, t))
+		pills = append(pills, queuePill(m.promptQueue, t, m.promptQueueItems...))
 	}
 
 	var expandedList string

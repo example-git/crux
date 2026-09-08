@@ -3,7 +3,11 @@
 // bundles; those responsibilities belong to the plugin host.
 package manifest
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/example-git/crux/foundation/catalog"
+)
 
 const (
 	// Version is the only manifest schema major supported by this package.
@@ -72,13 +76,7 @@ type Provider struct {
 	Brand                *Brand   `json:"brand,omitempty"`
 }
 
-type Brand struct {
-	Label     string `json:"label,omitempty" jsonschema:"maxLength=64"`
-	ShortName string `json:"short_name,omitempty" jsonschema:"maxLength=24"`
-	Color     string `json:"color,omitempty" jsonschema:"pattern=^#[0-9A-Fa-f]{6}$"`
-	GradientA string `json:"gradient_a,omitempty" jsonschema:"pattern=^#[0-9A-Fa-f]{6}$"`
-	GradientB string `json:"gradient_b,omitempty" jsonschema:"pattern=^#[0-9A-Fa-f]{6}$"`
-}
+type Brand = catalog.Brand
 
 type Model struct {
 	ID                 string                     `json:"id" jsonschema:"required,minLength=1,maxLength=256"`

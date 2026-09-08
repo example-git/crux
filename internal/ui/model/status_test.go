@@ -4,13 +4,77 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/example-git/crux/internal/ui/util"
 	"github.com/stretchr/testify/require"
 )
+
+func TestStatusHelpUsesExtraTerminalSpace(t *testing.T) {
+	for _, width := range []int{65, 120, 160, 240, 320} {
+		p, err := NewPreview()
+		require.NoError(t, err)
+		_, err = p.Render(PreviewOptions{Example: "tool-bash", Model: "dummy-coder", Scenario: "working", Cols: width, Rows: 40})
+		require.NoError(t, err)
+		m := p.ui
+		m.status.ClearInfoMsg()
+		for _, code := range []rune{tea.KeyLeft, tea.KeyRight} {
+			m.handleKeyPressMsg(tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl})
+			screen := uv.NewScreenBuffer(width, 40)
+			m.Draw(screen, screen.Bounds())
+			style := m.com.Styles.Status.Help
+			available := width - style.GetHorizontalFrameSize()
+			view := m.status.renderShortHelp(available)
+			require.LessOrEqual(t, ansi.StringWidth(view), available)
+			require.NotContains(t, view, "\n")
+			if width >= 240 {
+				old := dialog.ShortHelpLine(&m.status.help, m.ShortHelp(), available)
+				require.Greater(t, ansi.StringWidth(view), ansi.StringWidth(old))
+				require.Contains(t, ansi.Strip(view), m.keyMap.Sessions.Help().Desc)
+			}
+			expected := uv.NewScreenBuffer(width, 1)
+			uv.NewStyledString(style.Render(view)).Draw(expected, expected.Bounds())
+			for x := 0; x < ansi.StringWidth(style.Render(view)); x++ {
+				require.Equal(t, expected.CellAt(x, 0), screen.CellAt(x, m.layout.status.Min.Y), "width=%d compact=%t x=%d", width, m.isCompact, x)
+			}
+		}
+	}
+}
+
+func TestNotificationDrawSpansTerminalWidth(t *testing.T) {
+	for _, width := range []int{65, 120, 160} {
+		p, err := NewPreview()
+		require.NoError(t, err)
+		_, err = p.Render(PreviewOptions{Example: "tool-bash", Model: "dummy-coder", Scenario: "working", Cols: width, Rows: 40})
+		require.NoError(t, err)
+		m := p.ui
+		for _, code := range []rune{tea.KeyLeft, tea.KeyRight} {
+			m.handleKeyPressMsg(tea.KeyPressMsg{Code: code, Mod: tea.ModCtrl})
+			for _, msg := range []util.InfoMsg{
+				{Type: util.InfoTypeInfo, Msg: "Copied"},
+				{Type: util.InfoTypeSuccess, Msg: "Saved"},
+				{Type: util.InfoTypeWarn, Msg: "Warning"},
+				{Type: util.InfoTypeError, Msg: strings.Repeat("Long error ", 40)},
+				{Type: util.InfoTypeUpdate, Msg: "Update available"},
+			} {
+				m.status.SetInfoMsg(msg)
+				screen := uv.NewScreenBuffer(width, 40)
+				m.Draw(screen, screen.Bounds())
+				require.Equal(t, 0, m.layout.status.Min.X)
+				require.Equal(t, width, m.layout.status.Max.X)
+				expected := uv.NewScreenBuffer(width, 1)
+				uv.NewStyledString(m.status.renderInfo(width)).Draw(expected, expected.Bounds())
+				for x := 0; x < width; x++ {
+					require.Equal(t, expected.CellAt(x, 0), screen.CellAt(x, m.layout.status.Min.Y), "width=%d compact=%t type=%v x=%d", width, m.isCompact, msg.Type, x)
+				}
+			}
+		}
+	}
+}
 
 func TestStatusInfoFillsButDoesNotExceedViewport(t *testing.T) {
 	t.Parallel()

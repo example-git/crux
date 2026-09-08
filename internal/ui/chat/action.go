@@ -20,7 +20,7 @@ func newActionToolMessageItem(sty *styles.Styles, toolCall message.ToolCall, res
 }
 
 func (r *actionToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	name, params := actionToolHeader(opts.ToolCall)
 	if opts.IsPending() {
 		return pendingTool(sty, name, opts.Anim, opts.Compact)
@@ -37,7 +37,7 @@ func (r *actionToolRenderContext) RenderTool(sty *styles.Styles, width int, opts
 		return header
 	}
 
-	body := actionToolResult(sty, opts, cappedWidth-toolBodyLeftPaddingTotal)
+	body := actionToolResult(sty, opts, toolBodyWidth(sty, cappedWidth))
 	if body == "" {
 		return header
 	}
@@ -75,6 +75,12 @@ func actionToolHeader(toolCall message.ToolCall) (string, []string) {
 		}
 		return "Update Project", []string{value("id"), "state", state}
 	case tools.ProjectNotesToolName:
+		switch value("action") {
+		case "list":
+			return "List Project Notes", nil
+		case "read":
+			return "Read Project Note", []string{value("topic")}
+		}
 		return "Add Project Note", nil
 	case tools.ProjectCompleteToolName:
 		return "Complete Project", nil
@@ -82,6 +88,8 @@ func actionToolHeader(toolCall message.ToolCall) (string, []string) {
 		return "List Tasks", nil
 	case tools.TaskOutputToolName:
 		return "Task Output", []string{value("task_id")}
+	case tools.TaskRestartToolName:
+		return "Restart Command", []string{value("task_id")}
 	case tools.TaskStopToolName:
 		return "Stop Task", []string{value("task_id")}
 	case tools.TaskContinueToolName:
@@ -101,7 +109,7 @@ func actionToolResult(sty *styles.Styles, opts *ToolRenderOpts, width int) strin
 		return taskListActionResult(sty, opts.Result.Content, width, opts.ExpandedContent)
 	case tools.TaskOutputToolName:
 		return taskOutputActionResult(sty, opts.Result.Content, width, opts.ExpandedContent)
-	case tools.TaskContinueToolName, tools.TaskStopToolName:
+	case tools.TaskContinueToolName, tools.TaskStopToolName, tools.TaskRestartToolName:
 		return taskMutationActionResult(sty, opts.Result.Content, width)
 	default:
 		return ""
@@ -112,27 +120,31 @@ func memoryActionResult(sty *styles.Styles, content string, width int, expanded 
 	var entries []automemory.Entry
 	if json.Unmarshal([]byte(content), &entries) == nil {
 		if len(entries) == 0 {
-			return sty.Tool.StateWaiting.Render("No memories found.")
+			return sty.Tool.Body.Render(sty.Tool.StateWaiting.Render("No memories found."))
 		}
-		lines := []string{fmt.Sprintf("%d memories", len(entries))}
+		innerWidth := summaryContentWidth(sty, width)
+		rows := []string{sty.Tool.SummaryMeta.Render(fmt.Sprintf("%d memories", len(entries)))}
 		limit := len(entries)
 		if !expanded {
 			limit = min(limit, 5)
 		}
 		for _, entry := range entries[:limit] {
-			line := entry.Name
-			if line == "" {
-				line = entry.File
+			name := entry.Name
+			if name == "" {
+				name = entry.File
 			}
+			text := summaryClean(name)
 			if entry.Description != "" {
-				line += " · " + entry.Description
+				text += " · " + summaryClean(entry.Description)
 			}
-			lines = append(lines, "• "+line)
+			text = summaryWrap(text, max(1, innerWidth-2))
+			rows = append(rows, sty.Tool.SummaryText.Render("• "+strings.ReplaceAll(text, "\n", "\n  ")))
 		}
-		if limit < len(entries) {
-			lines = append(lines, fmt.Sprintf("… %d more", len(entries)-limit))
+		footer := ""
+		if expanded || limit < len(entries) {
+			footer = summaryDisclosure("All memories", expanded)
 		}
-		return toolOutputPlainContent(sty, strings.Join(lines, "\n"), width, true)
+		return renderSummaryCard(sty, width, rows, footer)
 	}
 	var entry automemory.Entry
 	if json.Unmarshal([]byte(content), &entry) == nil && (entry.Name != "" || entry.File != "") {
@@ -143,9 +155,12 @@ func memoryActionResult(sty *styles.Styles, content string, width int, expanded 
 		if entry.Description != "" {
 			text += "\n" + entry.Description
 		}
-		return toolOutputPlainContent(sty, text, width, expanded)
+		if entry.Content != "" {
+			text += "\n\n" + entry.Content
+		}
+		return sty.Tool.Body.Render(toolOutputMarkdownPanel(sty, text, width, expanded))
 	}
-	return toolOutputPlainContent(sty, content, width, expanded)
+	return sty.Tool.Body.Render(toolOutputPlainContent(sty, content, width, expanded))
 }
 
 type projectStatusView struct {
@@ -161,7 +176,7 @@ func projectStatusActionResult(sty *styles.Styles, content string, width int, ex
 	}
 	var project projectStatusView
 	if json.Unmarshal([]byte(content), &project) != nil || project.Name == "" {
-		return toolOutputPlainContent(sty, content, width, expanded)
+		return sty.Tool.Body.Render(toolOutputPlainContent(sty, content, width, expanded))
 	}
 	completed := 0
 	for _, task := range project.Tasks {
@@ -173,36 +188,73 @@ func projectStatusActionResult(sty *styles.Styles, content string, width int, ex
 	if project.CurrentGoal != nil {
 		lines = append(lines, "Current: "+project.CurrentGoal.ID+" "+project.CurrentGoal.Content)
 	}
-	return toolOutputPlainContent(sty, strings.Join(lines, "\n"), width, true)
+	return sty.Tool.Body.Render(toolOutputPlainContent(sty, strings.Join(lines, "\n"), width, expanded))
 }
 
 func taskListActionResult(sty *styles.Styles, content string, width int, expanded bool) string {
 	if content == "No background tasks are currently tracked." {
-		return sty.Tool.StateWaiting.Render(content)
+		return summaryTextResult(sty, content, width, expanded)
 	}
-	var tasks []managedtask.View
+	var tasks []struct {
+		managedtask.View
+		Status managedtask.Status `json:"status"`
+	}
 	if json.Unmarshal([]byte(content), &tasks) != nil {
-		return toolOutputPlainContent(sty, content, width, expanded)
+		return summaryTextResult(sty, content, width, expanded)
 	}
-	lines := []string{fmt.Sprintf("%d tasks", len(tasks))}
+	innerWidth := summaryContentWidth(sty, width)
+	rows := []string{sty.Tool.SummaryMeta.Render(fmt.Sprintf("%d tasks", len(tasks)))}
 	limit := len(tasks)
 	if !expanded {
 		limit = min(limit, 6)
 	}
+	clipped := false
 	for _, task := range tasks[:limit] {
-		description := strings.ReplaceAll(strings.TrimSpace(task.Description), "\n", " ")
-		lines = append(lines, fmt.Sprintf("• %s · %s · %s", task.ID, task.State.Status, description))
+		status := task.Status
+		if status == "" {
+			status = task.State.Status
+		}
+		statusStyle := sty.Tool.SummaryTitle
+		switch status {
+		case managedtask.StatusFailed, managedtask.StatusLost:
+			statusStyle = statusStyle.Foreground(sty.Tool.IconError.GetForeground())
+		case managedtask.StatusCompleted:
+			statusStyle = statusStyle.Foreground(sty.Tool.IconSuccess.GetForeground())
+		}
+		identity := sty.Tool.SummaryTitle.Render(summaryClean(task.ID))
+		if status != "" {
+			identity += "  " + statusStyle.Render(string(status))
+		}
+		if task.Type != "" {
+			identity += "  " + sty.Tool.SummaryMeta.Render(string(task.Type))
+		}
+		rows = append(rows, "", summaryWrap(identity, innerWidth))
+		description := summaryClean(task.Description)
+		if description != "" {
+			description = summaryWrap(description, innerWidth)
+			lines := strings.Split(description, "\n")
+			if !expanded && len(lines) > 3 {
+				clipped = true
+				description = strings.Join(lines[:2], "\n") + "\n" + summaryPreview(lines[2]+" …", innerWidth)
+			}
+			rows = append(rows, sty.Tool.SummaryText.Render(description))
+		}
 	}
-	if limit < len(tasks) {
-		lines = append(lines, fmt.Sprintf("… %d more", len(tasks)-limit))
+	footer := ""
+	if expanded || limit < len(tasks) || clipped {
+		detail := "Full descriptions"
+		if limit < len(tasks) {
+			detail = fmt.Sprintf("%d more tasks", len(tasks)-limit)
+		}
+		footer = summaryDisclosure(detail, expanded)
 	}
-	return toolOutputPlainContent(sty, strings.Join(lines, "\n"), width, true)
+	return renderSummaryCard(sty, width, rows, footer)
 }
 
 func taskOutputActionResult(sty *styles.Styles, content string, width int, expanded bool) string {
 	var result managedtask.OutputResult
 	if json.Unmarshal([]byte(content), &result) != nil || result.Task.ID == "" {
-		return toolOutputPlainContent(sty, content, width, expanded)
+		return sty.Tool.Body.Render(toolOutputPlainContent(sty, content, width, expanded))
 	}
 	status := fmt.Sprintf("%s · %s", result.Task.State.Status, result.RetrievalStatus)
 	if result.OutputTruncated {
@@ -214,10 +266,11 @@ func taskOutputActionResult(sty *styles.Styles, content string, width int, expan
 			output = formatted
 		}
 	}
-	if strings.TrimSpace(output) == "" {
-		return sty.Tool.StateWaiting.Render(status + " · no output")
+	diagnostics := taskResultDiagnostics(result.Task.State.ErrorMessage, result.Task.State.LostReason, result.Task.State.ExitCode)
+	if strings.TrimSpace(output) == "" && diagnostics == "" {
+		return sty.Tool.Body.Render(sty.Tool.StateWaiting.Render(status + " · no output"))
 	}
-	return toolOutputPlainContent(sty, status+"\n"+output, width, expanded)
+	return sty.Tool.Body.Render(toolOutputPlainContent(sty, strings.Join([]string{status, diagnostics, output}, "\n"), width, expanded))
 }
 
 func taskMutationActionResult(sty *styles.Styles, content string, width int) string {
@@ -229,5 +282,5 @@ func taskMutationActionResult(sty *styles.Styles, content string, width int) str
 	if task.ChildSessionID != "" {
 		text += " · child session ready"
 	}
-	return toolOutputPlainContent(sty, text, width, true)
+	return sty.Tool.Body.Render(toolOutputPlainContent(sty, text, width, false))
 }

@@ -3,6 +3,7 @@ package trafficcapture
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -87,6 +88,43 @@ func TestRuntimeArchiveLinkRejectsTraversal(t *testing.T) {
 
 	_, err = runtimeArchiveLink(root, parent, "../../escape")
 	require.ErrorContains(t, err, "unsafe embedded runtime archive link")
+}
+
+func TestTmuxSessionExists(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a POSIX shell")
+	}
+	for _, scenario := range []struct {
+		name    string
+		output  string
+		success bool
+		invalid bool
+	}{
+		{name: "existing session", success: true},
+		{name: "missing socket", output: "error connecting to /private/tmp/tmux-501/crux-capture (No such file or directory)"},
+		{name: "no server", output: "no server running on /tmp/tmux-501/crux-capture"},
+		{name: "legacy missing socket", output: "failed to connect to server: No such file or directory"},
+		{name: "missing session", output: "can't find session: capture"},
+		{name: "permission denied", output: "error connecting to /private/tmp/tmux-501/crux-capture (Permission denied)", invalid: true},
+		{name: "connection refused", output: "error connecting to /private/tmp/tmux-501/crux-capture (Connection refused)", invalid: true},
+		{name: "unrelated missing file", output: "open configuration: No such file or directory", invalid: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "tmux")
+			script := "#!/bin/sh\n" + shellJoin("printf", "%s\\n", scenario.output) + "\nexit 1\n"
+			if scenario.success {
+				script = "#!/bin/sh\nexit 0\n"
+			}
+			require.NoError(t, os.WriteFile(path, []byte(script), 0o700))
+			exists, err := tmuxSessionExists(context.Background(), path, "capture")
+			if scenario.invalid {
+				require.ErrorContains(t, err, scenario.output)
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, scenario.success, exists)
+		})
+	}
 }
 
 func TestShellJoinPreservesArguments(t *testing.T) {

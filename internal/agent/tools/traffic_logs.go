@@ -45,7 +45,9 @@ type TrafficLogsParams struct {
 }
 
 type TrafficLogsResponseMetadata struct {
-	Records []TrafficLogRecord `json:"records"`
+	Records       []TrafficLogRecord `json:"records"`
+	DroppedEvents uint64             `json:"dropped_events,omitempty"`
+	FailedEvents  uint64             `json:"failed_events,omitempty"`
 }
 
 type TrafficLogRecord struct {
@@ -97,7 +99,7 @@ func runTrafficLogs(ctx context.Context, params TrafficLogsParams) (string, Traf
 	if err != nil {
 		return "", TrafficLogsResponseMetadata{}, err
 	}
-	path, err := cruxlog.TrafficDatabasePath()
+	path, err := cruxlog.TrafficDatabasePath(ctx)
 	if err != nil {
 		return "", TrafficLogsResponseMetadata{}, err
 	}
@@ -107,7 +109,7 @@ func runTrafficLogs(ctx context.Context, params TrafficLogsParams) (string, Traf
 		}
 		return "", TrafficLogsResponseMetadata{}, fmt.Errorf("access traffic database: %w", err)
 	}
-	database, err := cruxlog.OpenTrafficDatabaseReadOnly()
+	database, err := cruxlog.OpenTrafficDatabaseReadOnly(ctx)
 	if err != nil {
 		return "", TrafficLogsResponseMetadata{}, err
 	}
@@ -116,11 +118,15 @@ func runTrafficLogs(ctx context.Context, params TrafficLogsParams) (string, Traf
 	if err != nil {
 		return "", TrafficLogsResponseMetadata{}, fmt.Errorf("query traffic database: %w", err)
 	}
-	if len(events) == 0 {
-		return "No matching traffic records", TrafficLogsResponseMetadata{}, nil
+	dropped, failed := cruxlog.TrafficDropCounts(ctx)
+	metadata := TrafficLogsResponseMetadata{Records: make([]TrafficLogRecord, 0, len(events)), DroppedEvents: dropped, FailedEvents: failed}
+	entries := make([]string, 0, len(events)+1)
+	if dropped > 0 || failed > 0 {
+		entries = append(entries, fmt.Sprintf("Traffic recording losses: %d queue drops, %d failed writes", dropped, failed))
 	}
-	entries := make([]string, 0, len(events))
-	metadata := TrafficLogsResponseMetadata{Records: make([]TrafficLogRecord, 0, len(events))}
+	if len(events) == 0 {
+		entries = append(entries, "No matching traffic records")
+	}
 	for _, event := range events {
 		entries = append(entries, formatTrafficEvent(event))
 		metadata.Records = append(metadata.Records, trafficLogListRecord(event))
@@ -458,7 +464,7 @@ func loadTrafficRecord(ctx context.Context, recordID string, bodyLimit int) (cru
 	if err != nil {
 		return cruxlog.TrafficEvent{}, err
 	}
-	path, err := cruxlog.TrafficDatabasePath()
+	path, err := cruxlog.TrafficDatabasePath(ctx)
 	if err != nil {
 		return cruxlog.TrafficEvent{}, err
 	}
@@ -468,7 +474,7 @@ func loadTrafficRecord(ctx context.Context, recordID string, bodyLimit int) (cru
 		}
 		return cruxlog.TrafficEvent{}, fmt.Errorf("access traffic database: %w", err)
 	}
-	database, err := cruxlog.OpenTrafficDatabaseReadOnly()
+	database, err := cruxlog.OpenTrafficDatabaseReadOnly(ctx)
 	if err != nil {
 		return cruxlog.TrafficEvent{}, err
 	}

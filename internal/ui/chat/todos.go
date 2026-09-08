@@ -39,7 +39,7 @@ type TodosToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (t *TodosToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "To-Do", opts.Anim, opts.Compact)
 	}
@@ -47,31 +47,19 @@ func (t *TodosToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 	var params tools.TodosParams
 	var meta tools.TodosResponseMetadata
 	var headerText string
-	var body string
 
 	// Parse params for pending state (before result is available).
 	if err := json.Unmarshal([]byte(opts.ToolCall.Input), &params); err == nil {
 		completedCount := 0
-		inProgressTask := ""
 		for _, todo := range params.Todos {
 			if todo.Status == "completed" {
 				completedCount++
-			}
-			if todo.Status == "in_progress" {
-				if todo.ActiveForm != "" {
-					inProgressTask = todo.ActiveForm
-				} else {
-					inProgressTask = todo.Content
-				}
 			}
 		}
 
 		// Default display from params (used when pending or no metadata).
 		ratio := sty.Tool.TodoRatio.Render(fmt.Sprintf("%d/%d", completedCount, len(params.Todos)))
 		headerText = ratio
-		if inProgressTask != "" {
-			headerText = fmt.Sprintf("%s · %s", ratio, inProgressTask)
-		}
 
 		// If we have metadata, use it for richer display.
 		if opts.HasResult() && opts.Result.Metadata != "" {
@@ -82,7 +70,6 @@ func (t *TodosToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 					} else {
 						headerText = fmt.Sprintf("created %d todos", meta.Total)
 					}
-					body = FormatTodosList(sty, meta.Todos, styles.ArrowRightIcon, cappedWidth)
 				} else {
 					// Build header based on what changed.
 					hasCompleted := len(meta.JustCompleted) > 0
@@ -104,15 +91,6 @@ func (t *TodosToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 					} else {
 						headerText = ratio
 					}
-
-					// Build body with details.
-					if allCompleted {
-						// Show all todos when all are completed, like when created.
-						body = FormatTodosList(sty, meta.Todos, styles.ArrowRightIcon, cappedWidth)
-					} else if meta.JustStarted != "" {
-						body = sty.Tool.TodoInProgressIcon.Render(styles.ArrowRightIcon+" ") +
-							sty.Tool.TodoJustStarted.Render(meta.JustStarted)
-					}
 				}
 			}
 		}
@@ -128,15 +106,11 @@ func (t *TodosToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 		return joinToolParts(header, earlyState)
 	}
 
-	if body == "" {
-		return header
-	}
-
-	return joinToolParts(header, sty.Tool.Body.Render(body))
+	return header
 }
 
 // FormatTodosList formats a list of todos for display.
-func FormatTodosList(sty *styles.Styles, todos []session.Todo, inProgressIcon string, width int) string {
+func FormatTodosList(sty *styles.Styles, todos []session.Todo, inProgressIcon string, width int, expanded ...bool) string {
 	if len(todos) == 0 {
 		return ""
 	}
@@ -145,8 +119,12 @@ func FormatTodosList(sty *styles.Styles, todos []session.Todo, inProgressIcon st
 	copy(sorted, todos)
 	sortTodos(sorted)
 
+	limit := len(sorted)
+	if len(expanded) == 0 || !expanded[0] {
+		limit = min(limit, 6)
+	}
 	var lines []string
-	for _, todo := range sorted {
+	for _, todo := range sorted[:limit] {
 		var prefix string
 		textStyle := sty.Tool.TodoItem
 
@@ -163,8 +141,14 @@ func FormatTodosList(sty *styles.Styles, todos []session.Todo, inProgressIcon st
 		if todo.Status == session.TodoStatusInProgress && todo.ActiveForm != "" {
 			text = todo.ActiveForm
 		}
+		textWidth := max(1, width-ansi.StringWidth(prefix))
+		text = summaryWrap(summaryClean(text), textWidth)
+		wrapped := strings.Split(text, "\n")
+		if (len(expanded) == 0 || !expanded[0]) && len(wrapped) > 3 {
+			text = strings.Join(wrapped[:2], "\n") + "\n" + ansi.Truncate(wrapped[2], max(1, textWidth-1), "") + "…"
+		}
+		text = strings.ReplaceAll(text, "\n", "\n"+strings.Repeat(" ", ansi.StringWidth(prefix)))
 		line := prefix + textStyle.Render(text)
-		line = ansi.Truncate(line, width, "…")
 
 		lines = append(lines, line)
 	}

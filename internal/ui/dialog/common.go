@@ -125,20 +125,52 @@ func applyInfoColumnVisibility(items []list.Item, rowWidth, maxPercent int) {
 // wraps or overflows the border, and never ends on a dangling separator.
 func renderDialogHelp(t *styles.Styles, h *help.Model, km help.KeyMap, contentWidth int) string {
 	textWidth := max(0, contentWidth-t.Dialog.HelpView.GetHorizontalFrameSize())
-	return t.Dialog.HelpView.Render(shortHelpLine(h, km.ShortHelp(), textWidth))
+	return t.Dialog.HelpView.Render(ShortHelpLine(h, km.ShortHelp(), textWidth))
 }
 
-// shortHelpLine builds a single-line short help view truncated to width.
+// ShortHelpLine builds a single-line short help view truncated to width.
 // It reimplements the bubbles help packing to avoid a component bug where
 // items are kept even when they overflow (when the ellipsis itself does not
 // fit), and to guarantee the line ends cleanly rather than on a separator.
-func shortHelpLine(h *help.Model, bindings []key.Binding, width int) string {
+func ShortHelpLine(h *help.Model, bindings []key.Binding, width int) string {
 	if width <= 0 {
 		return ""
 	}
 	sep := h.Styles.ShortSeparator.Inline(true).Render(h.ShortSeparator)
 	ellipsis := h.Styles.Ellipsis.Inline(true).Render(cmp.Or(h.Ellipsis, "…"))
 
+	fullWidth := 0
+	for _, kb := range bindings {
+		if kb.Enabled() {
+			if fullWidth > 0 {
+				fullWidth += lipgloss.Width(sep)
+			}
+			fullWidth += lipgloss.Width(kb.Help().Key + " " + kb.Help().Desc)
+		}
+	}
+	if fullWidth > width {
+		ordered := make([]key.Binding, 0, len(bindings))
+		for priority := 0; priority < 4; priority++ {
+			for _, kb := range bindings {
+				rank := 3
+				switch kb.Help().Desc {
+				case "commands":
+					rank = 1
+				case "help", "more":
+					rank = 2
+				}
+				for _, name := range kb.Keys() {
+					if name == "esc" || name == "ctrl+b" {
+						rank = 0
+					}
+				}
+				if rank == priority {
+					ordered = append(ordered, kb)
+				}
+			}
+		}
+		bindings = ordered
+	}
 	var b strings.Builder
 	total := 0
 	for _, kb := range bindings {

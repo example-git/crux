@@ -1,8 +1,10 @@
 package task
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +136,107 @@ func TestStoreReplacesAtomicallyAndRejectsInvalidRecords(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(root, "a87654321.task.json"), []byte("{"), 0o600))
 	_, err = store.List()
 	require.ErrorContains(t, err, "decoding task metadata")
+}
+
+func TestStoreListingPreservesAnotherWritersPendingCommit(t *testing.T) {
+	for _, notifications := range []bool{false, true} {
+		name := "records"
+		if notifications {
+			name = "notifications"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "metadata")
+			writer, err := NewStore(root)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, writer.Close()) })
+			reader, err := NewStore(root)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, reader.Close()) })
+			record := Record{
+				ID:        "al9ljtw37",
+				Type:      TypeAgent,
+				Ownership: Ownership{WorkspaceID: "workspace", ParentSessionID: "parent"},
+				State:     StateToRecord(State{Status: StatusPending}),
+				Agent:     &AgentRecord{Prompt: "original", AgentType: "task"},
+			}
+			require.NoError(t, writer.Put(record))
+			record, err = writer.Get(record.ID)
+			require.NoError(t, err)
+			record.Agent.Prompt = "updated"
+			data, err := json.Marshal(record)
+			require.NoError(t, err)
+			temporaryName := record.ID + ".pending.tmp"
+			file, err := createSecureFile(writer.dir, writer.root, temporaryName, 0o600)
+			require.NoError(t, err)
+			_, err = file.Write(data)
+			require.NoError(t, err)
+			require.NoError(t, file.Sync())
+			require.NoError(t, file.Close())
+
+			if notifications {
+				_, err = reader.ListNotifications("workspace", "parent", true, true)
+			} else {
+				var records []Record
+				records, err = reader.List()
+				require.Len(t, records, 1)
+				require.Equal(t, "original", records[0].Agent.Prompt)
+			}
+			require.NoError(t, err)
+			require.NoError(t, replaceSecureFile(writer.dir, writer.root, temporaryName, recordName(record.ID)))
+			recovered, err := reader.Get(record.ID)
+			require.NoError(t, err)
+			require.Equal(t, "updated", recovered.Agent.Prompt)
+		})
+	}
+}
+
+func TestStoreConcurrentPutAndNotificationListing(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "metadata")
+	writer, err := NewStore(root)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, writer.Close()) })
+	reader, err := NewStore(root)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, reader.Close()) })
+	record := Record{
+		ID:        "al9ljtw37",
+		Type:      TypeAgent,
+		Ownership: Ownership{WorkspaceID: "workspace", ParentSessionID: "parent"},
+		State:     StateToRecord(State{Status: StatusPending}),
+		Agent:     &AgentRecord{Prompt: "original", AgentType: "task"},
+	}
+	require.NoError(t, writer.Put(record))
+	writeDone := make(chan error, 1)
+	go func() {
+		for range 25 {
+			if err := writer.Put(record); err != nil {
+				writeDone <- err
+				return
+			}
+		}
+		writeDone <- nil
+	}()
+	for range 50 {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			require.NoError(t, <-writeDone)
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".tmp") {
+				_ = os.Remove(filepath.Join(root, entry.Name()))
+			}
+		}
+		_, err = reader.ListNotifications("workspace", "parent", true, true)
+		if err != nil {
+			require.NoError(t, <-writeDone)
+			t.Fatal(err)
+		}
+	}
+	require.NoError(t, <-writeDone)
+	stored, err := reader.Get(record.ID)
+	require.NoError(t, err)
+	require.Equal(t, record.Agent, stored.Agent)
 }
 
 func TestStoreNotificationFiltersAndDurableMarkers(t *testing.T) {

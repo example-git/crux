@@ -18,6 +18,7 @@ import (
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/foundation/catalog"
+	"github.com/example-git/crux/foundation/providers/anthropic"
 	"github.com/example-git/crux/foundation/providers/openai"
 	"github.com/example-git/crux/foundation/providers/openaicompat"
 	"github.com/example-git/crux/internal/agent/notify"
@@ -43,6 +44,43 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestAnthropicConstructorPreservesEfficiencyPolicy(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		policy *anthropic.EfficiencyPolicy
+		marked bool
+		ttl    string
+	}{
+		{name: "default", marked: true},
+		{name: "disabled", policy: &anthropic.EfficiencyPolicy{}, marked: false},
+		{name: "one hour", policy: &anthropic.EfficiencyPolicy{PromptCaching: true, TTL: "1h"}, marked: true, ttl: "1h"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var body map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"test","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+			}))
+			defer server.Close()
+			coordinator := &coordinator{}
+			provider, err := coordinator.buildAnthropicProvider(false, server.URL, "test", nil, test.policy, func() error { return nil })
+			require.NoError(t, err)
+			model, err := provider.LanguageModel(context.Background(), "claude-test")
+			require.NoError(t, err)
+			_, err = model.Generate(context.Background(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("hello")}})
+			require.NoError(t, err)
+			messages := body["messages"].([]any)
+			content := messages[0].(map[string]any)["content"].([]any)
+			cache, marked := content[0].(map[string]any)["cache_control"]
+			require.Equal(t, test.marked, marked)
+			if test.ttl != "" {
+				require.Equal(t, test.ttl, cache.(map[string]any)["ttl"])
+			}
+		})
+	}
+}
 
 func integratedRegistration(t *testing.T, providerID string) (providerregistry.Registration, bool) {
 	t.Helper()
@@ -751,8 +789,10 @@ func TestCoordinatorSummarizeUsesCapturedRuntime(t *testing.T) {
 	coord.cfg = config.NewTestStore(cfg)
 	snapshot := coord.cfg.RuntimeSnapshot()
 	captured := InstalledRuntime{
-		LargeModel: Model{ModelCfg: config.SelectedModel{Provider: providerID, Model: "captured-model"}},
-		Snapshot:   snapshot,
+		LargeModel:            Model{ModelCfg: config.SelectedModel{Provider: providerID, Model: "captured-model"}},
+		Snapshot:              snapshot,
+		CodexCompactionV2:     true,
+		SummarizationFastMode: true,
 	}
 	called := false
 	agent := &mockSessionAgent{
@@ -762,6 +802,8 @@ func TestCoordinatorSummarizeUsesCapturedRuntime(t *testing.T) {
 			called = true
 			require.Equal(t, captured.LargeModel.ModelCfg, runtime.LargeModel.ModelCfg)
 			require.Same(t, captured.Snapshot.Config(), runtime.Snapshot.Config())
+			require.True(t, runtime.CodexCompactionV2)
+			require.True(t, runtime.SummarizationFastMode)
 			return nil
 		},
 	}

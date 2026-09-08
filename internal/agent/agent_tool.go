@@ -334,7 +334,7 @@ func (c *coordinator) runAgentTool(
 		)
 	}
 	if !params.RunInBackground {
-		return c.runSubAgent(ctx, runParams)
+		return c.runDetachableSubAgent(ctx, params, selected, runParams)
 	}
 	return c.startBackgroundSubAgent(
 		ctx,

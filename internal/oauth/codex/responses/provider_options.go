@@ -52,6 +52,7 @@ type ProviderOptions struct {
 	ReasoningEffort   string `json:"reasoning_effort,omitempty"`
 	ResponseVerbosity string `json:"response_verbosity,omitempty"`
 	DisableReasoning  bool   `json:"disable_reasoning,omitempty"`
+	FastMode          bool   `json:"fast_mode,omitempty"`
 }
 
 // Options implements fantasy.ProviderOptionsData.

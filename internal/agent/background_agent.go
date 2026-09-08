@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/example-git/crux/internal/agent/tools"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/shell"
@@ -41,6 +42,7 @@ type TaskCoordinator interface {
 	ListTasks() []managedtask.View
 	TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error)
 	StopTask(ctx context.Context, id string) (managedtask.View, error)
+	RestartTask(ctx context.Context, id string) (managedtask.View, error)
 	ContinueTask(ctx context.Context, id, parentSessionID, prompt, originToolCallID string) (managedtask.View, error)
 	DeliverTaskNotification(ctx context.Context, notification managedtask.Notification, onPersisted, onDiscarded func()) error
 }
@@ -601,7 +603,50 @@ func (c *coordinator) ListTasks() []managedtask.View {
 }
 
 func (c *coordinator) TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error) {
-	return c.managedTaskOutput(ctx, id, wait, timeout)
+	if !wait || timeout <= 0 || c.backgroundShells == nil || tools.GetSessionFromContext(ctx) == "" {
+		return c.managedTaskOutput(ctx, id, wait, timeout)
+	}
+	initial, err := c.managedTaskOutput(ctx, id, false, 0)
+	if err != nil || initial.Task.State.Status.Terminal() {
+		return initial, err
+	}
+	foregroundWait := c.backgroundShells.ForegroundWaits.Register(tools.GetSessionFromContext(ctx))
+	defer c.backgroundShells.ForegroundWaits.Remove(foregroundWait)
+	waitCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type outputResult struct {
+		output ManagedTaskOutput
+		err    error
+	}
+	result := make(chan outputResult, 1)
+	go func() {
+		output, err := c.managedTaskOutput(waitCtx, id, true, timeout)
+		result <- outputResult{output, err}
+	}()
+	select {
+	case output := <-result:
+		return output.output, output.err
+	case <-foregroundWait.Detached:
+		cancel()
+		<-result
+		return c.managedTaskOutput(ctx, id, false, 0)
+	case <-ctx.Done():
+		return ManagedTaskOutput{}, ctx.Err()
+	}
+}
+
+func (c *coordinator) RestartTask(ctx context.Context, id string) (managedtask.View, error) {
+	if permission.IsSubagent(ctx) {
+		return managedtask.View{}, permission.ErrSubagentBackgroundTask
+	}
+	if c.backgroundShells == nil {
+		return managedtask.View{}, fmt.Errorf("background shell service is unavailable")
+	}
+	restarted, err := c.backgroundShells.Restart(ctx, id)
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	return managedtask.View{ID: restarted.ID, Type: managedtask.TypeShell, Description: restarted.Description, Command: restarted.Command, Ownership: restarted.Ownership, State: restarted.State(), OutputRef: restarted.OutputRef()}, nil
 }
 
 func (c *coordinator) StopTask(ctx context.Context, id string) (managedtask.View, error) {
@@ -620,6 +665,7 @@ func (c *coordinator) DeliverTaskNotification(ctx context.Context, notification 
 		ErrorCode:    notification.ErrorCode,
 		ErrorMessage: notification.ErrorMessage,
 		LostReason:   notification.LostReason,
+		ExitCode:     notification.ExitCode,
 		Usage:        notification.Usage,
 	})
 	if err != nil {
@@ -628,6 +674,7 @@ func (c *coordinator) DeliverTaskNotification(ctx context.Context, notification 
 	_, err = c.currentAgent.Run(ctx, SessionAgentCall{
 		SessionID:          notification.ParentSessionID,
 		SubmissionID:       notification.ID,
+		taskNotification:   true,
 		Prompt:             string(payload),
 		NonInteractive:     true,
 		OnMessagePersisted: onPersisted,
@@ -648,6 +695,7 @@ type taskNotificationPrompt struct {
 	ErrorCode    string                 `xml:"error-code,omitempty"`
 	ErrorMessage string                 `xml:"error-message,omitempty"`
 	LostReason   string                 `xml:"lost-reason,omitempty"`
+	ExitCode     *int                   `xml:"exit-code,omitempty"`
 	Usage        managedtask.AgentUsage `xml:"usage,omitempty"`
 }
 
@@ -721,7 +769,8 @@ func (c *coordinator) managedTaskOutput(ctx context.Context, id string, wait boo
 		if !ok {
 			return ManagedTaskOutput{}, fmt.Errorf("background shell not found: %s", id)
 		}
-		result, status, err := backgroundShell.ReadOutput(ctx, managedtask.ReadOptions{Stream: managedtask.OutputStreamMerged}, wait, timeout)
+		tailBytes := int64(managedtask.DefaultReadBytes)
+		result, status, err := backgroundShell.ReadOutput(ctx, managedtask.ReadOptions{Stream: managedtask.OutputStreamMerged, TailBytes: &tailBytes}, wait, timeout)
 		return ManagedTaskOutput{
 			Task: ManagedTaskInfo{
 				ID:          id,
@@ -736,7 +785,7 @@ func (c *coordinator) managedTaskOutput(ctx context.Context, id string, wait boo
 			RetrievalStatus: status,
 			Status:          status,
 			NextOffset:      result.NextOffset,
-			OutputTruncated: result.OutputTruncated,
+			OutputTruncated: result.OutputTruncated || result.NextOffset > int64(len(result.Output)),
 		}, err
 	case managedtask.TypeAgent:
 		if c.backgroundAgents == nil {

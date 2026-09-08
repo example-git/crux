@@ -83,11 +83,7 @@ type EditResponseMetadata struct {
 const FetchToolName = "fetch"
 
 // FetchParams represents the parameters for the fetch tool.
-type FetchParams struct {
-	URL     string `json:"url"`
-	Format  string `json:"format"`
-	Timeout int    `json:"timeout,omitempty"`
-}
+type FetchParams = tools.FetchParams
 
 // FetchPermissionsParams represents the permission parameters for the fetch tool.
 type FetchPermissionsParams = tools.FetchPermissionsParams

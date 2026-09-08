@@ -411,7 +411,7 @@ func (p *Permissions) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	// of overflowing. The dialog frame supplies the padding, so this renders
 	// the hint line without the extra help view inset that renderDialogHelp
 	// applies for RenderContext dialogs.
-	helpView := shortHelpLine(&p.help, p.ShortHelp(), contentWidth)
+	helpView := ShortHelpLine(&p.help, p.ShortHelp(), contentWidth)
 
 	p.defaultDiffSplitMode = width >= splitModeMinWidth
 

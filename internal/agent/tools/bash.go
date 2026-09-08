@@ -326,6 +326,8 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 			// to send it to the background while we wait.
 			bgShell.SetForeground(true)
 			defer bgShell.SetForeground(false)
+			foregroundWait := bgManager.ForegroundWaits.Register(GetSessionFromContext(ctx))
+			defer bgManager.ForegroundWaits.Remove(foregroundWait)
 
 			// Wait for completion, timeout, user detach, or cancellation.
 			ticker := time.NewTicker(100 * time.Millisecond)
@@ -348,10 +350,15 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 						break waitLoop
 					}
 				case <-timeout:
+					detached = bgManager.ForegroundWaits.Remove(foregroundWait)
 					stdout, stderr, done, execErr = bgShell.GetOutput()
-					if !done {
+					if !done && !detached {
 						timedOut = true
 					}
+					break waitLoop
+				case <-foregroundWait.Detached:
+					stdout, stderr, done, execErr = bgShell.GetOutput()
+					detached = !done
 					break waitLoop
 				case <-bgShell.Detached():
 					stdout, stderr, done, execErr = bgShell.GetOutput()
@@ -360,6 +367,10 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 					}
 					break waitLoop
 				case <-ctx.Done():
+					if bgManager.ForegroundWaits.Remove(foregroundWait) {
+						detached = true
+						break waitLoop
+					}
 					// Incoming context was cancelled while waiting.
 					// Kill the shell and return error
 					bgManager.Kill(bgShell.ID)

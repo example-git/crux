@@ -7,28 +7,77 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
-	"regexp"
+	"net/url"
 	"strings"
 	"unicode/utf8"
 
-	md "github.com/JohannesKaufmann/html-to-markdown"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/converter"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/base"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/strikethrough"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
+	"github.com/PuerkitoBio/goquery"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/redact"
 	"golang.org/x/net/html"
+	"golang.org/x/net/html/charset"
 )
 
 // BrowserUserAgent is a realistic browser User-Agent for better compatibility.
 const BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-var multipleNewlinesRe = regexp.MustCompile(`\n{3,}`)
+const maxFetchInputSize = 5 * 1024 * 1024
 
 // FetchURLAndConvert fetches a URL and converts HTML content to markdown.
-func FetchURLAndConvert(ctx context.Context, client *http.Client, url string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+func FetchURLAndConvert(ctx context.Context, client *http.Client, address string) (string, error) {
+	return fetchURLAndConvert(ctx, client, address, false)
+}
+
+type FetchIdentity struct {
+	Mode        string
+	Browser     *BrowserFetchService
+	SessionID   string
+	Environment []string
+}
+
+func FetchURLAndConvertWithIdentity(ctx context.Context, client *http.Client, address, toolCallID string, identity FetchIdentity) (content string, err error) {
+	if identity.Mode != "" && identity.Mode != "normal" && identity.Mode != "user" {
+		return "", errors.New("mode must be normal or user")
+	}
+	if identity.Mode != "user" {
+		return FetchURLAndConvert(ctx, client, address)
+	}
+	defer func() {
+		content = redact.String(content)
+		if err != nil && ctx.Err() == nil && !errors.Is(err, question.ErrCancelled) {
+			err = errors.New(redact.String(err.Error()))
+		}
+	}()
+	target, err := url.Parse(address)
+	if err != nil || target.Hostname() == "" || (target.Scheme != "http" && target.Scheme != "https") {
+		return "", errors.New("URL must be a valid HTTP or HTTPS URL")
+	}
+	if target.User != nil {
+		return "", errors.New("user-mode URLs must not contain embedded credentials")
+	}
+	if identity.SessionID == "" {
+		return "", errors.New("session ID is required for fetching a URL")
+	}
+	requestClient, err := identity.Browser.client(ctx, identity.SessionID, toolCallID, address, identity.Environment, client)
+	if err != nil {
+		return "", err
+	}
+	return fetchURLAndConvert(ctx, requestClient, address, true)
+}
+
+func fetchURLAndConvert(ctx context.Context, client *http.Client, address string, userMode bool) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", address, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Use realistic browser headers for better compatibility.
 	req.Header.Set("User-Agent", BrowserUserAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
@@ -43,118 +92,115 @@ func FetchURLAndConvert(ctx context.Context, client *http.Client, url string) (s
 		return "", fmt.Errorf("request failed with status code: %d", resp.StatusCode)
 	}
 
-	maxSize := int64(5 * 1024 * 1024) // 5MB
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSize))
+	content, isHTML, err := readFetchContent(resp)
 	if err != nil {
-		return "", fmt.Errorf("failed to read response body: %w", err)
+		return "", err
 	}
-
-	content := string(body)
-
-	if !utf8.ValidString(content) {
-		return "", errors.New("response content is not valid UTF-8")
+	if userMode {
+		content = redact.String(content)
 	}
-
-	contentType := resp.Header.Get("Content-Type")
-
-	// Convert HTML to markdown for better AI processing.
-	if strings.Contains(contentType, "text/html") {
-		// Remove noisy elements before conversion.
-		cleanedHTML := removeNoisyElements(content)
-		markdown, err := ConvertHTMLToMarkdown(cleanedHTML)
+	if isHTML {
+		content, err = convertFetchHTML(ctx, content, resp.Request.URL.String())
 		if err != nil {
 			return "", fmt.Errorf("failed to convert HTML to markdown: %w", err)
 		}
-		content = cleanupMarkdown(markdown)
-	} else if strings.Contains(contentType, "application/json") || strings.Contains(contentType, "text/json") {
-		// Format JSON for better readability.
-		formatted, err := FormatJSON(content)
-		if err == nil {
+	} else if contentType := resp.Header.Get("Content-Type"); strings.Contains(contentType, "application/json") || strings.Contains(contentType, "text/json") {
+		if formatted, err := FormatJSON(content); err == nil {
 			content = formatted
 		}
-		// If formatting fails, keep original content.
 	}
-
 	return content, nil
 }
 
-// removeNoisyElements removes script, style, nav, header, footer, and other
-// noisy elements from HTML to improve content extraction.
-func removeNoisyElements(htmlContent string) string {
-	doc, err := html.Parse(strings.NewReader(htmlContent))
+func readFetchContent(resp *http.Response) (string, bool, error) {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxFetchInputSize+1))
 	if err != nil {
-		// If parsing fails, return original content.
-		return htmlContent
+		return "", false, fmt.Errorf("failed to read response body: %w", err)
 	}
-
-	// Elements to remove entirely.
-	noisyTags := map[string]bool{
-		"script":   true,
-		"style":    true,
-		"nav":      true,
-		"header":   true,
-		"footer":   true,
-		"aside":    true,
-		"noscript": true,
-		"iframe":   true,
-		"svg":      true,
+	if len(body) > maxFetchInputSize {
+		return "", false, errors.New("response exceeds the 5MB input limit")
 	}
-
-	var removeNodes func(*html.Node)
-	removeNodes = func(n *html.Node) {
-		var toRemove []*html.Node
-
-		for c := n.FirstChild; c != nil; c = c.NextSibling {
-			if c.Type == html.ElementNode && noisyTags[c.Data] {
-				toRemove = append(toRemove, c)
-			} else {
-				removeNodes(c)
-			}
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = http.DetectContentType(body)
+	}
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	isHTML := mediaType == "text/html" || mediaType == "application/xhtml+xml"
+	if isHTML {
+		reader, err := charset.NewReader(bytes.NewReader(body), contentType)
+		if err != nil {
+			return "", true, fmt.Errorf("failed to decode HTML charset: %w", err)
 		}
-
-		for _, node := range toRemove {
-			n.RemoveChild(node)
+		body, err = io.ReadAll(reader)
+		if err != nil {
+			return "", true, fmt.Errorf("failed to decode HTML: %w", err)
 		}
 	}
-
-	removeNodes(doc)
-
-	var buf bytes.Buffer
-	if err := html.Render(&buf, doc); err != nil {
-		return htmlContent
+	if !utf8.Valid(body) {
+		return "", isHTML, errors.New("response content is not valid UTF-8")
 	}
-
-	return buf.String()
+	return string(body), isHTML, nil
 }
 
-// cleanupMarkdown removes excessive whitespace and blank lines from markdown.
-func cleanupMarkdown(content string) string {
-	// Collapse multiple blank lines into at most two.
-	content = multipleNewlinesRe.ReplaceAllString(content, "\n\n")
-
-	// Remove trailing whitespace from each line.
-	lines := strings.Split(content, "\n")
-	for i, line := range lines {
-		lines[i] = strings.TrimRight(line, " \t")
+func parseFetchHTML(content string) (*goquery.Document, error) {
+	root, err := html.ParseWithOptions(strings.NewReader(content), html.ParseOptionEnableScripting(false))
+	if err != nil {
+		return nil, err
 	}
-	content = strings.Join(lines, "\n")
-
-	// Trim leading/trailing whitespace.
-	content = strings.TrimSpace(content)
-
-	return content
+	doc := goquery.NewDocumentFromNode(root)
+	doc.Find("script, style, template, iframe, object, embed, [hidden], [aria-hidden='true']").Remove()
+	doc.Find("img").Each(func(_ int, image *goquery.Selection) {
+		source, _ := image.Attr("src")
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(source)), "data:") {
+			alt, _ := image.Attr("alt")
+			image.ReplaceWithNodes(&html.Node{Type: html.TextNode, Data: alt})
+		}
+	})
+	doc.Find("svg").Each(func(_ int, image *goquery.Selection) {
+		image.ReplaceWithNodes(&html.Node{Type: html.TextNode, Data: image.Find("title, desc").Text()})
+	})
+	return doc, nil
 }
 
 // ConvertHTMLToMarkdown converts HTML content to markdown format.
 func ConvertHTMLToMarkdown(htmlContent string) (string, error) {
-	converter := md.NewConverter("", true, nil)
+	return convertFetchHTML(context.Background(), htmlContent, "")
+}
 
-	markdown, err := converter.ConvertString(htmlContent)
+func convertFetchHTML(ctx context.Context, content, pageURL string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	doc, err := parseFetchHTML(content)
 	if err != nil {
 		return "", err
 	}
-
-	return markdown, nil
+	if href, ok := doc.Find("base[href]").First().Attr("href"); ok {
+		if baseURL, err := url.Parse(pageURL); err == nil {
+			if reference, err := url.Parse(href); err == nil {
+				resolved := baseURL.ResolveReference(reference)
+				if resolved.Scheme == "http" || resolved.Scheme == "https" {
+					pageURL = resolved.String()
+				}
+			}
+		}
+	}
+	doc.Find("head").Remove()
+	conv := converter.NewConverter(converter.WithPlugins(
+		base.NewBasePlugin(),
+		commonmark.NewCommonmarkPlugin(),
+		table.NewTablePlugin(),
+		strikethrough.NewStrikethroughPlugin(),
+	))
+	conv.Register.TagType("noscript", converter.TagTypeBlock, converter.PriorityEarly)
+	markdown, err := conv.ConvertNode(doc.Nodes[0], converter.WithDomain(pageURL), converter.WithContext(ctx))
+	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(markdown)), nil
 }
 
 // FormatJSON formats JSON content with proper indentation.

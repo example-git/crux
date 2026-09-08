@@ -23,7 +23,10 @@ Diagnostics (lint/typecheck) included in tool output.
 {{.SkillUsage}}
 {{end}}
 
-{{if .ContextFiles}}
+{{template "project-context" .}}
+{{template "user-context" .}}
+
+{{define "project-context"}}{{if .ContextFiles}}
 # Project-Specific Context
 Make sure to follow the instructions in the context below.
 <project_context>
@@ -33,8 +36,8 @@ Make sure to follow the instructions in the context below.
 </file>
 {{end}}
 </project_context>
-{{end}}
-{{if .GlobalContextFiles}}
+{{end}}{{end}}
+{{define "user-context"}}{{if .GlobalContextFiles}}
 
 # User context
 The following is personal content added by the user that they'd like you to follow no matter what project you're working in.
@@ -45,4 +48,4 @@ The following is personal content added by the user that they'd like you to foll
 </file>
 {{end}}
 </user_preferences>
-{{end}}
+{{end}}{{end}}

@@ -29,7 +29,7 @@ func NewTrafficLogsToolMessageItem(
 }
 
 func (r *TrafficLogsToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Traffic Logs", opts.Anim, opts.Compact)
 	}
@@ -52,19 +52,28 @@ func (r *TrafficLogsToolRenderContext) RenderTool(sty *styles.Styles, width int,
 
 	var metadata tools.TrafficLogsResponseMetadata
 	if opts.Result.Metadata == "" || json.Unmarshal([]byte(opts.Result.Metadata), &metadata) != nil || len(metadata.Records) == 0 {
-		bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
+		bodyWidth := toolBodyWidth(sty, cappedWidth)
 		body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
 		return joinToolParts(header, body)
 	}
 
-	bodyWidth := max(1, cappedWidth-toolBodyLeftPaddingTotal)
+	bodyWidth := toolBodyWidth(sty, cappedWidth)
 	parts := []string{sty.Tool.ParamKey.Render(fmt.Sprintf("%d traffic records", len(metadata.Records)))}
 	limit := len(metadata.Records)
 	if !opts.ExpandedContent {
 		limit = min(limit, collapsedTrafficRecordLimit)
 	}
 	for index, record := range metadata.Records[:limit] {
-		parts = append(parts, renderTrafficLogRecord(sty, record, bodyWidth, false, false, index+1))
+		if !opts.ExpandedContent {
+			identity := record.RecordID
+			if identity == "" {
+				identity = strconv.Itoa(index + 1)
+			}
+			parts = append(parts, sty.Tool.SummaryTitle.Render(summaryWrap("Record "+identity, bodyWidth)))
+			parts = append(parts, sty.Tool.SummaryText.Render(summaryPreview(record.Method+" "+record.URL+" "+formatOptionalInt(record.StatusCode), bodyWidth)))
+		} else {
+			parts = append(parts, renderTrafficLogRecord(sty, record, bodyWidth, false, false, index+1))
+		}
 	}
 	if !opts.ExpandedContent {
 		hidden := len(metadata.Records) - limit
@@ -72,7 +81,8 @@ func (r *TrafficLogsToolRenderContext) RenderTool(sty *styles.Styles, width int,
 			parts = append(parts, sty.Tool.ContentTruncation.Render(fmt.Sprintf("… %d more records; expand to show all", hidden)))
 		}
 	}
-	parts = append(parts, sty.Tool.ContentTruncation.Render("Use traffic_log_detail or traffic_log_search with a record ID"))
+	parts = append(parts, sty.Tool.SummaryMeta.Render(summaryWrap("Use traffic_log_detail or traffic_log_search with a record ID", bodyWidth)))
+	parts = append(parts, renderOutputFooter(sty, bodyWidth, summaryDisclosure("All records", opts.ExpandedContent), sty.PanelBackground))
 	return joinToolParts(header, sty.Tool.Body.Render(strings.Join(parts, "\n")))
 }
 
@@ -99,7 +109,7 @@ func NewTrafficLogSearchToolMessageItem(
 }
 
 func (r *TrafficLogDetailToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Traffic Log Detail", opts.Anim, opts.Compact)
 	}
@@ -119,11 +129,11 @@ func (r *TrafficLogDetailToolRenderContext) RenderTool(sty *styles.Styles, width
 	}
 	var metadata tools.TrafficLogDetailResponseMetadata
 	if opts.Result.Metadata == "" || json.Unmarshal([]byte(opts.Result.Metadata), &metadata) != nil || metadata.Record.RecordID == "" {
-		bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
+		bodyWidth := toolBodyWidth(sty, cappedWidth)
 		body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
 		return joinToolParts(header, body)
 	}
-	bodyWidth := max(1, cappedWidth-toolBodyLeftPaddingTotal)
+	bodyWidth := toolBodyWidth(sty, cappedWidth)
 	body := renderTrafficLogRecord(sty, metadata.Record, bodyWidth, opts.ExpandedContent, params.IncludeBody, 1)
 	if !opts.ExpandedContent {
 		body += "\n" + sty.Tool.ContentTruncation.Render("Expand for bounded headers, summaries, and body details")
@@ -132,7 +142,7 @@ func (r *TrafficLogDetailToolRenderContext) RenderTool(sty *styles.Styles, width
 }
 
 func (r *TrafficLogSearchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Traffic Log Search", opts.Anim, opts.Compact)
 	}
@@ -150,7 +160,7 @@ func (r *TrafficLogSearchToolRenderContext) RenderTool(sty *styles.Styles, width
 	if opts.HasEmptyResult() {
 		return header
 	}
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
+	bodyWidth := toolBodyWidth(sty, cappedWidth)
 	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
 	return joinToolParts(header, body)
 }

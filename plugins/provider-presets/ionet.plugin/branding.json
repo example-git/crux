@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "io.net",
+  "short_name": "IONET",
+  "color": "#6EE7B7",
+  "gradient_a": "#6EE7B7",
+  "gradient_b": "#67E8F9"
+}

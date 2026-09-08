@@ -1,14 +1,33 @@
 package providerplugin
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/stretchr/testify/require"
 )
+
+func TestImagePluginErrorsRetainSafeCauses(t *testing.T) {
+	cause := errors.New("registry read failed: access_token=synthetic-secret")
+	wrapped := &imagePluginCauseError{message: "image plugin ownership could not be revalidated", cause: cause}
+	require.ErrorIs(t, wrapped, cause)
+	require.ErrorContains(t, wrapped, "registry read failed")
+	require.NotContains(t, wrapped.Error(), "synthetic-secret")
+	diagnostic := &DiagnosticError{Report: DiagnosticReport{Diagnostics: []Diagnostic{{Code: "invalid-field", Path: "/generate", Message: "workflow is unavailable; access_token=synthetic-secret"}}}}
+	require.ErrorContains(t, diagnostic, "/generate: workflow is unavailable")
+	require.NotContains(t, diagnostic.Error(), "synthetic-secret")
+	manager := newTestManager(t)
+	_, err := manager.InspectImageSource(t.Context(), filepath.Join(t.TempDir(), "missing.plugin"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+	require.ErrorContains(t, err, "existing readable local bundle directory")
+}
 
 func TestImageManagerInstallTrustAndNamespace(t *testing.T) {
 	manager := newTestManager(t)
@@ -56,6 +75,30 @@ func TestImageManagerInstallTrustAndNamespace(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, images[0].Owner(), owner)
 	require.NoError(t, manager.ValidateImageOwner(t.Context(), owner))
+	t.Run("concurrent revalidation", func(t *testing.T) {
+		manager.mu.Lock()
+		var unlock sync.Once
+		defer unlock.Do(manager.mu.Unlock)
+		results := make(chan error, 5)
+		go func() { results <- manager.ValidateImageOwner(t.Context(), owner) }()
+		require.Eventually(t, func() bool {
+			return len(manager.rescanGate) == 1
+		}, time.Second, time.Millisecond)
+		for range 4 {
+			go func() { results <- manager.ValidateImageOwner(t.Context(), owner) }()
+		}
+		cancelCtx, cancelWait := context.WithCancel(t.Context())
+		cancelWait()
+		require.ErrorIs(t, manager.ValidateImageOwner(cancelCtx, owner), context.Canceled)
+		time.Sleep(managerLockTimeout + 200*time.Millisecond)
+		unlock.Do(manager.mu.Unlock)
+		for range 5 {
+			require.NoError(t, <-results)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		require.ErrorIs(t, manager.ValidateImageOwner(ctx, owner), context.Canceled)
+	})
 	for _, changed := range []ImageOwner{
 		{},
 		{Backend: "other", PluginID: owner.PluginID, Version: owner.Version, Digest: owner.Digest},

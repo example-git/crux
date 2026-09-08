@@ -120,6 +120,7 @@ func TestAssistantSectionCache_ThinkingChangeDoesNotInvalidateContent(t *testing
 	content := "Final answer goes here."
 	msg := thinkingMessage("a2", "Step 1", content)
 	item := NewAssistantMessageItem(&sty, msg).(*AssistantMessageItem)
+	item.ToggleExpanded()
 
 	const width = 73
 

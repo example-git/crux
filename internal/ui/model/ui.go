@@ -269,6 +269,7 @@ type UI struct {
 	// placeholder ghost text when the editor is empty and the agent is
 	// idle. Accepted with tab.
 	promptSuggestion        string
+	promptSuggestionCancel  context.CancelFunc
 	promptSuggestionGen     int
 	promptSuggestionPending bool
 	// promptSuggestionDone is true once a fetch completed for the
@@ -307,6 +308,7 @@ type UI struct {
 
 	// Active inline editor replaces the textarea when non-nil.
 	activeInline dialog.InlineEditor
+	taskPanel    *dialog.Tasks
 	// inlineCursor stores the cursor from the last inline editor
 	// Draw call, used by the cursor positioning logic below.
 	inlineCursor *tea.Cursor
@@ -324,6 +326,8 @@ type UI struct {
 	completionsQuery         string
 	completionsPositionStart image.Point // x,y where user typed '@'
 	runningTaskCount         int
+	foregroundWaitCount      int
+	foregroundWaitSessionID  string
 	taskRefreshInFlight      bool
 	// commandCompletionActions maps command completion IDs to their
 	// dialog actions for the inline slash-command completions.
@@ -380,6 +384,8 @@ type UI struct {
 	sidebarBrandLogoHeight  int
 	sidebarFilesHeaderLine  int
 	sidebarFilesCollapsed   bool
+	sidebarCollapsed        map[string]bool
+	sidebarSectionHeaders   map[string]int
 
 	// Notification state
 	notifyBackend       notification.Backend
@@ -390,6 +396,9 @@ type UI struct {
 
 	// forceCompactMode tracks whether compact mode is forced by user toggle
 	forceCompactMode bool
+	deliveryMode     agent.DeliveryMode
+	deliverySaveDone <-chan struct{}
+	forceSidebar     bool
 
 	// isCompact tracks whether we're currently in compact layout mode (either
 	// by user toggle or auto-switch based on window size)
@@ -543,6 +552,11 @@ func New(com *common.Common, initialSessionID string, continueLast bool, initial
 		skillStates:         skills.GetLatestStates(),
 	}
 
+	ui.deliveryMode = agent.DeliveryQueue
+	if cfg := com.Config(); cfg.Options.TUI != nil && cfg.Options.TUI.DeliveryMode != "" {
+		ui.deliveryMode = agent.DeliveryMode(cfg.Options.TUI.DeliveryMode)
+	}
+
 	status := NewStatus(com, ui)
 
 	// Seed the active theme key from the large model provider so the
@@ -576,6 +590,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool, initial
 
 	// Initialize compact mode from config
 	ui.forceCompactMode = com.Config().Options.TUI.CompactMode
+	ui.forceSidebar = !ui.forceCompactMode
 
 	// set onboarding state defaults
 	ui.onboarding.yesInitializeSelected = true
@@ -799,6 +814,22 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	// Update terminal capabilities
 	m.caps.Update(msg)
+	if reply, ok := msg.(taskPanelReplyMsg); ok {
+		if m.taskPanel == reply.panel {
+			return m, m.handleTaskPanelMsg(reply.msg)
+		}
+		return m, nil
+	}
+	if m.taskPanel != nil {
+		if _, ok := msg.(pubsub.Event[managedtask.Notification]); ok {
+			cmds = append(cmds, m.handleTaskPanelMsg(msg))
+		}
+		if !m.dialog.HasDialogs() {
+			if handled, cmd := m.routeTaskPanelInput(msg); handled {
+				return m, cmd
+			}
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.EnvMsg:
 		// Is this Windows Terminal?
@@ -828,7 +859,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case planModeToggledMsg:
 		m.session = &msg.session
 		m.setEditorPrompt(m.yoloModeCached())
-		status := "disabled"
+		status := "cancelled; normal mode restored"
 		if msg.session.Mode.IsPlan() {
 			status = "enabled"
 		}
@@ -1195,8 +1226,14 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		gen := msg.gen
 		sessionID := m.session.ID
+		if m.promptSuggestionCancel != nil {
+			m.promptSuggestionCancel()
+		}
+		suggestionCtx, cancel := context.WithCancel(context.Background())
+		m.promptSuggestionCancel = cancel
 		cmds = append(cmds, func() tea.Msg {
-			text, err := m.com.Workspace.AgentSuggestPrompt(context.Background(), sessionID)
+			defer cancel()
+			text, err := m.com.Workspace.AgentSuggestPrompt(suggestionCtx, sessionID)
 			if err != nil {
 				slog.Info("Prompt suggestion failed", "error", err)
 				text = ""
@@ -1297,7 +1334,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.handleSidebarLogoClick(msg) {
 			return m, tea.Batch(cmds...)
 		}
-		if m.handleSidebarFilesClick(msg) {
+		if m.handleSidebarFilesClick(msg) || m.handleSidebarSectionClick(msg) {
+			m.updateSidebarScrollState()
 			return m, tea.Batch(cmds...)
 		}
 
@@ -1309,7 +1347,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The attachment chips are rendered on the first row of the
 		// editor layout area, above the textarea.
 		if m.activeInline == nil && msg.Button == uv.MouseLeft && len(m.attachments.List()) > 0 && msg.Y == m.layout.editor.Min.Y {
-			relX := msg.X - m.layout.editor.Min.X
+			relX := msg.X - m.layout.editor.Min.X - 1
 			if m.attachments.HandleClick(relX) {
 				return m, tea.Batch(cmds...)
 			}
@@ -1862,6 +1900,9 @@ func (m *UI) appendSessionMessage(msg message.Message) tea.Cmd {
 	var cmds []tea.Cmd
 
 	existing := m.chat.MessageItem(msg.ID)
+	if existing == nil && msg.Role == message.User && chat.IsTaskNotificationMessage(&msg) {
+		existing = m.chat.MessageItem(msg.ID + ":task-notification")
+	}
 	if existing != nil {
 		// message already exists, skip
 		return nil
@@ -2234,11 +2275,17 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		}
 
 	// Command dialog messages.
+	case dialog.ActionToggleDeliveryMode:
+		cmds = append(cmds, m.toggleDeliveryMode())
+		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionToggleYoloMode:
 		m.toggleYoloMode()
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionTogglePlanMode:
 		cmds = append(cmds, m.togglePlanMode())
+		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionCancelPlanMode:
+		cmds = append(cmds, m.cancelPlanMode())
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionSwitchAccount:
 		m.dialog.CloseDialog(dialog.AccountSwitcherID)
@@ -2411,7 +2458,13 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		})
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionQuit:
-		cmds = append(cmds, tea.Quit)
+		done := m.deliverySaveDone
+		cmds = append(cmds, func() tea.Msg {
+			if done != nil {
+				<-done
+			}
+			return tea.Quit()
+		})
 	case dialog.ActionEnableDockerMCP:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.enableDockerMCP)
@@ -2718,11 +2771,6 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	var cmds []tea.Cmd
 
-	// Login must remain dismissible while authentication is in progress.
-	if m.isAgentBusy() && !m.dialog.ContainsDialog(dialog.LoginID) {
-		return util.ReportWarn("Agent is busy, please wait...")
-	}
-
 	cfg := m.com.Config()
 	if cfg == nil {
 		return util.ReportError(errors.New("configuration not found"))
@@ -2881,6 +2929,11 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 		case key.Matches(msg, m.keyMap.Providers):
 			m.openProvidersDialog()
 			return true
+		case key.Matches(msg, m.keyMap.CodebaseIndex):
+			if cmd := m.openCodebaseIndexDialog(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			return true
 		case key.Matches(msg, m.keyMap.Instructions):
 			m.openInstructionsDialog()
 			return true
@@ -2928,6 +2981,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			}
 			cmds = append(cmds, tea.Suspend)
 			return true
+		case key.Matches(msg, m.keyMap.ToggleDelivery):
+			cmds = append(cmds, m.toggleDeliveryMode())
+			return true
 		case key.Matches(msg, m.keyMap.ToggleYolo):
 			yolo := m.toggleYoloMode()
 			status := "disabled"
@@ -2943,9 +2999,28 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 		return false
 	}
 
+	if m.session != nil && m.session.Mode.IsPlan() && key.Matches(msg, m.keyMap.TogglePlan) {
+		return m.cancelPlanMode()
+	}
+
 	// Route all keys to the frontmost dialog before global UI handlers.
 	if m.dialog.HasDialogs() {
 		return m.handleDialogMsg(msg)
+	}
+
+	if m.state == uiChat && (msg.String() == "ctrl+right" || msg.String() == "ctrl+left") {
+		m.forceCompactMode = msg.String() == "ctrl+right"
+		m.forceSidebar = !m.forceCompactMode
+		m.detailsOpen = false
+		if m.forceCompactMode && m.focus == uiFocusSidebar {
+			m.focus = uiFocusEditor
+		}
+		m.updateLayoutAndSize()
+		return nil
+	}
+
+	if m.taskPanel != nil {
+		return m.handleTaskPanelMsg(msg)
 	}
 
 	if msg.Code == tea.KeyDown && msg.Mod == tea.ModCtrl && (m.state == uiChat || m.state == uiLanding) {
@@ -3032,17 +3107,8 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 		}
 	}
 
-	// ctrl+b while the agent is busy: send the foreground shell
-	// command (if any) to the background.
-	if key.Matches(msg, m.keyMap.DetachJob) && m.isAgentBusy() {
-		cmds = append(cmds, func() tea.Msg {
-			n := m.com.Workspace.AgentDetachForegroundJobs()
-			if n == 0 {
-				return util.InfoMsg{Type: util.InfoTypeWarn, Msg: "No running command to send to background"}
-			}
-			return util.InfoMsg{Type: util.InfoTypeInfo, Msg: "Command sent to background"}
-		})
-		return tea.Batch(cmds...)
+	if key.Matches(msg, m.keyMap.DetachJob) && m.state == uiChat && m.hasSession() {
+		return m.detachForeground()
 	}
 
 	switch m.state {
@@ -3455,6 +3521,11 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	if m.layout != layout {
 		m.layout = layout
 		m.updateSize()
+		layout = m.generateLayout(area.Dx(), area.Dy())
+		if m.layout != layout {
+			m.layout = layout
+			m.updateSize()
+		}
 	} else if m.state == uiChat && m.hasSession() {
 		// Re-render pills on every draw so the box appears even when
 		// the layout footprint hasn't changed (e.g. todos arrived
@@ -3489,7 +3560,9 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		main := uv.NewStyledString(m.landingView())
 		main.Draw(scr, layout.main)
 
-		if m.activeInline != nil {
+		if m.taskPanel != nil {
+			m.inlineCursor = m.taskPanel.DrawPanel(scr, layout.editor, m.editorAccent())
+		} else if m.activeInline != nil {
 			m.activeInline.SetFocused(m.focus == uiFocusEditor)
 			if m.focus == uiFocusEditor {
 				m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
@@ -3502,6 +3575,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		} else {
 			editor := uv.NewStyledString(m.renderEditorView(layout.editor.Dx()))
 			editor.Draw(scr, layout.editor)
+			fillSurfaceBackground(scr, layout.editor, m.com.Styles.Editor.Background)
 			m.inlineCursor = nil
 		}
 
@@ -3515,9 +3589,20 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		m.chat.Draw(scr, layout.main)
 		if layout.pills.Dy() > 0 && m.pillsView != "" {
 			uv.NewStyledString(m.pillsView).Draw(scr, layout.pills)
+			if m.taskPanel == nil && m.pillsExpanded && m.hasSession() && hasIncompleteTodos(m.session.Todos) && m.effectiveFocusedSection() == pillSectionTodos && layout.pills.Dx() >= 4 {
+				surface := layout.pills
+				if m.promptQueue > 0 {
+					surface.Min.Y += pillHeightWithBorder
+				}
+				rows := strings.Split(m.pillsView, "\n")
+				surface.Max.X = surface.Min.X + ansi.StringWidth(rows[len(rows)-1])
+				fillSurfaceBackground(scr, surface, m.com.Styles.Background)
+			}
 		}
 
-		if m.activeInline != nil {
+		if m.taskPanel != nil {
+			m.inlineCursor = m.taskPanel.DrawPanel(scr, layout.editor, m.editorAccent())
+		} else if m.activeInline != nil {
 			m.activeInline.SetFocused(m.focus == uiFocusEditor)
 			if m.focus == uiFocusEditor {
 				m.inlineCursor = m.activeInline.Draw(scr, layout.editor)
@@ -3530,6 +3615,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		} else {
 			editor := uv.NewStyledString(m.renderEditorView(layout.editor.Dx()))
 			editor.Draw(scr, layout.editor)
+			fillSurfaceBackground(scr, layout.editor, m.com.Styles.Editor.Background)
 			m.inlineCursor = nil
 		}
 
@@ -3543,10 +3629,12 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 	// Add status and help layer
 	m.status.SetHideHelp(isOnboarding)
-	m.status.Draw(scr, layout.status)
+	if m.taskPanel == nil {
+		m.status.Draw(scr, layout.status)
+	}
 
 	// Draw completions popup if open
-	if !isOnboarding && m.completionsOpen && m.completions.HasItems() {
+	if !isOnboarding && m.taskPanel == nil && m.completionsOpen && m.completions.HasItems() {
 		w, h := m.completions.Size()
 		x := m.completionsPositionStart.X
 		y := m.completionsPositionStart.Y - h
@@ -3582,6 +3670,9 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		return m.dialog.Draw(scr, scr.Bounds())
 	}
 
+	if m.taskPanel != nil {
+		return m.inlineCursor
+	}
 	switch m.focus {
 	case uiFocusEditor:
 		if m.layout.editor.Dy() <= 0 {
@@ -3595,7 +3686,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 		if m.activeInline != nil {
 			if cur := m.inlineCursor; cur != nil {
-				cur.X++                        // Adjust for app margins
+				cur.X += m.layout.editor.Min.X
 				cur.Y += m.layout.editor.Min.Y // Inline editor draws from area top
 				return cur
 			}
@@ -3604,8 +3695,8 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 		if m.textarea.Focused() {
 			cur := m.textarea.Cursor()
-			cur.X++                            // Adjust for app margins
-			cur.Y += m.layout.editor.Min.Y + 1 // Offset for attachments row
+			cur.X += m.layout.editor.Min.X + 1
+			cur.Y += m.layout.editor.Min.Y + 1
 			return cur
 		}
 	}
@@ -3651,6 +3742,9 @@ func (m *UI) View() tea.View {
 
 // ShortHelp implements [help.KeyMap].
 func (m *UI) ShortHelp() []key.Binding {
+	if m.taskPanel != nil {
+		return nil
+	}
 	var binds []key.Binding
 	k := &m.keyMap
 
@@ -3675,7 +3769,10 @@ func (m *UI) ShortHelp() []key.Binding {
 			if m.promptQueue > 0 {
 				cancelBinding.SetHelp("esc", "clear queue")
 			}
-			binds = append(binds, cancelBinding, k.DetachJob)
+			binds = append(binds, cancelBinding)
+		}
+		if m.canDetachForeground() {
+			binds = append(binds, k.DetachJob)
 		}
 
 		switch m.focus {
@@ -3743,6 +3840,9 @@ func (m *UI) ShortHelp() []key.Binding {
 
 // FullHelp implements [help.KeyMap].
 func (m *UI) FullHelp() [][]key.Binding {
+	if m.taskPanel != nil {
+		return nil
+	}
 	// When an inline editor is active, show its help.
 	if m.activeInline != nil {
 		return [][]key.Binding{m.activeInline.ShortHelp()}
@@ -3772,7 +3872,10 @@ func (m *UI) FullHelp() [][]key.Binding {
 			if m.promptQueue > 0 {
 				cancelBinding.SetHelp("esc", "clear queue")
 			}
-			binds = append(binds, []key.Binding{cancelBinding, k.DetachJob})
+			binds = append(binds, []key.Binding{cancelBinding})
+		}
+		if m.canDetachForeground() {
+			binds = append(binds, []key.Binding{k.DetachJob})
 		}
 
 		mainBinds := []key.Binding{}
@@ -3794,6 +3897,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 			k.Providers,
 			k.Instructions,
 			k.ToggleYolo,
+			k.ToggleDelivery,
 		)
 		if hasSession {
 			mainBinds = append(mainBinds, k.Chat.NewSession, k.Chat.EndFollow)
@@ -3872,6 +3976,7 @@ func (m *UI) FullHelp() [][]key.Binding {
 					k.Models,
 					k.Sessions,
 					k.ToggleYolo,
+					k.ToggleDelivery,
 				},
 			)
 			editorBinds := []key.Binding{
@@ -3963,15 +4068,12 @@ func (m *UI) togglePlanMode() tea.Cmd {
 	if m.session == nil {
 		return util.ReportWarn("Start a session before toggling plan mode")
 	}
-	if m.session.Mode == session.ModePlanExecution {
-		return util.ReportWarn("Complete the approved plan and request completion review before leaving plan mode")
+	if m.session.Mode.IsPlan() {
+		return m.cancelPlanMode()
 	}
 
 	sessionID := m.session.ID
 	mode := session.ModePlan
-	if m.session.Mode.IsPlan() {
-		mode = session.ModeDefault
-	}
 
 	return func() tea.Msg {
 		updated, err := m.com.Workspace.SetSessionMode(context.TODO(), sessionID, mode)
@@ -3982,8 +4084,23 @@ func (m *UI) togglePlanMode() tea.Cmd {
 	}
 }
 
+func (m *UI) cancelPlanMode() tea.Cmd {
+	if m.session == nil {
+		return util.ReportWarn("Start a session before cancelling plan mode")
+	}
+	sessionID := m.session.ID
+	return func() tea.Msg {
+		updated, err := m.com.Workspace.SetSessionMode(context.TODO(), sessionID, session.ModeDefault)
+		if err != nil {
+			return util.ReportError(err)()
+		}
+		return planModeToggledMsg{session: updated}
+	}
+}
+
 func (m *UI) toggleCompactMode() tea.Cmd {
 	m.forceCompactMode = !m.forceCompactMode
+	m.forceSidebar = !m.forceCompactMode
 
 	err := m.com.Workspace.SetCompactMode(config.ScopeGlobal, m.forceCompactMode)
 	if err != nil {
@@ -4001,7 +4118,7 @@ func (m *UI) updateLayoutAndSize() {
 	if m.state == uiChat {
 		if m.forceCompactMode {
 			m.isCompact = true
-		} else if m.width < compactModeWidthBreakpoint || m.height < compactModeHeightBreakpoint {
+		} else if !m.forceSidebar && (m.width < compactModeWidthBreakpoint || m.height < compactModeHeightBreakpoint) {
 			m.isCompact = true
 		} else {
 			m.isCompact = false
@@ -4063,7 +4180,11 @@ func (m *UI) updateSize() {
 
 	m.chat.SetSize(m.layout.main.Dx(), m.layout.main.Dy())
 	m.textarea.MaxHeight = TextareaMaxHeight
-	m.textarea.SetWidth(m.layout.editor.Dx())
+	m.textarea.SetWidth(max(1, m.layout.editor.Dx()-2))
+	if m.taskPanel == nil && m.activeInline == nil {
+		availableHeight := max(1, m.layout.editor.Max.Y-m.layout.main.Min.Y-editorHeightMargin-1)
+		m.textarea.SetHeight(min(m.textarea.Height(), availableHeight))
+	}
 	m.renderPills()
 
 	// Handle different app states
@@ -4100,8 +4221,11 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 			editorHeight = m.activeInline.Height(editorWidth)
 		}
 	}
+	if m.taskPanel != nil {
+		editorHeight = min(max(9, (h*3+5)/10), max(0, h-5))
+	}
 	// The sidebar width
-	sidebarWidth := 32
+	sidebarWidth := 34
 	// The header height
 	const landingHeaderHeight = 4
 
@@ -4123,6 +4247,9 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 	helpRect.Min.Y -= 1
 	appRect.Min.X += 1
 	appRect.Max.X -= 1
+	if m.taskPanel != nil {
+		appRect.Max.Y = area.Max.Y
+	}
 
 	if slices.Contains([]uiState{uiOnboarding, uiInitialize, uiLanding}, m.state) {
 		// extra padding on left and right for these states
@@ -4171,7 +4298,7 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 		).Split(appRect).Assign(&headerRect, &mainRect)
 		var editorRect image.Rectangle
 		layout.Vertical(
-			layout.Len(mainRect.Dy()-editorHeight),
+			layout.Len(max(0, mainRect.Dy()-editorHeight)),
 			layout.Fill(1),
 		).Split(mainRect).Assign(&mainRect, &editorRect)
 		// Remove extra padding from editor (but keep it for header and main)
@@ -4210,7 +4337,7 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 			mainRect.Min.Y += 1
 			var editorRect image.Rectangle
 			layout.Vertical(
-				layout.Len(mainRect.Dy()-editorHeight),
+				layout.Len(max(0, mainRect.Dy()-editorHeight)),
 				layout.Fill(1),
 			).Split(mainRect).Assign(&mainRect, &editorRect)
 			mainRect.Max.X -= 1 // Add padding right
@@ -4246,11 +4373,10 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 				layout.Len(appRect.Dx()-sidebarWidth),
 				layout.Fill(1),
 			).Split(appRect).Assign(&mainRect, &sideRect)
-			// Add padding left
-			sideRect.Min.X += 1
+			sideRect.Max.X -= 1
 			var editorRect image.Rectangle
 			layout.Vertical(
-				layout.Len(mainRect.Dy()-editorHeight),
+				layout.Len(max(0, mainRect.Dy()-editorHeight)),
 				layout.Fill(1),
 			).Split(mainRect).Assign(&mainRect, &editorRect)
 			mainRect.Max.X -= 1 // Add padding right
@@ -4271,6 +4397,27 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 			// Add bottom margin to main
 			uiLayout.main.Max.Y -= 1
 			uiLayout.editor = editorRect
+		}
+	}
+
+	if m.state == uiLanding || m.state == uiChat {
+		uiLayout.editor.Min.X = area.Min.X
+		uiLayout.editor.Max.X = area.Max.X - 1
+	}
+	if m.state == uiChat && !m.isCompact {
+		uiLayout.sidebar.Min.Y = area.Min.Y + 1
+		uiLayout.sidebar.Max = image.Pt(area.Max.X-1, max(uiLayout.sidebar.Min.Y, uiLayout.editor.Min.Y-1))
+	}
+
+	if m.taskPanel != nil {
+		uiLayout.editor.Max = area.Max
+		uiLayout.status = image.Rectangle{}
+		if len(m.taskPanel.PanelInfoLines()) > 0 {
+			uiLayout.pills.Min.X = uiLayout.editor.Min.X
+			uiLayout.pills.Max.X = uiLayout.editor.Max.X
+			if !m.isCompact {
+				uiLayout.sidebar.Max.Y = max(uiLayout.sidebar.Min.Y, uiLayout.pills.Min.Y-1)
+			}
 		}
 	}
 
@@ -4356,7 +4503,7 @@ func (m *UI) setEditorPrompt(yolo bool) {
 		return
 	}
 	if m.session != nil && m.session.Mode.IsPlan() {
-		m.textarea.SetPromptFunc(5, m.planPromptFunc)
+		m.textarea.SetPromptFunc(4, m.planPromptFunc)
 		return
 	}
 	if yolo {
@@ -4366,15 +4513,41 @@ func (m *UI) setEditorPrompt(yolo bool) {
 	m.textarea.SetPromptFunc(4, m.normalPromptFunc)
 }
 
-// normalPromptFunc returns the normal editor prompt style ("  > " on first
-// line, "::: " on subsequent lines).
+func (m *UI) toggleDeliveryMode() tea.Cmd {
+	if m.deliveryMode == agent.DeliverySteer {
+		m.deliveryMode = agent.DeliveryQueue
+	} else {
+		m.deliveryMode = agent.DeliverySteer
+	}
+	mode := m.deliveryMode
+	previous := m.deliverySaveDone
+	done := make(chan struct{})
+	m.deliverySaveDone = done
+	ws := m.com.Workspace
+	return func() tea.Msg {
+		defer close(done)
+		if previous != nil {
+			<-previous
+		}
+		if err := ws.SetConfigField(config.ScopeGlobal, "options.tui.delivery_mode", string(mode)); err != nil {
+			return util.ReportError(fmt.Errorf("failed to save %s delivery preference: %w", mode, err))()
+		}
+		return nil
+	}
+}
+
+func (m *UI) deliveryPrompt(queue, steer string) string {
+	label := queue
+	if m.deliveryMode == agent.DeliverySteer {
+		label = steer
+	}
+	return m.com.Styles.Editor.DeliveryBadges[label].Render()
+}
+
 func (m *UI) normalPromptFunc(info textarea.PromptInfo) string {
 	t := m.com.Styles
 	if info.LineNumber == 0 {
-		if info.Focused {
-			return "  > "
-		}
-		return "::: "
+		return m.deliveryPrompt("Q", "S")
 	}
 	if info.Focused {
 		return t.Editor.PromptNormalFocused.Render()
@@ -4382,16 +4555,10 @@ func (m *UI) normalPromptFunc(info textarea.PromptInfo) string {
 	return t.Editor.PromptNormalBlurred.Render()
 }
 
-// yoloPromptFunc returns the yolo mode editor prompt style with warning icon
-// and colored dots.
 func (m *UI) yoloPromptFunc(info textarea.PromptInfo) string {
 	t := m.com.Styles
 	if info.LineNumber == 0 {
-		if info.Focused {
-			return t.Editor.PromptYoloIconFocused.Render()
-		} else {
-			return t.Editor.PromptYoloIconBlurred.Render()
-		}
+		return m.deliveryPrompt("Yq", "Ys")
 	}
 	if info.Focused {
 		return t.Editor.PromptYoloDotsFocused.Render()
@@ -4402,10 +4569,7 @@ func (m *UI) yoloPromptFunc(info textarea.PromptInfo) string {
 func (m *UI) planPromptFunc(info textarea.PromptInfo) string {
 	t := m.com.Styles
 	if info.LineNumber == 0 {
-		if info.Focused {
-			return t.Editor.PromptPlanIconFocused.Render()
-		}
-		return t.Editor.PromptPlanIconBlurred.Render()
+		return m.deliveryPrompt("Pq", "Ps")
 	}
 	if info.Focused {
 		return t.Editor.PromptPlanDotsFocused.Render()
@@ -4616,7 +4780,7 @@ func (m *UI) completionsPosition() image.Point {
 		}
 	}
 	return image.Point{
-		X: cur.X + m.layout.editor.Min.X,
+		X: cur.X + m.layout.editor.Min.X + 1,
 		Y: m.layout.editor.Min.Y + cur.Y,
 	}
 }
@@ -4688,23 +4852,32 @@ func (m *UI) renderEditorView(width int) string {
 	label := activityStatusLabel(m.activityStatus)
 	statusWidth := 0
 	if label != "" {
-		statusWidth = min(ansi.StringWidth(label)+1, width)
+		statusWidth = min(ansi.StringWidth(label)+1, max(0, width-2))
 	}
 	var attachmentsView string
 	if m.attachments != nil && len(m.attachments.List()) > 0 {
-		attachmentsView = m.attachments.Render(max(width-statusWidth, 0))
+		attachmentsView = m.attachments.Render(max(width-2-statusWidth, 0))
 	}
 	accent := m.editorAccent()
+	background := m.com.Styles.Editor.Background
+	frame := lipgloss.NewStyle().Foreground(accent).Background(background)
+	innerWidth := max(0, width-2)
+	top := frame.Render("╭") + renderEditorFrameLine(innerWidth, attachmentsView, label, "─", accent, background) + frame.Render("╮")
+	bottom := frame.Render("╰") + renderEditorFrameLine(innerWidth, m.taskStatusTab(), "", "─", accent, background) + frame.Render("╯")
+	body := strings.Split(paintEditorBody(m.textarea.View(), innerWidth, background), "\n")
+	for i, line := range body {
+		body[i] = ansi.Truncate(frame.Render("│")+line+frame.Render("│"), max(0, width), "")
+	}
 	return strings.Join([]string{
-		renderEditorFrameLine(width, attachmentsView, label, accent),
-		paintEditorBody(m.textarea.View(), width, m.com.Styles.Editor.Background),
-		renderEditorFrameLine(width, m.taskStatusTab(), "", accent),
+		ansi.Truncate(top, max(0, width), ""),
+		strings.Join(body, "\n"),
+		ansi.Truncate(bottom, max(0, width), ""),
 	}, "\n")
 }
 
 // cacheSidebarLogo renders and caches the sidebar logo at the specified width.
 func (m *UI) cacheSidebarLogo(width int) {
-	m.sidebarLogo = renderLogo(m.com.Styles, true, true, max(width-2, 1), m.sidebarBrand())
+	m.sidebarLogo = renderLogo(m.com.Styles, true, true, max(width-4, 1), m.sidebarBrand())
 }
 
 // applyThemeForProvider swaps the active theme to the one associated with
@@ -4717,7 +4890,8 @@ func (m *UI) applyThemeForProvider(providerID string) {
 	// Update provider branding for the wordmark (header + sidebar logos)
 	// even when the theme itself does not change.
 	brand := m.brandForProvider(providerID)
-	if !brandEqual(m.brand, brand) {
+	brandChanged := !brandEqual(m.brand, brand)
+	if brandChanged {
 		m.brand = brand
 		m.header.setBrand(brand)
 		if m.layout.sidebar.Dx() > 0 {
@@ -4725,7 +4899,7 @@ func (m *UI) applyThemeForProvider(providerID string) {
 		}
 	}
 	key := styles.ThemeKeyForProvider(providerID)
-	if key == m.themeKey {
+	if key == m.themeKey && !brandChanged {
 		return
 	}
 	m.themeKey = key
@@ -4854,6 +5028,7 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 
 	// Capture session ID to avoid race with main goroutine updating m.session.
 	sessionID := m.session.ID
+	deliveryMode := m.deliveryMode
 	// Optimistically mark the agent busy: the prompt we are about to submit
 	// either starts a run or is enqueued behind one. This keeps esc pressed
 	// right after enter routing to cancelAgent instead of reading a stale
@@ -4869,6 +5044,7 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 		// or transport error. Run failures and cancellation surface
 		// through SSE-derived events, not this return value.
 		runCtx := agent.WithSubmissionID(context.Background(), submissionID)
+		runCtx = agent.WithDeliveryMode(runCtx, deliveryMode)
 		err := m.com.Workspace.AgentRun(runCtx, sessionID, content, attachments...)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			return util.InfoMsg{
@@ -5035,6 +5211,10 @@ func (m *UI) suggestionPlaceholder() string {
 // invalidatePromptSuggestion drops the current suggestion and cancels
 // any in-flight fetch.
 func (m *UI) invalidatePromptSuggestion() {
+	if m.promptSuggestionCancel != nil {
+		m.promptSuggestionCancel()
+		m.promptSuggestionCancel = nil
+	}
 	m.promptSuggestion = ""
 	m.promptSuggestionPending = false
 	m.promptSuggestionDone = false
@@ -5237,6 +5417,12 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openCodebaseIndexDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.SummarizationID:
+		if m.dialog.ContainsDialog(dialog.SummarizationID) {
+			m.dialog.BringToFront(dialog.SummarizationID)
+		} else {
+			m.dialog.OpenDialog(dialog.NewSummarization(m.com))
+		}
 	case dialog.MCPServersID:
 		if cmd := m.openMCPServersDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -5408,13 +5594,15 @@ func (m *UI) openTasksIfPresent() tea.Cmd {
 }
 
 func (m *UI) openTasksDialog() tea.Cmd {
-	if m.dialog.ContainsDialog(dialog.TasksID) {
-		m.dialog.BringToFront(dialog.TasksID)
+	if m.taskPanel != nil {
 		return nil
 	}
-	tasksDialog := dialog.NewTasks(m.com)
-	m.dialog.OpenDialog(tasksDialog)
-	return tasksDialog.InitialCmd()
+	m.taskPanel = dialog.NewTasksPanel(m.com)
+	m.textarea.Blur()
+	m.chat.Blur()
+	m.closeCompletions()
+	m.updateLayoutAndSize()
+	return wrapTaskPanelCmd(m.taskPanel, m.taskPanel.InitialCmd())
 }
 
 func (m *UI) openCodebaseIndexDialog() tea.Cmd {
@@ -5524,12 +5712,8 @@ func (m *UI) openBatchFormDialog(batch question.Request) {
 	m.updateLayoutAndSize()
 }
 
-// handleQuestionNotification dismisses an open question form when
-// any client resolved the pending batch. Only one question can be
-// pending at a time, so any notification means the current form
-// is stale regardless of BatchID.
-func (m *UI) handleQuestionNotification(_ question.Notification) {
-	if _, ok := m.activeInline.(*dialog.QuestionForm); ok {
+func (m *UI) handleQuestionNotification(notification question.Notification) {
+	if form, ok := m.activeInline.(*dialog.QuestionForm); ok && notification.BatchID != "" && form.BatchID == notification.BatchID {
 		m.activeInline = nil
 		m.textarea.Focus()
 		m.updateLayoutAndSize()
@@ -5543,10 +5727,7 @@ func (m *UI) handleQuestionNotification(_ question.Notification) {
 // of truth for the inline editor width used by both layout sizing
 // and Height() queries.
 func (m *UI) editorContentWidth() int {
-	width := m.width - 2 // appRect horizontal margins
-	if m.state == uiChat && !m.isCompact {
-		width -= 30 // sidebar column
-	}
+	width := m.width - 1
 	return width
 }
 
@@ -6006,8 +6187,10 @@ func (m *UI) handleStateChanged() tea.Cmd {
 		if cfg == nil {
 			return util.ReportError(errors.New("configuration not found"))()
 		}
-		if err := m.com.Workspace.UpdateAgentModel(context.Background(), cfg.AgentModelState()); err != nil {
-			return util.ReportError(err)()
+		if cfg.CanInitializeAgent() {
+			if err := m.com.Workspace.UpdateAgentModel(context.Background(), cfg.AgentModelState()); err != nil {
+				return util.ReportError(err)()
+			}
 		}
 		return mcpStateChangedMsg{
 			states: m.com.Workspace.MCPGetStates(),
@@ -6084,5 +6267,8 @@ func renderLogo(t *styles.Styles, compact, sidebar bool, width int, brand *provi
 		// brand color.
 		opts.FieldColor = brand.Accent
 	}
+	opts.TitleColorA = styles.ReadableText(opts.TitleColorA, t.Background)
+	opts.TitleColorB = styles.ReadableText(opts.TitleColorB, t.Background)
+	opts.VersionColor = styles.ReadableText(opts.VersionColor, t.Background)
 	return logo.Render(t.Logo.GradCanvas, version.Version, compact, opts)
 }

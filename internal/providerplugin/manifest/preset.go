@@ -23,6 +23,7 @@ type PresetManifest struct {
 	Publisher       Publisher                 `json:"publisher" jsonschema:"required"`
 	Compatibility   Compatibility             `json:"compatibility" jsonschema:"required"`
 	Preset          foundation.ProviderPreset `json:"preset" jsonschema:"required"`
+	Brand           *Brand                    `json:"brand,omitempty"`
 }
 
 func DecodePluginType(data []byte) (string, error) {

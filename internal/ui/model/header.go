@@ -71,6 +71,8 @@ func (h *header) refresh() {
 		name = h.brand.Title
 		gradA, gradB = h.brand.GradA, h.brand.GradB
 	}
+	gradA = styles.ReadableText(gradA, t.Background)
+	gradB = styles.ReadableText(gradB, t.Background)
 	h.compactLogo = styles.ApplyBoldForegroundGrad(t.Header.LogoGradCanvas, name, gradA, gradB) + " "
 	// Force drawHeader to re-render the wide logo on the next frame.
 	h.width = 0

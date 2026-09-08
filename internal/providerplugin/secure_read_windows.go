@@ -30,7 +30,7 @@ func readSecureBoundedFile(path string, maximum int64) ([]byte, error) {
 		return nil, err
 	}
 	size := int64(info.FileSizeHigh)<<32 | int64(info.FileSizeLow)
-	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 || info.NumberOfLinks != 1 || size < 0 || size > maximum {
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 || info.FileAttributes&windows.FILE_ATTRIBUTE_DIRECTORY != 0 || size < 0 || size > maximum {
 		return nil, errors.New("file is not a bounded private regular file")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maximum+1))

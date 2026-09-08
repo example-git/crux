@@ -13,16 +13,65 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestInstallRejectsHardLinks(t *testing.T) {
+func TestInstallAcceptsHardLinkedSource(t *testing.T) {
 	manager := newTestManager(t)
 	source := t.TempDir()
 	data, err := os.ReadFile(filepath.Join(exampleBundle(t, "minimal.plugin"), manifestFilename))
 	require.NoError(t, err)
 	manifestPath := filepath.Join(source, manifestFilename)
 	require.NoError(t, os.WriteFile(manifestPath, data, 0o600))
-	require.NoError(t, os.Link(manifestPath, filepath.Join(source, "duplicate.json")))
+	require.NoError(t, os.Link(manifestPath, filepath.Join(t.TempDir(), "backup.json")))
 	_, err = manager.Install(t.Context(), InstallRequest{Source: source})
-	require.ErrorContains(t, err, "hard-linked")
+	require.NoError(t, err)
+}
+
+func TestManagerAcceptsHardLinkedBackups(t *testing.T) {
+	manager := newTestManager(t)
+	snapshot, err := manager.Install(t.Context(), InstallRequest{Source: exampleBundle(t, "minimal.plugin")})
+	require.NoError(t, err)
+	status := snapshot.Plugins[0]
+	_, err = manager.SetTrust(t.Context(), status.ID, TrustRequest{Digest: status.Digest, Trusted: true})
+	require.NoError(t, err)
+	manifestPath := filepath.Join(manager.paths.Bundles, status.BundleName, manifestFilename)
+	backupDir := t.TempDir()
+	originals := make(map[string][]byte)
+	for _, path := range []string{manager.paths.TrustFile, manager.paths.ProvenanceFile, manifestPath} {
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		originals[path] = data
+		require.NoError(t, os.Link(path, filepath.Join(backupDir, filepath.Base(path))))
+	}
+
+	reopened, err := NewManager(t.Context(), manager.paths)
+	require.NoError(t, err)
+	t.Cleanup(reopened.Close)
+	require.Len(t, reopened.RegisteredBundles(), 1)
+	require.Equal(t, TrustTrusted, reopened.Snapshot().Plugins[0].Trust)
+
+	_, err = reopened.SetTrust(t.Context(), status.ID, TrustRequest{Digest: status.Digest, Trusted: false})
+	require.NoError(t, err)
+	require.NoError(t, saveProvenance(manager.paths.ProvenanceFile, provenanceStore{Records: map[string]provenanceRecord{}}))
+	for _, path := range []string{manager.paths.TrustFile, manager.paths.ProvenanceFile} {
+		backupPath := filepath.Join(backupDir, filepath.Base(path))
+		data, err := os.ReadFile(backupPath)
+		require.NoError(t, err)
+		require.Equal(t, originals[path], data)
+		activeInfo, err := os.Stat(path)
+		require.NoError(t, err)
+		backupInfo, err := os.Stat(backupPath)
+		require.NoError(t, err)
+		require.False(t, os.SameFile(activeInfo, backupInfo))
+	}
+
+	_, err = reopened.SetTrust(t.Context(), status.ID, TrustRequest{Digest: status.Digest, Trusted: true})
+	require.NoError(t, err)
+	changed := append(append([]byte(nil), originals[manifestPath]...), '\n')
+	require.NoError(t, os.WriteFile(filepath.Join(backupDir, manifestFilename), changed, 0o600))
+	snapshot, err = reopened.Rescan(t.Context(), 0)
+	require.NoError(t, err)
+	require.NotEqual(t, status.Digest, snapshot.Plugins[0].Digest)
+	require.NotEqual(t, TrustTrusted, snapshot.Plugins[0].Trust)
+	require.Empty(t, reopened.RegisteredBundles())
 }
 
 func TestInstallRejectsUndeclaredFiles(t *testing.T) {

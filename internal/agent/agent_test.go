@@ -38,6 +38,139 @@ func TestMain(m *testing.M) {
 	m.Run()
 }
 
+type queuedHistoryModel struct {
+	finishStreamModel
+	prompts []fantasy.Prompt
+}
+
+func (m *queuedHistoryModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	m.prompts = append(m.prompts, cloneFantasyMessages(call.Prompt))
+	step := len(m.prompts)
+	if step > 2 {
+		return (&finishStreamModel{text: "finished"}).Stream(ctx, call)
+	}
+	return func(yield func(fantasy.StreamPart) bool) {
+		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeToolCall, ID: fmt.Sprintf("tool-%d", step), ToolCallName: "work", ToolCallInput: `{}`}) {
+			return
+		}
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonToolCalls})
+	}, nil
+}
+
+func TestQueuedUserInstructionSurvivesFollowingToolRound(t *testing.T) {
+	for _, mode := range []DeliveryMode{"", DeliveryQueue, DeliverySteer} {
+		t.Run("mode="+string(mode), func(t *testing.T) {
+			env := testEnv(t)
+			model := &queuedHistoryModel{}
+			var agent SessionAgent
+			var sessionID string
+			toolCalls := 0
+			tool := fantasy.NewAgentTool("work", "Perform work", func(ctx context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+				toolCalls++
+				if toolCalls == 1 {
+					_, err := agent.Run(ctx, SessionAgentCall{SessionID: sessionID, DeliveryMode: mode, Prompt: "also strip images from summarization requests"})
+					if err != nil {
+						return fantasy.ToolResponse{}, err
+					}
+				}
+				return fantasy.NewTextResponse("work completed"), nil
+			})
+			agent = testSessionAgent(env, model, &finishStreamModel{text: "title"}, "system", tool)
+			current, err := env.sessions.Create(t.Context(), "session")
+			require.NoError(t, err)
+			sessionID = current.ID
+			_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: sessionID, Prompt: "keep working"})
+			require.NoError(t, err)
+			firstFollowup := 3
+			responses := 4
+			if mode == DeliverySteer {
+				firstFollowup = 1
+				responses = 3
+			}
+			require.Len(t, model.prompts, responses)
+			for step, prompt := range model.prompts {
+				count := 0
+				for index, msg := range prompt {
+					if msg.Role != fantasy.MessageRoleUser {
+						continue
+					}
+					for _, part := range msg.Content {
+						if text, ok := part.(fantasy.TextPart); ok && text.Text == "also strip images from summarization requests" {
+							count++
+							if mode == DeliverySteer && step == firstFollowup {
+								require.Greater(t, index, 0)
+								require.Equal(t, fantasy.MessageRoleTool, prompt[index-1].Role)
+							}
+						}
+					}
+				}
+				if step < firstFollowup {
+					require.Zero(t, count)
+				} else {
+					require.Equal(t, 1, count, "response %d lost or duplicated the instruction", step+1)
+				}
+			}
+		})
+	}
+}
+
+type handoffToolModel struct {
+	finishStreamModel
+	calls int
+}
+
+func (m *handoffToolModel) Stream(context.Context, fantasy.Call) (fantasy.StreamResponse, error) {
+	m.calls++
+	return func(yield func(fantasy.StreamPart) bool) {
+		if !yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeToolCall, ID: "handoff", ToolCallName: "change_model", ToolCallInput: `{}`}) {
+			return
+		}
+		yield(fantasy.StreamPart{Type: fantasy.StreamPartTypeFinish, FinishReason: fantasy.FinishReasonToolCalls})
+	}, nil
+}
+
+func TestModelSelectionDuringToolAppliesToNextResponse(t *testing.T) {
+	env := testEnv(t)
+	oldModel := &handoffToolModel{}
+	nextModel := &summaryCaptureModel{finishStreamModel: finishStreamModel{text: "new model response"}}
+	var agent SessionAgent
+	tool := fantasy.NewAgentTool[struct{}]("change_model", "Change model during an action", func(ctx context.Context, _ struct{}, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		require.NoError(t, ctx.Err())
+		next := agent.Runtime()
+		next.LargeModel.Model = nextModel
+		next.LargeModel.ModelCfg = config.SelectedModel{Provider: "next-provider", Model: "next-model"}
+		next.Instructions = fantasy.Instructions{}
+		agent.SetRuntime(next)
+		require.NoError(t, ctx.Err())
+		return fantasy.NewTextResponse("original action completed"), nil
+	})
+	agent = testSessionAgent(env, oldModel, &finishStreamModel{text: "title"}, "system", tool)
+	current, err := env.sessions.Create(t.Context(), "session")
+	require.NoError(t, err)
+	oldTemperature := 0.9
+	_, err = agent.Run(t.Context(), SessionAgentCall{
+		SessionID: current.ID, Prompt: "perform the action", Temperature: &oldTemperature,
+		PrepareRuntime: func(_ context.Context, next InstalledRuntime) (fantasy.StepModelSettings, error) {
+			require.Equal(t, "next-provider", next.LargeModel.ModelCfg.Provider)
+			limit := int64(1234)
+			return fantasy.StepModelSettings{MaxOutputTokens: &limit}, nil
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, oldModel.calls)
+	calls, _ := nextModel.snapshot()
+	require.Len(t, calls, 1)
+	require.EqualValues(t, 1234, *calls[0].MaxOutputTokens)
+	require.Nil(t, calls[0].Temperature)
+	stored, err := env.messages.List(t.Context(), current.ID)
+	require.NoError(t, err)
+	require.Len(t, stored, 4)
+	require.Equal(t, message.Tool, stored[2].Role)
+	require.Equal(t, "next-provider", stored[3].Provider)
+	require.Equal(t, "next-model", stored[3].Model)
+	require.Equal(t, "new model response", stored[3].Content().Text)
+}
+
 type promptCaptureModel struct {
 	*finishStreamModel
 	prompt fantasy.Prompt

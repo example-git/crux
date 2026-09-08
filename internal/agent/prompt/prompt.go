@@ -200,6 +200,8 @@ func (p *Prompt) buildLifecycleInstructions(ctx context.Context, provider, model
 	}
 	var nativeInstructions string
 	var lifecycleInstructions string
+	var projectContext strings.Builder
+	var userContext strings.Builder
 	if p.name == "coder" {
 		if strings.Contains(p.template, ".NativeSections") {
 			nativeInstructions = data.NativeSections
@@ -209,6 +211,18 @@ func (p *Prompt) buildLifecycleInstructions(ctx context.Context, provider, model
 			lifecycleInstructions = data.Lifecycle
 			data.Lifecycle = ""
 		}
+		if t.Lookup("project-context") != nil {
+			if err := t.ExecuteTemplate(&projectContext, "project-context", data); err != nil {
+				return fantasy.Instructions{}, fmt.Errorf("executing project context template: %w", err)
+			}
+			data.ContextFiles = nil
+		}
+		if t.Lookup("user-context") != nil {
+			if err := t.ExecuteTemplate(&userContext, "user-context", data); err != nil {
+				return fantasy.Instructions{}, fmt.Errorf("executing user context template: %w", err)
+			}
+			data.GlobalContextFiles = nil
+		}
 	}
 	var builder strings.Builder
 	if err := t.Execute(&builder, data); err != nil {
@@ -216,7 +230,9 @@ func (p *Prompt) buildLifecycleInstructions(ctx context.Context, provider, model
 	}
 
 	renderedStability := fantasy.InstructionStabilityStatic
-	if strings.Contains(p.template, ".Date") && !structuredDate {
+	if strings.Contains(p.template, ".Date") && !structuredDate ||
+		strings.Contains(p.template, ".ContextFiles") && t.Lookup("project-context") == nil ||
+		strings.Contains(p.template, ".GlobalContextFiles") && t.Lookup("user-context") == nil {
 		renderedStability = fantasy.InstructionStabilityDynamic
 	}
 	renderedKind := fantasy.InstructionKindAuxiliary
@@ -240,6 +256,8 @@ func (p *Prompt) buildLifecycleInstructions(ctx context.Context, provider, model
 			renderedInstructions,
 			fantasy.DynamicInstruction(fantasy.InstructionKindLifecycle, lifecycleInstructions),
 			fantasy.DynamicInstruction(fantasy.InstructionKindRuntime, runtimeInstructions),
+			fantasy.DynamicInstruction(fantasy.InstructionKindProjectContext, projectContext.String()),
+			fantasy.DynamicInstruction(fantasy.InstructionKindUserContext, userContext.String()),
 		)
 	} else {
 		instructions = fantasy.NewInstructions(
@@ -299,7 +317,18 @@ func (p *Prompt) projectInstructions(store *config.ConfigStore) (string, error) 
 		builder.WriteString("\n")
 	}
 	fmt.Fprintf(&builder, "<file path=%q>\n%s\n</file>\n", filepath.ToSlash(document.Path), document.Content)
-	fmt.Fprintf(&builder, "<file path=%q>\n%s\n</file>\n", filepath.ToSlash(document.NotesPath), document.Notes)
+	index, err := document.NotesIndex(0)
+	if err != nil {
+		return "", err
+	}
+	builder.WriteString("\n## Project notes index\n\nNotes belong to this durable project, not repository-wide memory. Only the compact index is included here. Use `project_notes` with action `read` and a listed topic ID to load relevant details on demand; use action `list` to refresh or page through the index. Do not load the entire notes archive. Append durable context with `project_notes`, starting with a short descriptive heading.\n\n")
+	fmt.Fprintf(&builder, "Archive: %s\nIndexed notes: %d (newest first).\n", filepath.ToSlash(document.NotesPath), index.Total)
+	for _, entry := range index.Entries {
+		fmt.Fprintf(&builder, "- `%s`: %s\n", entry.ID, entry.Title)
+	}
+	if index.NextOffset != nil {
+		fmt.Fprintf(&builder, "More notes: call `project_notes` with action `list` and offset %d.\n", *index.NextOffset)
+	}
 	builder.WriteString("</persistent_project>")
 	return builder.String(), nil
 }

@@ -35,6 +35,33 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+func (c *Config) restoreDeliveryPreference(path string) error {
+	tui := c.ensureTUI()
+	if tui.DeliveryMode != "" && tui.DeliveryMode != "queue" && tui.DeliveryMode != "steer" {
+		return fmt.Errorf("invalid delivery mode %q: expected queue or steer", tui.DeliveryMode)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read delivery preference: %w", err)
+	}
+	if len(data) > 0 {
+		if !json.Valid(data) {
+			return fmt.Errorf("invalid JSON in config file %s", path)
+		}
+		value := gjson.GetBytes(data, "options.tui.delivery_mode")
+		if value.Exists() {
+			if value.Type != gjson.String || (value.Str != "queue" && value.Str != "steer") {
+				return fmt.Errorf("invalid delivery mode %s: expected queue or steer", value.Raw)
+			}
+			tui.DeliveryMode = value.Str
+		}
+	}
+	if tui.DeliveryMode == "" {
+		tui.DeliveryMode = "queue"
+	}
+	return nil
+}
+
 // Load loads configuration and installs the resolved selections used by the
 // runtime. Persisted plugin-backed selections remain authoritative even when
 // their integration is temporarily unavailable. Do not make startup success
@@ -55,7 +82,7 @@ func SnapshotEnvironment() env.Env {
 	return snapshotEnvironment()
 }
 
-func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment env.Env, publishProcessState bool) (*ConfigStore, error) {
+func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment env.Env, publishProcessState bool, previewReadOnly ...bool) (*ConfigStore, error) {
 	globalConfigPath := globalConfigFromEnvironment(baseEnvironment)
 	globalDataPath := globalConfigDataFromEnvironment(appName, baseEnvironment)
 	notificationMigration := prepareDisableNotificationsMigration(globalConfigPath, globalDataPath)
@@ -111,6 +138,9 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 	// hooks also get their matcher regexes compiled.
 	if err := cfg.ValidateHooks(); err != nil {
 		return nil, fmt.Errorf("invalid hook configuration: %w", err)
+	}
+	if err := cfg.restoreDeliveryPreference(globalDataPath); err != nil {
+		return nil, err
 	}
 	if err := cfg.Options.validatePromptOptions(); err != nil {
 		return nil, fmt.Errorf("invalid prompt options: %w", err)
@@ -180,6 +210,11 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		}
 	}
 	cfg.SetupAgents()
+	if len(previewReadOnly) > 0 && previewReadOnly[0] {
+		store.effectiveEnvironment = cloneEnvironment(candidateEnv)
+		registerConfigSecrets(cfg)
+		return store, nil
+	}
 	if err := commitStartupCorrections(store, notificationMigration, pendingModelFields, preimages); err != nil {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return nil, errors.Join(fmt.Errorf("commit startup config corrections: %w", err), rollbackErr)

@@ -6,6 +6,12 @@ It provides an interactive coding session, repository tools, language-server int
 
 > Crux is not affiliated with, sponsored by, endorsed by, or maintained by Charmbracelet, Inc.
 
+## Demo
+
+<strong><ins>The Codex, Claude.ai, and Gemini providers shown in this demo are not included with this software and must be created manually. The repository owner will not provide these plugins or a guide for creating or configuring them.</ins></strong>
+
+![Crux demonstration using privately configured provider plugins](docs/assets/crux-demo.gif)
+
 ## Provider system
 
 Crux treats provider integration as a host-controlled protocol boundary. Provider bundles describe configuration and capabilities as data; they do not load executable plugin code.
@@ -184,7 +190,9 @@ Service metadata is stored privately so lifecycle commands only operate on the C
 
 Crux does not perform automatic Charm release or provider-catalog checks. Model providers, configured remote MCP servers, explicit web tools, remote provider discovery, HTTPS plugin installation, and explicitly enabled semantic indexing can use the network.
 
-HTTP and WebSocket diagnostics are retained locally in `~/.ai-cli/traffic/crux.db`. Crux keeps a process-wide in-memory set of resolved API keys, OAuth tokens, client secrets, and manifest fields marked secret. Exact occurrences of those values are removed from logs, traffic diagnostics, errors, and API responses. This supplements structured field-name redaction rather than replacing it; unknown secrets and ordinary sensitive content can still appear. Treat the database as private.
+HTTP and WebSocket traffic recording is **off by default**. To enable it for a project, add `option network-tracing true` to its `cruxrc`, or set `"options": {"network_tracing": true}` in its `crux.json`, then reopen the workspace. Set the option to `false` to override a global opt-in for a particular project. Each enabled workspace instance writes to a separate `<data-directory>/traffic/crux-<pid>-*.db` file rather than a shared global database. The `traffic_logs` tool reads the current workspace instance's database and reports queue drops and failed writes. A full recording queue drops diagnostic events instead of waiting for database writes and stalling response delivery.
+
+Crux keeps a process-wide in-memory set of resolved API keys, OAuth tokens, client secrets, and manifest fields marked secret. Exact occurrences of those values are removed from logs, traffic diagnostics, errors, and API responses. This supplements structured field-name redaction rather than replacing it; unknown secrets and ordinary sensitive content can still appear. Treat the database as private.
 
 ## Project documents
 

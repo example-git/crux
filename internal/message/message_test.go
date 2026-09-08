@@ -15,6 +15,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestUserTurnContextSurvivesDatabaseRestart(t *testing.T) {
+	dir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dir)
+	require.NoError(t, err)
+	queries := db.New(conn)
+	sessions := session.NewService(queries, conn)
+	current, err := sessions.Create(t.Context(), "turn context")
+	require.NoError(t, err)
+	turn := UserTurnContext{TodoState: "empty", TodoReminder: "original reminder"}
+	created, err := NewService(queries).Create(t.Context(), current.ID, CreateMessageParams{Role: User, Parts: []ContentPart{TextContent{Text: "user text", Context: turn}}})
+	require.NoError(t, err)
+	require.NoError(t, db.Release(dir))
+	conn, err = db.Connect(t.Context(), dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dir) })
+	loaded, err := NewService(db.New(conn)).Get(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, turn, loaded.Content().Context)
+	require.Equal(t, "user text", loaded.Content().Text)
+	clone := loaded.Clone()
+	require.Equal(t, loaded.ToAIMessage(), clone.ToAIMessage())
+	require.Len(t, loaded.ToAIMessage()[0].Content, 2)
+}
+
 func TestAllProviderMetadataScopesSurviveDatabaseRestart(t *testing.T) {
 	dir := t.TempDir()
 	conn, err := db.Connect(t.Context(), dir)
@@ -187,6 +211,7 @@ func TestCommitCompactionAtomicallyInstallsCheckpoint(t *testing.T) {
 	sess, err := sessions.Create(t.Context(), "original title")
 	require.NoError(t, err)
 	sess.Todos = []session.Todo{{Content: "keep", Status: session.TodoStatusPending, ActiveForm: "Keeping"}}
+	sess.UnseenLocalTokens = 40000
 	_, err = sessions.Save(t.Context(), sess)
 	require.NoError(t, err)
 
@@ -222,6 +247,8 @@ func TestCommitCompactionAtomicallyInstallsCheckpoint(t *testing.T) {
 	require.Equal(t, committed.ID, storedSession.SummaryMessageID)
 	require.Equal(t, int64(321), storedSession.PromptTokens)
 	require.Zero(t, storedSession.CompletionTokens)
+	require.Zero(t, storedSession.UnseenLocalTokens)
+	require.EqualValues(t, 321, storedSession.ContextTokens())
 	require.Equal(t, 1.25, storedSession.Cost)
 	require.True(t, storedSession.EstimatedUsage)
 	require.Equal(t, "original title", storedSession.Title)
@@ -238,7 +265,10 @@ func TestCommitCompactionAtomicallyInstallsCheckpoint(t *testing.T) {
 	require.Equal(t, pubsub.UpdatedEvent, updatedEvent.Type)
 	require.Equal(t, placeholder.ID, updatedEvent.Payload.ID)
 	require.True(t, updatedEvent.Payload.IsFinished())
-	require.Equal(t, pubsub.UpdatedEvent, (<-sessionEvents).Type)
+	sessionEvent := <-sessionEvents
+	require.Equal(t, pubsub.UpdatedEvent, sessionEvent.Type)
+	require.EqualValues(t, 321, sessionEvent.Payload.ContextTokens())
+	require.Zero(t, sessionEvent.Payload.UnseenLocalTokens)
 }
 
 func TestCommitCompactionRollsBackWhenCheckpointUpdateFails(t *testing.T) {

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"sync"
 	"time"
 
@@ -52,6 +53,7 @@ type requestProperties struct {
 	Include           []string
 	Text              *wireTextFormat
 	PromptCacheKey    string
+	ServiceTier       string
 	Store             bool
 }
 
@@ -178,6 +180,7 @@ func propertiesOf(frame *requestFrame) requestProperties {
 		Include:           append([]string(nil), frame.Include...),
 		Text:              cloneJSONValue(frame.Text),
 		PromptCacheKey:    frame.PromptCacheKey,
+		ServiceTier:       frame.ServiceTier,
 		Store:             frame.Store,
 	}
 }
@@ -202,7 +205,7 @@ func (s *sessionState) wireRequestLocked(logical *requestFrame) (*requestFrame, 
 	wire.PreviousResponseID = s.chain.responseID
 	wire.Input = cloneInputItems(logical.Input[len(s.chain.sourceRepresented):])
 	if logical.DynamicContext != "" && logical.DynamicContext != s.chain.dynamicContext {
-		wire.Input = append([]inputItem{dynamicEnvironmentItem(logical.DynamicContext)}, wire.Input...)
+		wire.Input = append([]inputItem{dynamicEnvironmentItemForModel(logical.Model, logical.DynamicContext)}, wire.Input...)
 	}
 	return wire, true, ""
 }
@@ -245,9 +248,21 @@ func fullWireRequest(logical *requestFrame) *requestFrame {
 	wire := cloneRequestFrame(logical)
 	wire.PreviousResponseID = ""
 	if logical.DynamicContext != "" {
-		wire.Input = append([]inputItem{dynamicEnvironmentItem(logical.DynamicContext)}, wire.Input...)
+		dynamic := dynamicEnvironmentItemForModel(logical.Model, logical.DynamicContext)
+		index := 0
+		if usesAstraInstructionLayout(logical.Model) && len(wire.Input) > 0 && isBaseInstructionsItem(wire.Input[0]) {
+			index = 1
+		}
+		wire.Input = append(wire.Input, inputItem{})
+		copy(wire.Input[index+1:], wire.Input[index:])
+		wire.Input[index] = dynamic
 	}
 	return wire
+}
+
+func isBaseInstructionsItem(item inputItem) bool {
+	metadata := item.InternalChatMessageMetadataPassthrough
+	return item.Type == "message" && item.Role == "developer" && metadata != nil && slices.Contains(metadata.ContentItemKinds, "model.base_instructions")
 }
 
 func hasInputPrefix(input, prefix []inputItem) bool {
@@ -299,6 +314,11 @@ func cloneInputItems(items []inputItem) []inputItem {
 		clone[i] = item
 		clone[i].Content = append([]messageContent(nil), item.Content...)
 		clone[i].Summary = append(json.RawMessage(nil), item.Summary...)
+		if item.InternalChatMessageMetadataPassthrough != nil {
+			metadata := *item.InternalChatMessageMetadataPassthrough
+			metadata.ContentItemKinds = append([]string(nil), item.InternalChatMessageMetadataPassthrough.ContentItemKinds...)
+			clone[i].InternalChatMessageMetadataPassthrough = &metadata
+		}
 		if item.Output != nil {
 			output := *item.Output
 			clone[i].Output = &output

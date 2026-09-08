@@ -36,6 +36,15 @@ func (c *controllerV1) handlePostWorkspaceTaskOutput(w http.ResponseWriter, r *h
 	jsonEncode(w, result)
 }
 
+func (c *controllerV1) handlePostWorkspaceTaskRestart(w http.ResponseWriter, r *http.Request) {
+	result, err := c.backend.RestartTask(r.Context(), r.PathValue("id"), r.PathValue("tid"))
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, result)
+}
+
 func (c *controllerV1) handlePostWorkspaceTaskStop(w http.ResponseWriter, r *http.Request) {
 	result, err := c.backend.StopTask(r.Context(), r.PathValue("id"), r.PathValue("tid"))
 	if err != nil {

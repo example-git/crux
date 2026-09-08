@@ -148,6 +148,10 @@ func NewImagegenTool(manager *imagegen.JobManager, permissions permission.Servic
 				return NewPermissionDeniedResponse(), nil
 			}
 
+			if err := manager.AuthenticateToolRequest(ctx, request, imagegen.SetupRequest{SessionID: sessionID, ToolCallID: call.ID, Interactive: len(interactive) > 0 && interactive[0]}); err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+
 			ownership := managedtask.OwnershipFromContext(ctx)
 			if ownership.ParentSessionID == "" {
 				ownership.ParentSessionID = sessionID

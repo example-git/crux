@@ -27,7 +27,7 @@ type ActionClose struct {
 }
 
 // ActionQuit is a message to quit the application.
-type ActionQuit = tea.QuitMsg
+type ActionQuit struct{}
 
 // ActionOpenDialog is a message to open a dialog.
 type ActionOpenDialog struct {
@@ -84,8 +84,10 @@ type (
 	ActionToggleThinking          struct{}
 	ActionTogglePills             struct{}
 	ActionExternalEditor          struct{}
+	ActionToggleDeliveryMode      struct{}
 	ActionToggleYoloMode          struct{}
 	ActionTogglePlanMode          struct{}
+	ActionCancelPlanMode          struct{}
 	ActionToggleNotifications     struct{}
 	ActionSelectNotificationStyle struct {
 		Style string

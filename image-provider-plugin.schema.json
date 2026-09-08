@@ -561,7 +561,8 @@
             "json",
             "text",
             "binary",
-            "framed-json"
+            "framed-json",
+            "line-framed-json"
           ]
         },
         "frame_prefix": {

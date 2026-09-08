@@ -179,6 +179,7 @@ const (
 )
 
 type AgentMessage struct {
+	DeliveryMode   string              `json:"delivery_mode,omitempty"`
 	SessionID      string              `json:"session_id"`
 	SubmissionID   string              `json:"submission_id,omitempty"`
 	RunID          string              `json:"run_id,omitempty"`
@@ -188,6 +189,7 @@ type AgentMessage struct {
 }
 
 type QueuedPrompt struct {
+	DeliveryMode string `json:"delivery_mode,omitempty"`
 	SubmissionID string `json:"submission_id,omitempty"`
 	Prompt       string `json:"prompt"`
 }

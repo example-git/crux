@@ -1,12 +1,16 @@
 package config
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/oauth/codex"
 	"github.com/example-git/crux/internal/oauth/copilot"
@@ -96,6 +100,13 @@ func TestCloneProviderCatalogIsDeepEnoughForUserMerges(t *testing.T) {
 }
 
 func TestProvidersRegistersTrustedManifestCatalog(t *testing.T) {
+	if os.Getenv("CRUX_TEST_LOCKED_PLUGIN_STARTUP") == "1" {
+		providers, err := Providers(&Config{Options: &Options{}})
+		require.NoError(t, err)
+		require.Equal(t, catalog.ProviderID("example-echo"), providers[len(providers)-1].ID)
+		require.Equal(t, "echo-1", providers[len(providers)-1].Models[0].ID)
+		return
+	}
 	root := t.TempDir()
 	dataRoot := filepath.Join(root, "data")
 	cacheRoot := filepath.Join(root, "cache")
@@ -119,6 +130,16 @@ func TestProvidersRegistersTrustedManifestCatalog(t *testing.T) {
 	})
 	require.NoError(t, err)
 	manager.Close()
+
+	release, err := lock.File(t.Context(), providerplugin.DefaultPaths(dataRoot, cacheRoot).ManagerLock)
+	require.NoError(t, err)
+	defer release()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestProvidersRegistersTrustedManifestCatalog$")
+	child.Env = append(os.Environ(), "CRUX_TEST_LOCKED_PLUGIN_STARTUP=1")
+	output, err := child.CombinedOutput()
+	require.NoError(t, err, "%s", output)
 
 	resetProviderState()
 	t.Cleanup(resetProviderState)

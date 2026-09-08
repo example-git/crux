@@ -224,10 +224,10 @@ func (d *InstructionsPreview) renderView(area uv.Rectangle) string {
 	header := t.Dialog.TitleText.Render("Effective Instructions")
 	mode := t.Dialog.SecondaryText.Render("  " + format)
 	header = ansi.Truncate(header+mode, innerWidth, "…")
-	hintText := "tab/m: format · ←/→: focus · esc: back"
+	hintText := "esc: back · ←/→: sections/content · tab/m: format"
 	for _, section := range d.sections {
 		if section.Toggleable {
-			hintText = "space: enable/disable · " + hintText
+			hintText += " · space: enable/disable"
 			break
 		}
 	}
@@ -239,6 +239,9 @@ func (d *InstructionsPreview) renderView(area uv.Rectangle) string {
 	content = lipgloss.NewStyle().Width(contentWidth).Height(viewportHeight).MaxHeight(viewportHeight).Render(content)
 	if viewportHeight > 0 && d.viewport.TotalLineCount() > viewportHeight {
 		content = joinScrollbar(t, content, viewportHeight, d.viewport.TotalLineCount(), viewportHeight, d.viewport.YOffset())
+	}
+	if paneWidth == 0 && d.sectionsFocused && viewportHeight > 0 {
+		content = d.sectionsView(t, innerWidth, viewportHeight)
 	}
 	if paneWidth > 0 && viewportHeight > 0 {
 		content = lipgloss.JoinHorizontal(
@@ -299,15 +302,15 @@ func (d *InstructionsPreview) sectionsView(t *styles.Styles, width, height int) 
 		if index == d.sectionCursor {
 			label = selectedLabel
 			if d.sectionsFocused && !section.Disabled {
-				rows = append(rows, t.Dialog.SelectedItem.Width(width).Render(label))
+				rows = append(rows, t.Dialog.SelectedItem.Padding(0).Width(width).Render(label))
 				continue
 			}
 		}
 		if section.Disabled {
-			rows = append(rows, t.Dialog.SecondaryText.Width(width).Render(label))
+			rows = append(rows, t.Dialog.SecondaryText.Padding(0).Width(width).Render(label))
 			continue
 		}
-		rows = append(rows, t.Dialog.NormalItem.Width(width).Render(label))
+		rows = append(rows, t.Dialog.NormalItem.Padding(0).Width(width).Render(label))
 	}
 	return lipgloss.NewStyle().Width(width).Height(height).MaxHeight(height).Render(
 		lipgloss.JoinVertical(lipgloss.Left, rows...),

@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Avian",
+  "short_name": "AVIAN",
+  "color": "#67E8F9",
+  "gradient_a": "#67E8F9",
+  "gradient_b": "#A7F3D0"
+}

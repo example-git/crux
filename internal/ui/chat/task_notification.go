@@ -2,11 +2,11 @@ package chat
 
 import (
 	"encoding/xml"
+	"fmt"
 	"strings"
 
 	"github.com/example-git/crux/internal/message"
 	managedtask "github.com/example-git/crux/internal/task"
-	"github.com/example-git/crux/internal/ui/list"
 	"github.com/example-git/crux/internal/ui/styles"
 )
 
@@ -19,13 +19,15 @@ type taskNotificationContent struct {
 	Result       string             `xml:"result"`
 	ErrorMessage string             `xml:"error-message"`
 	LostReason   string             `xml:"lost-reason"`
+	ExitCode     *int               `xml:"exit-code"`
 }
 
 type taskNotificationMessageItem struct {
-	*list.Versioned
-	id           string
+	*baseToolMessageItem
+}
+
+type taskNotificationRenderContext struct {
 	notification taskNotificationContent
-	sty          *styles.Styles
 }
 
 func parseTaskNotificationMessage(msg *message.Message) (taskNotificationContent, bool) {
@@ -65,23 +67,27 @@ func newTaskNotificationMessageItem(sty *styles.Styles, msg *message.Message) (M
 	if !ok {
 		return nil, false
 	}
-	return &taskNotificationMessageItem{
-		Versioned:    list.NewVersioned(),
-		id:           msg.ID + ":task-notification",
-		notification: notification,
-		sty:          sty,
-	}, true
+	result := strings.TrimSpace(notification.Result)
+	if notification.TaskType == managedtask.TypeImage {
+		if formatted, ok := FormatImagegenResult(result); ok {
+			result = formatted
+		}
+	}
+	diagnostics := taskResultDiagnostics(notification.ErrorMessage, notification.LostReason, notification.ExitCode)
+	if diagnostics != "" {
+		result = strings.TrimSpace(diagnostics + "\n" + result)
+	}
+	if result == "" {
+		result = strings.TrimSpace(notification.Summary)
+	}
+	base := newBaseToolMessageItem(sty, message.ToolCall{
+		ID: msg.ID + ":task-notification", Name: taskNotificationName(notification.TaskType), Finished: true,
+	}, &message.ToolResult{ToolCallID: msg.ID, Content: result, IsError: notification.Status == managedtask.StatusFailed || notification.Status == managedtask.StatusLost}, &taskNotificationRenderContext{notification: notification}, notification.Status == managedtask.StatusKilled)
+	base.SetMessageID(msg.ID)
+	return &taskNotificationMessageItem{baseToolMessageItem: base}, true
 }
 
-func (t *taskNotificationMessageItem) ID() string {
-	return t.id
-}
-
-func (t *taskNotificationMessageItem) Finished() bool {
-	return true
-}
-
-func (t *taskNotificationMessageItem) RawRender(width int) string {
+func (t *taskNotificationRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
 	status := ToolStatusSuccess
 	switch t.notification.Status {
 	case managedtask.StatusFailed, managedtask.StatusLost:
@@ -90,32 +96,26 @@ func (t *taskNotificationMessageItem) RawRender(width int) string {
 		status = ToolStatusCanceled
 	}
 	name := taskNotificationName(t.notification.TaskType)
-	contentWidth := cappedMessageWidth(width)
-	header := toolHeader(t.sty, status, name, contentWidth, &ToolRenderOpts{Status: status}, t.notification.TaskID, "status", string(t.notification.Status))
-	result := strings.TrimSpace(t.notification.Result)
-	if t.notification.TaskType == managedtask.TypeImage {
-		if formatted, ok := FormatImagegenResult(result); ok {
-			result = formatted
-		}
-	}
-	if result == "" {
-		result = strings.TrimSpace(t.notification.ErrorMessage)
-	}
-	if result == "" {
-		result = strings.TrimSpace(t.notification.LostReason)
-	}
-	if result == "" {
-		result = strings.TrimSpace(t.notification.Summary)
-	}
-	if result == "" {
+	header := toolHeader(sty, status, name, width, opts, t.notification.TaskID, "status", string(t.notification.Status))
+	if opts.Compact || opts.Result.Content == "" {
 		return header
 	}
-	body := toolOutputPlainContent(t.sty, result, max(0, contentWidth-toolBodyLeftPaddingTotal), false)
-	return joinToolParts(header, body)
+	body := toolOutputPlainContent(sty, opts.Result.Content, toolBodyWidth(sty, width), opts.ExpandedContent)
+	return joinToolParts(header, sty.Tool.Body.Render(body))
 }
 
-func (t *taskNotificationMessageItem) Render(width int) string {
-	return t.sty.Messages.ToolCallBlurred.Render(t.RawRender(width))
+func taskResultDiagnostics(errorMessage, lostReason string, exitCode *int) string {
+	var lines []string
+	if errorMessage = strings.TrimSpace(errorMessage); errorMessage != "" {
+		lines = append(lines, errorMessage)
+	}
+	if lostReason = strings.TrimSpace(lostReason); lostReason != "" && lostReason != errorMessage {
+		lines = append(lines, lostReason)
+	}
+	if exitCode != nil {
+		lines = append(lines, fmt.Sprintf("Exit code: %d", *exitCode))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func taskNotificationName(taskType managedtask.Type) string {

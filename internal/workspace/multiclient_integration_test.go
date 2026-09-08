@@ -94,6 +94,14 @@ func (c shellTaskCoordinator) TaskOutput(ctx context.Context, id string, wait bo
 	}, err
 }
 
+func (c shellTaskCoordinator) RestartTask(ctx context.Context, id string) (managedtask.View, error) {
+	backgroundShell, err := c.manager.Restart(ctx, id)
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	return shellTaskView(backgroundShell), nil
+}
+
 func (c shellTaskCoordinator) StopTask(ctx context.Context, id string) (managedtask.View, error) {
 	if _, err := c.manager.Stop(ctx, id); err != nil {
 		return managedtask.View{}, err
@@ -318,6 +326,16 @@ func TestServer_SharedWorkspaceManagedTaskLifecycle(t *testing.T) {
 	require.Eventually(t, func() bool {
 		output, outputErr := clientB.TaskOutput(ctx, workspaceA.ID, backgroundShell.ID, false, 0)
 		return outputErr == nil && output.Output == "shared-output"
+	}, 3*time.Second, 25*time.Millisecond)
+
+	restarted, err := clientA.RestartTask(ctx, workspaceA.ID, backgroundShell.ID)
+	require.NoError(t, err)
+	require.Equal(t, backgroundShell.ID, restarted.ID)
+	require.NotEqual(t, backgroundShell.OutputRef(), restarted.OutputRef)
+	require.Equal(t, managedtask.StatusKilled, backgroundShell.Status())
+	require.Eventually(t, func() bool {
+		output, outputErr := clientB.TaskOutput(ctx, workspaceA.ID, backgroundShell.ID, false, 0)
+		return outputErr == nil && output.Task.OutputRef == restarted.OutputRef && output.Output == "shared-output" && output.Task.State.Status == managedtask.StatusRunning
 	}, 3*time.Second, 25*time.Millisecond)
 
 	stopped, err := clientB.StopTask(ctx, workspaceA.ID, backgroundShell.ID)

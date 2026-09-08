@@ -42,6 +42,10 @@ func (s *taskServiceStub) TaskOutput(_ context.Context, id string, wait bool, ti
 	return s.output, s.err
 }
 
+func (s *taskServiceStub) RestartTask(_ context.Context, id string) (managedtask.View, error) {
+	return managedtask.View{ID: id, Type: managedtask.TypeShell}, s.err
+}
+
 func (s *taskServiceStub) StopTask(_ context.Context, id string) (managedtask.View, error) {
 	s.stopID = id
 	return s.stopped, s.err
@@ -62,6 +66,23 @@ func runTaskTool(t *testing.T, tool fantasy.AgentTool, ctx context.Context, name
 	response, err := tool.Run(ctx, fantasy.ToolCall{ID: "tool-call", Name: name, Input: string(data)})
 	require.NoError(t, err)
 	return response
+}
+
+func TestTaskRestartTool(t *testing.T) {
+	service := &taskServiceStub{}
+	response := runTaskTool(t, NewTaskRestartTool(service), t.Context(), TaskRestartToolName, TaskRestartParams{TaskID: "b12345678"})
+	require.False(t, response.IsError)
+	require.Contains(t, response.Content, "b12345678")
+	response = runTaskTool(t, NewTaskRestartTool(service), t.Context(), TaskRestartToolName, TaskRestartParams{})
+	require.True(t, response.IsError)
+	require.Contains(t, response.Content, "missing task_id")
+	response = runTaskTool(t, NewTaskRestartTool(service), permission.WithSubagent(t.Context()), TaskRestartToolName, TaskRestartParams{TaskID: "b12345678"})
+	require.True(t, response.IsError)
+	require.Contains(t, response.Content, permission.ErrSubagentBackgroundTask.Error())
+	service.err = errors.New("termination not confirmed")
+	response = runTaskTool(t, NewTaskRestartTool(service), t.Context(), TaskRestartToolName, TaskRestartParams{TaskID: "b12345678"})
+	require.True(t, response.IsError)
+	require.Contains(t, response.Content, service.err.Error())
 }
 
 func TestTaskToolsDispatchUnifiedOperations(t *testing.T) {

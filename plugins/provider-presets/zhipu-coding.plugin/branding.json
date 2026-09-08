@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Zhipu Coding",
+  "short_name": "ZHIPU",
+  "color": "#93C5FD",
+  "gradient_a": "#93C5FD",
+  "gradient_b": "#C4B5FD"
+}

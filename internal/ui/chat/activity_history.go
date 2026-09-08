@@ -98,6 +98,7 @@ func IsAgentTaskActivity(item MessageItem) bool {
 		tools.TaskListToolName,
 		tools.TaskOutputToolName,
 		tools.TaskStopToolName,
+		tools.TaskRestartToolName,
 		tools.TaskContinueToolName,
 		tools.JobListToolName,
 		tools.JobOutputToolName,

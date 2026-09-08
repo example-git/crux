@@ -198,20 +198,21 @@ func mcpEventTypeToProto(t mcp.EventType) proto.MCPEventType {
 
 func sessionToProto(s session.Session) proto.Session {
 	return proto.Session{
-		ID:               s.ID,
-		ParentSessionID:  s.ParentSessionID,
-		Title:            s.Title,
-		SummaryMessageID: s.SummaryMessageID,
-		MessageCount:     s.MessageCount,
-		PromptTokens:     s.PromptTokens,
-		CompletionTokens: s.CompletionTokens,
-		EstimatedUsage:   s.EstimatedUsage,
-		Cost:             s.Cost,
-		Todos:            todosToProto(s.Todos),
-		Mode:             string(s.Mode),
-		Plan:             s.Plan,
-		CreatedAt:        s.CreatedAt,
-		UpdatedAt:        s.UpdatedAt,
+		ID:                s.ID,
+		ParentSessionID:   s.ParentSessionID,
+		Title:             s.Title,
+		SummaryMessageID:  s.SummaryMessageID,
+		MessageCount:      s.MessageCount,
+		PromptTokens:      s.PromptTokens,
+		CompletionTokens:  s.CompletionTokens,
+		EstimatedUsage:    s.EstimatedUsage,
+		UnseenLocalTokens: s.UnseenLocalTokens,
+		Cost:              s.Cost,
+		Todos:             todosToProto(s.Todos),
+		Mode:              string(s.Mode),
+		Plan:              s.Plan,
+		CreatedAt:         s.CreatedAt,
+		UpdatedAt:         s.UpdatedAt,
 	}
 }
 
@@ -283,6 +284,7 @@ func messageToProto(m message.Message) proto.Message {
 		switch v := p.(type) {
 		case message.TextContent:
 			msg.Parts = append(msg.Parts, proto.TextContent{
+				Context:          v.Context,
 				Text:             v.Text,
 				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})

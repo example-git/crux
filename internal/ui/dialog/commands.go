@@ -486,6 +486,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	// Only show compact command if there's an active session
 	if c.hasSession {
 		commands = append(commands, NewCommandItem(c.com.Styles, "toggle_plan", "Toggle Plan Mode", "shift+tab", ActionTogglePlanMode{}).WithAliases("plan"))
+		commands = append(commands, NewCommandItem(c.com.Styles, "cancel_plan", "Cancel Plan Mode", "", ActionCancelPlanMode{}).WithAliases("exit plan", "stop plan"))
 		commands = append(commands, NewCommandItem(c.com.Styles, "summarize", "Summarize Session", "", ActionSummarize{SessionID: c.sessionID}))
 		commands = append(commands, NewCommandItem(c.com.Styles, "rewind", "Rewind Session", "esc esc", ActionOpenDialog{RewindID}))
 	}
@@ -573,14 +574,16 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	// Add a command for selecting notification style via picker dialog.
 	notificationLabel := "Notification Style"
 	commands = append(commands, NewCommandItem(c.com.Styles, "select_notifications", notificationLabel, "", ActionOpenDialog{DialogID: NotificationsID}))
+	commands = append(commands, NewCommandItem(c.com.Styles, "summarization", "Summarization Settings", "", ActionOpenDialog{DialogID: SummarizationID}).WithAliases("compaction", "context_cap"))
 	commands = append(commands, NewCommandItem(c.com.Styles, "projects", "Projects", "", ActionOpenDialog{DialogID: ProjectsID}).WithAliases("project"))
 	commands = append(commands, NewCommandItem(c.com.Styles, "tmux_sessions", "Crux tmux Sessions", "", ActionOpenDialog{DialogID: TmuxSessionsID}).WithAliases("tmux", "captures"))
-	commands = append(commands, NewCommandItem(c.com.Styles, "codebase_index", "Codebase Index", "", ActionOpenDialog{DialogID: CodebaseIndexID}).WithAliases("index", "semantic_index"))
+	commands = append(commands, NewCommandItem(c.com.Styles, "codebase_index", "Codebase Index", "ctrl+i", ActionOpenDialog{DialogID: CodebaseIndexID}).WithAliases("index", "semantic_index"))
 	commands = append(commands, NewCommandItem(c.com.Styles, "mcp_servers", "MCP Servers", "", ActionOpenDialog{DialogID: MCPServersID}).WithAliases("mcp", "mcp_config", "servers"))
 	commands = append(commands, NewCommandItem(c.com.Styles, "create_agent", "Create Agent Definition", "", ActionOpenDialog{DialogID: AgentDefinitionsID}).WithAliases("agent_definition", "new_agent"))
 
 	commands = append(
 		commands,
+		NewCommandItem(c.com.Styles, "toggle_delivery", "Toggle Queue / Steer Mode", "alt+s", ActionToggleDeliveryMode{}).WithAliases("queue", "steer"),
 		NewCommandItem(c.com.Styles, "toggle_yolo", "Toggle Yolo Mode", "ctrl+y", ActionToggleYoloMode{}),
 		NewCommandItem(c.com.Styles, "toggle_help", "Toggle Help", "ctrl+g", ActionToggleHelp{}),
 		NewCommandItem(c.com.Styles, "init", "Initialize Project", "", ActionInitializeProject{}),
@@ -595,7 +598,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 
 	commands = append(
 		commands,
-		NewCommandItem(c.com.Styles, "quit", "Quit", "ctrl+c", tea.QuitMsg{}).WithAliases("exit"),
+		NewCommandItem(c.com.Styles, "quit", "Quit", "ctrl+c", ActionQuit{}).WithAliases("exit"),
 	)
 
 	return commands

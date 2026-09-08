@@ -29,6 +29,8 @@ func TestActionToolRenderersUseActionSpecificHeaders(t *testing.T) {
 		{name: tools.ProjectStatusToolName, input: `{}`, result: `No project is active for this workspace.`, want: "Project Status"},
 		{name: tools.ProjectUpdateToolName, input: `{"id":"T1","completed":true}`, result: `Updated T1.`, want: "Update Project", param: "T1"},
 		{name: tools.ProjectNotesToolName, input: `{"content":"evidence"}`, result: `Appended notes.`, want: "Add Project Note"},
+		{name: tools.ProjectNotesToolName, input: `{"action":"list"}`, result: `{"entries":[]}`, want: "List Project Notes"},
+		{name: tools.ProjectNotesToolName, input: `{"action":"read","topic":"notes:123"}`, result: `{"content":"evidence"}`, want: "Read Project Note", param: "notes:123"},
 		{name: tools.ProjectCompleteToolName, input: `{}`, result: `Completed project.`, want: "Complete Project"},
 		{name: tools.TaskListToolName, input: `{}`, result: `[]`, want: "List Tasks"},
 		{name: tools.TaskOutputToolName, input: `{"task_id":"b12345678"}`, result: `{"task":{"id":"b12345678","state":{"status":"running"}},"retrieval_status":"not_ready"}`, want: "Task Output", param: "b12345678"},
@@ -62,8 +64,8 @@ func TestActionToolRenderersSummarizeStructuredResults(t *testing.T) {
 
 	view := ansi.Strip(NewToolMessageItem(&sty, "message", call, result, false, "").Render(100))
 	require.Contains(t, view, "2 tasks")
-	require.Contains(t, view, "b12345678 · running · compile package")
-	require.Contains(t, view, "a12345678 · completed · review changes")
+	require.Regexp(t, `b12345678\s+running\s+shell\s*\n\s+compile package`, view)
+	require.Regexp(t, `a12345678\s+completed\s+agent\s*\n\s+review changes`, view)
 	require.NotContains(t, view, `"ownership"`)
 	require.NotContains(t, view, `"usage"`)
 }

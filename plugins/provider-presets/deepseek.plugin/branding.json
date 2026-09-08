@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "DeepSeek",
+  "short_name": "DEEPSEEK",
+  "color": "#6B9BFF",
+  "gradient_a": "#6B9BFF",
+  "gradient_b": "#93C5FD"
+}

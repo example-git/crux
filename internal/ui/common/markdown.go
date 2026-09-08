@@ -26,9 +26,10 @@ func init() {
 // mdCacheMu FIRST, then rendererLocksMu. No other call site may
 // hold rendererLocksMu while acquiring mdCacheMu.
 var (
-	mdCacheMu    sync.Mutex
-	mdCache      = map[int]*glamour.TermRenderer{}
-	quietMDCache = map[int]*glamour.TermRenderer{}
+	mdCacheMu       sync.Mutex
+	mdCache         = map[int]*glamour.TermRenderer{}
+	quietMDCache    = map[int]*glamour.TermRenderer{}
+	thinkingMDCache = map[int]*glamour.TermRenderer{}
 )
 
 // MarkdownRenderer returns a glamour [glamour.TermRenderer] configured with
@@ -76,6 +77,21 @@ func QuietMarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer 
 	return r
 }
 
+func ThinkingMarkdownRenderer(sty *styles.Styles, width int) *glamour.TermRenderer {
+	mdCacheMu.Lock()
+	defer mdCacheMu.Unlock()
+	if r, ok := thinkingMDCache[width]; ok {
+		return r
+	}
+	r, _ := glamour.NewTermRenderer(
+		glamour.WithStyles(sty.ThinkingMarkdown),
+		glamour.WithWordWrap(width),
+		glamour.WithChromaFormatter(formatterName),
+	)
+	thinkingMDCache[width] = r
+	return r
+}
+
 // InvalidateMarkdownRendererCache drops every cached renderer
 // AND every per-renderer mutex in a single atomic critical
 // section so the two maps cannot disagree mid-toggle. Call this
@@ -96,6 +112,7 @@ func InvalidateMarkdownRendererCache() {
 
 	mdCache = map[int]*glamour.TermRenderer{}
 	quietMDCache = map[int]*glamour.TermRenderer{}
+	thinkingMDCache = map[int]*glamour.TermRenderer{}
 	rendererLocks = map[*glamour.TermRenderer]*sync.Mutex{}
 }
 

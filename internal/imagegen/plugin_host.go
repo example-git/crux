@@ -66,6 +66,9 @@ func NewHostPluginRuntime(ctx context.Context, store *config.ConfigStore, bindin
 		return provider.Configuration, err
 	}
 	runtime.ResolveCredentials = func(ctx context.Context, bundle providerplugin.RegisteredImageBundle) (PluginCredentials, error) {
+		if err := manager.ValidateImageOwner(ctx, bundle.Owner()); err != nil {
+			return PluginCredentials{}, err
+		}
 		provider, err := configured(bundle.Owner())
 		if err != nil {
 			return PluginCredentials{}, err
@@ -74,7 +77,7 @@ func NewHostPluginRuntime(ctx context.Context, store *config.ConfigStore, bindin
 		selected.Providers = provider.Credentials
 		if selected.Browser == nil {
 			selected.Browser = func(ctx context.Context, declaration manifest.ImageCredential) (http.CookieJar, string, error) {
-				return browserCache.resolve(ctx, hostEnvironment, bundle.Owner(), declaration, provider.BrowserProfiles[declaration.ID])
+				return browserCache.resolve(ctx, hostEnvironment, bundle.Owner(), declaration, provider.BrowserProfiles[declaration.ID], provider.Configuration)
 			}
 		}
 		credentials, err := ResolvePluginCredentials(ctx, store, bundle, selected)
@@ -87,7 +90,7 @@ func NewHostPluginRuntime(ctx context.Context, store *config.ConfigStore, bindin
 			if err != nil {
 				return err
 			}
-			if !reflect.DeepEqual(current.Credentials, provider.Credentials) || !reflect.DeepEqual(current.BrowserProfiles, provider.BrowserProfiles) {
+			if !reflect.DeepEqual(current.Credentials, provider.Credentials) || !reflect.DeepEqual(current.BrowserProfiles, provider.BrowserProfiles) || !reflect.DeepEqual(current.Configuration, provider.Configuration) {
 				return errors.New("image credential bindings changed during execution")
 			}
 			return validate()
@@ -139,10 +142,6 @@ func NewHostPluginRuntime(ctx context.Context, store *config.ConfigStore, bindin
 						return providerplugin.ImageOwner{}, errors.New("preferred image credential resolution failed")
 					}
 					available = available && (key != "" || providerConfig.OAuthToken != nil && providerConfig.OAuthToken.AccessToken != "")
-				case "browser":
-					if bindings.Browser == nil && provider.BrowserProfiles[credential.ID] == "" {
-						return providerplugin.ImageOwner{}, errors.New("preferred image browser profile is not configured")
-					}
 				}
 			}
 			if available {

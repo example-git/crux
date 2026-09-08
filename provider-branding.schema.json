@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/example-git/crux/main/provider-branding.schema.json",
+  "$ref": "#/$defs/Branding",
+  "$defs": {
+    "Branding": {
+      "properties": {
+        "$schema": {
+          "type": "string",
+          "format": "uri-reference"
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "short_name": {
+          "type": "string",
+          "maxLength": 24,
+          "description": "Custom logo label; one to five characters use large block glyphs; six or seven use compact two-row block lettering; anything else uses centered normal text"
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "gradient_a": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "gradient_b": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    }
+  },
+  "title": "Crux Provider Branding",
+  "description": "Optional branding.json for provider and provider-preset bundles; replaces inline branding"
+}

@@ -56,6 +56,10 @@ func (w *tasksTestWorkspace) ListMessages(context.Context, string) ([]message.Me
 	return w.messages, nil
 }
 
+func (w *tasksTestWorkspace) RestartTask(_ context.Context, id string) (managedtask.View, error) {
+	return managedtask.View{ID: id, Type: managedtask.TypeShell, OutputRef: "task-output:b87654321"}, nil
+}
+
 func (w *tasksTestWorkspace) StopTask(_ context.Context, id string) (managedtask.View, error) {
 	w.stopID = id
 	return w.stopped, nil

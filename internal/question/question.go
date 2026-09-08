@@ -195,6 +195,7 @@ type questionService struct {
 	broker             *pubsub.Broker[Request]
 	notificationBroker *pubsub.Broker[Notification]
 	mu                 sync.Mutex
+	requests           chan struct{}
 	pending            chan []Answer
 	cancelled          chan struct{}
 	pendingID          string
@@ -203,6 +204,7 @@ type questionService struct {
 // NewService creates a new question service.
 func NewService() *questionService {
 	return &questionService{
+		requests:           make(chan struct{}, 1),
 		broker:             pubsub.NewBroker[Request](),
 		notificationBroker: pubsub.NewBroker[Notification](),
 	}
@@ -244,6 +246,16 @@ func (s *questionService) Ask(ctx context.Context, req Request) ([]Answer, error
 		return nil, err
 	}
 
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case s.requests <- struct{}{}:
+	}
+	defer func() { <-s.requests }()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	s.mu.Lock()
 	s.pending = make(chan []Answer, 1)
 	s.cancelled = make(chan struct{})
@@ -262,6 +274,7 @@ func (s *questionService) Ask(ctx context.Context, req Request) ([]Answer, error
 
 	select {
 	case <-ctx.Done():
+		s.notificationBroker.Publish(pubsub.CreatedEvent, Notification{BatchID: req.ID})
 		return nil, ctx.Err()
 	case <-s.cancelled:
 		return nil, ErrCancelled

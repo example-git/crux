@@ -40,6 +40,19 @@ func TestPrependKeepsRestoredAttachmentsBeforeCurrentDraft(t *testing.T) {
 	})
 }
 
+func TestRenderPreservesLongFilenameExtension(t *testing.T) {
+	r := newTestRenderer()
+	for _, name := range []string{"a-long-preview-image.png", "日本語の長いファイル名.txt"} {
+		out := r.Render([]message.Attachment{{FileName: name}}, false, true, 65)
+		require.Contains(t, out, "…")
+		if strings.HasSuffix(name, ".png") {
+			require.Contains(t, out, ".png")
+		} else {
+			require.Contains(t, out, ".txt")
+		}
+	}
+}
+
 func TestRender_IncludesRemoveButton(t *testing.T) {
 	t.Parallel()
 

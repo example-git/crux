@@ -18,7 +18,7 @@ func newImagegenToolMessageItem(sty *styles.Styles, toolCall message.ToolCall, r
 }
 
 func (r *imagegenToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	var params tools.ImagegenParams
 	if err := json.Unmarshal([]byte(opts.ToolCall.Input), &params); err != nil {
 		return toolErrorContent(sty, &message.ToolResult{Content: "Invalid parameters"}, cappedWidth)
@@ -55,7 +55,7 @@ func (r *imagegenToolRenderContext) RenderTool(sty *styles.Styles, width int, op
 	if formatted, ok := formatQueuedImagegenResult(opts.Result.Metadata); ok {
 		content = formatted
 	}
-	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, content, cappedWidth-toolBodyLeftPaddingTotal, opts.ExpandedContent))
+	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, content, toolBodyWidth(sty, cappedWidth), opts.ExpandedContent))
 	return joinToolParts(header, body)
 }
 

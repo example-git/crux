@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Moonshot",
+  "short_name": "MOONSHOT",
+  "color": "#CBD5E1",
+  "gradient_a": "#CBD5E1",
+  "gradient_b": "#93C5FD"
+}

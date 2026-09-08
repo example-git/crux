@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Hugging Face",
+  "short_name": "HF",
+  "color": "#FACC15",
+  "gradient_a": "#FACC15",
+  "gradient_b": "#FDE68A"
+}

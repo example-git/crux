@@ -76,6 +76,13 @@ func handleOption(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	}
 
 	switch spec.kind {
+	case optInteger:
+		parsed, err := strconv.ParseInt(val, 10, 64)
+		if err != nil || parsed < 0 {
+			return usage(stderr, fmt.Sprintf("option: %s expects a non-negative integer", key))
+		}
+		o[spec.jsonKey] = parsed
+		return nil
 	case optList:
 		if val == "" {
 			return usage(stderr, fmt.Sprintf("option: %s requires a value", key))
@@ -118,6 +125,7 @@ const (
 	optString optionKind = iota
 	optBool
 	optList
+	optInteger
 )
 
 // optionSpec describes one user-facing option key: the JSON field it writes,
@@ -137,6 +145,11 @@ type optionSpec struct {
 // Not exhaustive by design: options with nested structure (option ui ...) are
 // handled as special cases in handleOption above and do not appear here.
 var optionSpecs = map[string]optionSpec{
+	"network-tracing":           {jsonKey: "network_tracing", kind: optBool},
+	"summarization-context-cap": {jsonKey: "summarization_context_cap", kind: optInteger},
+	"summarization-max-tokens":  {jsonKey: "summarization_max_tokens", kind: optInteger},
+	"summarization-fast-mode":   {jsonKey: "summarization_fast_mode", kind: optBool},
+	"codex-compaction-v2":       {jsonKey: "codex_compaction_v2", kind: optBool},
 	// Boolean fields (stored as-is).
 	"debug":     {jsonKey: "debug", kind: optBool},
 	"debug-lsp": {jsonKey: "debug_lsp", kind: optBool},

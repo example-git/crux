@@ -422,6 +422,13 @@ func (m *Chat) AppendMessages(msgs ...chat.MessageItem) {
 		items := make([]list.Item, len(msgs))
 		indexOffset := m.list.Len()
 		for i, msg := range msgs {
+			var previous list.Item
+			if i > 0 {
+				previous = msgs[i-1]
+			} else if indexOffset > 0 {
+				previous = m.list.ItemAt(indexOffset - 1)
+			}
+			setThinkingOrigin(msg, previous)
 			m.idInxMap[msg.ID()] = indexOffset + i
 			if container, ok := msg.(chat.NestedToolContainer); ok {
 				for _, nested := range container.NestedTools() {
@@ -444,10 +451,22 @@ func (m *Chat) AppendMessages(msgs ...chat.MessageItem) {
 	m.setMessageItems(chat.CompactActivityHistory(m.com.Styles, items, chat.ActivityHistoryLimit))
 }
 
+func setThinkingOrigin(item chat.MessageItem, previous list.Item) {
+	if assistant, ok := item.(*chat.AssistantMessageItem); ok {
+		_, followsUser := previous.(*chat.UserMessageItem)
+		assistant.SetThinkingStartsTurn(previous == nil || followsUser)
+	}
+}
+
 func (m *Chat) setMessageItems(msgs []chat.MessageItem) {
 	m.idInxMap = make(map[string]int, len(msgs))
 	items := make([]list.Item, len(msgs))
 	for i, msg := range msgs {
+		var previous list.Item
+		if i > 0 {
+			previous = msgs[i-1]
+		}
+		setThinkingOrigin(msg, previous)
 		m.idInxMap[msg.ID()] = i
 		if container, ok := msg.(chat.NestedToolContainer); ok {
 			for _, nested := range container.NestedTools() {
@@ -1063,7 +1082,7 @@ func (m *Chat) HighlightContent() string {
 				endLine,
 				endCol,
 			))
-			sb.WriteString(strings.Repeat("\n", m.list.Gap()))
+			sb.WriteString(strings.Repeat("\n", m.list.GapAfter(i)))
 		}
 	}
 

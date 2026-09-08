@@ -5,11 +5,13 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/ui/util"
 )
 
@@ -69,9 +71,17 @@ func (s *Status) SetHideHelp(hideHelp bool) {
 
 // Draw draws the status bar onto the screen.
 func (s *Status) Draw(scr uv.Screen, area uv.Rectangle) {
-	if !s.hideHelp {
-		helpView := s.com.Styles.Status.Help.Render(s.help.View(s.helpKm))
-		uv.NewStyledString(helpView).Draw(scr, area)
+	if !s.hideHelp && s.helpKm != nil {
+		visible := area.Intersect(scr.Bounds())
+		style := s.com.Styles.Status.Help
+		width := max(0, visible.Dx()-style.GetHorizontalFrameSize())
+		s.help.SetWidth(width)
+		view := s.help.View(s.helpKm)
+		if !s.help.ShowAll {
+			view = s.renderShortHelp(width)
+		}
+		helpView := style.Render(view)
+		uv.NewStyledString(helpView).Draw(scr, visible)
 	}
 
 	visibleArea := area.Intersect(scr.Bounds())
@@ -80,6 +90,71 @@ func (s *Status) Draw(scr uv.Screen, area uv.Rectangle) {
 		return
 	}
 	uv.NewStyledString(info).Draw(scr, visibleArea)
+}
+
+func (s *Status) renderShortHelp(width int) string {
+	if width <= 0 || s.helpKm == nil {
+		return ""
+	}
+	bindings := s.helpKm.ShortHelp()
+	if ansi.StringWidth(dialog.ShortHelpLine(&s.help, bindings, 1<<20)) > width {
+		ordered := make([]key.Binding, 0, len(bindings))
+		for priority := 0; priority < 4; priority++ {
+			for _, binding := range bindings {
+				rank := 3
+				switch binding.Help().Desc {
+				case "commands":
+					rank = 1
+				case "help", "more":
+					rank = 2
+				}
+				for _, name := range binding.Keys() {
+					if name == "esc" || name == "ctrl+b" {
+						rank = 0
+					}
+				}
+				if rank == priority {
+					ordered = append(ordered, binding)
+				}
+			}
+		}
+		bindings = ordered
+	}
+	bindings = append([]key.Binding(nil), bindings...)
+	for _, group := range s.helpKm.FullHelp() {
+		bindings = append(bindings, group...)
+	}
+	seen := make(map[string]bool)
+	unique := make([]key.Binding, 0, len(bindings))
+	for _, binding := range bindings {
+		identity := strings.Join(binding.Keys(), "\x00")
+		if binding.Enabled() && !seen[identity] {
+			seen[identity] = true
+			unique = append(unique, binding)
+		}
+	}
+	budget := width
+	tail := " " + s.help.Styles.Ellipsis.Inline(true).Render("…")
+	if ansi.StringWidth(dialog.ShortHelpLine(&s.help, unique, 1<<20)) > width {
+		budget = max(0, width-ansi.StringWidth(tail))
+	}
+	selected := make([]key.Binding, 0, len(unique))
+	omitted := false
+	for _, binding := range unique {
+		candidate := append(selected, binding)
+		if ansi.StringWidth(dialog.ShortHelpLine(&s.help, candidate, 1<<20)) > budget {
+			omitted = true
+			continue
+		}
+		selected = candidate
+	}
+	view := dialog.ShortHelpLine(&s.help, selected, width)
+	if omitted {
+		if ansi.StringWidth(view)+ansi.StringWidth(tail) <= width {
+			view += tail
+		}
+	}
+	return view
 }
 
 func (s *Status) renderInfo(width int) string {

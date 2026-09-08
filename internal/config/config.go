@@ -345,8 +345,9 @@ type LSPConfig struct {
 }
 
 type TUIOptions struct {
-	CompactMode bool   `json:"compact_mode,omitempty" jsonschema:"description=Enable compact mode for the TUI interface,default=false"`
-	DiffMode    string `json:"diff_mode,omitempty" jsonschema:"description=Diff mode for the TUI interface,enum=unified,enum=split"`
+	DeliveryMode string `json:"delivery_mode,omitempty" jsonschema:"description=Preferred chat message delivery mode persisted by the Queue/Steer toggle,enum=queue,enum=steer,default=queue"`
+	CompactMode  bool   `json:"compact_mode,omitempty" jsonschema:"description=Enable compact mode for the TUI interface,default=false"`
+	DiffMode     string `json:"diff_mode,omitempty" jsonschema:"description=Diff mode for the TUI interface,enum=unified,enum=split"`
 	// Here we can add themes later or any TUI related options
 	//
 
@@ -377,13 +378,18 @@ type Permissions struct {
 }
 
 type Options struct {
-	ContextPaths         []string    `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUX.md"`
-	GlobalContextPaths   []string    `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.ai-cli/crux/CRUX.md,default=~/.ai-cli/AGENTS.md"`
-	SkillsPaths          []string    `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.ai-cli/crux/skills,example=./skills"`
-	TUI                  *TUIOptions `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
-	Debug                bool        `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
-	DebugLSP             bool        `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
-	DisableAutoSummarize bool        `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
+	NetworkTracing          bool        `json:"network_tracing,omitempty" jsonschema:"description=Opt in to project-scoped HTTP and WebSocket traffic recording; reopen the workspace after changing this option,default=false"`
+	ContextPaths            []string    `json:"context_paths,omitempty" jsonschema:"description=Paths to files containing context information for the AI,example=.cursorrules,example=CRUX.md"`
+	GlobalContextPaths      []string    `json:"global_context_paths,omitempty" jsonschema:"description=Paths to files containing global context information for the AI,default=~/.ai-cli/crux/CRUX.md,default=~/.ai-cli/AGENTS.md"`
+	SkillsPaths             []string    `json:"skills_paths,omitempty" jsonschema:"description=Paths to directories containing Agent Skills (folders with SKILL.md files),example=~/.ai-cli/crux/skills,example=./skills"`
+	TUI                     *TUIOptions `json:"tui,omitempty" jsonschema:"description=Terminal user interface options"`
+	Debug                   bool        `json:"debug,omitempty" jsonschema:"description=Enable debug logging,default=false"`
+	DebugLSP                bool        `json:"debug_lsp,omitempty" jsonschema:"description=Enable debug logging for LSP servers,default=false"`
+	DisableAutoSummarize    bool        `json:"disable_auto_summarize,omitempty" jsonschema:"description=Disable automatic conversation summarization,default=false"`
+	SummarizationContextCap int64       `json:"summarization_context_cap,omitempty" jsonschema:"description=Maximum context window used for automatic summarization. Zero uses the model window.,minimum=0,default=0"`
+	SummarizationMaxTokens  int64       `json:"summarization_max_tokens,omitempty" jsonschema:"description=Output token budget for local summaries. Zero uses the selected model budget.,minimum=0,default=0"`
+	SummarizationFastMode   bool        `json:"summarization_fast_mode,omitempty" jsonschema:"description=Use Codex priority service tier for compaction and readable summaries only,default=false"`
+	CodexCompactionV2       bool        `json:"codex_compaction_v2,omitempty" jsonschema:"description=Experimental: use only Codex remote compaction v2 instead of the default single-request readable summary,default=false"`
 	// DataDirectory is where Crux keeps per-project state such as
 	// the SQLite database and workspace overrides. Relative paths are
 	// resolved against the working directory; absolute paths are used
@@ -413,6 +419,9 @@ type Options struct {
 }
 
 func (o *Options) validatePromptOptions() error {
+	if o.SummarizationContextCap < 0 || o.SummarizationMaxTokens < 0 {
+		return fmt.Errorf("summarization_context_cap and summarization_max_tokens must be non-negative integers")
+	}
 	if o.ResponseVerbosity != "" && !slices.Contains([]string{"low", "medium", "high"}, o.ResponseVerbosity) {
 		return fmt.Errorf("response_verbosity must be low, medium, or high")
 	}

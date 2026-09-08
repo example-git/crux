@@ -6,10 +6,44 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/example-git/crux/internal/lock"
 
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/stretchr/testify/require"
 )
+
+func TestManagerStartupAndRescanDoNotWaitForWriterLock(t *testing.T) {
+	manager := newTestManager(t)
+	snapshot, err := manager.Install(t.Context(), InstallRequest{Source: exampleBundle(t, "minimal.plugin"), Trust: true})
+	require.NoError(t, err)
+	require.Len(t, snapshot.Plugins, 1)
+	status := snapshot.Plugins[0]
+	require.Equal(t, StateRegistered, status.State)
+	release, err := lock.File(t.Context(), manager.paths.ManagerLock)
+	require.NoError(t, err)
+	defer release()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	second, err := NewManager(ctx, manager.paths)
+	require.NoError(t, err)
+	defer second.Close()
+	require.Len(t, second.RegisteredBundles(), 1)
+	snapshot, err = second.Rescan(ctx, 0)
+	require.NoError(t, err)
+	require.Equal(t, status.Digest, snapshot.Plugins[0].Digest)
+	require.Equal(t, StateRegistered, snapshot.Plugins[0].State)
+
+	writerCtx, stopWriter := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer stopWriter()
+	_, err = second.SetTrust(writerCtx, status.ID, TrustRequest{Digest: status.Digest, Trusted: false})
+	require.Error(t, err)
+	require.Equal(t, StateRegistered, second.Snapshot().Plugins[0].State)
+	_, err = lock.TryFile(manager.paths.ManagerLock)
+	require.ErrorIs(t, err, lock.ErrContended)
+}
 
 func TestManagerInstallTrustAndDigestChange(t *testing.T) {
 	manager := newTestManager(t)

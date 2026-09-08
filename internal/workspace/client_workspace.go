@@ -327,6 +327,7 @@ func (w *ClientWorkspace) AgentQueuedPromptsList(sessionID string) []agent.Queue
 	prompts := make([]agent.QueuedPrompt, len(queued))
 	for i, prompt := range queued {
 		prompts[i] = agent.QueuedPrompt{
+			DeliveryMode: agent.DeliveryMode(prompt.DeliveryMode),
 			SubmissionID: prompt.SubmissionID,
 			Prompt:       prompt.Prompt,
 		}
@@ -336,6 +337,10 @@ func (w *ClientWorkspace) AgentQueuedPromptsList(sessionID string) []agent.Queue
 
 func (w *ClientWorkspace) AgentClearQueue(sessionID string) {
 	_ = w.client.ClearAgentSessionQueuedPrompts(context.Background(), w.workspaceID(), sessionID)
+}
+
+func (w *ClientWorkspace) ForegroundTaskControl(ctx context.Context, sessionID string, detach bool) (int, error) {
+	return w.client.ForegroundTaskControl(ctx, w.workspaceID(), sessionID, detach)
 }
 
 func (w *ClientWorkspace) AgentDetachForegroundJobs() int {
@@ -387,6 +392,10 @@ func (w *ClientWorkspace) ListTasks(ctx context.Context) ([]managedtask.View, er
 
 func (w *ClientWorkspace) TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error) {
 	return w.client.TaskOutput(ctx, w.workspaceID(), id, wait, timeout)
+}
+
+func (w *ClientWorkspace) RestartTask(ctx context.Context, id string) (managedtask.View, error) {
+	return w.client.RestartTask(ctx, w.workspaceID(), id)
 }
 
 func (w *ClientWorkspace) StopTask(ctx context.Context, id string) (managedtask.View, error) {
@@ -1347,20 +1356,21 @@ func protoToMCPEventType(t proto.MCPEventType) mcp.EventType {
 // payload directly before this conversion runs.
 func protoToSession(s proto.Session) session.Session {
 	return session.Session{
-		ID:               s.ID,
-		ParentSessionID:  s.ParentSessionID,
-		Title:            s.Title,
-		SummaryMessageID: s.SummaryMessageID,
-		MessageCount:     s.MessageCount,
-		PromptTokens:     s.PromptTokens,
-		CompletionTokens: s.CompletionTokens,
-		EstimatedUsage:   s.EstimatedUsage,
-		Cost:             s.Cost,
-		Todos:            protoToTodos(s.Todos),
-		Mode:             session.Mode(s.Mode),
-		Plan:             s.Plan,
-		CreatedAt:        s.CreatedAt,
-		UpdatedAt:        s.UpdatedAt,
+		ID:                s.ID,
+		ParentSessionID:   s.ParentSessionID,
+		Title:             s.Title,
+		SummaryMessageID:  s.SummaryMessageID,
+		MessageCount:      s.MessageCount,
+		PromptTokens:      s.PromptTokens,
+		CompletionTokens:  s.CompletionTokens,
+		EstimatedUsage:    s.EstimatedUsage,
+		UnseenLocalTokens: s.UnseenLocalTokens,
+		Cost:              s.Cost,
+		Todos:             protoToTodos(s.Todos),
+		Mode:              session.Mode(s.Mode),
+		Plan:              s.Plan,
+		CreatedAt:         s.CreatedAt,
+		UpdatedAt:         s.UpdatedAt,
 	}
 }
 
@@ -1408,6 +1418,7 @@ func protoToMessage(m proto.Message) message.Message {
 		switch v := p.(type) {
 		case proto.TextContent:
 			msg.Parts = append(msg.Parts, message.TextContent{
+				Context:          v.Context,
 				Text:             v.Text,
 				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
@@ -1486,20 +1497,21 @@ func protoToFiles(files []proto.File) []history.File {
 
 func sessionToProto(s session.Session) proto.Session {
 	return proto.Session{
-		ID:               s.ID,
-		ParentSessionID:  s.ParentSessionID,
-		Title:            s.Title,
-		SummaryMessageID: s.SummaryMessageID,
-		MessageCount:     s.MessageCount,
-		PromptTokens:     s.PromptTokens,
-		CompletionTokens: s.CompletionTokens,
-		EstimatedUsage:   s.EstimatedUsage,
-		Cost:             s.Cost,
-		Todos:            todosToProto(s.Todos),
-		Mode:             string(s.Mode),
-		Plan:             s.Plan,
-		CreatedAt:        s.CreatedAt,
-		UpdatedAt:        s.UpdatedAt,
+		ID:                s.ID,
+		ParentSessionID:   s.ParentSessionID,
+		Title:             s.Title,
+		SummaryMessageID:  s.SummaryMessageID,
+		MessageCount:      s.MessageCount,
+		PromptTokens:      s.PromptTokens,
+		CompletionTokens:  s.CompletionTokens,
+		EstimatedUsage:    s.EstimatedUsage,
+		UnseenLocalTokens: s.UnseenLocalTokens,
+		Cost:              s.Cost,
+		Todos:             todosToProto(s.Todos),
+		Mode:              string(s.Mode),
+		Plan:              s.Plan,
+		CreatedAt:         s.CreatedAt,
+		UpdatedAt:         s.UpdatedAt,
 	}
 }
 

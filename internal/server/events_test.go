@@ -69,6 +69,18 @@ func TestMessageToProtoToolResult(t *testing.T) {
 	require.Equal(t, payload, decodedResult.ProviderMetadata[0].Payload)
 }
 
+func TestMessageToProtoPreservesUserTurnContext(t *testing.T) {
+	turn := message.UserTurnContext{TodoState: "empty", TodoReminder: "original reminder"}
+	source := message.Message{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "user text", Context: turn}}}
+	encoded, err := json.Marshal(messageToProto(source))
+	require.NoError(t, err)
+	var decoded proto.Message
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	text := decoded.Parts[0].(proto.TextContent)
+	require.Equal(t, "user text", text.Text)
+	require.Equal(t, turn, text.Context)
+}
+
 func TestMessageToProtoPreservesAllProviderMetadataScopes(t *testing.T) {
 	t.Parallel()
 
