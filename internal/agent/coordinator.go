@@ -1880,7 +1880,12 @@ func (c *coordinator) buildCodexProvider(snapshot config.RuntimeSnapshot, regist
 			}
 		}
 	}
-	return codex.NewProvider(baseURL, func() string { return apiKey }, accountID, headers, c.codexSessions, registration.Operation, compactionOperation, registration.Images, validate)
+	runtimeScope := ""
+	if authority := snapshot.RemoteAuthority(); authority != nil {
+		data, _ := json.Marshal(authority)
+		runtimeScope = hashContinuationIdentity(string(data))
+	}
+	return codex.NewProvider(baseURL, func() string { return apiKey }, accountID, headers, c.codexSessions, registration.Operation, compactionOperation, registration.Images, validate, runtimeScope)
 }
 
 // buildGeminiAntigravityProvider creates the Antigravity provider: a native

@@ -35,6 +35,7 @@ type options struct {
 	version        string
 	headers        map[string]string
 	sessionStore   *SessionStore
+	runtimeScope   string
 	ownerValidator func() error
 	connectTimeout time.Duration
 	requestTimeout time.Duration
@@ -117,6 +118,12 @@ func WithHeaders(headers map[string]string) Option {
 
 func WithSessionStore(store *SessionStore) Option {
 	return func(o *options) { o.sessionStore = store }
+}
+
+// WithRuntimeScope binds reusable state and provider cache identity to an
+// accepted client authority digest. Empty scope preserves server-owned behavior.
+func WithRuntimeScope(scope string) Option {
+	return func(o *options) { o.runtimeScope = scope }
 }
 
 func WithOwnerValidator(validate func() error) Option {
@@ -202,6 +209,7 @@ func (p *provider) LanguageModel(_ context.Context, modelID string) (fantasy.Lan
 			version:        p.options.version,
 			headers:        p.options.headers,
 			sessionStore:   p.options.sessionStore,
+			runtimeScope:   p.options.runtimeScope,
 			ownerValidator: p.options.ownerValidator,
 			connectTimeout: p.options.connectTimeout,
 			requestTimeout: p.options.requestTimeout,

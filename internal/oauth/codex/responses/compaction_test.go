@@ -17,6 +17,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCompactionChainResetRetainsOtherClientGeneration(t *testing.T) {
+	store := NewSessionStore()
+	defer store.Close()
+	model := &languageModel{provider: Name, modelID: "fixture", client: &client{
+		url: "ws://fixture.invalid", token: func() string { return "synthetic" }, sessionStore: store, runtimeScope: "accepted-new",
+	}}
+	account := accountDiscriminator("", "synthetic")
+	key := func(scope, purpose string) transportStateKey {
+		return newTransportStateKey(model.client.url, model.provider, account, model.modelID, "conversation", purpose, model.client.transportIdentity(), scope)
+	}
+	old := store.state(key("accepted-old", "conversation"))
+	old.chain = &responseChain{responseID: "old-response"}
+	current := store.state(key("accepted-new", "conversation"))
+	current.chain = &responseChain{responseID: "new-response"}
+	title := store.state(key("accepted-new", "title"))
+	title.chain = &responseChain{responseID: "title-response"}
+	model.clearCompactionChain("conversation")
+	require.Nil(t, current.chain)
+	require.NotNil(t, old.chain)
+	require.Equal(t, "old-response", old.chain.responseID)
+	require.NotNil(t, title.chain)
+	require.Equal(t, "title-response", title.chain.responseID)
+}
+
 type capturedCompactionRequest struct {
 	connection int32
 	frame      requestFrame

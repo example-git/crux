@@ -362,14 +362,15 @@ type transportStateKey struct {
 	conversation string
 	purpose      string
 	transport    string
+	runtimeScope string
 }
 
 func (k transportStateKey) sameConversationPurpose(other transportStateKey) bool {
-	return k.conversation == other.conversation && k.purpose == other.purpose
+	return k.runtimeScope == other.runtimeScope && k.conversation == other.conversation && k.purpose == other.purpose
 }
 
-func newTransportStateKey(endpoint, provider, account, modelID, conversationID, purpose, transportIdentity string) transportStateKey {
-	return transportStateKey{
+func newTransportStateKey(endpoint, provider, account, modelID, conversationID, purpose, transportIdentity string, runtimeScope ...string) transportStateKey {
+	key := transportStateKey{
 		endpoint:     endpoint,
 		provider:     provider,
 		account:      account,
@@ -378,6 +379,10 @@ func newTransportStateKey(endpoint, provider, account, modelID, conversationID, 
 		purpose:      purpose,
 		transport:    transportIdentity,
 	}
+	if len(runtimeScope) > 0 {
+		key.runtimeScope = runtimeScope[0]
+	}
+	return key
 }
 
 func accountDiscriminator(accountID, token string) string {
@@ -390,12 +395,19 @@ func accountDiscriminator(accountID, token string) string {
 	return "anonymous"
 }
 
-func promptCacheKey(provider, account, conversationID, purpose string) string {
-	return stableHash("crux-codex-cache\x00" + provider + "\x00" + account + "\x00" + conversationID + "\x00" + purpose)
+func promptCacheKey(provider, account, conversationID, purpose string, runtimeScope ...string) string {
+	return scopedIdentityHash("crux-codex-cache\x00"+provider+"\x00"+account+"\x00"+conversationID+"\x00"+purpose, runtimeScope)
 }
 
-func compatibilityIdentity(provider, account, conversationID, purpose string) string {
-	return stableHash("crux-codex-compatibility\x00" + provider + "\x00" + account + "\x00" + conversationID + "\x00" + purpose)
+func compatibilityIdentity(provider, account, conversationID, purpose string, runtimeScope ...string) string {
+	return scopedIdentityHash("crux-codex-compatibility\x00"+provider+"\x00"+account+"\x00"+conversationID+"\x00"+purpose, runtimeScope)
+}
+
+func scopedIdentityHash(identity string, runtimeScope []string) string {
+	if len(runtimeScope) > 0 && runtimeScope[0] != "" {
+		identity += "\x00client-runtime\x00" + runtimeScope[0]
+	}
+	return stableHash(identity)
 }
 
 func stableHash(value string) string {
