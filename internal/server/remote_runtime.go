@@ -200,3 +200,25 @@ func (c *controllerV1) handlePutWorkspaceRuntime(w http.ResponseWriter, r *http.
 	ws.SendEvent(pubsub.Event[proto.ConfigChanged]{Type: pubsub.UpdatedEvent, Payload: proto.ConfigChanged{WorkspaceID: ws.ID}})
 	jsonEncode(w, ack)
 }
+
+func (c *controllerV1) handlePostClientRefreshCompletion(w http.ResponseWriter, r *http.Request) {
+	if !requireRuntimeProtocol(w, r) {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	var response config.ClientRefreshCompletion
+	if err := decodeRuntimeRequest(w, r, &response); err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	ws, err := c.backend.GetWorkspace(r.PathValue("id"))
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	if err := ws.Cfg.CompleteClientRefresh(requestPrincipal(r), response); err != nil {
+		jsonError(w, http.StatusConflict, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}

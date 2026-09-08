@@ -242,6 +242,7 @@ func runNonInteractive(
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to events: %w", err)
 	}
+	clientAuthority := workspace.NewClientWorkspace(c, *ws)
 
 	// Mint a per-call RunID so we can correlate the terminal
 	// RunComplete with *this* SendMessage even if the session was
@@ -282,6 +283,9 @@ func runNonInteractive(
 			if !ok {
 				stopSpinner()
 				return nil
+			}
+			if clientAuthority.HandleClientRefreshEvent(ctx, ev) {
+				continue
 			}
 
 			// Forward events to herdr if running inside a herdr pane.

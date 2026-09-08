@@ -11,6 +11,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/redact"
 	"github.com/example-git/crux/internal/session"
 	"github.com/google/uuid"
@@ -370,6 +371,23 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 	// initial RoundTrip.
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
+	// Subscribe before inspecting pending state so a concurrent request is
+	// delivered by replay or the live broker; request IDs make duplicates safe.
+	if ws, err := c.backend.GetWorkspace(id); err == nil && ws.Cfg != nil && ws.Cfg.RemoteAuthority() != nil {
+		for _, request := range ws.Cfg.PendingClientRefreshes() {
+			wrapped := wrapEvent(pubsub.Event[config.ClientRefreshRequest]{Type: pubsub.CreatedEvent, Payload: request})
+			data, err := json.Marshal(wrapped)
+			if err != nil {
+				return
+			}
+			data, err = redact.JSON(data)
+			if err != nil {
+				return
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+	}
 
 	for {
 		select {
