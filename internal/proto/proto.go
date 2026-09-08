@@ -23,6 +23,7 @@ type Workspace struct {
 	YOLO             bool           `json:"yolo,omitempty"`
 	Debug            bool           `json:"debug,omitempty"`
 	DataDir          string         `json:"data_dir,omitempty"`
+	RequestedDataDir string         `json:"requested_data_dir,omitempty"`
 	Version          string         `json:"version,omitempty"`
 	ClientID         string         `json:"client_id,omitempty"`
 	ConnectedClients int            `json:"connected_clients,omitempty"`
@@ -44,6 +45,7 @@ type Workspace struct {
 	Authority             *config.RemoteAuthority            `json:"authority,omitempty"`
 	// Private backend admission fields are never discovery or request JSON.
 	Runtime                *config.RemoteRuntimeProposal `json:"-"`
+	Creation               *Workspace                    `json:"-"`
 	AuthorityMode          string                        `json:"-"`
 	AuthenticatedPrincipal string                        `json:"-"`
 }

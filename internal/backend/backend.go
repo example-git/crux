@@ -198,13 +198,14 @@ type clientState struct {
 // associated resources and state.
 type Workspace struct {
 	*app.App
-	ID            string
-	Path          string
-	Cfg           *config.ConfigStore
-	Env           []string
-	Skills        *skills.Manager
-	principal     string
-	authorityMode string
+	ID               string
+	Path             string
+	Cfg              *config.ConfigStore
+	Env              []string
+	Skills           *skills.Manager
+	principal        string
+	authorityMode    string
+	requestedDataDir string
 
 	// resolvedPath is the path used as the dedup key in
 	// Backend.pathIndex. It is filepath.EvalSymlinks(filepath.Abs(Path))
@@ -681,18 +682,19 @@ initializeWorkspace:
 	}
 	context.AfterFunc(wsCtx, closeTraffic)
 	ws := &Workspace{
-		App:           appWorkspace,
-		ID:            id,
-		Path:          args.Path,
-		Cfg:           cfg,
-		Env:           args.Env,
-		Skills:        skillsMgr,
-		principal:     args.AuthenticatedPrincipal,
-		authorityMode: args.AuthorityMode,
-		resolvedPath:  key,
-		ctx:           wsCtx,
-		cancel:        wsCancel,
-		clients:       make(map[string]*clientState),
+		App:              appWorkspace,
+		ID:               id,
+		Path:             args.Path,
+		Cfg:              cfg,
+		Env:              args.Env,
+		Skills:           skillsMgr,
+		principal:        args.AuthenticatedPrincipal,
+		authorityMode:    args.AuthorityMode,
+		requestedDataDir: args.DataDir,
+		resolvedPath:     key,
+		ctx:              wsCtx,
+		cancel:           wsCancel,
+		clients:          make(map[string]*clientState),
 	}
 
 	b.mu.Lock()
@@ -1378,6 +1380,7 @@ func workspaceToProto(ws *Workspace) proto.Workspace {
 		YOLO:             ws.Cfg.Overrides().SkipPermissionRequests,
 		Channels:         ws.Cfg.Overrides().EnabledChannels,
 		DataDir:          cfg.Options.DataDirectory,
+		RequestedDataDir: ws.requestedDataDir,
 		Debug:            cfg.Options.Debug,
 		Config:           cfg.RedactedForTransport(),
 		ProviderSurfaces: config.ProviderSurfaces(cfg),
@@ -1443,4 +1446,11 @@ func stringSlicesEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// DetachGrace is advertised before accepting client-owned credentials.
+func (b *Backend) DetachGrace() time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return max(b.detachGrace, 0)
 }

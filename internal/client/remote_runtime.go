@@ -31,7 +31,7 @@ func (c *Client) NegotiateRemoteRuntime(ctx context.Context) (*proto.RemoteRunti
 	if err := json.NewDecoder(io.LimitReader(rsp.Body, 64<<10)).Decode(&value); err != nil {
 		return nil, errors.New("invalid remote runtime capabilities")
 	}
-	if value.Protocol != proto.RemoteRuntimeProtocol || value.RuntimeVersion != config.RemoteRuntimeVersion || value.Compiler != config.RemoteRuntimeCompiler || value.WorkspaceSharing != "exclusive-certificate" || len(value.Principal) != 64 || value.MaxRequestBytes <= 0 || value.MaxBundles <= 0 || value.MaxProviders <= 0 {
+	if value.Protocol != proto.RemoteRuntimeProtocol || value.RuntimeVersion != config.RemoteRuntimeVersion || value.Compiler != config.RemoteRuntimeCompiler || value.WorkspaceSharing != "exclusive-certificate" || len(value.Principal) != 64 || value.MaxRequestBytes <= 0 || value.MaxBundles <= 0 || value.MaxProviders <= 0 || value.DisconnectGraceMillis < 0 {
 		return nil, errors.New("remote runtime capabilities are incompatible; no private state was sent")
 	}
 	return &value, nil

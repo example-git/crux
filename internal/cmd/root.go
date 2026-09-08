@@ -610,6 +610,7 @@ func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection,
 			return err
 		}
 		request.Path = remoteWorkspace.Path
+		request.DataDir = remoteWorkspace.RequestedDataDir
 		request.Channels = remoteWorkspace.Channels
 		request.YOLO = remoteWorkspace.YOLO
 		if remoteWorkspace.Authority == nil {

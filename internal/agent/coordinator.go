@@ -2523,7 +2523,11 @@ func (c *coordinator) waitForInteractiveReauth(ctx context.Context, expected pro
 	if err := c.cfg.ValidateRegistrationOwner(expected); err != nil {
 		return err
 	}
-	waitCtx, waitCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+	waitParent := context.WithoutCancel(ctx)
+	if c.cfg.RemoteAuthority() != nil {
+		waitParent = ctx
+	}
+	waitCtx, waitCancel := context.WithTimeout(waitParent, 5*time.Minute)
 	defer waitCancel()
 	slog.Info("Blocking on WaitForTokenChange", "provider", providerID)
 	if waitErr := c.cfg.WaitForTokenChange(waitCtx, expected); waitErr != nil {

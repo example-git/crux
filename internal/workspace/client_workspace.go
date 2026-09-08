@@ -1074,20 +1074,21 @@ func (w *ClientWorkspace) recoverWorkspace() error {
 		context.WithoutCancel(w.subCtx), recoveryCreateTimeout,
 	)
 	defer cancel()
-	created, err := w.client.CreateWorkspace(ctx, w.recreateArgs())
+	oldID := w.workspaceID()
+	var created *proto.Workspace
+	var err error
+	if w.clientOwned() {
+		created, err = w.recreateClientWorkspace(ctx)
+	} else {
+		created, err = w.client.CreateWorkspace(ctx, w.recreateArgs())
+		if err == nil {
+			w.installRecoveredWorkspace(*created)
+		}
+	}
 	if err != nil {
 		slog.Error("Failed to re-register workspace; retrying", "error", err)
 		return err
 	}
-	if created.Config != nil {
-		created.Config.SetupAgents()
-	}
-	sequence := w.refreshSequence.Add(1)
-	w.mu.Lock()
-	oldID := w.ws.ID
-	w.appliedRefresh = sequence
-	w.ws = *created
-	w.mu.Unlock()
 	slog.Info("Re-registered workspace after server-side loss",
 		"old_id", oldID, "new_id", created.ID)
 
@@ -1101,15 +1102,30 @@ func (w *ClientWorkspace) recoverWorkspace() error {
 	return nil
 }
 
+func (w *ClientWorkspace) installRecoveredWorkspace(created proto.Workspace) {
+	if created.Config != nil {
+		created.Config.SetupAgents()
+	}
+	sequence := w.refreshSequence.Add(1)
+	w.mu.Lock()
+	w.appliedRefresh = sequence
+	w.ws = created
+	w.mu.Unlock()
+}
+
 // recreateArgs derives the CreateWorkspace request used for recovery from
 // the cached snapshot. The ID is dropped so the server can dedupe by
 // path or mint a fresh workspace, and Version carries this client's
 // version, matching the startup handshake.
 func (w *ClientWorkspace) recreateArgs() proto.Workspace {
 	ws := w.cached()
+	dataDir := ws.DataDir
+	if ws.Authority != nil && ws.Authority.Principal != "" {
+		dataDir = ws.RequestedDataDir
+	}
 	return proto.Workspace{
 		Path:     ws.Path,
-		DataDir:  ws.DataDir,
+		DataDir:  dataDir,
 		Debug:    ws.Debug,
 		YOLO:     ws.YOLO,
 		Channels: ws.Channels,

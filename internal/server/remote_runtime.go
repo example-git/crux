@@ -73,6 +73,7 @@ func (c *controllerV1) handleGetRemoteRuntimeCapabilities(w http.ResponseWriter,
 		Compiler: config.RemoteRuntimeCompiler, HostVersion: version.Version,
 		MaxRequestBytes: maxRemoteRequestBytes, MaxBundles: config.MaxRemoteRuntimeBundles,
 		MaxProviders: config.MaxRemoteRuntimeProviders, Principal: principal, WorkspaceSharing: "exclusive-certificate",
+		DisconnectGraceMillis: c.backend.DetachGrace().Milliseconds(),
 	})
 }
 

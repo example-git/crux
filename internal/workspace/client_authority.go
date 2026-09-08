@@ -35,16 +35,17 @@ type clientAuthority struct {
 	view        atomic.Pointer[config.Config]
 	accepted    config.RemoteRuntimeProposal
 	principal   string
+	creation    proto.Workspace
 	pending     *config.RemoteRuntimeProposal
 	pendingView *config.Config
 	removed     map[providerregistry.RegistrationOwner]bool
 }
 
 func newClientAuthority(c *client.Client, ws proto.Workspace) *clientAuthority {
-	if c == nil || c.LocalRuntimeStore() == nil || ws.Authority == nil || ws.Authority.Mode != "client" || ws.Runtime == nil {
+	if c == nil || c.LocalRuntimeStore() == nil || ws.Authority == nil || ws.Authority.Mode != "client" || ws.Runtime == nil || ws.Creation == nil {
 		return nil
 	}
-	a := &clientAuthority{store: c.LocalRuntimeStore(), accepted: *ws.Runtime, principal: ws.Authority.Principal, removed: map[providerregistry.RegistrationOwner]bool{}}
+	a := &clientAuthority{store: c.LocalRuntimeStore(), accepted: *ws.Runtime, principal: ws.Authority.Principal, creation: *ws.Creation, removed: map[providerregistry.RegistrationOwner]bool{}}
 	a.view.Store(c.LocalRuntimeStore().Config())
 	for _, credential := range a.accepted.Credentials {
 		providerDisabled := false
@@ -181,4 +182,43 @@ func olderClientAuthority(incoming, current *config.RemoteAuthority) bool {
 		return false
 	}
 	return incoming == nil || incoming.Mode != "client" || incoming.Principal != current.Principal || incoming.Revision < current.Revision
+}
+
+// recreateClientWorkspace recollects authority independently of public state.
+// Holding the authority mutex through ID adoption prevents a configuration
+// transaction from publishing to the lost ID while recreation is in flight.
+func (w *ClientWorkspace) recreateClientWorkspace(ctx context.Context) (*proto.Workspace, error) {
+	a := w.authority
+	if a == nil {
+		return nil, errors.New("owning client authority is unavailable for recovery")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if _, err := w.client.NegotiateRemoteRuntime(ctx); err != nil {
+		return nil, err
+	}
+	proposal, err := a.store.CollectRemoteRuntimeWithUnavailable(ctx, a.accepted.Revision, a.removed)
+	if err != nil {
+		return nil, fmt.Errorf("recollect client runtime for recovery: %w", err)
+	}
+	if proposal.Digest != a.accepted.Digest {
+		if a.accepted.Revision == ^uint64(0) {
+			return nil, errors.New("client runtime revision exhausted")
+		}
+		proposal, err = a.store.CollectRemoteRuntimeWithUnavailable(ctx, a.accepted.Revision+1, a.removed)
+		if err != nil {
+			return nil, err
+		}
+	}
+	request := a.creation
+	request.AuthorityMode, request.Runtime = "client", &proposal
+	created, err := w.client.CreateWorkspace(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	a.accepted = proposal
+	a.view.Store(a.store.Config())
+	a.pending, a.pendingView = nil, nil
+	w.installRecoveredWorkspace(*created)
+	return created, nil
 }

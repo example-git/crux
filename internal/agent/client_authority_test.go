@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/foundation/catalog"
@@ -81,6 +83,16 @@ func TestClientProviderCapturedGenerationExecutesAfterRemoval(t *testing.T) {
 	require.ErrorContains(t, err, "has no credential")
 	_, err = removed.(RemoteCompactor).Compact(t.Context(), fantasy.Call{})
 	require.ErrorContains(t, err, "has no credential")
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	waitResult := make(chan error, 1)
+	go func() { waitResult <- c.waitForInteractiveReauth(cancelled, owner) }()
+	select {
+	case err := <-waitResult:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("client authentication wait outlived its cancelled workspace context")
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, []string{"Bearer synthetic-first", "Bearer synthetic-second"}, credentials)
