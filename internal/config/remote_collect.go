@@ -42,7 +42,7 @@ func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, r
 		return RemoteRuntimeProposal{}, errors.New("collect runtime on its owning client")
 	}
 	cfg := snapshot.Config()
-	proposal := RemoteRuntimeProposal{Version: RemoteRuntimeVersion, Revision: revision, Models: maps.Clone(cfg.Models), Images: cloneImageConfiguration(cfg.Images)}
+	proposal := RemoteRuntimeProposal{Version: RemoteRuntimeVersion, Revision: revision, Models: maps.Clone(cfg.Models), Images: cloneImageConfiguration(cfg.Images), Controls: remoteControlsFromOptions(cfg.Options)}
 	selected := make(map[string]bool)
 	for _, model := range proposal.Models {
 		selected[model.Provider] = true

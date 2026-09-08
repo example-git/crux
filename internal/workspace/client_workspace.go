@@ -661,6 +661,9 @@ func (w *ClientWorkspace) SetProviderDisabled(scope config.Scope, owner provider
 }
 
 func (w *ClientWorkspace) SetCompactMode(scope config.Scope, enabled bool) error {
+	if w.clientOwned() {
+		return w.mutateClientPresentation(func(store *config.ConfigStore) error { return store.SetCompactMode(scope, enabled) })
+	}
 	err := w.client.SetCompactMode(context.Background(), w.workspaceID(), scope, enabled)
 	if err == nil {
 		w.refreshWorkspace()
@@ -691,6 +694,15 @@ func (w *ClientWorkspace) RemoveProviderCredentials(scope config.Scope, owner pr
 }
 
 func (w *ClientWorkspace) SetConfigField(scope config.Scope, key string, value any) error {
+	if w.clientOwned() && config.ClientRuntimeSetting(key) {
+		if err := config.ValidateClientRuntimeSetting(key, value); err != nil {
+			return err
+		}
+		if config.ClientPresentationSetting(key) {
+			return w.mutateClientPresentation(func(store *config.ConfigStore) error { return store.SetConfigField(scope, key, value) })
+		}
+		return w.mutateClientAuthority(context.Background(), func(store *config.ConfigStore) error { return store.SetConfigField(scope, key, value) })
+	}
 	err := w.client.SetConfigField(context.Background(), w.workspaceID(), scope, key, value)
 	if err == nil {
 		w.refreshWorkspace()
@@ -699,6 +711,12 @@ func (w *ClientWorkspace) SetConfigField(scope config.Scope, key string, value a
 }
 
 func (w *ClientWorkspace) RemoveConfigField(scope config.Scope, key string) error {
+	if w.clientOwned() && config.ClientRuntimeSetting(key) {
+		if config.ClientPresentationSetting(key) {
+			return w.mutateClientPresentation(func(store *config.ConfigStore) error { return store.RemoveConfigField(scope, key) })
+		}
+		return w.mutateClientAuthority(context.Background(), func(store *config.ConfigStore) error { return store.RemoveConfigField(scope, key) })
+	}
 	err := w.client.RemoveConfigField(context.Background(), w.workspaceID(), scope, key)
 	if err == nil {
 		w.refreshWorkspace()
