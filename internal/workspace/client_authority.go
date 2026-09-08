@@ -127,6 +127,24 @@ func (w *ClientWorkspace) mutateClientAuthority(ctx context.Context, mutate func
 	return w.publishClientAuthorityLocked(ctx, a)
 }
 
+func (w *ClientWorkspace) mutateClientPresentation(mutate func(*config.ConfigStore) error) error {
+	a := w.authority
+	if a == nil {
+		return errors.New("owning client configuration is unavailable")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := mutate(a.store); err != nil {
+		return err
+	}
+	local := a.store.Config()
+	a.view.Store(a.configView().WithClientPresentation(local))
+	if a.pendingView != nil {
+		a.pendingView = a.pendingView.WithClientPresentation(local)
+	}
+	return nil
+}
+
 func (w *ClientWorkspace) publishClientAuthorityLocked(ctx context.Context, a *clientAuthority) error {
 	proposal, err := a.store.CollectRemoteRuntimeWithUnavailable(ctx, a.accepted.Revision+1, a.removed)
 	if err != nil {

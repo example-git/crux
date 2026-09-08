@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -27,10 +28,11 @@ import (
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
-	for _, mode := range []string{"refresh-once", "expired", "never", "changed-definition", "changed-bundle", "definition-during-exchange", "bundle-during-exchange", "rejected-completion", "account-replacement-during-exchange", "account-identical-during-exchange", "account-switchback-during-exchange", "account-logout-during-exchange", "recovery-after-rotation"} {
+	for _, mode := range []string{"refresh-once", "expired", "never", "changed-definition", "changed-bundle", "definition-during-exchange", "bundle-during-exchange", "rejected-completion", "account-replacement-during-exchange", "account-identical-during-exchange", "account-switchback-during-exchange", "account-logout-during-exchange", "recovery-after-rotation", "runtime-controls"} {
 		t.Run(mode, func(t *testing.T) {
 			xdgIsolate(t)
 			t.Setenv("AI_CLI_DIR", t.TempDir())
@@ -76,6 +78,21 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					return
 				}
 				require.Equal(t, "/v1/responses", r.URL.Path)
+				if mode == "runtime-controls" {
+					body, err := io.ReadAll(r.Body)
+					require.NoError(t, err)
+					want := "high"
+					if strings.Contains(string(body), "controls-removal") {
+						want = "medium"
+					} else if strings.Contains(string(body), "controls-low") {
+						want = "low"
+					}
+					require.Equal(t, want, gjson.GetBytes(body, "reasoning.effort").String(), "the native request must use the accepted client reasoning control")
+					require.Equal(t, want, gjson.GetBytes(body, "text.verbosity").String(), "the native request must use the accepted client verbosity control")
+					if strings.Contains(string(body), "controls-instructions") {
+						require.Contains(t, string(body), "You are a token engine.", "enabling the client instruction section must affect inference")
+					}
+				}
 				credential := r.Header.Get("Authorization")
 				requestMu.Lock()
 				credentials = append(credentials, credential)
@@ -109,6 +126,14 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(configDir, "crux.json"), []byte(configuration), 0o600))
 			store, err := config.Load(t.TempDir(), t.TempDir(), false)
 			require.NoError(t, err)
+			if mode == "runtime-controls" {
+				require.NoError(t, store.SetConfigFields(config.ScopeGlobal, map[string]any{
+					"options.analysis_effort": "high", "options.response_verbosity": "high",
+					"options.disable_auto_summarize": true, "options.summarization_context_cap": 8192,
+					"options.summarization_max_tokens": 1024, "options.summarization_fast_mode": true,
+					"options.instruction_mode": "project", "options.disabled_instruction_sections": []string{"identity"},
+				}))
+			}
 			proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
 			require.NoError(t, err)
 			c, err := client.NewAuthenticatedClient(t.TempDir(), connection.Connection{Address: "tcp://" + strings.TrimPrefix(remote.URL, "https://"), ServerCertificate: serverCode, Client: identity})
@@ -247,6 +272,51 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 					receiver, err := s.Backend().GetWorkspace(created.ID)
 					require.NoError(t, err)
 					require.Equal(t, uint64(2), receiver.Cfg.RemoteAuthority().Revision)
+					if mode == "runtime-controls" {
+						options := receiver.Cfg.Config().Options
+						require.True(t, options.DisableAutoSummarize)
+						require.EqualValues(t, 8192, options.SummarizationContextCap)
+						require.EqualValues(t, 1024, options.SummarizationMaxTokens)
+						require.True(t, options.SummarizationFastMode)
+						require.Equal(t, "project", options.InstructionMode)
+						require.NoError(t, w.SetCompactMode(config.ScopeGlobal, true))
+						require.True(t, w.Config().Options.TUI.CompactMode)
+						require.Equal(t, uint64(2), receiver.Cfg.RemoteAuthority().Revision, "a display preference must not replace provider authority")
+						localBefore, err := os.ReadFile(config.GlobalConfigData())
+						require.NoError(t, err)
+						beforeInvalid := receiver.Cfg.RemoteAuthority()
+						require.ErrorContains(t, w.SetConfigField(config.ScopeGlobal, "options.analysis_effort", "invalid"), "analysis_effort")
+						localAfter, err := os.ReadFile(config.GlobalConfigData())
+						require.NoError(t, err)
+						require.Equal(t, localBefore, localAfter)
+						require.Equal(t, beforeInvalid, receiver.Cfg.RemoteAuthority())
+						for _, phase := range []string{"controls-low", "controls-removal"} {
+							for _, field := range []string{"options.analysis_effort", "options.response_verbosity"} {
+								if phase == "controls-low" {
+									require.NoError(t, w.SetConfigField(config.ScopeGlobal, field, "low"))
+								} else {
+									require.NoError(t, w.RemoveConfigField(config.ScopeGlobal, field))
+								}
+							}
+							require.NoError(t, c.SendMessageWithPermissionMode(ctx, created.ID, session.ID, phase, phase+": return the fixture response.", proto.AgentPermissionDeny))
+							awaitRefreshFixtureRun(t, ctx, events, w, phase)
+						}
+						instructions := func() string {
+							snapshot, err := c.GetAgentInstructions(ctx, created.ID)
+							require.NoError(t, err)
+							data, err := json.Marshal(snapshot)
+							require.NoError(t, err)
+							return string(data)
+						}
+						require.NotContains(t, instructions(), "You are a token engine.")
+						require.NoError(t, w.SetConfigField(config.ScopeGlobal, "options.instruction_mode", "native"))
+						require.NotContains(t, instructions(), "You are a token engine.", "the explicitly disabled section must remain disabled")
+						require.NoError(t, w.RemoveConfigField(config.ScopeGlobal, "options.disabled_instruction_sections"))
+						require.Contains(t, instructions(), "You are a token engine.")
+						require.NoError(t, c.SendMessageWithPermissionMode(ctx, created.ID, session.ID, "controls-instructions", "controls-instructions: return the fixture response.", proto.AgentPermissionDeny))
+						awaitRefreshFixtureRun(t, ctx, events, w, "controls-instructions")
+						require.EqualValues(t, 1, exchanges.Load())
+					}
 					if mode == "recovery-after-rotation" {
 						cancel()
 						require.Eventually(t, func() bool { return receiver.ConnectedClients() == 0 }, 5*time.Second, 10*time.Millisecond)
@@ -267,6 +337,28 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func awaitRefreshFixtureRun(t *testing.T, ctx context.Context, events <-chan any, w *workspace.ClientWorkspace, runID string) {
+	t.Helper()
+	for {
+		select {
+		case event, ok := <-events:
+			require.True(t, ok, "stream ended before control verification completed")
+			if w.HandleClientRefreshEvent(ctx, event) {
+				continue
+			}
+			finished, ok := event.(pubsub.Event[proto.RunComplete])
+			if !ok || finished.Payload.RunID != runID {
+				continue
+			}
+			require.Empty(t, finished.Payload.Error)
+			require.Contains(t, finished.Payload.Text, "verified remote refresh")
+			return
+		case <-ctx.Done():
+			t.Fatal("runtime-control inference did not complete")
+		}
 	}
 }
 
@@ -362,6 +454,12 @@ func installRefreshFixture(t *testing.T, endpoint, dataDir, cacheDir, mode strin
 	}
 	if mode == "replacement" {
 		value.Capabilities.Headers[1].Value.Value = "changed-responses"
+	}
+	if mode == "runtime-controls" {
+		value.Capabilities.RuntimeControls = append(value.Capabilities.RuntimeControls, manifest.RuntimeControl{
+			ID: "response_verbosity", Label: "Response verbosity", Type: "enum", Values: []string{"low", "medium", "high"},
+			Default: "medium", Scope: "model", RequestPath: "/text/verbosity",
+		})
 	}
 	data, err = json.Marshal(value)
 	require.NoError(t, err)

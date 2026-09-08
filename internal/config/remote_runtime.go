@@ -43,7 +43,7 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion      = 1
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v8"
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v9"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -60,6 +60,7 @@ type RemoteRuntimeProposal struct {
 	Bundles               []providerplugin.TransportBundle    `json:"bundles"`
 	Providers             []RemoteProviderDefinition          `json:"providers"`
 	Models                map[SelectedModelType]SelectedModel `json:"models"`
+	Controls              RemoteRuntimeControls               `json:"controls"`
 	Credentials           []RemoteCredentialBinding           `json:"credentials"`
 	Images                *ImageConfiguration                 `json:"images,omitempty"`
 	CredentialEnvironment map[string]string                   `json:"credential_environment,omitempty"`
@@ -179,12 +180,13 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 	if s.clientRuntime.authority.Revision != expectedRevision || expectedRevision == ^uint64(0) || proposal.Revision != expectedRevision+1 {
 		return nil, ErrRemoteRuntimeRevision
 	}
-	// Preserve workspace tool/UI settings while replacing all provider-owned
-	// fields, without applying ordinary provider/model fallback or disk reload.
+	// Preserve execution-host tool/UI settings while replacing all client-owned
+	// provider fields and controls, without provider/model fallback or disk reload.
 	next := s.Config().cloneForWrite()
 	next.Providers = candidate.config.Providers
 	next.Models = candidate.config.Models
 	next.Images = candidate.config.Images
+	proposal.Controls.apply(next.Options)
 	next.bindProviderScan(*candidate.config.providerScan)
 	next.captureExplicitModels()
 	next.SetupAgents()
@@ -420,7 +422,11 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		return nil, errors.New("client runtime registry has incompatible or conflicting owners")
 	}
 	scan.Registry = registry
-	cfg := &Config{Providers: providers, Models: maps.Clone(proposal.Models), Images: proposal.Images}
+	options, err := proposal.Controls.options()
+	if err != nil {
+		return nil, err
+	}
+	cfg := &Config{Providers: providers, Models: maps.Clone(proposal.Models), Images: proposal.Images, Options: options}
 	if baseEnvironment == nil {
 		baseEnvironment = env.NewFromMap(map[string]string{})
 	}
