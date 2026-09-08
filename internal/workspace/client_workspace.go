@@ -41,7 +41,8 @@ import (
 // proto.Workspace returned at creation time and refreshes it after
 // config-mutating operations.
 type ClientWorkspace struct {
-	client *client.Client
+	client    *client.Client
+	authority *clientAuthority
 
 	mu              sync.RWMutex
 	refreshSequence atomic.Uint64
@@ -95,6 +96,7 @@ func NewClientWorkspace(c *client.Client, ws proto.Workspace) *ClientWorkspace {
 	mgr := skills.NewManager(nil, nil, states, skills.WithGlobalMirror())
 	subCtx, subCancel := context.WithCancel(context.Background())
 	return &ClientWorkspace{
+		authority:   newClientAuthority(c, ws),
 		client:      c,
 		ws:          ws,
 		skills:      mgr,
@@ -119,7 +121,7 @@ func (w *ClientWorkspace) refreshWorkspace() {
 		updated.Config.SetupAgents()
 	}
 	w.mu.Lock()
-	if w.ws.ID == workspaceID && sequence >= w.appliedRefresh {
+	if w.ws.ID == workspaceID && sequence >= w.appliedRefresh && !olderClientAuthority(updated.Authority, w.ws.Authority) {
 		w.appliedRefresh = sequence
 		w.ws = *updated
 	}
@@ -377,6 +379,14 @@ func (w *ClientWorkspace) InitCoderAgentNonInteractive(ctx context.Context) erro
 }
 
 func (w *ClientWorkspace) GetDefaultSmallModel(providerID string) (config.SelectedModel, error) {
+	if w.clientOwned() {
+		if w.authority == nil {
+			return config.SelectedModel{}, errors.New("owning client catalog is unavailable")
+		}
+		cfg := w.authority.configView()
+		known, _ := config.Providers(cfg)
+		return config.DefaultSmallModel(cfg, providerID, known)
+	}
 	model, err := w.client.GetDefaultSmallModel(context.Background(), w.workspaceID(), providerID)
 	if err != nil {
 		return config.SelectedModel{}, err
@@ -595,10 +605,16 @@ func (w *ClientWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCoun
 // -- Config (read-only) --
 
 func (w *ClientWorkspace) Config() *config.Config {
+	if w.authority != nil {
+		return w.authority.configView()
+	}
 	return w.cached().Config
 }
 
 func (w *ClientWorkspace) ProviderSurfaces() []providerregistry.Surface {
+	if w.authority != nil {
+		return config.ProviderSurfaces(w.authority.configView())
+	}
 	surfaces := w.cached().ProviderSurfaces
 	for i := range surfaces {
 		surfaces[i] = surfaces[i].Clone()
@@ -617,6 +633,15 @@ func (w *ClientWorkspace) Resolver() config.VariableResolver {
 // -- Config mutations --
 
 func (w *ClientWorkspace) UpdatePreferredModel(scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel, owner providerregistry.RegistrationOwner) (config.AgentModelState, error) {
+	if w.clientOwned() {
+		var state config.AgentModelState
+		err := w.mutateClientAuthority(context.Background(), func(s *config.ConfigStore) error {
+			var err error
+			state, err = s.UpdatePreferredModelForOwner(scope, modelType, model, owner)
+			return err
+		})
+		return state, err
+	}
 	state, err := w.client.UpdatePreferredModel(context.Background(), w.workspaceID(), scope, modelType, model, owner)
 	if err == nil {
 		w.refreshWorkspace()
@@ -625,6 +650,9 @@ func (w *ClientWorkspace) UpdatePreferredModel(scope config.Scope, modelType con
 }
 
 func (w *ClientWorkspace) SetProviderDisabled(scope config.Scope, owner providerregistry.RegistrationOwner, disabled bool) error {
+	if w.clientOwned() {
+		return w.mutateClientAuthority(context.Background(), func(s *config.ConfigStore) error { return s.SetProviderDisabled(scope, owner, disabled) })
+	}
 	err := w.client.SetProviderDisabled(context.Background(), w.workspaceID(), scope, owner, disabled)
 	if err == nil {
 		w.refreshWorkspace()
@@ -641,6 +669,9 @@ func (w *ClientWorkspace) SetCompactMode(scope config.Scope, enabled bool) error
 }
 
 func (w *ClientWorkspace) SetProviderAPIKey(scope config.Scope, providerID string, apiKey any) error {
+	if w.clientOwned() {
+		return w.transactClientCredentials(context.Background(), func(editor CredentialEditor) error { return editor.SetProviderAPIKey(scope, providerID, apiKey) })
+	}
 	err := w.client.SetProviderAPIKey(context.Background(), w.workspaceID(), scope, providerID, apiKey)
 	if err == nil {
 		w.refreshWorkspace()
@@ -649,6 +680,9 @@ func (w *ClientWorkspace) SetProviderAPIKey(scope config.Scope, providerID strin
 }
 
 func (w *ClientWorkspace) RemoveProviderCredentials(scope config.Scope, owner providerregistry.RegistrationOwner) error {
+	if w.clientOwned() {
+		return w.transactClientCredentials(context.Background(), func(editor CredentialEditor) error { return editor.RemoveProviderCredentials(scope, owner) })
+	}
 	err := w.client.RemoveProviderCredentials(context.Background(), w.workspaceID(), scope, owner)
 	if err == nil {
 		w.refreshWorkspace()

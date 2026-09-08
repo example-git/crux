@@ -1730,8 +1730,11 @@ func nativeResponsesContinuationOwner(snapshot config.RuntimeSnapshot, registrat
 	}
 	if owner.AccountNamespace != "" {
 		entry, ok := snapshot.EphemeralAccount(owner)
-		if !ok {
+		if !ok && !snapshot.IsClientOwned() {
 			entry, _ = accounts.Active(context.Background(), owner.AccountNamespace)
+		}
+		if snapshot.IsClientOwned() && (entry == nil || entry.ID == "" || entry.AccessToken != apiKey) {
+			return ""
 		}
 		if entry != nil && entry.ID != "" && entry.AccessToken == apiKey {
 			account = "account:" + entry.ID
@@ -1829,13 +1832,13 @@ func (c *coordinator) buildOpenaiCompatProvider(debug bool, baseURL, apiKey stri
 // buildCodexProvider creates the Codex provider: a native Responses-over-
 // WebSocket adapter for the ChatGPT Codex endpoint, authenticating with an
 // OAuth Bearer token and presenting the Codex CLI identity.
-func (c *coordinator) buildCodexProvider(registration providerregistry.Registration, baseURL, apiKey string, headers map[string]string, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
+func (c *coordinator) buildCodexProvider(snapshot config.RuntimeSnapshot, registration providerregistry.Registration, baseURL, apiKey string, headers map[string]string, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
 	accountID := func() string {
 		if registration.AccountNamespace == "" {
 			return ""
 		}
-		entry, ok := c.cfg.EphemeralAccount(registration.Owner())
-		if !ok {
+		entry, ok := snapshot.EphemeralAccount(registration.Owner())
+		if !ok && !snapshot.IsClientOwned() {
 			var err error
 			entry, err = accounts.Active(context.Background(), registration.AccountNamespace)
 			if err != nil {
@@ -2032,6 +2035,9 @@ func openAICompatExtraBody(providerCfg config.ProviderConfig) map[string]any {
 }
 
 func (c *coordinator) buildProvider(snapshot config.RuntimeSnapshot, providerCfg config.ProviderConfig, selectedModel config.SelectedModel, isSubAgent bool) (fantasy.Provider, error) {
+	if unavailable := snapshot.ClientProviderUnavailable(selectedModel.Provider); unavailable != nil {
+		return unavailableClientProvider{id: selectedModel.Provider, err: unavailable}, nil
+	}
 	providerCfg, registration, registered, err := snapshot.ProviderForConstruction(selectedModel.Provider, providerCfg)
 	if err != nil {
 		return nil, err
@@ -2041,6 +2047,13 @@ func (c *coordinator) buildProvider(snapshot config.RuntimeSnapshot, providerCfg
 		return nil, fmt.Errorf("provider %s exact owner is unavailable before construction", providerCfg.ID)
 	}
 	validateOwner := func() error {
+		if snapshot.IsClientOwned() {
+			current, ok := snapshot.ProviderOwner(owner.ProviderID)
+			if !ok || current != owner {
+				return fmt.Errorf("captured client provider owner is unavailable")
+			}
+			return snapshot.ClientProviderUnavailable(owner.ProviderID)
+		}
 		return c.cfg.ValidateActiveProviderOwner(owner)
 	}
 	cfg := snapshot.Config()
@@ -2097,7 +2110,7 @@ func (c *coordinator) buildProvider(snapshot config.RuntimeSnapshot, providerCfg
 					return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
 				}
 			}
-			return c.buildCodexProvider(registration, baseURL, apiKey, headers, validateOwner)
+			return c.buildCodexProvider(snapshot, registration, baseURL, apiKey, headers, validateOwner)
 		case providerregistry.ConstructionCopilot:
 			return c.buildOpenaiCompatProvider(debug, baseURL, apiKey, headers, providerCfg.ExtraBody, registration.Construction, isSubAgent, validateOwner)
 		case providerregistry.ConstructionAnthropicMessages:

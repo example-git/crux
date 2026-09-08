@@ -749,43 +749,7 @@ func (app *App) GetDefaultSmallModel(providerID string) (config.SelectedModel, e
 }
 
 func defaultSmallModel(cfg *config.Config, providerID string, knownProviders []catalog.Provider) (config.SelectedModel, error) {
-	provider, ok := cfg.Providers.Get(providerID)
-	if !ok || !cfg.IsProviderAvailable(providerID) {
-		return config.SelectedModel{}, fmt.Errorf("provider %s is not available", providerID)
-	}
-	if len(provider.Models) == 0 {
-		return config.SelectedModel{}, fmt.Errorf("provider %s has no models configured", providerID)
-	}
-
-	for _, known := range knownProviders {
-		if string(known.ID) != providerID {
-			continue
-		}
-		if model := cfg.GetModel(providerID, known.DefaultSmallModelID); model != nil {
-			return config.SelectedModel{
-				Provider:        providerID,
-				Model:           model.ID,
-				MaxTokens:       model.DefaultMaxTokens,
-				ReasoningEffort: model.DefaultReasoningEffort,
-			}, nil
-		}
-		break
-	}
-
-	large := cfg.Models[config.SelectedModelTypeLarge]
-	if large.Provider == providerID {
-		if model := cfg.GetModel(providerID, large.Model); model != nil {
-			return large, nil
-		}
-	}
-
-	model := provider.Models[0]
-	return config.SelectedModel{
-		Provider:        providerID,
-		Model:           model.ID,
-		MaxTokens:       model.DefaultMaxTokens,
-		ReasoningEffort: model.DefaultReasoningEffort,
-	}, nil
+	return config.DefaultSmallModel(cfg, providerID, knownProviders)
 }
 
 func (app *App) setupEvents() {

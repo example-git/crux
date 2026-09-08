@@ -621,7 +621,7 @@ func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection,
 		}
 	}
 	if request.AuthorityMode == "client" {
-		request.Runtime, err = collectRemoteProviderState(cmd.Context(), localCwd, "", debug, revision)
+		request.Runtime, err = collectRemoteProviderStateForClient(cmd.Context(), workspaceClient, localCwd, "", debug, revision)
 		if err != nil {
 			return err
 		}
@@ -647,9 +647,16 @@ func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection,
 }
 
 func collectRemoteProviderState(ctx context.Context, cwd, dataDir string, debug bool, revision uint64) (*config.RemoteRuntimeProposal, error) {
+	return collectRemoteProviderStateForClient(ctx, nil, cwd, dataDir, debug, revision)
+}
+
+func collectRemoteProviderStateForClient(ctx context.Context, c *client.Client, cwd, dataDir string, debug bool, revision uint64) (*config.RemoteRuntimeProposal, error) {
 	store, err := config.Load(cwd, dataDir, debug)
 	if err != nil {
 		return nil, fmt.Errorf("load selected client runtime: %w", err)
+	}
+	if c != nil {
+		c.SetLocalRuntimeStore(store)
 	}
 	proposal, err := store.CollectRemoteRuntime(ctx, revision)
 	if err != nil {
@@ -722,7 +729,7 @@ func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func
 			return nil, nil, nil, err
 		}
 		wsReq.AuthorityMode = "client"
-		wsReq.Runtime, err = collectRemoteProviderState(cmd.Context(), localCwd, "", debug, 1)
+		wsReq.Runtime, err = collectRemoteProviderStateForClient(cmd.Context(), c, localCwd, "", debug, 1)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -742,7 +749,11 @@ func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func
 	}
 
 	if ws.Config != nil {
-		logFile := filepath.Join(ws.Config.Options.DataDirectory, "logs", "crux.log")
+		logDir := ws.Config.Options.DataDirectory
+		if local := c.LocalRuntimeStore(); local != nil {
+			logDir = local.Config().Options.DataDirectory
+		}
+		logFile := filepath.Join(logDir, "logs", "crux.log")
 		cruxlog.Setup(logFile, debug)
 	}
 

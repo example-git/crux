@@ -9,7 +9,10 @@ import (
 	"slices"
 
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/oauth/codex"
+	"github.com/example-git/crux/internal/oauth/gemini"
 	"github.com/example-git/crux/internal/providerplugin"
+	"github.com/example-git/crux/internal/providerregistry"
 )
 
 func cloneTransportBundles(values map[string]providerplugin.TransportBundle) map[string]providerplugin.TransportBundle {
@@ -28,6 +31,12 @@ func cloneTransportBundles(values map[string]providerplugin.TransportBundle) map
 // are read only for selected owners and must match that generation's token.
 // It never reopens a bundle path or substitutes another provider/account.
 func (s *ConfigStore) CollectRemoteRuntime(ctx context.Context, revision uint64) (RemoteRuntimeProposal, error) {
+	return s.CollectRemoteRuntimeWithUnavailable(ctx, revision, nil)
+}
+
+// CollectRemoteRuntimeWithUnavailable records intentional client logout without
+// keeping the receiver's old secret or choosing a different provider.
+func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, revision uint64, removed map[providerregistry.RegistrationOwner]bool) (RemoteRuntimeProposal, error) {
 	s.writeMu.RLock()
 	defer s.writeMu.RUnlock()
 	snapshot := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
@@ -54,7 +63,7 @@ func (s *ConfigStore) CollectRemoteRuntime(ctx context.Context, revision uint64)
 	}
 	for _, id := range slices.Sorted(maps.Keys(selected)) {
 		provider, ok := cfg.Providers.Get(id)
-		if !ok || provider.Disable {
+		if !ok {
 			return proposal, fmt.Errorf("selected client provider %q is unavailable", id)
 		}
 		owner, ok := snapshot.ProviderOwnerFor(id, provider)
@@ -77,13 +86,13 @@ func (s *ConfigStore) CollectRemoteRuntime(ctx context.Context, revision uint64)
 		if definition.BundleDigest != "" {
 			wantedBundles[definition.BundleDigest] = true
 		}
-		credential := RemoteCredentialBinding{Owner: owner, Generation: revision}
+		credential := RemoteCredentialBinding{Owner: owner, Generation: revision, Unavailable: removed[owner] || provider.Disable}
 		key, err := snapshot.Resolve(provider.APIKey)
 		if err != nil {
 			return proposal, errors.New("selected client API credential cannot be resolved")
 		}
 		credential.APIKey = key
-		if provider.OAuthToken != nil || owner.HasOAuth {
+		if !credential.Unavailable && (provider.OAuthToken != nil || owner.HasOAuth) {
 			entry, err := accounts.Active(ctx, owner.AccountNamespace)
 			if err != nil {
 				return proposal, errors.New("selected client account cannot be read")
@@ -97,10 +106,22 @@ func (s *ConfigStore) CollectRemoteRuntime(ctx context.Context, revision uint64)
 			}
 			credential.Account, credential.APIKey = entry, ""
 		}
+		if credential.Unavailable {
+			credential.APIKey = ""
+			credential.Account = nil
+		}
 		definition.Config.APIKey, definition.Config.APIKeyTemplate, definition.Config.OAuthToken = "", "", nil
 		definition.Config.BaseURL, err = snapshot.Resolve(provider.BaseURL)
 		if err != nil {
 			return proposal, errors.New("selected client endpoint cannot be resolved")
+		}
+		if definition.Config.BaseURL == "" && provider.Owner.Type == ProviderOwnerCore {
+			switch owner.Construction {
+			case providerregistry.ConstructionCodex:
+				definition.Config.BaseURL = codex.APIEndpoint
+			case providerregistry.ConstructionGeminiAntigravity:
+				definition.Config.BaseURL = gemini.APIEndpoint
+			}
 		}
 		definition.Config.ExtraHeaders = maps.Clone(provider.ExtraHeaders)
 		proposal.Providers = append(proposal.Providers, definition)

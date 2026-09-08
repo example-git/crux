@@ -115,6 +115,17 @@ func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*prot
 	if capabilities != nil && (created.Authority == nil || created.Authority.Mode != "client" || created.Authority.Principal != capabilities.Principal || created.Authority.Revision != ws.Runtime.Revision || created.Authority.Digest != ws.Runtime.Digest) {
 		return nil, errors.New("remote workspace acknowledgement does not match submitted client authority")
 	}
+	if mode == "client" {
+		// Private local state is never reconstructed from redacted discovery.
+		data, err := json.Marshal(ws.Runtime)
+		if err != nil {
+			return nil, errors.New("cannot retain accepted client runtime")
+		}
+		if err := json.Unmarshal(data, &created.Runtime); err != nil {
+			return nil, err
+		}
+	}
+	created.AuthorityMode = mode
 	return &created, nil
 }
 

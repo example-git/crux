@@ -27,12 +27,13 @@ const DummyHost = "api.crux.localhost"
 
 // Client represents an RPC client connected to a Crux server.
 type Client struct {
-	h        *http.Client
-	path     string
-	network  string
-	addr     string
-	clientID string
-	secure   bool
+	h                 *http.Client
+	path              string
+	network           string
+	addr              string
+	clientID          string
+	localRuntimeStore *config.ConfigStore
+	secure            bool
 }
 
 // DefaultClient creates a new [Client] connected to the default server address.
@@ -308,3 +309,8 @@ func (c *Client) buildReq(ctx context.Context, method, url string, body io.Reade
 
 	return r, nil
 }
+
+// SetLocalRuntimeStore retains owning-client configuration independently of
+// redacted server discovery. Set it during startup, before sharing this client.
+func (c *Client) SetLocalRuntimeStore(store *config.ConfigStore) { c.localRuntimeStore = store }
+func (c *Client) LocalRuntimeStore() *config.ConfigStore         { return c.localRuntimeStore }
