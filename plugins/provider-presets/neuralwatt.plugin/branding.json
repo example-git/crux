@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Neuralwatt",
+  "short_name": "NWATT",
+  "color": "#FACC15",
+  "gradient_a": "#FACC15",
+  "gradient_b": "#86EFAC"
+}

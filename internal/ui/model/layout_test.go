@@ -53,6 +53,32 @@ var _ chat.MessageItem = (*mutableMessageItem)(nil)
 // newTestUI builds a focused uiChat model with dynamic textarea sizing enabled.
 // It intentionally keeps dependencies minimal so layout behavior can be tested
 // in isolation.
+func TestInputAndSidebarReachTerminalEdges(t *testing.T) {
+	for _, state := range []uiState{uiLanding, uiChat} {
+		for _, compact := range []bool{false, true} {
+			ui := newTestUI()
+			ui.state = state
+			ui.isCompact = compact
+			ui.width = 120
+			layout := ui.generateLayout(120, 40)
+			if layout.editor.Min.X != 0 {
+				t.Errorf("state %v compact %v: input left edge = %d", state, compact, layout.editor.Min.X)
+			}
+			if layout.editor.Dx() != ui.editorContentWidth() {
+				t.Errorf("state %v compact %v: input width %d differs from form width %d", state, compact, layout.editor.Dx(), ui.editorContentWidth())
+			}
+			if state == uiChat && !compact {
+				if layout.sidebar.Min.Y != 1 || layout.sidebar.Min.X != 85 || layout.sidebar.Max.X != 119 || layout.sidebar.Max.Y != layout.editor.Min.Y-1 {
+					t.Errorf("sidebar does not match requested inset: %v", layout.sidebar)
+				}
+				if layout.status.Min.X != 0 || layout.status.Max.X != 120 {
+					t.Errorf("status does not span terminal width: %v", layout.status)
+				}
+			}
+		}
+	}
+}
+
 func newTestUI() *UI {
 	com := common.DefaultCommon(nil)
 

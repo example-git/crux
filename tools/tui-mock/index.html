@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Crux · Real UI preview</title></head>
+<body>
+ <div class="preview-controls" aria-label="Controls connected to the real Go UI">
+  <div class="preview-title"><strong>Crux · real UI</strong><span id="provider">Dummy Provider (local fixture)</span><output id="dimensions"></output></div>
+  <div class="control-row">
+   <label>Example <select id="example"><option value="all">All types</option></select></label>
+   <label>Modal <select id="modal"><option value="none">None</option></select></label>
+   <label>Popover <select id="popover"><option value="none">None</option></select></label>
+   <label>Menu row <input id="menu-row" type="range" min="0" max="100" step="1" value="0"></label>
+   <label>Model <select id="model"><option value="dummy-coder">Dummy Coder · 280K</option></select></label>
+   <label>Session <select id="scenario"><option value="working">Working</option><option value="idle">Idle / completed</option><option value="error">Tool error</option></select></label>
+   <label>Font <input id="font-size" type="range" min="9" max="18" step="0.5" value="12"><output id="font-value">12px</output></label>
+   <label>Spacing <select id="line-height"><option value="1.1">Original</option><option value="1.3">Roomier</option><option value="1">Tight</option></select></label>
+   <label><input id="compact" type="checkbox"> Compact layout</label>
+   <label><input id="plan" type="checkbox" checked> Expand To-Do</label>
+   <label><input id="expanded" type="checkbox"> Expand tool output</label>
+   <label><input id="compact-tools" type="checkbox"> Tool headers only</label>
+   <button id="reset" type="button">Reset</button>
+  </div>
+  <div class="control-row">
+   <span id="session-source">Dummy data</span><label>Saved session <select id="saved-session" disabled><option value="">Select a session</option></select></label><button id="session-load" disabled>Load session</button>
+   <button id="jump-top">Top</button><label>Message # <input id="jump-message" type="number" min="1" value="1" style="width:70px"></label><button id="jump-go">Go</button><button id="jump-bottom">Bottom</button>
+  </div>
+  <details id="control-api"><summary>Preview control API</summary><span id="control-connection">Connecting control API…</span><label>Command JSON <textarea id="control-command" rows="2">{"action":"set","state":{"example":"tool-job_output","toolsExpanded":false}}</textarea></label><button id="control-apply" type="button">Apply preview command</button><output id="control-result" aria-live="polite"></output></details>
+  <div class="bridge-row"><span id="bridge-status" role="status">Connecting to Go renderer…</span><span><span id="example-note">All fixture types · local input only</span></span></div>
+ </div>
+ <div id="terminal" aria-label="Crux production UI rendered by Go"></div>
+ <script type="module" src="/main.js"></script>
+</body>
+</html>

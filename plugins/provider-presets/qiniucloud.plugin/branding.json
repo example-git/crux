@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "QiniuCloud",
+  "short_name": "QINIU",
+  "color": "#60A5FA",
+  "gradient_a": "#60A5FA",
+  "gradient_b": "#A5B4FC"
+}

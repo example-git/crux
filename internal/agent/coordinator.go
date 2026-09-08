@@ -139,11 +139,13 @@ type Coordinator interface {
 }
 
 type coordinator struct {
+	trafficContext           context.Context
 	cfg                      *config.ConfigStore
 	sessions                 session.Service
 	messages                 message.Service
 	permissions              permission.Service
 	questions                question.Service
+	browserFetch             *tools.BrowserFetchService
 	history                  history.Service
 	filetracker              filetracker.Service
 	lspManager               *lsp.Manager
@@ -244,11 +246,13 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	skillTracker := skills.NewTracker(activeSkills)
 
 	c := &coordinator{
+		trafficContext:         ctx,
 		cfg:                    opts.Config,
 		sessions:               opts.Sessions,
 		messages:               opts.Messages,
 		permissions:            opts.Permissions,
 		questions:              opts.Questions,
+		browserFetch:           tools.NewBrowserFetchService(opts.Questions, opts.Interactive),
 		history:                opts.History,
 		filetracker:            opts.FileTracker,
 		lspManager:             opts.LSPManager,
@@ -568,6 +572,23 @@ func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sess
 // dispatchMu; when nil (the in-process/local path) no accept tracking
 // applies.
 func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+	ctx = log.WithTrafficContext(ctx, c.trafficContext)
+	if DeliveryModeFromContext(ctx) == DeliverySteer {
+		call := SessionAgentCall{
+			SessionID: sessionID, Prompt: prompt, Attachments: attachments,
+			DeliveryMode: DeliverySteer, SubmissionID: SubmissionIDFromContext(ctx),
+			RunID: RunIDFromContext(ctx), Accepted: accept,
+		}
+		if err := ValidateCall(call); err != nil {
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if active, ok := c.currentAgent.(interface{ queueActivePrompt(SessionAgentCall) bool }); ok && active.queueActivePrompt(call) {
+			return nil, nil
+		}
+	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
@@ -665,10 +686,47 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		slog.Debug("Could not load relevant auto-memory", "error", memoryErr)
 		memoryInstructions = ""
 	}
+	prepareRuntime := func(stepContext context.Context, next InstalledRuntime) (fantasy.StepModelSettings, error) {
+		nextModel := next.LargeModel
+		nextConfig := next.Snapshot.Config()
+		nextProvider, ok := nextConfig.Providers.Get(nextModel.ModelCfg.Provider)
+		if !ok {
+			return fantasy.StepModelSettings{}, errModelProviderNotConfigured
+		}
+		nextProvider.ID = nextModel.ModelCfg.Provider
+		nextRegistration, nextRegistered := next.Snapshot.ProviderBehaviorRegistration(nextModel.ModelCfg.Provider, nextProvider)
+		nextOptions, nextTemp, nextTopP, nextTopK, nextFreq, nextPres, err := mergeCallOptions(nextModel, nextProvider, nextRegistration)
+		if err != nil {
+			return fantasy.StepModelSettings{}, err
+		}
+		nextOptions = c.oauthReasoningOptionsForRegistration(nextModel.ModelCfg.Provider, nextModel.ModelCfg.Model, nextRegistration, nextRegistered, nextOptions)
+		nextOptions = applyRegisteredRuntimeOptions(nextModel.ModelCfg.Model, nextConfig.Options, nextRegistration, nextRegistered, nextOptions)
+		runtime, model, cfg = next, nextModel, nextConfig
+		providerCfg, registration, registered = nextProvider, nextRegistration, nextRegistered
+		mergedOptions, temp, topP, topK, freqPenalty, presPenalty = nextOptions, nextTemp, nextTopP, nextTopK, nextFreq, nextPres
+		maxTokens = model.CatalogModel.DefaultMaxTokens
+		if model.ModelCfg.MaxTokens != 0 {
+			maxTokens = model.ModelCfg.MaxTokens
+		}
+		var outputLimit *int64
+		if maxTokens > 0 {
+			limit := maxTokens
+			outputLimit = &limit
+		}
+		return fantasy.StepModelSettings{
+			MaxOutputTokens: outputLimit, ProviderOptions: mergedOptions,
+			Temperature: temp, TopP: topP, TopK: topK,
+			FrequencyPenalty: freqPenalty, PresencePenalty: presPenalty,
+			MaxRetries:    modelMaxRetries(model),
+			OnAuthRefresh: c.makeAuthRefreshCallback(runtime.Snapshot, providerCfg),
+		}, nil
+	}
 	run := func() (*fantasy.AgentResult, error) {
 		return c.currentAgent.Run(ctx, SessionAgentCall{
+			PrepareRuntime:       prepareRuntime,
 			SessionID:            sessionID,
 			SubmissionID:         submissionID,
+			DeliveryMode:         DeliveryModeFromContext(ctx),
 			RunID:                runID,
 			Prompt:               prompt,
 			CodebaseInstructions: codebaseInstructions,
@@ -1096,21 +1154,25 @@ func (c *coordinator) buildAgentWithSnapshot(ctx context.Context, promptTemplate
 
 	largeProviderCfg, _ := cfg.Providers.Get(large.ModelCfg.Provider)
 	result := NewSessionAgent(SessionAgentOptions{
-		LargeModel:           large,
-		SmallModel:           small,
-		SystemPromptPrefix:   largeProviderCfg.SystemPromptPrefix,
-		SystemPrompt:         "",
-		SystemPromptBuilder:  c.systemPromptBuilder(promptTemplate, snapshot, isSubAgent, agent.Instructions),
-		RuntimeSnapshot:      snapshot,
-		IsSubAgent:           isSubAgent,
-		DisableAutoSummarize: cfg.Options.DisableAutoSummarize,
-		IsYolo:               c.permissions.SkipRequests(),
-		Sessions:             c.sessions,
-		Messages:             c.messages,
-		Tools:                nil,
-		PlanModeTools:        nil,
-		Notify:               c.notify,
-		RunComplete:          c.runComplete,
+		LargeModel:              large,
+		SmallModel:              small,
+		SystemPromptPrefix:      largeProviderCfg.SystemPromptPrefix,
+		SystemPrompt:            "",
+		SystemPromptBuilder:     c.systemPromptBuilder(promptTemplate, snapshot, isSubAgent, agent.Instructions),
+		RuntimeSnapshot:         snapshot,
+		IsSubAgent:              isSubAgent,
+		DisableAutoSummarize:    cfg.Options.DisableAutoSummarize,
+		SummarizationContextCap: cfg.Options.SummarizationContextCap,
+		SummarizationMaxTokens:  cfg.Options.SummarizationMaxTokens,
+		SummarizationFastMode:   cfg.Options.SummarizationFastMode,
+		CodexCompactionV2:       cfg.Options.CodexCompactionV2,
+		IsYolo:                  c.permissions.SkipRequests(),
+		Sessions:                c.sessions,
+		Messages:                c.messages,
+		Tools:                   nil,
+		PlanModeTools:           nil,
+		Notify:                  c.notify,
+		RunComplete:             c.runComplete,
 	})
 
 	// The readiness goroutines below perform one-time setup — building the
@@ -1163,6 +1225,7 @@ func resolveSubagentTools(agent config.Agent, disabled []string) []string {
 			tools.CodebaseSearchToolName,
 			tools.ImagegenToolName,
 			tools.TaskContinueToolName,
+			tools.TaskRestartToolName,
 			tools.TrafficCaptureToolName:
 			return true
 		default:
@@ -1248,11 +1311,12 @@ func (c *coordinator) buildToolsForSkills(ctx context.Context, agent config.Agen
 		tools.NewTaskListTool(c),
 		tools.NewTaskOutputTool(c),
 		tools.NewTaskStopTool(c),
+		tools.NewTaskRestartTool(c),
 		tools.NewTaskContinueTool(c),
 		tools.NewDownloadTool(c.permissions, c.cfg.WorkingDir(), nil),
 		tools.NewEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 		tools.NewMultiEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
-		tools.NewFetchTool(c.permissions, c.cfg.WorkingDir(), nil),
+		tools.NewFetchTool(c.permissions, c.cfg.WorkingDir(), nil, c.browserFetch, environment),
 		tools.NewSearchTool(c.permissions, c.cfg.WorkingDir(), cfg.Tools.Search),
 		tools.NewLsTool(c.permissions, c.cfg.WorkingDir(), cfg.Tools.Ls),
 		tools.NewMemoryListTool(memoryService),
@@ -1505,18 +1569,19 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 	smallImagePolicy, hasSmallImagePolicy := imageattachment.PolicyFromDeclaration(smallRegistration.Images)
 
 	primary := Model{
-		Model:              primaryLanguageModel,
-		CatalogModel:       *primaryCatalogModel,
-		ModelCfg:           primaryModelCfg,
-		FlatRate:           primaryProviderCfg.FlatRate,
-		SystemPromptPrefix: primaryProviderCfg.SystemPromptPrefix,
-		InstructionPolicy:  instructionPolicyForConstruction(primaryRegistration.Construction),
-		Compaction:         primaryCompaction,
-		Compactor:          primaryCompactor,
-		CompactionRetry:    primaryCompactionRetry,
-		Retry:              manifestOperationRetry(primaryRegistration, primaryRegistered),
-		Metadata:           slices.Clone(primaryRegistration.Metadata),
-		OnAuthRefresh:      c.makeAuthRefreshCallback(snapshot, primaryProviderCfg),
+		Model:               primaryLanguageModel,
+		CatalogModel:        *primaryCatalogModel,
+		ModelCfg:            primaryModelCfg,
+		FlatRate:            primaryProviderCfg.FlatRate,
+		SystemPromptPrefix:  primaryProviderCfg.SystemPromptPrefix,
+		InstructionPolicy:   instructionPolicyForConstruction(primaryRegistration.Construction),
+		Compaction:          primaryCompaction,
+		Compactor:           primaryCompactor,
+		CompactionRetry:     primaryCompactionRetry,
+		Retry:               manifestOperationRetry(primaryRegistration, primaryRegistered),
+		Metadata:            slices.Clone(primaryRegistration.Metadata),
+		AnthropicEfficiency: primaryRegistration.AnthropicEfficiency,
+		OnAuthRefresh:       c.makeAuthRefreshCallback(snapshot, primaryProviderCfg),
 	}
 	if !primaryRegistered {
 		primary.InstructionPolicy = fantasy.InstructionPolicyGeneric
@@ -1536,18 +1601,19 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 		primaryProviderOptions,
 	)
 	small := Model{
-		Model:              smallLanguageModel,
-		CatalogModel:       *smallCatalogModel,
-		ModelCfg:           smallModelCfg,
-		FlatRate:           smallProviderCfg.FlatRate,
-		SystemPromptPrefix: smallProviderCfg.SystemPromptPrefix,
-		InstructionPolicy:  instructionPolicyForConstruction(smallRegistration.Construction),
-		Compaction:         smallCompaction,
-		Compactor:          smallCompactor,
-		CompactionRetry:    smallCompactionRetry,
-		Retry:              manifestOperationRetry(smallRegistration, smallRegistered),
-		Metadata:           slices.Clone(smallRegistration.Metadata),
-		OnAuthRefresh:      c.makeAuthRefreshCallback(snapshot, smallProviderCfg),
+		Model:               smallLanguageModel,
+		CatalogModel:        *smallCatalogModel,
+		ModelCfg:            smallModelCfg,
+		FlatRate:            smallProviderCfg.FlatRate,
+		SystemPromptPrefix:  smallProviderCfg.SystemPromptPrefix,
+		InstructionPolicy:   instructionPolicyForConstruction(smallRegistration.Construction),
+		Compaction:          smallCompaction,
+		Compactor:           smallCompactor,
+		CompactionRetry:     smallCompactionRetry,
+		Retry:               manifestOperationRetry(smallRegistration, smallRegistered),
+		Metadata:            slices.Clone(smallRegistration.Metadata),
+		AnthropicEfficiency: smallRegistration.AnthropicEfficiency,
+		OnAuthRefresh:       c.makeAuthRefreshCallback(snapshot, smallProviderCfg),
 	}
 	if !smallRegistered {
 		small.InstructionPolicy = fantasy.InstructionPolicyGeneric
@@ -1599,8 +1665,11 @@ func manifestCompaction(registration providerregistry.Registration, registered b
 	}
 }
 
-func (c *coordinator) buildAnthropicProvider(debug bool, baseURL, apiKey string, headers map[string]string, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
+func (c *coordinator) buildAnthropicProvider(debug bool, baseURL, apiKey string, headers map[string]string, efficiency *anthropic.EfficiencyPolicy, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
 	opts := []anthropic.Option{anthropic.WithAPIKey(apiKey)}
+	if efficiency != nil {
+		opts = append(opts, anthropic.WithEfficiencyPolicy(*efficiency))
+	}
 	if len(headers) > 0 {
 		opts = append(opts, anthropic.WithHeaders(headers))
 	}
@@ -1638,6 +1707,9 @@ func (c *coordinator) buildManifestAnthropicProvider(debug bool, registration pr
 	}
 	headers["Authorization"] = "Bearer " + apiKey
 	opts := []anthropic.Option{anthropic.WithHTTPClient(httpClient)}
+	if registration.AnthropicEfficiency != nil {
+		opts = append(opts, anthropic.WithEfficiencyPolicy(*registration.AnthropicEfficiency))
+	}
 	if len(headers) > 0 {
 		opts = append(opts, anthropic.WithHeaders(headers))
 	}
@@ -2035,7 +2107,7 @@ func (c *coordinator) buildProvider(snapshot config.RuntimeSnapshot, providerCfg
 			if registration.Operation.Anthropic != nil {
 				return c.buildManifestAnthropicProvider(debug, registration, baseURL, apiKey, headers, values, validateOwner)
 			}
-			return c.buildAnthropicProvider(debug, baseURL, apiKey, headers, validateOwner)
+			return c.buildAnthropicProvider(debug, baseURL, apiKey, headers, registration.AnthropicEfficiency, validateOwner)
 		case providerregistry.ConstructionOpenAIResponses:
 			if registration.Operation == nil {
 				return nil, fmt.Errorf("provider %s has no operation contract", providerCfg.ID)
@@ -2274,14 +2346,18 @@ func (c *coordinator) prepareRuntimeGeneration(ctx context.Context, runtimeSnaps
 	}
 
 	installed := InstalledRuntime{
-		LargeModel:           large,
-		SmallModel:           small,
-		Instructions:         instructions,
-		Tools:                palettes.normal,
-		PlanModeTools:        palettes.planMode,
-		DisableAutoSummarize: cfg.Options.DisableAutoSummarize,
-		SystemPromptBuilder:  c.systemPromptBuilder(coder, runtimeSnapshot, false, agentCfg.Instructions),
-		Snapshot:             runtimeSnapshot,
+		LargeModel:              large,
+		SmallModel:              small,
+		Instructions:            instructions,
+		Tools:                   palettes.normal,
+		PlanModeTools:           palettes.planMode,
+		DisableAutoSummarize:    cfg.Options.DisableAutoSummarize,
+		SummarizationContextCap: cfg.Options.SummarizationContextCap,
+		SummarizationMaxTokens:  cfg.Options.SummarizationMaxTokens,
+		SummarizationFastMode:   cfg.Options.SummarizationFastMode,
+		CodexCompactionV2:       cfg.Options.CodexCompactionV2,
+		SystemPromptBuilder:     c.systemPromptBuilder(coder, runtimeSnapshot, false, agentCfg.Instructions),
+		Snapshot:                runtimeSnapshot,
 	}
 	var once sync.Once
 	finish := func(commit bool) {
@@ -2319,6 +2395,7 @@ func (c *coordinator) QueuedPromptsList(sessionID string) []QueuedPrompt {
 }
 
 func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
+	ctx = log.WithTrafficContext(ctx, c.trafficContext)
 	runtime := c.currentAgent.Runtime()
 	model := runtime.LargeModel
 	cfg := runtime.Snapshot.Config()
@@ -2349,6 +2426,7 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
 
 // GenerateTitle generates a session title using the current agent.
 func (c *coordinator) GenerateTitle(ctx context.Context, sessionID, prompt string) {
+	ctx = log.WithTrafficContext(ctx, c.trafficContext)
 	if c.currentAgent == nil {
 		return
 	}
@@ -2358,6 +2436,7 @@ func (c *coordinator) GenerateTitle(ctx context.Context, sessionID, prompt strin
 // SuggestPrompt predicts the user's likely next message using the
 // small model.
 func (c *coordinator) SuggestPrompt(ctx context.Context, sessionID string) (string, error) {
+	ctx = log.WithTrafficContext(ctx, c.trafficContext)
 	if c.currentAgent == nil {
 		return "", errors.New("agent not initialized")
 	}

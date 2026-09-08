@@ -27,9 +27,6 @@ import (
 // responseContextHeight limits the number of lines displayed in tool output.
 const responseContextHeight = 10
 
-// toolBodyLeftPaddingTotal represents the padding that should be applied to each tool body
-const toolBodyLeftPaddingTotal = 2
-
 // ToolStatus represents the current state of a tool call.
 type ToolStatus int
 
@@ -235,9 +232,11 @@ func NewToolMessageItem(
 	case tools.MultiEditToolName:
 		item = NewMultiEditToolMessageItem(sty, toolCall, result, canceled)
 	case tools.SearchToolName:
-		item = NewSearchToolMessageItem(sty, toolCall, result, canceled)
+		item = NewSearchToolMessageItem(sty, toolCall, result, canceled, workingDir)
 	case tools.LSToolName:
 		item = NewLSToolMessageItem(sty, toolCall, result, canceled)
+	case tools.SkillLoadToolName:
+		item = newBaseToolMessageItem(sty, toolCall, result, &skillLoadRenderContext{}, canceled)
 	case tools.DownloadToolName:
 		item = NewDownloadToolMessageItem(sty, toolCall, result, canceled)
 	case tools.ImagegenToolName:
@@ -295,6 +294,7 @@ func NewToolMessageItem(
 		tools.TaskListToolName,
 		tools.TaskOutputToolName,
 		tools.TaskStopToolName,
+		tools.TaskRestartToolName,
 		tools.TaskContinueToolName:
 		item = newActionToolMessageItem(sty, toolCall, result, canceled)
 	default:
@@ -355,9 +355,13 @@ func (t *baseToolMessageItem) Animate(msg anim.StepMsg) tea.Cmd {
 
 // RawRender implements [MessageItem].
 func (t *baseToolMessageItem) RawRender(width int) string {
-	toolItemWidth := width - MessageLeftPaddingTotal
+	prefixWidth := MessageLeftPaddingTotal
+	if t.isCompact {
+		prefixWidth = lipgloss.Width(t.sty.Messages.ToolCallCompact.Render())
+	}
+	toolItemWidth := max(1, width-prefixWidth)
 	if t.hasCappedWidth {
-		toolItemWidth = cappedMessageWidth(width)
+		toolItemWidth = min(toolItemWidth, maxTextWidth)
 	}
 
 	content, height, ok := t.getCachedRender(toolItemWidth)
@@ -503,6 +507,9 @@ func (t *baseToolMessageItem) SetSpinningFunc(fn SpinningFunc) {
 
 // ToggleExpanded toggles the expanded state of the thinking box.
 func (t *baseToolMessageItem) ToggleExpanded() bool {
+	if t.toolCall.Name == tools.TodosToolName && t.computeStatus() != ToolStatusError {
+		return false
+	}
 	t.expandedContent = !t.expandedContent
 	t.clearCache()
 	t.Bump()
@@ -561,7 +568,7 @@ func toolEarlyStateContent(sty *styles.Styles, opts *ToolRenderOpts, width int) 
 	var msg string
 	switch opts.Status {
 	case ToolStatusError:
-		msg = toolErrorContent(sty, opts.Result, width)
+		msg = toolErrorContent(sty, opts.Result, width, opts.ExpandedContent)
 	case ToolStatusCanceled:
 		msg = sty.Tool.StateCancelled.Render("Canceled.")
 	case ToolStatusAwaitingPermission:
@@ -575,22 +582,28 @@ func toolEarlyStateContent(sty *styles.Styles, opts *ToolRenderOpts, width int) 
 }
 
 // toolErrorContent formats an error message with an ERROR or WARN tag.
-func toolErrorContent(sty *styles.Styles, result *message.ToolResult, width int) string {
+func toolErrorContent(sty *styles.Styles, result *message.ToolResult, width int, expanded ...bool) string {
 	if result == nil {
 		return ""
 	}
-	errContent := strings.ReplaceAll(result.Content, "\n", " ")
-	if strings.Contains(errContent, "User denied permission") ||
-		strings.Contains(errContent, "User cancelled") {
-		deniedTag := sty.Tool.WarnTag.Render("WARN")
-		deniedTagWidth := lipgloss.Width(deniedTag)
-		errContent = ansi.Truncate(errContent, width-deniedTagWidth-3, "…")
-		return fmt.Sprintf("%s %s", deniedTag, sty.Tool.WarnMessage.Render(errContent))
+	content := common.StripCursorControl(result.Content)
+	tag := sty.Tool.ErrorTag.Render("ERROR")
+	textStyle := sty.Tool.ErrorMessage
+	if strings.Contains(content, "User denied permission") || strings.Contains(content, "User cancelled") {
+		tag = sty.Tool.WarnTag.Render("WARN")
+		textStyle = sty.Tool.WarnMessage
 	}
-	errTag := sty.Tool.ErrorTag.Render("ERROR")
-	tagWidth := lipgloss.Width(errTag)
-	errContent = ansi.Truncate(errContent, width-tagWidth-3, "…")
-	return fmt.Sprintf("%s %s", errTag, sty.Tool.ErrorMessage.Render(errContent))
+	isExpanded := len(expanded) > 0 && expanded[0]
+	flat := strings.ReplaceAll(content, "\n", " ")
+	available := max(1, width-lipgloss.Width(tag)-1)
+	if isExpanded {
+		return tag + "\n" + textStyle.Render(ansi.Hardwrap(content, max(1, width), true)) + "\n" + renderOutputFooter(sty, width, summaryDisclosure("Error details", true), sty.PanelBackground)
+	}
+	body := tag + " " + textStyle.Render(ansi.Truncate(flat, available, "…"))
+	if strings.Contains(content, "\n") || ansi.StringWidth(flat) > available {
+		body += "\n" + renderOutputFooter(sty, width, summaryDisclosure("Error details", false), sty.PanelBackground)
+	}
+	return body
 }
 
 // toolIcon returns the status icon for a tool call.
@@ -679,37 +692,41 @@ func toolOutputPlainContent(sty *styles.Styles, content string, width int, expan
 	content = common.StripCursorControl(content)
 	content = common.RemapANSI16(content, sty.ANSI)
 	lines := strings.Split(content, "\n")
-
-	maxLines := responseContextHeight
-	if expanded {
-		maxLines = len(lines) // Show all
-	}
-
-	var out []string
-	for i, ln := range lines {
-		if i >= maxLines {
-			break
+	limit := len(lines)
+	if !expanded {
+		limit = min(limit, responseContextHeight)
+		if width < 70 {
+			limit = min(limit, 4)
 		}
-		ln = " " + ln
-		if lipgloss.Width(ln) > width {
-			ln = ansi.Truncate(ln, width, "…")
+	}
+	innerWidth := summaryContentWidth(sty, width)
+	rows := make([]string, 0, limit)
+	clipped := limit < len(lines)
+	for _, line := range lines[:limit] {
+		if expanded {
+			line = ansi.Hardwrap(line, innerWidth, true)
+		} else {
+			clipped = clipped || ansi.StringWidth(line) > innerWidth
+			line = ansi.Truncate(line, innerWidth, "…")
 		}
-		out = append(out, sty.Tool.ContentLine.Width(width).Render(ln))
+		rows = append(rows, line)
 	}
-
-	wasTruncated := len(lines) > responseContextHeight
-
-	if !expanded && wasTruncated {
-		out = append(out, sty.Tool.ContentTruncation.
-			Width(width).
-			Render(fmt.Sprintf(assistantMessageTruncateFormat, len(lines)-responseContextHeight)))
+	footer := ""
+	if expanded || clipped {
+		footer = summaryDisclosure("Full output", expanded)
 	}
-
-	return strings.Join(out, "\n")
+	return renderSummaryPanel(sty, width, rows, footer)
 }
 
 // toolOutputCodeContent renders code with syntax highlighting and line numbers.
 func toolOutputCodeContent(sty *styles.Styles, path, content string, offset, width int, expanded bool) string {
+	bodyWidth := toolBodyWidth(sty, width)
+	body := toolOutputCodePanel(sty, path, content, offset, bodyWidth, expanded)
+	body += "\n" + renderOutputFooter(sty, bodyWidth, summaryDisclosure("Full code", expanded), sty.PanelBackground)
+	return sty.Tool.Body.Render(body)
+}
+
+func toolOutputCodePanel(sty *styles.Styles, path, content string, offset, width int, expanded bool) string {
 	content = stringext.NormalizeSpace(content)
 
 	lines := strings.Split(content, "\n")
@@ -733,33 +750,29 @@ func toolOutputCodeContent(sty *styles.Styles, path, content string, offset, wid
 	maxDigits := getDigits(maxLineNumber)
 	numFmt := fmt.Sprintf("%%%dd", maxDigits)
 
-	bodyWidth := width - toolBodyLeftPaddingTotal
-	codeWidth := bodyWidth - maxDigits
+	bodyWidth := width
+	codeWidth := max(1, bodyWidth-maxDigits-sty.Tool.ContentLineNumber.GetHorizontalFrameSize())
 
 	var out []string
 	for i, ln := range highlightedLines {
 		lineNum := sty.Tool.ContentLineNumber.Render(fmt.Sprintf(numFmt, i+1+offset))
 
-		// Truncate accounting for padding that will be added.
-		ln = ansi.Truncate(ln, codeWidth-sty.Tool.ContentCodeLine.GetHorizontalPadding(), "…")
-
-		codeLine := sty.Tool.ContentCodeLine.
-			Width(codeWidth).
-			Render(ln)
-
-		out = append(out, lipgloss.JoinHorizontal(lipgloss.Left, lineNum, codeLine))
+		textWidth := max(1, codeWidth-sty.Tool.ContentCodeLine.GetHorizontalPadding())
+		if expanded {
+			ln = ansi.Hardwrap(ln, textWidth, true)
+		} else {
+			ln = ansi.Truncate(ln, textWidth, "…")
+		}
+		for row, text := range strings.Split(ln, "\n") {
+			if row > 0 {
+				lineNum = sty.Tool.ContentLineNumber.Render(strings.Repeat(" ", maxDigits))
+			}
+			codeLine := sty.Tool.ContentCodeLine.Width(codeWidth).Render(text)
+			out = append(out, lipgloss.JoinHorizontal(lipgloss.Left, lineNum, codeLine))
+		}
 	}
 
-	// Add truncation message if needed.
-	if len(lines) > maxLines && !expanded {
-		out = append(
-			out, sty.Tool.ContentCodeTruncation.
-				Width(width).
-				Render(fmt.Sprintf(assistantMessageTruncateFormat, len(lines)-maxLines)),
-		)
-	}
-
-	return sty.Tool.Body.Render(strings.Join(out, "\n"))
+	return strings.Join(out, "\n")
 }
 
 // toolOutputImageContent renders image data with size info.
@@ -987,11 +1000,12 @@ func formatSize(bytes int) string {
 
 // toolOutputDiffContent renders a diff between old and new content.
 func toolOutputDiffContent(sty *styles.Styles, file, oldContent, newContent string, width int, expanded bool) string {
-	bodyWidth := width - toolBodyLeftPaddingTotal
+	bodyWidth := toolBodyWidth(sty, width)
 
 	formatter := common.DiffFormatter(sty).
 		Before(file, oldContent).
 		After(file, newContent).
+		Wrap(expanded).
 		Width(bodyWidth)
 
 	// Use split view for wide terminals.
@@ -1009,12 +1023,10 @@ func toolOutputDiffContent(sty *styles.Styles, file, oldContent, newContent stri
 	}
 
 	if len(lines) > maxLines && !expanded {
-		truncMsg := sty.Tool.DiffTruncation.
-			Width(bodyWidth).
-			Render(fmt.Sprintf(assistantMessageTruncateFormat, len(lines)-maxLines))
-		formatted = strings.Join(lines[:maxLines], "\n") + "\n" + truncMsg
+		formatted = strings.Join(lines[:maxLines], "\n")
 	}
 
+	formatted += "\n" + renderOutputFooter(sty, bodyWidth, summaryDisclosure("Full diff", expanded), sty.PanelBackground)
 	return sty.Tool.Body.Render(formatted)
 }
 
@@ -1037,11 +1049,12 @@ func formatNonZero(value int) string {
 
 // toolOutputMultiEditDiffContent renders a diff with optional failed edits note.
 func toolOutputMultiEditDiffContent(sty *styles.Styles, file string, meta tools.MultiEditResponseMetadata, totalEdits, width int, expanded bool) string {
-	bodyWidth := width - toolBodyLeftPaddingTotal
+	bodyWidth := toolBodyWidth(sty, width)
 
 	formatter := common.DiffFormatter(sty).
 		Before(file, meta.OldContent).
 		After(file, meta.NewContent).
+		Wrap(expanded).
 		Width(bodyWidth)
 
 	// Use split view for wide terminals.
@@ -1059,10 +1072,7 @@ func toolOutputMultiEditDiffContent(sty *styles.Styles, file string, meta tools.
 	}
 
 	if len(lines) > maxLines && !expanded {
-		truncMsg := sty.Tool.DiffTruncation.
-			Width(bodyWidth).
-			Render(fmt.Sprintf(assistantMessageTruncateFormat, len(lines)-maxLines))
-		formatted = truncMsg + "\n" + strings.Join(lines[:maxLines], "\n")
+		formatted = strings.Join(lines[:maxLines], "\n")
 	}
 
 	// Add failed edits note if any exist.
@@ -1073,6 +1083,7 @@ func toolOutputMultiEditDiffContent(sty *styles.Styles, file string, meta tools.
 		formatted = formatted + "\n\n" + note
 	}
 
+	formatted += "\n" + renderOutputFooter(sty, bodyWidth, summaryDisclosure("Full diff", expanded), sty.PanelBackground)
 	return sty.Tool.Body.Render(formatted)
 }
 
@@ -1096,14 +1107,12 @@ func roundedEnumerator(lPadding, width int) tree.Enumerator {
 
 // toolOutputMarkdownContent renders markdown content with optional truncation.
 func toolOutputMarkdownContent(sty *styles.Styles, content string, width int, expanded bool) string {
+	return sty.Tool.Body.Render(toolOutputMarkdownPanel(sty, content, toolBodyWidth(sty, width), expanded))
+}
+
+func toolOutputMarkdownPanel(sty *styles.Styles, content string, width int, expanded bool) string {
 	content = stringext.NormalizeSpace(content)
-
-	// Cap width for readability.
-	if width > maxTextWidth {
-		width = maxTextWidth
-	}
-
-	renderer := common.QuietMarkdownRenderer(sty, width)
+	renderer := common.QuietMarkdownRenderer(sty, summaryContentWidth(sty, width))
 	mu := common.LockMarkdownRenderer(renderer)
 	mu.Lock()
 	rendered, err := renderer.Render(content)
@@ -1112,7 +1121,7 @@ func toolOutputMarkdownContent(sty *styles.Styles, content string, width int, ex
 		return toolOutputPlainContent(sty, content, width, expanded)
 	}
 
-	lines := strings.Split(rendered, "\n")
+	lines := strings.Split(trimGlamourMargins(rendered), "\n")
 	maxLines := responseContextHeight
 	if expanded {
 		maxLines = len(lines)
@@ -1126,15 +1135,11 @@ func toolOutputMarkdownContent(sty *styles.Styles, content string, width int, ex
 		out = append(out, ln)
 	}
 
-	if len(lines) > maxLines && !expanded {
-		out = append(
-			out, sty.Tool.ContentTruncation.
-				Width(width).
-				Render(fmt.Sprintf(assistantMessageTruncateFormat, len(lines)-maxLines)),
-		)
+	footer := ""
+	if expanded || len(lines) > maxLines {
+		footer = summaryDisclosure("Full output", expanded)
 	}
-
-	return sty.Tool.Body.Render(strings.Join(out, "\n"))
+	return renderSummaryPanel(sty, width, out, footer)
 }
 
 // formatToolForCopy formats the tool call for clipboard copying.

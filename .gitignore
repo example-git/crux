@@ -86,3 +86,11 @@ completions/crux.*sh
 .prettierignore
 .task
 .gitmessage
+node_modules/
+node_modules
+tools/tui_mock
+testkit/
+docs/compatibility/references/*
+.tmp.driveupload
+REMOTE_WORKSPACE_PROVIDER_AND_PAIRING_DESIGN.md
+VISUALS-MAP.md

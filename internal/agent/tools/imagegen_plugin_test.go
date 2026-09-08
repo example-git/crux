@@ -8,9 +8,12 @@ import (
 	"image"
 	"image/png"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,11 +30,11 @@ import (
 )
 
 func TestImageToolUsesNewlyInstalledCustomProvider(t *testing.T) {
-	testImageToolInstalledProvider(t, false)
+	testImageToolInstalledProvider(t, false, false)
 }
 
 func TestImageToolSetupResumesOriginalRequest(t *testing.T) {
-	testImageToolInstalledProvider(t, true)
+	testImageToolInstalledProvider(t, true, false)
 }
 
 type imageToolSetupQuestions struct {
@@ -43,13 +46,22 @@ func (q imageToolSetupQuestions) Ask(ctx context.Context, request question.Reque
 	return q.ask(ctx, request)
 }
 
-func testImageToolInstalledProvider(t *testing.T, withSetup bool) {
+func TestImageToolAuthenticatesBrowserAfterPermission(t *testing.T) {
+	testImageToolInstalledProvider(t, false, true)
+}
+
+func testImageToolInstalledProvider(t *testing.T, withSetup, withBrowser bool) {
 	t.Helper()
 	var pixels bytes.Buffer
 	require.NoError(t, png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))))
 	var calls atomic.Int64
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
+		if withBrowser {
+			cookie, err := r.Cookie("session")
+			require.NoError(t, err)
+			require.Equal(t, "synthetic-browser-session", cookie.Value)
+		}
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		require.Equal(t, "draft", body["quality"])
@@ -64,7 +76,20 @@ func testImageToolInstalledProvider(t *testing.T, withSetup bool) {
 	t.Setenv("CRUX_PROVIDER_PROFILE", "core-only")
 	store, err := config.LoadIsolated(root, filepath.Join(root, "workspace"), false, config.SnapshotEnvironment())
 	require.NoError(t, err)
-	runtime, err := imagegen.NewHostPluginRuntime(t.Context(), store, imagegen.PluginCredentialBindings{})
+	var resolutions atomic.Int64
+	bindings := imagegen.PluginCredentialBindings{}
+	if withBrowser {
+		jar, err := cookiejar.New(nil)
+		require.NoError(t, err)
+		address, err := url.Parse(server.URL)
+		require.NoError(t, err)
+		jar.SetCookies(address, []*http.Cookie{{Name: "session", Value: "synthetic-browser-session"}})
+		bindings.Browser = func(context.Context, manifest.ImageCredential) (http.CookieJar, string, error) {
+			resolutions.Add(1)
+			return jar, "synthetic-browser", nil
+		}
+	}
+	runtime, err := imagegen.NewHostPluginRuntime(t.Context(), store, bindings)
 	require.NoError(t, err)
 	plugins := runtime.Manager
 	defer plugins.Close()
@@ -80,6 +105,9 @@ func testImageToolInstalledProvider(t *testing.T, withSetup bool) {
 			require.NoError(t, request.Validate())
 			return []question.Answer{{QuestionID: request.Questions[0].ID, Yes: &accept, FillInText: source}}, nil
 		}}}
+	}
+	if withBrowser {
+		setup = &imagegen.SetupService{Runtime: runtime, Store: store}
 	}
 	jobs, err := imagegen.NewJobManagerWithStore(root, nil, imagegen.JobManagerOptions{PluginRuntime: runtime, Setup: setup})
 	require.NoError(t, err)
@@ -103,6 +131,12 @@ func testImageToolInstalledProvider(t *testing.T, withSetup bool) {
 			Result: manifest.ImageValue{Ref: "/steps/send/body"},
 		}},
 	}
+	if withBrowser {
+		address, err := url.Parse(server.URL)
+		require.NoError(t, err)
+		value.Credentials = []manifest.ImageCredential{{ID: "browser", Source: "browser", Domains: []string{address.Hostname()}}}
+		value.Origins[0].Credentials = []string{"browser"}
+	}
 	data, err := json.Marshal(value)
 	require.NoError(t, err)
 	source = t.TempDir()
@@ -110,6 +144,11 @@ func testImageToolInstalledProvider(t *testing.T, withSetup bool) {
 	if !withSetup {
 		_, err = plugins.Install(t.Context(), providerplugin.InstallRequest{Source: source, Trust: true})
 		require.NoError(t, err)
+	}
+	if withBrowser {
+		owner, err := plugins.CaptureImageOwner(value.Backend)
+		require.NoError(t, err)
+		require.NoError(t, store.CompareAndSetImageConfiguration(nil, &config.ImageConfiguration{Providers: map[string]config.ImageProviderConfiguration{owner.Backend: {Owner: owner, BrowserProfiles: map[string]string{"browser": strings.Repeat("a", 64)}}}}))
 	}
 	input, err := json.Marshal(ImagegenParams{Mode: imagegen.ModeGenerate, Backend: "fixture-images", Prompt: "paper bird", Quality: "draft", OutputDirectory: filepath.Join(root, "outputs")})
 	require.NoError(t, err)
@@ -130,6 +169,15 @@ func testImageToolInstalledProvider(t *testing.T, withSetup bool) {
 		require.ErrorIs(t, err, os.ErrNotExist)
 		accept = true
 	}
+	if withBrowser {
+		permissions.allow = false
+		denied, err := tool.Run(ctx, fantasy.ToolCall{ID: "denied", Name: ImagegenToolName, Input: string(input)})
+		require.NoError(t, err)
+		require.True(t, denied.IsError)
+		require.Zero(t, resolutions.Load())
+		permissions.allow = true
+		permissions.requestCount = 0
+	}
 	response, err := tool.Run(ctx, fantasy.ToolCall{ID: "first", Name: ImagegenToolName, Input: string(input)})
 	require.NoError(t, err)
 	require.False(t, response.IsError, response.Content)
@@ -140,6 +188,9 @@ func testImageToolInstalledProvider(t *testing.T, withSetup bool) {
 	saved, err := os.ReadFile(metadata.Outputs[0])
 	require.NoError(t, err)
 	require.Equal(t, pixels.Bytes(), saved)
+	if withBrowser {
+		require.GreaterOrEqual(t, resolutions.Load(), int64(2))
+	}
 	owner, err := plugins.CaptureImageOwner(value.Backend)
 	require.NoError(t, err)
 	_, err = plugins.SetTrust(t.Context(), owner.PluginID, providerplugin.TrustRequest{Digest: owner.Digest, Trusted: false})

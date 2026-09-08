@@ -222,6 +222,9 @@ func (w *Worker) run() {
 		w.activeCancel = cancel
 		w.mu.Unlock()
 
+		if err := w.maybeDream(ctx, sessionID); err != nil && ctx.Err() == nil {
+			slog.Debug("Auto-memory maintenance failed", "error", err)
+		}
 		w.setActivity("updating")
 		if err := w.extract(ctx, sessionID); err != nil && ctx.Err() == nil {
 			slog.Debug("Auto-memory extraction failed", "error", err)
@@ -276,6 +279,9 @@ func (w *Worker) extract(ctx context.Context, sessionID string) error {
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := w.apply(mutations); err != nil {
 		return err
 	}
@@ -286,17 +292,39 @@ func (w *Worker) extract(ctx context.Context, sessionID string) error {
 }
 
 func (w *Worker) maybeDream(ctx context.Context, currentSessionID string) error {
+	topics, err := scanTopics(w.memory.Directory)
+	if err != nil {
+		return err
+	}
+	pressure := len(topics) >= ProjectMemorySlots*4/5
+	interval := w.dreamInterval
+	if pressure {
+		interval = min(interval, time.Hour)
+	}
+	if len(topics) > ProjectMemorySlots {
+		interval = min(interval, 10*time.Minute)
+	}
 	lockPath := filepath.Join(w.memory.Directory, ".consolidate-lock")
 	lastConsolidated := time.Time{}
 	if info, err := os.Stat(lockPath); err == nil {
 		lastConsolidated = info.ModTime()
-		if w.now().Sub(lastConsolidated) < w.dreamInterval {
-			return nil
-		}
 	} else if !os.IsNotExist(err) {
 		return err
 	}
 
+	changed := 0
+	for _, topic := range topics {
+		if topic.ModifiedAt.After(lastConsolidated) {
+			changed++
+		}
+	}
+	maintenance := pressure || changed >= w.dreamSessions
+	if maintenance {
+		interval = min(interval, time.Hour)
+	}
+	if w.now().Sub(lastConsolidated) < interval {
+		return nil
+	}
 	w.mu.Lock()
 	if !w.lastScan.IsZero() && w.now().Sub(w.lastScan) < 10*time.Minute {
 		w.mu.Unlock()
@@ -315,7 +343,7 @@ func (w *Worker) maybeDream(ctx context.Context, currentSessionID string) error 
 			candidates = append(candidates, session)
 		}
 	}
-	if len(candidates) < w.dreamSessions {
+	if !maintenance && len(candidates) < w.dreamSessions {
 		return nil
 	}
 	slices.SortFunc(candidates, func(left, right SessionInfo) int {
@@ -339,7 +367,7 @@ func (w *Worker) maybeDream(ctx context.Context, currentSessionID string) error 
 	w.setActivity("consolidating")
 	defer w.setActivity("")
 
-	memoryContext, err := w.memoryContext(maxDreamInputBytes / 2)
+	memoryContext, reviewed, nextTopic, err := w.memoryContext(maxDreamInputBytes / 2)
 	if err != nil {
 		return err
 	}
@@ -358,7 +386,11 @@ func (w *Worker) maybeDream(ctx context.Context, currentSessionID string) error 
 			break
 		}
 	}
-	prompt := consolidationPrompt(memoryContext, truncateUTF8Prefix(transcriptContext.String(), maxDreamInputBytes/2))
+	manifest, err := w.manifest()
+	if err != nil {
+		return err
+	}
+	prompt := consolidationPrompt(manifest+"\nComplete topic files for this maintenance batch:\n"+memoryContext, truncateUTF8Prefix(transcriptContext.String(), maxDreamInputBytes/2))
 	response, err := w.generate(ctx, "memory_consolidation", prompt, 8192)
 	if err != nil {
 		return err
@@ -367,7 +399,13 @@ func (w *Worker) maybeDream(ctx context.Context, currentSessionID string) error 
 	if err != nil {
 		return err
 	}
-	if err := w.apply(mutations); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := applyMemoryMutations(w.memory, mutations, reviewed); err != nil {
+		return err
+	}
+	if err := atomicWrite(filepath.Join(w.memory.Directory, ".consolidate-next"), []byte(nextTopic), 0o600); err != nil {
 		return err
 	}
 	return commitDreamLock(lockPath, w.now())
@@ -379,6 +417,7 @@ func (w *Worker) manifest() (string, error) {
 		return "", err
 	}
 	var builder strings.Builder
+	fmt.Fprintf(&builder, "Project memory slots: %d/%d occupied. Consolidate toward %d topics when near capacity.\n", len(topics), ProjectMemorySlots, ProjectMemorySlots*4/5)
 	for _, topic := range topics {
 		fmt.Fprintf(&builder, "- %s | type=%s | name=%s | description=%s\n", filepath.Base(topic.Path), topic.Type, topic.Name, topic.Description)
 	}
@@ -401,23 +440,49 @@ func (w *Worker) relatedMemoryContext(query string) (string, error) {
 	return builder.String(), nil
 }
 
-func (w *Worker) memoryContext(limit int) (string, error) {
+func (w *Worker) memoryContext(limit int) (string, map[string]string, string, error) {
 	topics, err := scanTopics(w.memory.Directory)
 	if err != nil {
-		return "", err
+		return "", nil, "", err
 	}
-	var builder strings.Builder
-	for _, topic := range topics {
-		content, readErr := readTopic(topic.Path)
-		if readErr != nil {
-			continue
-		}
-		fmt.Fprintf(&builder, "<memory file=%q>\n%s\n</memory>\n", filepath.Base(topic.Path), content)
-		if builder.Len() >= limit {
+	slices.SortFunc(topics, func(left, right Topic) int { return strings.Compare(left.Path, right.Path) })
+	cursor, err := os.ReadFile(filepath.Join(w.memory.Directory, ".consolidate-next"))
+	if err != nil && !os.IsNotExist(err) {
+		return "", nil, "", err
+	}
+	start := 0
+	for i, topic := range topics {
+		if filepath.Base(topic.Path) >= string(cursor) {
+			start = i
 			break
 		}
 	}
-	return truncateUTF8Prefix(builder.String(), limit), nil
+	var builder strings.Builder
+	reviewed := make(map[string]string)
+	next := ""
+	for i := range len(topics) {
+		topic := topics[(start+i)%len(topics)]
+		info, err := os.Stat(topic.Path)
+		if err != nil {
+			return "", nil, "", err
+		}
+		if info.Size() > maxMemoryFileBytes {
+			return "", nil, "", fmt.Errorf("memory %s exceeds maintenance file limit", filepath.Base(topic.Path))
+		}
+		content, err := os.ReadFile(topic.Path)
+		if err != nil {
+			return "", nil, "", err
+		}
+		file := filepath.Base(topic.Path)
+		block := fmt.Sprintf("<memory file=%q>\n%s\n</memory>\n", file, content)
+		if builder.Len()+len(block) > limit {
+			next = file
+			break
+		}
+		builder.WriteString(block)
+		reviewed[file] = string(content)
+	}
+	return builder.String(), reviewed, next, nil
 }
 
 func (w *Worker) apply(mutations []memoryMutation) error {
@@ -458,11 +523,11 @@ func boundedTranscript(turns []Turn) string {
 }
 
 func extractionPrompt(manifest, relatedMemories, transcript string) string {
-	return "Analyze only the recent conversation below for durable memories. Before proposing any mutation, inspect the target project scope's existing memory manifest and the supplied full content of related memories. If a related memory exists and remains relevant, upsert that same file, preserving its useful details while adding the new durable information instead of creating a duplicate. Delete an existing memory when the conversation establishes that it is no longer relevant, stale, or superseded. Create a new topic only when no related memory exists. Keep the collection naturally concise and aim for roughly 30 to 50 memories depending on project complexity; this is a soft target, not a hard limit, and useful memories must not be deleted solely to reach it. Do not save code structure, paths, architecture, Git history, secrets, debugging recipes represented in code, or current task state. Save user preferences/role, feedback with reasons, non-derivable project decisions/motivations/deadlines, and external references. Return JSON only in this schema: {\"memories\":[{\"file\":\"semantic-name.md\",\"action\":\"upsert|delete\",\"name\":\"title\",\"description\":\"specific relevance hook\",\"type\":\"user|feedback|project|reference\",\"content\":\"durable body\"}]}. Return {\"memories\":[]} when nothing qualifies.\n\nExisting memory manifest:\n" + manifest + "\nFull content for related memories:\n" + relatedMemories + "\nRecent conversation:\n" + transcript
+	return "Analyze only the recent conversation below for durable memories. Before proposing any mutation, inspect the target project scope's existing memory manifest and the supplied full content of related memories. If a related memory exists and remains relevant, upsert that same file, preserving its useful details while adding the new durable information instead of creating a duplicate. Delete an existing memory when the conversation establishes that it is no longer relevant, stale, or superseded. Create a new topic only when no related memory exists. Each project has a hard limit of 50 memory slots. Keep MEMORY.md as a compact index of short titles and relevance hooks pointing to detailed topic files. Consolidate related facts in existing topic files instead of creating one memory per fact. At capacity, update existing topics or merge related topics and delete the superseded files before adding another; never discard useful details merely to free a slot. Do not save code structure, paths, architecture, Git history, secrets, debugging recipes represented in code, or current task state. Save user preferences/role, feedback with reasons, non-derivable project decisions/motivations/deadlines, and external references. Return JSON only in this schema: {\"memories\":[{\"file\":\"semantic-name.md\",\"action\":\"upsert|delete\",\"name\":\"title\",\"description\":\"specific relevance hook\",\"type\":\"user|feedback|project|reference\",\"content\":\"durable body\"}]}. Return {\"memories\":[]} when nothing qualifies.\n\nExisting memory manifest:\n" + manifest + "\nFull content for related memories:\n" + relatedMemories + "\nRecent conversation:\n" + transcript
 }
 
 func consolidationPrompt(memories, transcripts string) string {
-	return "Consolidate the memory files using recent cross-session signal. First inspect the current target-scope memories before proposing any mutation. Merge duplicates by updating the best existing topic, correct contradictions, remove memories that are no longer relevant, stale, or superseded, preserve useful reasons and applicability, and keep each topic focused. Keep the collection naturally concise and aim for roughly 30 to 50 memories depending on project complexity; this is a soft target, not a hard limit, and useful memories must not be deleted solely to reach it. Do not create activity logs or copy repository-derived facts. Return JSON only using the same mutation schema: {\"memories\":[{\"file\":\"semantic-name.md\",\"action\":\"upsert|delete\",\"name\":\"title\",\"description\":\"specific relevance hook\",\"type\":\"user|feedback|project|reference\",\"content\":\"durable body\"}]}. Return {\"memories\":[]} if no changes are needed.\n\nCurrent memories:\n" + memories + "\nRecent session excerpts:\n" + transcripts
+	return "Consolidate the memory files using recent cross-session signal. First inspect the current target-scope memories before proposing any mutation. Merge duplicates by updating the best existing topic, correct contradictions, remove memories that are no longer relevant, stale, or superseded, preserve useful reasons and applicability, and keep each topic focused. Each project has a hard limit of 50 memory slots. Keep MEMORY.md as a compact index of short titles and relevance hooks pointing to detailed topic files. Consolidate related facts in existing topic files instead of creating one memory per fact. At capacity, update existing topics or merge related topics and delete the superseded files before adding another; never discard useful details merely to free a slot. When near or above capacity, actively merge overlapping topics toward 40 occupied slots, preserving useful detail in the retained files. Update or delete only topics whose complete content is supplied in this batch; the manifest alone is not enough. Return no mutations if no evidence-based merge or removal is appropriate. Do not create activity logs or copy repository-derived facts. Return JSON only using the same mutation schema: {\"memories\":[{\"file\":\"semantic-name.md\",\"action\":\"upsert|delete\",\"name\":\"title\",\"description\":\"specific relevance hook\",\"type\":\"user|feedback|project|reference\",\"content\":\"durable body\"}]}. Return {\"memories\":[]} if no changes are needed.\n\nCurrent memories:\n" + memories + "\nRecent session excerpts:\n" + transcripts
 }
 
 func acquireDreamLock(path string, previous, now time.Time) (time.Time, bool, error) {

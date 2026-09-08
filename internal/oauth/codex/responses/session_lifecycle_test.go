@@ -2,6 +2,7 @@ package responses
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	fantasy "github.com/example-git/crux/foundation"
+	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
@@ -540,6 +542,65 @@ func TestClientReportsRepeatedMessageTooBigClearly(t *testing.T) {
 	require.ErrorContains(t, err, "compact the session")
 }
 
+func TestReadPumpDeliversWhileTrafficDatabaseIsLocked(t *testing.T) {
+	ctx, cleanup, err := cruxlog.SetupTraffic(t.Context(), t.TempDir(), true)
+	require.NoError(t, err)
+	defer cleanup()
+	path, err := cruxlog.TrafficDatabasePath(ctx)
+	require.NoError(t, err)
+	database, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+	transaction, err := database.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer transaction.Rollback()
+	_, err = transaction.ExecContext(ctx, `UPDATE traffic_meta SET value = value WHERE key = 'total_bytes'`)
+	require.NoError(t, err)
+
+	const eventCount = 2048
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for range eventCount {
+			if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.output_text.delta","delta":"x"}`)); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	url := strings.Replace(server.URL, "http://", "ws://", 1)
+	conn, response, err := websocket.DefaultDialer.DialContext(ctx, url, nil)
+	if response != nil && response.Body != nil {
+		_ = response.Body.Close()
+	}
+	require.NoError(t, err)
+	client := &client{url: url}
+	events, stop := client.startReadPump(ctx, conn, "locked-traffic")
+	defer func() {
+		close(stop)
+		_ = conn.Close()
+	}()
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	for index := range eventCount {
+		select {
+		case event := <-events:
+			require.NoError(t, event.err)
+			require.Contains(t, string(event.data), `"delta":"x"`)
+		case <-deadline.C:
+			t.Fatalf("traffic writer lock stalled delivery at frame %d", index)
+		}
+	}
+	dropped, _ := cruxlog.TrafficDropCounts(ctx)
+	require.Positive(t, dropped)
+	require.NoError(t, transaction.Rollback())
+}
+
 func TestReadPumpPreservesBurstsBeyondOldBacklogLimit(t *testing.T) {
 	const eventCount = 64
 	serverDone := make(chan struct{})
@@ -565,7 +626,7 @@ func TestReadPumpPreservesBurstsBeyondOldBacklogLimit(t *testing.T) {
 	}
 	require.NoError(t, err)
 	client := &client{url: url}
-	events, stop := client.startReadPump(conn, "test")
+	events, stop := client.startReadPump(t.Context(), conn, "test")
 	defer func() {
 		close(stop)
 		_ = conn.Close()

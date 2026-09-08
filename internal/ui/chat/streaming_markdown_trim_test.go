@@ -99,6 +99,7 @@ func TestLiveThinkingDefersMarkdownUntilFinished(t *testing.T) {
 		},
 	}
 	item := NewAssistantMessageItem(&sty, active).(*AssistantMessageItem)
+	item.ToggleExpanded()
 	activeRender := ansi.Strip(item.renderThinking(thinking, 80))
 	require.Contains(t, activeRender, "# Heading")
 	require.Contains(t, activeRender, "**bold reasoning**")

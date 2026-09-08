@@ -85,7 +85,15 @@ func WithDetachedAgent(ctx context.Context) context.Context {
 	return context.WithValue(ctx, detachedAgentKey{}, true)
 }
 
+func WithDetachableAgent(ctx context.Context) (context.Context, func()) {
+	detached := &atomic.Bool{}
+	return context.WithValue(ctx, detachedAgentKey{}, detached), func() { detached.Store(true) }
+}
+
 func IsDetachedAgent(ctx context.Context) bool {
+	if detached, ok := ctx.Value(detachedAgentKey{}).(*atomic.Bool); ok {
+		return detached.Load()
+	}
 	detached, _ := ctx.Value(detachedAgentKey{}).(bool)
 	return detached
 }

@@ -271,6 +271,11 @@ func (g *languageModel) prepareRequest(call fantasy.Call) (*requestFrame, []fant
 	}
 
 	instructions, dynamicContext, input, warnings := toInputWithDynamic(g.modelID, call.Prompt)
+	astraLayout := usesAstraInstructionLayout(g.modelID)
+	if astraLayout && instructions != "" {
+		input = append([]inputItem{baseInstructionsItem(instructions)}, input...)
+		instructions = ""
+	}
 	tools, toolWarnings := toWireTools(call.Tools)
 	warnings = append(warnings, toolWarnings...)
 
@@ -288,10 +293,16 @@ func (g *languageModel) prepareRequest(call fantasy.Call) (*requestFrame, []fant
 	if !providerOptions.DisableReasoning {
 		effort := cmp.Or(providerOptions.ReasoningEffort, "medium")
 		frame.Reasoning = &wireReasoning{Effort: effort, Summary: "auto"}
+		if astraLayout {
+			frame.Reasoning.Context = "all_turns"
+		}
 		frame.Include = []string{"reasoning.encrypted_content"}
 	}
 	frame.Text.Format.Type = "text"
 	frame.Text.Verbosity = providerOptions.ResponseVerbosity
+	if providerOptions.FastMode {
+		frame.ServiceTier = "priority"
+	}
 	if len(tools) > 0 {
 		frame.Tools = tools
 		frame.ToolChoice = "auto"

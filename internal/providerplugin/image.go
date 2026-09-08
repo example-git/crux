@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 )
@@ -43,7 +44,20 @@ func (m *Manager) ImageBundleForOwner(owner ImageOwner) (RegisteredImageBundle, 
 			return bundle, nil
 		}
 	}
-	return RegisteredImageBundle{}, errors.New("exact image plugin owner is unavailable")
+	for _, status := range m.Snapshot().Plugins {
+		if status.PluginType != manifest.PluginTypeImageProvider || status.ID != owner.PluginID {
+			continue
+		}
+		if status.Digest != owner.Digest || status.Version != owner.Version || status.ProviderID != owner.Backend {
+			return RegisteredImageBundle{}, fmt.Errorf("image plugin %s changed since this job selected it; submit a new job after reviewing the installed owner", owner.PluginID)
+		}
+		message := fmt.Sprintf("image plugin %s is unavailable (state: %s, trust: %s)", owner.PluginID, status.State, status.Trust)
+		if len(status.Diagnostics) > 0 {
+			message += ": " + safeDiagnosticMessage(status.Diagnostics[0].Message)
+		}
+		return RegisteredImageBundle{}, errors.New(message + "; inspect it with crux plugins list")
+	}
+	return RegisteredImageBundle{}, fmt.Errorf("image plugin %s for backend %s is not installed or could not be validated; inspect crux plugins list", owner.PluginID, owner.Backend)
 }
 
 func (m *Manager) ValidateImageOwner(ctx context.Context, owner ImageOwner) error {
@@ -51,11 +65,22 @@ func (m *Manager) ValidateImageOwner(ctx context.Context, owner ImageOwner) erro
 		return errors.New("complete image plugin owner is required")
 	}
 	if _, err := m.Rescan(ctx, 0); err != nil {
-		return errors.New("image plugin ownership could not be revalidated")
+		return &imagePluginCauseError{message: fmt.Sprintf("image plugin %s ownership could not be revalidated", owner.PluginID), cause: err}
 	}
 	_, err := m.ImageBundleForOwner(owner)
 	return err
 }
+
+type imagePluginCauseError struct {
+	message string
+	cause   error
+}
+
+func (e *imagePluginCauseError) Error() string {
+	return e.message + ": " + safeDiagnosticMessage(e.cause.Error())
+}
+
+func (e *imagePluginCauseError) Unwrap() error { return e.cause }
 
 type RegisteredImageBundle struct {
 	Manifest manifest.ImageManifest

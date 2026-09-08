@@ -79,7 +79,7 @@ func TestDrainQueueForStep_FiltersUnderDispatchLock(t *testing.T) {
 	a.messageQueue.Set(sessionID, []SessionAgentCall{
 		{SessionID: sessionID, Prompt: "below", acceptSeq: 1},
 		{SessionID: sessionID, Prompt: "at-mark", acceptSeq: 2},
-		{SessionID: sessionID, Prompt: "after", acceptSeq: 3},
+		{SessionID: sessionID, Prompt: "after", DeliveryMode: DeliverySteer, acceptSeq: 3},
 		{SessionID: sessionID, Prompt: "untracked", acceptSeq: 0},
 	})
 	// Cancel high-water mark at seq 2: seq <= 2 and seq == 0 are covered.
@@ -96,9 +96,7 @@ func TestDrainQueueForStep_FiltersUnderDispatchLock(t *testing.T) {
 	require.False(t, ok, "drain must clear the session message queue when nothing is kept")
 }
 
-// TestDrainQueueForStep_NoMarkFoldsAllNonRunID verifies that with no
-// cancel mark recorded, every queued call without a RunID is folded.
-func TestDrainQueueForStep_NoMarkFoldsAllNonRunID(t *testing.T) {
+func TestDrainQueueForStep_NoMarkFoldsSteer(t *testing.T) {
 	t.Parallel()
 
 	env := testEnv(t)
@@ -109,12 +107,12 @@ func TestDrainQueueForStep_NoMarkFoldsAllNonRunID(t *testing.T) {
 
 	const sessionID = "drain-nomark"
 	a.messageQueue.Set(sessionID, []SessionAgentCall{
-		{SessionID: sessionID, Prompt: "a", acceptSeq: 0},
-		{SessionID: sessionID, Prompt: "b", acceptSeq: 5},
+		{SessionID: sessionID, Prompt: "a", DeliveryMode: DeliverySteer, acceptSeq: 0},
+		{SessionID: sessionID, Prompt: "b", DeliveryMode: DeliverySteer, acceptSeq: 5},
 	})
 
 	fold, canceledWithRunID := a.drainQueueForStep(sessionID)
-	require.Len(t, fold, 2, "no cancel mark means all non-RunID queued calls are folded")
+	require.Len(t, fold, 2, "steering calls without a cancel mark are folded")
 	require.Empty(t, canceledWithRunID)
 }
 
@@ -124,7 +122,6 @@ func TestDrainQueueForStep_NoMarkFoldsAllNonRunID(t *testing.T) {
 // publish a RunComplete for its RunID, hanging a `crux run` caller that
 // blocks on that event. Such prompts are left in the queue so the
 // recursive run path gives each its own turn and its own RunComplete.
-// Non-RunID prompts are still folded.
 func TestDrainQueueForStep_KeepsRunIDPromptsQueued(t *testing.T) {
 	t.Parallel()
 
@@ -136,7 +133,7 @@ func TestDrainQueueForStep_KeepsRunIDPromptsQueued(t *testing.T) {
 
 	const sessionID = "drain-runid"
 	a.messageQueue.Set(sessionID, []SessionAgentCall{
-		{SessionID: sessionID, Prompt: "fold-me", acceptSeq: 1},
+		{SessionID: sessionID, Prompt: "fold-me", DeliveryMode: DeliverySteer, acceptSeq: 1},
 		{SessionID: sessionID, RunID: "run-a", Prompt: "keep-me", acceptSeq: 2},
 		{SessionID: sessionID, RunID: "run-b", Prompt: "keep-me-too", acceptSeq: 3},
 	})

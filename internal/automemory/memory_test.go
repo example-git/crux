@@ -99,8 +99,8 @@ func TestPromptDescribesIndexAndTopicWorkflow(t *testing.T) {
 	require.Contains(t, result, "Before every memory mutation, inspect the target scope with memory_list")
 	require.Contains(t, result, "update that topic to incorporate the new durable information")
 	require.Contains(t, result, "Remove memories that are no longer relevant")
-	require.Contains(t, result, "roughly 30 to 50 memories per scope")
-	require.Contains(t, result, "soft target, not a hard limit")
+	require.Contains(t, result, "hard limit of 50 memory slots")
+	require.Contains(t, result, "linking to detailed topic files")
 	require.NotContains(t, result, "use the view tool")
 	require.Contains(t, result, "Trust current evidence over memory")
 }

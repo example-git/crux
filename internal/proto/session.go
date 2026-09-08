@@ -14,22 +14,23 @@ package proto
 // live SSE stream. Hold-only clients (streams == 0) do not contribute.
 // Like IsBusy, it is computed on read by REST handlers.
 type Session struct {
-	ID               string  `json:"id"`
-	ParentSessionID  string  `json:"parent_session_id"`
-	Title            string  `json:"title"`
-	MessageCount     int64   `json:"message_count"`
-	PromptTokens     int64   `json:"prompt_tokens"`
-	CompletionTokens int64   `json:"completion_tokens"`
-	EstimatedUsage   bool    `json:"estimated_usage"`
-	SummaryMessageID string  `json:"summary_message_id"`
-	Cost             float64 `json:"cost"`
-	Todos            []Todo  `json:"todos,omitempty"`
-	Mode             string  `json:"mode"`
-	Plan             string  `json:"plan,omitempty"`
-	CreatedAt        int64   `json:"created_at"`
-	UpdatedAt        int64   `json:"updated_at"`
-	IsBusy           bool    `json:"is_busy"`
-	AttachedClients  int     `json:"attached_clients"`
+	ID                string  `json:"id"`
+	ParentSessionID   string  `json:"parent_session_id"`
+	Title             string  `json:"title"`
+	MessageCount      int64   `json:"message_count"`
+	PromptTokens      int64   `json:"prompt_tokens"`
+	CompletionTokens  int64   `json:"completion_tokens"`
+	EstimatedUsage    bool    `json:"estimated_usage"`
+	UnseenLocalTokens int64   `json:"unseen_local_tokens"`
+	SummaryMessageID  string  `json:"summary_message_id"`
+	Cost              float64 `json:"cost"`
+	Todos             []Todo  `json:"todos,omitempty"`
+	Mode              string  `json:"mode"`
+	Plan              string  `json:"plan,omitempty"`
+	CreatedAt         int64   `json:"created_at"`
+	UpdatedAt         int64   `json:"updated_at"`
+	IsBusy            bool    `json:"is_busy"`
+	AttachedClients   int     `json:"attached_clients"`
 }
 
 // Todo represents a single todo entry on a session in the proto layer.

@@ -25,6 +25,14 @@ type snapshotResult struct {
 	DirectoryCount int
 }
 
+func snapshotDirectory(source, destination string) (snapshotResult, error) {
+	return snapshotDirectoryWithSync(source, destination, true)
+}
+
+func snapshotForValidation(source, destination string) (snapshotResult, error) {
+	return snapshotDirectoryWithSync(source, destination, false)
+}
+
 // canonicalBundleDigest commits to the normalized path, file mode, size, and
 // already-verified content hash of every file. It deliberately does not
 // reopen pathnames after snapshotting.

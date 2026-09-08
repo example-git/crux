@@ -21,6 +21,50 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestJobOutputReportsQueueAndExecutionBeforeFinalResult(t *testing.T) {
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	manager, err := NewJobManagerWithStore(t.TempDir(), nil, JobManagerOptions{
+		MaxConcurrent: 1,
+		Executor: func(ctx context.Context, request JobRequest) (*Response, error) {
+			started <- struct{}{}
+			select {
+			case <-release:
+				return testImageResponse(request.Model), nil
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		},
+	})
+	require.NoError(t, err)
+	defer manager.StopAll(context.Background())
+	first, err := manager.Enqueue(testJobRequest(filepath.Join(t.TempDir(), "first.png"), "first"), "first", managedtask.Ownership{ParentSessionID: "parent"})
+	require.NoError(t, err)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("image worker did not start")
+	}
+	second, err := manager.Enqueue(testJobRequest(filepath.Join(t.TempDir(), "second.png"), "second"), "second", managedtask.Ownership{ParentSessionID: "parent"})
+	require.NoError(t, err)
+	running, err := manager.Output(t.Context(), first.ID, false, 0)
+	require.NoError(t, err)
+	require.Equal(t, managedtask.StatusRunning, running.Task.State.Status)
+	require.Contains(t, running.Output, "Executing image request")
+	queued, err := manager.Output(t.Context(), second.ID, false, 0)
+	require.NoError(t, err)
+	require.Equal(t, managedtask.StatusPending, queued.Task.State.Status)
+	require.Contains(t, queued.Output, "waiting for an image worker")
+	close(release)
+	for _, id := range []string{first.ID, second.ID} {
+		result, err := manager.Output(t.Context(), id, true, 2*time.Second)
+		require.NoError(t, err)
+		require.Equal(t, managedtask.StatusCompleted, result.Task.State.Status)
+		require.True(t, json.Valid([]byte(result.Output)))
+		require.Equal(t, result.Task.FinalOutput, result.Output)
+	}
+}
+
 func TestJobManagerRunsFourJobsAndQueuesRemainingFIFO(t *testing.T) {
 	started := make(chan string, 6)
 	release := make(chan struct{}, 6)

@@ -36,7 +36,7 @@ type DockerMCPToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (d *DockerMCPToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 
 	var params map[string]any
 	if err := json.Unmarshal([]byte(opts.ToolCall.Input), &params); err != nil {
@@ -133,12 +133,11 @@ func (d *DockerMCPToolRenderContext) RenderTool(sty *styles.Styles, width int, o
 		return header
 	}
 
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
 	var parts []string
 
 	// Handle text content.
 	if opts.Result.Content != "" {
-		body := renderToolResultTextContent(sty, opts.Result.Content, toolResultContentWidths{Body: bodyWidth, Diff: cappedWidth}, opts.ExpandedContent)
+		body := renderToolResultTextContent(sty, opts.Result.Content, cappedWidth, opts.ExpandedContent)
 		parts = append(parts, body)
 	}
 
@@ -169,14 +168,14 @@ func (d *DockerMCPToolRenderContext) renderMCPServers(sty *styles.Styles, opts *
 
 	var result FindMCPResponse
 	if err := json.Unmarshal([]byte(opts.Result.Content), &result); err != nil {
-		return toolOutputPlainContent(sty, opts.Result.Content, width-toolBodyLeftPaddingTotal, opts.ExpandedContent)
+		return sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, toolBodyWidth(sty, width), opts.ExpandedContent))
 	}
 
 	if len(result.Servers) == 0 {
 		return sty.Tool.ResultEmpty.Render("No MCP servers found.")
 	}
 
-	bodyWidth := min(120, width) - toolBodyLeftPaddingTotal
+	bodyWidth := toolBodyWidth(sty, width)
 	rows := [][]string{}
 	moreServers := ""
 	for i, server := range result.Servers {

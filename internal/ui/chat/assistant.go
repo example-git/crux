@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"charm.land/lipgloss/v2/tree"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/ui/anim"
@@ -180,14 +181,15 @@ type AssistantMessageItem struct {
 	*cachedMessageItem
 	*focusableMessageItem
 
-	message           *message.Message
-	sty               *styles.Styles
-	anim              *anim.Anim
-	retryAnim         *anim.Anim
-	activeRetryAnim   bool
-	summaryExpanded   bool
-	thinkingViewMode  thinkingViewMode
-	thinkingBoxHeight int // Tracks the rendered thinking box height for click detection.
+	message            *message.Message
+	sty                *styles.Styles
+	anim               *anim.Anim
+	retryAnim          *anim.Anim
+	activeRetryAnim    bool
+	summaryExpanded    bool
+	thinkingViewMode   thinkingViewMode
+	thinkingStartsTurn bool
+	thinkingBoxHeight  int // Tracks the rendered thinking box height for click detection.
 
 	// Incremental FNV-64a hash of the thinking text. Avoids
 	// re-hashing the entire accumulated text on every streaming
@@ -450,6 +452,10 @@ func (a *AssistantMessageItem) renderMessageContent(width int) (string, int) {
 			messageParts = append(messageParts, a.sty.Messages.AssistantCanceled.Render("Canceled"))
 		case a.message.IsErrorLike():
 			messageParts = append(messageParts, a.cachedError(width))
+		case a.message.FinishReason() == message.FinishReasonMaxTokens:
+			messageParts = append(messageParts, a.sty.Messages.AssistantCanceled.Render(summaryWrap("Stopped: output token limit reached", width)))
+		case a.message.FinishReason() == message.FinishReasonUnknown:
+			messageParts = append(messageParts, a.sty.Messages.AssistantCanceled.Render(summaryWrap("Stopped: unknown finish reason", width)))
 		}
 	}
 
@@ -646,33 +652,95 @@ func renderLiveThinkingWindow(thinking string, width, limit, totalLines int) (st
 	return rendered, hidden
 }
 
+func (a *AssistantMessageItem) JoinPrevious() bool {
+	return !a.thinkingStartsTurn && strings.TrimSpace(a.message.ReasoningContent().Thinking) != ""
+}
+
+func (a *AssistantMessageItem) SetThinkingStartsTurn(startsTurn bool) {
+	if a.thinkingStartsTurn == startsTurn {
+		return
+	}
+	a.thinkingStartsTurn = startsTurn
+	a.clearCache()
+	a.Bump()
+}
+
+func (a *AssistantMessageItem) thinkingBranchPadding() int {
+	return max(0, a.sty.Tool.Body.GetPaddingLeft()-a.sty.Messages.ThinkingBox.GetPaddingLeft())
+}
+
+func (a *AssistantMessageItem) renderThinkingBranch(content string, width int) string {
+	padding := a.thinkingBranchPadding()
+	enumerator := roundedEnumerator(padding, 2)
+	branch := tree.New().Enumerator(func(children tree.Children, index int) string {
+		if a.thinkingStartsTurn && index == 0 {
+			return strings.Repeat(" ", padding) + "╭──"
+		}
+		return enumerator(children, index)
+	})
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(ansi.Strip(line)) != "" {
+			branch.Child(line)
+		}
+	}
+	return a.sty.Messages.ThinkingBox.Width(width).Render(branch.String())
+}
+
+func nonblankThinkingLines(thinking string) []string {
+	lines := strings.Split(thinking, "\n")
+	visible := lines[:0]
+	for _, line := range lines {
+		if strings.TrimSpace(line) != "" {
+			visible = append(visible, line)
+		}
+	}
+	return visible
+}
+
+func (a *AssistantMessageItem) hasExpandableThinking() bool {
+	return len(nonblankThinkingLines(a.message.ReasoningContent().Thinking)) > 1
+}
+
 func (a *AssistantMessageItem) renderThinking(thinking string, width int) string {
+	visibleLines := nonblankThinkingLines(thinking)
+	if len(visibleLines) == 0 {
+		a.thinkingBoxHeight = 0
+		return ""
+	}
+	mode := a.thinkingViewMode
+	if len(visibleLines) == 1 {
+		mode = thinkingFullExpanded
+	}
+	if mode == thinkingCollapsed {
+		result := a.renderThinkingBranch("Expand Thoughts ▾", width)
+		a.thinkingBoxHeight = lipgloss.Height(result)
+		return result
+	}
+	contentWidth := max(1, width-a.sty.Messages.ThinkingBox.GetHorizontalFrameSize()-a.thinkingBranchPadding()-4)
 	if a.thinkingHashLen != len(thinking) {
 		a.thinkingHashIncremental(thinking)
 	}
 	if a.message.IsThinking() {
 		limit := 0
 		hintFormat := ""
-		switch a.thinkingViewMode {
-		case thinkingCollapsed:
-			limit = maxCollapsedThinkingHeight
-			hintFormat = assistantMessageTruncateFormat
+		switch mode {
 		case thinkingTailWindow:
 			limit = maxExpandedThinkingTailLines
 			hintFormat = assistantMessageTailWindowFormat
 		}
-		rendered, hidden := renderLiveThinkingWindow(thinking, width, limit, a.thinkingLineCount)
+		rendered, hidden := renderLiveThinkingWindow(strings.Join(visibleLines, "\n"), contentWidth, limit, len(visibleLines))
+		rendered = lipgloss.NewStyle().Foreground(lipgloss.Color(*a.sty.ThinkingMarkdown.Document.Color)).Render(rendered)
 		if hidden > 0 {
 			hint := a.sty.Messages.ThinkingTruncationHint.Render(fmt.Sprintf(hintFormat, hidden))
 			rendered = hint + "\n\n" + rendered
 		}
-		result := a.sty.Messages.ThinkingBox.Width(width).Render(rendered)
+		result := a.renderThinkingBranch(rendered, width)
 		a.thinkingBoxHeight = lipgloss.Height(result)
 		return result
 	}
 
-	renderer := common.QuietMarkdownRenderer(a.sty, width)
-	rendered := a.streamingThinking.Render(thinking, width, renderer)
+	renderer := common.ThinkingMarkdownRenderer(a.sty, contentWidth)
+	rendered := a.streamingThinking.Render(thinking, contentWidth, renderer)
 	rendered = strings.TrimSpace(rendered)
 
 	// Count lines and, for the windowed view modes, slice the tail
@@ -682,18 +750,7 @@ func (a *AssistantMessageItem) renderThinking(thinking string, width int) string
 	// scan.
 	var lines []string
 	var totalLines int
-	switch a.thinkingViewMode {
-	case thinkingCollapsed:
-		totalLines = countLines(rendered)
-		if totalLines > maxCollapsedThinkingHeight {
-			tail, hidden := tailLines(rendered, maxCollapsedThinkingHeight, totalLines)
-			hint := a.sty.Messages.ThinkingTruncationHint.Render(
-				fmt.Sprintf(assistantMessageTruncateFormat, hidden),
-			)
-			lines = append([]string{hint, ""}, strings.Split(tail, "\n")...)
-		} else {
-			lines = strings.Split(rendered, "\n")
-		}
+	switch mode {
 	case thinkingTailWindow:
 		totalLines = countLines(rendered)
 		if totalLines > maxExpandedThinkingTailLines {
@@ -709,15 +766,14 @@ func (a *AssistantMessageItem) renderThinking(thinking string, width int) string
 		lines = strings.Split(rendered, "\n")
 	}
 
-	thinkingStyle := a.sty.Messages.ThinkingBox.Width(width)
-	result := thinkingStyle.Render(strings.Join(lines, "\n"))
+	result := a.renderThinkingBranch(strings.Join(lines, "\n"), width)
 	a.thinkingBoxHeight = lipgloss.Height(result)
 
 	duration := a.message.ThinkingDuration()
 	if duration.String() != "0s" {
 		footer := a.sty.Messages.ThinkingFooterTitle.Render("Thought for ") +
 			a.sty.Messages.ThinkingFooterDuration.Render(duration.String())
-		result += "\n\n" + footer
+		result += "\n" + footer
 	}
 
 	return result
@@ -867,8 +923,8 @@ func (a *AssistantMessageItem) ToggleExpanded() bool {
 		a.Bump()
 		return a.summaryExpanded
 	}
-	if strings.TrimSpace(a.message.ReasoningContent().Thinking) == "" {
-		return a.thinkingViewMode != thinkingCollapsed
+	if !a.hasExpandableThinking() {
+		return false
 	}
 	switch a.thinkingViewMode {
 	case thinkingCollapsed:
@@ -903,13 +959,8 @@ func (a *AssistantMessageItem) ToggleExpanded() bool {
 // the cycle costs the user one extra toggle — preferred over the
 // alternative of failing to show the affordance on a genuinely
 // long block.
-//
-// Logical line count is `1 + newlineCount` (a string with no
-// newlines is one line). Comparing newline count alone introduced
-// an off-by-one that let a source whose post-newline-split length
-// equalled the cap skip the tail-window step.
 func (a *AssistantMessageItem) tailWindowWouldTruncate() bool {
-	lineCount := 1 + strings.Count(a.message.ReasoningContent().Thinking, "\n")
+	lineCount := len(nonblankThinkingLines(a.message.ReasoningContent().Thinking))
 	return lineCount > maxExpandedThinkingTailLines
 }
 
@@ -927,7 +978,7 @@ func (a *AssistantMessageItem) HandleMouseClick(btn ansi.MouseButton, x, y int) 
 	}
 	// Only the thinking box is clickable; other regions of the assistant
 	// message should not trigger expansion.
-	return a.thinkingBoxHeight > 0 && y < a.thinkingBoxHeight
+	return a.hasExpandableThinking() && a.thinkingBoxHeight > 0 && y >= 0 && y < a.thinkingBoxHeight
 }
 
 // HandleKeyEvent implements KeyEventHandler.

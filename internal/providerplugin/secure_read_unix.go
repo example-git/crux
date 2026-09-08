@@ -25,7 +25,7 @@ func readSecureBoundedFile(path string, maximum int64) ([]byte, error) {
 	if err := unix.Fstat(fd, &stat); err != nil {
 		return nil, err
 	}
-	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Nlink != 1 || stat.Size < 0 || stat.Size > maximum {
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Size < 0 || stat.Size > maximum {
 		return nil, errors.New("file is not a bounded private regular file")
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maximum+1))

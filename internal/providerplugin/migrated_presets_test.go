@@ -42,7 +42,7 @@ func TestCanonicalMigratedProviderPresetDigestsMatchGeneratedBundles(t *testing.
 		require.Equal(t, "0.51.23", version)
 		snapshot, err := snapshotDirectory(filepath.Join(root, entry.Name()), filepath.Join(t.TempDir(), "snapshot"))
 		require.NoError(t, err, providerID)
-		require.Equal(t, 1, snapshot.FileCount, providerID)
+		require.Equal(t, 2, snapshot.FileCount, providerID)
 		require.Equal(t, digest, snapshot.Digest, providerID)
 		count++
 	}

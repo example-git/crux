@@ -8,8 +8,37 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
+	"github.com/example-git/crux/internal/session"
 	managedtask "github.com/example-git/crux/internal/task"
 )
+
+func TestForegroundShortcutAvailability(t *testing.T) {
+	ui := newTestUI()
+	ui.session = &session.Session{ID: "parent"}
+	ui.keyMap = DefaultKeyMap()
+	ui.state = uiChat
+	ui.agentBusyCache.set(true)
+	visible := func() bool {
+		for _, binding := range ui.ShortHelp() {
+			if binding.Help().Key == "ctrl+b" {
+				return true
+			}
+		}
+		return false
+	}
+	require.False(t, visible())
+	ui.applyTaskStatus(taskStatusMsg{sessionID: ui.session.ID, foregroundCount: 1})
+	require.True(t, visible())
+	ui.agentBusyCache.set(false)
+	require.True(t, visible())
+	ui.agentBusyCache.set(true)
+	ui.foregroundWaitSessionID = "other-session"
+	require.False(t, visible())
+	ui.applyTaskStatus(taskStatusMsg{sessionID: ui.session.ID})
+	require.False(t, visible())
+	ui.session = nil
+	require.NotPanics(t, func() { ui.applyTaskStatus(taskStatusMsg{}); require.False(t, visible()) })
+}
 
 func TestTaskStatusCountsOnlyRunningTasks(t *testing.T) {
 	ui := newTestUI()
@@ -35,7 +64,7 @@ func TestTaskStatusTabIsIntegratedIntoBottomEditorOutline(t *testing.T) {
 	bottom := lines[len(lines)-1]
 
 	require.Equal(t, 32, ansi.StringWidth(bottom))
-	require.Equal(t, " ctrl+↓ 1 task "+strings.Repeat("─", 17), ansi.Strip(bottom))
+	require.Equal(t, "╰ ctrl+↓ 1 task "+strings.Repeat("─", 15)+"╯", ansi.Strip(bottom))
 	require.Contains(t, bottom, "\x1b[")
 }
 

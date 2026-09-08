@@ -2,6 +2,7 @@ package styles
 
 import (
 	"image/color"
+	"math"
 
 	"github.com/charmbracelet/x/exp/charmtone"
 	"github.com/example-git/crux/internal/ui/brand"
@@ -35,6 +36,7 @@ func ThemeForProvider(providerID string) Styles {
 // CharmtonePantera returns the Charmtone dark theme. It's the default style
 // for the UI.
 func CharmtonePantera() Styles {
+	panelBackground := color.NRGBA{R: 0x18, G: 0x17, B: 0x1D, A: 0xFF}
 	s := quickStyle(quickStyleOpts{
 		primary:   charmtone.Charple,
 		secondary: charmtone.Dolly,
@@ -49,7 +51,7 @@ func CharmtonePantera() Styles {
 		onPrimary: charmtone.Butter,
 
 		bgBase:         charmtone.Pepper,
-		bgLeastVisible: charmtone.BBQ,
+		bgLeastVisible: panelBackground,
 		bgLessVisible:  charmtone.Char,
 		bgMostVisible:  charmtone.Iron,
 
@@ -122,23 +124,62 @@ func CharmtonePantera() Styles {
 // and accent drives selection backgrounds and frame borders.
 func ApplyBrandAccents(s *Styles, gradA, gradB, accent color.Color) {
 	onAccent := contrastFg(accent)
+	textAccent := ReadableText(gradA, s.Background)
 
-	s.Dialog.Title = s.Dialog.Title.Foreground(gradA)
-	s.Dialog.TitleText = s.Dialog.TitleText.Foreground(gradA)
+	s.Dialog.Title = s.Dialog.Title.Foreground(textAccent)
+	s.Dialog.TitleText = s.Dialog.TitleText.Foreground(textAccent)
 	s.Dialog.TitleGradFromColor = gradA
 	s.Dialog.TitleGradToColor = gradB
-	s.Dialog.PrimaryText = s.Dialog.PrimaryText.Foreground(gradA)
+	s.Dialog.PrimaryText = s.Dialog.PrimaryText.Foreground(textAccent)
 	s.Dialog.SelectedItem = s.Dialog.SelectedItem.Background(accent).Foreground(onAccent)
+	s.Dialog.ListItem.InfoFocused = s.Dialog.ListItem.InfoFocused.Foreground(onAccent)
+	s.Dialog.Sessions.InfoFocused = s.Dialog.Sessions.InfoFocused.Foreground(onAccent)
 	s.Dialog.ScrollbarThumb = s.Dialog.ScrollbarThumb.Foreground(gradB)
 	s.Dialog.View = s.Dialog.View.BorderForeground(gradB)
 	s.Dialog.Quit.Frame = s.Dialog.Quit.Frame.BorderForeground(gradB)
-	s.Dialog.Arguments.InputRequiredMarkFocused = s.Dialog.Arguments.InputRequiredMarkFocused.Foreground(gradA)
+	s.Dialog.Arguments.InputRequiredMarkFocused = s.Dialog.Arguments.InputRequiredMarkFocused.Foreground(textAccent)
 
 	s.WorkingGradFromColor = gradA
 	s.WorkingGradToColor = gradB
 
 	s.Completions.Focused = s.Completions.Focused.Background(accent).Foreground(onAccent)
 	s.TextSelection = s.TextSelection.Background(accent).Foreground(onAccent)
+}
+
+func ReadableText(foreground, background color.Color) color.Color {
+	if foreground == nil || background == nil {
+		return foreground
+	}
+	luminance := func(value color.Color) float64 {
+		r, g, b, _ := value.RGBA()
+		linear := func(channel uint32) float64 {
+			value := float64(channel) / 65535
+			if value <= 0.04045 {
+				return value / 12.92
+			}
+			return math.Pow((value+0.055)/1.055, 2.4)
+		}
+		return 0.2126*linear(r) + 0.7152*linear(g) + 0.0722*linear(b)
+	}
+	backgroundLuminance := luminance(background)
+	readable := func(value color.Color) bool {
+		foregroundLuminance := luminance(value)
+		return (max(foregroundLuminance, backgroundLuminance)+0.05)/(min(foregroundLuminance, backgroundLuminance)+0.05) >= 4.5
+	}
+	if readable(foreground) {
+		return foreground
+	}
+	original := color.NRGBAModel.Convert(foreground).(color.NRGBA)
+	for step := 1; step <= 255; step++ {
+		brighten := func(channel uint8) uint8 {
+			return uint8(int(channel) + (255-int(channel))*step/255)
+		}
+		candidate := color.NRGBA{R: brighten(original.R), G: brighten(original.G), B: brighten(original.B), A: original.A}
+		if readable(candidate) {
+			return candidate
+		}
+	}
+	return foreground
 }
 
 // contrastFg picks a legible foreground for text rendered on the given

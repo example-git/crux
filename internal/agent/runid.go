@@ -2,6 +2,27 @@ package agent
 
 import "context"
 
+type DeliveryMode string
+
+const (
+	DeliveryQueue DeliveryMode = "queue"
+	DeliverySteer DeliveryMode = "steer"
+)
+
+type deliveryModeContextKey struct{}
+
+func WithDeliveryMode(ctx context.Context, mode DeliveryMode) context.Context {
+	return context.WithValue(ctx, deliveryModeContextKey{}, mode)
+}
+
+func DeliveryModeFromContext(ctx context.Context) DeliveryMode {
+	mode, _ := ctx.Value(deliveryModeContextKey{}).(DeliveryMode)
+	if mode == "" {
+		return DeliveryQueue
+	}
+	return mode
+}
+
 // runIDContextKey is the unexported context key used to carry a
 // caller-supplied RunID from the workspace HTTP boundary
 // (backend.SendMessage) down into coordinator.Run without forcing a

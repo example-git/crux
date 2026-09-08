@@ -34,7 +34,7 @@ type FetchToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (f *FetchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Fetch", opts.Anim, opts.Compact)
 	}
@@ -45,6 +45,9 @@ func (f *FetchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 	}
 
 	toolParams := []string{params.URL}
+	if params.Mode == "user" {
+		toolParams = append(toolParams, "mode", "user")
+	}
 	if params.Format != "" {
 		toolParams = append(toolParams, "format", params.Format)
 	}
@@ -65,7 +68,10 @@ func (f *FetchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 		return header
 	}
 
-	// Determine file extension for syntax highlighting based on format.
+	if params.Format == "" || params.Format == "markdown" {
+		body := toolOutputMarkdownContent(sty, opts.Result.Content, cappedWidth, opts.ExpandedContent)
+		return joinToolParts(header, body)
+	}
 	file := getFileExtensionForFormat(params.Format)
 	body := toolOutputCodeContent(sty, file, opts.Result.Content, 0, cappedWidth, opts.ExpandedContent)
 	return joinToolParts(header, body)
@@ -109,7 +115,7 @@ type WebFetchToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (w *WebFetchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Fetch", opts.Anim, opts.Compact)
 	}
@@ -163,7 +169,7 @@ type WebSearchToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (w *WebSearchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Search", opts.Anim, opts.Compact)
 	}

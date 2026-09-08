@@ -181,7 +181,11 @@ func NewInstructions(com *common.Common) *Instructions {
 	if surface.Name != "" {
 		runtimeHeader = surface.Name + " Runtime Controls"
 	}
-	items = append(items, instrItem{kind: instrHeader, label: runtimeHeader})
+	if len(surface.RuntimeControls) > 0 {
+		if len(surface.RuntimeControls) > 0 {
+		items = append(items, instrItem{kind: instrHeader, label: runtimeHeader})
+	}
+	}
 	for i := range surface.RuntimeControls {
 		control := surface.RuntimeControls[i]
 		label := control.Label

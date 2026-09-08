@@ -37,7 +37,7 @@ type ViewToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (v *ViewToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "View", opts.Anim, opts.Compact)
 	}
@@ -123,7 +123,7 @@ type WriteToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (w *WriteToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Write", opts.Anim, opts.Compact)
 	}
@@ -150,11 +150,11 @@ func (w *WriteToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 	if opts.Result.IsError {
 		var meta tools.WriteResponseMetadata
 		if err := json.Unmarshal([]byte(opts.Result.Metadata), &meta); err == nil && meta.Diff != "" {
-			errLine := toolErrorContent(sty, opts.Result, cappedWidth)
+			errLine := toolErrorContent(sty, opts.Result, cappedWidth, opts.ExpandedContent)
 			diff := toolOutputDiffContentFromUnified(sty, meta.Diff, cappedWidth, opts.ExpandedContent)
 			return strings.Join([]string{header, "", errLine, "", diff}, "\n")
 		}
-		return joinToolParts(header, toolErrorContent(sty, opts.Result, cappedWidth))
+		return joinToolParts(header, toolErrorContent(sty, opts.Result, cappedWidth, opts.ExpandedContent))
 	}
 
 	// Render code content with syntax highlighting.
@@ -218,7 +218,7 @@ func (e *EditToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *
 	// Get diff content from metadata.
 	var meta tools.EditResponseMetadata
 	if err := json.Unmarshal([]byte(opts.Result.Metadata), &meta); err != nil {
-		bodyWidth := width - toolBodyLeftPaddingTotal
+		bodyWidth := toolBodyWidth(sty, width)
 		body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
 		return joinToolParts(header, body)
 	}
@@ -227,7 +227,7 @@ func (e *EditToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *
 
 	// On error (e.g. denied permission), show error above the diff.
 	if opts.Result.IsError {
-		errLine := toolErrorContent(sty, opts.Result, width)
+		errLine := toolErrorContent(sty, opts.Result, width, opts.ExpandedContent)
 		return strings.Join([]string{header, "", errLine, "", diff}, "\n")
 	}
 
@@ -291,7 +291,7 @@ func (m *MultiEditToolRenderContext) RenderTool(sty *styles.Styles, width int, o
 	// Get diff content from metadata.
 	var meta tools.MultiEditResponseMetadata
 	if err := json.Unmarshal([]byte(opts.Result.Metadata), &meta); err != nil {
-		bodyWidth := width - toolBodyLeftPaddingTotal
+		bodyWidth := toolBodyWidth(sty, width)
 		body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
 		return joinToolParts(header, body)
 	}
@@ -301,7 +301,7 @@ func (m *MultiEditToolRenderContext) RenderTool(sty *styles.Styles, width int, o
 
 	// On error (e.g. denied permission), show error above the diff.
 	if opts.Result.IsError {
-		errLine := toolErrorContent(sty, opts.Result, width)
+		errLine := toolErrorContent(sty, opts.Result, width, opts.ExpandedContent)
 		return strings.Join([]string{header, "", errLine, "", diff}, "\n")
 	}
 
@@ -334,7 +334,7 @@ type DownloadToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (d *DownloadToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Download", opts.Anim, opts.Compact)
 	}
@@ -365,7 +365,7 @@ func (d *DownloadToolRenderContext) RenderTool(sty *styles.Styles, width int, op
 		return header
 	}
 
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
+	bodyWidth := toolBodyWidth(sty, cappedWidth)
 	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
 	return joinToolParts(header, body)
 }

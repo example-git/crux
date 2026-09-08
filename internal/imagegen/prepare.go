@@ -14,6 +14,22 @@ func (m *JobManager) PrepareToolRequest(ctx context.Context, request JobRequest,
 	return m.PrepareRequest(ctx, request)
 }
 
+func (m *JobManager) AuthenticateToolRequest(ctx context.Context, request JobRequest, setup SetupRequest) error {
+	if m.setup == nil || request.Owner == nil {
+		return nil
+	}
+	bundle, err := m.setup.Runtime.Manager.ImageBundleForOwner(*request.Owner)
+	if err != nil {
+		return err
+	}
+	for _, credential := range bundle.Manifest.Credentials {
+		if credential.Source == "browser" {
+			return m.setup.Authenticate(ctx, setup, *request.Owner)
+		}
+	}
+	return nil
+}
+
 func (m *JobManager) PrepareRequest(ctx context.Context, request JobRequest) (JobRequest, error) {
 	if m.pluginRuntime == nil {
 		if request.Owner != nil {

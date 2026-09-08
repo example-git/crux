@@ -21,7 +21,6 @@ import (
 	"github.com/example-git/crux/internal/compatibility"
 	"github.com/example-git/crux/internal/compatibility/localaddon"
 	_ "github.com/example-git/crux/internal/dns"
-	cruxlog "github.com/example-git/crux/internal/log"
 	_ "github.com/joho/godotenv/autoload"
 )
 
@@ -50,9 +49,6 @@ func main() {
 	}
 	if exitCode, handled := compatibility.Dispatch(context.Background(), invocation); handled {
 		os.Exit(exitCode)
-	}
-	if err := cruxlog.SetupTraffic(); err != nil {
-		slog.Error("Failed to initialize traffic logging", "error", err)
 	}
 	if os.Getenv("CRUX_PROFILE") != "" {
 		go func() {

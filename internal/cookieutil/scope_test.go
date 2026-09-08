@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/example-git/crux/internal/redact"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,6 +21,37 @@ func TestCookieDomainsRejectBroadOrMalformedScope(t *testing.T) {
 	}
 	for _, host := range []string{"evilprovider.example", "provider.example.evil", "example"} {
 		require.False(t, MatchesDomain(host, domains))
+	}
+}
+
+func TestScopedJarsRegisterOnlyAllowedResponseCookies(t *testing.T) {
+	for _, name := range []string{"allowed", "denied", "missing_policy", "nil_jar"} {
+		t.Run(name, func(t *testing.T) {
+			target, err := url.Parse("https://provider.example/")
+			require.NoError(t, err)
+			jar, err := cookiejar.New(nil)
+			require.NoError(t, err)
+			secret := "synthetic-scoped-response-cookie-" + name
+			scoped := ScopedJars{Jars: map[string]http.CookieJar{"browser": jar}}
+			if name != "missing_policy" {
+				scoped.Allowed = func(address *url.URL, id string) bool {
+					return name != "denied" && address == target && id == "browser"
+				}
+			}
+			if name == "nil_jar" {
+				scoped.Jars["browser"] = nil
+			}
+			scoped.Store(target, []*http.Cookie{{Name: "session", Value: secret, Secure: true, HttpOnly: true}})
+			if name == "allowed" {
+				require.Equal(t, redact.Replacement, redact.String(secret))
+				stored := jar.Cookies(target)
+				require.Len(t, stored, 1)
+				require.Equal(t, secret, stored[0].Value)
+			} else {
+				require.Equal(t, secret, redact.String(secret))
+				require.Empty(t, jar.Cookies(target))
+			}
+		})
 	}
 }
 

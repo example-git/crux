@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -123,6 +124,7 @@ type options struct {
 	client    option.HTTPClient
 
 	objectMode fantasy.ObjectMode
+	efficiency EfficiencyPolicy
 }
 
 type provider struct {
@@ -137,11 +139,15 @@ func New(opts ...Option) (fantasy.Provider, error) {
 	providerOptions := options{
 		headers:    map[string]string{},
 		objectMode: fantasy.ObjectModeAuto,
+		efficiency: EfficiencyPolicy{PromptCaching: true},
 	}
 	for _, o := range opts {
 		o(&providerOptions)
 	}
 
+	if err := providerOptions.efficiency.Validate(); err != nil {
+		return nil, err
+	}
 	providerOptions.baseURL = cmp.Or(providerOptions.baseURL, DefaultURL)
 	providerOptions.name = cmp.Or(providerOptions.name, Name)
 	return &provider{options: providerOptions}, nil
@@ -216,9 +222,11 @@ func (a *provider) LanguageModel(ctx context.Context, modelID string) (fantasy.L
 	for key, value := range resolved {
 		clientOptions = append(clientOptions, option.WithHeader(key, value))
 	}
-	if a.options.client != nil {
-		clientOptions = append(clientOptions, option.WithHTTPClient(a.options.client))
+	client := a.options.client
+	if client == nil {
+		client = http.DefaultClient
 	}
+	clientOptions = append(clientOptions, option.WithHTTPClient(cacheHTTPClient{base: client}))
 	return languageModel{
 		modelID:  modelID,
 		provider: a.options.name,
@@ -1233,6 +1241,11 @@ func (a languageModel) Generate(ctx context.Context, call fantasy.Call) (*fantas
 	if err != nil {
 		return nil, err
 	}
+	providerOptions, _ := call.ProviderOptions[Name].(*ProviderOptions)
+	ctx, err = a.cacheContext(ctx, providerOptions)
+	if err != nil {
+		return nil, err
+	}
 	reqOpts := buildRequestOptions(call, rawTools, betaFlags)
 
 	response, err := a.client.Messages.New(ctx, *params, reqOpts...)
@@ -1393,6 +1406,11 @@ func (a languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.S
 		return nil, err
 	}
 
+	providerOptions, _ := call.ProviderOptions[Name].(*ProviderOptions)
+	ctx, err = a.cacheContext(ctx, providerOptions)
+	if err != nil {
+		return nil, err
+	}
 	reqOpts := buildRequestOptions(call, rawTools, betaFlags)
 
 	stream := a.client.Messages.NewStreaming(ctx, *params, reqOpts...)

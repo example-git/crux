@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/agent/notify"
+	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/imageattachment"
@@ -383,6 +385,19 @@ func TestHandleSelectModelStopsOnboardingAfterFailedRequiredStage(t *testing.T) 
 	}
 }
 
+func TestHandleSelectModelWhileBusy(t *testing.T) {
+	ui, workspace, action, expectedState := modelSelectionTestUI(t, true)
+	ui.agentBusyCache.set(true)
+	require.True(t, ui.isAgentBusy())
+	messages := collectCommandMessages(ui.handleSelectModel(action))
+	require.Len(t, messages, 1)
+	_, applied := messages[0].(modelSelectionAppliedMsg)
+	require.True(t, applied)
+	require.Equal(t, 1, workspace.updateAgentCalls)
+	require.Equal(t, expectedState, workspace.updateAgentState)
+	require.True(t, ui.isAgentBusy())
+}
+
 func TestHandleSelectModelPublishesUsageOnlyAfterRuntimeUpdate(t *testing.T) {
 	t.Run("runtime update failure", func(t *testing.T) {
 		ui, workspace, action, expectedState := modelSelectionTestUI(t, true)
@@ -482,6 +497,68 @@ func TestReAuthenticateNotificationRequiresExactOwner(t *testing.T) {
 				require.Nil(t, cmd)
 				require.False(t, ui.dialog.HasDialogs())
 			}
+		})
+	}
+}
+
+type mcpRefreshWorkspace struct {
+	testWorkspace
+	states     map[string]mcptools.ClientInfo
+	stateCalls int
+}
+
+func (w *mcpRefreshWorkspace) MCPGetStates() map[string]mcptools.ClientInfo {
+	w.stateCalls++
+	return w.states
+}
+
+func TestMCPStateRefreshSkipsUnavailableSelectedProviders(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		disabledSlot config.SelectedModelType
+		refreshError error
+		wantUpdates  int
+	}{
+		{name: "disabled large", disabledSlot: config.SelectedModelTypeLarge},
+		{name: "disabled small", disabledSlot: config.SelectedModelTypeSmall},
+		{name: "enabled", wantUpdates: 1},
+		{name: "enabled refresh failure", wantUpdates: 1, refreshError: errors.New("refresh failed")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			providers := csync.NewMap[string, config.ProviderConfig]()
+			models := make(map[config.SelectedModelType]config.SelectedModel)
+			for _, slot := range []config.SelectedModelType{config.SelectedModelTypeLarge, config.SelectedModelTypeSmall} {
+				providerID := "startup-" + string(slot)
+				providers.Set(providerID, config.ProviderConfig{
+					ID: providerID, Type: "openai-compat", Disable: slot == test.disabledSlot,
+					Models: []catalog.Model{{ID: "model"}},
+				})
+				models[slot] = config.SelectedModel{Provider: providerID, Model: "model"}
+			}
+			ui := newTestUIWithConfig(t, &config.Config{Providers: providers, Models: models})
+			ws := &mcpRefreshWorkspace{
+				testWorkspace: testWorkspace{cfg: ui.com.Config(), updateAgentError: test.refreshError},
+				states:        map[string]mcptools.ClientInfo{"startup-server": {}},
+			}
+			ui.com.Workspace = ws
+			require.Equal(t, test.wantUpdates == 1, ws.cfg.CanInitializeAgent())
+			sequence := reflect.ValueOf(ui.handleStateChanged()())
+			require.Equal(t, reflect.Slice, sequence.Kind())
+			require.Equal(t, 2, sequence.Len())
+			refresh, ok := sequence.Index(0).Interface().(tea.Cmd)
+			require.True(t, ok)
+			result := refresh()
+			require.Equal(t, test.wantUpdates, ws.updateAgentCalls)
+			require.Equal(t, models, ws.cfg.Models)
+			if test.refreshError != nil {
+				require.IsType(t, util.ReportError(test.refreshError)(), result)
+				require.Zero(t, ws.stateCalls)
+				return
+			}
+			state, ok := result.(mcpStateChangedMsg)
+			require.True(t, ok)
+			require.Equal(t, ws.states, state.states)
+			require.Equal(t, 1, ws.stateCalls)
 		})
 	}
 }

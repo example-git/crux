@@ -516,7 +516,12 @@ func (r *PluginRuntime) Execute(ctx context.Context, owner providerplugin.ImageO
 		return nil, ctx.Err()
 	}
 	if len(response.Data) == 0 {
-		return response, fmt.Errorf("image plugin produced no outputs: %d failed variants", len(response.Failures))
+		failures := make([]error, 0, len(response.Failures)+1)
+		for _, failure := range response.Failures {
+			failures = append(failures, fmt.Errorf("variant %d: %s", failure.Variant, failure.Error))
+		}
+		failures = append(failures, fmt.Errorf("image plugin %s (backend %s, model %s) produced no outputs: %d failed variants", owner.PluginID, owner.Backend, response.Model, len(response.Failures)))
+		return response, errors.Join(failures...)
 	}
 	return response, nil
 }

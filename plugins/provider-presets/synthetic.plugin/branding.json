@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Synthetic",
+  "short_name": "SYNTH",
+  "color": "#C4B5FD",
+  "gradient_a": "#C4B5FD",
+  "gradient_b": "#93C5FD"
+}

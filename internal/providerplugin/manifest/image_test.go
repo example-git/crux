@@ -63,6 +63,26 @@ func TestImageManifestStrictContract(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestImageManifestFramingModes(t *testing.T) {
+	for _, response := range []string{"framed-json", "line-framed-json", "json", "text", "binary", "unknown"} {
+		t.Run(response, func(t *testing.T) {
+			value := imageManifestFixture()
+			request := value.Workflows["generate"].Steps[0].Request
+			request.Response = response
+			request.FramePrefix = "prefix"
+			data, err := json.Marshal(value)
+			require.NoError(t, err)
+			decoded, err := DecodeImageStrict(data)
+			if response == "framed-json" || response == "line-framed-json" {
+				require.NoError(t, err)
+				require.Equal(t, response, decoded.Workflows["generate"].Steps[0].Request.Response)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}
+
 func TestImageManifestRejectsUnexecutableReferences(t *testing.T) {
 	for _, ref := range []string{"/steps/send/body", "/steps/missing/body", "/credentials/missing", "/clients/missing/version"} {
 		value := imageManifestFixture()

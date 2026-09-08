@@ -97,6 +97,32 @@ func MaxTokensUsed(maxTokens int64) StopCondition {
 }
 
 // PrepareStepFunctionOptions contains the options for preparing a step in an agent execution.
+type StepModelSettings struct {
+	MaxOutputTokens  *int64
+	Temperature      *float64
+	TopP             *float64
+	TopK             *int64
+	PresencePenalty  *float64
+	FrequencyPenalty *float64
+	ProviderOptions  ProviderOptions
+	MaxRetries       *int
+	OnAuthRefresh    OnAuthRefreshFunc
+	ModelProvider    func() LanguageModel
+}
+
+func (s *StepModelSettings) apply(call *AgentCall) {
+	call.MaxOutputTokens = s.MaxOutputTokens
+	call.Temperature = s.Temperature
+	call.TopP = s.TopP
+	call.TopK = s.TopK
+	call.PresencePenalty = s.PresencePenalty
+	call.FrequencyPenalty = s.FrequencyPenalty
+	call.ProviderOptions = s.ProviderOptions
+	call.MaxRetries = s.MaxRetries
+	call.OnAuthRefresh = s.OnAuthRefresh
+	call.ModelProvider = s.ModelProvider
+}
+
 type PrepareStepFunctionOptions struct {
 	Steps      []StepResult
 	StepNumber int
@@ -106,6 +132,8 @@ type PrepareStepFunctionOptions struct {
 
 // PrepareStepResult contains the result of preparing a step in an agent execution.
 type PrepareStepResult struct {
+	RetainMessages  []Message
+	Settings        *StepModelSettings
 	Model           LanguageModel
 	Messages        []Message
 	System          *string
@@ -471,6 +499,11 @@ func (a *agent) Generate(ctx context.Context, opts AgentCall) (*AgentResult, err
 			}
 
 			ctx = updatedCtx
+			responseMessages = append(responseMessages, prepared.RetainMessages...)
+
+			if prepared.Settings != nil {
+				prepared.Settings.apply(&opts)
+			}
 
 			// Apply prepared step modifications
 			if prepared.Messages != nil {
@@ -787,6 +820,14 @@ func (a *agent) executeSingleTool(ctx context.Context, toolMap map[string]AgentT
 		ProviderExecuted: false,
 	}
 
+	if err := ctx.Err(); err != nil {
+		result.Result = ToolResultOutputContentError{Error: err}
+		if toolResultCallback != nil {
+			_ = toolResultCallback(result)
+		}
+		return result, true
+	}
+
 	// Skip invalid tool calls - create error result (not critical)
 	if toolCall.Invalid {
 		result.Result = ToolResultOutputContentError{
@@ -945,7 +986,11 @@ func (a *agent) Stream(ctx context.Context, opts AgentStreamCall) (*AgentResult,
 			}
 
 			ctx = updatedCtx
+			responseMessages = append(responseMessages, prepared.RetainMessages...)
 
+			if prepared.Settings != nil {
+				prepared.Settings.apply(&call)
+			}
 			if prepared.Messages != nil {
 				stepInputMessages = prepared.Messages
 			}

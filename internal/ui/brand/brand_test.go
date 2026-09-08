@@ -1,7 +1,6 @@
 package brand
 
 import (
-	"image/color"
 	"testing"
 
 	"charm.land/lipgloss/v2"
@@ -10,18 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestForProviderUsesLightAccent(t *testing.T) {
-	tests := map[string]color.RGBA{
-		"openai":  {R: 127, G: 196, B: 255, A: 255},
-		"gemini":  {R: 140, G: 233, B: 154, A: 255},
-		"copilot": {R: 201, G: 168, B: 255, A: 255},
-	}
-
-	for providerID, expected := range tests {
+func TestForProviderUsesDefaultWithoutLoadedBrand(t *testing.T) {
+	for _, providerID := range []string{"", "openai", "gemini", "copilot", "custom"} {
 		t.Run(providerID, func(t *testing.T) {
-			provider := ForProvider(providerID)
-			require.NotNil(t, provider)
-			assert.Equal(t, expected, provider.Accent)
+			assert.Nil(t, ForProvider(providerID))
+			assert.Nil(t, FromSurface(providerregistry.Surface{ID: providerID}))
 		})
 	}
 }

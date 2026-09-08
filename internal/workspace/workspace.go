@@ -180,6 +180,7 @@ type Workspace interface {
 	ListTasks(ctx context.Context) ([]managedtask.View, error)
 	TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error)
 	StopTask(ctx context.Context, id string) (managedtask.View, error)
+	RestartTask(ctx context.Context, id string) (managedtask.View, error)
 	ContinueTask(ctx context.Context, id, parentSessionID, prompt string) (managedtask.View, error)
 	ListTaskNotifications(ctx context.Context, parentSessionID string, unreadOnly bool) ([]managedtask.Notification, error)
 	MarkTaskNotificationRead(ctx context.Context, notificationID string) (managedtask.Notification, error)

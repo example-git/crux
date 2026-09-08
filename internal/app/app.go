@@ -893,6 +893,7 @@ func (app *App) ensureCoderAgent(ctx context.Context, interactive bool) (agent.C
 }
 
 func (app *App) newCoderAgentLocked(ctx context.Context, interactive bool) (agent.Coordinator, error) {
+	ctx = log.WithTrafficContext(ctx, app.globalCtx)
 	coderAgentCfg := app.config.Config().Agents[config.AgentCoder]
 	if coderAgentCfg.ID == "" {
 		return nil, fmt.Errorf("coder agent configuration is missing")

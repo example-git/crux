@@ -39,9 +39,9 @@ func (e *DiagnosticError) Error() string {
 	}
 	diagnostic := e.Report.Diagnostics[0]
 	if diagnostic.Path != "" {
-		return fmt.Sprintf("provider plugin diagnostics failed: %s at %s", diagnostic.Code, diagnostic.Path)
+		return fmt.Sprintf("provider plugin diagnostics failed: %s at %s: %s", diagnostic.Code, diagnostic.Path, safeDiagnosticMessage(diagnostic.Message))
 	}
-	return fmt.Sprintf("provider plugin diagnostics failed: %s", diagnostic.Code)
+	return fmt.Sprintf("provider plugin diagnostics failed: %s: %s", diagnostic.Code, safeDiagnosticMessage(diagnostic.Message))
 }
 
 func (m *Manager) Diagnose(ctx context.Context, request DiagnoseRequest) (DiagnosticReport, error) {
@@ -98,7 +98,7 @@ func (m *Manager) diagnosePath(ctx context.Context, source string) (DiagnosticRe
 		return DiagnosticReport{}, err
 	}
 	temporary := filepath.Join(m.paths.Cache, ".diagnose-"+uuid.NewString())
-	snapshot, err := snapshotDirectory(source, temporary)
+	snapshot, err := snapshotForValidation(source, temporary)
 	if err != nil {
 		_ = os.RemoveAll(temporary)
 		message := safeDiagnostic("bundle-snapshot-invalid", err.Error()).Message

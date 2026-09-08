@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"net/http"
@@ -39,13 +41,14 @@ func testInstalledImagePluginRunsJobToFiles(t *testing.T, variantMode string) {
 	require.NoError(t, png.Encode(&pixels, image.NewRGBA(image.Rect(0, 0, 2, 2))))
 	encoded := base64.StdEncoding.EncodeToString(pixels.Bytes())
 	var calls atomic.Int64
+	var rejectAll atomic.Bool
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		var body map[string]any
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		require.Equal(t, float64(47), body["wire_model"])
 		require.Equal(t, "paper bird", body["prompt"])
-		if body["variant"] == float64(2) {
+		if rejectAll.Load() || body["variant"] == float64(2) {
 			http.Error(w, "synthetic variant failure", 500)
 			return
 		}
@@ -76,7 +79,7 @@ func testInstalledImagePluginRunsJobToFiles(t *testing.T, variantMode string) {
 		Backend: "synthetic-images", Configuration: manifest.Configuration{Schema: map[string]any{"type": "object", "additionalProperties": false}},
 		Origins: []manifest.ImageOrigin{{URL: server.URL}}, Models: []manifest.ImageModel{{ID: "model", Name: "Model", Parameters: map[string]any{"wire": 47}}}, DefaultModel: "model",
 		Options: manifest.ImageOptions{AspectRatios: []string{"1:1", "2:1"}, Quality: []string{"auto"}, Background: []string{"auto"}, Sizes: []string{"auto", "1024x64"}, Dimensions: true, DimensionLimits: &manifest.ImageDimensionLimits{Multiple: 16, MaxEdge: 1024, MinPixels: 4096, MaxPixels: 262144, MaxAspect: 2}, OutputExtension: ".png"},
-		Limits:  manifest.ImageLimits{Concurrency: 1, Variants: 3, InputImages: 1, InputBytes: 1024, TotalInputBytes: 1024, OutputBytes: 1024, ResponseBytes: 4096, TimeoutSeconds: 30}, Generate: "generate", VariantMode: variantMode,
+		Limits:  manifest.ImageLimits{Concurrency: 4, Variants: 3, InputImages: 1, InputBytes: 1024, TotalInputBytes: 1024, OutputBytes: 1024, ResponseBytes: 4096, TimeoutSeconds: 30}, Generate: "generate", VariantMode: variantMode,
 		Workflows: map[string]manifest.ImageWorkflow{"generate": {
 			Steps:  []manifest.ImageStep{{ID: "send", Request: &manifest.ImageRequest{Method: "POST", URL: literal(server.URL), Encoding: "json", Body: &manifest.ImageValue{Object: map[string]manifest.ImageValue{"wire_model": {Ref: "/model/parameters/wire"}, "prompt": {Ref: "/request/prompt"}, "variant": {Ref: "/variant"}}}, Response: "json", Phase: "generation", MaxBytes: 4096, TimeoutSeconds: 5}}},
 			Result: manifest.ImageValue{Ref: "/steps/send/body/images"},
@@ -149,6 +152,63 @@ func testInstalledImagePluginRunsJobToFiles(t *testing.T, variantMode string) {
 		require.ErrorIs(t, err, os.ErrNotExist)
 	}
 	require.Equal(t, expectedCalls, calls.Load())
+	if variantMode == "individual" {
+		concurrent := request
+		concurrent.Count = 1
+		concurrent.OutputPaths = nil
+		results := make(chan error, 8)
+		for range 8 {
+			go func() {
+				view, _, err := jobs.EnqueueNumbered(concurrent, output, "concurrent image", managedtask.Ownership{ParentSessionID: "parent"})
+				if err != nil {
+					results <- err
+					return
+				}
+				finished, err := jobs.Output(t.Context(), view.ID, true, 20*time.Second)
+				if err == nil {
+					var result JobResult
+					err = json.Unmarshal([]byte(finished.Output), &result)
+					if err == nil && (!result.Success || len(result.Outputs) != 1) {
+						err = fmt.Errorf("concurrent job failed: %s", finished.Output)
+					}
+					if err == nil {
+						var saved []byte
+						saved, err = os.ReadFile(result.Outputs[0])
+						if err == nil && !bytes.Equal(saved, pixels.Bytes()) {
+							err = errors.New("concurrent image bytes differ")
+						}
+					}
+				}
+				results <- err
+			}()
+		}
+		for range 8 {
+			require.NoError(t, <-results)
+		}
+		expectedCalls += 8
+	}
+	rejectAll.Store(true)
+	failedView, failedPaths, err := jobs.EnqueueNumbered(request, output, "failed image", managedtask.Ownership{ParentSessionID: "parent"})
+	require.NoError(t, err)
+	failedOutput, err := jobs.Output(t.Context(), failedView.ID, true, 10*time.Second)
+	require.NoError(t, err)
+	var failedResult JobResult
+	require.NoError(t, json.Unmarshal([]byte(failedOutput.Output), &failedResult))
+	require.False(t, failedResult.Success)
+	require.Empty(t, failedResult.Outputs)
+	require.Contains(t, failedResult.Error, "variant 1:")
+	require.Contains(t, failedResult.Error, "HTTP 500")
+	require.Contains(t, failedResult.Error, "synthetic variant failure")
+	require.Contains(t, failedOutput.Task.State.ErrorMessage, "synthetic variant failure")
+	require.Contains(t, failedResult.Failures[0].Error, "synthetic variant failure")
+	for _, path := range failedPaths {
+		require.NoFileExists(t, path)
+	}
+	if variantMode == "individual" {
+		expectedCalls += int64(request.Count)
+	} else {
+		expectedCalls++
+	}
 	_, err = manager.SetTrust(t.Context(), owner.PluginID, providerplugin.TrustRequest{Digest: owner.Digest, Trusted: false})
 	require.NoError(t, err)
 	request.Owner = &owner

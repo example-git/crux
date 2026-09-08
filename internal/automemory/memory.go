@@ -38,6 +38,7 @@ func (e *ConfigurationError) Unwrap() error {
 }
 
 type Memory struct {
+	Scope          Scope
 	Directory      string
 	Entrypoint     string
 	Content        string
@@ -141,7 +142,7 @@ func Prompt(memory Memory) string {
 	builder.WriteString("## Saving memories\n\n")
 	builder.WriteString("Use the memory_list, memory_upsert, and memory_remove tools instead of generic filesystem tools. Save project-specific decisions and references in project scope. Save preferences and feedback that apply across projects in user scope. Before every memory mutation, inspect the target scope with memory_list. If a related memory exists and remains relevant, update that topic to incorporate the new durable information instead of creating a duplicate. Remove memories that are no longer relevant to their scope, stale, or superseded. Each memory uses this frontmatter:\n\n")
 	builder.WriteString("```markdown\n---\nname: {{memory name}}\ndescription: {{specific one-line relevance description}}\ntype: {{user|feedback|project|reference}}\n---\n\n{{durable content}}\n```\n\n")
-	fmt.Fprintf(&builder, "The memory tools maintain each scope's `%s` index atomically. Keep topics focused and the collection naturally concise. Aim for roughly 30 to 50 memories per scope depending on project complexity; treat that range as a soft target, not a hard limit, and never delete useful memory solely to reach it. Each index remains bounded to %d lines.\n\n", EntrypointName, MaxEntrypointLines)
+	fmt.Fprintf(&builder, "The memory tools maintain each scope's `%s` index atomically. Each project has a hard limit of %d memory slots. Each topic file occupies one slot; the index does not. Keep the index to short titles and relevance hooks linking to detailed topic files, and read those files only when relevant. Consolidate related details into existing topics instead of creating a new file for every fact. At capacity, new topics are rejected; update existing topics or merge related memories and remove the superseded files before adding another. Existing over-limit collections remain readable and editable but cannot add new topics until brought within the limit. Preserve useful details when consolidating; do not silently discard them. User-wide memory is separate from the project slot limit. Each index remains bounded to %d lines.\n\n", EntrypointName, ProjectMemorySlots, MaxEntrypointLines)
 	builder.WriteString("## Recalling memories\n\n")
 	builder.WriteString("The indices below are always loaded. When an entry is relevant, use memory_list with its scope and topic to read it before relying on it. You must consult memory when the user asks you to recall prior work. If the user says to ignore memory, act as if both indices were empty and do not mention remembered content.\n\n")
 	builder.WriteString("Memory can become stale. Verify claims about current files, functions, flags, or project state against the repository before recommending action. Trust current evidence over memory and update stale records.\n\n")

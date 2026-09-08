@@ -129,6 +129,49 @@ func TestRenderSidebarProviderWordmark(t *testing.T) {
 	}
 }
 
+func TestCustomShortLabelGlyphs(t *testing.T) {
+	for _, title := range []string{"A", "CODEX", "QVWZ5"} {
+		out := ansi.Strip(Render(lipgloss.NewStyle(), "v1", true, Opts{Title: title, Sidebar: true, Width: 64}))
+		if strings.Contains(out, title) || !strings.ContainsAny(out, "█▀▄") {
+			t.Fatalf("short label %q did not render as glyphs: %s", title, out)
+		}
+		if IsShortTitle(title) {
+			t.Fatalf("label %q unexpectedly selected compact lettering", title)
+		}
+	}
+	for _, title := range []string{"CLAUDE", "COPILOT"} {
+		if !IsShortTitle(title) {
+			t.Fatalf("%q must use compact lettering", title)
+		}
+		want, err := ConvertASCIIArt(title, "blocks-in-two-lines-filled")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sidebar := range []bool{false, true} {
+			out := ansi.Strip(Render(lipgloss.NewStyle(), "v1", sidebar, Opts{Title: title, Sidebar: sidebar, Width: 64}))
+			for _, row := range strings.Split(want, "\n") {
+				if !strings.Contains(out, row) {
+					t.Fatalf("%q missing compact block row %q: %s", title, row, out)
+				}
+			}
+		}
+	}
+	if IsShortTitle("ABCDEFGH") {
+		t.Fatal("eight-character label must not use compact lettering")
+	}
+	out := ansi.Strip(Render(lipgloss.NewStyle(), "v1", true, Opts{Title: "ABCDEFGH", Sidebar: true, Width: 64}))
+	if !strings.Contains(out, "ABCDEFGH") {
+		t.Fatalf("eight-character label must remain visible as text: %s", out)
+	}
+	lines := strings.Split(out, "\n")
+	if got := strings.Index(lines[3], "ABCDEFGH"); got != (64-8)/2 {
+		t.Fatalf("text starts at %d; want centered column %d", got, (64-8)/2)
+	}
+	if _, err := ConvertASCIIArt("A界", "3-rows"); err == nil {
+		t.Fatal("unsupported glyph must not silently disappear")
+	}
+}
+
 func TestRenderDefaultCruxWordmarkCentered(t *testing.T) {
 	t.Parallel()
 

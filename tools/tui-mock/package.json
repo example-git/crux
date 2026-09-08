@@ -1,0 +1,23 @@
+{
+  "name": "crux-tui-mock",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 8767 --strictPort",
+    "build": "npm run build:web && go build -o .cache/preview-server ./server",
+    "test": "go test ../../internal/ui/model -run \"^TestPreview\" -count=1",
+    "build:web": "vite build --outDir ../../internal/ui/demo/web --emptyOutDir",
+    "build:headless": "esbuild node_modules/@xterm/headless/lib-headless/xterm-headless.js --target=es2015 --outfile=public/headless.js"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "6.0.0"
+  },
+  "devDependencies": {
+    "@xterm/headless": "6.0.0",
+    "esbuild": "0.28.2",
+    "vite": "8.2.2"
+  }
+}

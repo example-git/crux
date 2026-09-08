@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func snapshotDirectory(source, destination string) (snapshotResult, error) {
+func snapshotDirectoryWithSync(source, destination string, syncFiles bool) (snapshotResult, error) {
 	fd, err := unix.Open(source, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return snapshotResult{}, fmt.Errorf("open plugin source root: %w", err)
@@ -30,14 +30,14 @@ func snapshotDirectory(source, destination string) (snapshotResult, error) {
 	}
 	seen := map[string]string{}
 	result := snapshotResult{DirectoryCount: 1}
-	if err := copySourceDirectory(root, destination, "", 0, seen, &result); err != nil {
+	if err := copySourceDirectory(root, destination, "", 0, seen, &result, syncFiles); err != nil {
 		return snapshotResult{}, err
 	}
 	result.Digest = canonicalBundleDigest(result.Files)
 	return result, nil
 }
 
-func copySourceDirectory(source *os.File, destination, relative string, depth int, seen map[string]string, result *snapshotResult) error {
+func copySourceDirectory(source *os.File, destination, relative string, depth int, seen map[string]string, result *snapshotResult, syncFiles bool) error {
 	remaining := MaxBundleFiles + MaxBundleDirectories - result.FileCount - result.DirectoryCount + 1
 	entries, err := source.ReadDir(remaining)
 	if err != nil && err != io.EOF {
@@ -87,7 +87,7 @@ func copySourceDirectory(source *os.File, destination, relative string, depth in
 				child.Close()
 				return fmt.Errorf("create snapshot directory %q: %w", rel, err)
 			}
-			if err := copySourceDirectory(child, destination, rel, depth+1, seen, result); err != nil {
+			if err := copySourceDirectory(child, destination, rel, depth+1, seen, result, syncFiles); err != nil {
 				child.Close()
 				return err
 			}
@@ -95,10 +95,6 @@ func copySourceDirectory(source *os.File, destination, relative string, depth in
 				return fmt.Errorf("close plugin source directory %q: %w", rel, err)
 			}
 		case unix.S_IFREG:
-			if stat.Nlink != 1 {
-				child.Close()
-				return fmt.Errorf("plugin entry %q is hard-linked", rel)
-			}
 			if result.FileCount >= MaxBundleFiles {
 				child.Close()
 				return fmt.Errorf("plugin bundle exceeds %d files", MaxBundleFiles)
@@ -107,7 +103,7 @@ func copySourceDirectory(source *os.File, destination, relative string, depth in
 				child.Close()
 				return fmt.Errorf("plugin entry %q exceeds bundle size limits", rel)
 			}
-			file, err := copySourceFile(child, destination, rel, stat)
+			file, err := copySourceFile(child, destination, rel, stat, syncFiles)
 			if closeErr := child.Close(); err == nil && closeErr != nil {
 				err = closeErr
 			}
@@ -125,7 +121,7 @@ func copySourceDirectory(source *os.File, destination, relative string, depth in
 	return nil
 }
 
-func copySourceFile(source *os.File, destination, relative string, before unix.Stat_t) (bundleFile, error) {
+func copySourceFile(source *os.File, destination, relative string, before unix.Stat_t, syncFile bool) (bundleFile, error) {
 	beforeInfo, err := source.Stat()
 	if err != nil {
 		return bundleFile{}, fmt.Errorf("inspect plugin entry %q: %w", relative, err)
@@ -156,9 +152,11 @@ func copySourceFile(source *os.File, destination, relative string, before unix.S
 		output.Close()
 		return bundleFile{}, fmt.Errorf("protect snapshot file %q: %w", relative, err)
 	}
-	if err := output.Sync(); err != nil {
-		output.Close()
-		return bundleFile{}, fmt.Errorf("sync snapshot file %q: %w", relative, err)
+	if syncFile {
+		if err := output.Sync(); err != nil {
+			output.Close()
+			return bundleFile{}, fmt.Errorf("sync snapshot file %q: %w", relative, err)
+		}
 	}
 	if err := output.Close(); err != nil {
 		return bundleFile{}, fmt.Errorf("close snapshot file %q: %w", relative, err)

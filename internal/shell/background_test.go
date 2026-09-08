@@ -16,6 +16,74 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBackgroundShellRestartSameID(t *testing.T) {
+	root := t.TempDir()
+	outputStore, err := task.NewOutputStore(filepath.Join(root, "output"), task.OutputStoreOptions{})
+	require.NoError(t, err)
+	recordStore, err := task.NewStore(filepath.Join(root, "metadata"))
+	require.NoError(t, err)
+	manager, err := NewBackgroundShellManagerWithStores("workspace", outputStore, recordStore)
+	require.NoError(t, err)
+	t.Cleanup(func() { manager.KillAll(context.Background()); recordStore.Close(); outputStore.Close() })
+	var calls atomic.Int64
+	blocks := []BlockFunc{func(args []string) bool { calls.Add(1); return false }}
+	command := "printf '%s:%s' \"$RESTART_TEST\" \"$PWD\"; printf stderr >&2; sleep 30"
+	original, err := manager.StartOwnedWithEnvironment(t.Context(), root, blocks, command, "restart test", task.Ownership{ParentSessionID: "parent"}, []string{"RESTART_TEST=preserved", "PATH=" + os.Getenv("PATH")})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { stdout, _, _, _ := original.GetOutput(); return strings.Contains(stdout, "preserved:") }, time.Second*3, time.Millisecond*10)
+	before := calls.Load()
+	restarted, err := manager.Restart(t.Context(), original.ID)
+	require.NoError(t, err)
+	require.Equal(t, original.ID, restarted.ID)
+	require.NotEqual(t, original.OutputRef(), restarted.OutputRef())
+	require.Equal(t, original.Command, restarted.Command)
+	require.Equal(t, original.Ownership, restarted.Ownership)
+	select {
+	case <-original.executionDone:
+	default:
+		t.Fatal("restart returned before original execution terminated")
+	}
+	require.Equal(t, task.StatusKilled, original.Status())
+	require.Eventually(t, func() bool {
+		stdout, stderr, _, _ := restarted.GetOutput()
+		return strings.Contains(stdout, "preserved:") && stderr == "stderr"
+	}, time.Second*3, time.Millisecond*10)
+	stdout, _, _, _ := restarted.GetOutput()
+	require.Equal(t, "preserved:"+root, stdout)
+	require.Greater(t, calls.Load(), before)
+	original.MarkBackgrounded()
+	record, err := recordStore.Get(original.ID)
+	require.NoError(t, err)
+	require.Equal(t, restarted.OutputRef(), record.OutputRef)
+	_, err = manager.Stop(t.Context(), restarted.ID)
+	require.NoError(t, err)
+	third, err := manager.Restart(t.Context(), restarted.ID)
+	require.NoError(t, err)
+	require.Equal(t, original.ID, third.ID)
+	require.NotEqual(t, restarted.OutputRef(), third.OutputRef())
+}
+
+func TestBackgroundShellRestartRequiresExecutionTermination(t *testing.T) {
+	manager := NewBackgroundShellManager(t.TempDir())
+	manager.stopTimeout = 10 * time.Millisecond
+	done := make(chan struct{})
+	close(done)
+	previous := &BackgroundShell{ID: "b12345678", startOptions: &Options{}, done: done, executionDone: make(chan struct{}), state: task.State{Status: task.StatusLost}}
+	manager.shells[previous.ID] = previous
+	_, err := manager.Restart(t.Context(), previous.ID)
+	require.ErrorContains(t, err, "has not terminated")
+	current, ok := manager.Get(previous.ID)
+	require.True(t, ok)
+	require.Same(t, previous, current)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = manager.Restart(ctx, previous.ID)
+	require.ErrorIs(t, err, context.Canceled)
+	previous.startOptions = nil
+	_, err = manager.Restart(t.Context(), previous.ID)
+	require.ErrorContains(t, err, "original execution environment and restrictions are unavailable")
+}
+
 func TestBackgroundShellManager_Start(t *testing.T) {
 	t.Skip("Skipping this until I figure out why its flaky")
 	t.Parallel()

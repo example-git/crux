@@ -68,6 +68,15 @@ type Provider struct {
 	DefaultSmallModelID string            `json:"default_small_model_id,omitempty"`
 	Models              []Model           `json:"models,omitempty"`
 	DefaultHeaders      map[string]string `json:"default_headers,omitempty"`
+	Brand               *Brand            `json:"brand,omitempty"`
+}
+
+type Brand struct {
+	Label     string `json:"label,omitempty" jsonschema:"maxLength=64"`
+	ShortName string `json:"short_name,omitempty" jsonschema:"maxLength=24,description=Custom logo label; one to five characters use large block glyphs; six or seven use compact two-row block lettering; anything else uses centered normal text"`
+	Color     string `json:"color,omitempty" jsonschema:"pattern=^#[0-9A-Fa-f]{6}$"`
+	GradientA string `json:"gradient_a,omitempty" jsonschema:"pattern=^#[0-9A-Fa-f]{6}$"`
+	GradientB string `json:"gradient_b,omitempty" jsonschema:"pattern=^#[0-9A-Fa-f]{6}$"`
 }
 
 type ModelOptions struct {

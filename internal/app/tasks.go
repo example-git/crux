@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/example-git/crux/internal/agent"
@@ -32,6 +33,14 @@ func (app *App) TaskOutput(ctx context.Context, id string, wait bool, timeout ti
 		return managedtask.OutputResult{}, err
 	}
 	return coordinator.TaskOutput(ctx, id, wait, timeout)
+}
+
+func (app *App) RestartTask(ctx context.Context, id string) (managedtask.View, error) {
+	coordinator, err := app.taskCoordinator()
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	return coordinator.RestartTask(ctx, id)
 }
 
 func (app *App) StopTask(ctx context.Context, id string) (managedtask.View, error) {
@@ -65,13 +74,19 @@ func (app *App) startTaskNotificationDelivery() {
 		agentNotifications := app.BackgroundAgents.SubscribeNotifications(ctx)
 		imageNotifications := app.BackgroundImages.SubscribeNotifications(ctx)
 		app.serviceEventsWG.Go(func() {
-			pending, err := app.TaskStore.ListNotifications(app.config.WorkingDir(), "", false, true)
-			if err != nil {
-				slog.Error("Failed to load pending task notifications", "error", err)
+			reconcile := func() {
+				pending, err := app.TaskStore.ListNotifications(app.config.WorkingDir(), "", false, true)
+				if err != nil {
+					slog.Error("Failed to load pending task notifications", "error", err)
+					return
+				}
+				for _, notification := range pending {
+					app.deliverTaskNotification(ctx, notification)
+				}
 			}
-			for _, notification := range pending {
-				app.deliverTaskNotification(ctx, notification)
-			}
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			reconcile()
 			for {
 				select {
 				case event, ok := <-shellNotifications:
@@ -92,6 +107,8 @@ func (app *App) startTaskNotificationDelivery() {
 						continue
 					}
 					app.deliverTaskNotification(ctx, event.Payload)
+				case <-ticker.C:
+					reconcile()
 				case <-ctx.Done():
 					return
 				}
@@ -119,41 +136,43 @@ func (app *App) finishTaskNotificationDelivery(notificationID string) {
 	app.taskNotificationDeliveryMu.Unlock()
 }
 
-func (app *App) retryTaskNotification(ctx context.Context, notification managedtask.Notification) {
-	app.finishTaskNotificationDelivery(notification.ID)
-	time.AfterFunc(time.Second, func() {
-		if ctx.Err() == nil {
-			app.deliverTaskNotification(ctx, notification)
-		}
-	})
-}
-
 func (app *App) deliverTaskNotification(ctx context.Context, notification managedtask.Notification) {
+	if ctx.Err() != nil || !app.beginTaskNotificationDelivery(notification.ID) {
+		return
+	}
 	record, err := app.TaskStore.Get(notification.TaskID)
-	if err != nil || record.Notification == nil || !record.Notification.ModelDeliveredAt.IsZero() {
+	if err != nil || record.Notification == nil || record.Notification.ID != notification.ID || !record.Notification.ModelDeliveredAt.IsZero() {
+		app.finishTaskNotificationDelivery(notification.ID)
 		return
 	}
 	notification = *record.Notification
-	if !app.beginTaskNotificationDelivery(notification.ID) {
-		return
-	}
-	coordinator, err := app.taskCoordinator()
-	if err != nil {
-		app.retryTaskNotification(ctx, notification)
-		return
-	}
-	err = coordinator.DeliverTaskNotification(ctx, notification, func() {
-		if _, markErr := app.TaskStore.MarkNotificationDelivered(notification.ID); markErr != nil {
-			slog.Error("Failed to mark task notification delivered", "notification_id", notification.ID, "error", markErr)
-			app.retryTaskNotification(ctx, notification)
+	app.serviceEventsWG.Go(func() {
+		var settled sync.Once
+		discarded := func() {
+			settled.Do(func() {
+				app.finishTaskNotificationDelivery(notification.ID)
+			})
+		}
+		if ctx.Err() != nil {
+			discarded()
 			return
 		}
-		app.finishTaskNotificationDelivery(notification.ID)
-	}, func() {
-		app.retryTaskNotification(ctx, notification)
+		coordinator, err := app.taskCoordinator()
+		if err != nil {
+			discarded()
+			return
+		}
+		err = coordinator.DeliverTaskNotification(ctx, notification, func() {
+			settled.Do(func() {
+				if _, markErr := app.TaskStore.MarkNotificationDelivered(notification.ID); markErr != nil {
+					slog.Error("Failed to mark task notification delivered", "notification_id", notification.ID, "error", markErr)
+				}
+				app.finishTaskNotificationDelivery(notification.ID)
+			})
+		}, discarded)
+		if err != nil {
+			slog.Error("Failed to deliver task notification", "notification_id", notification.ID, "error", err)
+			discarded()
+		}
 	})
-	if err != nil {
-		slog.Error("Failed to deliver task notification", "notification_id", notification.ID, "error", err)
-		app.retryTaskNotification(ctx, notification)
-	}
 }

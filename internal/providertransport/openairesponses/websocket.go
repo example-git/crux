@@ -29,6 +29,7 @@ var (
 // WebSocketOptions are host-owned transport bounds. Zero values select bounded
 // core defaults rather than consumer-specific policy.
 type WebSocketOptions struct {
+	TraceContext  context.Context
 	MaxEventBytes int64
 	IdleTimeout   time.Duration
 	EventBuffer   int
@@ -115,7 +116,7 @@ func (c *WebSocket) Open(ctx context.Context, streamID string, request json.RawM
 	c.writeMu.Lock()
 	err = c.conn.WriteMessage(websocket.TextMessage, frame)
 	c.writeMu.Unlock()
-	cruxlog.TraceWebSocketFrame(c.traceID, "outbound", c.endpoint, websocket.TextMessage, frame, err)
+	cruxlog.TraceWebSocketFrame(c.opts.TraceContext, c.traceID, "outbound", c.endpoint, websocket.TextMessage, frame, err)
 	if err != nil {
 		c.remove(streamID, stream)
 		return nil, fmt.Errorf("write Responses WebSocket request: %w", err)
@@ -132,7 +133,7 @@ func (c *WebSocket) Done() <-chan struct{} { return c.done }
 func (c *WebSocket) readLoop() {
 	for {
 		messageType, data, err := c.conn.ReadMessage()
-		cruxlog.TraceWebSocketFrame(c.traceID, "inbound", c.endpoint, messageType, data, err)
+		cruxlog.TraceWebSocketFrame(c.opts.TraceContext, c.traceID, "inbound", c.endpoint, messageType, data, err)
 		if err != nil {
 			_ = c.shutdown(fmt.Errorf("read Responses WebSocket event: %w", err))
 			return

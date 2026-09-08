@@ -54,7 +54,10 @@ type ProjectUpdateParams struct {
 }
 
 type ProjectNotesParams struct {
-	Content string `json:"content" description:"Markdown content to append to the active project's notes file"`
+	Action  string `json:"action,omitempty" description:"append (default), list the compact index, or read one note"`
+	Content string `json:"content,omitempty" description:"Markdown content for append; start with a short descriptive heading"`
+	Topic   string `json:"topic,omitempty" description:"Project-qualified note ID from the index, required for read"`
+	Offset  int    `json:"offset,omitempty" description:"Pagination offset returned by list or read; defaults to zero"`
 }
 
 type projectStatusResponse struct {
@@ -140,6 +143,32 @@ func NewProjectNotesTool(service *projects.Service, workingDir string) fantasy.A
 		ProjectNotesToolName,
 		projectNotesDescription,
 		func(_ context.Context, params ProjectNotesParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			switch params.Action {
+			case "list":
+				if params.Content != "" || params.Topic != "" {
+					return fantasy.NewTextErrorResponse("list accepts only an optional offset"), nil
+				}
+				page, err := service.ListNotes(workingDir, params.Offset)
+				if err != nil {
+					return fantasy.NewTextErrorResponse(err.Error()), nil
+				}
+				return memoryJSONResponse(page)
+			case "read":
+				if params.Content != "" || params.Topic == "" {
+					return fantasy.NewTextErrorResponse("read requires a topic and does not accept content"), nil
+				}
+				note, err := service.ReadNote(workingDir, params.Topic, params.Offset)
+				if err != nil {
+					return fantasy.NewTextErrorResponse(err.Error()), nil
+				}
+				return memoryJSONResponse(note)
+			case "", "append":
+				if params.Topic != "" || params.Offset != 0 {
+					return fantasy.NewTextErrorResponse("append does not accept topic or offset"), nil
+				}
+			default:
+				return fantasy.NewTextErrorResponse("invalid project notes action: expected append, list, or read"), nil
+			}
 			document, err := service.AppendNotes(workingDir, params.Content)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil

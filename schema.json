@@ -504,6 +504,11 @@
           "description": "Automatically setup LSPs based on root markers",
           "type": "boolean"
         },
+        "codex_compaction_v2": {
+          "default": false,
+          "description": "Experimental: use only Codex remote compaction v2 instead of the default single-request readable summary",
+          "type": "boolean"
+        },
         "context_paths": {
           "description": "Paths to files containing context information for the AI",
           "items": {
@@ -606,6 +611,11 @@
           ],
           "type": "string"
         },
+        "network_tracing": {
+          "default": false,
+          "description": "Opt in to project-scoped HTTP and WebSocket traffic recording; reopen the workspace after changing this option",
+          "type": "boolean"
+        },
         "notifications": {
           "default": "auto",
           "description": "Notification style to use. Options: auto (default), native, osc, bell, disabled. Auto selects based on environment: native for local sessions, osc for SSH (with automatic OSC 99/777 detection).",
@@ -642,6 +652,23 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "summarization_context_cap": {
+          "default": 0,
+          "description": "Maximum context window used for automatic summarization. Zero uses the model window.",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "summarization_fast_mode": {
+          "default": false,
+          "description": "Use Codex priority service tier for compaction and readable summaries only",
+          "type": "boolean"
+        },
+        "summarization_max_tokens": {
+          "default": 0,
+          "description": "Output token budget for local summaries. Zero uses the selected model budget.",
+          "minimum": 0,
+          "type": "integer"
         },
         "tui": {
           "$ref": "#/$defs/TUIOptions",
@@ -991,6 +1018,15 @@
         "completions": {
           "$ref": "#/$defs/Completions",
           "description": "Completions UI options"
+        },
+        "delivery_mode": {
+          "default": "queue",
+          "description": "Preferred chat message delivery mode persisted by the Queue/Steer toggle",
+          "enum": [
+            "queue",
+            "steer"
+          ],
+          "type": "string"
         },
         "diff_mode": {
           "description": "Diff mode for the TUI interface",

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/example-git/crux/internal/config"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/question"
+	"github.com/example-git/crux/internal/redact"
 )
 
 //go:embed templates/agentic_fetch.md
@@ -29,6 +32,18 @@ type agenticFetchValidationResult struct {
 
 // validateAgenticFetchParams validates the tool call parameters and extracts required context values.
 func validateAgenticFetchParams(ctx context.Context, params tools.AgenticFetchParams) (agenticFetchValidationResult, error) {
+	if params.Mode != "" && params.Mode != "normal" && params.Mode != "user" {
+		return agenticFetchValidationResult{}, errors.New("mode must be normal or user")
+	}
+	if params.Mode == "user" && params.URL != "" {
+		target, err := url.Parse(params.URL)
+		if err != nil || target.Hostname() == "" || (target.Scheme != "http" && target.Scheme != "https") {
+			return agenticFetchValidationResult{}, errors.New("URL must be a valid HTTP or HTTPS URL")
+		}
+		if target.User != nil {
+			return agenticFetchValidationResult{}, errors.New("user-mode URLs must not contain embedded credentials")
+		}
+	}
 	if params.Prompt == "" {
 		return agenticFetchValidationResult{}, errors.New("prompt is required")
 	}
@@ -68,7 +83,16 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 	return fantasy.NewParallelAgentTool(
 		tools.AgenticFetchToolName,
 		agenticFetchToolDescription,
-		func(ctx context.Context, params tools.AgenticFetchParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, params tools.AgenticFetchParams, call fantasy.ToolCall) (response fantasy.ToolResponse, err error) {
+			if params.Mode == "user" {
+				defer func() {
+					response.Content = redact.String(response.Content)
+					if err != nil && ctx.Err() == nil {
+						response = fantasy.NewTextErrorResponse(redact.String(err.Error()))
+						err = nil
+					}
+				}()
+			}
 			validationResult, err := validateAgenticFetchParams(ctx, params)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
@@ -107,11 +131,20 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			}
 			defer os.RemoveAll(tmpDir)
 
+			identity := tools.FetchIdentity{
+				Mode:        params.Mode,
+				Browser:     c.browserFetch,
+				SessionID:   validationResult.SessionID,
+				Environment: c.cfg.RuntimeSnapshot().Environment(),
+			}
 			var fullPrompt string
 
 			if params.URL != "" {
 				// URL mode: fetch the URL content first.
-				content, err := tools.FetchURLAndConvert(ctx, client, params.URL)
+				content, err := tools.FetchURLAndConvertWithIdentity(ctx, client, params.URL, call.ID, identity)
+				if errors.Is(err, question.ErrCancelled) {
+					return tools.NewPermissionDeniedResponse(), nil
+				}
 				if err != nil {
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("Failed to fetch URL: %s", err)), nil
 				}
@@ -175,7 +208,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				return fantasy.ToolResponse{}, errors.New("small model provider not configured")
 			}
 
-			webFetchTool := tools.NewWebFetchTool(tmpDir, client)
+			webFetchTool := tools.NewWebFetchToolWithIdentity(tmpDir, client, identity)
 			webSearchTool := tools.NewWebSearchTool(client)
 			fetchTools := []fantasy.AgentTool{
 				webFetchTool,
@@ -191,17 +224,21 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 			// the user's hooks N times per delegated turn.
 
 			agent := NewSessionAgent(SessionAgentOptions{
-				LargeModel:           small, // Use small model for both (fetch doesn't need large)
-				SmallModel:           small,
-				SystemPromptPrefix:   smallProviderCfg.SystemPromptPrefix,
-				Instructions:         instructions,
-				RuntimeSnapshot:      runtimeSnapshot,
-				IsSubAgent:           true,
-				DisableAutoSummarize: cfg.Options.DisableAutoSummarize,
-				IsYolo:               c.permissions.SkipRequests(),
-				Sessions:             c.sessions,
-				Messages:             c.messages,
-				Tools:                fetchTools,
+				LargeModel:              small, // Use small model for both (fetch doesn't need large)
+				SmallModel:              small,
+				SystemPromptPrefix:      smallProviderCfg.SystemPromptPrefix,
+				Instructions:            instructions,
+				RuntimeSnapshot:         runtimeSnapshot,
+				IsSubAgent:              true,
+				DisableAutoSummarize:    cfg.Options.DisableAutoSummarize,
+				SummarizationContextCap: cfg.Options.SummarizationContextCap,
+				SummarizationMaxTokens:  cfg.Options.SummarizationMaxTokens,
+				SummarizationFastMode:   cfg.Options.SummarizationFastMode,
+				CodexCompactionV2:       cfg.Options.CodexCompactionV2,
+				IsYolo:                  c.permissions.SkipRequests(),
+				Sessions:                c.sessions,
+				Messages:                c.messages,
+				Tools:                   fetchTools,
 			})
 
 			return c.runSubAgent(ctx, subAgentParams{

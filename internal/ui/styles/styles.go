@@ -69,7 +69,15 @@ type Styles struct {
 	// to the user's terminal defaults, which are often illegible on
 	// Crux's background. Defining them here keeps output readable and
 	// on-brand regardless of terminal configuration.
-	ANSI [16]color.Color
+	ANSI            [16]color.Color
+	PanelBackground color.Color
+	TaskPanel       struct {
+		OutputBackground   color.Color
+		OutputForeground   color.Color
+		ControlsBackground color.Color
+		Title              lipgloss.Style
+		Metadata           lipgloss.Style
+	}
 
 	// Header
 	Header struct {
@@ -98,8 +106,9 @@ type Styles struct {
 	TextSelection lipgloss.Style
 
 	// Markdown & Chroma
-	Markdown      ansi.StyleConfig
-	QuietMarkdown ansi.StyleConfig
+	Markdown         ansi.StyleConfig
+	QuietMarkdown    ansi.StyleConfig
+	ThinkingMarkdown ansi.StyleConfig
 
 	// Inputs
 	TextInput textinput.Styles
@@ -125,6 +134,7 @@ type Styles struct {
 	Editor struct {
 		Textarea   textarea.Styles
 		Background color.Color
+		DeliveryBadges map[string]lipgloss.Style
 
 		// Normal mode prompt (default "::: ").
 		PromptNormalFocused lipgloss.Style
@@ -229,6 +239,7 @@ type Styles struct {
 
 	// Sidebar
 	Sidebar struct {
+		Background   color.Color
 		SessionTitle lipgloss.Style // Current session title at top of sidebar
 		WorkingDir   lipgloss.Style // Working directory path (PrettyPath)
 	}
@@ -342,6 +353,12 @@ type Styles struct {
 		ContentCodeTruncation lipgloss.Style // Code truncation message with bgBase
 		ContentCodeBg         color.Color    // Background color for syntax highlighting
 		Body                  lipgloss.Style // Body content padding (PaddingLeft(2))
+		SummaryPanel          lipgloss.Style
+		SummaryText           lipgloss.Style
+		SummaryTitle          lipgloss.Style
+		SummaryMeta           lipgloss.Style
+		SummaryHint           lipgloss.Style
+		SummaryMatch          lipgloss.Style
 
 		// Deprecated - kept for backward compatibility
 		ContentBg         lipgloss.Style // Content background

@@ -89,6 +89,15 @@ func ConvertASCIIArt(text, mapID string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("unknown ASCII-art map %q", mapID)
 	}
+	characters := text
+	if asciiArtMap.Lowercase {
+		characters = strings.ToLower(characters)
+	}
+	for _, character := range characters {
+		if _, ok := asciiArtMap.glyphs[character]; !ok {
+			return "", fmt.Errorf("ASCII-art map %q has no glyph for %q", mapID, character)
+		}
+	}
 	return convertASCIIArt(text, asciiArtMap), nil
 }
 

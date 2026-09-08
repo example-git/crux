@@ -26,6 +26,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestSessionProtocolPreservesContextOccupancy(t *testing.T) {
+	wire := proto.Session{ID: "session", PromptTokens: 100000, CompletionTokens: 1000, UnseenLocalTokens: 35000}
+	encoded, err := json.Marshal(wire)
+	require.NoError(t, err)
+	var decoded proto.Session
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	current := protoToSession(decoded)
+	require.EqualValues(t, 136000, current.ContextTokens())
+	require.True(t, current.ContextEstimated())
+	require.Equal(t, wire, sessionToProto(current))
+}
+
 func TestClientWorkspaceRefreshRejectsReverseOrderOwnerSnapshot(t *testing.T) {
 	ownerA := providerregistry.RegistrationOwner{
 		ProviderID:      "same",
@@ -147,6 +159,14 @@ func TestProtoToMessageToolResult(t *testing.T) {
 	require.True(t, tr.ProviderExecuted)
 	require.Len(t, tr.ProviderMetadata, 1)
 	require.Equal(t, payload, tr.ProviderMetadata[0].Payload)
+}
+
+func TestProtoToMessagePreservesUserTurnContext(t *testing.T) {
+	turn := message.UserTurnContext{TodoState: "empty", TodoReminder: "original reminder"}
+	source := proto.Message{Role: proto.User, Parts: []proto.ContentPart{proto.TextContent{Text: "user text", Context: turn}}}
+	decoded := protoToMessage(source)
+	require.Equal(t, "user text", decoded.Content().Text)
+	require.Equal(t, turn, decoded.Content().Context)
 }
 
 func TestProtoToMessagePreservesAllProviderMetadataScopes(t *testing.T) {

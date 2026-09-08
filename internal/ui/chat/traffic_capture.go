@@ -22,7 +22,7 @@ func NewTrafficCaptureToolMessageItem(
 }
 
 func (r *TrafficCaptureToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Traffic Capture", opts.Anim, opts.Compact)
 	}
@@ -46,7 +46,7 @@ func (r *TrafficCaptureToolRenderContext) RenderTool(sty *styles.Styles, width i
 	}
 	var metadata tools.TrafficCaptureResponseMetadata
 	if opts.Result.Metadata == "" || json.Unmarshal([]byte(opts.Result.Metadata), &metadata) != nil || metadata.Session == "" {
-		bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
+		bodyWidth := toolBodyWidth(sty, cappedWidth)
 		body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
 		return joinToolParts(header, body)
 	}

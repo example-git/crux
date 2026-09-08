@@ -2,6 +2,8 @@
 
 This directory contains 26 canonical data-only provider presets migrated from Catwalk v0.51.23. They are optional migration aids for users moving from Crush to Crux and do not restore Catwalk as a runtime dependency or authority.
 
+Each preset includes a root `branding.json` with a display label, logo short name, accent color, and two-color gradient. Related regional and product variants share a palette. These are simple Crux presentation palettes, not official brand specifications. The branding file participates in the canonical bundle digest alongside the unchanged provider/model manifest.
+
 Each preset selects Crux's existing `openai-compat` Foundation implementation. Install one preset with:
 
 ```bash

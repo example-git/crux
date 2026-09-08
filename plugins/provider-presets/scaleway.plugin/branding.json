@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Scaleway",
+  "short_name": "SCALEWAY",
+  "color": "#A78BFA",
+  "gradient_a": "#A78BFA",
+  "gradient_b": "#F0ABFC"
+}

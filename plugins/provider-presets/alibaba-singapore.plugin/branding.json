@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Alibaba (Singapore)",
+  "short_name": "ALIBABA",
+  "color": "#FF9A52",
+  "gradient_a": "#FF9A52",
+  "gradient_b": "#FFD166"
+}

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/example-git/crux/internal/redact"
 	"golang.org/x/net/publicsuffix"
 )
 
@@ -81,6 +82,9 @@ func (s ScopedJars) Add(request *http.Request, used map[string]bool) {
 func (s ScopedJars) Store(target *url.URL, cookies []*http.Cookie) {
 	for id, jar := range s.Jars {
 		if jar != nil && s.Allowed != nil && s.Allowed(target, id) {
+			for _, cookie := range cookies {
+				redact.Register(cookie.Value)
+			}
 			jar.SetCookies(target, cookies)
 		}
 	}

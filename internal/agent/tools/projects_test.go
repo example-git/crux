@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/example-git/crux/internal/projects"
@@ -53,6 +54,29 @@ func TestProjectToolsManageDurableProjectLifecycle(t *testing.T) {
 	require.Equal(t, projects.StatusCompleted, document.Metadata.Status)
 	require.Contains(t, document.Notes, "`T1.1`: Persisted")
 	require.Contains(t, document.Notes, "Durable observation")
+}
+
+func TestProjectNotesToolListsAndReadsOnDemand(t *testing.T) {
+	service := projects.NewServiceAt(t.TempDir())
+	root := t.TempDir()
+	_, err := service.Create(projects.Definition{Name: "Notes", Slug: "notes", Goal: "Index notes", SuccessCriteria: []string{"Readable"}, Tasks: []projects.DefinitionTask{{ID: "T1", Content: "Read"}}}, root)
+	require.NoError(t, err)
+	tool := NewProjectNotesTool(service, root)
+	response := runServiceTool(t, tool, ProjectNotesToolName, ProjectNotesParams{Content: "## Decision title\n\nDETAIL_ONLY_SENTINEL"})
+	require.False(t, response.IsError)
+	response = runServiceTool(t, tool, ProjectNotesToolName, ProjectNotesParams{Action: "list"})
+	require.False(t, response.IsError)
+	require.NotContains(t, response.Content, "DETAIL_ONLY_SENTINEL")
+	var page projects.NotePage
+	require.NoError(t, json.Unmarshal([]byte(response.Content), &page))
+	require.Len(t, page.Entries, 1)
+	response = runServiceTool(t, tool, ProjectNotesToolName, ProjectNotesParams{Action: "read", Topic: page.Entries[0].ID})
+	require.False(t, response.IsError)
+	require.Contains(t, response.Content, "DETAIL_ONLY_SENTINEL")
+	for _, params := range []ProjectNotesParams{{Action: "invalid"}, {Action: "read"}, {Action: "list", Offset: -1}, {Action: "read", Topic: "../other"}, {Action: "list", Content: "unexpected"}, {Action: "append", Topic: "unexpected", Content: "not written"}} {
+		response = runServiceTool(t, tool, ProjectNotesToolName, params)
+		require.True(t, response.IsError)
+	}
 }
 
 func TestProjectCreateToolRejectsInvalidExplicitSlug(t *testing.T) {

@@ -59,6 +59,7 @@ func ProviderSurfaces(cfg *Config) []providerregistry.Surface {
 			surface = genericProviderSurface(id, provider.Name, provider.Models)
 			surface.DefaultLargeModel = provider.DefaultLargeModelID
 			surface.DefaultSmallModel = provider.DefaultSmallModelID
+			surface.Brand = clonePointer(provider.Brand)
 		}
 		if cfg.Providers != nil {
 			if configured, exists := cfg.Providers.Get(id); exists {

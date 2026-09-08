@@ -106,6 +106,7 @@ func (ReasoningContent) isPart() {}
 
 // TextContent represents a text part of a message.
 type TextContent struct {
+	Context          message.UserTurnContext  `json:"context,omitzero"`
 	Text             string                   `json:"text"`
 	ProviderMetadata message.ProviderMetadata `json:"provider_metadata,omitempty"`
 }

@@ -4,10 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/example-git/crux/internal/db"
 	"github.com/example-git/crux/internal/pubsub"
@@ -62,20 +62,29 @@ func HasIncompleteTodos(todos []Todo) bool {
 }
 
 type Session struct {
-	ID               string
-	ParentSessionID  string
-	Title            string
-	MessageCount     int64
-	PromptTokens     int64
-	CompletionTokens int64
-	EstimatedUsage   bool
-	SummaryMessageID string
-	Cost             float64
-	Todos            []Todo
-	Mode             Mode
-	Plan             string
-	CreatedAt        int64
-	UpdatedAt        int64
+	ID                string
+	ParentSessionID   string
+	Title             string
+	MessageCount      int64
+	PromptTokens      int64
+	CompletionTokens  int64
+	UnseenLocalTokens int64
+	EstimatedUsage    bool
+	SummaryMessageID  string
+	Cost              float64
+	Todos             []Todo
+	Mode              Mode
+	Plan              string
+	CreatedAt         int64
+	UpdatedAt         int64
+}
+
+func (s Session) ContextTokens() int64 {
+	return s.PromptTokens + s.CompletionTokens + s.UnseenLocalTokens
+}
+
+func (s Session) ContextEstimated() bool {
+	return s.EstimatedUsage || s.UnseenLocalTokens > 0
 }
 
 type Service interface {
@@ -102,8 +111,9 @@ type Service interface {
 
 type service struct {
 	*pubsub.Broker[Session]
-	db *sql.DB
-	q  *db.Queries
+	db          *sql.DB
+	q           *db.Queries
+	planStateMu sync.Mutex
 }
 
 func (s *service) Create(ctx context.Context, title string) (Session, error) {
@@ -214,7 +224,8 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 			String: todosJSON,
 			Valid:  todosJSON != "",
 		},
-		EstimatedUsage: boolToInt64(session.EstimatedUsage),
+		EstimatedUsage:    boolToInt64(session.EstimatedUsage),
+		UnseenLocalTokens: session.UnseenLocalTokens,
 	})
 	if err != nil {
 		return Session{}, err
@@ -226,15 +237,7 @@ func (s *service) Save(ctx context.Context, session Session) (Session, error) {
 
 func (s *service) SetMode(ctx context.Context, sessionID string, mode Mode) error {
 	switch mode {
-	case ModeDefault:
-		current, err := s.Get(ctx, sessionID)
-		if err != nil {
-			return err
-		}
-		if current.Mode == ModePlanExecution {
-			return errors.New("approved plan execution can only end after completion approval")
-		}
-	case ModePlan:
+	case ModeDefault, ModePlan:
 	default:
 		return fmt.Errorf("invalid session mode %q", mode)
 	}
@@ -242,6 +245,11 @@ func (s *service) SetMode(ctx context.Context, sessionID string, mode Mode) erro
 }
 
 func (s *service) SetPlanState(ctx context.Context, sessionID string, mode Mode, plan string) error {
+	s.planStateMu.Lock()
+	defer s.planStateMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	plan = strings.TrimSpace(plan)
 	switch mode {
 	case ModeDefault, ModePlan:
@@ -334,20 +342,21 @@ func (s *service) fromDBItem(item db.Session) Session {
 		slog.Error("Failed to unmarshal todos", "session_id", item.ID, "error", err)
 	}
 	return Session{
-		ID:               item.ID,
-		ParentSessionID:  item.ParentSessionID.String,
-		Title:            item.Title,
-		MessageCount:     item.MessageCount,
-		PromptTokens:     item.PromptTokens,
-		CompletionTokens: item.CompletionTokens,
-		EstimatedUsage:   item.EstimatedUsage != 0,
-		SummaryMessageID: item.SummaryMessageID.String,
-		Cost:             item.Cost,
-		Todos:            todos,
-		Mode:             Mode(item.Mode),
-		Plan:             item.Plan,
-		CreatedAt:        item.CreatedAt,
-		UpdatedAt:        item.UpdatedAt,
+		ID:                item.ID,
+		ParentSessionID:   item.ParentSessionID.String,
+		Title:             item.Title,
+		MessageCount:      item.MessageCount,
+		PromptTokens:      item.PromptTokens,
+		CompletionTokens:  item.CompletionTokens,
+		EstimatedUsage:    item.EstimatedUsage != 0,
+		UnseenLocalTokens: item.UnseenLocalTokens,
+		SummaryMessageID:  item.SummaryMessageID.String,
+		Cost:              item.Cost,
+		Todos:             todos,
+		Mode:              Mode(item.Mode),
+		Plan:              item.Plan,
+		CreatedAt:         item.CreatedAt,
+		UpdatedAt:         item.UpdatedAt,
 	}
 }
 

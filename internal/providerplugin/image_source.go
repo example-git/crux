@@ -19,9 +19,9 @@ func (m *Manager) InspectImageSource(ctx context.Context, source string) (Regist
 	}
 	temporary := filepath.Join(m.paths.Cache, ".image-preview-"+uuid.NewString())
 	defer os.RemoveAll(temporary)
-	snapshot, err := snapshotDirectory(source, temporary)
+	snapshot, err := snapshotForValidation(source, temporary)
 	if err != nil {
-		return RegisteredImageBundle{}, errors.New("cannot snapshot image setup source")
+		return RegisteredImageBundle{}, &imagePluginCauseError{message: "cannot read image setup bundle; use an existing readable local bundle directory", cause: err}
 	}
 	report, bundle := diagnoseSnapshot(temporary, snapshot)
 	if !report.Valid {

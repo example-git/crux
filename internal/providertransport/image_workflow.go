@@ -1,6 +1,7 @@
 package providertransport
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -84,11 +85,52 @@ type ImageWorkflowError struct {
 
 func (e *ImageWorkflowError) Error() string {
 	if e.Status != 0 {
-		return fmt.Sprintf("image %s request failed (HTTP %d)", e.Phase, e.Status)
+		message := fmt.Sprintf("image %s request failed (HTTP %d)", e.Phase, e.Status)
+		if e.Cause != nil {
+			message += ": " + boundedErrorText(e.Cause.Error())
+		}
+		return message
 	}
 	return "image " + e.Phase + " failed: " + e.Cause.Error()
 }
 func (e *ImageWorkflowError) Unwrap() error { return e.Cause }
+
+func imageResponseError(data []byte) error {
+	if len(data) > maxMappedErrorBodyBytes {
+		data = data[:maxMappedErrorBodyBytes]
+	}
+	var body any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	message := ""
+	if decoder.Decode(&body) == nil {
+		for _, pointer := range []string{"/error/message", "/message", "/detail", "/error", "/errors/0/message"} {
+			if value, ok := jsonPointerString(body, pointer); ok && strings.TrimSpace(value) != "" {
+				message = value
+				break
+			}
+		}
+		if value, ok := body.(string); ok {
+			message = value
+		}
+		for _, field := range []string{"code", "param", "type"} {
+			value, ok := jsonPointerString(body, "/error/"+field)
+			if !ok {
+				value, ok = jsonPointerString(body, "/"+field)
+			}
+			if ok && value != "" {
+				message += fmt.Sprintf(" (%s: %s)", field, value)
+			}
+		}
+	} else {
+		message = string(data)
+	}
+	message = strings.TrimSpace(boundedErrorText(message))
+	if message == "" {
+		message = "HTTP request rejected without an error message"
+	}
+	return errors.New(message)
+}
 
 func (h *ImageWorkflowHost) Execute(ctx context.Context, id string, values map[string]any) (any, error) {
 	if h.ValidateOwner == nil {
@@ -183,7 +225,13 @@ func (h *ImageWorkflowHost) allowedURL(target *url.URL) bool {
 
 type imageBoundaryError struct{ cause error }
 
-func (e *imageBoundaryError) Error() string { return "image plugin execution boundary rejected" }
+func (e *imageBoundaryError) Error() string {
+	message := "image plugin execution boundary rejected"
+	if e.cause != nil {
+		message += ": " + boundedErrorText(e.cause.Error())
+	}
+	return message
+}
 func (e *imageBoundaryError) Unwrap() error { return e.cause }
 
 type imageOwnerTransport struct {
@@ -379,7 +427,7 @@ func (h *ImageWorkflowHost) request(ctx context.Context, declaration manifest.Im
 					continue
 				}
 			}
-			return nil, &ImageWorkflowError{Phase: declaration.Phase, Status: response.StatusCode, Cause: errors.New("HTTP request rejected")}
+			return nil, &ImageWorkflowError{Phase: declaration.Phase, Status: response.StatusCode, Cause: imageResponseError(data)}
 		}
 		var decoded any
 		switch declaration.Response {
@@ -399,6 +447,11 @@ func (h *ImageWorkflowHost) request(ctx context.Context, declaration manifest.Im
 			}
 		case "framed-json":
 			decoded, err = decodeImageFrames(data, declaration.FramePrefix)
+			if err != nil {
+				return nil, &ImageWorkflowError{Phase: "validation", Cause: err}
+			}
+		case "line-framed-json":
+			decoded, err = decodeImageLineFrames(data, declaration.FramePrefix)
 			if err != nil {
 				return nil, &ImageWorkflowError{Phase: "validation", Cause: err}
 			}
@@ -533,6 +586,43 @@ func decodeImageFrames(data []byte, prefix string) ([]any, error) {
 			return nil, errors.New("image response frame count exceeds limit")
 		}
 		text = rest[length:]
+	}
+	if len(frames) == 0 {
+		return nil, errors.New("image response contains no frames")
+	}
+	return frames, nil
+}
+
+func decodeImageLineFrames(data []byte, prefix string) ([]any, error) {
+	if !bytes.HasPrefix(data, []byte(prefix)) {
+		return nil, errors.New("image response framing prefix is missing")
+	}
+	data = bytes.TrimPrefix(data, []byte(prefix))
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 4096), len(data)+1)
+	var frames []any
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 || len(bytes.Trim(line, "0123456789")) == 0 {
+			continue
+		}
+		var frame any
+		decoder := json.NewDecoder(bytes.NewReader(line))
+		decoder.UseNumber()
+		if err := decoder.Decode(&frame); err != nil {
+			return nil, errors.New("invalid image response frame")
+		}
+		var extra any
+		if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+			return nil, errors.New("trailing image response frame data")
+		}
+		frames = append(frames, frame)
+		if len(frames) > 4096 {
+			return nil, errors.New("image response frame count exceeds limit")
+		}
+	}
+	if scanner.Err() != nil {
+		return nil, errors.New("read image response frame failed")
 	}
 	if len(frames) == 0 {
 		return nil, errors.New("image response contains no frames")

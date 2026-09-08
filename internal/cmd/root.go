@@ -472,15 +472,24 @@ func setupLocalWorkspace(cmd *cobra.Command) (workspace.Workspace, func(), error
 		skills.WithWorkingDir(discoveryCfg.WorkingDir),
 	)
 
+	ctx, closeTraffic, err := cruxlog.SetupTraffic(ctx, cfg.Options.DataDirectory, cfg.Options.NetworkTracing)
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("initialize network tracing: %w", err)
+	}
 	appInstance, err := app.New(ctx, conn, store, skillsMgr)
 	if err != nil {
 		_ = conn.Close()
+		closeTraffic()
 		slog.Error("Failed to create app instance", "error", err)
 		return nil, nil, err
 	}
 
 	ws := workspace.NewAppWorkspace(appInstance, store)
-	cleanup := func() { appInstance.Shutdown() }
+	cleanup := func() {
+		appInstance.Shutdown()
+		closeTraffic()
+	}
 	return ws, cleanup, nil
 }
 

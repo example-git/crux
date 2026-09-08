@@ -3,6 +3,33 @@
   "$id": "https://raw.githubusercontent.com/example-git/crux/main/provider-preset-plugin.schema.json",
   "$ref": "#/$defs/PresetManifest",
   "$defs": {
+    "Brand": {
+      "properties": {
+        "label": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "short_name": {
+          "type": "string",
+          "maxLength": 24,
+          "description": "Custom logo label; one to five characters use large block glyphs; six or seven use compact two-row block lettering; anything else uses centered normal text"
+        },
+        "color": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "gradient_a": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        },
+        "gradient_b": {
+          "type": "string",
+          "pattern": "^#[0-9A-Fa-f]{6}$"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "Compatibility": {
       "properties": {
         "host_api": {
@@ -171,6 +198,9 @@
         },
         "preset": {
           "$ref": "#/$defs/ProviderPreset"
+        },
+        "brand": {
+          "$ref": "#/$defs/Brand"
         }
       },
       "additionalProperties": false,

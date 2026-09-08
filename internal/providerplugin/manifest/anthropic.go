@@ -2,7 +2,15 @@ package manifest
 
 // AnthropicPolicy configures finite Anthropic Messages wire transformations.
 // It is interpreted by the host and contains no executable behavior.
+type AnthropicEfficiencyPolicy struct {
+	PromptCaching bool `json:"prompt_caching" jsonschema:"required"`
+	TTL string `json:"ttl,omitempty" jsonschema:"enum=5m,enum=1h"`
+	ContextManagement bool `json:"context_management,omitempty"`
+	RedactedThinking bool `json:"redacted_thinking,omitempty"`
+}
+
 type AnthropicPolicy struct {
+	Efficiency *AnthropicEfficiencyPolicy `json:"efficiency,omitempty"`
 	ClientIdentity       *ResolvedClientIdentity    `json:"client_identity,omitempty"`
 	SessionHeader        string                     `json:"session_header,omitempty" jsonschema:"maxLength=128"`
 	DeleteHeaderPrefixes []string                   `json:"delete_header_prefixes,omitempty" jsonschema:"uniqueItems=true,maxItems=32"`

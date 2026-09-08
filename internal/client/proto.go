@@ -602,6 +602,7 @@ func (c *Client) SendMessageWithPermissionMode(ctx context.Context, id string, s
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent", id), nil, jsonBody(proto.AgentMessage{
 		SessionID:      sessionID,
 		SubmissionID:   agent.SubmissionIDFromContext(ctx),
+		DeliveryMode:   string(agent.DeliveryModeFromContext(ctx)),
 		RunID:          runID,
 		Prompt:         prompt,
 		Attachments:    proto.AttachmentsFromMessage(attachments),
@@ -719,6 +720,32 @@ func (c *Client) AgentSuggestPrompt(ctx context.Context, id, sessionID string) (
 
 // AgentDetachForegroundJobs sends foreground-waited commands to the
 // background. Returns how many were detached.
+func (c *Client) ForegroundTaskControl(ctx context.Context, id, sessionID string, detach bool) (int, error) {
+	path := fmt.Sprintf("/workspaces/%s/agent/jobs/detach", id)
+	query := url.Values{"session_id": {sessionID}}
+	var rsp *http.Response
+	var err error
+	if detach {
+		rsp, err = c.post(ctx, path, query, nil, nil)
+	} else {
+		rsp, err = c.get(ctx, path, query, nil)
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer rsp.Body.Close()
+	if rsp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("foreground task control: status code %d", rsp.StatusCode)
+	}
+	var out struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(rsp.Body).Decode(&out); err != nil {
+		return 0, err
+	}
+	return out.Count, nil
+}
+
 func (c *Client) AgentDetachForegroundJobs(ctx context.Context, id string) (int, error) {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent/jobs/detach", id), nil, nil, nil)
 	if err != nil {

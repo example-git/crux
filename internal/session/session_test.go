@@ -7,6 +7,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestContextOccupancyIncludesUnseenTokens(t *testing.T) {
+	current := Session{PromptTokens: 100, CompletionTokens: 20, UnseenLocalTokens: 30}
+	require.EqualValues(t, 150, current.ContextTokens())
+	require.True(t, current.ContextEstimated())
+	current.UnseenLocalTokens = 0
+	require.EqualValues(t, 120, current.ContextTokens())
+	require.False(t, current.ContextEstimated())
+	current.EstimatedUsage = true
+	require.True(t, current.ContextEstimated())
+}
+
 func TestEstimatedUsageStateSurvivesFetchModifySave(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Cleanup(func() {
@@ -23,6 +34,7 @@ func TestEstimatedUsageStateSurvivesFetchModifySave(t *testing.T) {
 	require.NoError(t, err)
 	created.PromptTokens = 100
 	created.CompletionTokens = 50
+	created.UnseenLocalTokens = 25
 	created.EstimatedUsage = true
 
 	saved, err := sessions.Save(t.Context(), created)
@@ -46,6 +58,8 @@ func TestEstimatedUsageStateSurvivesFetchModifySave(t *testing.T) {
 	refetched, err := sessions.Get(t.Context(), created.ID)
 	require.NoError(t, err)
 	require.True(t, refetched.EstimatedUsage)
+	require.EqualValues(t, 25, refetched.UnseenLocalTokens)
+	require.EqualValues(t, 175, refetched.ContextTokens())
 }
 
 func TestEstimatedUsageStateSurvivesServiceRestart(t *testing.T) {
@@ -57,6 +71,7 @@ func TestEstimatedUsageStateSurvivesServiceRestart(t *testing.T) {
 	created, err := sessions.Create(t.Context(), "test")
 	require.NoError(t, err)
 	created.EstimatedUsage = true
+	created.UnseenLocalTokens = 25
 	_, err = sessions.Save(t.Context(), created)
 	require.NoError(t, err)
 
@@ -72,6 +87,8 @@ func TestEstimatedUsageStateSurvivesServiceRestart(t *testing.T) {
 	restored, err := NewService(db.New(reopened), reopened).Get(t.Context(), created.ID)
 	require.NoError(t, err)
 	require.True(t, restored.EstimatedUsage)
+	require.EqualValues(t, 25, restored.UnseenLocalTokens)
+	require.EqualValues(t, 25, restored.ContextTokens())
 }
 
 func TestUpdateTitleAndCostPreservesActiveOccupancy(t *testing.T) {
@@ -143,7 +160,6 @@ func TestSessionPlanLifecycleIsPersistentAndIsolatedFromSave(t *testing.T) {
 	require.Equal(t, ModePlanExecution, saved.Mode)
 	require.Equal(t, "Inspect, then implement", saved.Plan)
 
-	require.ErrorContains(t, sessions.SetMode(t.Context(), created.ID, ModeDefault), "can only end after completion approval")
 	require.ErrorContains(t, sessions.SetMode(t.Context(), created.ID, ModePlanExecution), "invalid session mode")
 	require.ErrorContains(t, sessions.SetPlanState(t.Context(), created.ID, ModePlanRevision, ""), "requires a plan")
 	require.ErrorContains(t, sessions.SetPlanState(t.Context(), created.ID, ModeDefault, "retained"), "cannot retain a plan")
@@ -153,7 +169,7 @@ func TestSessionPlanLifecycleIsPersistentAndIsolatedFromSave(t *testing.T) {
 	require.Equal(t, ModePlanExecution, unchanged.Mode)
 	require.Equal(t, "Inspect, then implement", unchanged.Plan)
 
-	require.NoError(t, sessions.SetPlanState(t.Context(), created.ID, ModeDefault, ""))
+	require.NoError(t, sessions.SetMode(t.Context(), created.ID, ModeDefault))
 	completed, err := sessions.Get(t.Context(), created.ID)
 	require.NoError(t, err)
 	require.Equal(t, ModeDefault, completed.Mode)

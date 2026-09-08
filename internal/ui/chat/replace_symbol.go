@@ -60,7 +60,7 @@ func (r *ReplaceSymbolToolRenderContext) RenderTool(sty *styles.Styles, width in
 
 		// On error, show error above the diff.
 		if opts.Result.IsError {
-			errLine := toolErrorContent(sty, opts.Result, width)
+			errLine := toolErrorContent(sty, opts.Result, width, opts.ExpandedContent)
 			return joinToolParts(header, errLine+"\n"+diff)
 		}
 
@@ -68,7 +68,7 @@ func (r *ReplaceSymbolToolRenderContext) RenderTool(sty *styles.Styles, width in
 	}
 
 	// Fallback to plain text if no metadata.
-	bodyWidth := width - toolBodyLeftPaddingTotal
+	bodyWidth := toolBodyWidth(sty, width)
 	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
 	return joinToolParts(header, body)
 }

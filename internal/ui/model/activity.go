@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/example-git/crux/internal/proto"
 )
@@ -89,20 +90,41 @@ func (m *UI) editorAccent() color.Color {
 	return m.com.Styles.Logo.TitleColorB
 }
 
-func renderEditorFrameLine(width int, left, label string, accent color.Color) string {
+func renderEditorFrameLine(width int, left, label, edge string, accent, textColor color.Color) string {
 	if width <= 0 {
 		return ""
 	}
-	accentStyle := lipgloss.NewStyle().Foreground(accent)
+	accentStyle := lipgloss.NewStyle().Foreground(accent).Background(textColor)
+	textStyle := lipgloss.NewStyle().Foreground(textColor).Background(accent)
 	status := ""
 	if label != "" {
 		label = ansi.Truncate(label, max(width-1, 0), "…")
-		status = accentStyle.Render(" " + label)
+		status = textStyle.Render(" " + label)
 	}
 	available := max(width-ansi.StringWidth(status), 0)
 	left = ansi.Truncate(left, available, "…")
 	fill := max(width-ansi.StringWidth(left)-ansi.StringWidth(status), 0)
-	return left + accentStyle.Render(strings.Repeat("─", fill)) + status
+	if left != "" {
+		left = textStyle.Render(left)
+	}
+	return left + accentStyle.Render(strings.Repeat(edge, fill)) + status
+}
+
+func fillSurfaceBackground(scr uv.Screen, area uv.Rectangle, background color.Color) {
+	area = area.Intersect(scr.Bounds())
+	for y := area.Min.Y; y < area.Max.Y; y++ {
+		for x := area.Min.X; x < area.Max.X; {
+			cell := uv.Cell{Content: " ", Width: 1}
+			if existing := scr.CellAt(x, y); existing != nil && !existing.IsZero() {
+				cell = *existing
+			}
+			if cell.Style.Bg == nil {
+				cell.Style.Bg = background
+				scr.SetCell(x, y, &cell)
+			}
+			x += max(1, cell.Width)
+		}
+	}
 }
 
 func paintEditorBody(body string, width int, background color.Color) string {
@@ -112,7 +134,7 @@ func paintEditorBody(body string, width int, background color.Color) string {
 	style := lipgloss.NewStyle().Background(background).Width(width)
 	lines := strings.Split(body, "\n")
 	for i, line := range lines {
-		lines[i] = style.Render(line)
+		lines[i] = style.Render(ansi.Truncate(line, width, ""))
 	}
 	return strings.Join(lines, "\n")
 }

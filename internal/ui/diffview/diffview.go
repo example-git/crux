@@ -44,6 +44,8 @@ type DiffView struct {
 	height          int
 	width           int
 	xOffset         int
+	wrap            bool
+	patch           string
 	yOffset         int
 	infiniteYScroll bool
 	style           Style
@@ -202,6 +204,10 @@ func (dv *DiffView) clearSyntaxCache() {
 
 // String returns the string representation of the DiffView.
 func (dv *DiffView) String() string {
+	if dv.patch != "" {
+		dv.adjustStyles()
+		return dv.readableViewport(dv.renderPatch())
+	}
 	dv.normalizeLineEndings()
 	dv.replaceTabs()
 	if err := dv.computeDiff(); err != nil {
@@ -211,6 +217,17 @@ func (dv *DiffView) String() string {
 	dv.adjustStyles()
 	dv.detectNumDigits()
 	dv.detectTotalLines()
+	if dv.wrap {
+		var rows []string
+		if dv.fileName != "" {
+			rows = append(rows, dv.readableHeading(dv.fileName)...)
+		}
+		for _, hunk := range dv.unified.Hunks {
+			rows = append(rows, dv.readableHeading(dv.hunkLineFor(hunk))...)
+			rows = append(rows, dv.readableHunk(hunk)...)
+		}
+		return dv.readableViewport(rows)
+	}
 	dv.preventInfiniteYScroll()
 
 	if dv.width <= 0 {

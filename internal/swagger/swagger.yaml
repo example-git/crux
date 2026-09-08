@@ -1960,16 +1960,27 @@ paths:
       tags:
       - agent
   /workspaces/{id}/agent/jobs/detach:
-    post:
+    get:
+      description: GET requires session_id and returns the available count. POST with
+        session_id detaches Bash, agent, and task-output waits and returns count.
+        Legacy POST without session_id detaches foreground shells and returns detached.
       parameters:
       - description: Workspace ID
         in: path
         name: id
         required: true
         type: string
+      - description: Session ID; required for GET
+        in: query
+        name: session_id
+        type: string
       responses:
         "200":
           description: OK
+          schema:
+            additionalProperties:
+              type: integer
+            type: object
         "404":
           description: Not Found
           schema:
@@ -1978,7 +1989,39 @@ paths:
           description: Internal Server Error
           schema:
             $ref: '#/definitions/proto.Error'
-      summary: Detach foreground jobs
+      summary: Control foreground waits
+      tags:
+      - agent
+    post:
+      description: GET requires session_id and returns the available count. POST with
+        session_id detaches Bash, agent, and task-output waits and returns count.
+        Legacy POST without session_id detaches foreground shells and returns detached.
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Session ID; required for GET
+        in: query
+        name: session_id
+        type: string
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: integer
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Control foreground waits
       tags:
       - agent
   /workspaces/{id}/agent/sessions/{sid}:

@@ -23,6 +23,14 @@ func (b *Backend) TaskOutput(ctx context.Context, workspaceID, taskID string, wa
 	return ws.TaskOutput(ctx, taskID, wait, timeout)
 }
 
+func (b *Backend) RestartTask(ctx context.Context, workspaceID, taskID string) (managedtask.View, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	return ws.RestartTask(ctx, taskID)
+}
+
 func (b *Backend) StopTask(ctx context.Context, workspaceID, taskID string) (managedtask.View, error) {
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {

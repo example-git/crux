@@ -173,6 +173,22 @@ func validateSnapshot(root string, snapshot snapshotResult) (validatedBundle, []
 	default:
 		return validatedBundle{}, []Diagnostic{safeDiagnostic("manifest-invalid", fmt.Sprintf("unsupported plugin type %q", pluginType))}
 	}
+	if _, ok := files["branding.json"]; ok && (validated.manifest != nil || validated.preset != nil) {
+		brandingData, err := readBoundedRegularFile(filepath.Join(root, "branding.json"), manifest.MaxBrandingBytes)
+		if err != nil {
+			return validatedBundle{}, []Diagnostic{safeDiagnostic("branding-invalid", fmt.Sprintf("read branding.json: %v", err))}
+		}
+		branding, err := manifest.DecodeBrandingStrict(brandingData)
+		if err != nil {
+			return validatedBundle{}, []Diagnostic{safeDiagnostic("branding-invalid", err.Error())}
+		}
+		referenced["branding.json"] = struct{}{}
+		if validated.manifest != nil {
+			validated.manifest.Provider.Brand = &branding
+		} else {
+			validated.preset.Brand = &branding
+		}
+	}
 	for path := range files {
 		if _, ok := referenced[path]; !ok {
 			return validatedBundle{}, []Diagnostic{safeDiagnostic("bundle-file-unexpected", fmt.Sprintf("bundle contains undeclared file %q", path))}

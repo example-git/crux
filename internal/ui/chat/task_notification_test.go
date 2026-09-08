@@ -77,3 +77,16 @@ func TestOrdinaryUserMessageDoesNotBecomeTaskNotification(t *testing.T) {
 	require.Len(t, items, 1)
 	require.IsType(t, &UserMessageItem{}, items[0])
 }
+
+func TestTaskNotificationCopyIncludesResultAndDiagnostics(t *testing.T) {
+	sty := styles.CharmtonePantera()
+	msg := &message.Message{ID: "notification", Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: `<task-notification><task-id>a12345678</task-id><task-type>agent</task-type><status>failed</status><error-message>failure details</error-message><result>partial result</result></task-notification>`}}}
+	item, ok := newTaskNotificationMessageItem(&sty, msg)
+	require.True(t, ok)
+	notification := item.(*taskNotificationMessageItem)
+	require.Equal(t, msg.ID, notification.MessageID())
+	copied := notification.formatToolForCopy()
+	require.Contains(t, copied, "failure details")
+	require.Contains(t, copied, "partial result")
+	require.NotContains(t, copied, "Pending...")
+}

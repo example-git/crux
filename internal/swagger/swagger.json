@@ -466,11 +466,12 @@
             }
         },
         "/workspaces/{id}/agent/jobs/detach": {
-            "post": {
+            "get": {
+                "description": "GET requires session_id and returns the available count. POST with session_id detaches Bash, agent, and task-output waits and returns count. Legacy POST without session_id detaches foreground shells and returns detached.",
                 "tags": [
                     "agent"
                 ],
-                "summary": "Detach foreground jobs",
+                "summary": "Control foreground waits",
                 "parameters": [
                     {
                         "type": "string",
@@ -478,11 +479,68 @@
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Session ID; required for GET",
+                        "name": "session_id",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK"
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "integer"
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "description": "GET requires session_id and returns the available count. POST with session_id detaches Bash, agent, and task-output waits and returns count. Legacy POST without session_id detaches foreground shells and returns detached.",
+                "tags": [
+                    "agent"
+                ],
+                "summary": "Control foreground waits",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Session ID; required for GET",
+                        "name": "session_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "integer"
+                            }
+                        }
                     },
                     "404": {
                         "description": "Not Found",

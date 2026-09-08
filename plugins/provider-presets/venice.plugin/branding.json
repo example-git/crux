@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Venice AI",
+  "short_name": "VENICE",
+  "color": "#FB7185",
+  "gradient_a": "#FB7185",
+  "gradient_b": "#FDBA74"
+}

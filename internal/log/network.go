@@ -36,17 +36,102 @@ const (
 )
 
 var (
-	networkTraceState atomic.Pointer[networkTrace]
-	networkTraceID    atomic.Uint64
-	defaultHTTPBase   = http.DefaultTransport.(*http.Transport).Clone()
-	defaultTraceOnce  sync.Once
-	networkSetupOnce  sync.Once
-	networkSetupErr   error
+	networkTraceID   atomic.Uint64
+	defaultHTTPBase  = http.DefaultTransport.(*http.Transport).Clone()
+	defaultTraceOnce sync.Once
 )
 
 type networkTrace struct {
 	database *sql.DB
+	path     string
 	entries  chan trafficWrite
+	dropped  atomic.Uint64
+	failed   atomic.Uint64
+	mu       sync.RWMutex
+	closed   bool
+	done     chan struct{}
+}
+
+type trafficContextKey struct{}
+
+func SetupTraffic(ctx context.Context, dataDir string, enabled bool) (context.Context, func(), error) {
+	if !enabled {
+		return context.WithValue(ctx, trafficContextKey{}, (*networkTrace)(nil)), func() {}, nil
+	}
+	if dataDir == "" {
+		return ctx, nil, errors.New("network tracing requires a project data directory")
+	}
+	directory, err := filepath.Abs(filepath.Join(dataDir, "traffic"))
+	if err != nil {
+		return ctx, nil, err
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return ctx, nil, fmt.Errorf("create traffic directory: %w", err)
+	}
+	file, err := os.CreateTemp(directory, fmt.Sprintf("crux-%d-*.db", os.Getpid()))
+	if err != nil {
+		return ctx, nil, fmt.Errorf("create traffic database: %w", err)
+	}
+	path := file.Name()
+	if err := file.Close(); err != nil {
+		return ctx, nil, err
+	}
+	database, err := openTrafficDatabase(path, false)
+	if err != nil {
+		_ = os.Remove(path)
+		return ctx, nil, err
+	}
+	trace := newNetworkTrace(database)
+	trace.path = path
+	defaultTraceOnce.Do(func() {
+		http.DefaultTransport = WrapHTTPTransport(http.DefaultTransport)
+	})
+	return context.WithValue(ctx, trafficContextKey{}, trace), trace.close, nil
+}
+
+func trafficFromContext(ctx context.Context) *networkTrace {
+	if ctx == nil {
+		return nil
+	}
+	trace, _ := ctx.Value(trafficContextKey{}).(*networkTrace)
+	return trace
+}
+
+func WithTrafficContext(ctx, owner context.Context) context.Context {
+	return context.WithValue(ctx, trafficContextKey{}, trafficFromContext(owner))
+}
+
+func TrafficDatabasePath(ctx context.Context) (string, error) {
+	trace := trafficFromContext(ctx)
+	if trace == nil {
+		return "", errors.New("network tracing is disabled for this workspace; enable option network-tracing true and reopen the workspace")
+	}
+	return trace.path, nil
+}
+
+func OpenTrafficDatabaseReadOnly(ctx context.Context) (*sql.DB, error) {
+	path, err := TrafficDatabasePath(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return openTrafficDatabase(path, true)
+}
+
+func TrafficDropCounts(ctx context.Context) (uint64, uint64) {
+	trace := trafficFromContext(ctx)
+	if trace == nil {
+		return 0, 0
+	}
+	return trace.dropped.Load(), trace.failed.Load()
+}
+
+func (t *networkTrace) close() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.closed {
+		t.closed = true
+		close(t.entries)
+	}
 }
 
 type trafficWrite struct {
@@ -86,35 +171,6 @@ type TrafficQuery struct {
 	Limit       int
 	BodyLimit   int
 	IncludeBody bool
-}
-
-func TrafficDatabasePath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user home directory: %w", err)
-	}
-	return filepath.Join(home, ".ai-cli", "traffic", "crux.db"), nil
-}
-
-func SetupTraffic() error {
-	networkSetupOnce.Do(func() {
-		path, err := TrafficDatabasePath()
-		if err != nil {
-			networkSetupErr = err
-			return
-		}
-		database, err := openTrafficDatabase(path, false)
-		if err != nil {
-			networkSetupErr = err
-			return
-		}
-		trace := newNetworkTrace(database)
-		networkTraceState.Store(trace)
-		defaultTraceOnce.Do(func() {
-			http.DefaultTransport = WrapHTTPTransport(defaultHTTPBase)
-		})
-	})
-	return networkSetupErr
 }
 
 func trafficDatabaseFileURL(path string) string {
@@ -287,27 +343,69 @@ func initializeTrafficDatabase(database *sql.DB) error {
 				f.message_type, f.error
 			FROM websocket_frames f LEFT JOIN websocket_frame_payloads p ON p.frame_id = f.id`,
 	}
+	ready, err := trafficSchemaReady(database, statements)
+	if err != nil || ready {
+		return err
+	}
+	transaction, err := database.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin traffic database initialization: %w", err)
+	}
+	defer transaction.Rollback()
 	for _, statement := range statements {
-		if _, err := database.ExecContext(context.Background(), statement); err != nil {
+		if _, err := transaction.ExecContext(context.Background(), statement); err != nil {
 			return fmt.Errorf("initialize traffic database: %w", err)
 		}
 	}
-	return nil
+	return transaction.Commit()
 }
 
-func OpenTrafficDatabaseReadOnly() (*sql.DB, error) {
-	path, err := TrafficDatabasePath()
+func trafficSchemaReady(database *sql.DB, statements []string) (bool, error) {
+	rows, err := database.QueryContext(context.Background(), `SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL`)
 	if err != nil {
-		return nil, err
+		return false, fmt.Errorf("inspect traffic database schema: %w", err)
 	}
-	return openTrafficDatabase(path, true)
+	normalize := func(statement string) string {
+		return strings.Join(strings.Fields(strings.ReplaceAll(statement, "IF NOT EXISTS ", "")), " ")
+	}
+	definitions := make(map[string]struct{})
+	for rows.Next() {
+		var statement string
+		if err := rows.Scan(&statement); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("read traffic database schema: %w", err)
+		}
+		definitions[normalize(statement)] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	for _, statement := range statements {
+		if strings.HasPrefix(statement, "CREATE ") {
+			if _, found := definitions[normalize(statement)]; !found {
+				return false, nil
+			}
+		}
+	}
+	var totalBytes int64
+	err = database.QueryRowContext(context.Background(), `SELECT value FROM traffic_meta WHERE key = 'total_bytes'`).Scan(&totalBytes)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func newNetworkTrace(database *sql.DB) *networkTrace {
-	trace := &networkTrace{database: database, entries: make(chan trafficWrite, trafficQueueSize)}
+	trace := &networkTrace{database: database, entries: make(chan trafficWrite, trafficQueueSize), done: make(chan struct{})}
 	go func() {
+		defer close(trace.done)
+		defer database.Close()
 		batch := make([]TrafficEvent, 0, trafficBatchSize)
 		timer := time.NewTimer(trafficBatchDelay)
+		defer timer.Stop()
 		if !timer.Stop() {
 			<-timer.C
 		}
@@ -316,7 +414,8 @@ func newNetworkTrace(database *sql.DB) *networkTrace {
 				return
 			}
 			if err := trace.insertBatch(batch); err != nil {
-				slog.Error("Failed to write traffic batch", "error", err, "events", len(batch))
+				trace.failed.Add(uint64(len(batch)))
+				slog.Error("Failed to write traffic batch", "error", err, "events", len(batch), "dropped_events", trace.dropped.Load(), "failed_events", trace.failed.Load())
 			}
 			batch = batch[:0]
 		}
@@ -376,7 +475,16 @@ func (t *networkTrace) record(event TrafficEvent) {
 		event.Timestamp = time.Now().UTC()
 	}
 	event.ProcessID = os.Getpid()
-	t.entries <- trafficWrite{event: &event}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.closed {
+		return
+	}
+	select {
+	case t.entries <- trafficWrite{event: &event}:
+	default:
+		t.dropped.Add(1)
+	}
 }
 
 func (t *networkTrace) flush() {
@@ -635,7 +743,7 @@ func (t *networkRoundTripper) RoundTrip(request *http.Request) (*http.Response, 
 	if request == nil {
 		return nil, errors.New("HTTP request is nil")
 	}
-	trace := networkTraceState.Load()
+	trace := trafficFromContext(request.Context())
 	if trace == nil {
 		return t.base.RoundTrip(request)
 	}
@@ -744,7 +852,7 @@ func (b *networkTraceBody) record(err error) {
 
 func TraceHTTPHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		trace := networkTraceState.Load()
+		trace := trafficFromContext(request.Context())
 		if trace == nil {
 			next.ServeHTTP(writer, request)
 			return
@@ -821,8 +929,8 @@ func (w *networkResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
 }
 
-func TraceWebSocketFrame(traceID, direction, endpoint string, messageType int, data []byte, err error) {
-	trace := networkTraceState.Load()
+func TraceWebSocketFrame(ctx context.Context, traceID, direction, endpoint string, messageType int, data []byte, err error) {
+	trace := trafficFromContext(ctx)
 	if trace == nil {
 		return
 	}
@@ -834,8 +942,8 @@ func TraceWebSocketFrame(traceID, direction, endpoint string, messageType int, d
 	trace.record(event)
 }
 
-func TraceWebSocketHandshake(traceID, direction, endpoint string, headers http.Header, statusCode int, duration time.Duration, err error) {
-	trace := networkTraceState.Load()
+func TraceWebSocketHandshake(ctx context.Context, traceID, direction, endpoint string, headers http.Header, statusCode int, duration time.Duration, err error) {
+	trace := trafficFromContext(ctx)
 	if trace == nil {
 		return
 	}

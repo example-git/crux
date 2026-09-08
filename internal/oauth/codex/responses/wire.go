@@ -14,7 +14,9 @@ package responses
 // transport safely replays prior reasoning items and function calls in full.
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -51,8 +53,9 @@ type inputItem struct {
 	Type string `json:"type"`
 
 	// message
-	Role    string           `json:"role,omitempty"`
-	Content []messageContent `json:"content,omitempty"`
+	Role                                   string                       `json:"role,omitempty"`
+	Content                                []messageContent             `json:"content,omitempty"`
+	InternalChatMessageMetadataPassthrough *internalChatMessageMetadata `json:"internal_chat_message_metadata_passthrough,omitempty"`
 
 	// function_call
 	ID        string `json:"id,omitempty"`
@@ -73,6 +76,10 @@ type messageContent struct {
 	Text     string `json:"text,omitempty"`
 	ImageURL string `json:"image_url,omitempty"`
 	Detail   string `json:"detail,omitempty"`
+}
+
+type internalChatMessageMetadata struct {
+	ContentItemKinds []string `json:"content_item_kinds,omitempty"`
 }
 
 // wireTool is the flat tool shape Codex expects.
@@ -99,6 +106,7 @@ type requestFrame struct {
 	Include            []string          `json:"include,omitempty"`
 	Text               *wireTextFormat   `json:"text,omitempty"`
 	PromptCacheKey     string            `json:"prompt_cache_key,omitempty"`
+	ServiceTier        string            `json:"service_tier,omitempty"`
 	Store              bool              `json:"store"`
 	ClientMetadata     map[string]string `json:"client_metadata,omitempty"`
 	DynamicContext     string            `json:"-"`
@@ -108,6 +116,7 @@ type requestFrame struct {
 type wireReasoning struct {
 	Effort  string `json:"effort"`
 	Summary string `json:"summary"`
+	Context string `json:"context,omitempty"`
 }
 
 type wireTextFormat struct {
@@ -488,7 +497,28 @@ func toolOutputLimitBytes(modelID string) int {
 	return limit
 }
 
+func usesAstraInstructionLayout(modelID string) bool {
+	return modelID == "gpt-6-astra"
+}
+
+func baseInstructionsItem(text string) inputItem {
+	digest := sha256.Sum256([]byte(text))
+	return inputItem{
+		Type:    "message",
+		ID:      "msg_" + hex.EncodeToString(digest[:16]),
+		Role:    "developer",
+		Content: []messageContent{{Type: "input_text", Text: text}},
+		InternalChatMessageMetadataPassthrough: &internalChatMessageMetadata{
+			ContentItemKinds: []string{"model.base_instructions"},
+		},
+	}
+}
+
 func dynamicEnvironmentItem(snapshot string) inputItem {
+	return dynamicEnvironmentItemForModel("", snapshot)
+}
+
+func dynamicEnvironmentItemForModel(modelID, snapshot string) inputItem {
 	const prefix = "<environment_context>\nThis context replaces the previous dynamic environment snapshot.\n"
 	const suffix = "\n</environment_context>"
 	text := prefix + snapshot + suffix
@@ -497,11 +527,17 @@ func dynamicEnvironmentItem(snapshot string) inputItem {
 		snapshot = utf8Prefix(snapshot, available)
 		text = prefix + snapshot + dynamicEnvironmentTag + suffix
 	}
-	return inputItem{
+	item := inputItem{
 		Type:    "message",
 		Role:    "user",
 		Content: []messageContent{{Type: "input_text", Text: text}},
 	}
+	if usesAstraInstructionLayout(modelID) {
+		item.InternalChatMessageMetadataPassthrough = &internalChatMessageMetadata{
+			ContentItemKinds: []string{"environments.environment_context"},
+		}
+	}
+	return item
 }
 
 func utf8Prefix(value string, maxBytes int) string {

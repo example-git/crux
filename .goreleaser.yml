@@ -55,6 +55,7 @@ archives:
       - schema.json
       - provider-plugin.schema.json
       - provider-preset-plugin.schema.json
+      - provider-branding.schema.json
       - image-provider-plugin.schema.json
       - docs/provider-plugins/README.md
       - docs/provider-plugins/**/*

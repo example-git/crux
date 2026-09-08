@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
@@ -35,9 +34,11 @@ var (
 type Manager struct {
 	paths      Paths
 	mu         sync.RWMutex
+	rescanGate chan struct{}
 	state      Snapshot
 	trust      trustStore
 	provenance provenanceStore
+	validated  map[string]validatedBundle
 	events     *pubsub.Broker[Event]
 }
 
@@ -56,7 +57,7 @@ func NewManager(ctx context.Context, paths Paths) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	manager := &Manager{paths: paths, trust: trust, provenance: provenance, events: pubsub.NewBroker[Event]()}
+	manager := &Manager{paths: paths, trust: trust, provenance: provenance, events: pubsub.NewBroker[Event](), rescanGate: make(chan struct{}, 1)}
 	if _, err := manager.Rescan(ctx, 0); err != nil {
 		manager.events.Shutdown()
 		return nil, err
@@ -186,19 +187,16 @@ func (m *Manager) RegisteredManifests() []manifest.Manifest {
 	return result
 }
 
-// Rescan atomically rebuilds plugin state from canonical bytes, current exact-
-// digest trust, provenance, compatibility, and duplicate policy. Keep the file
-// lock, revision check, and state swap together; partial refresh can pair trust
-// from one bundle version with manifest bytes from another.
 func (m *Manager) Rescan(ctx context.Context, expectedRevision uint64) (Snapshot, error) {
-	lockContext, cancel := context.WithTimeout(ctx, managerLockTimeout)
-	defer cancel()
-	release, err := lock.File(lockContext, m.paths.ManagerLock)
-	if err != nil {
-		return Snapshot{}, fmt.Errorf("lock plugin registry: %w", err)
+	select {
+	case m.rescanGate <- struct{}{}:
+		defer func() { <-m.rescanGate }()
+	case <-ctx.Done():
+		return Snapshot{}, ctx.Err()
 	}
-	defer release()
-
+	if err := ctx.Err(); err != nil {
+		return Snapshot{}, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if expectedRevision != 0 && expectedRevision != m.state.Revision {
@@ -246,6 +244,7 @@ func (m *Manager) scanLocked(ctx context.Context, trust trustStore, provenance p
 	slices.SortFunc(entries, func(a, b os.DirEntry) int { return strings.Compare(a.Name(), b.Name()) })
 	seenNames := map[string]int{}
 	statuses := make([]Status, 0, len(entries))
+	validatedCache := make(map[string]validatedBundle, len(entries))
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -275,7 +274,7 @@ func (m *Manager) scanLocked(ctx context.Context, trust trustStore, provenance p
 		}
 		status.InstalledAt = info.ModTime().UTC()
 		temporary := filepath.Join(m.paths.Cache, ".scan-"+uuid.NewString())
-		snapshot, err := snapshotDirectory(filepath.Join(m.paths.Bundles, name), temporary)
+		snapshot, err := snapshotForValidation(filepath.Join(m.paths.Bundles, name), temporary)
 		if err != nil {
 			_ = os.RemoveAll(temporary)
 			status.State = StateInvalid
@@ -283,7 +282,11 @@ func (m *Manager) scanLocked(ctx context.Context, trust trustStore, provenance p
 			statuses = append(statuses, status)
 			continue
 		}
-		validated, diagnostics := validateSnapshot(temporary, snapshot)
+		validated, cached := m.validated[snapshot.Digest]
+		var diagnostics []Diagnostic
+		if !cached {
+			validated, diagnostics = validateSnapshot(temporary, snapshot)
+		}
 		_ = os.RemoveAll(temporary)
 		if len(diagnostics) > 0 {
 			status.State = StateInvalid
@@ -292,6 +295,7 @@ func (m *Manager) scanLocked(ctx context.Context, trust trustStore, provenance p
 			statuses = append(statuses, status)
 			continue
 		}
+		validatedCache[snapshot.Digest] = validated
 		status.PluginType = validated.pluginType
 		status.ID = validated.id()
 		status.ProviderID = validated.providerID()
@@ -337,6 +341,7 @@ func (m *Manager) scanLocked(ctx context.Context, trust trustStore, provenance p
 		}
 		statuses = append(statuses, status)
 	}
+	m.validated = validatedCache
 	return statuses, nil
 }
 

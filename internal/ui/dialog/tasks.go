@@ -43,6 +43,9 @@ type tasksLoadedMsg struct {
 }
 
 type taskOutputLoadedMsg struct {
+	request       uint64
+	lines         []string
+	maxWidth      int
 	result        managedtask.OutputResult
 	messages      []message.Message
 	notifications []managedtask.Notification
@@ -54,13 +57,21 @@ type taskDetailTickMsg struct {
 }
 
 type taskStoppedMsg struct {
-	task managedtask.View
-	err  error
+	request uint64
+	task    managedtask.View
+	err     error
+}
+
+type taskRestartedMsg struct {
+	request uint64
+	task    managedtask.View
+	err     error
 }
 
 type taskContinuedMsg struct {
-	task managedtask.View
-	err  error
+	request uint64
+	task    managedtask.View
+	err     error
 }
 
 type taskNotificationReadMsg struct {
@@ -69,30 +80,50 @@ type taskNotificationReadMsg struct {
 }
 
 type Tasks struct {
-	com                    *common.Common
-	help                   help.Model
-	input                  textinput.Model
-	mode                   taskDialogMode
-	tasks                  []managedtask.View
-	notifications          []managedtask.Notification
-	selected               int
-	output                 managedtask.OutputResult
-	messages               []message.Message
-	loadErr                error
-	actionErr              error
-	loading                bool
-	refreshing             bool
-	terminalFocused        bool
-	terminalScroll         int
-	terminalViewportHeight int
-	terminalRect           uv.Rectangle
-	keyMap                 struct {
+	panel                     bool
+	listLoading               bool
+	ctx                       context.Context
+	cancel                    context.CancelFunc
+	outputCancel              context.CancelFunc
+	outputRequest             uint64
+	actionRequest             uint64
+	panelLines                []string
+	panelMaxWidth             int
+	panelRect                 uv.Rectangle
+	panelListStart            int
+	panelButtons              []taskPanelButton
+	panelNotificationsRequest uint64
+	panelNotificationsLoading bool
+	panelNotificationsTaskID  string
+	panelNotificationsErr     error
+	com                       *common.Common
+	help                      help.Model
+	input                     textinput.Model
+	mode                      taskDialogMode
+	tasks                     []managedtask.View
+	notifications             []managedtask.Notification
+	selected                  int
+	output                    managedtask.OutputResult
+	messages                  []message.Message
+	loadErr                   error
+	actionErr                 error
+	loading                   bool
+	refreshing                bool
+	terminalFocused           bool
+	terminalScroll            int
+	terminalUnseenLines       int
+	terminalXOffset           int
+	terminalContentWidth      int
+	terminalViewportHeight    int
+	terminalRect              uv.Rectangle
+	keyMap                    struct {
 		Select        key.Binding
 		Next          key.Binding
 		Previous      key.Binding
 		UpDown        key.Binding
 		Refresh       key.Binding
 		Stop          key.Binding
+		Restart       key.Binding
 		Continue      key.Binding
 		Back          key.Binding
 		Close         key.Binding
@@ -103,7 +134,7 @@ type Tasks struct {
 var _ Dialog = (*Tasks)(nil)
 
 func NewTasks(com *common.Common) *Tasks {
-	tasks := &Tasks{com: com, loading: true}
+	tasks := &Tasks{com: com, loading: true, ctx: context.Background()}
 	tasks.help = help.New()
 	tasks.help.Styles = com.Styles.DialogHelpStyles()
 	tasks.input = textinput.New()
@@ -117,6 +148,7 @@ func NewTasks(com *common.Common) *Tasks {
 	tasks.keyMap.UpDown = key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑/↓", "choose"))
 	tasks.keyMap.Refresh = key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "refresh"))
 	tasks.keyMap.Stop = key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "stop"))
+	tasks.keyMap.Restart = key.NewBinding(key.WithKeys("R", "shift+r"), key.WithHelp("shift+r", "restart"))
 	tasks.keyMap.Continue = key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "continue"))
 	tasks.keyMap.Back = key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))
 	tasks.keyMap.Close = key.NewBinding(key.WithKeys("esc", "ctrl+c"), key.WithHelp("esc", "close"))
@@ -133,8 +165,12 @@ func (d *Tasks) InitialCmd() tea.Cmd {
 }
 
 func (d *Tasks) loadCmd() tea.Cmd {
+	if d.panel && d.listLoading {
+		return nil
+	}
+	d.listLoading = true
 	return func() tea.Msg {
-		tasks, err := d.com.Workspace.ListTasks(context.Background())
+		tasks, err := d.com.Workspace.ListTasks(d.ctx)
 		if err != nil {
 			return tasksLoadedMsg{err: err}
 		}
@@ -144,7 +180,15 @@ func (d *Tasks) loadCmd() tea.Cmd {
 
 func (d *Tasks) HandleMsg(msg tea.Msg) Action {
 	switch msg := msg.(type) {
+	case taskPanelListTickMsg:
+		if d.panel && d.mode == taskDialogList && !d.loading {
+			return ActionCmd{Cmd: d.loadCmd()}
+		}
 	case tasksLoadedMsg:
+		d.listLoading = false
+		if d.panel && d.mode != taskDialogList {
+			return nil
+		}
 		d.loading = false
 		d.loadErr = msg.err
 		if msg.err == nil {
@@ -158,7 +202,7 @@ func (d *Tasks) HandleMsg(msg tea.Msg) Action {
 			if selectedID != "" {
 				d.selectTask(selectedID)
 			}
-			if len(d.tasks) == 1 && d.mode == taskDialogList {
+			if !d.panel && len(d.tasks) == 1 && d.mode == taskDialogList {
 				d.mode = taskDialogDetail
 				return d.loadSelectedOutput(true)
 			}
@@ -167,29 +211,96 @@ func (d *Tasks) HandleMsg(msg tea.Msg) Action {
 			}
 		}
 	case taskOutputLoadedMsg:
+		if d.panel && (msg.request != d.outputRequest || d.mode == taskDialogList || d.ctx.Err() != nil) {
+			return nil
+		}
 		d.loading = false
 		d.refreshing = false
 		d.actionErr = msg.err
 		if msg.err == nil {
+			if d.output.Task.OutputRef != msg.result.Task.OutputRef {
+				d.terminalScroll = 0
+				d.terminalUnseenLines = 0
+				d.terminalXOffset = 0
+			}
 			if d.terminalScroll > 0 && d.output.Task.ID == msg.result.Task.ID {
-				oldLines := len(terminalOutputLines(d.output.Output))
-				newLines := len(terminalOutputLines(msg.result.Output))
-				d.terminalScroll += max(0, newLines-oldLines)
+				oldLines, newLines := len(d.panelLines), len(msg.lines)
+				if !d.panel {
+					oldLines = len(terminalOutputLines(d.output.Output))
+					newLines = len(terminalOutputLines(msg.result.Output))
+				}
+				added := max(0, newLines-oldLines)
+				if msg.result.Task.Type == managedtask.TypeShell && msg.result.NextOffset > int64(len(msg.result.Output)) {
+					newBytes := min(max(0, msg.result.NextOffset-d.output.NextOffset), int64(len(msg.result.Output)))
+					added = strings.Count(msg.result.Output[int64(len(msg.result.Output))-newBytes:], "\n")
+				}
+				d.terminalScroll += added
+				d.terminalUnseenLines += added
 			}
 			d.output = msg.result
+			d.panelLines = msg.lines
+			d.panelMaxWidth = msg.maxWidth
 			d.messages = msg.messages
-			d.notifications = msg.notifications
-			d.replaceTask(msg.result.Task)
-			if !msg.result.Task.State.Status.Terminal() {
-				return ActionCmd{Cmd: scheduleTaskDetailRefresh(msg.result.Task.ID)}
+			if !d.panel {
+				d.notifications = msg.notifications
 			}
+			d.replaceTask(msg.result.Task)
+			var commands []tea.Cmd
+			if d.panel {
+				commands = append(commands, d.loadPanelNotifications(msg.result.Task))
+			}
+			if !msg.result.Task.State.Status.Terminal() {
+				commands = append(commands, scheduleTaskDetailRefresh(msg.result.Task.ID))
+			}
+			return ActionCmd{Cmd: tea.Batch(commands...)}
+		}
+		if d.panel {
+			if task, ok := d.selectedTask(); ok {
+				return ActionCmd{Cmd: scheduleTaskDetailRefresh(task.ID)}
+			}
+		}
+	case taskPanelNotificationsMsg:
+		if !d.panel || msg.request != d.panelNotificationsRequest || d.mode == taskDialogList || d.ctx.Err() != nil {
+			return nil
+		}
+		d.panelNotificationsLoading = false
+		d.panelNotificationsErr = msg.err
+		if msg.err == nil {
+			d.notifications = msg.notifications
+			if msg.terminal {
+				d.panelNotificationsTaskID = msg.taskID
+			}
+		}
+		if task, ok := d.selectedTask(); ok && task.ID == msg.taskID && task.State.Status.Terminal() && !msg.terminal {
+			return ActionCmd{Cmd: d.loadPanelNotifications(task)}
 		}
 	case taskDetailTickMsg:
 		task, ok := d.selectedTask()
-		if d.mode == taskDialogDetail && ok && task.ID == msg.taskID && !task.State.Status.Terminal() && !d.loading && !d.refreshing {
+		if d.mode == taskDialogDetail && ok && task.ID == msg.taskID && (!task.State.Status.Terminal() || d.actionErr != nil) && !d.loading && !d.refreshing {
 			return d.loadSelectedOutput(false)
 		}
+	case taskRestartedMsg:
+		if msg.request != d.actionRequest || d.mode != taskDialogDetail || d.ctx.Err() != nil {
+			return nil
+		}
+		d.loading = false
+		d.actionErr = msg.err
+		if msg.err == nil {
+			d.replaceTask(msg.task)
+			d.output = managedtask.OutputResult{}
+			d.panelLines = nil
+			d.terminalScroll = 0
+			d.terminalUnseenLines = 0
+			d.terminalXOffset = 0
+			return d.loadSelectedOutput(true)
+		}
+		if task, ok := d.selectedTask(); ok {
+			return ActionCmd{Cmd: scheduleTaskDetailRefresh(task.ID)}
+		}
 	case taskStoppedMsg:
+		if d.panel && msg.request != d.actionRequest {
+			return nil
+		}
 		d.loading = false
 		d.actionErr = msg.err
 		if msg.err == nil {
@@ -197,12 +308,16 @@ func (d *Tasks) HandleMsg(msg tea.Msg) Action {
 			return d.loadSelectedOutput(false)
 		}
 	case taskContinuedMsg:
+		if d.panel && msg.request != d.actionRequest {
+			return nil
+		}
 		d.loading = false
 		d.actionErr = msg.err
 		if msg.err == nil {
 			d.replaceTask(msg.task)
 			d.selectTask(msg.task.ID)
 			d.mode = taskDialogDetail
+			d.terminalFocused = d.panel
 			d.input.SetValue("")
 			d.input.Blur()
 			return d.loadSelectedOutput(true)
@@ -218,27 +333,74 @@ func (d *Tasks) HandleMsg(msg tea.Msg) Action {
 			}
 		}
 	case pubsub.Event[managedtask.Notification]:
-		if d.mode == taskDialogList {
-			d.loading = true
+		if d.panel && d.mode != taskDialogList {
+			if !d.loading && !d.refreshing && d.mode == taskDialogDetail {
+				return d.loadSelectedOutput(false)
+			}
+			return nil
 		}
 		return ActionCmd{Cmd: d.loadCmd()}
+	case common.CoalescedWheelMsg:
+		if d.panel && d.mode == taskDialogList && image.Pt(msg.Mouse.X, msg.Mouse.Y).In(d.terminalRect) {
+			d.selected = min(max(0, len(d.tasks)-1), max(0, d.selected+int(msg.DeltaY)))
+			return nil
+		}
+		task, ok := d.selectedTask()
+		if d.mode == taskDialogDetail && ok && (d.panel || task.Type == managedtask.TypeShell) && image.Pt(msg.Mouse.X, msg.Mouse.Y).In(d.terminalRect) {
+			d.scrollTerminal(-int(msg.DeltaY))
+			d.scrollTerminalHorizontal(int(msg.DeltaX))
+		}
+	case tea.MouseClickMsg:
+		if d.panel {
+			return d.handlePanelClick(msg)
+		}
 	case tea.MouseWheelMsg:
 		return d.handleMouseWheel(msg)
 	case tea.KeyPressMsg:
 		return d.handleKey(msg)
+	default:
+		if d.mode == taskDialogContinue {
+			var cmd tea.Cmd
+			d.input, cmd = d.input.Update(msg)
+			return ActionCmd{Cmd: cmd}
+		}
+	}
+	if _, ok := msg.(tasksLoadedMsg); ok && d.panel && d.mode == taskDialogList {
+		return ActionCmd{Cmd: scheduleTaskPanelListRefresh()}
 	}
 	return nil
 }
 
 func (d *Tasks) scrollTerminal(delta int) {
-	lines := terminalOutputLines(d.output.Output)
+	lines := d.outputLines()
 	maximum := max(0, len(lines)-max(1, d.terminalViewportHeight))
 	d.terminalScroll = min(maximum, max(0, d.terminalScroll+delta))
+	d.terminalUnseenLines = min(d.terminalUnseenLines, d.terminalScroll)
+}
+
+func (d *Tasks) scrollTerminalHorizontal(delta int) {
+	maximumWidth := d.panelMaxWidth
+	if !d.panel {
+		for _, line := range terminalOutputLines(d.output.Output) {
+			maximumWidth = max(maximumWidth, ansi.StringWidth(line))
+		}
+	}
+	maximum := max(0, maximumWidth-max(1, d.terminalContentWidth))
+	d.terminalXOffset = min(maximum, max(0, d.terminalXOffset+delta))
 }
 
 func (d *Tasks) handleMouseWheel(msg tea.MouseWheelMsg) Action {
+	if d.panel && d.mode == taskDialogList && image.Pt(msg.X, msg.Y).In(d.terminalRect) {
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			d.selected = max(0, d.selected-1)
+		case tea.MouseWheelDown:
+			d.selected = min(max(0, len(d.tasks)-1), d.selected+1)
+		}
+		return nil
+	}
 	task, ok := d.selectedTask()
-	if d.mode != taskDialogDetail || !ok || task.Type != managedtask.TypeShell || !image.Pt(msg.X, msg.Y).In(d.terminalRect) {
+	if d.mode != taskDialogDetail || !ok || (!d.panel && task.Type != managedtask.TypeShell) || !image.Pt(msg.X, msg.Y).In(d.terminalRect) {
 		return nil
 	}
 	switch msg.Button {
@@ -259,14 +421,19 @@ func (d *Tasks) handleTerminalKey(msg tea.KeyPressMsg) bool {
 		d.scrollTerminal(1)
 	case "down":
 		d.scrollTerminal(-1)
+	case "left", "shift+left":
+		d.scrollTerminalHorizontal(-8)
+	case "right", "shift+right":
+		d.scrollTerminalHorizontal(8)
 	case "pgup":
 		d.scrollTerminal(max(1, d.terminalViewportHeight-1))
 	case "pgdown":
 		d.scrollTerminal(-max(1, d.terminalViewportHeight-1))
 	case "home":
-		d.scrollTerminal(len(terminalOutputLines(d.output.Output)))
+		d.scrollTerminal(len(d.outputLines()))
 	case "end":
 		d.terminalScroll = 0
+		d.terminalUnseenLines = 0
 	default:
 		return false
 	}
@@ -274,11 +441,21 @@ func (d *Tasks) handleTerminalKey(msg tea.KeyPressMsg) bool {
 }
 
 func (d *Tasks) handleKey(msg tea.KeyPressMsg) Action {
+	if d.panel && msg.String() == "ctrl+c" {
+		return ActionClose{}
+	}
 	if d.mode == taskDialogContinue {
 		switch {
 		case key.Matches(msg, d.keyMap.Back):
 			d.mode = taskDialogDetail
+			d.actionRequest++
+			d.loading = false
 			d.input.Blur()
+			if d.panel {
+				if task, ok := d.selectedTask(); ok {
+					return ActionCmd{Cmd: scheduleTaskDetailRefresh(task.ID)}
+				}
+			}
 			return nil
 		case key.Matches(msg, d.keyMap.Select):
 			prompt := strings.TrimSpace(d.input.Value())
@@ -291,9 +468,11 @@ func (d *Tasks) handleKey(msg tea.KeyPressMsg) Action {
 			}
 			d.loading = true
 			d.actionErr = nil
+			d.actionRequest++
+			request := d.actionRequest
 			return ActionCmd{Cmd: func() tea.Msg {
-				continued, err := d.com.Workspace.ContinueTask(context.Background(), task.ID, task.Ownership.ParentSessionID, prompt)
-				return taskContinuedMsg{task: continued, err: err}
+				continued, err := d.com.Workspace.ContinueTask(d.ctx, task.ID, task.Ownership.ParentSessionID, prompt)
+				return taskContinuedMsg{request: request, task: continued, err: err}
 			}}
 		default:
 			var cmd tea.Cmd
@@ -305,27 +484,60 @@ func (d *Tasks) handleKey(msg tea.KeyPressMsg) Action {
 	if d.mode == taskDialogDetail {
 		switch {
 		case key.Matches(msg, d.keyMap.Back):
-			if len(d.tasks) == 1 {
+			if !d.panel && len(d.tasks) == 1 {
 				return ActionClose{}
 			}
 			d.mode = taskDialogList
+			d.actionRequest++
+			d.outputRequest++
+			if d.outputCancel != nil {
+				d.outputCancel()
+			}
+			d.loading = false
+			d.refreshing = false
 			d.actionErr = nil
 			d.terminalFocused = false
 			d.terminalScroll = 0
+			d.terminalUnseenLines = 0
+			d.terminalXOffset = 0
+			if d.panel {
+				return ActionCmd{Cmd: scheduleTaskPanelListRefresh()}
+			}
 			return nil
 		case key.Matches(msg, d.keyMap.TerminalFocus):
 			task, ok := d.selectedTask()
-			if ok && task.Type == managedtask.TypeShell {
+			if ok && !d.panel && task.Type == managedtask.TypeShell {
 				d.terminalFocused = !d.terminalFocused
 			}
 			return nil
 		case d.handleTerminalKey(msg):
 			return nil
 		case key.Matches(msg, d.keyMap.Refresh):
-			if d.refreshing {
+			if d.refreshing || d.loading {
 				return nil
 			}
 			return d.loadSelectedOutput(false)
+		case key.Matches(msg, d.keyMap.Restart):
+			task, ok := d.selectedTask()
+			if !ok || task.Type != managedtask.TypeShell || d.loading {
+				return nil
+			}
+			d.loading = true
+			d.refreshing = false
+			d.actionErr = nil
+			d.actionRequest++
+			d.outputRequest++
+			d.panelNotificationsRequest++
+			d.panelNotificationsLoading = false
+			d.panelNotificationsTaskID = ""
+			if d.outputCancel != nil {
+				d.outputCancel()
+			}
+			request := d.actionRequest
+			return ActionCmd{Cmd: func() tea.Msg {
+				restarted, err := d.com.Workspace.RestartTask(d.ctx, task.ID)
+				return taskRestartedMsg{request: request, task: restarted, err: err}
+			}}
 		case key.Matches(msg, d.keyMap.Stop):
 			task, ok := d.selectedTask()
 			if !ok || task.State.Status.Terminal() || d.loading {
@@ -333,9 +545,11 @@ func (d *Tasks) handleKey(msg tea.KeyPressMsg) Action {
 			}
 			d.loading = true
 			d.actionErr = nil
+			d.actionRequest++
+			request := d.actionRequest
 			return ActionCmd{Cmd: func() tea.Msg {
-				stopped, err := d.com.Workspace.StopTask(context.Background(), task.ID)
-				return taskStoppedMsg{task: stopped, err: err}
+				stopped, err := d.com.Workspace.StopTask(d.ctx, task.ID)
+				return taskStoppedMsg{request: request, task: stopped, err: err}
 			}}
 		case key.Matches(msg, d.keyMap.Continue):
 			task, ok := d.selectedTask()
@@ -343,7 +557,9 @@ func (d *Tasks) handleKey(msg tea.KeyPressMsg) Action {
 				return nil
 			}
 			d.mode = taskDialogContinue
-			d.input.Focus()
+			if cmd := d.input.Focus(); cmd != nil {
+				return ActionCmd{Cmd: cmd}
+			}
 			return nil
 		}
 		return nil
@@ -363,6 +579,7 @@ func (d *Tasks) handleKey(msg tea.KeyPressMsg) Action {
 	case key.Matches(msg, d.keyMap.Select):
 		if len(d.tasks) > 0 {
 			d.mode = taskDialogDetail
+			d.terminalFocused = d.panel
 			return d.loadSelectedOutput(true)
 		}
 	case key.Matches(msg, d.keyMap.Refresh):
@@ -377,7 +594,23 @@ func (d *Tasks) loadSelectedOutput(initial bool) Action {
 	if !ok {
 		return nil
 	}
+	d.outputRequest++
+	request := d.outputRequest
+	if d.outputCancel != nil {
+		d.outputCancel()
+	}
+	ctx, cancel := context.WithCancel(d.ctx)
+	d.outputCancel = cancel
 	if initial {
+		d.panelLines = nil
+		d.panelMaxWidth = 0
+		d.panelNotificationsRequest++
+		d.panelNotificationsLoading = false
+		d.panelNotificationsTaskID = ""
+		d.panelNotificationsErr = nil
+		d.terminalScroll = 0
+		d.terminalUnseenLines = 0
+		d.terminalXOffset = 0
 		d.loading = true
 		d.output = managedtask.OutputResult{}
 		d.messages = nil
@@ -385,22 +618,27 @@ func (d *Tasks) loadSelectedOutput(initial bool) Action {
 		d.refreshing = true
 	}
 	d.actionErr = nil
+	panel := d.panel
 	var commands []tea.Cmd
 	commands = append(commands, func() tea.Msg {
-		result, err := d.com.Workspace.TaskOutput(context.Background(), task.ID, false, 0)
+		result, err := d.com.Workspace.TaskOutput(ctx, task.ID, false, 0)
 		if err != nil {
-			return taskOutputLoadedMsg{result: result, err: err}
+			return taskOutputLoadedMsg{request: request, result: result, err: err}
 		}
 		var messages []message.Message
 		if result.Task.Type == managedtask.TypeAgent && result.Task.ChildSessionID != "" {
-			messages, err = d.com.Workspace.ListMessages(context.Background(), result.Task.ChildSessionID)
+			messages, err = d.com.Workspace.ListMessages(ctx, result.Task.ChildSessionID)
 			if err != nil {
-				return taskOutputLoadedMsg{result: result, err: err}
+				return taskOutputLoadedMsg{request: request, result: result, err: err}
 			}
 		}
-		notifications, err := d.com.Workspace.ListTaskNotifications(context.Background(), result.Task.Ownership.ParentSessionID, true)
+		if panel {
+			lines, maxWidth := prepareTaskPanelOutput(result, messages)
+			return taskOutputLoadedMsg{request: request, result: result, messages: messages, lines: lines, maxWidth: maxWidth}
+		}
+		notifications, err := d.com.Workspace.ListTaskNotifications(ctx, result.Task.Ownership.ParentSessionID, true)
 		if err != nil {
-			return taskOutputLoadedMsg{result: result, messages: messages, err: err}
+			return taskOutputLoadedMsg{request: request, result: result, messages: messages, err: err}
 		}
 		selectedNotifications := make([]managedtask.Notification, 0, 1)
 		for _, notification := range notifications {
@@ -408,14 +646,15 @@ func (d *Tasks) loadSelectedOutput(initial bool) Action {
 				continue
 			}
 			if notification.ReadAt.IsZero() {
-				notification, err = d.com.Workspace.MarkTaskNotificationRead(context.Background(), notification.ID)
+				notification, err = d.com.Workspace.MarkTaskNotificationRead(ctx, notification.ID)
 				if err != nil {
-					return taskOutputLoadedMsg{result: result, messages: messages, err: err}
+					return taskOutputLoadedMsg{request: request, result: result, messages: messages, err: err}
 				}
 			}
 			selectedNotifications = append(selectedNotifications, notification)
 		}
-		return taskOutputLoadedMsg{result: result, messages: messages, notifications: selectedNotifications}
+		lines, maxWidth := prepareTaskPanelOutput(result, messages)
+		return taskOutputLoadedMsg{request: request, result: result, messages: messages, notifications: selectedNotifications, lines: lines, maxWidth: maxWidth}
 	})
 	return ActionCmd{Cmd: tea.Batch(commands...)}
 }
@@ -456,6 +695,8 @@ func (d *Tasks) selectTask(id string) {
 			if currentID != id {
 				d.terminalFocused = false
 				d.terminalScroll = 0
+				d.terminalUnseenLines = 0
+				d.terminalXOffset = 0
 			}
 			return
 		}
@@ -523,7 +764,7 @@ func (d *Tasks) updateTerminalRect(area uv.Rectangle, view string) {
 		x := center.Min.X + lipgloss.Width(line[:left])
 		panelWidth := lipgloss.Width(line[left : right+len("┐")])
 		top := center.Min.Y + index
-		d.terminalRect = uv.Rect(x, top, x+panelWidth, top+d.terminalViewportHeight+2)
+		d.terminalRect = image.Rect(x, top, x+panelWidth, top+d.terminalViewportHeight+2)
 		return
 	}
 }
@@ -729,13 +970,15 @@ func (d *Tasks) drawShellActivity(width, height int, task managedtask.View) stri
 	end := max(0, len(lines)-d.terminalScroll)
 	start := max(0, end-viewportHeight)
 	visible := lines[start:end]
-	contentWidth := max(1, width-4)
-	for i := range visible {
-		visible[i] = ansi.Truncate(visible[i], contentWidth, "…")
-	}
 	panelStyle := d.com.Styles.Dialog.TerminalPanel
 	if d.terminalFocused {
 		panelStyle = d.com.Styles.Dialog.TerminalPanelFocused
+	}
+	contentWidth := max(1, width-2-panelStyle.GetHorizontalFrameSize())
+	d.terminalContentWidth = contentWidth
+	d.scrollTerminalHorizontal(0)
+	for index := range visible {
+		visible[index] = ansi.Cut(visible[index], d.terminalXOffset, d.terminalXOffset+contentWidth)
 	}
 	panel := panelStyle.Width(max(1, width-2)).Height(viewportHeight).Render(strings.Join(visible, "\n"))
 	lineCount := len(lines)
@@ -750,12 +993,12 @@ func (d *Tasks) drawShellActivity(width, height int, task managedtask.View) stri
 		count = fmt.Sprintf("Showing lines %d-%d of %d", first, last, lineCount)
 	}
 	if d.terminalFocused {
-		count += " · ↑/↓ scroll · pgup/pgdown page · end follow"
+		count += " · ↑/↓ scroll · ←/→ pan · pgup/pgdown page · end follow"
 	}
 	return strings.Join([]string{
 		d.com.Styles.Dialog.PrimaryText.Padding(0).Render("Output:"),
 		panel,
-		d.com.Styles.Dialog.SecondaryText.Padding(0).Render(count),
+		d.com.Styles.Dialog.SecondaryText.Padding(0).Render(ansi.Truncate(count, max(1, width), "…")),
 	}, "\n")
 }
 
@@ -812,7 +1055,7 @@ func terminalOutputLines(output string) []string {
 	}
 	lines := make([]string, len(lineRunes))
 	for i := range lineRunes {
-		lines[i] = string(lineRunes[i])
+		lines[i] = strings.ReplaceAll(string(lineRunes[i]), "\t", "    ")
 	}
 	return lines
 }
@@ -832,6 +1075,25 @@ func (d *Tasks) Cursor() *tea.Cursor {
 }
 
 func (d *Tasks) ShortHelp() []key.Binding {
+	if d.panel {
+		if d.mode == taskDialogList {
+			return []key.Binding{d.keyMap.Close, d.keyMap.Select, d.keyMap.UpDown, d.keyMap.Refresh}
+		}
+		if d.mode == taskDialogContinue {
+			return []key.Binding{d.keyMap.Back, key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "submit"))}
+		}
+		task, _ := d.selectedTask()
+		bindings := []key.Binding{d.keyMap.Back}
+		if task.Type == managedtask.TypeShell {
+			bindings = append(bindings, d.keyMap.Restart)
+		}
+		if !task.State.Status.Terminal() {
+			bindings = append(bindings, d.keyMap.Stop)
+		} else if task.Type == managedtask.TypeAgent && task.ChildSessionID != "" {
+			bindings = append(bindings, d.keyMap.Continue)
+		}
+		return append(bindings, d.keyMap.Refresh, key.NewBinding(key.WithKeys("up", "down", "left", "right"), key.WithHelp("arrows", "scroll")))
+	}
 	if d.mode == taskDialogList {
 		return []key.Binding{d.keyMap.UpDown, d.keyMap.Select, d.keyMap.Refresh, d.keyMap.Close}
 	}
@@ -841,6 +1103,9 @@ func (d *Tasks) ShortHelp() []key.Binding {
 	task, _ := d.selectedTask()
 	bindings := []key.Binding{d.keyMap.Refresh}
 	if task.Type == managedtask.TypeShell {
+		bindings = append(bindings, d.keyMap.Restart)
+	}
+	if !d.panel && task.Type == managedtask.TypeShell {
 		bindings = append(bindings, d.keyMap.TerminalFocus)
 	}
 	if !task.State.Status.Terminal() {

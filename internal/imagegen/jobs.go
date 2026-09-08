@@ -89,22 +89,23 @@ type ImageJob struct {
 	Ownership   managedtask.Ownership
 	Request     JobRequest
 
-	mu            sync.Mutex
-	state         managedtask.State
-	createdAt     int64
-	finalOutput   string
-	cancel        context.CancelFunc
-	done          chan struct{}
-	executionDone chan struct{}
-	doneOnce      sync.Once
-	executionOnce sync.Once
-	releaseOnce   sync.Once
-	stopOnce      sync.Once
-	notified      bool
-	notification  *managedtask.Notification
-	persist       func(*ImageJob) error
-	notify        func(managedtask.Notification)
-	release       func(*ImageJob)
+	mu             sync.Mutex
+	state          managedtask.State
+	createdAt      int64
+	finalOutput    string
+	progressOutput string
+	cancel         context.CancelFunc
+	done           chan struct{}
+	executionDone  chan struct{}
+	doneOnce       sync.Once
+	executionOnce  sync.Once
+	releaseOnce    sync.Once
+	stopOnce       sync.Once
+	notified       bool
+	notification   *managedtask.Notification
+	persist        func(*ImageJob) error
+	notify         func(managedtask.Notification)
+	release        func(*ImageJob)
 }
 
 type JobManager struct {
@@ -628,6 +629,7 @@ func (m *JobManager) run(job *ImageJob) {
 	job.cancel = cancel
 	job.state.Status = managedtask.StatusRunning
 	job.state.StartedAt = time.Now()
+	job.progressOutput = "Executing image request.\n"
 	persistErr := job.persist(job)
 	job.mu.Unlock()
 
@@ -656,6 +658,9 @@ func (m *JobManager) executeJob(ctx context.Context, job *ImageJob, persistErr e
 	defer clearImageResponseData(response)
 	var outputs []string
 	if err == nil {
+		job.mu.Lock()
+		job.progressOutput += "Image response received; writing output files.\n"
+		job.mu.Unlock()
 		outputs, err = writeJobImages(ctx, job.Request, response)
 	}
 	m.finish(job, response, outputs, err)
@@ -1127,12 +1132,22 @@ func (m *JobManager) Output(ctx context.Context, id string, wait bool, timeout t
 	}
 	status, err := managedtask.WaitForOutput(ctx, job.done, wait, timeout)
 	info := job.Info()
+	job.mu.Lock()
+	progress := job.progressOutput
+	job.mu.Unlock()
+	output := info.FinalOutput
+	if !info.State.Status.Terminal() {
+		output = progress
+		if info.State.Status == managedtask.StatusPending {
+			output = "Queued; waiting for an image worker.\n"
+		}
+	}
 	return managedtask.OutputResult{
 		Task:            info,
-		Output:          info.FinalOutput,
+		Output:          output,
 		RetrievalStatus: status,
 		Status:          status,
-		NextOffset:      int64(len(info.FinalOutput)),
+		NextOffset:      int64(len(output)),
 	}, err
 }
 

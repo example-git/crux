@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Cerebras",
+  "short_name": "CEREBRAS",
+  "color": "#FB923C",
+  "gradient_a": "#FB923C",
+  "gradient_b": "#FDE68A"
+}

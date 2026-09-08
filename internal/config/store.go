@@ -1110,6 +1110,16 @@ func (s *ConfigStore) HasConfigField(scope Scope, key string) bool {
 // After a successful write, it automatically reloads config to keep in-memory
 // state fresh.
 func (s *ConfigStore) SetConfigField(scope Scope, key string, value any) error {
+	if key == "options.tui.delivery_mode" {
+		mode, ok := value.(string)
+		if !ok || (mode != "queue" && mode != "steer") {
+			return fmt.Errorf("invalid delivery mode %v: expected queue or steer", value)
+		}
+		return s.update(scope, func(c *Config) map[string]any {
+			c.ensureTUI().DeliveryMode = mode
+			return map[string]any{key: mode}
+		})
+	}
 	return s.SetConfigFields(scope, map[string]any{key: value})
 }
 
@@ -1123,6 +1133,12 @@ func (s *ConfigStore) SetConfigField(scope Scope, key string, value any) error {
 // The write is protected by an in-process mutex and a cross-process flock
 // to prevent races between concurrent writers in different processes.
 func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
+	if value, exists := kv["options.tui.delivery_mode"]; exists {
+		mode, ok := value.(string)
+		if !ok || (mode != "queue" && mode != "steer") {
+			return fmt.Errorf("invalid delivery mode %v: expected queue or steer", value)
+		}
+	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	if _, err := s.configPath(scope); err != nil {
@@ -2420,6 +2436,9 @@ func (s *ConfigStore) loadReloadConfigInputs(
 
 	if err := cfg.ValidateHooks(); err != nil {
 		return nil, nil, "", fmt.Errorf("invalid hook configuration on reload: %w", err)
+	}
+	if err := cfg.restoreDeliveryPreference(globalConfigDataFromEnvironment(appName, baseEnvironment)); err != nil {
+		return nil, nil, "", err
 	}
 	if err := cfg.Options.validatePromptOptions(); err != nil {
 		return nil, nil, "", fmt.Errorf("invalid prompt options on reload: %w", err)

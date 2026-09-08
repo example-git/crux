@@ -55,9 +55,6 @@ func Setup(logFile string, debug bool, ws ...io.Writer) {
 		}
 
 		slog.SetDefault(slog.New(slog.NewMultiHandler(handlers...)))
-		if err := SetupTraffic(); err != nil {
-			slog.Error("Failed to initialize traffic logging", "error", err)
-		}
 		initialized.Store(true)
 	})
 }

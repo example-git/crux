@@ -125,7 +125,7 @@ type AgentToolRenderContext struct {
 
 // RenderTool implements the [ToolRenderer] interface.
 func (r *AgentToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	var params agent.AgentParams
 	_ = json.Unmarshal([]byte(opts.ToolCall.Input), &params)
 	name := "Agent"
@@ -189,7 +189,7 @@ func (r *AgentToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 	// Add body content when completed.
 	if opts.HasResult() && opts.Result.Content != "" {
 		content := opts.Result.Content
-		if params.RunInBackground {
+		if params.RunInBackground && !opts.ExpandedContent {
 			var metadata agent.AgentResponseMetadata
 			if json.Unmarshal([]byte(opts.Result.Metadata), &metadata) == nil && metadata.TaskID != "" {
 				content = "Started " + metadata.TaskID
@@ -198,7 +198,7 @@ func (r *AgentToolRenderContext) RenderTool(sty *styles.Styles, width int, opts 
 				}
 			}
 		}
-		body := toolOutputMarkdownContent(sty, content, cappedWidth-toolBodyLeftPaddingTotal, opts.ExpandedContent)
+		body := toolOutputMarkdownContent(sty, content, cappedWidth, opts.ExpandedContent)
 		return joinToolParts(result, body)
 	}
 
@@ -303,13 +303,14 @@ type AgenticFetchToolRenderContext struct {
 
 // agenticFetchParams matches tools.AgenticFetchParams.
 type agenticFetchParams struct {
+	Mode   string `json:"mode,omitempty"`
 	URL    string `json:"url,omitempty"`
 	Prompt string `json:"prompt"`
 }
 
 // RenderTool implements the [ToolRenderer] interface.
 func (r *AgenticFetchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if !opts.ToolCall.Finished && !opts.IsCanceled() && len(r.fetch.nestedTools) == 0 {
 		return pendingTool(sty, "Agentic Fetch", opts.Anim, opts.Compact)
 	}
@@ -326,6 +327,10 @@ func (r *AgenticFetchToolRenderContext) RenderTool(sty *styles.Styles, width int
 	var toolParams []string
 	if params.URL != "" {
 		toolParams = append(toolParams, params.URL)
+	}
+
+	if params.Mode != "" {
+		toolParams = append(toolParams, "mode", params.Mode)
 	}
 
 	header := toolHeader(sty, opts.Status, "Agentic Fetch", cappedWidth, opts, toolParams...)
@@ -375,7 +380,7 @@ func (r *AgenticFetchToolRenderContext) RenderTool(sty *styles.Styles, width int
 
 	// Add body content when completed.
 	if opts.HasResult() && opts.Result.Content != "" {
-		body := toolOutputMarkdownContent(sty, opts.Result.Content, cappedWidth-toolBodyLeftPaddingTotal, opts.ExpandedContent)
+		body := toolOutputMarkdownContent(sty, opts.Result.Content, cappedWidth, opts.ExpandedContent)
 		return joinToolParts(result, body)
 	}
 

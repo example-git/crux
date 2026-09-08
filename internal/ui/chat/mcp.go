@@ -31,7 +31,7 @@ type MCPToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (b *MCPToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	toolNameParts := strings.SplitN(opts.ToolCall.Name, "_", 3)
 	if len(toolNameParts) != 3 {
 		return toolErrorContent(sty, &message.ToolResult{Content: "Invalid tool name"}, cappedWidth)
@@ -72,7 +72,6 @@ func (b *MCPToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *T
 		return header
 	}
 
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
-	body := renderToolResultTextContent(sty, opts.Result.Content, toolResultContentWidths{Body: bodyWidth, Diff: cappedWidth}, opts.ExpandedContent)
+	body := renderToolResultTextContent(sty, opts.Result.Content, cappedWidth, opts.ExpandedContent)
 	return joinToolParts(header, body)
 }

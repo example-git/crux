@@ -33,7 +33,7 @@ type QuestionToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (q *QuestionToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Question", opts.Anim, opts.Compact)
 	}
@@ -57,7 +57,7 @@ func (q *QuestionToolRenderContext) RenderTool(sty *styles.Styles, width int, op
 		return header
 	}
 
-	body := formatQuestionAnswers(sty, opts.Result.Content, cappedWidth-toolBodyLeftPaddingTotal)
+	body := formatQuestionAnswers(sty, opts.Result.Content, toolBodyWidth(sty, cappedWidth))
 	if body == "" {
 		return header
 	}

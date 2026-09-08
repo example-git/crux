@@ -30,7 +30,7 @@ type SymbolsToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (r *SymbolsToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "List Symbols", opts.Anim, opts.Compact)
 	}

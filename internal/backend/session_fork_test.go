@@ -25,6 +25,7 @@ func TestForkSessionClonesPersistedHistoryIndependently(t *testing.T) {
 	require.NoError(t, err)
 	source.PromptTokens = 120
 	source.CompletionTokens = 30
+	source.UnseenLocalTokens = 25
 	source.EstimatedUsage = true
 	source, err = workspace.Sessions.Save(t.Context(), source)
 	require.NoError(t, err)
@@ -44,6 +45,8 @@ func TestForkSessionClonesPersistedHistoryIndependently(t *testing.T) {
 	persistedFork, err := workspace.Sessions.Get(t.Context(), forked.ID)
 	require.NoError(t, err)
 	require.True(t, persistedFork.EstimatedUsage)
+	require.Equal(t, source.UnseenLocalTokens, persistedFork.UnseenLocalTokens)
+	require.Equal(t, source.ContextTokens(), persistedFork.ContextTokens())
 	cloned, err := workspace.Messages.List(t.Context(), forked.ID)
 	require.NoError(t, err)
 	require.Len(t, cloned, 1)

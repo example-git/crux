@@ -185,6 +185,7 @@ type Registration struct {
 	Quota                oauthusage.Fetcher
 	QuotaCredential      QuotaCredential
 	Usage                *manifest.UsagePolicy
+	AnthropicEfficiency  *anthropic.EfficiencyPolicy
 	Images               *manifest.ImagePolicy
 	Instructions         *InstructionCapability
 	RuntimeControls      []manifest.RuntimeControl
@@ -202,6 +203,10 @@ type Registration struct {
 // mappings held by the active registry. Shallow copies here create cross-client
 // behavior changes that are extremely difficult to attribute to a plugin.
 func (r Registration) Clone() Registration {
+	if r.AnthropicEfficiency != nil {
+		value := *r.AnthropicEfficiency
+		r.AnthropicEfficiency = &value
+	}
 	r.Aliases = slices.Clone(r.Aliases)
 	if r.Brand != nil {
 		value := *r.Brand
@@ -633,6 +638,14 @@ func FromManifest(value manifest.Manifest, staticFiles ...map[string]string) (Re
 		Manifest:         ptr(cloneManifest(value)),
 		LoginOrder:       value.Provider.LoginOrder,
 		AccountOrder:     value.Provider.AccountOrder,
+	}
+	if registration.Construction == ConstructionAnthropicMessages {
+		efficiency := anthropic.EfficiencyPolicy{PromptCaching: true}
+		if policy := value.Capabilities.Anthropic; policy != nil && policy.Efficiency != nil {
+			declared := policy.Efficiency
+			efficiency = anthropic.EfficiencyPolicy{PromptCaching: declared.PromptCaching, TTL: declared.TTL, ContextManagement: declared.ContextManagement, RedactedThinking: declared.RedactedThinking}
+		}
+		registration.AnthropicEfficiency = &efficiency
 	}
 	if value.Provider.Brand != nil {
 		registration.Brand = &Brand{

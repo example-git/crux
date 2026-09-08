@@ -4,11 +4,17 @@ Provider plugins are versioned, data-only manifests interpreted by bounded host 
 
 This document is normative for `manifest_version: 1`. Full provider manifests use [`provider-plugin.schema.json`](../../provider-plugin.schema.json). Provider preset manifests use [`provider-preset-plugin.schema.json`](../../provider-preset-plugin.schema.json). The Go semantic validators are in `internal/providerplugin/manifest`.
 
+## Demo
+
+<strong><ins>The Codex, Claude.ai, and Gemini providers shown in this demo are not included with this software and must be created manually. The repository owner will not provide these plugins or a guide for creating or configuring them.</ins></strong>
+
+![Crux demonstration using privately configured provider plugins](../assets/crux-demo.gif)
+
 ## Bundle types
 
 A missing `plugin_type` or `plugin_type: "provider"` selects the full declarative provider contract documented below. It may declare bounded authentication, operations, configuration, and capability metadata interpreted by the host.
 
-`plugin_type: "provider-preset"` selects the separate Catwalk-compatible catalog contract. Its `preset` contains only provider identity, Foundation-owned implementation `type`, endpoint, environment-variable credential reference, headers, defaults, and models. Presets cannot declare OAuth, operations, compatibility adapters, static files, or executable behavior. They select an implementation already compiled into Foundation and contribute no provider registry registration.
+`plugin_type: "provider-preset"` selects the separate Catwalk-compatible catalog contract. Its `preset` contains only provider identity, Foundation-owned implementation `type`, endpoint, environment-variable credential reference, headers, defaults, and models. Presets cannot declare OAuth, operations, compatibility adapters, instruction files, or executable behavior. They may include optional `branding.json` display metadata. They select an implementation already compiled into Foundation and contribute no provider registry registration.
 
 Trusted compatible presets append catalog entries only when the provider ID is not claimed by a protected core catalog or a selected full provider registration. They never replace a same-ID core or plugin owner. Presets remain catalog data under permitted runtime ownership profiles; profiles still control which executable provider implementations are compiled and selectable. See [`deepseek-preset.plugin`](examples/deepseek-preset.plugin) for an installable example with the independent `example-deepseek` provider ID. The protected `deepseek` provider ID requires the exact canonical bundle from the optional [Catwalk v0.51.23 migration preset catalog](../../plugins/provider-presets/README.md), which provides individually installable legacy provider metadata.
 
@@ -25,6 +31,7 @@ A source directory does not need a `.plugin` suffix. The installer validates and
 <global-data-directory>/plugins/
 └── example.echo.plugin/
     ├── manifest.json               required, UTF-8 JSON
+    ├── branding.json               optional provider branding
     └── instructions/               optional declared UTF-8 text
 ```
 
@@ -51,6 +58,26 @@ The host enforces 64 MiB per bundle, 32 MiB per file, 1,024 files, 256 directori
 `crux plugins list` exposes the local execution host's authoritative status; `--json` returns the complete revisioned snapshot. Each entry includes bundle type, plugin and provider identity, version, canonical digest, lifecycle state, independent trust and compatibility states, declared capability groups, safe provenance, installation time, and bounded redacted validation diagnostics. An empty directory returns a valid core-only snapshot.
 
 A Crux server exposes the same redacted status through `GET /v1/plugins`, and the typed client exposes it as `Client.PluginSnapshot`. This endpoint is host-global rather than workspace-scoped: a remote client reports the server's installed plugins and never substitutes plugins from the client machine. The current server transport has no administrative authentication boundary, so installation, trust changes, and rescans intentionally remain local-host CLI operations; no unauthenticated remote mutation endpoint exists.
+
+## Provider branding
+
+Full provider and provider-preset bundles may include a root `branding.json`, validated against [`provider-branding.schema.json`](../../provider-branding.schema.json). It is bounded to 16 KiB and participates in the bundle digest and exact-digest trust. Invalid JSON, unknown fields, invalid colors, and control characters in labels fail validation.
+
+```json
+{
+  "label": "Example Provider",
+  "short_name": "EXAMP",
+  "color": "#7FC4FF",
+  "gradient_a": "#1B3B8B",
+  "gradient_b": "#7FC4FF"
+}
+```
+
+`short_name` is the custom logo label. Labels of one to five characters use large block letter glyphs; six or seven characters use the existing compact two-row block lettering; anything else uses centered normal text. Unsupported glyph characters remain visible as centered text rather than being dropped. `label` is the longer display label and is used for the logo when `short_name` is omitted. Labels are limited to 64 and 24 characters respectively. Colors are six-digit `#RRGGBB` values. Missing gradient endpoints use `color`, then the corresponding default CRUX endpoint. A missing accent uses the resolved first endpoint. Missing labels use CRUX.
+
+When present, `branding.json` replaces the entire inline brand declaration (`provider.brand` for full providers, root `brand` for presets). Without the file, inline branding remains supported. Without loaded or declared branding, the UI uses the default CRUX wordmark and gradient. Dark heading text is raised in luminance against the UI background for readability without modifying the stored brand colors or decorative gradients.
+
+Generate the editor schema with `crux schema provider-branding`.
 
 ## Identity and compatibility
 
@@ -255,6 +282,12 @@ The host owns framing, TLS, redirects, cancellation, parsing, backpressure, norm
 For `anthropic-messages`, the optional finite `capabilities.anthropic` policy binds only to that inference protocol. It can resolve a validated client version through environment, bounded HTTPS probe, host cache, and literal fallback; protect ordered identity/beta headers; reuse one process-scoped session identity; bound and transform Messages JSON; construct deterministic billing/session metadata; apply the structural tool codec; and retain bounded state while reversing streamed aliases. Invalid URLs, regular expressions, header names, byte offsets, formats, or protocol bindings fail semantic validation. No manifest code executes.
 
 Omitting an operation-local retry policy means no operation-local replay. Omitting time hints selects host defaults: 30 seconds to connect, 300 seconds per request, and 60 seconds idle while streaming. Hints may lower, never raise, host ceilings.
+
+### Anthropic prompt caching
+
+Anthropic Messages providers enable prompt caching by default. `capabilities.anthropic.efficiency.prompt_caching` can explicitly disable it; `ttl` accepts only `5m` or `1h`. Omitted TTL uses the standard ephemeral lifetime. Model provider options `prompt_caching` and `cache_ttl` preserve explicit request choices; unsupported caching and invalid TTLs fail rather than silently falling back.
+
+The shared serializer places one conversation breakpoint on the final message, or the penultimate message for disposable requests using `skip_cache_write`. The final plugin rewrite reapplies this policy, including explicit disable, and validates the four-marker limit and long-before-short TTL ordering. Thinking blocks never receive explicit markers; their content and signatures remain intact.
 
 ### Normalized streaming events
 

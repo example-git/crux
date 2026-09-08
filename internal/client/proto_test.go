@@ -368,9 +368,14 @@ func TestSendMessagePropagatesSubmissionID(t *testing.T) {
 	defer srv.Close()
 
 	c := captureClient(t, srv)
-	ctx := agent.WithSubmissionID(context.Background(), "submission-id")
-	require.NoError(t, c.SendMessage(ctx, "ws1", "sess1", "", "hello"))
-	require.Equal(t, "submission-id", received.SubmissionID)
+	for _, mode := range []agent.DeliveryMode{agent.DeliveryQueue, agent.DeliverySteer} {
+		ctx := agent.WithSubmissionID(context.Background(), "submission-id")
+		ctx = agent.WithDeliveryMode(ctx, mode)
+		require.NoError(t, c.SendMessageWithPermissionMode(ctx, "ws1", "sess1", "", "hello", proto.AgentPermissionDeny))
+		require.Equal(t, "submission-id", received.SubmissionID)
+		require.Equal(t, string(mode), received.DeliveryMode)
+		require.Equal(t, proto.AgentPermissionDeny, received.PermissionMode)
+	}
 }
 
 func TestSendMessagePropagatesPermissionMode(t *testing.T) {

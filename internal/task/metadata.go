@@ -33,6 +33,7 @@ type RecordState struct {
 }
 
 type ShellRecord struct {
+	OutputID            string `json:"output_id,omitempty"`
 	Command             string `json:"command"`
 	WorkingDirectory    string `json:"working_directory"`
 	Backgrounded        bool   `json:"backgrounded,omitempty"`
@@ -152,7 +153,7 @@ func (s *Store) putLocked(record Record) error {
 	if len(data) > maxRecordBytes {
 		return fmt.Errorf("task metadata exceeds %d bytes", maxRecordBytes)
 	}
-	temporaryName := record.ID + "." + uuid.NewString() + ".tmp"
+	temporaryName := record.ID + "." + uuid.NewString() + ".pending"
 	file, err := createSecureFile(s.dir, s.root, temporaryName, 0o600)
 	if err != nil {
 		return fmt.Errorf("creating task metadata temporary file: %w", err)
@@ -206,10 +207,6 @@ func (s *Store) List() ([]Record, error) {
 	ids := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
-		if strings.HasSuffix(name, ".tmp") {
-			_ = removeSecureFile(s.dir, s.root, name)
-			continue
-		}
 		if !strings.HasSuffix(name, ".task.json") {
 			continue
 		}
@@ -386,8 +383,16 @@ func validateRecord(record Record) error {
 	}
 	switch record.Type {
 	case TypeShell:
-		if record.Shell == nil || record.Agent != nil || record.Image != nil || record.OutputRef != "task-output:"+record.ID {
+		if record.Shell == nil || record.Agent != nil || record.Image != nil {
 			return fmt.Errorf("invalid shell task metadata for %s", record.ID)
+		}
+		outputID := record.Shell.OutputID
+		if outputID == "" {
+			outputID = record.ID
+		}
+		outputType, outputErr := ParseID(outputID)
+		if outputErr != nil || outputType != TypeShell || record.OutputRef != "task-output:"+outputID {
+			return fmt.Errorf("invalid shell task output metadata for %s", record.ID)
 		}
 	case TypeAgent:
 		if record.Agent == nil || record.Shell != nil || record.Image != nil {

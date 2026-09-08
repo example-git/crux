@@ -8,6 +8,57 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestOption_SummarizationFastMode(t *testing.T) {
+	for _, value := range []string{"true", "false", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cruxrc")
+			data, err := LoadShellConfig(t.Context(), path, []byte("option summarization-fast-mode "+value))
+			if value == "invalid" {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			var result map[string]any
+			require.NoError(t, json.Unmarshal(data, &result))
+			require.Equal(t, value == "true", result["options"].(map[string]any)["summarization_fast_mode"])
+		})
+	}
+}
+
+func TestOption_CodexCompactionV2(t *testing.T) {
+	for _, value := range []string{"true", "false", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cruxrc")
+			data, err := LoadShellConfig(t.Context(), path, []byte("option codex-compaction-v2 "+value))
+			if value == "invalid" {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			var result map[string]any
+			require.NoError(t, json.Unmarshal(data, &result))
+			require.Equal(t, value == "true", result["options"].(map[string]any)["codex_compaction_v2"])
+		})
+	}
+}
+
+func TestOption_NetworkTracing(t *testing.T) {
+	for _, value := range []string{"true", "false", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "cruxrc")
+			data, err := LoadShellConfig(t.Context(), path, []byte("option network-tracing "+value))
+			if value == "invalid" {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			var result map[string]any
+			require.NoError(t, json.Unmarshal(data, &result))
+			require.Equal(t, value == "true", result["options"].(map[string]any)["network_tracing"])
+		})
+	}
+}
+
 func TestOption_Bool(t *testing.T) {
 	t.Parallel()
 

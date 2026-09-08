@@ -6,6 +6,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestShellConfigNetworkTracing(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		script string
+		want   bool
+	}{
+		{name: "default"},
+		{name: "enabled", script: "option network-tracing true", want: true},
+		{name: "disabled", script: "option network-tracing false"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := loadCruxSh(t, test.script)
+			require.Equal(t, test.want, store.Config().Options.NetworkTracing)
+		})
+	}
+}
+
 func TestShellConfigOptionBooleans(t *testing.T) {
 	store := loadCruxSh(t, `option debug true
 option progress false

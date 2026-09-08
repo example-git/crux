@@ -819,6 +819,7 @@ func cloneProviderCatalog(providers []catalog.Provider) []catalog.Provider {
 }
 
 func cloneProvider(provider catalog.Provider) catalog.Provider {
+	provider.Brand = clonePointer(provider.Brand)
 	provider.Models = slices.Clone(provider.Models)
 	for i := range provider.Models {
 		provider.Models[i].ReasoningLevels = slices.Clone(provider.Models[i].ReasoningLevels)

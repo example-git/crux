@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
+	"time"
+
+	"github.com/example-git/crux/internal/lock"
 )
 
 type Scope string
@@ -31,7 +33,7 @@ type Service struct {
 
 const maxMemoryFileBytes = maxMemoryContentBytes + 4096
 
-var mutationMu sync.Mutex
+const ProjectMemorySlots = 50
 
 func NewService(workingDirectory string) *Service {
 	return &Service{workingDirectory: workingDirectory}
@@ -156,7 +158,7 @@ func (s *Service) resolve(ctx context.Context, scope Scope, requireManaged bool)
 		memory = Memory{Directory: directory, Entrypoint: filepath.Join(directory, EntrypointName), Managed: managed}
 	case ScopeUser:
 		directory := UserDirectory()
-		memory = Memory{Directory: directory, Entrypoint: filepath.Join(directory, EntrypointName), Managed: true}
+		memory = Memory{Directory: directory, Entrypoint: filepath.Join(directory, EntrypointName), Managed: true, Scope: ScopeUser}
 	default:
 		return Memory{}, fmt.Errorf("invalid memory scope %q: expected project or user", scope)
 	}
@@ -193,9 +195,17 @@ func memoryBody(content string) string {
 	return ""
 }
 
-func applyMemoryMutations(memory Memory, mutations []memoryMutation) error {
-	mutationMu.Lock()
-	defer mutationMu.Unlock()
+func applyMemoryMutations(memory Memory, mutations []memoryMutation, snapshots ...map[string]string) error {
+	if err := os.MkdirAll(memory.Directory, 0o700); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	release, err := lock.File(ctx, filepath.Join(memory.Directory, ".mutations.lock"))
+	if err != nil {
+		return fmt.Errorf("locking memory mutations: %w", err)
+	}
+	defer release()
 	if len(mutations) > maxMutationCount {
 		return fmt.Errorf("memory response contains too many mutations")
 	}
@@ -219,7 +229,47 @@ func applyMemoryMutations(memory Memory, mutations []memoryMutation) error {
 		default:
 			return fmt.Errorf("invalid memory action %q", mutation.Action)
 		}
+		if len(snapshots) > 0 {
+			current, readErr := os.ReadFile(filepath.Join(memory.Directory, mutation.File))
+			expected, reviewed := snapshots[0][mutation.File]
+			if readErr != nil && !os.IsNotExist(readErr) {
+				return readErr
+			}
+			if (readErr == nil && !reviewed) || (reviewed && (readErr != nil || string(current) != expected)) {
+				return fmt.Errorf("memory %q was not fully reviewed or changed during maintenance; retry with fresh content", mutation.File)
+			}
+		}
 		normalized[index] = mutation
+	}
+	if memory.Scope != ScopeUser {
+		entries, err := os.ReadDir(memory.Directory)
+		if err != nil {
+			return fmt.Errorf("counting project memory slots: %w", err)
+		}
+		existing := make(map[string]bool)
+		for _, entry := range entries {
+			if safeTopicName(entry.Name()) {
+				existing[entry.Name()] = true
+			}
+		}
+		final := make(map[string]bool, len(existing))
+		for file := range existing {
+			final[file] = true
+		}
+		for _, mutation := range normalized {
+			if mutation.Action == "delete" {
+				delete(final, mutation.File)
+			} else {
+				final[mutation.File] = true
+			}
+		}
+		if len(final) > ProjectMemorySlots {
+			for file := range final {
+				if !existing[file] {
+					return fmt.Errorf("project memory has %d/%d slots occupied; consolidate related details into existing topic files and remove merged or obsolete topics before creating a new memory", len(existing), ProjectMemorySlots)
+				}
+			}
+		}
 	}
 	for _, mutation := range normalized {
 		path := filepath.Join(memory.Directory, mutation.File)
@@ -248,7 +298,7 @@ func rebuildMemoryIndex(memory Memory) error {
 	})
 	var builder strings.Builder
 	for _, topic := range topics {
-		fmt.Fprintf(&builder, "- [%s](%s) - %s\n", oneLine(topic.Name, 120), filepath.Base(topic.Path), oneLine(topic.Description, 200))
+		fmt.Fprintf(&builder, "- [%s](%s) - %s\n", oneLine(topic.Name, 80), filepath.Base(topic.Path), oneLine(topic.Description, 100))
 	}
 	return atomicWrite(memory.Entrypoint, []byte(builder.String()), 0o600)
 }

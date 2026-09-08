@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -31,6 +32,27 @@ func (s *countingMessageService) List(ctx context.Context, sessionID string) ([]
 	return s.Service.List(ctx, sessionID)
 }
 
+func TestManagedTaskOutputFollowsRealShellPastReadWindow(t *testing.T) {
+	manager := shell.NewBackgroundShellManager(t.TempDir())
+	defer manager.KillAll(context.Background())
+	background, err := manager.Start(t.Context(), t.TempDir(), nil, "printf 'first-stdout\\n'; printf 'first-stderr\\n' >&2; sleep 1; printf '%09000000d' 0; printf '\\nlatest-stdout\\n'; printf 'latest-stderr\\n' >&2; sleep 10", "long live output")
+	require.NoError(t, err)
+	coord := &coordinator{backgroundShells: manager}
+	require.Eventually(t, func() bool {
+		output, err := coord.managedTaskOutput(t.Context(), background.ID, false, 0)
+		return err == nil && !output.Task.State.Status.Terminal() && strings.Contains(output.Output, "first-stdout") && strings.Contains(output.Output, "first-stderr")
+	}, time.Second, 10*time.Millisecond)
+	var latest ManagedTaskOutput
+	require.Eventually(t, func() bool {
+		latest, err = coord.managedTaskOutput(t.Context(), background.ID, false, 0)
+		return err == nil && strings.Contains(latest.Output, "latest-stdout") && strings.Contains(latest.Output, "latest-stderr")
+	}, 10*time.Second, 50*time.Millisecond)
+	require.False(t, background.IsDone())
+	require.True(t, latest.OutputTruncated)
+	require.Greater(t, latest.NextOffset, int64(managedtask.DefaultReadBytes))
+	require.Len(t, latest.Output, managedtask.DefaultReadBytes)
+}
+
 func TestDeliverTaskNotificationQueuesStructuredParentMessage(t *testing.T) {
 	env := testEnv(t)
 	parentAgent := NewSessionAgent(SessionAgentOptions{Sessions: env.sessions, Messages: env.messages}).(*sessionAgent)
@@ -38,6 +60,7 @@ func TestDeliverTaskNotificationQueuesStructuredParentMessage(t *testing.T) {
 	coordinator := &coordinator{currentAgent: parentAgent}
 	persisted := false
 	discarded := false
+	exitCode := 0
 	notification := managedtask.Notification{
 		ID:              "notification",
 		TaskID:          "a12345678",
@@ -48,6 +71,7 @@ func TestDeliverTaskNotificationQueuesStructuredParentMessage(t *testing.T) {
 		Summary:         "Agent completed",
 		OutputRef:       "session:child",
 		FinalOutput:     "finished",
+		ExitCode:        &exitCode,
 		Usage:           managedtask.AgentUsage{PromptTokens: 3, CompletionTokens: 2},
 	}
 
@@ -59,6 +83,7 @@ func TestDeliverTaskNotificationQueuesStructuredParentMessage(t *testing.T) {
 	require.Contains(t, queued[0].Prompt, "<task-id>a12345678</task-id>")
 	require.Contains(t, queued[0].Prompt, "<output-file>session:child</output-file>")
 	require.Contains(t, queued[0].Prompt, "<result>finished</result>")
+	require.Contains(t, queued[0].Prompt, "<exit-code>0</exit-code>")
 	require.False(t, persisted)
 	require.False(t, discarded)
 	parentAgent.publishCanceledQueueDrops(queued)

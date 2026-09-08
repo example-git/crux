@@ -173,6 +173,7 @@ func newBusyUI(ws *countingWorkspace) *UI {
 		status:      NewStatus(com, nil),
 		chat:        NewChat(com, config.ScrollbarDefault),
 		textarea:    textarea.New(),
+		completions: completions.New(com.Styles.Completions.Normal, com.Styles.Completions.Focused, com.Styles.Completions.Match),
 		state:       uiChat,
 		focus:       uiFocusEditor,
 		width:       140,
@@ -264,7 +265,8 @@ func TestControlArrowDownFromPopulatedEditorOpensTasksWhenPresent(t *testing.T) 
 	require.Equal(t, 1, workspace.taskListCalls)
 
 	model.Update(availability)
-	require.True(t, model.dialog.ContainsDialog(dialog.TasksID))
+	require.NotNil(t, model.taskPanel)
+	require.False(t, model.dialog.ContainsDialog(dialog.TasksID))
 }
 
 func TestArrowDownPreservesHistoryNavigationWithoutCheckingTasks(t *testing.T) {
@@ -341,7 +343,8 @@ func TestControlArrowDownOpensTasksWhileQuestionIsActive(t *testing.T) {
 	require.True(t, availability.available)
 
 	model.Update(availability)
-	require.True(t, model.dialog.ContainsDialog(dialog.TasksID))
+	require.NotNil(t, model.taskPanel)
+	require.False(t, model.dialog.ContainsDialog(dialog.TasksID))
 }
 
 func TestControlArrowDownOpensTasksWhileAutocompleteIsActive(t *testing.T) {
@@ -379,7 +382,8 @@ func TestControlArrowDownOpensTasksWhileAutocompleteIsActive(t *testing.T) {
 
 	model.Update(availability)
 	require.False(t, model.completionsOpen)
-	require.True(t, model.dialog.ContainsDialog(dialog.TasksID))
+	require.NotNil(t, model.taskPanel)
+	require.False(t, model.dialog.ContainsDialog(dialog.TasksID))
 }
 
 func TestArrowDownDoesNotOpenTasksWhileDialogIsOpen(t *testing.T) {
@@ -1215,18 +1219,18 @@ func TestProviderUsageRefreshRebuildsSidebarCacheAndRejectsStaleResults(t *testi
 	m.sidebarLogo = "logo"
 	m.usageFetchGen = 2
 	m.updateSidebarScrollState()
-	require.NotContains(t, ansi.Strip(m.sidebarDrawLogo), "5h")
+	require.NotContains(t, ansi.Strip(m.sidebarContent), "5h")
 
 	current := &oauthusage.Usage{ProviderID: "codex", Windows: []oauthusage.Window{{Name: "5h", Percent: 75}}}
 	_, _ = m.Update(usageUpdatedMsg{gen: 2, usage: current})
 	require.Same(t, current, m.providerUsage)
-	require.Contains(t, ansi.Strip(m.sidebarDrawLogo), "5h")
-	require.Contains(t, ansi.Strip(m.sidebarDrawLogo), "█████")
+	require.Contains(t, ansi.Strip(m.sidebarContent), "5h")
+	require.Contains(t, ansi.Strip(m.sidebarContent), "█████")
 
 	stale := &oauthusage.Usage{ProviderID: "codex", Windows: []oauthusage.Window{{Name: "stale", Percent: 10}}}
 	_, _ = m.Update(usageUpdatedMsg{gen: 1, usage: stale})
 	require.Same(t, current, m.providerUsage)
-	require.NotContains(t, ansi.Strip(m.sidebarDrawLogo), "stale")
+	require.NotContains(t, ansi.Strip(m.sidebarContent), "stale")
 }
 
 func TestSessionFileRefreshRebuildsSidebarCacheAndRejectsStaleResults(t *testing.T) {
@@ -1276,14 +1280,14 @@ func TestPlanModeUsesDistinctEditorPromptAndPreservesBangPrecedence(t *testing.T
 	m.session = &session.Session{Mode: session.ModePlan}
 	m.setEditorPrompt(true)
 	planPrompt := ansi.Strip(m.textarea.View())
-	require.Contains(t, planPrompt, "PLAN")
+	require.Contains(t, planPrompt, "Pq")
 	require.NotContains(t, planPrompt, " Y ")
 
 	m.bangMode = true
 	m.setEditorPrompt(true)
 	bangPrompt := ansi.Strip(m.textarea.View())
 	require.Contains(t, bangPrompt, "!")
-	require.NotContains(t, bangPrompt, "PLAN")
+	require.NotContains(t, bangPrompt, "Pq")
 }
 
 func TestShiftTabTogglesPlanModeBothWays(t *testing.T) {
@@ -1302,15 +1306,28 @@ func TestShiftTabTogglesPlanModeBothWays(t *testing.T) {
 	require.Equal(t, session.ModeDefault, m.session.Mode)
 }
 
-func TestShiftTabCannotBypassPlanCompletionApproval(t *testing.T) {
-	ws := &countingWorkspace{ready: true}
-	m := newBusyUI(ws)
-	m.session.Mode = session.ModePlanExecution
-	shiftTab := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+func TestShiftTabResetsEveryPlanStage(t *testing.T) {
+	for _, mode := range []session.Mode{session.ModePlan, session.ModePlanRevision, session.ModePlanExecution} {
+		t.Run(string(mode), func(t *testing.T) {
+			ws := &countingWorkspace{ready: true}
+			m := newBusyUI(ws)
+			m.session.Mode = mode
+			m.session.Plan = "Unfinished plan"
+			m.activeInline = dialog.NewQuestionForm(m.com.Styles, question.Request{
+				Questions: []question.Question{{
+					ID: "plan-review", Type: question.TypeYesNo,
+					Text: "Approve?", Description: "Review the plan.",
+				}},
+			})
+			m.activeInline.SetFocused(true)
+			shiftTab := tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
 
-	runCmds(m, m.handleKeyPressMsg(shiftTab))
-	require.Zero(t, ws.modeCalls)
-	require.Equal(t, session.ModePlanExecution, m.session.Mode)
+			runCmds(m, m.handleKeyPressMsg(shiftTab))
+			require.Equal(t, 1, ws.modeCalls)
+			require.Equal(t, session.ModeDefault, m.session.Mode)
+			require.Empty(t, m.session.Plan)
+		})
+	}
 }
 
 func TestRemoteYoloToggleUpdatesEditorPrompt(t *testing.T) {

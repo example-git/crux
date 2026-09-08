@@ -3,6 +3,7 @@ package prompt
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +111,63 @@ func TestProviderInstructionsReportUnreadableFile(t *testing.T) {
 
 	_, err = p.Build(t.Context(), "codex", "gpt-5.6-sol", store)
 	require.ErrorContains(t, err, "reading provider instructions")
+}
+
+func TestCoderTemplateKeepsProjectAndProviderContextAfterCacheBoundary(t *testing.T) {
+	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "true")
+	directory := t.TempDir()
+	projectFile := filepath.Join(directory, "PROJECT.md")
+	userFile := filepath.Join(directory, "USER.md")
+	providerFile := filepath.Join(directory, "anthropic.txt")
+	template, err := os.ReadFile(filepath.Join("..", "templates", "coder.md.tpl"))
+	require.NoError(t, err)
+	builder, err := NewPrompt("coder", string(template), withProviderInstructionsDir(directory), WithWorkingDir(directory))
+	require.NoError(t, err)
+	store := config.NewTestStore(&config.Config{Options: &config.Options{
+		InstructionMode: "all", ContextPaths: []string{projectFile}, GlobalContextPaths: []string{userFile},
+	}})
+	var baseline []fantasy.InstructionSection
+	for _, version := range []string{"original", "updated"} {
+		require.NoError(t, os.WriteFile(projectFile, []byte(version+" project instructions"), 0o600))
+		require.NoError(t, os.WriteFile(userFile, []byte(version+" user instructions"), 0o600))
+		require.NoError(t, os.WriteFile(providerFile, []byte(version+" provider instructions"), 0o600))
+		instructions, err := builder.BuildInstructions(t.Context(), "anthropic", "model", store)
+		require.NoError(t, err)
+		var static []fantasy.InstructionSection
+		dynamic := map[fantasy.InstructionKind]string{}
+		firstDynamic := true
+		for _, section := range instructions.Sections() {
+			if section.Stability == fantasy.InstructionStabilityStatic {
+				static = append(static, section)
+				continue
+			}
+			if firstDynamic {
+				require.Equal(t, fantasy.InstructionKindProviderContext, section.Kind)
+				firstDynamic = false
+			}
+			dynamic[section.Kind] = section.Text
+		}
+		require.Contains(t, dynamic[fantasy.InstructionKindProjectContext], version+" project instructions")
+		require.Contains(t, dynamic[fantasy.InstructionKindUserContext], version+" user instructions")
+		require.Equal(t, version+" provider instructions", dynamic[fantasy.InstructionKindProviderContext])
+		for _, content := range []string{"project instructions", "user instructions", "provider instructions"} {
+			require.Equal(t, 1, strings.Count(instructions.String(), version+" "+content))
+		}
+		if baseline == nil {
+			baseline = static
+		} else {
+			require.Equal(t, baseline, static)
+			require.NotContains(t, instructions.String(), "original project instructions")
+		}
+		projected := instructions.Message(fantasy.InstructionPolicyAnthropic)
+		require.Equal(t, fantasy.MessageRoleSystem, projected.Role)
+		for _, part := range projected.Content {
+			options := fantasy.InstructionPartOptionsFrom(part.Options())
+			if options.Stability == fantasy.InstructionStabilityDynamic {
+				require.False(t, options.CacheBoundary)
+			}
+		}
+	}
 }
 
 func TestCoderInstructionsPlaceDynamicSectionsAfterCachedStaticSections(t *testing.T) {
@@ -282,11 +340,19 @@ func TestCoderPromptIncludesAndReloadsSelectedProjectFiles(t *testing.T) {
 	require.Contains(t, first, "Use the existing `todos` tool")
 	require.Contains(t, first, "Keep Projects separate from plans")
 
-	_, err = service.AppendNotes(workingDir, "Fresh note content")
+	_, err = service.AppendNotes(workingDir, "## Fresh note title\n\n"+strings.Repeat("PRIVATE_NOTE_BODY ", 2000))
 	require.NoError(t, err)
 	second, err := p.BuildLifecycle(t.Context(), "codex", "gpt-5.6-sol", store, Lifecycle{Stage: LifecycleDraft})
 	require.NoError(t, err)
-	require.Contains(t, second, "Fresh note content")
+	require.Contains(t, second, "Fresh note title")
+	require.Contains(t, second, "Project notes index")
+	require.NotContains(t, second, "PRIVATE_NOTE_BODY")
+	require.Less(t, len(second)-len(first), 1000)
+	page, err := service.ListNotes(workingDir, 0)
+	require.NoError(t, err)
+	detail, err := service.ReadNote(workingDir, page.Entries[0].ID, 0)
+	require.NoError(t, err)
+	require.Contains(t, detail.Content, "PRIVATE_NOTE_BODY")
 	require.Contains(t, second, "<persistent_project>")
 
 	require.NoError(t, service.Disable(workingDir))

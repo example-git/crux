@@ -17,6 +17,7 @@ const (
 	TaskListToolName     = "task_list"
 	TaskOutputToolName   = "task_output"
 	TaskStopToolName     = "task_stop"
+	TaskRestartToolName  = "task_restart"
 	TaskContinueToolName = "task_continue"
 )
 
@@ -32,6 +33,7 @@ type TaskService interface {
 	ListTasks() []managedtask.View
 	TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error)
 	StopTask(ctx context.Context, id string) (managedtask.View, error)
+	RestartTask(ctx context.Context, id string) (managedtask.View, error)
 	ContinueTask(ctx context.Context, id, parentSessionID, prompt, originToolCallID string) (managedtask.View, error)
 }
 
@@ -50,6 +52,10 @@ type TaskOutputParams struct {
 
 type TaskStopParams struct {
 	TaskID string `json:"task_id" description:"The typed ID of the background task to stop"`
+}
+
+type TaskRestartParams struct {
+	TaskID string `json:"task_id" description:"The typed ID of the background shell command to restart"`
 }
 
 type TaskContinueParams struct {
@@ -170,6 +176,30 @@ func NewTaskContinueTool(service TaskService) fantasy.AgentTool {
 			data, err := json.MarshalIndent(result, "", "  ")
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("encoding continued task: %w", err)
+			}
+			return fantasy.NewTextResponse(string(data)), nil
+		},
+	)
+}
+
+func NewTaskRestartTool(service TaskService) fantasy.AgentTool {
+	return fantasy.NewAgentTool(
+		TaskRestartToolName,
+		"Stop a background shell command, wait for termination, and rerun its original command and execution settings with the same task ID and fresh output. Running and terminal commands can be restarted. Recovered commands whose original execution settings are unavailable fail explicitly.",
+		func(ctx context.Context, params TaskRestartParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if permission.IsSubagent(ctx) {
+				return fantasy.NewTextErrorResponse(permission.ErrSubagentBackgroundTask.Error()), nil
+			}
+			if params.TaskID == "" {
+				return fantasy.NewTextErrorResponse("missing task_id"), nil
+			}
+			result, err := service.RestartTask(ctx, params.TaskID)
+			if err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+			data, err := json.MarshalIndent(result, "", "  ")
+			if err != nil {
+				return fantasy.ToolResponse{}, fmt.Errorf("encoding restarted task: %w", err)
 			}
 			return fantasy.NewTextResponse(string(data)), nil
 		},

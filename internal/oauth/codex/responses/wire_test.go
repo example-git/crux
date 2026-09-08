@@ -447,6 +447,89 @@ func TestPrepareRequestShape(t *testing.T) {
 	}
 }
 
+func TestPrepareRequestUsesAstraInstructionLayout(t *testing.T) {
+	instructions := fantasy.NewInstructions(
+		fantasy.StaticInstruction(fantasy.InstructionKindTooling, "crux tooling"),
+		fantasy.DynamicInstruction(fantasy.InstructionKindMemory, "relevant memory"),
+		fantasy.DynamicInstruction(fantasy.InstructionKindRuntime, "Today's date: 9/5/2026"),
+	)
+	prompt := fantasy.Prompt{
+		instructions.Message(fantasy.InstructionPolicyCodex),
+		fantasy.NewUserMessage("first"),
+		{Role: fantasy.MessageRoleAssistant, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "answer"}}},
+		fantasy.NewUserMessage("next"),
+	}
+
+	astra := &languageModel{modelID: "gpt-6-astra", provider: Name, client: &client{}}
+	frame, warnings, err := astra.prepareRequest(fantasy.Call{Prompt: prompt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+	wire := fullWireRequest(frame)
+	data, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request map[string]any
+	if err := json.Unmarshal(data, &request); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := request["instructions"]; ok {
+		t.Fatalf("Astra serialized top-level instructions: %s", data)
+	}
+	reasoning := request["reasoning"].(map[string]any)
+	if reasoning["context"] != "all_turns" {
+		t.Fatalf("Astra reasoning = %v", reasoning)
+	}
+	items := request["input"].([]any)
+	if len(items) != 5 {
+		t.Fatalf("Astra input = %v", items)
+	}
+	base := items[0].(map[string]any)
+	if base["type"] != "message" || base["role"] != "developer" || !strings.HasPrefix(base["id"].(string), "msg_") {
+		t.Fatalf("Astra base instructions = %v", base)
+	}
+	baseContent := base["content"].([]any)[0].(map[string]any)
+	if baseContent["text"] != "crux tooling\n\nrelevant memory" {
+		t.Fatalf("Astra base instruction text = %q", baseContent["text"])
+	}
+	baseMetadata := base["internal_chat_message_metadata_passthrough"].(map[string]any)
+	if got := baseMetadata["content_item_kinds"].([]any); len(got) != 1 || got[0] != "model.base_instructions" {
+		t.Fatalf("Astra base instruction kinds = %v", got)
+	}
+	dynamic := items[1].(map[string]any)
+	if dynamic["role"] != "user" {
+		t.Fatalf("Astra dynamic context = %v", dynamic)
+	}
+	dynamicMetadata := dynamic["internal_chat_message_metadata_passthrough"].(map[string]any)
+	if got := dynamicMetadata["content_item_kinds"].([]any); len(got) != 1 || got[0] != "environments.environment_context" {
+		t.Fatalf("Astra dynamic context kinds = %v", got)
+	}
+	for index, role := range []string{"user", "assistant", "user"} {
+		if got := items[index+2].(map[string]any)["role"]; got != role {
+			t.Fatalf("Astra input[%d] role = %v, want %q", index+2, got, role)
+		}
+	}
+
+	legacy := &languageModel{modelID: "gpt-5.6-sol", provider: Name, client: &client{}}
+	legacyFrame, _, err := legacy.prepareRequest(fantasy.Call{Prompt: prompt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacyFrame.Instructions != "crux tooling\n\nrelevant memory" {
+		t.Fatalf("legacy instructions = %q", legacyFrame.Instructions)
+	}
+	if len(legacyFrame.Input) != 3 || legacyFrame.Input[0].Role != "user" {
+		t.Fatalf("legacy input = %+v", legacyFrame.Input)
+	}
+	if legacyFrame.Reasoning.Context != "" {
+		t.Fatalf("legacy reasoning context = %q", legacyFrame.Reasoning.Context)
+	}
+}
+
 func TestPrepareRequestWarnsForUnsupportedOutputLimitWithoutSerializingIt(t *testing.T) {
 	g := &languageModel{modelID: "gpt-5.5", provider: Name, client: &client{}}
 	maxOutputTokens := int64(4096)

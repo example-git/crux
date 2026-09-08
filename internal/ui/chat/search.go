@@ -24,14 +24,17 @@ func NewSearchToolMessageItem(
 	toolCall message.ToolCall,
 	result *message.ToolResult,
 	canceled bool,
+	workingDir string,
 ) ToolMessageItem {
-	return newBaseToolMessageItem(sty, toolCall, result, &SearchToolRenderContext{}, canceled)
+	return newBaseToolMessageItem(sty, toolCall, result, &SearchToolRenderContext{workingDir: workingDir}, canceled)
 }
 
-type SearchToolRenderContext struct{}
+type SearchToolRenderContext struct {
+	workingDir string
+}
 
 func (s *SearchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Search", opts.Anim, opts.Compact)
 	}
@@ -41,7 +44,7 @@ func (s *SearchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts
 		return toolErrorContent(sty, &message.ToolResult{Content: "Invalid parameters"}, cappedWidth)
 	}
 
-	toolParams := []string{params.Mode, params.Pattern}
+	toolParams := []string{params.Pattern, "mode", params.Mode}
 	if params.Path != "" {
 		toolParams = append(toolParams, "path", params.Path)
 	}
@@ -65,8 +68,8 @@ func (s *SearchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts
 		return header
 	}
 
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
-	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
+	bodyWidth := toolBodyWidth(sty, cappedWidth)
+	body := searchSummaryResult(sty, params, opts.Result, s.workingDir, bodyWidth, opts.ExpandedContent)
 	return joinToolParts(header, body)
 }
 
@@ -96,7 +99,7 @@ type LSToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (l *LSToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "List", opts.Anim, opts.Compact)
 	}
@@ -125,8 +128,8 @@ func (l *LSToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *To
 		return header
 	}
 
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
-	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
+	bodyWidth := toolBodyWidth(sty, cappedWidth)
+	body := directorySummaryResult(sty, opts.Result, bodyWidth, opts.ExpandedContent)
 	return joinToolParts(header, body)
 }
 
@@ -156,7 +159,7 @@ type SourcegraphToolRenderContext struct{}
 
 // RenderTool implements the [ToolRenderer] interface.
 func (s *SourcegraphToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Sourcegraph", opts.Anim, opts.Compact)
 	}
@@ -187,7 +190,7 @@ func (s *SourcegraphToolRenderContext) RenderTool(sty *styles.Styles, width int,
 		return header
 	}
 
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
+	bodyWidth := toolBodyWidth(sty, cappedWidth)
 	body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, bodyWidth, opts.ExpandedContent))
 	return joinToolParts(header, body)
 }

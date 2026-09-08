@@ -18,6 +18,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCodebaseIndexShortcutOpensDialog(t *testing.T) {
+	for _, landing := range []bool{false, true} {
+		ui := newTestUI()
+		ui.com.Workspace = &testWorkspace{cfg: &config.Config{}}
+		ui.keyMap = DefaultKeyMap()
+		ui.dialog = dialog.NewOverlay()
+		ui.attachments = attachments.New(nil, attachments.Keymap{})
+		if landing {
+			ui.state = uiLanding
+		}
+		ui.textarea.SetValue("keep this draft")
+		cmd := ui.handleKeyPressMsg(tea.KeyPressMsg{Code: 'i', Mod: tea.ModCtrl})
+		require.NotNil(t, cmd)
+		require.True(t, ui.dialog.ContainsDialog(dialog.CodebaseIndexID))
+		require.Equal(t, "keep this draft", ui.textarea.Value())
+		require.Nil(t, ui.openCodebaseIndexDialog())
+	}
+}
+
 type modelsDialogStub struct{}
 
 type instructionsDialogStub struct{}

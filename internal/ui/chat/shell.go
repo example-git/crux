@@ -139,8 +139,7 @@ func (s *ShellItem) Animate(msg anim.StepMsg) tea.Cmd {
 }
 
 func (s *ShellItem) Render(width int) string {
-	innerWidth := max(0, width-MessageLeftPaddingTotal)
-	content := s.RawRender(innerWidth)
+	content := s.RawRender(width)
 
 	var prefix string
 	if s.focused {
@@ -288,7 +287,11 @@ func (s *ShellItem) RawRender(width int) string {
 
 	for _, ln := range lines {
 		scrolled := ansi.GraphemeWidth.Cut(ln, s.xOffset, len(ln))
-		truncated := ansi.Truncate(scrolled, cappedWidth, "…")
+		textWidth := cappedWidth
+		if s.xOffset > 0 {
+			textWidth = max(1, textWidth-1)
+		}
+		truncated := ansi.Truncate(scrolled, textWidth, "…")
 		if s.xOffset > 0 && strings.TrimSpace(truncated) != "" {
 			truncated = "…" + truncated
 		}

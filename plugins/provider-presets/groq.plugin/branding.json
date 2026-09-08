@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "Groq",
+  "short_name": "GROQ",
+  "color": "#FB923C",
+  "gradient_a": "#FB923C",
+  "gradient_b": "#FDBA74"
+}

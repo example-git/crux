@@ -66,6 +66,15 @@ func (w *AppWorkspace) SaveSession(ctx context.Context, sess session.Session) (s
 }
 
 func (w *AppWorkspace) SetSessionMode(ctx context.Context, sessionID string, mode session.Mode) (session.Session, error) {
+	if mode == session.ModeDefault {
+		current, err := w.app.Sessions.Get(ctx, sessionID)
+		if err != nil {
+			return session.Session{}, err
+		}
+		if current.Mode.IsPlan() {
+			w.AgentCancel(sessionID)
+		}
+	}
 	if err := w.app.Sessions.SetMode(ctx, sessionID, mode); err != nil {
 		return session.Session{}, err
 	}
@@ -249,6 +258,16 @@ func (w *AppWorkspace) AgentClearQueue(sessionID string) {
 	}
 }
 
+func (w *AppWorkspace) ForegroundTaskControl(ctx context.Context, sessionID string, detach bool) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if detach {
+		return w.app.BackgroundShells.ForegroundWaits.Detach(sessionID), nil
+	}
+	return w.app.BackgroundShells.ForegroundWaits.Count(sessionID), nil
+}
+
 func (w *AppWorkspace) AgentDetachForegroundJobs() int {
 	return w.app.BackgroundShells.DetachForeground()
 }
@@ -328,6 +347,10 @@ func (w *AppWorkspace) ListTasks(ctx context.Context) ([]managedtask.View, error
 
 func (w *AppWorkspace) TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error) {
 	return w.app.TaskOutput(ctx, id, wait, timeout)
+}
+
+func (w *AppWorkspace) RestartTask(ctx context.Context, id string) (managedtask.View, error) {
+	return w.app.RestartTask(ctx, id)
 }
 
 func (w *AppWorkspace) StopTask(ctx context.Context, id string) (managedtask.View, error) {
@@ -490,6 +513,9 @@ func (w *AppWorkspace) RemoveProviderCredentials(scope config.Scope, owner provi
 func (w *AppWorkspace) SetConfigField(scope config.Scope, key string, value any) error {
 	if err := w.store.SetConfigField(scope, key, value); err != nil {
 		return err
+	}
+	if key == "options.tui.delivery_mode" {
+		return nil
 	}
 	if coordinator := w.app.CurrentAgentCoordinator(); skills.ConfigKeyAffectsDiscovery(key) && coordinator != nil {
 		if err := coordinator.UpdateModels(context.Background()); err != nil {

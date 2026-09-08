@@ -60,6 +60,7 @@ func (b *Backend) ForkSession(ctx context.Context, workspaceID, sessionID string
 	}
 	forked.PromptTokens = source.PromptTokens
 	forked.CompletionTokens = source.CompletionTokens
+	forked.UnseenLocalTokens = source.UnseenLocalTokens
 	forked.EstimatedUsage = source.EstimatedUsage
 	forked.Cost = source.Cost
 	forked.Todos = append([]session.Todo(nil), source.Todos...)
@@ -168,6 +169,17 @@ func (b *Backend) SetSessionMode(ctx context.Context, workspaceID, sessionID str
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {
 		return session.Session{}, err
+	}
+	if mode == session.ModeDefault {
+		current, err := ws.Sessions.Get(ctx, sessionID)
+		if err != nil {
+			return session.Session{}, err
+		}
+		if current.Mode.IsPlan() {
+			if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil {
+				coordinator.Cancel(sessionID)
+			}
+		}
 	}
 	if err := ws.Sessions.SetMode(ctx, sessionID, mode); err != nil {
 		return session.Session{}, err

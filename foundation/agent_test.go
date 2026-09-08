@@ -1237,6 +1237,76 @@ func TestStopConditions_Integration(t *testing.T) {
 	})
 }
 
+func TestPrepareStepRetainsQueuedMessages(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(fmt.Sprintf("streaming=%t", streaming), func(t *testing.T) {
+			var prompts [][]string
+			capture := func(call Call) int {
+				var texts []string
+				for _, msg := range call.Prompt {
+					for _, part := range msg.Content {
+						if text, ok := part.(TextPart); ok {
+							texts = append(texts, text.Text)
+						}
+					}
+				}
+				prompts = append(prompts, texts)
+				return len(prompts)
+			}
+			model := &mockLanguageModel{
+				generateFunc: func(_ context.Context, call Call) (*Response, error) {
+					step := capture(call)
+					response := &Response{FinishReason: FinishReasonStop}
+					if step < 4 {
+						response.Content = []Content{ToolCallContent{ToolCallID: fmt.Sprintf("tool-%d", step), ToolName: "work", Input: `{}`}}
+						response.FinishReason = FinishReasonToolCalls
+					}
+					return response, nil
+				},
+				streamFunc: func(_ context.Context, call Call) (StreamResponse, error) {
+					step := capture(call)
+					return func(yield func(StreamPart) bool) {
+						reason := FinishReasonStop
+						if step < 4 {
+							if !yield(StreamPart{Type: StreamPartTypeToolCall, ID: fmt.Sprintf("tool-%d", step), ToolCallName: "work", ToolCallInput: `{}`}) {
+								return
+							}
+							reason = FinishReasonToolCalls
+						}
+						yield(StreamPart{Type: StreamPartTypeFinish, FinishReason: reason})
+					}, nil
+				},
+			}
+			prepare := func(ctx context.Context, options PrepareStepFunctionOptions) (context.Context, PrepareStepResult, error) {
+				prepared := PrepareStepResult{Messages: append([]Message(nil), options.Messages...)}
+				if options.StepNumber == 1 || options.StepNumber == 2 {
+					queued := Message{Role: MessageRoleUser, Content: []MessagePart{TextPart{Text: fmt.Sprintf("follow-up-%d", options.StepNumber)}}}
+					prepared.RetainMessages = []Message{queued}
+					prepared.Messages = append(prepared.Messages, queued)
+				}
+				if options.StepNumber == 1 {
+					prepared.Messages = append(prepared.Messages, Message{Role: MessageRoleUser, Content: []MessagePart{TextPart{Text: "temporary"}}})
+				}
+				return ctx, prepared, nil
+			}
+			agent := NewAgent(model, WithTools(&mockTool{name: "work"}), WithStopConditions(StepCountIs(4)))
+			if streaming {
+				_, err := agent.Stream(t.Context(), AgentStreamCall{Prompt: "original", PrepareStep: prepare})
+				require.NoError(t, err)
+			} else {
+				_, err := agent.Generate(t.Context(), AgentCall{Prompt: "original", PrepareStep: prepare})
+				require.NoError(t, err)
+			}
+			require.Equal(t, [][]string{
+				{"original"},
+				{"original", "follow-up-1", "temporary"},
+				{"original", "follow-up-1", "follow-up-2"},
+				{"original", "follow-up-1", "follow-up-2"},
+			}, prompts)
+		})
+	}
+}
+
 func TestPrepareStep(t *testing.T) {
 	t.Parallel()
 

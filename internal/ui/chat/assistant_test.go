@@ -21,6 +21,27 @@ import (
 // proves both that AssistantMessageItem still satisfies the interface
 // and that the bool return reports the right semantic state at every
 // point in the cycle.
+func TestAssistantFinishReasonLabels(t *testing.T) {
+	sty := styles.CharmtonePantera()
+	for _, test := range []struct {
+		reason message.FinishReason
+		want   string
+	}{
+		{message.FinishReasonMaxTokens, "Stopped: output token limit reached"},
+		{message.FinishReasonUnknown, "Stopped: unknown finish reason"},
+		{message.FinishReasonEndTurn, ""},
+	} {
+		msg := &message.Message{ID: "finish", Role: message.Assistant, Parts: []message.ContentPart{message.TextContent{Text: "Response text"}, message.Finish{Reason: test.reason}}}
+		text := ansi.Strip(NewAssistantMessageItem(&sty, msg).Render(80))
+		require.Contains(t, text, "Response text")
+		if test.want == "" {
+			require.NotContains(t, text, "Stopped:")
+		} else {
+			require.Contains(t, text, test.want)
+		}
+	}
+}
+
 func TestAssistantMessageItemExpandable(t *testing.T) {
 	t.Parallel()
 
@@ -139,6 +160,30 @@ func TestAssistantSummaryMessageIsDistinctAndCollapsible(t *testing.T) {
 	require.NotContains(t, recollapsedPlain, "Hidden body")
 }
 
+func TestCodexReadableSummaryIsCollapsible(t *testing.T) {
+	sty := styles.CharmtonePantera()
+	msg := &message.Message{
+		ID:               "codex-summary",
+		Role:             message.Assistant,
+		Provider:         "codex",
+		IsSummaryMessage: true,
+		Parts: []message.ContentPart{
+			message.TextContent{Text: "# Current task\n\nReadable checkpoint\n\n## Remaining work\n\nNext action"},
+			message.Finish{Reason: message.FinishReasonEndTurn, Time: testFinishTime},
+		},
+	}
+	item := NewAssistantMessageItem(&sty, msg).(*AssistantMessageItem)
+	collapsed := ansi.Strip(item.Render(100))
+	require.Contains(t, collapsed, "Conversation Summary")
+	require.Contains(t, collapsed, "Readable checkpoint")
+	require.NotContains(t, collapsed, "Next action")
+	require.NotContains(t, collapsed, "Conversation compacted by Codex")
+	require.True(t, item.ToggleExpanded())
+	require.Contains(t, ansi.Strip(item.Render(100)), "Next action")
+	require.False(t, item.ToggleExpanded())
+	require.NotContains(t, ansi.Strip(item.Render(100)), "Next action")
+}
+
 func TestAssistantSummaryPlaceholderTransitionsFromSpinnerToPreview(t *testing.T) {
 	t.Parallel()
 
@@ -212,7 +257,7 @@ func TestAssistantMessageItemHandleMouseClick(t *testing.T) {
 	t.Parallel()
 
 	sty := styles.CharmtonePantera()
-	msg := &message.Message{ID: "m2", Role: message.Assistant}
+	msg := thinkingMessage("m2", "First thought\nSecond thought", "")
 	item := NewAssistantMessageItem(&sty, msg).(*AssistantMessageItem)
 	item.thinkingBoxHeight = 5
 

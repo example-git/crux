@@ -448,28 +448,28 @@ func TestUpdateSessionUsageUsesAuthoritativeCodexTotalForMalformedCacheUsage(t *
 func TestShouldAutoCompactUsesNormalizedOccupancy(t *testing.T) {
 	t.Parallel()
 
-	triggered, threshold := shouldAutoCompact(140_000, 100_000, 10_000, 0, 0, false)
+	triggered, threshold := shouldAutoCompact(140_000, 110_000, 0, false)
 	require.Equal(t, int64(28_000), threshold)
 	require.False(t, triggered)
 
-	triggered, _ = shouldAutoCompact(140_000, 180_000, 10_000, 0, 0, false)
+	triggered, _ = shouldAutoCompact(140_000, 190_000, 0, false)
 	require.True(t, triggered)
 
-	triggered, _ = shouldAutoCompact(140_000, 100_000, 10_000, 2_000, 0, false)
+	triggered, _ = shouldAutoCompact(140_000, (session.Session{PromptTokens: 100_000, CompletionTokens: 10_000, UnseenLocalTokens: 2_000}).ContextTokens(), 0, false)
 	require.True(t, triggered)
 
-	triggered, _ = shouldAutoCompact(140_000, 180_000, 10_000, 0, 0, true)
+	triggered, _ = shouldAutoCompact(140_000, 190_000, 0, true)
 	require.False(t, triggered)
 }
 
 func TestShouldAutoCompactUsesProviderRetainedTokenBudget(t *testing.T) {
 	t.Parallel()
 
-	triggered, threshold := shouldAutoCompact(100_000, 75_000, 0, 0, 30_000, false)
+	triggered, threshold := shouldAutoCompact(100_000, 75_000, 30_000, false)
 	require.Equal(t, int64(30_000), threshold)
 	require.True(t, triggered)
 
-	triggered, threshold = shouldAutoCompact(100_000, 75_000, 0, 0, 10_000, false)
+	triggered, threshold = shouldAutoCompact(100_000, 75_000, 10_000, false)
 	require.Equal(t, int64(10_000), threshold)
 	require.False(t, triggered)
 }

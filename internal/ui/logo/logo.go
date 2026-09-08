@@ -51,15 +51,22 @@ func Render(base lipgloss.Style, version string, compact bool, o Opts) string {
 	var shortTitle string
 	if o.Title != "" {
 		title := strings.ToUpper(o.Title)
-		if o.Sidebar && IsShortTitle(title) {
+		if IsShortTitle(title) {
 			wordmark, err := ConvertASCIIArt(title, "blocks-in-two-lines-filled")
 			if err == nil {
 				shortTitle = wordmark
 			}
 		}
 		if shortTitle == "" {
-			if forms, ok := lettersFor(title); ok {
+			if forms, ok := lettersFor(title); ok && len([]rune(title)) <= 5 {
 				wordLetterforms = forms
+			} else if len([]rune(title)) <= 5 {
+				wordmark, err := ConvertASCIIArt(title, "blurred-black")
+				if err == nil {
+					shortTitle = wordmark
+				} else {
+					plainTitle = title
+				}
 			} else {
 				plainTitle = title
 			}
@@ -74,7 +81,7 @@ func Render(base lipgloss.Style, version string, compact bool, o Opts) string {
 		wordmark = plainTitle
 	}
 	wordmarkWidth := lipgloss.Width(wordmark)
-	centerSidebarContent := compact && (o.Title == "" || o.Sidebar && shortTitle != "")
+	centerSidebarContent := compact && (o.Title == "" || plainTitle != "" || o.Sidebar)
 	contentWidth := wordmarkWidth
 	if centerSidebarContent {
 		contentWidth = max(contentWidth, o.Width)
@@ -148,7 +155,8 @@ func Render(base lipgloss.Style, version string, compact bool, o Opts) string {
 }
 
 func IsShortTitle(title string) bool {
-	return len([]rune(title)) > 5
+	length := len([]rune(title))
+	return length > 5 && length < 8
 }
 
 // SmallRender renders a smaller version of the Crux logo, suitable for
@@ -163,6 +171,14 @@ func SmallRender(t *styles.Styles, width int, o Opts) string {
 		gradA, gradB = o.TitleColorA, o.TitleColorB
 	}
 	title := styles.ApplyBoldForegroundGrad(t.Logo.GradCanvas, name, gradA, gradB)
+	if o.Sidebar {
+		title = ansi.Truncate(title, max(0, width), "")
+		remaining := max(0, width-ansi.StringWidth(title)-2)
+		if remaining > 0 {
+			return t.Logo.SmallDiagonals.Render(strings.Repeat("╱", remaining/2)) + " " + title + " " + t.Logo.SmallDiagonals.Render(strings.Repeat("╱", remaining-remaining/2))
+		}
+		return lipgloss.PlaceHorizontal(width, lipgloss.Center, title)
+	}
 	remainingWidth := width - lipgloss.Width(title) - 1 // 1 for the space after the name
 	if remainingWidth > 0 {
 		lines := strings.Repeat("╱", remainingWidth)

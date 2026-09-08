@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "AIHubMix",
+  "short_name": "AIHUB",
+  "color": "#A78BFA",
+  "gradient_a": "#A78BFA",
+  "gradient_b": "#67E8F9"
+}

@@ -43,7 +43,12 @@ func (m *Manager) CatalogPresets() []catalog.Provider {
 		if status.State != StateRegistered || status.preset == nil {
 			continue
 		}
-		providers = append(providers, catalogPreset(status.preset.Preset))
+		provider := catalogPreset(status.preset.Preset)
+		if status.preset.Brand != nil {
+			brand := *status.preset.Brand
+			provider.Brand = &brand
+		}
+		providers = append(providers, provider)
 	}
 	return providers
 }

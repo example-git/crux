@@ -68,6 +68,8 @@ You have access to a web_search tool that allows you to search the web:
 You have access to a web_fetch tool that allows you to fetch web pages:
 - Use it when you need to follow links from search results or the current page
 - Provide just the URL (no prompt parameter)
+- Page fetches inherit the parent operation's normal or user mode; user mode requires explicit browser-session consent and never falls back to anonymous access
+- If browser access is denied or fails, report it rather than substituting another fetch mechanism; web_search remains anonymous
 - The tool will fetch and return the content (or save to a file if large)
 - Then extract the relevant information from that content to answer the user's question
 - **Use this liberally** — if a link seems relevant to answering the question, fetch it

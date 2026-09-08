@@ -477,6 +477,29 @@ func TestInstructionsPreviewSectionPaneFitsAssignedWidth(t *testing.T) {
 	}
 }
 
+func TestInstructionsPreviewCompactSectionNavigation(t *testing.T) {
+	sty := styles.CharmtonePantera()
+	preview := NewInstructionsPreview(&common.Common{Styles: &sty}, []InstructionPreviewSection{
+		{ID: "first", Label: "Tooling instructions", Content: "FIRST CONTENT", Toggleable: true},
+		{ID: "second", Label: "Provider context", Content: "SECOND CONTENT", Toggleable: true},
+	}, 65)
+	preview.HandleMsg(preview.StartLoading()())
+	area := image.Rect(0, 0, 65, 25)
+	if text := ansi.Strip(preview.renderView(area)); !strings.Contains(text, "sections/content") {
+		t.Fatal("compact section navigation is not advertised")
+	}
+	preview.HandleMsg(tea.KeyPressMsg{Code: tea.KeyLeft})
+	text := ansi.Strip(preview.renderView(area))
+	if !strings.Contains(text, "Sections") || !strings.Contains(text, "Tooling instructions") || !strings.Contains(text, "Provider context") {
+		t.Fatalf("compact sections absent: %s", text)
+	}
+	preview.HandleMsg(tea.KeyPressMsg{Code: tea.KeyDown})
+	preview.HandleMsg(tea.KeyPressMsg{Code: tea.KeyRight})
+	if text := ansi.Strip(preview.renderView(area)); !strings.Contains(text, "SECOND CONTENT") {
+		t.Fatalf("selected section content absent: %s", text)
+	}
+}
+
 func TestInstructionsPreviewFitsNarrowShortArea(t *testing.T) {
 	previewStyles := styles.ThemeForProvider("")
 	preview := NewInstructionsPreview(

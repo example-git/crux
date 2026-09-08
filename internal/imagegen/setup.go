@@ -12,12 +12,13 @@ import (
 	"sync"
 
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/cookieutil"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/question"
 )
 
-var ErrSetupRequired = errors.New("image setup required: install and trust an image-provider bundle with crux plugins install, then configure images.preferred")
+var ErrSetupRequired = errors.New("image setup required: run crux plugins setup-images /absolute/path/to/provider.plugin on the execution host to preview the bundle, then repeat with its --digest and --configuration file to install, trust, and configure it")
 
 type SetupRequest struct {
 	SessionID   string
@@ -26,11 +27,12 @@ type SetupRequest struct {
 }
 
 type SetupService struct {
-	Runtime   *PluginRuntime
-	Store     *config.ConfigStore
-	Questions question.Service
-	mu        sync.Mutex
-	flight    *imageSetupFlight
+	Runtime         *PluginRuntime
+	Store           *config.ConfigStore
+	Questions       question.Service
+	browserProfiles func() []cookieutil.BrowserProfile
+	mu              sync.Mutex
+	flight          *imageSetupFlight
 }
 
 type imageSetupFlight struct {
@@ -83,11 +85,16 @@ func (s *SetupService) ensure(ctx context.Context, request SetupRequest) error {
 	}
 	expected := s.Store.ImageConfiguration()
 	if expected != nil && (len(expected.Preferred) > 0 || len(expected.Providers) > 0) {
-		return errors.New("configured image owners are unavailable; setup will not replace them")
+		for _, owner := range expected.Preferred {
+			if _, err := manager.ImageBundleForOwner(owner); err != nil {
+				return fmt.Errorf("image setup cannot replace a configured owner: %w", err)
+			}
+		}
+		return errors.New("configured image owners are unavailable; inspect crux plugins list and repair the selected owner's installation or trust before retrying setup")
 	}
 	for _, status := range manager.Snapshot().Plugins {
 		if status.PluginType == manifest.PluginTypeImageProvider {
-			return errors.New("installed image providers are unavailable; inspect plugin status and trust before setup")
+			return fmt.Errorf("image provider %s is unavailable (state: %s, trust: %s); inspect crux plugins list before setup", status.ID, status.State, status.Trust)
 		}
 	}
 	if !request.Interactive || s.Questions == nil || request.SessionID == "" {
@@ -134,7 +141,7 @@ func (s *SetupService) ensure(ctx context.Context, request SetupRequest) error {
 	_, _, configurationErr := imageConfiguration(bundle.Manifest, nil)
 	needsConfiguration := configurationErr != nil
 	for _, credential := range bundle.Manifest.Credentials {
-		needsConfiguration = needsConfiguration || (credential.Source == "provider" || credential.Source == "browser")
+		needsConfiguration = needsConfiguration || credential.Source == "provider"
 	}
 	if needsConfiguration {
 		answer, err = ask("image-configuration", question.TypeFreeText, "Where is the private image configuration file?", "Enter an absolute local JSON path containing configuration and exact-owner credentials bindings. Use existing provider login for authentication. Do not enter secrets in this answer.")
@@ -145,6 +152,9 @@ func (s *SetupService) ensure(ctx context.Context, request SetupRequest) error {
 		if err != nil {
 			return err
 		}
+	}
+	if _, err := s.selectBrowserProfiles(ctx, request, bundle, &provider); err != nil {
+		return err
 	}
 	return s.install(ctx, source, bundle, provider, expected, false, false)
 }
@@ -246,15 +256,15 @@ func (s *SetupService) install(ctx context.Context, source string, bundle provid
 	}
 	for _, credential := range bundle.Manifest.Credentials {
 		if credential.Source == "browser" && provider.BrowserProfiles[credential.ID] == "" {
-			return errors.New("image setup requires explicit browser_profiles bindings; list profiles with crux plugins browser-profiles")
+			return fmt.Errorf("image setup credential %q requires a browser_profiles binding; list profiles with crux plugins browser-profiles and add the chosen ID to the --configuration file", credential.ID)
 		}
 		if credential.Source == "provider" {
 			bound, ok := provider.Credentials[credential.ID]
 			if !ok || bound.ProviderID != credential.Provider {
-				return errors.New("image setup requires exact credential-owner bindings")
+				return fmt.Errorf("image setup credential %q requires an exact owner binding for provider %q; obtain it with crux plugins image-credential-owner %s and add it to credentials in the --configuration file", credential.ID, credential.Provider, credential.Provider)
 			}
 			if err := s.Store.ValidateActiveProviderOwner(bound); err != nil {
-				return err
+				return fmt.Errorf("image setup credential %q for provider %q is unavailable: %w", credential.ID, credential.Provider, err)
 			}
 		}
 	}
@@ -275,12 +285,15 @@ func readImageSetupConfiguration(path string, owner providerplugin.ImageOwner) (
 		return config.ImageProviderConfiguration{}, errors.New("image configuration path must be absolute")
 	}
 	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
-		return config.ImageProviderConfiguration{}, errors.New("image configuration must be a bounded regular file")
+	if err != nil {
+		return config.ImageProviderConfiguration{}, fmt.Errorf("cannot inspect image configuration file: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return config.ImageProviderConfiguration{}, errors.New("image configuration must be a regular JSON file no larger than 1 MiB")
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return config.ImageProviderConfiguration{}, errors.New("cannot open image configuration file")
+		return config.ImageProviderConfiguration{}, fmt.Errorf("cannot open image configuration file: %w", err)
 	}
 	defer file.Close()
 	data, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
@@ -292,7 +305,15 @@ func readImageSetupConfiguration(path string, owner providerplugin.ImageOwner) (
 	decoder.DisallowUnknownFields()
 	decoder.UseNumber()
 	if err := decoder.Decode(&value); err != nil {
-		return value, errors.New("invalid image configuration JSON")
+		var syntax *json.SyntaxError
+		if errors.As(err, &syntax) {
+			return value, fmt.Errorf("invalid image configuration JSON syntax at byte %d", syntax.Offset)
+		}
+		var mismatch *json.UnmarshalTypeError
+		if errors.As(err, &mismatch) {
+			return value, fmt.Errorf("invalid image configuration field %q: expected %s at byte %d", mismatch.Field, mismatch.Type, mismatch.Offset)
+		}
+		return value, errors.New("invalid image configuration JSON: expected one object using only owner, configuration, credentials, and browser_profiles fields")
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return value, errors.New("image configuration must contain one JSON value")

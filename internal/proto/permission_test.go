@@ -121,11 +121,13 @@ func TestPermissionRequestParamsTypeAssertable(t *testing.T) {
 			params: tools.FetchPermissionsParams{
 				URL:    "https://example.com",
 				Format: "text",
+				Mode:   "user",
 			},
 			assert: func(t *testing.T, got any) {
 				v, ok := got.(tools.FetchPermissionsParams)
 				require.True(t, ok, "params must decode as tools.FetchPermissionsParams, got %T", got)
 				require.Equal(t, "https://example.com", v.URL)
+				require.Equal(t, "user", v.Mode)
 			},
 		},
 		{

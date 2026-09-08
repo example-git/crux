@@ -86,6 +86,9 @@ func init() {
 
 // ProviderOptions represents additional options for the Anthropic provider.
 type ProviderOptions struct {
+	PromptCaching          *bool                   `json:"prompt_caching,omitempty"`
+	CacheTTL               string                  `json:"cache_ttl,omitempty"`
+	SkipCacheWrite         bool                    `json:"skip_cache_write,omitempty"`
 	SendReasoning          *bool                   `json:"send_reasoning"`
 	Thinking               *ThinkingProviderOption `json:"thinking"`
 	Effort                 *Effort                 `json:"effort"`
@@ -256,6 +259,9 @@ func NewProviderCacheControlOptions(opts *ProviderCacheControlOptions) fantasy.P
 func ParseOptions(data map[string]any) (*ProviderOptions, error) {
 	var options ProviderOptions
 	if err := fantasy.ParseOptions(data, &options); err != nil {
+		return nil, err
+	}
+	if err := (EfficiencyPolicy{TTL: options.CacheTTL}).Validate(); err != nil {
 		return nil, err
 	}
 	return &options, nil

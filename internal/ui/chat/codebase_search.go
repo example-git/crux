@@ -32,7 +32,7 @@ func newCodebaseSearchToolMessageItem(sty *styles.Styles, toolCall message.ToolC
 }
 
 func (r *codebaseSearchToolRenderContext) RenderTool(sty *styles.Styles, width int, opts *ToolRenderOpts) string {
-	cappedWidth := cappedMessageWidth(width)
+	cappedWidth := width
 	if opts.IsPending() {
 		return pendingTool(sty, "Codebase Search", opts.Anim, opts.Compact)
 	}
@@ -65,7 +65,7 @@ func (r *codebaseSearchToolRenderContext) RenderTool(sty *styles.Styles, width i
 
 	matches := parseCodebaseSearchMatches(opts.Result.Content)
 	if len(matches) == 0 {
-		body := toolOutputPlainContent(sty, opts.Result.Content, cappedWidth-toolBodyLeftPaddingTotal, opts.ExpandedContent)
+		body := sty.Tool.Body.Render(toolOutputPlainContent(sty, opts.Result.Content, toolBodyWidth(sty, cappedWidth), opts.ExpandedContent))
 		return joinToolParts(header, body)
 	}
 
@@ -73,7 +73,7 @@ func (r *codebaseSearchToolRenderContext) RenderTool(sty *styles.Styles, width i
 	if !opts.ExpandedContent {
 		limit = min(limit, 3)
 	}
-	bodyWidth := cappedWidth - toolBodyLeftPaddingTotal
+	bodyWidth := toolBodyWidth(sty, cappedWidth)
 	parts := []string{sty.Tool.ParamKey.Render(fmt.Sprintf("%d semantic matches", len(matches)))}
 	lastRole := ""
 	for _, match := range matches[:limit] {
@@ -86,16 +86,22 @@ func (r *codebaseSearchToolRenderContext) RenderTool(sty *styles.Styles, width i
 		if match.symbol != "" {
 			score += sty.Tool.ParamKey.Render("  " + match.symbol)
 		}
-		parts = append(parts, location+score)
+		parts = append(parts, summaryWrap(location+score, bodyWidth))
 		if match.explanation != "" {
-			parts = append(parts, sty.Tool.ParamKey.Render(match.explanation))
+			parts = append(parts, sty.Tool.ParamKey.Render(summaryWrap(match.explanation, bodyWidth)))
 		}
-		code := toolOutputCodeContent(sty, match.path, match.content, match.startLine, bodyWidth, opts.ExpandedContent)
+		content := match.content
+		if !opts.ExpandedContent && bodyWidth < 70 {
+			lines := strings.Split(content, "\n")
+			content = strings.Join(lines[:min(3, len(lines))], "\n")
+		}
+		code := toolOutputCodePanel(sty, match.path, content, max(0, match.startLine-1), bodyWidth, opts.ExpandedContent)
 		parts = append(parts, code)
 	}
 	if limit < len(matches) {
 		parts = append(parts, sty.Tool.ContentTruncation.Render(fmt.Sprintf("… %d more matches", len(matches)-limit)))
 	}
+	parts = append(parts, renderOutputFooter(sty, bodyWidth, summaryDisclosure("Full matches", opts.ExpandedContent), sty.PanelBackground))
 	return joinToolParts(header, sty.Tool.Body.Render(strings.Join(parts, "\n")))
 }
 

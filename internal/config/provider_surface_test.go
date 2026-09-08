@@ -18,6 +18,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCatalogBrandingReachesDetachedProviderSurface(t *testing.T) {
+	registry, err := providerregistry.New()
+	require.NoError(t, err)
+	cfg := &Config{Options: &Options{}, Providers: csync.NewMap[string, ProviderConfig]()}
+	cfg.bindProviderScan(ProviderScan{
+		Registry: registry,
+		Providers: []catalog.Provider{{ID: "branded-preset", Name: "Branded Preset", Brand: &catalog.Brand{ShortName: "BRAND", Color: "#123456"}}},
+	})
+	surface, ok := lookupTestSurface(ProviderSurfaces(cfg), "branded-preset")
+	require.True(t, ok)
+	require.Equal(t, "BRAND", surface.Brand.ShortName)
+	surface.Brand.ShortName = "CHANGED"
+	surface, ok = lookupTestSurface(ProviderSurfaces(cfg), "branded-preset")
+	require.True(t, ok)
+	require.Equal(t, "BRAND", surface.Brand.ShortName)
+}
+
 func TestProviderSurfacesPreserveCustomProviders(t *testing.T) {
 	cfg := &Config{
 		Options: &Options{DisableDefaultProviders: true},

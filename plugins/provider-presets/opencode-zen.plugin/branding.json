@@ -1,0 +1,8 @@
+{
+  "$schema": "../../../provider-branding.schema.json",
+  "label": "OpenCode Zen",
+  "short_name": "OCZEN",
+  "color": "#CBD5E1",
+  "gradient_a": "#CBD5E1",
+  "gradient_b": "#F8FAFC"
+}

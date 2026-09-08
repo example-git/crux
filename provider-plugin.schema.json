@@ -31,6 +31,31 @@
         "type"
       ]
     },
+    "AnthropicEfficiencyPolicy": {
+      "properties": {
+        "prompt_caching": {
+          "type": "boolean"
+        },
+        "ttl": {
+          "type": "string",
+          "enum": [
+            "5m",
+            "1h"
+          ]
+        },
+        "context_management": {
+          "type": "boolean"
+        },
+        "redacted_thinking": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "prompt_caching"
+      ]
+    },
     "AnthropicInstructionBlock": {
       "properties": {
         "profile": {
@@ -49,6 +74,9 @@
     },
     "AnthropicPolicy": {
       "properties": {
+        "efficiency": {
+          "$ref": "#/$defs/AnthropicEfficiencyPolicy"
+        },
         "client_identity": {
           "$ref": "#/$defs/ResolvedClientIdentity"
         },
@@ -207,7 +235,8 @@
         },
         "short_name": {
           "type": "string",
-          "maxLength": 24
+          "maxLength": 24,
+          "description": "Custom logo label; one to five characters use large block glyphs; six or seven use compact two-row block lettering; anything else uses centered normal text"
         },
         "color": {
           "type": "string",
