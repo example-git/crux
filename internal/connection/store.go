@@ -181,6 +181,14 @@ func Add(ctx context.Context, name, address, serverCertificate string) (Connecti
 }
 
 func AuthorizeClient(ctx context.Context, name, clientCertificate string) error {
+	return authorizeClientWithCommit(ctx, name, clientCertificate, nil)
+}
+
+// authorizationCommit serializes the final file replacement with enrollment
+// terminal state. Preparing and syncing the candidate does not grant access.
+type authorizationCommit func(persist func() error) error
+
+func authorizeClientWithCommit(ctx context.Context, name, clientCertificate string, commit authorizationCommit) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return errors.New("client name cannot be empty")
@@ -191,7 +199,7 @@ func AuthorizeClient(ctx context.Context, name, clientCertificate string) error 
 		return fmt.Errorf("invalid client pairing code: %w", err)
 	}
 	fingerprint := certificateFingerprint(certificate)
-	return update(ctx, func(data *store) error {
+	return updateWithCommit(ctx, func(data *store) error {
 		if data.Server == nil {
 			return errors.New("server identity is not initialized")
 		}
@@ -209,7 +217,7 @@ func AuthorizeClient(ctx context.Context, name, clientCertificate string) error 
 		}
 		data.AuthorizedClients[name] = clientCertificate
 		return nil
-	})
+	}, commit)
 }
 
 func ListAuthorizedClients(ctx context.Context) ([]AuthorizedClient, error) {
@@ -277,6 +285,10 @@ func load(ctx context.Context) (*store, error) {
 }
 
 func update(ctx context.Context, apply func(*store) error) error {
+	return updateWithCommit(ctx, apply, nil)
+}
+
+func updateWithCommit(ctx context.Context, apply func(*store) error, commit authorizationCommit) error {
 	if err := os.MkdirAll(filepath.Dir(storePath()), 0o700); err != nil {
 		return fmt.Errorf("create connection store directory: %w", err)
 	}
@@ -292,7 +304,10 @@ func update(ctx context.Context, apply func(*store) error) error {
 	if err := apply(data); err != nil {
 		return err
 	}
-	return writeStore(data)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeStoreWithCommit(data, commit)
 }
 
 func readStore() (*store, error) {
@@ -326,6 +341,10 @@ func readStore() (*store, error) {
 }
 
 func writeStore(data *store) error {
+	return writeStoreWithCommit(data, nil)
+}
+
+func writeStoreWithCommit(data *store, commit authorizationCommit) error {
 	content, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode connection store: %w", err)
@@ -353,10 +372,16 @@ func writeStore(data *store) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	if err := replaceStoreFile(temporaryPath, storePath()); err != nil {
-		return fmt.Errorf("replace connection store: %w", err)
+	persist := func() error {
+		if err := replaceStoreFile(temporaryPath, storePath()); err != nil {
+			return fmt.Errorf("replace connection store: %w", err)
+		}
+		return nil
 	}
-	return nil
+	if commit != nil {
+		return commit(persist)
+	}
+	return persist()
 }
 
 func replaceStoreFile(temporaryPath, destination string) error {

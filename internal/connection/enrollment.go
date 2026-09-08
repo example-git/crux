@@ -48,15 +48,16 @@ type EnrollmentListener struct {
 	code            string
 	listener        net.Listener
 	server          *http.Server
-	result          chan enrollmentOutcome
+	ctx             context.Context
+	outcome         enrollmentOutcome
+	terminal        bool
 	done            chan struct{}
-	once            sync.Once
 	mu              sync.Mutex
 	attempts        int
 	tokenState      enrollmentTokenState
 	expired         bool
 	expiresAt       time.Time
-	authorizeClient func(context.Context, string, string) error
+	authorizeClient func(context.Context, string, string, authorizationCommit) error
 }
 
 type enrollmentTokenState uint8
@@ -138,10 +139,10 @@ func StartEnrollment(ctx context.Context, listenAddress, advertisedAddress strin
 		setup:           setup,
 		code:            base64.RawURLEncoding.EncodeToString(codeBytes),
 		listener:        listener,
-		result:          make(chan enrollmentOutcome, 1),
+		ctx:             ctx,
 		done:            make(chan struct{}),
 		expiresAt:       expiresAt,
-		authorizeClient: AuthorizeClient,
+		authorizeClient: authorizeClientWithCommit,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+enrollmentPath, enrollment.handleEnrollment)
@@ -190,17 +191,26 @@ func (e *EnrollmentListener) Address() string {
 
 func (e *EnrollmentListener) Wait(ctx context.Context) (EnrollmentResult, error) {
 	select {
-	case outcome := <-e.result:
-		return outcome.result, outcome.err
+	case <-e.done:
 	case <-ctx.Done():
-		return EnrollmentResult{}, ctx.Err()
+		// Cancellation ends enrollment, not just this waiter. If persistence
+		// already won the commit boundary, report that success to every waiter.
+		e.finish(enrollmentOutcome{err: ctx.Err()})
 	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.outcome.result, e.outcome.err
 }
 
 func (e *EnrollmentListener) Close() error {
+	e.finish(enrollmentOutcome{err: errEnrollmentClosed})
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	return e.server.Shutdown(shutdownCtx)
+	err := e.server.Shutdown(shutdownCtx)
+	if err != nil {
+		_ = e.server.Close()
+	}
+	return err
 }
 
 func (e *EnrollmentListener) handleEnrollment(response http.ResponseWriter, request *http.Request) {
@@ -252,7 +262,16 @@ func (e *EnrollmentListener) handleEnrollment(response http.ResponseWriter, requ
 }
 
 func (e *EnrollmentListener) authorize(ctx context.Context, name, certificate string) error {
+	parsed, err := parseCertificate(certificate, x509.ExtKeyUsageClientAuth)
+	if err != nil {
+		return err
+	}
 	e.mu.Lock()
+	if e.terminal {
+		err := e.terminalErrorLocked()
+		e.mu.Unlock()
+		return err
+	}
 	if e.expired || !time.Now().Before(e.expiresAt) {
 		e.expired = true
 		e.mu.Unlock()
@@ -266,19 +285,46 @@ func (e *EnrollmentListener) authorize(ctx context.Context, name, certificate st
 	e.tokenState = enrollmentTokenReserved
 	e.mu.Unlock()
 
-	err := e.authorizeClient(ctx, name, certificate)
+	result := EnrollmentResult{Name: name, Fingerprint: certificateFingerprint(parsed)}
+	err = e.authorizeClient(ctx, name, certificate, func(persist func() error) error {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if e.terminal {
+			return e.terminalErrorLocked()
+		}
+		if err := e.ctx.Err(); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if e.expired || !time.Now().Before(e.expiresAt) {
+			return enrollmentExpiredError()
+		}
+		if err := persist(); err != nil {
+			return err
+		}
+		e.tokenState = enrollmentTokenUsed
+		// The file replacement and its successful outcome share the same
+		// lock. No failure can be announced between those two observations.
+		e.publishLocked(enrollmentOutcome{result: result})
+		return nil
+	})
 	e.mu.Lock()
 	if err != nil {
-		e.tokenState = enrollmentTokenAvailable
+		if !e.terminal {
+			e.tokenState = enrollmentTokenAvailable
+		}
 		expired := e.expired || !time.Now().Before(e.expiresAt)
 		e.expired = expired
 		e.mu.Unlock()
 		if expired {
 			e.finish(enrollmentOutcome{err: enrollmentExpiredError()})
+		} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			e.finish(enrollmentOutcome{err: err})
 		}
 		return err
 	}
-	e.tokenState = enrollmentTokenUsed
 	e.mu.Unlock()
 	return nil
 }
@@ -286,33 +332,52 @@ func (e *EnrollmentListener) authorize(ctx context.Context, name, certificate st
 func (e *EnrollmentListener) expire() {
 	e.mu.Lock()
 	e.expired = true
-	idle := e.tokenState == enrollmentTokenAvailable
+	e.publishLocked(enrollmentOutcome{err: enrollmentExpiredError()})
 	e.mu.Unlock()
-	if idle {
-		e.finish(enrollmentOutcome{err: enrollmentExpiredError()})
-	}
 }
 
 func (e *EnrollmentListener) failedAttempt() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.attempts++
-	return e.attempts >= enrollmentMaxAttempts
+	if e.attempts >= enrollmentMaxAttempts {
+		e.publishLocked(enrollmentOutcome{err: errors.New("enrollment attempt limit exceeded")})
+		return true
+	}
+	return false
 }
 
 func (e *EnrollmentListener) finish(outcome enrollmentOutcome) {
-	e.once.Do(func() {
-		e.result <- outcome
-		close(e.done)
-		go func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-			defer cancel()
-			_ = e.server.Shutdown(shutdownCtx)
-		}()
-	})
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.publishLocked(outcome)
+}
+
+func (e *EnrollmentListener) terminalErrorLocked() error {
+	if e.outcome.err != nil {
+		return e.outcome.err
+	}
+	return errors.New("enrollment token already used")
+}
+
+func (e *EnrollmentListener) publishLocked(outcome enrollmentOutcome) {
+	if e.terminal {
+		return
+	}
+	e.terminal = true
+	e.outcome = outcome
+	close(e.done)
+	go func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if e.server.Shutdown(shutdownCtx) != nil {
+			_ = e.server.Close()
+		}
+	}()
 }
 
 var errEnrollmentExpired = errors.New("enrollment code expired")
+var errEnrollmentClosed = errors.New("enrollment closed")
 
 func enrollmentExpiredError() error {
 	return fmt.Errorf("%w; rerun `crux server setup` to generate a new code", errEnrollmentExpired)

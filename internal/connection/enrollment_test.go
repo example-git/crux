@@ -99,12 +99,12 @@ func TestEnrollmentTokenAuthorizesExactlyOneConcurrentClient(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	var authorizationCalls atomic.Int32
-	enrollment.authorizeClient = func(ctx context.Context, name, certificate string) error {
+	enrollment.authorizeClient = func(ctx context.Context, name, certificate string, commit authorizationCommit) error {
 		if authorizationCalls.Add(1) == 1 {
 			close(entered)
 			<-release
 		}
-		return AuthorizeClient(ctx, name, certificate)
+		return authorizeClientWithCommit(ctx, name, certificate, commit)
 	}
 
 	const clients = 12
