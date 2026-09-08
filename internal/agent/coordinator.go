@@ -625,6 +625,13 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	}
 
 	runtime := c.currentAgent.Runtime()
+	runtime, refreshErr := c.refreshAdmittedRuntime(ctx, runtime)
+	if refreshErr != nil {
+		if runtime.Snapshot.IsClientOwned() {
+			return nil, refreshErr
+		}
+		slog.Error("Failed to refresh OAuth2 token. Proceeding with existing token.", "error", refreshErr)
+	}
 	model := runtime.LargeModel
 	maxTokens := model.CatalogModel.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
@@ -645,12 +652,6 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	}
 	mergedOptions = c.oauthReasoningOptionsForRegistration(model.ModelCfg.Provider, model.ModelCfg.Model, registration, registered, mergedOptions)
 	mergedOptions = applyRegisteredRuntimeOptions(model.ModelCfg.Model, cfg.Options, registration, registered, mergedOptions)
-
-	if err := c.refreshTokenIfExpired(ctx, runtime.Snapshot, providerCfg); err != nil {
-		// NOTE(@andreynering): We don't return here because the event handling to ask the user to reauthenticate
-		// depends on the flow below. If refresh fails, proceed with the token we have.
-		slog.Error("Failed to refresh OAuth2 token. Proceeding with existing token.", "provider", providerCfg.ID)
-	}
 
 	// Coalesce per-attempt RunComplete payloads so only the final
 	// outcome reaches subscribers. Without this, the first attempt's
@@ -1572,6 +1573,7 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 	smallImagePolicy, hasSmallImagePolicy := imageattachment.PolicyFromDeclaration(smallRegistration.Images)
 
 	primary := Model{
+		isSubAgent:          isSubAgent,
 		Model:               primaryLanguageModel,
 		CatalogModel:        *primaryCatalogModel,
 		ModelCfg:            primaryModelCfg,
@@ -1604,6 +1606,7 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 		primaryProviderOptions,
 	)
 	small := Model{
+		isSubAgent:          true,
 		Model:               smallLanguageModel,
 		CatalogModel:        *smallCatalogModel,
 		ModelCfg:            smallModelCfg,
@@ -1635,6 +1638,12 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 		smallRegistered,
 		smallProviderOptions,
 	)
+	if primaryRegistered && primaryRegistration.Construction == providerregistry.ConstructionOpenAIResponses {
+		primary = c.bindModelAuthentication(snapshot, primary, primaryProviderCfg)
+	}
+	if smallRegistered && smallRegistration.Construction == providerregistry.ConstructionOpenAIResponses {
+		small = c.bindModelAuthentication(snapshot, small, smallProviderCfg)
+	}
 	return primary, small, nil
 }
 
@@ -2318,24 +2327,26 @@ func (c *coordinator) UpdateModelsForState(ctx context.Context, expected config.
 	})
 }
 
-func (c *coordinator) prepareRuntimeGeneration(ctx context.Context, runtimeSnapshot config.RuntimeSnapshot) (config.RuntimeGenerationCandidate, error) {
-	c.updateMu.Lock()
-	release := true
-	defer func() {
-		if release {
-			c.updateMu.Unlock()
-		}
-	}()
+type coordinatorRuntimeGeneration struct {
+	installed InstalledRuntime
+	catalog   skills.Snapshot
+	selected  skills.Snapshot
+	tracker   *skills.Tracker
+	prompt    *prompt.Prompt
+}
 
+// buildRuntimeGeneration builds a captured runtime without publishing it. Its
+// caller serializes construction with updateMu, independently of config writes.
+func (c *coordinator) buildRuntimeGeneration(ctx context.Context, runtimeSnapshot config.RuntimeSnapshot) (*coordinatorRuntimeGeneration, error) {
 	cfg := runtimeSnapshot.Config()
 	agentCfg, ok := cfg.Agents[config.AgentCoder]
 	if !ok {
-		return config.RuntimeGenerationCandidate{}, errCoderAgentNotConfigured
+		return nil, errCoderAgentNotConfigured
 	}
 
 	large, small, err := c.buildAgentModelsWithSnapshot(ctx, agentCfg, false, runtimeSnapshot)
 	if err != nil {
-		return config.RuntimeGenerationCandidate{}, err
+		return nil, err
 	}
 
 	catalogSnapshot := discoverSkillSnapshotWithRuntime(c.cfg, runtimeSnapshot)
@@ -2349,16 +2360,16 @@ func (c *coordinator) prepareRuntimeGeneration(ctx context.Context, runtimeSnaps
 		prompt.WithSkills(snapshot.ActiveSkills),
 	)
 	if err != nil {
-		return config.RuntimeGenerationCandidate{}, err
+		return nil, err
 	}
 	instructions, err := coder.BuildInstructionsWithSnapshot(ctx, large.ModelCfg.Provider, large.Model.Model(), c.cfg, runtimeSnapshot)
 	if err != nil {
-		return config.RuntimeGenerationCandidate{}, err
+		return nil, err
 	}
 
 	palettes, err := c.buildToolsForSkills(ctx, agentCfg, false, snapshot, tracker, runtimeSnapshot)
 	if err != nil {
-		return config.RuntimeGenerationCandidate{}, err
+		return nil, err
 	}
 
 	installed := InstalledRuntime{
@@ -2375,6 +2386,22 @@ func (c *coordinator) prepareRuntimeGeneration(ctx context.Context, runtimeSnaps
 		SystemPromptBuilder:     c.systemPromptBuilder(coder, runtimeSnapshot, false, agentCfg.Instructions),
 		Snapshot:                runtimeSnapshot,
 	}
+	return &coordinatorRuntimeGeneration{installed: installed, catalog: catalogSnapshot, selected: snapshot, tracker: tracker, prompt: coder}, nil
+}
+
+func (c *coordinator) prepareRuntimeGeneration(ctx context.Context, runtimeSnapshot config.RuntimeSnapshot) (config.RuntimeGenerationCandidate, error) {
+	c.updateMu.Lock()
+	release := true
+	defer func() {
+		if release {
+			c.updateMu.Unlock()
+		}
+	}()
+	prepared, err := c.buildRuntimeGeneration(ctx, runtimeSnapshot)
+	if err != nil {
+		return config.RuntimeGenerationCandidate{}, err
+	}
+	installed, catalogSnapshot, snapshot, tracker, coder := prepared.installed, prepared.catalog, prepared.selected, prepared.tracker, prepared.prompt
 	var once sync.Once
 	finish := func(commit bool) {
 		once.Do(func() {
@@ -2413,6 +2440,13 @@ func (c *coordinator) QueuedPromptsList(sessionID string) []QueuedPrompt {
 func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
 	ctx = log.WithTrafficContext(ctx, c.trafficContext)
 	runtime := c.currentAgent.Runtime()
+	runtime, refreshErr := c.refreshAdmittedRuntime(ctx, runtime)
+	if refreshErr != nil {
+		if runtime.Snapshot.IsClientOwned() {
+			return refreshErr
+		}
+		slog.Error("Failed to refresh OAuth2 token before summarize. Proceeding with existing token.", "error", refreshErr)
+	}
 	model := runtime.LargeModel
 	cfg := runtime.Snapshot.Config()
 	providerCfg, ok := cfg.Providers.Get(model.ModelCfg.Provider)
@@ -2420,10 +2454,6 @@ func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
 		return errModelProviderNotConfigured
 	}
 	providerCfg.ID = model.ModelCfg.Provider
-
-	if err := c.refreshTokenIfExpired(ctx, runtime.Snapshot, providerCfg); err != nil {
-		slog.Error("Failed to refresh OAuth2 token before summarize. Proceeding with existing token.", "provider", providerCfg.ID)
-	}
 
 	// Auth failures during summarize flow through fantasy's OnAuthRefresh,
 	// the same path used by regular turns.
@@ -2477,6 +2507,9 @@ func (c *coordinator) refreshTokenIfExpired(ctx context.Context, snapshot config
 // refresh token is revoked, it triggers interactive re-authentication and
 // blocks until the user completes it (or the context is cancelled).
 func (c *coordinator) retryAfterUnauthorized(ctx context.Context, snapshot config.RuntimeSnapshot, expected providerregistry.RegistrationOwner, providerCfg config.ProviderConfig) error {
+	if snapshot.IsClientOwned() {
+		return c.refreshAdmittedClientModel(ctx, snapshot, expected)
+	}
 	if err := c.cfg.ValidateRegistrationOwner(expected); err != nil {
 		return err
 	}

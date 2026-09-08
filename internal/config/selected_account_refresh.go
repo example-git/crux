@@ -85,8 +85,11 @@ func (s *ConfigStore) RefreshSelectedOAuthAccount(ctx context.Context, scope Sco
 	refresh := func(exchangeCtx context.Context, token string) (*oauth.Token, error) {
 		// A mismatch may be a completed peer rotation, which the accounts layer
 		// can adopt without entering this callback. Never exchange on a guess.
-		if !providerHasAccount(before, expected) || !diskHasAccountOrAbsent(diskBefore, expected) {
-			return nil, accounts.ErrCredentialChanged
+		if !providerHasAccount(before, expected) {
+			return nil, fmt.Errorf("provider configuration no longer matches the selected account: %w", accounts.ErrCredentialChanged)
+		}
+		if !diskHasAccountOrAbsent(diskBefore, expected) {
+			return nil, fmt.Errorf("provider configuration on disk no longer matches the selected account: %w", accounts.ErrCredentialChanged)
 		}
 		if s.exchangeToken != nil {
 			return s.exchangeToken(exchangeCtx, owner.ProviderID, token)
@@ -155,7 +158,11 @@ func (s *ConfigStore) RefreshSelectedOAuthAccount(ctx context.Context, scope Sco
 }
 
 func providerHasAccount(provider ProviderConfig, entry accounts.Entry) bool {
-	return tokenHasAccount(provider.OAuthToken, entry) && provider.APIKey == entry.AccessToken
+	// Declarative OAuth providers may retain only the selected access token in
+	// api_key. The exact selected account and rotation are checked separately by
+	// the account store. If oauth is present, all of its identity fields must
+	// still agree; absence must not defeat a collector-admitted account.
+	return provider.APIKey == entry.AccessToken && (provider.OAuthToken == nil || tokenHasAccount(provider.OAuthToken, entry))
 }
 
 func tokenHasAccount(token *oauth.Token, entry accounts.Entry) bool {

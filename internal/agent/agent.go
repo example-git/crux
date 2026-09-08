@@ -40,6 +40,7 @@ import (
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providertransport"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/stringext"
@@ -178,6 +179,7 @@ type SessionAgent interface {
 }
 
 type Model struct {
+	isSubAgent          bool
 	Model               fantasy.LanguageModel
 	CatalogModel        catalog.Model
 	ModelCfg            config.SelectedModel
@@ -1922,6 +1924,9 @@ func modelMaxRetries(model Model) *int {
 }
 
 func modelAuthRefresh(model Model, callback func(context.Context, *fantasy.ProviderError) error) func(context.Context, *fantasy.ProviderError) error {
+	if owner, ok := model.Model.(interface{ HandlesAuthenticationRefresh() bool }); ok && owner.HandlesAuthenticationRefresh() {
+		return nil
+	}
 	if model.Retry == nil {
 		return callback
 	}
@@ -1935,15 +1940,28 @@ func refreshAdmittedModel(admitted *Model, current func() Model, callback func(c
 	return refreshAdmittedModelValidated(admitted, current, callback, nil)
 }
 
+type clientAuthRefreshKey struct{}
+
+type clientAuthRefreshTarget struct {
+	admitted  Model
+	refreshed *Model
+}
+
 func refreshAdmittedModelValidated(admitted *Model, current func() Model, callback func(context.Context, *fantasy.ProviderError) error, validate func(Model) error) func(context.Context, *fantasy.ProviderError) error {
 	if callback == nil {
 		return nil
 	}
 	return func(ctx context.Context, providerErr *fantasy.ProviderError) error {
-		if err := callback(ctx, providerErr); err != nil {
+		target := &clientAuthRefreshTarget{admitted: *admitted}
+		if err := callback(context.WithValue(ctx, clientAuthRefreshKey{}, target), providerErr); err != nil {
 			return err
 		}
-		refreshed := current()
+		var refreshed Model
+		if target.refreshed != nil {
+			refreshed = *target.refreshed
+		} else {
+			refreshed = current()
+		}
 		if refreshed.ModelCfg.Provider != admitted.ModelCfg.Provider || refreshed.ModelCfg.Model != admitted.ModelCfg.Model {
 			return fmt.Errorf("model generation changed during authentication refresh")
 		}
@@ -2553,6 +2571,10 @@ func (a *sessionAgent) generateTitleWithRuntime(ctx context.Context, sessionID s
 			break
 		}
 		if err != nil {
+			if stopTitleProviderFallback(err) {
+				slog.Error("Title generation stopped after authentication failure or cancellation", "model", attempt.name, "err", err)
+				return
+			}
 			slog.Error("Error generating title with "+attempt.name+" model; trying next", "err", err)
 		} else {
 			slog.Error("Title generation hit token limit with " + attempt.name + " model; trying next")
@@ -2604,6 +2626,18 @@ func (a *sessionAgent) generateTitleWithRuntime(ctx context.Context, sessionID s
 		return
 	}
 	titleSaved = true
+}
+
+func stopTitleProviderFallback(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var refreshErr *providertransport.AuthenticationRefreshError
+	if errors.As(err, &refreshErr) {
+		return true
+	}
+	var providerErr *fantasy.ProviderError
+	return errors.As(err, &providerErr) && (providerErr.AuthError || providerErr.StatusCode == 401 || providerErr.StatusCode == 403)
 }
 
 func anthropicCompactionReserve(model Model, summaryMaxTokens int64) int64 {

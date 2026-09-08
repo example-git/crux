@@ -26,6 +26,7 @@ import (
 	"github.com/example-git/crux/internal/message"
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providertransport"
 	"github.com/example-git/crux/internal/session"
 	"github.com/stretchr/testify/require"
 
@@ -332,6 +333,27 @@ func TestManifestRetryPolicyControlsAgentCall(t *testing.T) {
 
 	model.Retry.Authentication = "never"
 	require.Nil(t, modelAuthRefresh(model, callback))
+}
+
+func TestModelOwnedAuthenticationCannotRefreshAgainInAgent(t *testing.T) {
+	initial, fresh := &authenticationStreamModel{}, &authenticationStreamModel{}
+	policy := manifest.RetryPolicy{MaxAttempts: 3, Authentication: "refresh-once", ReplayRequirement: "before-first-event"}
+	innerRefreshes, outerRefreshes := 0, 0
+	wrapped := providertransport.NewAuthRefreshModel(initial, policy, nil, func(context.Context) (fantasy.LanguageModel, error) {
+		innerRefreshes++
+		return fresh, nil
+	})
+	model := Model{Model: wrapped, Retry: &policy, OnAuthRefresh: func(context.Context, *fantasy.ProviderError) error {
+		outerRefreshes++
+		return nil
+	}}
+	call := auxiliaryStreamCall("prompt", nil, model, func() Model { return model }, fantasy.Instructions{})
+	_, err := fantasy.NewAgent(wrapped).Stream(t.Context(), call)
+	require.Error(t, err)
+	require.Equal(t, 1, initial.attempts)
+	require.Equal(t, 1, fresh.attempts)
+	require.Equal(t, 1, innerRefreshes)
+	require.Zero(t, outerRefreshes)
 }
 
 func TestManifestRetryPolicyUsesOneOuterAuthenticationRefresh(t *testing.T) {

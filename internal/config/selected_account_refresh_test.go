@@ -58,6 +58,26 @@ func TestSelectedOAuthRefreshPersistsAndAdoptsPeerRotation(t *testing.T) {
 	require.EqualValues(t, 1, calls.Load())
 }
 
+func TestSelectedOAuthRefreshWithAccessTokenOnlyConfiguration(t *testing.T) {
+	store, owner, entry := selectedRefreshFixture(t)
+	store.mutateInMemory(func(cfg *Config) {
+		provider, _ := cfg.Providers.Get(owner.ProviderID)
+		provider.OAuthToken = nil
+		cfg.Providers.Set(owner.ProviderID, provider)
+	})
+	data, err := os.ReadFile(store.globalDataPath)
+	require.NoError(t, err)
+	data, err = sjson.DeleteBytes(data, "providers.codex.oauth")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(store.globalDataPath, data, 0o600))
+	store.exchangeToken = func(context.Context, string, string) (*oauth.Token, error) { return selectedRefreshToken(), nil }
+	fresh, err := store.RefreshSelectedOAuthAccount(t.Context(), ScopeGlobal, owner, entry, true)
+	require.NoError(t, err)
+	provider, _ := store.Config().Providers.Get(owner.ProviderID)
+	require.Equal(t, fresh.Token(), provider.OAuthToken)
+	require.Equal(t, fresh.AccessToken, provider.APIKey)
+}
+
 func TestSelectedOAuthRefreshRejectsConcurrentMutation(t *testing.T) {
 	for _, action := range []string{"disk-credential", "disk-owner", "memory-credential", "account-switch", "logout", "owner"} {
 		t.Run(action, func(t *testing.T) {

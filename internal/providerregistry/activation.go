@@ -65,6 +65,9 @@ func ValidateActivation(registration Registration) error {
 	if err := validateNativeLifecycle(registration.Construction, operation); err != nil {
 		return activationError(registration, err)
 	}
+	if registration.Construction == ConstructionOpenAIResponses && operation.Retry.Authentication == "refresh-once" && (registration.OAuth == nil || registration.OAuth.Refresh == nil) {
+		return activationError(registration, fmt.Errorf("operation %q refresh-once authentication requires an OAuth refresh executor", operation.ID))
+	}
 	for _, control := range registration.RuntimeControls {
 		if control.RequestPath == "" {
 			return activationError(registration, fmt.Errorf("runtime control %q has no request path", control.ID))
@@ -970,8 +973,8 @@ func validateNativeLifecycle(construction Construction, operation *providertrans
 		if len(operation.Retry.Codes) > 0 {
 			return fmt.Errorf("operation %q retry codes are unavailable for native OpenAI Responses construction", operation.ID)
 		}
-		if operation.Retry.Authentication == "refresh-once" {
-			return fmt.Errorf("operation %q refresh-once authentication is unavailable for the complete native OpenAI Responses language-model contract", operation.ID)
+		if operation.Retry.Authentication == "refresh-once" && operation.Retry.MaxAttempts < 2 {
+			return fmt.Errorf("operation %q refresh-once authentication requires at least two attempts", operation.ID)
 		}
 		if operation.Retry.MaxAttempts > 1 && operation.Retry.UnexpectedEOF && (len(operation.Retry.Statuses) > 0 || operation.Retry.TransportErrors) {
 			return fmt.Errorf("operation %q cannot share one max-attempts budget across HTTP and unexpected-EOF retries", operation.ID)
