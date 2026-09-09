@@ -30,8 +30,15 @@ func executeOAuthJournalValidationCLI(t *testing.T, args ...string) (string, err
 		changed bool
 	}
 	var saved []savedFlag
+	type savedContext struct {
+		command *cobra.Command
+		ctx     context.Context
+	}
+	var contexts []savedContext
 	seen := map[*pflag.Flag]bool{}
 	for _, command := range []*cobra.Command{rootCmd, accountsCmd, pendingOAuthJournalCmd, retireOAuthJournalCmd} {
+		contexts = append(contexts, savedContext{command, command.Context()})
+		command.SetContext(t.Context())
 		for _, flags := range []*pflag.FlagSet{command.Flags(), command.PersistentFlags()} {
 			flags.VisitAll(func(flag *pflag.Flag) {
 				if !seen[flag] {
@@ -43,6 +50,9 @@ func executeOAuthJournalValidationCLI(t *testing.T, args ...string) (string, err
 	}
 	previousOut, previousErr := rootCmd.OutOrStdout(), rootCmd.ErrOrStderr()
 	defer func() {
+		for _, saved := range contexts {
+			saved.command.SetContext(saved.ctx)
+		}
 		for _, s := range saved {
 			if s.flag.Value.String() != s.value {
 				_ = s.flag.Value.Set(s.value)
