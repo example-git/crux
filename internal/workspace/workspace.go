@@ -22,6 +22,7 @@ import (
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/question"
 	"github.com/example-git/crux/internal/session"
@@ -226,6 +227,8 @@ type Workspace interface {
 	// Config (read-only data)
 	Config() *config.Config
 	ProviderSurfaces() []providerregistry.Surface
+	ProviderAuthentication(context.Context) (providerauth.Snapshot, error)
+	ProviderAccounts(context.Context, providerauth.Target) (providerauth.AccountsState, error)
 	WorkingDir() string
 	Resolver() config.VariableResolver
 

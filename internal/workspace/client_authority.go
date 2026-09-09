@@ -10,6 +10,7 @@ import (
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
 )
 
@@ -30,16 +31,18 @@ func TransactCredentials(ctx context.Context, w Workspace, mutate func(Credentia
 }
 
 type clientAuthority struct {
-	mu            sync.Mutex
-	store         *config.ConfigStore
-	view          atomic.Pointer[config.Config]
-	accepted      config.RemoteRuntimeProposal
-	principal     string
-	creation      proto.Workspace
-	pending       *config.RemoteRuntimeProposal
-	pendingView   *config.Config
-	removed       map[providerregistry.RegistrationOwner]bool
-	refreshEvents sync.Map
+	mu                      sync.Mutex
+	store                   *config.ConfigStore
+	view                    atomic.Pointer[config.Config]
+	accepted                config.RemoteRuntimeProposal
+	principal               string
+	creation                proto.Workspace
+	pending                 *config.RemoteRuntimeProposal
+	pendingView             *config.Config
+	removed                 map[providerregistry.RegistrationOwner]bool
+	refreshEvents           sync.Map
+	providerAuth            *providerauth.Service
+	providerAuthWorkspaceID string
 }
 
 func newClientAuthority(c *client.Client, ws proto.Workspace) *clientAuthority {
@@ -47,7 +50,7 @@ func newClientAuthority(c *client.Client, ws proto.Workspace) *clientAuthority {
 		return nil
 	}
 	a := &clientAuthority{store: c.LocalRuntimeStore(), accepted: *ws.Runtime, principal: ws.Authority.Principal, creation: *ws.Creation, removed: map[providerregistry.RegistrationOwner]bool{}}
-	a.view.Store(c.LocalRuntimeStore().Config())
+	a.view.Store(clientCollectionConfig(*ws.Runtime, c.LocalRuntimeStore()))
 	for _, credential := range a.accepted.Credentials {
 		providerDisabled := false
 		for _, definition := range a.accepted.Providers {
@@ -64,6 +67,14 @@ func newClientAuthority(c *client.Client, ws proto.Workspace) *clientAuthority {
 
 func (a *clientAuthority) configView() *config.Config {
 	return a.view.Load()
+}
+
+func clientCollectionConfig(proposal config.RemoteRuntimeProposal, store *config.ConfigStore) *config.Config {
+	if cfg := proposal.CollectionConfig(); cfg != nil {
+		return cfg
+	}
+	// Hand-built proposals do not have collection provenance.
+	return store.Config()
 }
 
 func (w *ClientWorkspace) clientOwned() bool {
@@ -150,7 +161,7 @@ func (w *ClientWorkspace) publishClientAuthorityLocked(ctx context.Context, a *c
 	if err != nil {
 		return fmt.Errorf("client state saved; remote runtime was not updated: %w", err)
 	}
-	a.pending, a.pendingView = &proposal, a.store.Config()
+	a.pending, a.pendingView = &proposal, clientCollectionConfig(proposal, a.store)
 	ack, err := w.client.ReplaceRemoteRuntime(ctx, w.workspaceID(), a.accepted.Revision, proposal)
 	if err != nil {
 		// A committed request may lose its response. Only its exact content
@@ -240,7 +251,7 @@ func (w *ClientWorkspace) recreateClientWorkspace(ctx context.Context) (*proto.W
 		return nil, err
 	}
 	a.accepted = proposal
-	a.view.Store(a.store.Config())
+	a.view.Store(clientCollectionConfig(proposal, a.store))
 	a.pending, a.pendingView = nil, nil
 	w.installRecoveredWorkspace(*created)
 	return created, nil

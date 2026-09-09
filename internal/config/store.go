@@ -95,12 +95,14 @@ type ForwardedAccount struct {
 }
 
 type RuntimeSnapshot struct {
-	config            *Config
-	resolver          VariableResolver
-	registry          *providerregistry.Registry
-	environment       env.Env
-	ephemeralAccounts map[string]ForwardedAccount
-	clientRuntime     *clientRuntimeState
+	publicationStore    *ConfigStore
+	publicationSequence uint64
+	config              *Config
+	resolver            VariableResolver
+	registry            *providerregistry.Registry
+	environment         env.Env
+	ephemeralAccounts   map[string]ForwardedAccount
+	clientRuntime       *clientRuntimeState
 }
 
 type RuntimeGenerationCandidate struct {
@@ -112,6 +114,14 @@ type RuntimeGenerationPreparer func(context.Context, RuntimeSnapshot) (RuntimeGe
 
 func (s RuntimeSnapshot) Config() *Config {
 	return s.config
+}
+
+// SamePublication reports whether both snapshots captured the same accepted
+// publication of the same store. Empty, manually constructed and unpublished
+// candidate snapshots have no publication identity and never compare equal.
+func (s RuntimeSnapshot) SamePublication(other RuntimeSnapshot) bool {
+	return s.publicationStore != nil && s.publicationSequence != 0 &&
+		s.publicationStore == other.publicationStore && s.publicationSequence == other.publicationSequence
 }
 
 func (s RuntimeSnapshot) Environment() []string {
@@ -332,6 +342,7 @@ func (s RuntimeSnapshot) EphemeralAccount(expected providerregistry.Registration
 
 type ConfigStore struct {
 	config                   *Config
+	publicationSequence      uint64
 	clientRuntime            *clientRuntimeState
 	ephemeralAccounts        map[string]ForwardedAccount
 	ephemeralProviderConfigs map[string]ProviderConfig
@@ -355,9 +366,9 @@ type ConfigStore struct {
 	trackedConfigPaths       []string                // unique, normalized config file paths
 	snapshots                map[string]fileSnapshot // path -> snapshot at last capture
 
-	// configMu guards the config pointer field against concurrent
+	// configMu guards the config pointer and publication sequence against concurrent
 	// readers (Config) and the writeMu-serialised swap (setConfig). It
-	// protects the pointer word only; the pointed-to Config is treated
+	// protects publication identity; the pointed-to Config is treated
 	// as immutable once published, since both reloads and typed mutators
 	// build a fresh Config rather than mutating the live one.
 	configMu sync.RWMutex
@@ -406,8 +417,8 @@ func (s *ConfigStore) Config() *Config {
 func (s *ConfigStore) RuntimeSnapshot() RuntimeSnapshot {
 	s.writeMu.RLock()
 	defer s.writeMu.RUnlock()
-	s.configMu.RLock()
-	defer s.configMu.RUnlock()
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	return s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
 }
 
@@ -418,12 +429,15 @@ func (s *ConfigStore) Environment() []string {
 func (s *ConfigStore) WithRuntimeSnapshot(build func(RuntimeSnapshot) error) error {
 	s.writeMu.RLock()
 	defer s.writeMu.RUnlock()
-	s.configMu.RLock()
+	s.configMu.Lock()
 	snapshot := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
-	s.configMu.RUnlock()
+	s.configMu.Unlock()
 	return build(snapshot)
 }
 
+// runtimeSnapshotLocked requires exclusive configMu as well as writeMu held
+// for reading or writing. Capturing a hand-built store initializes its fence;
+// a prospective reload config must not inherit the accepted config's identity.
 func (s *ConfigStore) runtimeSnapshotLocked(cfg *Config, resolver VariableResolver, registry *providerregistry.Registry, environment env.Env) RuntimeSnapshot {
 	snapshot := RuntimeSnapshot{
 		config:            cfg,
@@ -431,6 +445,11 @@ func (s *ConfigStore) runtimeSnapshotLocked(cfg *Config, resolver VariableResolv
 		environment:       cloneEnvironment(environment),
 		ephemeralAccounts: make(map[string]ForwardedAccount, len(s.ephemeralAccounts)),
 		clientRuntime:     s.clientRuntime,
+	}
+	if cfg != nil && cfg == s.config {
+		s.ensurePublicationLocked()
+		snapshot.publicationStore = s
+		snapshot.publicationSequence = s.publicationSequence
 	}
 	for namespace, forwarded := range s.ephemeralAccounts {
 		forwarded.Entry.Raw = slices.Clone(forwarded.Entry.Raw)
@@ -474,13 +493,29 @@ func (s *ConfigStore) applyProcessEnvironment(base env.Env, previous, current ma
 	return applyEnvironmentWith(base, previous, current, setenv, unsetenv)
 }
 
-// setConfig atomically swaps the active config pointer under configMu.
-// Used by the reload path; in-place field mutators leave the pointer
-// untouched and run under mu instead.
+// setConfig atomically publishes a config and advances its private fence.
+// Even publication of the same pointer/value invalidates older snapshots.
 func (s *ConfigStore) setConfig(cfg *Config) {
 	registerConfigSecrets(cfg)
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
+	s.publishConfigLocked(cfg)
+}
+
+func (s *ConfigStore) ensurePublicationLocked() {
+	if s.publicationSequence == 0 {
+		s.publicationSequence = 1
+	}
+}
+
+// publishConfigLocked requires exclusive configMu. All accepted config swaps,
+// including grouped runtime publications, use this single advancement point.
+func (s *ConfigStore) publishConfigLocked(cfg *Config) {
+	s.ensurePublicationLocked()
+	if s.publicationSequence == ^uint64(0) {
+		panic("configuration publication sequence exhausted")
+	}
+	s.publicationSequence++
 	s.config = cfg
 }
 
@@ -560,7 +595,7 @@ func (s *ConfigStore) ApplyEphemeralProviderState(providers map[string]ProviderC
 	}
 
 	s.configMu.Lock()
-	s.config = merged
+	s.publishConfigLocked(merged)
 	s.ephemeralAccounts = clonedAccounts
 	s.ephemeralProviderConfigs = maps.Clone(providers)
 	s.ephemeralProviders = ephemeralProviders
@@ -626,7 +661,7 @@ func (s *ConfigStore) applyEphemeralToken(token *oauth.Token, expected providerr
 
 	s.configMu.Lock()
 	defer s.configMu.Unlock()
-	s.config = next
+	s.publishConfigLocked(next)
 	if s.ephemeralProviderConfigs == nil {
 		s.ephemeralProviderConfigs = make(map[string]ProviderConfig)
 	}
@@ -1689,7 +1724,7 @@ func (s *ConfigStore) RemoveProviderCredentials(scope Scope, expected providerre
 		if s.isEphemeralProvider(expected.ProviderID) {
 			registerConfigSecrets(next)
 			s.configMu.Lock()
-			s.config = next
+			s.publishConfigLocked(next)
 			if s.ephemeralProviderConfigs == nil {
 				s.ephemeralProviderConfigs = make(map[string]ProviderConfig)
 			}
@@ -2150,6 +2185,7 @@ func newTestStoreWithRegistry(cfg *Config, registry *providerregistry.Registry, 
 	baseEnvironment := snapshotEnvironment()
 	return &ConfigStore{
 		config:               cfg,
+		publicationSequence:  1,
 		loadedPaths:          loadedPaths,
 		resolver:             NewShellVariableResolver(env.New()),
 		baseEnvironment:      baseEnvironment,
@@ -2588,7 +2624,10 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	}
 	cfg.SetupAgents()
 
-	runtimeCandidate, err := s.prepareRuntimeGeneration(ctx, s.runtimeSnapshotLocked(cfg, resolver, scan.Registry, candidateEnv))
+	s.configMu.Lock()
+	candidateSnapshot := s.runtimeSnapshotLocked(cfg, resolver, scan.Registry, candidateEnv)
+	s.configMu.Unlock()
+	runtimeCandidate, err := s.prepareRuntimeGeneration(ctx, candidateSnapshot)
 	if err != nil {
 		return fmt.Errorf("prepare reloaded runtime generation: %w", err)
 	}
@@ -2663,7 +2702,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		s.overrides = overrides
 		s.workspacePath = workspacePath
 		s.configMu.Lock()
-		s.config = cfg
+		s.publishConfigLocked(cfg)
 		s.configMu.Unlock()
 		if runtimeCandidate.Commit != nil {
 			runtimeCandidate.Commit()

@@ -64,6 +64,7 @@ const (
 // Configurations contain resolved client values; only Credentials carries the
 // provider's API/OAuth account token. Bundles retain original bytes and digests.
 type RemoteRuntimeProposal struct {
+	collectionSource            *runtimeCollectionSource
 	Version                     int                                 `json:"version"`
 	Revision                    uint64                              `json:"revision"`
 	Digest                      string                              `json:"digest"`
@@ -202,7 +203,7 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 	next.bindProviderScan(*candidate.config.providerScan)
 	next.captureExplicitModels()
 	next.SetupAgents()
-	candidate.config = next
+	candidate.setConfig(next)
 	runtimeCandidate, err := s.prepareRuntimeGeneration(ctx, candidate.RuntimeSnapshot())
 	if err != nil {
 		return nil, fmt.Errorf("prepare client runtime replacement: %w", err)
@@ -222,7 +223,7 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 		registerAccountSecrets(account.Entry)
 	}
 	s.configMu.Lock()
-	s.config = next
+	s.publishConfigLocked(next)
 	s.providerRegistry = candidate.providerRegistry
 	s.knownProviders = candidate.knownProviders
 	s.ephemeralAccounts = candidate.ephemeralAccounts
@@ -590,7 +591,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		}
 	}
 	cfg.SetupAgents()
-	return &ConfigStore{config: cfg, workingDir: workingDir, baseEnvironment: cloneEnvironment(baseEnvironment), effectiveEnvironment: env.NewFromMap(maps.Clone(proposal.CredentialEnvironment)), resolver: IdentityResolver(), providerRegistry: registry, knownProviders: cloneProviderCatalog(scan.Providers), ephemeralAccounts: forwarded, clientRuntime: &clientRuntimeState{authority: authority, proposal: proposal, bundles: bundles}}, nil
+	return &ConfigStore{config: cfg, publicationSequence: 1, workingDir: workingDir, baseEnvironment: cloneEnvironment(baseEnvironment), effectiveEnvironment: env.NewFromMap(maps.Clone(proposal.CredentialEnvironment)), resolver: IdentityResolver(), providerRegistry: registry, knownProviders: cloneProviderCatalog(scan.Providers), ephemeralAccounts: forwarded, clientRuntime: &clientRuntimeState{authority: authority, proposal: proposal, bundles: bundles}}, nil
 }
 
 // ClientProviderUnavailable returns an explicit accepted client availability

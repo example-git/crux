@@ -25,6 +25,7 @@ import (
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/question"
@@ -43,11 +44,15 @@ type ClientWorkspace struct {
 	client    *client.Client
 	authority *clientAuthority
 
-	mu              sync.RWMutex
-	refreshSequence atomic.Uint64
-	appliedRefresh  uint64
-	ws              proto.Workspace
-	skills          *skills.Manager
+	mu                       sync.RWMutex
+	refreshSequence          atomic.Uint64
+	appliedRefresh           uint64
+	providerAuthReadSequence atomic.Uint64
+	providerAuthAppliedRead  uint64
+	providerAuthGeneration   providerauth.Generation
+	providerAuthWorkspaceID  string
+	ws                       proto.Workspace
+	skills                   *skills.Manager
 	// lastSession is the most recent session ID reported via
 	// SetCurrentSession. The subscription loop re-asserts it after a
 	// reconnect, because the server's per-client presence entry (or the

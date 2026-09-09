@@ -21,28 +21,37 @@ import (
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/projects"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/question"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/shell"
 	"github.com/example-git/crux/internal/skills"
 	managedtask "github.com/example-git/crux/internal/task"
+	"github.com/google/uuid"
 )
 
 // AppWorkspace implements the Workspace interface by delegating
 // directly to an in-process [app.App] instance. This is the default
 // mode when the client/server architecture is not enabled.
 type AppWorkspace struct {
-	app   *app.App
-	store *config.ConfigStore
+	app                *app.App
+	store              *config.ConfigStore
+	providerAuth       *providerauth.Service
+	providerAuthCtx    context.Context
+	providerAuthCancel context.CancelFunc
 }
 
 // NewAppWorkspace creates a new AppWorkspace wrapping the given app
 // and config store.
 func NewAppWorkspace(a *app.App, store *config.ConfigStore) *AppWorkspace {
+	authCtx, authCancel := context.WithCancel(context.Background())
 	return &AppWorkspace{
-		app:   a,
-		store: store,
+		app:                a,
+		store:              store,
+		providerAuth:       providerauth.New(store, "local:"+uuid.NewString()),
+		providerAuthCtx:    authCtx,
+		providerAuthCancel: authCancel,
 	}
 }
 
@@ -768,6 +777,9 @@ func (w *AppWorkspace) Subscribe(program *tea.Program) {
 }
 
 func (w *AppWorkspace) Shutdown() {
+	if w.providerAuthCancel != nil {
+		w.providerAuthCancel()
+	}
 	w.app.Shutdown()
 }
 
