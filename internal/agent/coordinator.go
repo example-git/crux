@@ -178,6 +178,7 @@ type coordinator struct {
 	readinessCancel context.CancelFunc
 	readinessClosed bool
 	readinessWork   sync.WaitGroup
+	auxiliary       auxiliaryWork
 
 	reasoningMu            sync.RWMutex
 	reasoningDisabled      map[string]bool
@@ -1186,6 +1187,7 @@ func (c *coordinator) buildAgentWithSnapshot(ctx context.Context, promptTemplate
 
 	largeProviderCfg, _ := cfg.Providers.Get(large.ModelCfg.Provider)
 	result := NewSessionAgent(SessionAgentOptions{
+		beginAuxiliary:          c.beginAuxiliaryWork,
 		MCPRuntime:              mcp.For(c.cfg),
 		LargeModel:              large,
 		SmallModel:              small,
@@ -2205,6 +2207,7 @@ func (c *coordinator) CancelAll() {
 
 func (c *coordinator) CloseContext(ctx context.Context) {
 	c.stopReadiness()
+	c.auxiliary.close()
 	c.stopCodebaseIndexLifecycle(ctx)
 	if c.backgroundAgents != nil {
 		c.backgroundAgents.StopAll(ctx)
