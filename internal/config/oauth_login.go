@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/example-git/crux/internal/oauth"
@@ -30,6 +31,11 @@ type oauthLoginPreparation struct {
 	layers       authenticationLayers
 	authorize    oauthLoginAttempt[AuthorizedOAuthPreparation]
 	device       oauthLoginAttempt[OAuthDeviceLogin]
+	code         oauthLoginAttempt[OAuthCodeLogin]
+	routeMu      sync.Mutex
+	route        string
+	codePort     uint16
+	codePortSet  bool
 }
 
 // AuthorizedOAuthPreparation can only be produced by the retained owner's
@@ -68,6 +74,27 @@ func (d OAuthDeviceLogin) Interaction() (userCode, verificationURL string) {
 		return "", ""
 	}
 	return d.state.authorization.UserCode, d.state.authorization.VerificationURL
+}
+
+// ExpiresAt is the exact deadline retained by the device interpreter. Zero
+// remains unknown; this accessor never creates a replacement timeout.
+func (d OAuthDeviceLogin) ExpiresAt() time.Time {
+	if d.state == nil {
+		return time.Time{}
+	}
+	return d.state.authorization.ExpiresAt
+}
+
+// One preparation selects one interaction path. A split code challenge cannot
+// later be satisfied by a separate monolithic browser flow or vice versa.
+func (p *oauthLoginPreparation) claimRoute(route string) error {
+	p.routeMu.Lock()
+	defer p.routeMu.Unlock()
+	if p.route != "" && p.route != route {
+		return errors.New("OAuth login interaction path differs from its original attempt")
+	}
+	p.route = route
+	return nil
 }
 
 func (OAuthLoginPreparation) MarshalJSON() ([]byte, error) {
@@ -182,7 +209,7 @@ func (s *ConfigStore) PrepareOAuthLogin(ctx context.Context, before Authenticati
 	capability := registration.OAuth
 	switch capability.Adapter {
 	case providerregistry.LoginBrowser, providerregistry.LoginHostedPaste:
-		if capability.Authorize == nil {
+		if capability.Authorize == nil && capability.PrepareCode == nil {
 			return OAuthLoginPreparation{}, errors.New("OAuth authorization capability is unavailable")
 		}
 	case providerregistry.LoginDeviceCode:
@@ -225,8 +252,14 @@ func (s *ConfigStore) oauthLoginContext(ctx context.Context, p *oauthLoginPrepar
 // Interaction callbacks can supply display/code input, never token results.
 func (s *ConfigStore) AuthorizeOAuthLogin(ctx context.Context, prepared OAuthLoginPreparation, open providerregistry.OpenURL, read providerregistry.ReadCode) (AuthorizedOAuthPreparation, error) {
 	p := prepared.state
-	if p == nil || p.store != s || (prepared.Adapter() != providerregistry.LoginBrowser && prepared.Adapter() != providerregistry.LoginHostedPaste) {
+	if p == nil || p.store != s || (prepared.Adapter() != providerregistry.LoginBrowser && prepared.Adapter() != providerregistry.LoginHostedPaste) || p.registration.OAuth.Authorize == nil {
 		return AuthorizedOAuthPreparation{}, errors.New("matching browser OAuth preparation is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return AuthorizedOAuthPreparation{}, err
+	}
+	if err := p.claimRoute("authorize"); err != nil {
+		return AuthorizedOAuthPreparation{}, err
 	}
 	return p.authorize.execute(ctx, func() (AuthorizedOAuthPreparation, error) {
 		if err := s.validateOAuthLogin(ctx, p); err != nil {
@@ -245,6 +278,12 @@ func (s *ConfigStore) RequestOAuthDeviceCode(ctx context.Context, prepared OAuth
 	p := prepared.state
 	if p == nil || p.store != s || prepared.Adapter() != providerregistry.LoginDeviceCode {
 		return OAuthDeviceLogin{}, errors.New("matching device OAuth preparation is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return OAuthDeviceLogin{}, err
+	}
+	if err := p.claimRoute("device"); err != nil {
+		return OAuthDeviceLogin{}, err
 	}
 	return p.device.execute(ctx, func() (OAuthDeviceLogin, error) {
 		if err := s.validateOAuthLogin(ctx, p); err != nil {
