@@ -48,6 +48,8 @@ type clientAuthority struct {
 	authenticationRetired     providerauth.Generation
 	authenticationRecoveries  map[string]*clientAuthenticationRecoveryReceipt
 	authenticationRecoveryIDs []string
+	authenticationReviews     map[string]*clientAuthenticationReviewReceipt
+	authenticationReviewIDs   []string
 }
 
 func newClientAuthority(c *client.Client, ws proto.Workspace) *clientAuthority {
@@ -94,6 +96,9 @@ func matchesAuthority(ack *config.RemoteAuthority, principal string, proposal co
 // reconcileClientAuthority handles an ambiguous previous PUT before another
 // mutation. It never overwrites a different client's accepted revision.
 func (w *ClientWorkspace) reconcileClientAuthority(ctx context.Context, a *clientAuthority) error {
+	if a.pendingAuthenticationReview(w.workspaceID()) {
+		return errors.New("acknowledge the reviewed authentication publication before publishing client runtime changes")
+	}
 	if a.pending == nil {
 		return nil
 	}

@@ -38,6 +38,9 @@ type clientAuthenticationReceipt struct {
 	acknowledged     bool
 	adopted          bool
 	recoverySequence uint64
+	reviewSequence   uint64
+	reconciledBy     string
+	pendingReview    string
 	err              error
 }
 
@@ -211,6 +214,12 @@ func (a *clientAuthority) retainClientAuthentication(receipt *clientAuthenticati
 func (w *ClientWorkspace) replayClientAuthenticationLocked(ctx context.Context, a *clientAuthority, receipt *clientAuthenticationReceipt) (providerauth.MutationOutcome, error) {
 	if receipt.principal != a.principal || receipt.request.target.WorkspaceID != w.workspaceID() {
 		return clientAuthenticationOutcome(receipt, providerauth.ErrStale)
+	}
+	if receipt.reconciledBy != "" {
+		return clientAuthenticationOutcome(receipt, errors.New("saved authentication was published by a separate reviewed action; the original mutation result is unchanged"))
+	}
+	if a.pendingAuthenticationReview(receipt.request.target.WorkspaceID) {
+		return clientAuthenticationOutcome(receipt, errors.New("acknowledge the reviewed authentication publication through its apply action"))
 	}
 	if receipt.err != nil {
 		return clientAuthenticationOutcome(receipt, receipt.err)
