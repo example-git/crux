@@ -68,6 +68,7 @@ func TestBuildAgentReadinessSurvivesCallerCancellation(t *testing.T) {
 	// stands rather than waiting for initialization to finish.
 	mcp.For(cfg).ArmInit()
 	t.Cleanup(mcp.For(cfg).DisarmInit)
+	t.Cleanup(coord.stopReadiness)
 
 	p, err := coderPrompt(prompt.WithWorkingDir(env.workingDir))
 	require.NoError(t, err)
@@ -93,5 +94,68 @@ func TestBuildAgentReadinessSurvivesCallerCancellation(t *testing.T) {
 		require.NoError(t, err, "unexpected buildAgent readiness error")
 	case <-time.After(2 * time.Second):
 		t.Fatal("readyWg did not complete; the readiness goroutines must not block on MCP init")
+	}
+}
+
+// The parent must not finish shutdown while an admitted constructor is still
+// unwinding, and that constructor cannot admit a new asynchronous child.
+func TestCoordinatorShutdownJoinsReadinessAndRejectsChildren(t *testing.T) {
+	c := &coordinator{}
+	entered := make(chan context.Context, 1)
+	release := make(chan struct{})
+	defer close(release)
+	require.NoError(t, c.startReadiness(context.Background(), func(ctx context.Context) error {
+		entered <- ctx
+		<-release
+		return nil
+	}))
+	buildCtx := <-entered
+	done := make(chan struct{})
+	go func() { c.stopReadiness(); close(done) }()
+	select {
+	case <-buildCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not cancel readiness")
+	}
+	require.ErrorIs(t, c.startReadiness(context.Background(), func(context.Context) error {
+		t.Error("shutdown admitted new work")
+		return nil
+	}), context.Canceled)
+	select {
+	case <-done:
+		t.Fatal("shutdown returned before the admitted task exited")
+	default:
+	}
+	// Release without closing here so the deferred close also handles failures.
+	release <- struct{}{}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not join completed readiness")
+	}
+	c.stopReadiness()
+}
+
+func TestCoordinatorShutdownJoinsSynchronousConstruction(t *testing.T) {
+	c := &coordinator{}
+	ctx, finish, err := c.beginReadiness(context.Background(), false)
+	require.NoError(t, err)
+	done := make(chan struct{})
+	go func() { c.stopReadiness(); close(done) }()
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not cancel constructor")
+	}
+	select {
+	case <-done:
+		t.Fatal("shutdown returned before constructor exited")
+	default:
+	}
+	finish()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown did not join constructor")
 	}
 }

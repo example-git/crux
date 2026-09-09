@@ -346,6 +346,68 @@ func TestWorkspaceOAuthCallerCancellationRetainsAdmittedLocalCommit(t *testing.T
 	require.EqualValues(t, 1, exchanges.Load())
 }
 
+func TestWorkspaceOAuthBeginReplayRejectsCacheChangeDuringServiceWait(t *testing.T) {
+	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"access_token":"retained-token","refresh_token":"retained-refresh","expires_in":3600}`)
+	}))
+	defer host.Close()
+	f := newWorkspaceOAuthFixture(t, host, "hosted-paste")
+	authorizeWorkspaceOAuth(t, f, "hosted-paste")
+	entered, release := make(chan struct{}), make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	f.store.SetRuntimeGenerationPreparer(func(context.Context, config.RuntimeSnapshot) (config.RuntimeGenerationCandidate, error) {
+		close(entered)
+		<-release
+		return config.RuntimeGenerationCandidate{Abort: func() {}, Commit: func() {}}, nil
+	})
+	commit := make(chan error, 1)
+	go func() {
+		_, err := f.w.authority.providerAuth.CompleteOAuthLogin(t.Context(), f.ref)
+		commit <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("commit did not hold the service gate")
+	}
+	type reply struct {
+		state providerauth.OAuthLoginState
+		err   error
+	}
+	done := make(chan reply, 1)
+	go func() {
+		state, err := f.w.BeginProviderOAuthLogin(t.Context(), f.ref)
+		done <- reply{state, err}
+	}()
+	require.Eventually(t, func() bool {
+		if f.w.authority.mu.TryLock() {
+			f.w.authority.mu.Unlock()
+			return false
+		}
+		return true
+	}, time.Second, time.Millisecond)
+	f.w.mu.Lock()
+	changed := *f.w.ws.Authority
+	changed.Principal = "changed-principal"
+	f.w.ws.Authority = &changed
+	f.w.mu.Unlock()
+	close(release)
+	require.NoError(t, <-commit)
+	select {
+	case result := <-done:
+		require.Error(t, result.err)
+		require.Empty(t, result.state.Login.LoginID, "a stale cache cannot receive a successful original login state")
+	case <-time.After(10 * time.Second):
+		t.Fatal("Begin replay stayed blocked")
+	}
+}
+
 func newWorkspaceOAuthFixture(t *testing.T, host *httptest.Server, mode string) workspaceOAuthFixture {
 	t.Helper()
 	f := newClientAuthenticationFixture(t, false)

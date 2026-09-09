@@ -454,3 +454,36 @@ func TestDefaultSmallModelRejectsUnavailableOwner(t *testing.T) {
 	_, err := defaultSmallModel(cfg, "alpha", nil)
 	require.ErrorContains(t, err, "provider alpha is not available")
 }
+
+type shutdownRecordingCoordinator struct {
+	agent.Coordinator
+	canceled int
+	closed   int
+}
+
+func (c *shutdownRecordingCoordinator) CancelAll()                   { c.canceled++ }
+func (c *shutdownRecordingCoordinator) CloseContext(context.Context) { c.closed++ }
+
+func TestAgentShutdownIncludesReplacedCoordinatorsAndFencesInitialization(t *testing.T) {
+	application, _ := newAgentRecoveryTestApp(t)
+	first, second := &shutdownRecordingCoordinator{}, &shutdownRecordingCoordinator{}
+	created := 0
+	application.newCoordinator = func(context.Context, agent.CoordinatorOptions) (agent.Coordinator, error) {
+		created++
+		if created == 1 {
+			return first, nil
+		}
+		return second, nil
+	}
+	require.NoError(t, application.InitCoderAgent(t.Context()))
+	require.NoError(t, application.InitCoderAgent(t.Context()))
+	application.closeAgentCoordinators(t.Context())
+	require.Equal(t, 1, first.canceled)
+	require.Equal(t, 1, first.closed)
+	require.Equal(t, 1, second.canceled)
+	require.Equal(t, 1, second.closed)
+	require.ErrorContains(t, application.InitCoderAgent(t.Context()), "shutting down")
+	_, err := application.ensureCoderAgent(t.Context(), false)
+	require.ErrorContains(t, err, "shutting down")
+	require.Equal(t, 2, created)
+}

@@ -112,8 +112,12 @@ func (w *ClientWorkspace) BeginProviderOAuthLogin(ctx context.Context, request p
 	// terminal failures. Do not replace its generation or initialize a new
 	// service when a later unacknowledged transaction is present.
 	if a.providerAuth != nil && a.providerAuthWorkspaceID == id {
-		state, err := a.providerAuth.WaitOAuthLogin(ctx, request, 0)
+		service := a.providerAuth
+		state, err := service.WaitOAuthLogin(ctx, request, 0)
 		if !errors.Is(err, providerauth.ErrOAuthLoginUnavailable) {
+			if check := w.verifyClientOAuthSession(id, a, service); check != nil {
+				return providerauth.OAuthLoginState{}, check
+			}
 			return state, err
 		}
 	}
@@ -123,7 +127,21 @@ func (w *ClientWorkspace) BeginProviderOAuthLogin(ctx context.Context, request p
 	if a.unacknowledgedClientAuthentication(id) {
 		return providerauth.OAuthLoginState{}, errors.New("a saved client authentication change requires explicit recovery before another login")
 	}
-	return a.providerAuth.BeginOAuthLoginForAccepted(ctx, request, a.accepted, a.configView())
+	service := a.providerAuth
+	state, err := service.BeginOAuthLoginForAccepted(ctx, request, a.accepted, a.configView())
+	if check := w.verifyClientOAuthSession(id, a, service); check != nil {
+		return providerauth.OAuthLoginState{}, check
+	}
+	return state, err
+}
+
+// Called with the retained authority lock held. A generic workspace refresh
+// can change its cache under w.mu alone, so validate again after service calls.
+func (w *ClientWorkspace) verifyClientOAuthSession(id string, a *clientAuthority, service *providerauth.Service) error {
+	if w.authority != a || !w.clientOwned() || a.providerAuth != service || a.providerAuthWorkspaceID != id || w.workspaceID() != id {
+		return providerauth.ErrStale
+	}
+	return w.verifyClientProviderAuthAuthority(id, a)
 }
 
 // Interaction states do not publish or acknowledge configuration. Follow-ups
@@ -162,10 +180,7 @@ func (w *ClientWorkspace) clientOAuthSession(ctx context.Context, ref providerau
 		return state, lockErr
 	}
 	defer a.mu.Unlock()
-	if w.authority != a || !w.clientOwned() || a.providerAuth != service || a.providerAuthWorkspaceID != id || w.workspaceID() != id {
-		return providerauth.OAuthLoginState{}, providerauth.ErrStale
-	}
-	if verifyErr := w.verifyClientProviderAuthAuthority(id, a); verifyErr != nil {
+	if verifyErr := w.verifyClientOAuthSession(id, a, service); verifyErr != nil {
 		return providerauth.OAuthLoginState{}, verifyErr
 	}
 	return state, err
