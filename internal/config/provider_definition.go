@@ -33,7 +33,7 @@ func (snapshot RuntimeSnapshot) clientProviderDefinition(ctx context.Context, id
 		}
 		definition.NativeIdentity = &identity
 	}
-	provider, _ := snapshot.config.Providers.Get(id)
+	provider, _ := snapshot.config.authenticationCollectionProvider(id)
 	if err := snapshot.validateResolvedProviderEndpointOwner(provider); err != nil {
 		return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, err
 	}
@@ -64,7 +64,7 @@ func (snapshot RuntimeSnapshot) clientProviderDefinitionRaw(id string) (RemotePr
 	if cfg == nil {
 		return zero, noOwner, errors.New("captured provider runtime is required")
 	}
-	provider, ok := cfg.Providers.Get(id)
+	provider, ok := cfg.authenticationCollectionProvider(id)
 	if !ok {
 		return zero, noOwner, fmt.Errorf("selected client provider %q is unavailable", id)
 	}
@@ -93,6 +93,17 @@ func (snapshot RuntimeSnapshot) clientProviderDefinitionRaw(id string) (RemotePr
 	definition.Config.resolvedAPIKey = nil
 	definition.Config.resolvedEndpoint = nil
 	return definition, owner, nil
+}
+
+// An explicit, loaded OAuth definition remains collectable before login. The
+// candidate is not inserted into Config.Providers, so local readiness,
+// migration and authentication status retain their unconfigured behavior.
+func (c *Config) authenticationCollectionProvider(id string) (ProviderConfig, bool) {
+	if provider, ok := c.Providers.Get(id); ok {
+		return provider, true
+	}
+	provider, ok := c.authenticationCandidates[id]
+	return cloneProviderConfig(provider), ok
 }
 
 // ProviderDefinitionDigest binds executable provider configuration and the

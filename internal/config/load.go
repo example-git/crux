@@ -392,6 +392,7 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 }
 
 func (c *Config) configureProvidersWithMigration(ctx context.Context, store *ConfigStore, env env.Env, resolver VariableResolver, knownProviders []catalog.Provider, migrate func(map[string]ProviderOwnerReference, map[string]ProviderPluginReference, map[string]ProviderPresetReference) error) error {
+	c.authenticationCandidates = nil
 	// Validate retained credential identity before preparation can resolve
 	// headers, migrate owners, or issue discovery requests.
 	snapshot := RuntimeSnapshot{config: c, registry: c.providerCapabilities()}
@@ -566,6 +567,12 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 		}
 		if v == "" && !anonymous || err != nil {
 			if configExists {
+				if registration, ok := c.ProviderRegistration(string(p.ID)); ok && registration.OAuth != nil && err == nil && prepared.OAuthToken == nil {
+					if c.authenticationCandidates == nil {
+						c.authenticationCandidates = make(map[string]ProviderConfig)
+					}
+					c.authenticationCandidates[string(p.ID)] = cloneProviderConfig(prepared)
+				}
 				slog.Warn("Skipping provider due to missing API key", "provider", p.ID)
 				c.Providers.Del(string(p.ID))
 			}

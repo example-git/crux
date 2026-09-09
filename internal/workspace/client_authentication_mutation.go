@@ -21,6 +21,7 @@ type clientAuthenticationRequest struct {
 	accountID   string
 	logout      bool
 	checkID     string
+	loginID     string
 }
 
 // A local receipt is not an acknowledgement. Keep the exact collected proposal
@@ -67,7 +68,7 @@ func (w *ClientWorkspace) logoutClientAuthentication(ctx context.Context, reques
 }
 
 func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, request clientAuthenticationRequest) (providerauth.MutationOutcome, error) {
-	initial := providerauth.MutationOutcome{OperationID: request.operationID, CheckID: request.checkID, Previous: request.target}
+	initial := providerauth.MutationOutcome{OperationID: request.operationID, CheckID: request.checkID, LoginID: request.loginID, Previous: request.target}
 	ctx, done := providerAuthContext(ctx, w.subCtx)
 	defer done()
 	if err := ctx.Err(); err != nil {
@@ -110,7 +111,14 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	receipt := &clientAuthenticationReceipt{request: request, principal: a.principal, base: a.accepted}
 	var local providerauth.MutationResult
 	var err error
-	if request.checkID != "" {
+	if request.loginID != "" {
+		// Admission above belongs to the caller. Once admitted, keep the local
+		// fixed commit joined until its workspace-owned result is known. The
+		// caller still controls collection/publication below; cancellation there
+		// retains the completed capture for explicit recovery instead of losing
+		// an in-progress local result and allowing an unrelated publication.
+		local, err = a.providerAuth.CompleteOAuthLoginForAccepted(w.subCtx, providerauth.OAuthLoginRef{LoginID: request.loginID, OperationID: request.operationID, Target: request.target}, a.accepted, a.configView())
+	} else if request.checkID != "" {
 		local, err = a.providerAuth.SaveAPIKeyForAccepted(ctx, providerauth.APIKeySaveRequest{OperationID: request.operationID, Target: request.target, CheckID: request.checkID}, a.accepted, a.configView())
 	} else if request.logout {
 		local, err = a.providerAuth.LogoutForAccepted(ctx, providerauth.LogoutRequest{OperationID: request.operationID, Target: request.target}, a.accepted, a.configView())
@@ -118,7 +126,14 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		local, err = a.providerAuth.SwitchForAccepted(ctx, providerauth.SwitchRequest{OperationID: request.operationID, Target: request.target, AccountID: request.accountID}, a.accepted, a.configView())
 	}
 	receipt.outcome, receipt.err = local.Outcome, err
-	receipt.owner, _ = local.OriginalOwner()
+	var admitted bool
+	receipt.owner, admitted = local.OriginalOwner()
+	if request.loginID != "" && err != nil && !admitted {
+		// Authorization may still be preparing or awaiting user interaction.
+		// A refused Complete is not an admitted fixed commit and must not
+		// permanently shadow the later authorized result for this login.
+		return clientAuthenticationOutcome(receipt, err)
+	}
 	a.retainClientAuthentication(receipt)
 	if err != nil {
 		return clientAuthenticationOutcome(receipt, err)
@@ -329,7 +344,7 @@ func (w *ClientWorkspace) clientAuthenticationAcknowledgedOutcome(ctx context.Co
 func clientAuthenticationOutcome(receipt *clientAuthenticationReceipt, cause error) (providerauth.MutationOutcome, error) {
 	data, err := json.Marshal(receipt.outcome)
 	if err != nil {
-		return providerauth.MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, providerauth.ErrReceiptUnverified
+		return providerauth.MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, LoginID: receipt.request.loginID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, providerauth.ErrReceiptUnverified
 	}
 	var outcome providerauth.MutationOutcome
 	decoder := json.NewDecoder(bytes.NewReader(data))

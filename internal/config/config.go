@@ -802,8 +802,12 @@ type Config struct {
 	transportProviderOwners   map[string]providerregistry.RegistrationOwner
 	authenticationRevocations map[string]providerregistry.RegistrationOwner
 	authenticationBasis       *authenticationLoadBasis
-	authenticationAccounts    *authenticationRuntimeAccounts
-	explicitModels            map[SelectedModelType]bool
+	// Explicit OAuth definitions prepared by this load but excluded from
+	// local execution until authentication. Private immutable candidates let
+	// remote collection retain a logged-out selected owner's definition.
+	authenticationCandidates map[string]ProviderConfig
+	authenticationAccounts   *authenticationRuntimeAccounts
+	explicitModels           map[SelectedModelType]bool
 }
 
 // cloneForWrite returns a copy of c that the store's typed field mutators
@@ -952,6 +956,7 @@ func (c *Config) RedactedForTransport() *Config {
 	}
 	result := *c
 	result.authenticationAccounts = nil
+	result.authenticationCandidates = nil
 	result.Images = cloneImageConfiguration(c.Images)
 	if result.Images != nil {
 		for backend, provider := range result.Images.Providers {

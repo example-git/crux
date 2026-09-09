@@ -326,10 +326,26 @@ func (c AuthenticationCapture) ValidateAcceptedAuthentication(accepted RemoteRun
 			return pending
 		}
 		provider, ok := c.runtime.config.Providers.Get(owner.ProviderID)
+		candidate := !ok && binding.Unavailable
+		if candidate {
+			provider, ok = c.runtime.config.authenticationCollectionProvider(owner.ProviderID)
+		}
 		if !ok {
 			return pending
 		}
 		if binding.Unavailable { // Acknowledged logout/disable has no executable credential.
+			if candidate {
+				if source == nil || provider.OAuthToken != nil || c.accounts.ActiveID(owner.AccountNamespace) != "" {
+					return pending
+				}
+				collected, known := source.runtime.config.authenticationCandidates[owner.ProviderID]
+				if !known || collected.APIKey != provider.APIKey || collected.APIKeyTemplate != provider.APIKeyTemplate {
+					return pending
+				}
+				// This same accepted load/collection resolved the source empty.
+				// Status retains that evidence without rerunning an expression.
+				continue
+			}
 			if !provider.Disable && (provider.APIKey != "" || provider.OAuthToken != nil) {
 				return pending
 			}
