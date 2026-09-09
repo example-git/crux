@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/providerregistry"
 )
 
 // Operation IDs are generated once per explicit user action and reused for
@@ -69,10 +70,11 @@ type MutationOutcome struct {
 // MutationResult retains private runtime authority. Serialize Outcome explicitly
 // at transport boundaries; never serialize the full result or a Config snapshot.
 type MutationResult struct {
-	Outcome MutationOutcome
-	runtime config.RuntimeSnapshot
-	after   config.AuthenticationCapture
-	current bool
+	Outcome       MutationOutcome
+	runtime       config.RuntimeSnapshot
+	after         config.AuthenticationCapture
+	current       bool
+	originalOwner providerregistry.RegistrationOwner
 }
 
 func (MutationResult) MarshalJSON() ([]byte, error) {
@@ -81,6 +83,15 @@ func (MutationResult) MarshalJSON() ([]byte, error) {
 
 func (MutationResult) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication mutation result]"))
+}
+
+// OriginalOwner is the complete private owner from this operation's admitted
+// initial capture. It remains available on partial, unverified and historical
+// receipts, independently of current runtime authority. Admission refusals have
+// no original owner. This provenance does not prove success or authorize using
+// a newer owner's namespace, credentials or configuration.
+func (r MutationResult) OriginalOwner() (providerregistry.RegistrationOwner, bool) {
+	return r.originalOwner, r.originalOwner.ProviderID != ""
 }
 
 // RuntimeSnapshot is available only after this service verified the exact

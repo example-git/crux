@@ -31,11 +31,12 @@ type mutationRequest struct {
 }
 
 type mutationReceipt struct {
-	request mutationRequest
-	outcome MutationOutcome
-	after   config.AuthenticationCapture
-	runtime config.RuntimeSnapshot
-	err     error
+	request       mutationRequest
+	outcome       MutationOutcome
+	after         config.AuthenticationCapture
+	runtime       config.RuntimeSnapshot
+	originalOwner providerregistry.RegistrationOwner
+	err           error
 }
 
 func (mutationReceipt) MarshalJSON() ([]byte, error) {
@@ -139,16 +140,19 @@ func (s *Service) mutate(ctx context.Context, request mutationRequest, accepted 
 	if s.mutations == nil {
 		return initial, errors.New("authentication mutation service is unavailable")
 	}
+	// Capture provenance at admission, before the transaction can change files
+	// or fail without a coherent After. Never derive this from a later capture.
+	receipt := mutationReceipt{request: request, originalOwner: owner}
 	var transaction config.AuthenticationMutationResult
 	if request.logout {
 		transaction, err = s.mutations.LogoutAuthentication(ctx, config.ScopeGlobal, before, owner)
 	} else {
 		transaction, err = s.mutations.SwitchAuthenticationAccount(ctx, config.ScopeGlobal, before, owner, request.accountID)
 	}
-	receipt := mutationReceipt{request: request, outcome: MutationOutcome{OperationID: request.operationID, Previous: request.target, Progress: MutationProgress{
+	receipt.outcome = MutationOutcome{OperationID: request.operationID, Previous: request.target, Progress: MutationProgress{
 		AccountRefreshed: transaction.AccountRefreshed, AccountsSaved: transaction.AccountsSaved,
 		ConfigSaved: transaction.ConfigSaved, RuntimePublished: transaction.RuntimePublished,
-	}}}
+	}}
 	runtime, coherent := transaction.RuntimeSnapshot()
 	if err != nil || !coherent || transaction.After.SameObservation(before) {
 		// Even an unchanged failure consumes its initiating target. Therefore an
@@ -199,9 +203,9 @@ func (s *Service) retain(receipt mutationReceipt) {
 func (s *Service) replay(ctx context.Context, receipt mutationReceipt) (MutationResult, error) {
 	outcome, err := cloneMutationOutcome(receipt.outcome)
 	if err != nil {
-		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}}, safeMutationError(err)
+		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner}, safeMutationError(err)
 	}
-	result := MutationResult{Outcome: outcome}
+	result := MutationResult{Outcome: outcome, originalOwner: receipt.originalOwner}
 	if receipt.err != nil {
 		return result, receipt.err
 	}
