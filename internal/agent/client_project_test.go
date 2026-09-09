@@ -28,10 +28,16 @@ type clientProjectRoundTrip func(*http.Request) (*http.Response, error)
 func (f clientProjectRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
-	for _, mode := range []string{"explicit", "credential-lookup", "missing-metadata", "server-owned"} {
+	for _, mode := range []string{"explicit", "credential-lookup", "captured-default", "explicit-provider-header", "missing-metadata", "server-owned"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("GEMINI_PROJECT_ID", "execution-host-project")
-			t.Setenv("ANTIGRAVITY_CLI_VERSION", "test")
+			t.Setenv("ANTIGRAVITY_CLI_VERSION", "execution-host-version")
+			identity := config.NativeIdentity{UserAgent: "antigravity/cli/owner-version client-os/client-arch"}
+			if mode == "captured-default" {
+				// This is an already resolved owning-client declaration. Resolution of
+				// absent client environment is covered at the config collection boundary.
+				identity.UserAgent = "antigravity/cli/0.1.0 default-os/default-arch"
+			}
 			project := ""
 			expected := "credential-project"
 			if mode == "explicit" {
@@ -43,11 +49,17 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 			if mode == "server-owned" {
 				expected = "execution-host-project"
 			}
-			var expectedProject atomic.Value
+			var expectedProject, expectedIdentity atomic.Value
 			expectedProject.Store(expected)
+			expectedIdentity.Store(identity.UserAgent)
+			if mode == "server-owned" {
+				expectedIdentity.Store(gemini.UserAgent())
+			}
 			var lookups, inferences atomic.Int32
 			host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				assert.Equal(t, "Bearer synthetic-client-token", r.Header.Get("Authorization"))
+				assert.Equal(t, expectedIdentity.Load().(string), r.Header.Get("User-Agent"))
+				assert.NotNil(t, r.TLS, "native inference and metadata must use the HTTPS fixture")
 				w.Header().Set("Content-Type", "application/json")
 				if strings.HasSuffix(r.URL.Path, ":loadCodeAssist") {
 					lookups.Add(1)
@@ -57,6 +69,9 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 					}
 					_, _ = w.Write([]byte(`{"cloudaicompanionProject":"credential-project"}`))
 					return
+				}
+				if mode == "explicit-provider-header" {
+					assert.Equal(t, "client-header-present", r.Header.Get("X-Identity-Precedence"), "the accepted header map must reach inference even though native User-Agent wins")
 				}
 				body, err := io.ReadAll(r.Body)
 				require.NoError(t, err)
@@ -89,9 +104,12 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 			require.True(t, ok)
 			selected := config.SelectedModel{Provider: gemini.ID, Model: "fixture"}
 			proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
-				Providers:   []config.RemoteProviderDefinition{{GeminiProjectID: &project, Config: config.ProviderConfig{ID: gemini.ID, Type: catalog.TypeOpenAICompat, BaseURL: host.URL, Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionGeminiAntigravity}, Models: []catalog.Model{{ID: selected.Model, Name: "Fixture"}}}}},
+				Providers:   []config.RemoteProviderDefinition{{NativeIdentity: &identity, GeminiProjectID: &project, Config: config.ProviderConfig{ID: gemini.ID, Type: catalog.TypeOpenAICompat, BaseURL: host.URL, Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionGeminiAntigravity}, Models: []catalog.Model{{ID: selected.Model, Name: "Fixture"}}}}},
 				Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: selected, config.SelectedModelTypeSmall: selected},
 				Credentials: []config.RemoteCredentialBinding{{Owner: registration.Owner(), Generation: 1, Account: &accounts.Entry{ID: "selected", AccessToken: "synthetic-client-token", RefreshToken: "synthetic-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}}},
+			}
+			if mode == "explicit-provider-header" {
+				proposal.Providers[0].Config.ExtraHeaders = map[string]string{"User-Agent": "explicit-gemini-client-agent", "X-Identity-Precedence": "client-header-present"}
 			}
 			sealClientResponsesProposal(t, &proposal)
 			root := t.TempDir()
@@ -112,9 +130,14 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 			require.NoError(t, err)
 			require.Contains(t, result.Content.Text(), "project authority verified")
 			expectedInferences := 1
-			if mode == "explicit" {
+			if mode == "explicit" || mode == "credential-lookup" || mode == "captured-default" || mode == "explicit-provider-header" {
 				proposal.Revision, proposal.Credentials[0].Generation = 2, 2
-				proposal.Providers[0].GeminiProjectID = new("new-client-project")
+				nextIdentity := config.NativeIdentity{UserAgent: "antigravity/cli/new-owner-version next-client-os/next-client-arch"}
+				proposal.Providers[0].NativeIdentity = &nextIdentity
+				if mode == "explicit" {
+					proposal.Providers[0].GeminiProjectID = new("new-client-project")
+				}
+				t.Setenv("ANTIGRAVITY_CLI_VERSION", "changed-execution-host-version")
 				sealClientResponsesProposal(t, &proposal)
 				_, err := store.ReplaceRemoteRuntime(t.Context(), proposal, strings.Repeat("a", 64), 1)
 				require.NoError(t, err)
@@ -125,9 +148,13 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 				require.NoError(t, err)
 				for index, captured := range []fantasy.LanguageModel{nextModel, model} {
 					if index == 0 {
-						expectedProject.Store("new-client-project")
+						expectedIdentity.Store(nextIdentity.UserAgent)
+						if mode == "explicit" {
+							expectedProject.Store("new-client-project")
+						}
 					} else {
-						expectedProject.Store("client-project")
+						expectedIdentity.Store(identity.UserAgent)
+						expectedProject.Store(expected)
 					}
 					result, err := captured.Generate(t.Context(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("verify captured project")}})
 					require.NoError(t, err)
@@ -136,7 +163,9 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 				expectedInferences = 3
 			}
 			require.EqualValues(t, expectedInferences, inferences.Load())
-			if mode == "credential-lookup" || mode == "missing-metadata" {
+			if mode == "credential-lookup" || mode == "captured-default" || mode == "explicit-provider-header" {
+				require.EqualValues(t, 3, lookups.Load())
+			} else if mode == "missing-metadata" {
 				require.EqualValues(t, 1, lookups.Load())
 			} else {
 				require.Zero(t, lookups.Load())

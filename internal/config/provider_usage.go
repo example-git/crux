@@ -106,6 +106,10 @@ func (s *ConfigStore) ProviderUsage(ctx context.Context, request ProviderUsageRe
 	if err := snapshot.ClientProviderUnavailable(request.Owner.ProviderID); err != nil {
 		return nil, err
 	}
+	ctx, err := snapshot.contextWithClientNativeIdentity(ctx, request.Owner)
+	if err != nil {
+		return nil, err
+	}
 	usage, err := PrepareProviderUsage(current, request.Owner)(ctx)
 	if err != nil {
 		return nil, err

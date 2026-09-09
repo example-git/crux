@@ -1845,6 +1845,13 @@ func (c *coordinator) buildCodexProvider(snapshot config.RuntimeSnapshot, regist
 		data, _ := json.Marshal(authority)
 		runtimeScope = hashContinuationIdentity(string(data))
 	}
+	if snapshot.IsClientOwned() {
+		identity, err := snapshot.ClientNativeIdentity(registration.ProviderID)
+		if err != nil {
+			return nil, err
+		}
+		return codex.NewProviderWithIdentity(baseURL, func() string { return apiKey }, accountID, headers, c.codexSessions, registration.Operation, compactionOperation, registration.Images, validate, identity, runtimeScope)
+	}
 	return codex.NewProvider(baseURL, func() string { return apiKey }, accountID, headers, c.codexSessions, registration.Operation, compactionOperation, registration.Images, validate, runtimeScope)
 }
 
@@ -2076,12 +2083,16 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 				if err != nil {
 					return nil, err
 				}
-				return gemini.NewProviderWithProjectSource(baseURL, func() string { return apiKey }, headers, registration.Operation, validateOwner, func(ctx context.Context, token string) string {
+				identity, err := snapshot.ClientNativeIdentity(providerCfg.ID)
+				if err != nil {
+					return nil, err
+				}
+				return gemini.NewProviderWithIdentity(baseURL, func() string { return apiKey }, headers, registration.Operation, validateOwner, func(ctx context.Context, token string) string {
 					if project != "" {
 						return project
 					}
 					return gemini.ProjectForCredential(ctx, token)
-				})
+				}, identity)
 			}
 			return c.buildGeminiAntigravityProvider(registration, baseURL, apiKey, headers, validateOwner)
 		case providerregistry.ConstructionCodex:

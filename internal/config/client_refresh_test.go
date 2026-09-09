@@ -21,7 +21,7 @@ func clientRefreshRuntimeFixture(t *testing.T) (*ConfigStore, RemoteRuntimePropo
 	registration, ok := registry.Lookup("codex")
 	require.True(t, ok)
 	proposal := sealRemoteRuntime(t, RemoteRuntimeProposal{Version: RemoteRuntimeVersion, Revision: 1,
-		Providers:   []RemoteProviderDefinition{{Config: ProviderConfig{ID: "codex", Name: "Fixture", Type: catalog.TypeOpenAICompat, BaseURL: "wss://fixture.invalid/responses", Owner: &ProviderOwnerReference{Type: ProviderOwnerCore, Construction: providerregistry.ConstructionCodex}, Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}}}}},
+		Providers:   []RemoteProviderDefinition{{NativeIdentity: &NativeIdentity{UserAgent: "fixture-client/1.2.3 (FixtureOS 1; fixture) FixtureTerminal", Version: "1.2.3", Originator: "fixture-client"}, Config: ProviderConfig{ID: "codex", Name: "Fixture", Type: catalog.TypeOpenAICompat, BaseURL: "wss://fixture.invalid/responses", Owner: &ProviderOwnerReference{Type: ProviderOwnerCore, Construction: providerregistry.ConstructionCodex}, Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}}}}},
 		Models:      map[SelectedModelType]SelectedModel{SelectedModelTypeLarge: {Provider: "codex", Model: "fixture"}, SelectedModelTypeSmall: {Provider: "codex", Model: "fixture"}},
 		Credentials: []RemoteCredentialBinding{{Owner: registration.Owner(), Generation: 1, Account: &accounts.Entry{ID: "selected", AccessToken: "synthetic-old", RefreshToken: "synthetic-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}}},
 	})

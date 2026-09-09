@@ -36,15 +36,31 @@ func (s *ConfigStore) CollectRemoteRuntime(ctx context.Context, revision uint64)
 // CollectRemoteRuntimeWithUnavailable records intentional client logout without
 // keeping the receiver's old secret or choosing a different provider.
 func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, revision uint64, removed map[providerregistry.RegistrationOwner]bool) (RemoteRuntimeProposal, error) {
-	if err := lockAuthenticationMutex(ctx, s.writeMu.TryRLock, s.writeMu.RUnlock); err != nil {
-		return RemoteRuntimeProposal{}, err
+	var snapshot RuntimeSnapshot
+	for {
+		var err error
+		snapshot, err = s.captureRemoteCollectionRuntime(ctx)
+		if err != nil {
+			return RemoteRuntimeProposal{}, err
+		}
+		if err := snapshot.prepareNativeIdentities(ctx); err != nil {
+			return RemoteRuntimeProposal{}, err
+		}
+		if err := lockAuthenticationMutex(ctx, s.writeMu.TryRLock, s.writeMu.RUnlock); err != nil {
+			return RemoteRuntimeProposal{}, err
+		}
+		if err := lockAuthenticationMutex(ctx, s.configMu.TryLock, s.configMu.Unlock); err != nil {
+			s.writeMu.RUnlock()
+			return RemoteRuntimeProposal{}, err
+		}
+		current := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
+		s.configMu.Unlock()
+		if snapshot.SamePublication(current) && snapshot.nativeIdentities == current.nativeIdentities {
+			break
+		}
+		s.writeMu.RUnlock()
 	}
 	defer s.writeMu.RUnlock()
-	if err := lockAuthenticationMutex(ctx, s.configMu.TryLock, s.configMu.Unlock); err != nil {
-		return RemoteRuntimeProposal{}, err
-	}
-	snapshot := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
-	s.configMu.Unlock()
 	return collectRemoteRuntime(ctx, snapshot, revision, removed, snapshot.Resolve, func(ctx context.Context, owner providerregistry.RegistrationOwner) (*accounts.Entry, error) {
 		state, err := captureRuntimeAccounts(ctx, snapshot, []string{owner.AccountNamespace})
 		if err != nil {
@@ -58,6 +74,20 @@ func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, r
 		}
 		return nil, nil
 	})
+}
+
+// Capture only immutable state, with the same cancelable lock waits as the
+// collection transaction. Native version discovery runs after both unlocks.
+func (s *ConfigStore) captureRemoteCollectionRuntime(ctx context.Context) (RuntimeSnapshot, error) {
+	if err := lockAuthenticationMutex(ctx, s.writeMu.TryRLock, s.writeMu.RUnlock); err != nil {
+		return RuntimeSnapshot{}, err
+	}
+	defer s.writeMu.RUnlock()
+	if err := lockAuthenticationMutex(ctx, s.configMu.TryLock, s.configMu.Unlock); err != nil {
+		return RuntimeSnapshot{}, err
+	}
+	defer s.configMu.Unlock()
+	return s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment), nil
 }
 
 // account resolves only a selected owner. Authentication completion supplies
@@ -94,7 +124,7 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 		if !ok {
 			return proposal, fmt.Errorf("selected client provider %q is unavailable", id)
 		}
-		definition, owner, err := snapshot.clientProviderDefinition(id, resolve)
+		definition, owner, err := snapshot.clientProviderDefinition(ctx, id, resolve)
 		if err != nil {
 			return proposal, err
 		}

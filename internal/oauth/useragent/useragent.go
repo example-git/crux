@@ -71,6 +71,15 @@ func Gemini() string {
 }
 
 func GeminiForContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if identity, ok := ctx.Value(geminiIdentityKey{}).(NativeIdentity); ok {
+		return identity.UserAgent, nil
+	}
 	version, err := GeminiVersionForContext(ctx)
 	if err != nil {
 		return "", err
@@ -807,17 +816,8 @@ func Codex() string {
 }
 
 func CodexForContext(ctx context.Context) (string, error) {
-	version, err := CodexVersionForContext(ctx)
-	if err != nil {
-		return "", err
-	}
-	osRelease, err := osVersionForContext(ctx)
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%s/%s (%s %s; %s) %s",
-		CodexOriginatorForContext(ctx), version, codexOSType(), osRelease,
-		runtime.GOARCH, codexTerminalTokenForContext(ctx)), nil
+	identity, err := ResolveCodexIdentity(ctx)
+	return identity.UserAgent, err
 }
 
 // CodexOriginator returns the originator value presented in the UA and the
@@ -829,6 +829,9 @@ func CodexOriginator() string {
 // CodexOriginatorForContext matches the originator used by CodexForContext,
 // including captured absence, so a request's header and User-Agent agree.
 func CodexOriginatorForContext(ctx context.Context) string {
+	if identity, ok := ctx.Value(codexIdentityKey{}).(NativeIdentity); ok {
+		return identity.Originator
+	}
 	return environmentOrForContext(ctx, "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "codex_cli_rs")
 }
 
@@ -871,6 +874,9 @@ func CodexVersionForContext(ctx context.Context) (string, error) {
 	}
 	if err := providertransport.ValidateContextOwner(ctx); err != nil {
 		return "", err
+	}
+	if identity, ok := ctx.Value(codexIdentityKey{}).(NativeIdentity); ok {
+		return identity.Version, nil
 	}
 	if value := environmentOrForContext(ctx, "CODEX_VERSION", ""); value != "" {
 		return value, nil

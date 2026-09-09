@@ -89,7 +89,16 @@ func configuredCodexAuth(ctx context.Context, store *config.ConfigStore, snapsho
 	if err != nil {
 		return resolvedAuth{}, true, err
 	}
+	var identity *config.NativeIdentity
+	if snapshot.IsClientOwned() {
+		captured, err := snapshot.ClientNativeIdentity(owner.ProviderID)
+		if err != nil {
+			return resolvedAuth{}, true, err
+		}
+		identity = &captured
+	}
 	return resolvedAuth{
+		nativeIdentity: identity,
 		mode:           AuthCodex,
 		token:          token,
 		accountID:      accountID,
@@ -155,6 +164,9 @@ func configuredCodexAccountID(ctx context.Context, store *config.ConfigStore, sn
 		if accountID := accountIDFromRaw(entry.Raw); accountID != "" {
 			return accountID, nil
 		}
+	}
+	if snapshot.IsClientOwned() {
+		return codex.AccountID(token), nil
 	}
 	if err := store.ValidateRegistrationOwner(expected); err != nil {
 		return "", err

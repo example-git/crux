@@ -395,6 +395,7 @@ func imageVariantFailuresError(failures []ImageVariantFailure) error {
 
 // resolvedAuth is the credential selected for a request.
 type resolvedAuth struct {
+	nativeIdentity *useragent.NativeIdentity
 	mode           AuthMode
 	token          string
 	accountID      string
@@ -574,9 +575,15 @@ func applyAuthHeaders(httpReq *http.Request, auth resolvedAuth) {
 		if auth.accountID != "" {
 			httpReq.Header.Set("ChatGPT-Account-ID", auth.accountID)
 		}
-		httpReq.Header.Set("User-Agent", useragent.Codex())
-		httpReq.Header.Set("originator", useragent.CodexOriginator())
-		httpReq.Header.Set("version", useragent.CodexVersion())
+		if identity := auth.nativeIdentity; identity != nil {
+			httpReq.Header.Set("User-Agent", identity.UserAgent)
+			httpReq.Header.Set("originator", identity.Originator)
+			httpReq.Header.Set("version", identity.Version)
+		} else {
+			httpReq.Header.Set("User-Agent", useragent.Codex())
+			httpReq.Header.Set("originator", useragent.CodexOriginator())
+			httpReq.Header.Set("version", useragent.CodexVersion())
+		}
 	}
 }
 

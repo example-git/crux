@@ -293,6 +293,19 @@ func (c AuthenticationCapture) ValidateAcceptedAuthentication(accepted RemoteRun
 				current.Config.BaseURL = gemini.APIEndpoint
 			}
 		}
+		if transported.Config.Owner != nil && nativeConstruction(transported.Config.Owner.Construction) {
+			capture := c.runtime.nativeIdentities
+			if source != nil {
+				capture = source.runtime.nativeIdentities
+			}
+			identity, ready := capture.peek(transported.Config.Owner.Construction)
+			if !ready || transported.NativeIdentity == nil || identity != *transported.NativeIdentity {
+				return pending
+			}
+		}
+		// Raw comparisons are immutable input projections; the exact resolved
+		// declaration was checked separately against its retained capture above.
+		wanted.NativeIdentity = nil
 		currentJSON, err := json.Marshal(current)
 		if err != nil {
 			return pending

@@ -22,6 +22,18 @@ type AccountIDSource = responses.AccountIDSource
 // WebSocket adapter pointed at the ChatGPT Codex endpoint, presenting the
 // Codex CLI identity and authenticating with the given OAuth token source.
 func NewProvider(baseURL string, token TokenSource, accountID AccountIDSource, headers map[string]string, sessionStore *responses.SessionStore, operation, compactionOperation *providertransport.Operation, images *manifest.ImagePolicy, validate providertransport.OwnerValidator, runtimeScope ...string) (fantasy.Provider, error) {
+	return newProvider(baseURL, token, accountID, headers, sessionStore, operation, compactionOperation, images, validate, nil, runtimeScope...)
+}
+
+// NewProviderWithIdentity uses the owning runtime's resolved literal identity.
+func NewProviderWithIdentity(baseURL string, token TokenSource, accountID AccountIDSource, headers map[string]string, sessionStore *responses.SessionStore, operation, compactionOperation *providertransport.Operation, images *manifest.ImagePolicy, validate providertransport.OwnerValidator, identity useragent.NativeIdentity, runtimeScope ...string) (fantasy.Provider, error) {
+	if err := identity.ValidateCodex(); err != nil {
+		return nil, err
+	}
+	return newProvider(baseURL, token, accountID, headers, sessionStore, operation, compactionOperation, images, validate, &identity, runtimeScope...)
+}
+
+func newProvider(baseURL string, token TokenSource, accountID AccountIDSource, headers map[string]string, sessionStore *responses.SessionStore, operation, compactionOperation *providertransport.Operation, images *manifest.ImagePolicy, validate providertransport.OwnerValidator, identity *useragent.NativeIdentity, runtimeScope ...string) (fantasy.Provider, error) {
 	if validate == nil {
 		return nil, fmt.Errorf("Codex provider owner validator is unavailable")
 	}
@@ -31,14 +43,17 @@ func NewProvider(baseURL string, token TokenSource, accountID AccountIDSource, h
 	if images == nil || images.HistoryBudget == nil {
 		return nil, fmt.Errorf("Codex image history budget is unavailable")
 	}
+	if identity == nil {
+		identity = &useragent.NativeIdentity{UserAgent: useragent.Codex(), Originator: useragent.CodexOriginator(), Version: useragent.CodexVersion()}
+	}
 	opts := []responses.Option{
 		responses.WithURL(baseURL),
 		responses.WithName(ID),
 		responses.WithTokenSource(token),
 		responses.WithAccountIDSource(accountID),
-		responses.WithUserAgent(useragent.Codex()),
-		responses.WithOriginator(useragent.CodexOriginator()),
-		responses.WithVersion(useragent.CodexVersion()),
+		responses.WithUserAgent(identity.UserAgent),
+		responses.WithOriginator(identity.Originator),
+		responses.WithVersion(identity.Version),
 		responses.WithSessionStore(sessionStore),
 		responses.WithOwnerValidator(validate),
 		responses.WithImagePolicy(images),

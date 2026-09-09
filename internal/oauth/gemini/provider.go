@@ -50,6 +50,28 @@ func NewProvider(baseURL string, token TokenSource, headers map[string]string, o
 
 // NewProviderWithProjectSource binds project metadata to the caller's authority.
 func NewProviderWithProjectSource(baseURL string, token TokenSource, headers map[string]string, operation *providertransport.Operation, validate providertransport.OwnerValidator, project func(context.Context, string) string) (fantasy.Provider, error) {
+	return newProvider(baseURL, token, headers, operation, validate, project, nil)
+}
+
+// NewProviderWithIdentity binds inference and project lookup to one resolved
+// native identity without consulting execution-host environment or metadata.
+func NewProviderWithIdentity(baseURL string, token TokenSource, headers map[string]string, operation *providertransport.Operation, validate providertransport.OwnerValidator, project func(context.Context, string) string, identity useragent.NativeIdentity) (fantasy.Provider, error) {
+	if err := identity.ValidateGemini(); err != nil {
+		return nil, err
+	}
+	if project == nil {
+		return nil, fmt.Errorf("Gemini project source is unavailable")
+	}
+	return newProvider(baseURL, token, headers, operation, validate, func(ctx context.Context, token string) string {
+		bound, err := useragent.ContextWithGeminiIdentity(ctx, identity)
+		if err != nil {
+			return ""
+		}
+		return project(bound, token)
+	}, &identity)
+}
+
+func newProvider(baseURL string, token TokenSource, headers map[string]string, operation *providertransport.Operation, validate providertransport.OwnerValidator, project func(context.Context, string) string, identity *useragent.NativeIdentity) (fantasy.Provider, error) {
 	if validate == nil {
 		return nil, fmt.Errorf("Gemini provider owner validator is unavailable")
 	}
@@ -59,12 +81,15 @@ func NewProviderWithProjectSource(baseURL string, token TokenSource, headers map
 	if baseURL == "" {
 		baseURL = APIEndpoint
 	}
+	if identity == nil {
+		identity = &useragent.NativeIdentity{UserAgent: UserAgent()}
+	}
 	httpClient := inferenceHTTPClient(operation, validate)
 	opts := []antigravity.Option{
 		antigravity.WithBaseURL(baseURL),
 		antigravity.WithName(ID),
 		antigravity.WithHTTPClient(httpClient),
-		antigravity.WithUserAgent(UserAgent()),
+		antigravity.WithUserAgent(identity.UserAgent),
 		antigravity.WithTokenSource(token),
 		antigravity.WithProjectLoader(func(ctx context.Context, token string) string {
 			return project(providertransport.ContextWithOwnerValidator(ctx, validate), token)
