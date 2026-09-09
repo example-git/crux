@@ -391,7 +391,10 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 	return c.configureProvidersWithMigration(ctx, store, env, resolver, knownProviders, store.migrateProviderReferences)
 }
 
-func (c *Config) configureProvidersWithMigration(ctx context.Context, store *ConfigStore, env env.Env, resolver VariableResolver, knownProviders []catalog.Provider, migrate func(map[string]ProviderOwnerReference, map[string]ProviderPluginReference, map[string]ProviderPresetReference) error) error {
+func (c *Config) configureProvidersWithMigration(ctx context.Context, store *ConfigStore, env env.Env, resolver VariableResolver, knownProviders []catalog.Provider, migrate func(map[string]ProviderOwnerReference, map[string]ProviderPluginReference, map[string]ProviderPresetReference) error, captureCredentials ...bool) error {
+	if len(captureCredentials) > 0 && captureCredentials[0] {
+		resolver = authenticationReloadResolver{ctx: ctx, resolver: resolver}
+	}
 	c.authenticationCandidates = nil
 	// Validate retained credential identity before preparation can resolve
 	// headers, migrate owners, or issue discovery requests.
@@ -434,6 +437,28 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 		})
 		if err != nil {
 			return err
+		}
+		// Explicit manifest definitions without catalogs skip the catalog
+		// readiness loop below. Accept their declared primary source here.
+		if len(captureCredentials) > 0 && captureCredentials[0] && provider.Plugin != nil && !provider.Disable && provider.OAuthToken == nil && provider.APIKey != "" && providerAPIKeySlotSupported(snapshot, provider) {
+			literal, resolveErr := ResolveProviderAPIKey(provider, resolver.ResolveValue)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			if literal != "" {
+				owner, active := snapshot.ProviderOwnerFor(id, provider)
+				if !active {
+					return errors.New("reloaded manifest credential owner is unavailable")
+				}
+				source := provider.APIKey
+				if provider.APIKeyTemplate != "" {
+					source = provider.APIKeyTemplate
+				}
+				provider, err = bindResolvedProviderAPIKey(snapshot, provider, owner, source, literal)
+				if err != nil {
+					return err
+				}
+			}
 		}
 		c.Providers.Set(id, provider)
 		if providerMissingConfigurationCredentials(snapshot, provider) {
@@ -600,6 +625,19 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 			}
 			continue
 		}
+		// Only an explicit saved-authentication reload captures ordinary primary
+		// source/literal provenance. Reuse the readiness evaluation above;
+		// review/apply must never evaluate this source a second time.
+		if len(captureCredentials) > 0 && captureCredentials[0] && v != "" && prepared.OAuthToken == nil && providerAPIKeySlotSupported(snapshot, prepared) {
+			owner, active := snapshot.ProviderOwnerFor(prepared.ID, prepared)
+			if !active {
+				return errors.New("reloaded credential owner is unavailable")
+			}
+			prepared, err = bindResolvedProviderAPIKey(snapshot, prepared, owner, prepared.APIKeyTemplate, v)
+			if err != nil {
+				return err
+			}
+		}
 		c.Providers.Set(string(p.ID), prepared)
 	}
 
@@ -739,6 +777,20 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 			providerConfig.APIKeyTemplate = ""
 		}
 		apiKey, err := ResolveProviderAPIKey(providerConfig, resolver.ResolveValue)
+		if err == nil && apiKey != "" && len(captureCredentials) > 0 && captureCredentials[0] && providerConfig.OAuthToken == nil && providerAPIKeySlotSupported(snapshot, providerConfig) {
+			owner, active := snapshot.ProviderOwnerFor(id, providerConfig)
+			if !active {
+				return errors.New("reloaded custom credential owner is unavailable")
+			}
+			source := providerConfig.APIKey
+			if providerConfig.APIKeyTemplate != "" {
+				source = providerConfig.APIKeyTemplate
+			}
+			providerConfig, err = bindResolvedProviderAPIKey(snapshot, providerConfig, owner, source, apiKey)
+			if err != nil {
+				return err
+			}
+		}
 		if apiKey == "" || err != nil {
 			slog.Warn("Provider is missing API key, this might be OK for local providers", "provider", id)
 		}
@@ -820,6 +872,9 @@ func (c *Config) buildEnvironment() (env.Env, VariableResolver, map[string]strin
 }
 
 func (c *Config) buildEnvironmentFrom(base env.Env) (env.Env, VariableResolver, map[string]string, error) {
+	return c.buildEnvironmentFromContext(context.Background(), base)
+}
+func (c *Config) buildEnvironmentFromContext(ctx context.Context, base env.Env) (env.Env, VariableResolver, map[string]string, error) {
 	values := environmentValues(base)
 	candidate := env.NewFromMap(values)
 	resolver := NewShellVariableResolver(candidate)
@@ -836,7 +891,7 @@ func (c *Config) buildEnvironmentFrom(base env.Env) (env.Env, VariableResolver, 
 		if immutableHostEnvironmentVariables[key] {
 			return nil, nil, nil, fmt.Errorf("environment variable %q is a startup-only host setting", key)
 		}
-		resolved, err := resolver.ResolveValue(c.Env[key])
+		resolved, err := resolver.(contextVariableResolver).ResolveValueContext(ctx, c.Env[key])
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("resolve environment variable %q", key)
 		}

@@ -20,17 +20,20 @@ func (r ProviderAuthenticationReviewRequest) Validate() error {
 	return clientAuthenticationReviewRequest(r).validate()
 }
 func (r ProviderAuthenticationApplyRequest) Validate() error {
-	return validateAuthenticationReviewIDs(r.OriginalTarget, r.OperationID, r.ReviewID, r.PreviewID, r.ApplyID)
+	return clientAuthenticationApplyRequest(r).validate()
 }
 
 func (s clientAuthenticationReviewSummary) Validate(r ProviderAuthenticationReviewRequest) error {
 	if err := r.Validate(); err != nil {
 		return err
 	}
-	if s.OperationID != r.OperationID || s.ReviewID != r.ReviewID || s.ReviewSequence != r.ReviewSequence || s.Choice != r.Choice || s.Owner != r.OriginalTarget.Owner {
+	if s.OperationID != r.OperationID || s.ReviewID != r.ReviewID || s.ReviewSequence != r.ReviewSequence || s.Choice != r.Choice || s.FreshSaved != r.FreshSaved || s.Owner != clientAuthenticationReviewRequest(r).target().Owner {
 		return providerauth.ErrReceiptUnverified
 	}
-	if err := validateAuthenticationReviewIDs(r.OriginalTarget, s.PreviewID); err != nil {
+	if err := validateAuthenticationReviewIDs(clientAuthenticationReviewRequest(r).target(), s.PreviewID); err != nil {
+		return providerauth.ErrReceiptUnverified
+	}
+	if r.FreshSaved && (s.OriginalProgress != (providerauth.MutationProgress{}) || s.OriginalLogout || s.OriginalAccountID != "" || s.OriginalLoginID != "" || s.OriginalOAuthToken) {
 		return providerauth.ErrReceiptUnverified
 	}
 	if s.Receiver.Mode != "client" || s.Receiver.Principal == "" || s.Receiver.Revision == 0 || s.Receiver.Digest == "" {
@@ -42,19 +45,25 @@ func (o clientAuthenticationReconciliationOutcome) Validate(r ProviderAuthentica
 	if err := r.Validate(); err != nil {
 		return err
 	}
-	if o.OperationID != r.OperationID || o.ReviewID != r.ReviewID || o.PreviewID != r.PreviewID || o.ApplyID != r.ApplyID ||
-		o.Adopted && !o.RemoteAcknowledged || o.OriginalDisposition != "unresolved" && o.OriginalDisposition != "runtime-reconciled" ||
-		(o.OriginalDisposition == "runtime-reconciled") != o.Adopted {
+	if o.OperationID != r.OperationID || o.ReviewID != r.ReviewID || o.PreviewID != r.PreviewID || o.ApplyID != r.ApplyID || o.Adopted && !o.RemoteAcknowledged {
 		return providerauth.ErrReceiptUnverified
 	}
+	if r.FreshSaved {
+		if o.OriginalDisposition != "not-applicable" {
+			return providerauth.ErrReceiptUnverified
+		}
+	} else if o.OriginalDisposition != "unresolved" && o.OriginalDisposition != "runtime-reconciled" || (o.OriginalDisposition == "runtime-reconciled") != o.Adopted {
+		return providerauth.ErrReceiptUnverified
+	}
+
 	return nil
 }
 
 // ProviderAuthenticationReconciler is optional. It is supported only by the
-// owning client and its retained switch/logout or confirmed OAuth credential
-// receipts. Namespace-free login intent uses a private complete-token identity;
-// an alternate saved token requires its separate explicit review choice.
-// Checked-key reconciliation remains unsupported.
+// owning client. Original mode uses retained switch/logout or confirmed OAuth
+// receipts; fresh mode uses a separately captured current saved target and an
+// explicit account, logout, complete OAuth token or credential-slot choice.
+// Original checked-key probe provenance remains a distinct journal concern.
 type ProviderAuthenticationReconciler interface {
 	CanReconcileProviderAuthentication() bool
 	ReviewProviderAuthentication(context.Context, ProviderAuthenticationReviewRequest) (ProviderAuthenticationReviewSummary, error)

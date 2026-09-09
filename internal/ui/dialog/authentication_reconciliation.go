@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/workspace"
 )
@@ -28,6 +29,9 @@ type AuthenticationReconciliation struct {
 	generation                              uint64
 	original, message, preview              string
 	pending, retryReview, apply, retryApply bool
+	fresh                                   bool
+	slots                                   []providerauth.CredentialSlot
+	slotIndex                               int
 	finished                                bool
 	scroll                                  int
 }
@@ -51,6 +55,11 @@ func NewAuthenticationReconciliation(com *common.Common, original string, accoun
 	d.help.Styles = com.Styles.DialogHelpStyles()
 	return d
 }
+func (d *AuthenticationReconciliation) SetFreshSaved(slots []providerauth.CredentialSlot) {
+	d.fresh = true
+	d.slots = append([]providerauth.CredentialSlot(nil), slots...)
+}
+
 func (d *AuthenticationReconciliation) ID() string         { return AuthenticationReconciliationID }
 func (d *AuthenticationReconciliation) Generation() uint64 { return d.generation }
 func (d *AuthenticationReconciliation) Choice() workspace.ProviderAuthenticationReviewChoice {
@@ -58,6 +67,12 @@ func (d *AuthenticationReconciliation) Choice() workspace.ProviderAuthentication
 }
 func (d *AuthenticationReconciliation) SetChoice(choice workspace.ProviderAuthenticationReviewChoice) {
 	d.choice = choice
+	for i, slot := range d.slots {
+		if slot.ID == choice.CredentialID {
+			d.slotIndex = i
+			break
+		}
+	}
 	d.input.SetValue(choice.AccountID)
 	d.generation++
 	d.preview, d.apply, d.retryApply = "", false, false
@@ -85,7 +100,10 @@ func (d *AuthenticationReconciliation) HandleMsg(msg tea.Msg) Action {
 			return nil
 		}
 		switch kp.String() {
-		case "alt+1", "alt+2", "alt+3", "alt+4":
+		case "alt+1", "alt+2", "alt+3", "alt+4", "alt+5":
+			if kp.String() == "alt+1" && d.fresh {
+				return nil
+			}
 			choice := workspace.ProviderAuthenticationReviewChoice{}
 			if kp.String() == "alt+2" {
 				choice.Kind, choice.AccountID = "saved-account", d.input.Value()
@@ -97,10 +115,21 @@ func (d *AuthenticationReconciliation) HandleMsg(msg tea.Msg) Action {
 				choice.Kind = "saved-logout"
 			} else if kp.String() == "alt+4" {
 				choice.Kind = "saved-oauth-token"
+			} else if kp.String() == "alt+5" {
+				if !d.fresh || len(d.slots) == 0 {
+					return nil
+				}
+				choice.Kind = "saved-credential"
+				choice.CredentialID = d.slots[d.slotIndex%len(d.slots)].ID
 			}
 			d.SetChoice(choice)
 			return ActionAuthenticationReconciliation{Dialog: d, Kind: "choice", Choice: choice}
 		case "tab":
+			if d.fresh && d.choice.Kind == "saved-credential" && len(d.slots) > 0 {
+				d.slotIndex = (d.slotIndex + 1) % len(d.slots)
+				d.SetChoice(workspace.ProviderAuthenticationReviewChoice{Kind: "saved-credential", CredentialID: d.slots[d.slotIndex].ID})
+				return ActionAuthenticationReconciliation{Dialog: d, Kind: "choice", Choice: d.choice}
+			}
 			if d.choice.Kind == "saved-account" && len(d.accounts) > 0 {
 				d.accountIndex = (d.accountIndex + 1) % len(d.accounts)
 				d.SetChoice(workspace.ProviderAuthenticationReviewChoice{Kind: "saved-account", AccountID: d.accounts[d.accountIndex].AccountID})
@@ -172,8 +201,13 @@ func (d *AuthenticationReconciliation) Draw(scr uv.Screen, area uv.Rectangle) *t
 		choice = "Saved logout"
 	} else if d.choice.Kind == "saved-oauth-token" {
 		choice = "Saved OAuth credential"
+	} else if d.choice.Kind == "saved-credential" {
+		choice = "Saved credential slot: " + d.choice.CredentialID
 	}
 	text := "Publish reviewed saved state; the original operation is not repeated.\nAlt+1 original intent · Alt+2 saved account · Alt+3 saved logout · Alt+4 saved OAuth credential\nChoice: " + choice
+	if d.fresh {
+		text = "New explicit saved intent; no original operation is asserted.\nAlt+2 saved account · Alt+3 saved logout · Alt+4 saved OAuth · Alt+5 credential slot (Tab cycles)\nChoice: " + choice
+	}
 	if d.finished {
 		text = "Reviewed publication completed.\nChoice: " + choice
 	}
@@ -187,16 +221,20 @@ func (d *AuthenticationReconciliation) Draw(scr uv.Screen, area uv.Rectangle) *t
 	if d.preview != "" {
 		text += "\n\n" + d.preview
 	}
-	text += "\n\nOriginal result: " + d.original + "\nNo files are repaired or reloaded by review/apply."
+	if !d.fresh {
+		text += "\n\nOriginal result: " + d.original
+	}
+	text += "\nNo files are repaired or reloaded by review/apply. Return to Saved Authentication for explicit reload."
 	lines := strings.Split(ansi.Wrap(ansi.Strip(text), max(1, inner), ""), "\n")
-	capacity := max(0, area.Dy()-t.Dialog.View.GetVerticalFrameSize()-5)
+	footer := savedAuthenticationFooter(d.com, &d.help, d.ShortHelp(), inner)
+	capacity := max(0, area.Dy()-t.Dialog.View.GetVerticalFrameSize()-len(strings.Split(footer, "\n"))-2)
 	d.scroll = min(d.scroll, max(0, len(lines)-capacity))
 	end := min(len(lines), d.scroll+capacity)
 	parts := []string{common.DialogTitle(t, "Review Saved Authentication", inner, t.Dialog.TitleGradFromColor, t.Dialog.TitleGradToColor), strings.Join(lines[d.scroll:end], "\n")}
 	if len(lines) > capacity {
 		parts = append(parts, t.Dialog.SecondaryText.Render(fmt.Sprintf("PgUp/PgDn scroll (%d–%d of %d)", d.scroll+1, end, len(lines))))
 	}
-	parts = append(parts, renderDialogHelp(t, &d.help, d, inner))
+	parts = append(parts, footer)
 	view := t.Dialog.View.Width(width).Render(strings.Join(parts, "\n"))
 	DrawCenterCursor(scr, area, view, nil)
 	return nil

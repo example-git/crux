@@ -30,25 +30,26 @@ type clientAuthenticationRequest struct {
 // Retention matches the local service's bounded receipt window; it is not a
 // restart-persistent operation-ID ledger.
 type clientAuthenticationReceipt struct {
-	request          clientAuthenticationRequest
-	principal        string
-	base             config.RemoteRuntimeProposal
-	outcome          providerauth.MutationOutcome
-	after            config.AuthenticationCapture
-	owner            providerregistry.RegistrationOwner
-	removed          map[providerregistry.RegistrationOwner]bool
-	proposal         *config.RemoteRuntimeProposal
-	acknowledged     bool
-	adopted          bool
-	recoverySequence uint64
-	reviewSequence   uint64
-	reconciledBy     string
-	pendingReview    string
-	err              error
-	removalSuccessor string
-	removalActive    bool
-	removalAdmitted  bool
-	oauthTokenID     string
+	request                clientAuthenticationRequest
+	principal              string
+	base                   config.RemoteRuntimeProposal
+	outcome                providerauth.MutationOutcome
+	after                  config.AuthenticationCapture
+	owner                  providerregistry.RegistrationOwner
+	removed                map[providerregistry.RegistrationOwner]bool
+	proposal               *config.RemoteRuntimeProposal
+	acknowledged           bool
+	adopted                bool
+	recoverySequence       uint64
+	reviewSequence         uint64
+	savedStateSupersededBy string
+	reconciledBy           string
+	pendingReview          string
+	err                    error
+	removalSuccessor       string
+	removalActive          bool
+	removalAdmitted        bool
+	oauthTokenID           string
 }
 
 func (clientAuthenticationReceipt) MarshalJSON() ([]byte, error) {
@@ -257,6 +258,9 @@ func (a *clientAuthority) retainClientAuthentication(receipt *clientAuthenticati
 func (w *ClientWorkspace) replayClientAuthenticationLocked(ctx context.Context, a *clientAuthority, receipt *clientAuthenticationReceipt) (providerauth.MutationOutcome, error) {
 	if receipt.principal != a.principal || receipt.request.target.WorkspaceID != w.workspaceID() {
 		return clientAuthenticationOutcome(receipt, providerauth.ErrStale)
+	}
+	if receipt.savedStateSupersededBy != "" {
+		return clientAuthenticationOutcome(receipt, errors.New("a separate fresh saved-state action superseded this publication; the original result is unchanged"))
 	}
 	if receipt.reconciledBy != "" {
 		return clientAuthenticationOutcome(receipt, errors.New("saved authentication was published by a separate reviewed action; the original mutation result is unchanged"))

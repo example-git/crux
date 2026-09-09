@@ -2662,6 +2662,10 @@ func (s *ConfigStore) revalidateReloadGeneration(
 // provider-specific model values. Keep resolution before SetupAgents and roll
 // back on real setup errors without normalizing unavailable selections.
 func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context, retained ...*Config) error {
+	return s.reloadFromDiskWithCredentialCaptureLocked(ctx, false, retained...)
+}
+
+func (s *ConfigStore) reloadFromDiskWithCredentialCaptureLocked(ctx context.Context, captureCredentials bool, retained ...*Config) error {
 	baseEnvironment := s.baseEnvironment
 	if baseEnvironment == nil {
 		baseEnvironment = snapshotEnvironment()
@@ -2708,7 +2712,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context, retained ...*Con
 		resolvedInputs = &observed
 	}
 
-	candidateEnv, resolver, resolvedEnv, environmentErr := cfg.buildEnvironmentFrom(baseEnvironment)
+	candidateEnv, resolver, resolvedEnv, environmentErr := cfg.buildEnvironmentFromContext(ctx, baseEnvironment)
 	if environmentErr != nil {
 		return fmt.Errorf("build candidate environment during reload: %w", environmentErr)
 	}
@@ -2735,7 +2739,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context, retained ...*Con
 		pendingPresets = maps.Clone(presets)
 		return nil
 	}
-	if err := cfg.configureProvidersWithMigration(ctx, s, candidateEnv, resolver, providers, collectMigration); err != nil {
+	if err := cfg.configureProvidersWithMigration(ctx, s, candidateEnv, resolver, providers, collectMigration, captureCredentials); err != nil {
 		return fmt.Errorf("failed to configure providers during reload: %w", err)
 	}
 	cfg.retainAuthenticationRevocations(s.Config())

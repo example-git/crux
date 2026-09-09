@@ -454,6 +454,8 @@ type UI struct {
 	modelSelectionLanes           map[workspace.Workspace]*modelSelectionLane
 	modelSelectionGen             uint64
 	cancelCopilotImport           context.CancelFunc
+	savedAuthentication           *savedAuthenticationUI
+	savedAuthentications          map[workspace.Workspace]*savedAuthenticationUI
 	authenticationReads           map[*dialog.AccountAuthentication]*authenticationRead
 	authenticationOperations      map[workspace.Workspace]*authenticationOperation
 	authenticationReconciliations map[*authenticationOperation]*authenticationReconciliation
@@ -866,6 +868,10 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 		cmds = append(cmds, m.completeAuthenticationOperation(msg))
 	case authenticationRecoveryPreparedMsg:
 		cmds = append(cmds, m.completeAuthenticationRecoveryPreparation(msg))
+	case savedAuthenticationReadMsg:
+		cmds = append(cmds, m.completeSavedAuthenticationRead(msg))
+	case savedAuthenticationReloadMsg:
+		cmds = append(cmds, m.completeSavedAuthenticationReload(msg))
 	case authenticationReconciliationPreparedMsg:
 		cmds = append(cmds, m.completeAuthenticationReconciliationPreparation(msg))
 	case authenticationReviewCompletedMsg:
@@ -2467,6 +2473,8 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		cmds = append(cmds, m.beginAuthenticationRecovery(msg))
 	case dialog.ActionAuthenticationReviewOpen:
 		cmds = append(cmds, m.openAuthenticationReconciliation(msg))
+	case dialog.ActionSavedAuthentication:
+		cmds = append(cmds, m.handleSavedAuthentication(msg))
 	case dialog.ActionAuthenticationReconciliation:
 		cmds = append(cmds, m.handleAuthenticationReconciliation(msg))
 	case dialog.AccountSwitchedMsg:
@@ -5418,6 +5426,8 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openLoginDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.SavedAuthenticationID:
+		cmds = append(cmds, m.openSavedAuthentication())
 	case dialog.LogoutID:
 		cmds = append(cmds, m.openAuthenticationAccounts(true))
 	case dialog.AccountSwitcherID:

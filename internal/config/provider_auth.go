@@ -67,6 +67,11 @@ func (s *ConfigStore) CaptureAuthentication(ctx context.Context) (Authentication
 		}
 	}
 	defer s.writeMu.RUnlock()
+	return s.captureAuthenticationLocked(ctx)
+}
+
+// Caller holds writeMu for reading or writing.
+func (s *ConfigStore) captureAuthenticationLocked(ctx context.Context) (AuthenticationCapture, error) {
 	if err := ctx.Err(); err != nil {
 		return AuthenticationCapture{}, err
 	}
