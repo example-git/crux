@@ -119,10 +119,19 @@ func (s *ConfigStore) CaptureAuthenticationJournal(ctx context.Context) (Authent
 		return AuthenticationJournal{}, err
 	}
 	defer s.writeMu.RUnlock()
+	return s.captureAuthenticationJournalLocked()
+}
+
+// captureAuthenticationJournalLocked is for mutation code already holding
+// writeMu. Re-entering its read lock can deadlock when a writer is pending.
+func (s *ConfigStore) captureAuthenticationJournalLocked() (AuthenticationJournal, error) {
 	if err := s.RuntimeRevocation(); err != nil {
 		return AuthenticationJournal{}, err
 	}
-	if s.RuntimeSnapshot().IsClientOwned() {
+	s.configMu.RLock()
+	clientOwned := s.clientRuntime != nil
+	s.configMu.RUnlock()
+	if clientOwned {
 		return AuthenticationJournal{}, ErrClientRuntimeManaged
 	}
 	if !filepath.IsAbs(s.globalDataPath) {
