@@ -22,6 +22,9 @@ type Service struct {
 	mutations   authenticationMutator
 	receipts    map[string]mutationReceipt
 	receiptIDs  []string
+	apiKeys     checkedAPIKeyStore
+	keyChecks   map[string]apiKeyCheckReceipt
+	keyCheckIDs []string
 }
 
 func New(store *config.ConfigStore, workspaceID string) *Service {
@@ -29,7 +32,7 @@ func New(store *config.ConfigStore, workspaceID string) *Service {
 	// crypto/rand.Read either fills the buffer or terminates the process on a
 	// broken OS entropy source. No predictable authentication incarnation fallback.
 	_, _ = rand.Read(epoch[:])
-	return &Service{store: store, workspaceID: workspaceID, epoch: hex.EncodeToString(epoch[:]), gate: make(chan struct{}, 1), mutations: store, receipts: map[string]mutationReceipt{}}
+	return &Service{store: store, workspaceID: workspaceID, epoch: hex.EncodeToString(epoch[:]), gate: make(chan struct{}, 1), mutations: store, receipts: map[string]mutationReceipt{}, apiKeys: store, keyChecks: map[string]apiKeyCheckReceipt{}}
 }
 
 func (s *Service) Status(ctx context.Context) (Snapshot, error) {
