@@ -240,6 +240,15 @@ receiver workspace incarnation are marked as historical; their targets cannot
 publish into a newly created workspace. JSON output contains the public metadata
 projection, without retained proposals or credentials.
 
+In the UI, open **Authentication History** (`auth_history`) and select an
+operation or retained review. **Alt+R** starts an explicit original-publication
+recovery, **Alt+T** retries its retained request, and **Enter** opens a retained
+review. **Ctrl+P** reads local repair progress and **Ctrl+Y** applies that exact
+reviewed disk repair. **Ctrl+L** opens Saved Authentication for a separate reload
+and fresh review. Actions for an older workspace cannot publish its old target
+into the current workspace. Closing the dialog keeps admitted operations and
+their eventual receipts available.
+
 Repair finishes only the recorded account/configuration postimages and refuses
 conflicting newer saved state. It preserves the original progress separately,
 does not repeat a token exchange, and does not publish a receiver runtime.
