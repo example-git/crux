@@ -227,8 +227,9 @@ crux --connection NAME --cwd /srv/projects/PROJECT accounts logout PROVIDER
 ```
 
 Removing an inactive account does not need a model or runtime change. Removing
-the active account also clears its selected configuration and publishes the
-result. Logout clears the provider credential and its saved accounts. A
+the active account selects the first remaining account in stored order and
+publishes that successor; when none remains, it clears the selected credential.
+Logout clears the provider credential and its saved accounts. A
 concurrent replacement or selection change invalidates an old operation rather
 than authorizing it to affect the new selection.
 
@@ -442,7 +443,7 @@ authorization records; live usage tracking can update authorization last-use
 metadata.
 
 Forwarded credentials and private bundle contents are excluded from public
-workspace discovery and private-request traffic bodies. Secret redaction keeps
+workspace discovery and logged private-request traffic bodies. Secret redaction keeps
 process-keyed fingerprints for delayed logs without retaining plaintext secret
 registry entries. This is not a guarantee of physical memory zeroization; the
 executing process, a debugger or a process dump can expose live credentials.
