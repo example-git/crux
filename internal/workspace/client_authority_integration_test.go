@@ -20,10 +20,9 @@ import (
 	"github.com/example-git/crux/internal/connection"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/server"
-	"github.com/example-git/crux/internal/ui/common"
-	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
@@ -109,7 +108,7 @@ func TestClientAuthorityTransactionsThroughTLS(t *testing.T) {
 	hs.StartTLS()
 	t.Cleanup(func() { hs.Close(); _ = s.Close() })
 
-	// Only this client configuration is persisted by the UI transaction. The
+	// Only this client configuration is persisted by the client transaction. The
 	// server has already loaded its identity and compiles detached runtimes.
 	clientConfig := t.TempDir()
 	t.Setenv("CRUX_GLOBAL_CONFIG", clientConfig)
@@ -243,7 +242,10 @@ assertNoChange:
 	secondAccount := accounts.Entry{ID: "second", AccessToken: "synthetic-second-account", RefreshToken: "synthetic-second-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Raw: json.RawMessage(`{"account_id":"second-remote"}`)}
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, secondAccount))
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, firstAccount))
-	require.NoError(t, os.WriteFile(filepath.Join(oauthConfig, "crux.json"), []byte(`{"providers":{"codex":{"api_key":"synthetic-first-account","owner":{"type":"core","construction":"integrated-codex"},"models":[{"id":"fixture-model","name":"Fixture"}]}},"models":{"large":{"provider":"codex","model":"fixture-model"},"small":{"provider":"codex","model":"fixture-model"}}}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(oauthConfig, "crux.json"), []byte(`{"providers":{"codex":{"owner":{"type":"core","construction":"integrated-codex"},"models":[{"id":"fixture-model","name":"Fixture"}]}},"models":{"large":{"provider":"codex","model":"fixture-model"},"small":{"provider":"codex","model":"fixture-model"}}}`), 0o600))
+	// ScopeGlobal mutations write the data overlay. Keep the initial credential
+	// there too, so logout removes it without exposing a lower-layer key.
+	require.NoError(t, os.WriteFile(filepath.Join(oauthData, "crux.json"), []byte(`{"providers":{"codex":{"api_key":"synthetic-first-account"}}}`), 0o600))
 	oauthStore, err := config.Load(t.TempDir(), t.TempDir(), false)
 	require.NoError(t, err)
 	oauthProposal, err := oauthStore.CollectRemoteRuntime(t.Context(), 1)
@@ -258,12 +260,37 @@ assertNoChange:
 	registration, ok := oauthStore.ProviderRegistration("codex")
 	require.True(t, ok)
 	require.NoError(t, oauthWorkspace.InitCoderAgent(t.Context()))
-	com := &common.Common{Workspace: oauthWorkspace}
+	readAuthenticationAccounts := func() providerauth.AccountsState {
+		snapshot, err := oauthWorkspace.ProviderAuthentication(t.Context())
+		require.NoError(t, err)
+		publicOwner := providerauth.PublicOwner(registration.Owner())
+		found := false
+		for _, status := range snapshot.Providers {
+			if status.Owner == publicOwner {
+				found = true
+				break
+			}
+		}
+		require.True(t, found, "the initiating owner must come from current authentication status")
+		target := providerauth.Target{WorkspaceID: snapshot.WorkspaceID, Generation: snapshot.Generation, Owner: publicOwner}
+		state, err := oauthWorkspace.ProviderAccounts(t.Context(), target)
+		require.NoError(t, err)
+		require.Equal(t, target, state.Target)
+		return state
+	}
+	initialAccounts := readAuthenticationAccounts()
+	require.Len(t, initialAccounts.Accounts, 2)
+	require.Contains(t, []string{initialAccounts.Accounts[0].ID, initialAccounts.Accounts[1].ID}, secondAccount.ID)
+	selectedModels := oauthWorkspace.Config().Models
 	beforeSwitch := puts.Load()
-	switched, ok := dialog.SwitchAccountCmd(com, dialog.ActionSwitchAccount{Provider: registration.AccountNamespace, AccountID: secondAccount.ID, DisplayName: "Second"})().(dialog.AccountSwitchedMsg)
-	require.True(t, ok)
-	require.NoError(t, switched.Err)
-	require.Equal(t, beforeSwitch+1, puts.Load(), "the UI must publish exactly once after both local account writes")
+	switchRequest := providerauth.SwitchRequest{OperationID: strings.Repeat("a", 32), Target: initialAccounts.Target, AccountID: secondAccount.ID}
+	switched, err := oauthWorkspace.SwitchProviderAccount(t.Context(), switchRequest)
+	require.NoError(t, err)
+	require.NoError(t, switched.ValidateSwitch(switchRequest))
+	require.NotNil(t, switched.Change)
+	require.Equal(t, secondAccount.ID, switched.Change.Current.Status.ActiveAccountID)
+	require.Equal(t, selectedModels, oauthWorkspace.Config().Models)
+	require.Equal(t, beforeSwitch+1, puts.Load(), "the typed switch must publish exactly once after both local account writes")
 	oauthReceiver, err := s.Backend().GetWorkspace(oauthCreated.ID)
 	require.NoError(t, err)
 	acceptedAccount, ok := oauthReceiver.Cfg.EphemeralAccount(registration.Owner())
@@ -347,9 +374,16 @@ waitingForRefresh:
 	persisted, err = accounts.Active(t.Context(), registration.AccountNamespace)
 	require.NoError(t, err)
 	require.Equal(t, accounts.CredentialID(*autoAccount), accounts.CredentialID(*persisted))
-	loggedOut, ok := dialog.LogoutCmd(com, dialog.ActionLogout{Owner: registration.Owner(), AccountNamespace: registration.AccountNamespace, Label: "Codex"})().(dialog.LogoutDoneMsg)
-	require.True(t, ok)
-	require.NoError(t, loggedOut.Err)
+	currentAccounts := readAuthenticationAccounts()
+	logoutRequest := providerauth.LogoutRequest{OperationID: strings.Repeat("b", 32), Target: currentAccounts.Target}
+	beforeLogout := puts.Load()
+	loggedOut, err := oauthWorkspace.LogoutProvider(t.Context(), logoutRequest)
+	require.NoError(t, err)
+	require.NoError(t, loggedOut.ValidateLogout(logoutRequest))
+	require.NotNil(t, loggedOut.Change)
+	require.Empty(t, loggedOut.Change.Current.Accounts)
+	require.Equal(t, selectedModels, oauthWorkspace.Config().Models)
+	require.Equal(t, beforeLogout+1, puts.Load(), "the typed logout must publish exactly once")
 	_, hasAccount := oauthReceiver.Cfg.EphemeralAccount(registration.Owner())
 	require.False(t, hasAccount)
 	require.ErrorContains(t, oauthReceiver.Cfg.RuntimeSnapshot().ClientProviderUnavailable("codex"), "has no credential")
