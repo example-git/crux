@@ -42,7 +42,20 @@ func loadMCPDestinationAuthenticationStore(t *testing.T, selected config.MCPConf
 		require.NoError(t, os.MkdirAll(directory, 0o700))
 	}
 	path := filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json")
-	encoded, err := json.Marshal(map[string]any{"mcp": config.MCPs{"fixture": selected}})
+	// Config loading requires a custom provider when defaults are disabled.
+	// This static declaration is never executed by the MCP-only fixture.
+	encoded, err := json.Marshal(map[string]any{
+		"mcp": config.MCPs{"fixture": selected},
+		"providers": map[string]any{"fixture-static": map[string]any{
+			"type": "openai-compat", "api_key": "synthetic-unused-provider-key",
+			"base_url": "http://127.0.0.1:1/v1", "discover_models": false,
+			"models": []map[string]any{{"id": "fixture-model", "name": "Fixture model", "context_window": 8192, "default_max_tokens": 128}},
+		}},
+		"models": map[string]any{
+			"large": map[string]string{"provider": "fixture-static", "model": "fixture-model"},
+			"small": map[string]string{"provider": "fixture-static", "model": "fixture-model"},
+		},
+	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, encoded, 0o600))
 	store, err := config.LoadIsolated(working, workspaceData, false, env.NewFromMap(values))
