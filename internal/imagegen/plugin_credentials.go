@@ -144,7 +144,7 @@ func imageProviderCredential(ctx context.Context, snapshot config.RuntimeSnapsho
 	if !ok || !active || provider.Disable || actual != owner {
 		return nil, errors.New("image credential provider owner is unavailable")
 	}
-	key, err := snapshot.Resolve(provider.APIKey)
+	key, err := config.ResolveProviderAPIKey(provider, snapshot.Resolve)
 	if err != nil {
 		return nil, errors.New("image provider API credential resolution failed")
 	}

@@ -73,7 +73,7 @@ func configuredCodexAuth(ctx context.Context, store *config.ConfigStore, snapsho
 		}
 		refreshedToken = strings.TrimSpace(refreshed.AccessToken)
 	}
-	token, err := snapshot.Resolve(provider.APIKey)
+	token, err := config.ResolveProviderAPIKey(provider, snapshot.Resolve)
 	if err != nil {
 		return resolvedAuth{}, true, err
 	}
@@ -116,7 +116,7 @@ func configuredOpenAIAuth(store *config.ConfigStore, snapshot config.RuntimeSnap
 	if !active || owner != expected {
 		return resolvedAuth{}, false, nil
 	}
-	token, err := snapshot.Resolve(provider.APIKey)
+	token, err := config.ResolveProviderAPIKey(provider, snapshot.Resolve)
 	if err != nil {
 		return resolvedAuth{}, true, err
 	}
