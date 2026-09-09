@@ -712,7 +712,7 @@ func TestProviderGenerateExecutesRedirectAndRequestTimeoutPolicy(t *testing.T) {
 			defer server.Close()
 			provider := &Provider{ID: "synthetic", HTTPClient: server.Client(), Operation: &providertransport.Operation{
 				ID: "inference", Key: providertransport.Key{Protocol: "generic-json", Transport: "http-json"},
-				Endpoint: manifest.Endpoint{BaseURL: server.URL, FollowRedirects: follow}, Method: http.MethodPost, Path: "/redirect", RequestTimeout: time.Second,
+				Endpoint: manifest.Endpoint{BaseURL: server.URL, AllowedSchemes: []string{"https"}, AllowedHosts: []string{"127.0.0.1"}, Override: "same-origin", FollowRedirects: follow}, Method: http.MethodPost, Path: "/redirect", RequestTimeout: time.Second,
 			}}
 			model, err := provider.LanguageModel(t.Context(), "model-one")
 			require.NoError(t, err)

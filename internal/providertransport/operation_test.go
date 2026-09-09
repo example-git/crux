@@ -143,9 +143,11 @@ func TestOperationHTTPClientExecutesTimeoutAndRedirectPolicy(t *testing.T) {
 	require.Equal(t, 2*time.Second, client.Timeout)
 	require.ErrorIs(t, client.CheckRedirect(nil, nil), http.ErrUseLastResponse)
 
-	operation.Endpoint.FollowRedirects = true
+	operation.Endpoint = manifest.Endpoint{BaseURL: "https://example.invalid", AllowedSchemes: []string{"https"}, AllowedHosts: []string{"example.invalid"}, Override: "same-origin", FollowRedirects: true}
 	client = operation.HTTPClient(base)
-	require.ErrorIs(t, client.CheckRedirect(nil, nil), preserved)
+	request, err := http.NewRequest(http.MethodGet, "https://example.invalid/redirected", nil)
+	require.NoError(t, err)
+	require.ErrorIs(t, client.CheckRedirect(request, []*http.Request{request}), preserved)
 }
 
 func TestOperationValidateSelection(t *testing.T) {

@@ -168,8 +168,8 @@ func (o *Operation) HTTPClient(base *http.Client) *http.Client {
 	if o != nil && o.RequestTimeout > 0 {
 		client.Timeout = o.RequestTimeout
 	}
-	if o != nil && !o.Endpoint.FollowRedirects {
-		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	if o != nil {
+		return EndpointHTTPClient(&client, o.Endpoint)
 	}
 	return &client
 }

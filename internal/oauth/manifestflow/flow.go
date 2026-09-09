@@ -71,10 +71,7 @@ func (e *Executor) httpClient(endpoint manifest.Endpoint) *http.Client {
 		clone := *e.client
 		client = &clone
 	}
-	if !endpoint.FollowRedirects {
-		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	}
-	return client
+	return providertransport.EndpointHTTPClient(client, endpoint)
 }
 
 func (e *Executor) endpoint(id string) (manifest.Endpoint, *url.URL, error) {
