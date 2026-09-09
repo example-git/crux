@@ -18,6 +18,7 @@ type AuthenticationHistoryRow struct {
 	Key, Label, Details                                 string
 	Review, Recover, RetryRecovery, Repair, ApplyRepair bool
 	AbandonLocal, RetryAbandonLocal                     bool
+	AbandonPublication, RetryAbandonPublication         bool
 }
 type ActionAuthenticationHistory struct {
 	Dialog     *AuthenticationHistory
@@ -172,6 +173,14 @@ func (d *AuthenticationHistory) HandleMsg(msg tea.Msg) Action {
 		if row.Repair {
 			return action("repair")
 		}
+	case "alt+b":
+		if row.AbandonPublication {
+			return action("abandon-publication")
+		}
+	case "alt+n":
+		if row.RetryAbandonPublication {
+			return action("retry-abandon-publication")
+		}
 	case "alt+x":
 		if row.AbandonLocal {
 			return action("abandon-local")
@@ -206,6 +215,8 @@ func (d *AuthenticationHistory) actionChoices() []authenticationHistoryAction {
 	add(row.RetryRecovery, "alt+t", "Retry exact recovery", "retry-recovery")
 	add(row.Repair, "ctrl+p", "Review local repair", "repair")
 	add(row.ApplyRepair, "ctrl+y", "Apply reviewed repair", "apply-repair")
+	add(row.AbandonPublication, "alt+b", "Abandon publication recovery", "abandon-publication")
+	add(row.RetryAbandonPublication, "alt+n", "Retry publication abandonment", "retry-abandon-publication")
 	add(row.AbandonLocal, "alt+x", "Abandon local recovery", "abandon-local")
 	add(row.RetryAbandonLocal, "alt+y", "Retry local abandonment", "retry-abandon-local")
 	result = append(result, authenticationHistoryAction{"ctrl+l", "Open saved authentication", "saved"}, authenticationHistoryAction{"ctrl+r", "Refresh history", "refresh"})

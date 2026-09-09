@@ -873,6 +873,10 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 		cmds = append(cmds, m.completeAuthenticationOperation(msg))
 	case authenticationRecoveryPreparedMsg:
 		cmds = append(cmds, m.completeAuthenticationRecoveryPreparation(msg))
+	case authenticationHistoryAbandonPreparedMsg:
+		cmds = append(cmds, m.completeHistoricalPublicationAbandonPreparation(msg))
+	case authenticationHistoryAbandonedMsg:
+		cmds = append(cmds, m.completeHistoricalPublicationAbandon(msg))
 	case authenticationHistoryLoadedMsg:
 		cmds = append(cmds, m.completeAuthenticationHistory(msg))
 	case authenticationHistoryPreparedMsg:

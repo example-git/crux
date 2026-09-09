@@ -33,6 +33,7 @@ type AuthenticationReconciliation struct {
 	slots                                   []providerauth.CredentialSlot
 	slotIndex                               int
 	finished                                bool
+	retired                                 bool
 	scroll                                  int
 }
 
@@ -82,6 +83,7 @@ func (d *AuthenticationReconciliation) SetState(message, preview string, pending
 	d.pending, d.retryReview, d.apply, d.retryApply = pending, retryReview, apply, retryApply
 }
 func (d *AuthenticationReconciliation) SetFinished(finished bool) { d.finished = finished }
+func (d *AuthenticationReconciliation) SetRetired(retired bool)   { d.retired = retired }
 func (d *AuthenticationReconciliation) HandleMsg(msg tea.Msg) Action {
 	if kp, ok := msg.(tea.KeyPressMsg); ok {
 		switch kp.String() {
@@ -96,7 +98,7 @@ func (d *AuthenticationReconciliation) HandleMsg(msg tea.Msg) Action {
 			d.scroll = max(0, d.scroll-5)
 			return nil
 		}
-		if d.pending || d.finished {
+		if d.pending || d.finished || d.retired {
 			return nil
 		}
 		switch kp.String() {
@@ -155,7 +157,7 @@ func (d *AuthenticationReconciliation) HandleMsg(msg tea.Msg) Action {
 			return nil
 		}
 	}
-	if !d.pending && !d.finished && d.choice.Kind == "saved-account" {
+	if !d.pending && !d.finished && !d.retired && d.choice.Kind == "saved-account" {
 		before := d.input.Value()
 		d.input, _ = d.input.Update(msg)
 		if before != d.input.Value() {
@@ -169,7 +171,7 @@ func (d *AuthenticationReconciliation) HandleMsg(msg tea.Msg) Action {
 }
 func (d *AuthenticationReconciliation) ShortHelp() []key.Binding {
 	bindings := []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close"))}
-	if d.finished {
+	if d.finished || d.retired {
 		return bindings
 	}
 	if d.pending {
@@ -210,6 +212,9 @@ func (d *AuthenticationReconciliation) Draw(scr uv.Screen, area uv.Rectangle) *t
 	}
 	if d.finished {
 		text = "Reviewed publication completed.\nChoice: " + choice
+	}
+	if d.retired {
+		text = "This retained review was superseded or its recovery was explicitly abandoned. Original outcomes remain unchanged.\nChoice: " + choice
 	}
 	if d.choice.Kind == "saved-account" {
 		text += "\nType the exact account ID. Tab cycles known account rows."
