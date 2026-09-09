@@ -5,14 +5,12 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"net/http"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/csync"
-	"github.com/example-git/crux/internal/discover"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/copilot"
 	"github.com/example-git/crux/internal/providerplugin"
@@ -1467,90 +1465,12 @@ func (c *Config) SetupAgents() {
 	c.Agents = agents
 }
 
+// TestConnection preserves the historical error-only probe contract. A nil
+// error does not establish inference authorization; callers needing the actual
+// level of evidence should use ProbeConnection.
 func (c *ProviderConfig) TestConnection(ctx context.Context, resolver VariableResolver, validate providertransport.OwnerValidator) error {
-	if validate == nil {
-		return fmt.Errorf("provider owner validator is unavailable")
-	}
-	ctx = providertransport.ContextWithOwnerValidator(ctx, validate)
-	if err := providertransport.ValidateContextOwner(ctx); err != nil {
-		return err
-	}
-	if err := validateConfiguredProviderOwner(c.ID, *c); err != nil {
-		return err
-	}
-
-	providerID := catalog.ProviderID(c.ID)
-	apiKey, err := ResolveProviderAPIKey(*c, resolver.ResolveValue)
-	if err != nil {
-		return fmt.Errorf("resolve provider %s credential: %w", c.ID, err)
-	}
-	exactPreset := c.Owner.Type == ProviderOwnerPreset
-	if exactPreset && (c.Preset.ID == "" || c.Preset.Version == "" || c.Preset.Digest == "") {
-		return fmt.Errorf("provider preset for provider %s has an incomplete owner reference", c.ID)
-	}
-
-	switch {
-	case exactPreset && (providerID == catalog.ProviderMiniMax || providerID == catalog.ProviderMiniMaxChina):
-		return nil
-	case exactPreset && providerID == catalog.ProviderAlibabaSingapore:
-		if !strings.HasPrefix(apiKey, "sk-") {
-			return fmt.Errorf("invalid API key format for provider %s", c.ID)
-		}
-		return nil
-	}
-
-	providerType := cmp.Or(c.Type, catalog.TypeOpenAICompat)
-	if providerType != catalog.TypeOpenAICompat && !discover.IsKnownCustomProvider(string(providerType)) {
-		return fmt.Errorf("unsupported provider type %q", providerType)
-	}
-	baseURL, err := resolver.ResolveValue(c.BaseURL)
-	if err != nil {
-		return fmt.Errorf("resolve provider %s base URL: %w", c.ID, err)
-	}
-	if baseURL == "" {
-		return fmt.Errorf("provider %s is missing an API endpoint", c.ID)
-	}
-	testURL := strings.TrimRight(baseURL, "/") + "/models"
-	if exactPreset && providerID == catalog.ProviderOpenCodeGo {
-		testURL = strings.TrimRight(strings.Replace(baseURL, "/go", "", 1), "/") + "/models"
-	}
-
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, testURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request for provider %s: %w", c.ID, err)
-	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
-	}
-	for key, value := range c.ExtraHeaders {
-		req.Header.Set(key, value)
-	}
-
-	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
-	if ownerErr := providertransport.ValidateContextOwner(ctx); ownerErr != nil {
-		if resp != nil {
-			resp.Body.Close()
-		}
-		return ownerErr
-	}
-	if err != nil {
-		return fmt.Errorf("failed to connect to provider %s: %w", c.ID, err)
-	}
-	defer resp.Body.Close()
-
-	if exactPreset && providerID == catalog.ProviderZAI {
-		if resp.StatusCode == http.StatusUnauthorized {
-			return fmt.Errorf("failed to connect to provider %s: %s", c.ID, resp.Status)
-		}
-		return nil
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to connect to provider %s: %s", c.ID, resp.Status)
-	}
-	return nil
+	_, err := c.ProbeConnection(ctx, resolver, validate)
+	return err
 }
 
 // resolveEnvs expands every value in envs through the given resolver
