@@ -17,6 +17,7 @@ const AuthenticationHistoryID = "authentication_history"
 type AuthenticationHistoryRow struct {
 	Key, Label, Details                                 string
 	Review, Recover, RetryRecovery, Repair, ApplyRepair bool
+	AbandonLocal, RetryAbandonLocal                     bool
 }
 type ActionAuthenticationHistory struct {
 	Dialog     *AuthenticationHistory
@@ -33,6 +34,8 @@ type AuthenticationHistory struct {
 	selected, scroll int
 	generation       uint64
 	detail, pending  bool
+	actions          bool
+	actionIndex      int
 	message          string
 }
 
@@ -80,6 +83,11 @@ func (d *AuthenticationHistory) HandleMsg(msg tea.Msg) Action {
 	}
 	switch name {
 	case "esc":
+		if d.actions {
+			d.actions = false
+			d.generation++
+			return nil
+		}
 		if d.detail {
 			d.detail = false
 			d.scroll = 0
@@ -97,6 +105,26 @@ func (d *AuthenticationHistory) HandleMsg(msg tea.Msg) Action {
 		return nil
 	}
 	if d.pending {
+		return nil
+	}
+	if d.actions {
+		choices := d.actionChoices()
+		switch name {
+		case "up", "k":
+			d.actionIndex = max(0, d.actionIndex-1)
+			d.generation++
+		case "down", "j":
+			d.actionIndex = min(max(0, len(choices)-1), d.actionIndex+1)
+			d.generation++
+		case "enter":
+			if len(choices) > 0 {
+				d.actionIndex = min(d.actionIndex, len(choices)-1)
+				kind := choices[d.actionIndex].kind
+				d.actions = false
+				d.generation++
+				return action(kind)
+			}
+		}
 		return nil
 	}
 	switch name {
@@ -123,6 +151,11 @@ func (d *AuthenticationHistory) HandleMsg(msg tea.Msg) Action {
 		return nil
 	}
 	switch name {
+	case "ctrl+a":
+		d.actions = true
+		d.actionIndex = 0
+		d.generation++
+		return nil
 	case "enter":
 		if row.Review {
 			return action("review")
@@ -139,6 +172,14 @@ func (d *AuthenticationHistory) HandleMsg(msg tea.Msg) Action {
 		if row.Repair {
 			return action("repair")
 		}
+	case "alt+x":
+		if row.AbandonLocal {
+			return action("abandon-local")
+		}
+	case "alt+y":
+		if row.RetryAbandonLocal {
+			return action("retry-abandon-local")
+		}
 	case "ctrl+y":
 		if row.ApplyRepair {
 			return action("apply-repair")
@@ -146,33 +187,42 @@ func (d *AuthenticationHistory) HandleMsg(msg tea.Msg) Action {
 	}
 	return nil
 }
+
+type authenticationHistoryAction struct{ key, label, kind string }
+
+func (d *AuthenticationHistory) actionChoices() []authenticationHistoryAction {
+	if len(d.rows) == 0 {
+		return nil
+	}
+	row := d.rows[d.selected]
+	result := []authenticationHistoryAction{}
+	add := func(enabled bool, key, label, kind string) {
+		if enabled {
+			result = append(result, authenticationHistoryAction{key, label, kind})
+		}
+	}
+	add(row.Review, "enter", "Open retained review", "review")
+	add(row.Recover, "alt+r", "New original recovery", "recover")
+	add(row.RetryRecovery, "alt+t", "Retry exact recovery", "retry-recovery")
+	add(row.Repair, "ctrl+p", "Review local repair", "repair")
+	add(row.ApplyRepair, "ctrl+y", "Apply reviewed repair", "apply-repair")
+	add(row.AbandonLocal, "alt+x", "Abandon local recovery", "abandon-local")
+	add(row.RetryAbandonLocal, "alt+y", "Retry local abandonment", "retry-abandon-local")
+	result = append(result, authenticationHistoryAction{"ctrl+l", "Open saved authentication", "saved"}, authenticationHistoryAction{"ctrl+r", "Refresh history", "refresh"})
+	return result
+}
 func (d *AuthenticationHistory) ShortHelp() []key.Binding {
 	add := func(k, label string) key.Binding { return key.NewBinding(key.WithKeys(k), key.WithHelp(k, label)) }
-	result := []key.Binding{}
 	if d.pending {
 		return []key.Binding{add("ctrl+c", "cancel wait"), add("esc", "close")}
 	}
-	if !d.detail {
-		result = append(result, add("enter", "open"), add("↑/↓", "select"))
-	} else if len(d.rows) > 0 {
-		row := d.rows[d.selected]
-		if row.Review {
-			result = append(result, add("enter", "review"))
-		}
-		if row.Recover {
-			result = append(result, add("alt+r", "recover"))
-		}
-		if row.RetryRecovery {
-			result = append(result, add("alt+t", "retry"))
-		}
-		if row.Repair {
-			result = append(result, add("ctrl+p", "repair review"))
-		}
-		if row.ApplyRepair {
-			result = append(result, add("ctrl+y", "apply repair"))
-		}
+	if d.actions {
+		return []key.Binding{add("enter", "choose"), add("↑/↓", "select"), add("esc", "back")}
 	}
-	return append(result, add("ctrl+r", "history"), add("ctrl+l", "saved"), add("esc", "back"))
+	if d.detail {
+		return []key.Binding{add("ctrl+a", "actions"), add("pgup/pgdn", "scroll"), add("ctrl+l", "saved"), add("ctrl+r", "refresh"), add("esc", "back")}
+	}
+	return []key.Binding{add("enter", "open"), add("↑/↓", "select"), add("ctrl+r", "refresh"), add("ctrl+l", "saved"), add("esc", "close")}
 }
 func (d *AuthenticationHistory) FullHelp() [][]key.Binding { return [][]key.Binding{d.ShortHelp()} }
 func (d *AuthenticationHistory) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
@@ -182,7 +232,22 @@ func (d *AuthenticationHistory) Draw(scr uv.Screen, area uv.Rectangle) *tea.Curs
 	footer := savedAuthenticationFooter(d.com, &d.help, d.ShortHelp(), inner)
 	available := max(0, area.Dy()-t.Dialog.View.GetVerticalFrameSize()-len(strings.Split(footer, "\n"))-2)
 	lines := []string{common.DialogTitle(t, "Authentication History", inner, t.Dialog.TitleGradFromColor, t.Dialog.TitleGradToColor)}
-	if d.detail {
+	if d.actions {
+		choices := d.actionChoices()
+		d.actionIndex = min(d.actionIndex, max(0, len(choices)-1))
+		start := max(0, d.actionIndex-max(0, available-1))
+		end := min(len(choices), start+available)
+		for i := start; i < end; i++ {
+			prefix := "  "
+			if i == d.actionIndex {
+				prefix = "> "
+			}
+			lines = append(lines, ansi.Truncate(prefix+choices[i].key+" "+choices[i].label, inner, "…"))
+		}
+		if len(choices) > available {
+			lines = append(lines, ansi.Truncate(fmt.Sprintf("%d–%d/%d actions", start+1, end, len(choices)), inner, "…"))
+		}
+	} else if d.detail {
 		text := d.message
 		if len(d.rows) > 0 {
 			text = d.rows[d.selected].Label + "\n" + d.rows[d.selected].Details + "\n\n" + text

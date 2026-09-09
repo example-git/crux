@@ -33,19 +33,21 @@ type authenticationHistoryUI struct {
 	message   string
 }
 type authenticationHistoryEntry struct {
-	key                string
-	operation          *workspace.ProviderAuthenticationHistoryOperation
-	review             *workspace.ProviderAuthenticationHistoryReview
-	coordinator        *authenticationOperation
-	reconciliation     *authenticationReconciliation
-	recovery           *workspace.ProviderAuthenticationRecoveryRequest
-	recoverySequence   uint64
-	repair             *providerauth.LocalRepairRequest
-	repaired           *config.LocalAuthenticationRepairResult
-	preparing, pending bool
-	attempt            uint64
-	cancel             context.CancelFunc
-	message            string
+	key                 string
+	operation           *workspace.ProviderAuthenticationHistoryOperation
+	review              *workspace.ProviderAuthenticationHistoryReview
+	coordinator         *authenticationOperation
+	reconciliation      *authenticationReconciliation
+	recovery            *workspace.ProviderAuthenticationRecoveryRequest
+	recoverySequence    uint64
+	repair              *providerauth.LocalRepairRequest
+	repaired            *config.LocalAuthenticationRepairResult
+	localAbandon        *providerauth.LocalRepairRequest
+	localAbandonPending bool
+	preparing, pending  bool
+	attempt             uint64
+	cancel              context.CancelFunc
+	message             string
 }
 type authenticationHistoryLoadedMsg struct {
 	state    *authenticationHistoryUI
@@ -381,7 +383,13 @@ func (m *UI) showAuthenticationHistory(s *authenticationHistoryUI) {
 			details += "\nReview controller: " + e.reconciliation.message
 		}
 		recover := e.operation != nil && !old && e.operation.ReconciledBy == "" && e.operation.SavedStateSupersededBy == ""
-		rows = append(rows, dialog.AuthenticationHistoryRow{Key: key, Label: label, Details: details, Review: !old && !e.superseded() && !(e.operation != nil && e.operation.Adopted) && !busy, Recover: recover && !busy, RetryRecovery: recover && e.recovery != nil && !busy, Repair: e.operationID() != "" && !busy, ApplyRepair: e.repair != nil && e.repaired != nil && !busy})
+		repairable, abandonable := false, false
+		if e.repaired != nil {
+			summary := e.repaired.Summary
+			repairable = !summary.Abandoned && !summary.NoEffects && (summary.Coherent || summary.NeedsReload || summary.RepairReady && (!summary.RefreshStarted || summary.RefreshObserved))
+			abandonable = !summary.Abandoned && !summary.NoEffects && !summary.Coherent && !summary.NeedsReload
+		}
+		rows = append(rows, dialog.AuthenticationHistoryRow{Key: key, Label: label, Details: details, Review: !old && !e.superseded() && !(e.operation != nil && e.operation.Adopted) && !busy, Recover: recover && !busy, RetryRecovery: recover && e.recovery != nil && !busy, Repair: e.operationID() != "" && !busy, ApplyRepair: e.repair != nil && repairable && !busy, AbandonLocal: abandonable && !busy, RetryAbandonLocal: e.localAbandon != nil && !busy})
 		if key == s.dialog.SelectedKey() {
 			selectedBusy = busy
 		}
@@ -439,6 +447,10 @@ func (m *UI) handleAuthenticationHistory(action dialog.ActionAuthenticationHisto
 		}
 	case "repair":
 		return m.dispatchHistoricalAuthenticationRepair(s, e, false)
+	case "abandon-local":
+		return m.dispatchHistoricalLocalAbandon(s, e, false)
+	case "retry-abandon-local":
+		return m.dispatchHistoricalLocalAbandon(s, e, true)
 	case "apply-repair":
 		return m.dispatchHistoricalAuthenticationRepair(s, e, true)
 	}
@@ -650,6 +662,9 @@ func (m *UI) dispatchHistoricalAuthenticationRepair(s *authenticationHistoryUI, 
 		if e.repair == nil || e.repaired == nil {
 			return nil
 		}
+		if e.repaired.Summary.Abandoned || e.repaired.Summary.NoEffects {
+			return util.ReportError(errors.New("this original local recovery is terminal; choose fresh saved authentication"))
+		}
 		request = *e.repair
 		if !request.Apply {
 			request.Apply = true
@@ -663,6 +678,7 @@ func (m *UI) dispatchHistoricalAuthenticationRepair(s *authenticationHistoryUI, 
 		e.repaired = nil // Only this new explicit review may authorize its apply.
 	}
 	e.repair = &request
+	e.localAbandonPending = false
 	e.pending = true
 	e.attempt++
 	attempt := e.attempt
@@ -682,7 +698,14 @@ func (m *UI) dispatchHistoricalAuthenticationRepair(s *authenticationHistoryUI, 
 }
 func (m *UI) completeHistoricalAuthenticationRepair(msg authenticationHistoryRepairedMsg) tea.Cmd {
 	s, e := msg.state, msg.entry
-	if s == nil || e == nil || m.authenticationHistories[s.workspace] != s || s.entries[e.key] != e || !e.pending || e.attempt != msg.attempt || e.repair == nil || *e.repair != msg.request {
+	if s == nil || e == nil || m.authenticationHistories[s.workspace] != s || s.entries[e.key] != e || !e.pending || e.attempt != msg.attempt {
+		return nil
+	}
+	expected := e.repair
+	if e.localAbandonPending {
+		expected = e.localAbandon
+	}
+	if expected == nil || *expected != msg.request {
 		return nil
 	}
 	e.pending, e.cancel = false, nil
@@ -704,14 +727,26 @@ func (m *UI) completeHistoricalAuthenticationRepair(msg authenticationHistoryRep
 	}
 	if err != nil {
 		e.message = "Local repair remains unresolved: " + err.Error() + ". Ctrl+Y retries the retained apply; Ctrl+P explicitly reviews current repair progress."
-	} else if msg.result.NeedsReload {
+		if msg.request.Abandon {
+			e.message = "Local abandonment remains unresolved: " + err.Error() + ". The Actions menu retries this exact abandonment; Ctrl+P explicitly reads the current local record."
+		}
+	} else if msg.result.Summary.Abandoned {
+		e.message = "Original local recovery was explicitly abandoned. Unknown exchange and original progress remain unchanged; abandonment repaired no files and published no runtime. Ctrl+L opens a separate saved-state choice."
+	} else if msg.result.Summary.NoEffects {
+		e.message = "The local save attempt finished without an account refresh or staged disk write. No repair is needed. Ctrl+L opens a separate saved-state choice."
+	} else if msg.result.NeedsReload || summary.NeedsReload {
 		e.message = "Original disk progress is retained. Ctrl+L opens Saved Authentication for explicit Reload, then a fresh review and Apply. This is separate from the original operation."
+	} else if summary.RefreshStarted && !summary.RefreshObserved {
+		e.message = "The original account refresh may have consumed its token; no returned successor was recorded. It will not be exchanged again. The Actions menu can explicitly abandon original local recovery."
+	} else if !summary.RepairReady {
+		e.message = "No fixed local write was staged. The Actions menu can explicitly abandon this retained local recovery; Saved Authentication starts a separate choice."
 	} else {
 		e.message = fmt.Sprintf("Local repair revision %d reviewed. Ctrl+Y applies this exact fixed disk operation; original runtime/acknowledgement progress is unchanged.", summary.Revision)
 	}
 	if e.repaired != nil {
 		r := e.repaired
-		e.message += fmt.Sprintf("\nRepair written: accounts=%t, config=%t; matching saved files: accounts=%t, config=%t.", r.AccountsWritten, r.ConfigWritten, r.AccountsMatched, r.ConfigMatched)
+		e.message += fmt.Sprintf("\nPrior repair writes: accounts=%t, config=%t. Original progress: refreshed=%t, accounts=%t, config=%t, runtime=%t.", r.Summary.RepairAccountsWritten, r.Summary.RepairConfigWritten, r.Summary.Original.AccountRefreshed, r.Summary.Original.AccountsSaved, r.Summary.Original.ConfigSaved, r.Summary.Original.RuntimePublished)
+		e.message += fmt.Sprintf("\nThis action wrote: accounts=%t, config=%t; matching saved files: accounts=%t, config=%t.", r.AccountsWritten, r.ConfigWritten, r.AccountsMatched, r.ConfigMatched)
 	}
 	m.showAuthenticationHistory(s)
 	if err != nil {
