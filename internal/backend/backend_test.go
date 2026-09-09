@@ -1676,7 +1676,7 @@ func TestExplicitDeleteThenAttach(t *testing.T) {
 // that was then removed and shut down. With the fix, the outcome must
 // be deterministic: either AttachClient won and the workspace is
 // alive with the client registered, or teardown won and AttachClient
-// returns ErrWorkspaceNotFound — never a half-state where the
+// returns ErrWorkspaceNotFound or ErrServerShuttingDown — never a half-state where the
 // workspace is gone but ws.clients still contains the new client.
 func TestAttachClient_RacesWithTeardown(t *testing.T) {
 	t.Parallel()
@@ -1737,15 +1737,15 @@ func TestAttachClient_RacesWithTeardown(t *testing.T) {
 				"iter %d: attach succeeded but cidB missing from clients", i)
 			require.Equal(t, int32(0), shutdownCount,
 				"iter %d: attach succeeded but workspace was shut down", i)
-		case errors.Is(attachErr, ErrWorkspaceNotFound):
+		case errors.Is(attachErr, ErrWorkspaceNotFound), errors.Is(attachErr, ErrServerShuttingDown):
 			// Teardown won. The workspace must be removed,
 			// shut down exactly once, and ws.clients must be
 			// empty (no half-state with cidB inserted into a
 			// dead workspace's clients map).
 			require.False(t, wsStillRegistered,
-				"iter %d: ErrWorkspaceNotFound but workspace still registered", i)
+				"iter %d: teardown refused attachment but workspace still registered", i)
 			require.Equal(t, int32(1), shutdownCount,
-				"iter %d: ErrWorkspaceNotFound but shutdown count = %d", i, shutdownCount)
+				"iter %d: teardown refused attachment but shutdown count = %d", i, shutdownCount)
 			require.False(t, hasA,
 				"iter %d: teardown won but cidA still in clients", i)
 			require.False(t, hasB,
@@ -2321,7 +2321,11 @@ func TestRegisterClient_RearmsGraceAndCancelsRelease(t *testing.T) {
 	require.Equal(t, int32(1), wsShutdowns.Load())
 
 	// A second workspace, this time reclaimed by a duplicate create while
-	// its short detach grace is running.
+	// its short detach grace is running. The first backend has completed
+	// idle shutdown and cannot admit another workspace.
+	b, _ = newTestBackend(t)
+	b.SetDetachGrace(50 * time.Millisecond)
+	b.createGrace = time.Hour
 	ws2, ws2Shutdowns := insertTestWorkspace(t, b, "/tmp/rearm-2")
 	b.registerClient(ws2, cid)
 	require.NoError(t, b.AttachClient(ws2.ID, cid))
