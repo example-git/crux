@@ -77,6 +77,12 @@ func TestRemotePresetPublicInferenceUsesClientSelectionThroughMTLS(t *testing.T)
 	})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(serverConfigPath, serverConfig, 0o600))
+	// A matching host topic would be included by the legacy path-only
+	// relevant-memory loader. The remote prompt must never contain it.
+	hostMemory := filepath.Join(os.Getenv("CRUX_GLOBAL_DATA"), "memory")
+	require.NoError(t, os.MkdirAll(hostMemory, 0o700))
+	const hostMemoryMarker = "synthetic-host-only-memory-marker"
+	require.NoError(t, os.WriteFile(filepath.Join(hostMemory, "preset.md"), []byte("---\nname: Selected client preset\ndescription: exact selected client preset\ntype: feedback\n---\n\n"+hostMemoryMarker), 0o600))
 	h := newRemoteOwnershipAcceptanceServer(t, root)
 	protectedBefore := remoteOwnershipAcceptanceProtectedState(t)
 
@@ -189,6 +195,7 @@ func TestRemotePresetPublicInferenceUsesClientSelectionThroughMTLS(t *testing.T)
 		require.Equal(t, "client-asset-header", request.Header)
 		require.Equal(t, "client-large", request.Model)
 		require.Contains(t, request.Body, "client preset configured prompt marker")
+		require.NotContains(t, request.Body, hostMemoryMarker, "remote relevant memory must not consult the server's memory topics")
 	case <-ctx.Done():
 		t.Fatal("public completion had no witnessed conversation inference request")
 	}

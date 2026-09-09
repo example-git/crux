@@ -12,6 +12,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/example-git/crux/internal/config"
 )
 
 const (
@@ -30,6 +32,12 @@ type Topic struct {
 }
 
 var wordPattern = regexp.MustCompile(`[\pL\pN]+`)
+
+// RelevantForStore uses the same principal-scoped memory roots as prompt
+// loading and memory tools. Explicit server-owned stores retain local roots.
+func RelevantForStore(ctx context.Context, store *config.ConfigStore, query string, now time.Time) (string, error) {
+	return Relevant(contextForStore(ctx, store), store.WorkingDir(), query, now)
+}
 
 func Relevant(ctx context.Context, workingDir, query string, now time.Time) (string, error) {
 	memory, err := Load(ctx, workingDir)
