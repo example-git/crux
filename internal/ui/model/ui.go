@@ -1885,14 +1885,20 @@ func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
 		slog.Warn("Server connection degraded", "error", msg.Err, "stuck", msg.Stuck)
 		if msg.Stuck {
 			info.Type = util.InfoTypeError
-			info.Msg = "Can't restore the connection to the Crux server. Restart Crux to recover."
+			info.Msg = "Connection recovery has not completed. Check the saved connection and workspace authorization."
 			info.TTL = time.Minute
 		}
 	case workspace.ConnectionRecovered:
 		info = util.InfoMsg{
 			Type: util.InfoTypeSuccess,
-			Msg:  "Reconnected to the Crux server.",
+			Msg:  "Reattached to the existing workspace.",
 			TTL:  DefaultStatusTTL,
+		}
+		if msg.Recreated {
+			info.Msg = "New workspace runtime acknowledged after server-side loss."
+			if m.session != nil {
+				info.Msg += " Reloading the saved session…"
+			}
 		}
 	}
 	m.status.SetInfoMsg(info)

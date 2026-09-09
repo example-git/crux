@@ -220,6 +220,8 @@ explicitly retired, credential-bearing work is canceled and drained. Detaching
 a task does not grant indefinite access to an abandoned runtime.
 
 Live reattachment uses the same principal and accepted runtime authority.
+The UI reports reattachment separately from a newly acknowledged workspace
+runtime. Reloading a saved session is a later operation with its own result.
 Workspace loss or daemon restart requires a newly negotiated proposal from the
 client. Public discovery and server configuration are not substitutes for the
 client's private inputs.
