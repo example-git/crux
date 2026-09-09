@@ -32,14 +32,22 @@ import (
 )
 
 func TestLiveRevocationDrainsRealInferenceAndStreamOnSameDaemon(t *testing.T) {
-	testLiveRevocationDrainsCredentialWork(t, false)
+	testLiveCredentialWorkLifetime(t, false, false)
 }
 
 func TestLiveRevocationDrainsDetachedAgentOnSameDaemon(t *testing.T) {
-	testLiveRevocationDrainsCredentialWork(t, true)
+	testLiveCredentialWorkLifetime(t, true, false)
 }
 
-func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
+func TestFinalDisconnectGraceDrainsRealInferenceAndTitle(t *testing.T) {
+	testLiveCredentialWorkLifetime(t, false, true)
+}
+
+func TestFinalDisconnectGraceDrainsDetachedAgent(t *testing.T) {
+	testLiveCredentialWorkLifetime(t, true, true)
+}
+
+func testLiveCredentialWorkLifetime(t *testing.T, detached, disconnect bool) {
 	t.Helper()
 	root := t.TempDir()
 	for _, name := range []string{"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CRUX_GLOBAL_DATA", "CRUX_GLOBAL_CONFIG", "CRUX_CACHE_DIR", "AI_CLI_DIR"} {
@@ -49,6 +57,10 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
+	const disconnectGrace = time.Second
+	if disconnect {
+		t.Setenv("CRUX_SERVER_DETACH_GRACE", disconnectGrace.String())
+	}
 	entered := make(chan struct{})
 	titleEntered := make(chan struct{})
 	childSessionHashes := make(chan string, 1)
@@ -204,6 +216,7 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 	workspaces := map[string]*proto.Workspace{}
 	sessions := map[string]string{}
 	streams := map[string]<-chan any{}
+	streamCancels := map[string]context.CancelFunc{}
 	for _, name := range []string{"revoked", "retained"} {
 		owner := providerregistry.RegistrationOwner{ProviderID: "live-fixture"}
 		proposal := config.RemoteRuntimeProposal{
@@ -232,9 +245,12 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 		require.NoError(t, c.InitiateAgentProcessing(ctx, ws.ID, false))
 		session, err := c.CreateSession(ctx, ws.ID, "Live revocation acceptance")
 		require.NoError(t, err)
-		events, err := c.SubscribeEvents(ctx, ws.ID, *ws.Authority)
+		streamCtx, cancelStream := context.WithCancel(ctx)
+		t.Cleanup(cancelStream)
+		events, err := c.SubscribeEvents(streamCtx, ws.ID, *ws.Authority)
 		require.NoError(t, err)
 		clients[name], workspaces[name], sessions[name], streams[name] = c, ws, session.ID, events
+		streamCancels[name] = cancelStream
 	}
 	parentSessionHash.Store(session.HashID(sessions["revoked"]))
 	streamEnded := make(chan struct{})
@@ -298,12 +314,43 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 		taskCoordinator, ok = local.CurrentAgentCoordinator().(agent.TaskCoordinator)
 		require.True(t, ok)
 	}
-	outcome, err := connection.RevokeClientWithOutcome(ctx, "revoked", "")
-	require.NoError(t, err)
-	require.True(t, outcome.Saved)
-	require.Equal(t, "acknowledged", outcome.Resolution)
-	require.Len(t, outcome.Daemons, 1)
-	require.True(t, outcome.Daemons[0].Acknowledged)
+	if disconnect {
+		// A second real SSE claim must keep the credential-bearing request
+		// alive even after the first stream has been absent longer than grace.
+		remainingCtx, cancelRemaining := context.WithCancel(ctx)
+		defer cancelRemaining()
+		remaining, err := clients["revoked"].SubscribeEvents(remainingCtx, workspaces["revoked"].ID, *workspaces["revoked"].Authority)
+		require.NoError(t, err)
+		remainingEnded := make(chan struct{})
+		go func() {
+			for range remaining {
+			}
+			close(remainingEnded)
+		}()
+		streamCancels["revoked"]()
+		select {
+		case <-streamEnded:
+		case <-ctx.Done():
+			t.Fatal("first client stream did not close")
+		}
+		require.Never(t, func() bool { return active.Load() == 0 || cancelled.Load() != 0 }, disconnectGrace+100*time.Millisecond, 10*time.Millisecond, "another live stream must preserve foreground and detached work")
+		_, err = clients["revoked"].GetWorkspace(ctx, workspaces["revoked"].ID)
+		require.NoError(t, err)
+		cancelRemaining()
+		select {
+		case <-remainingEnded:
+		case <-ctx.Done():
+			t.Fatal("final client stream did not close")
+		}
+		require.Never(t, func() bool { return active.Load() == 0 || cancelled.Load() != 0 }, disconnectGrace/3, 10*time.Millisecond, "work must survive the configured grace after final detach")
+	} else {
+		outcome, err := connection.RevokeClientWithOutcome(ctx, "revoked", "")
+		require.NoError(t, err)
+		require.True(t, outcome.Saved)
+		require.Equal(t, "acknowledged", outcome.Resolution)
+		require.Len(t, outcome.Daemons, 1)
+		require.True(t, outcome.Daemons[0].Acknowledged)
+	}
 	require.Eventually(t, func() bool { return active.Load() == 0 && cancelled.Load() > 0 && conversationCancelled.Load() > 0 }, 5*time.Second, 10*time.Millisecond, "credential-bearing provider transport must observe real cancellation")
 	if !detached {
 		require.Positive(t, titleCancelled.Load(), "acknowledgement must include physical cancellation of the detached title")
@@ -311,6 +358,12 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 	if detached {
 		// Read the real retained manager after the workspace has been retired;
 		// do not call Drain or Stop from the test to manufacture a terminal task.
+		if disconnect {
+			require.Eventually(t, func() bool {
+				tasks := taskCoordinator.ListTasks()
+				return len(tasks) == 1 && tasks[0].State.Status.Terminal()
+			}, 5*time.Second, 10*time.Millisecond, "the real task manager must finish after provider cancellation")
+		}
 		tasks := taskCoordinator.ListTasks()
 		require.Len(t, tasks, 1)
 		require.Equal(t, detachedTask.ID, tasks[0].ID)
