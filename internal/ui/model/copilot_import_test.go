@@ -94,11 +94,12 @@ func TestCopilotImportCompletesThroughUIMessage(t *testing.T) {
 			require.True(t, called)
 			require.Zero(t, w.preferredModelCalls, "the command must not mutate UI selection")
 			_, command = ui.Update(message)
-			require.Equal(t, 1, w.preferredModelCalls, "completion must re-read the configured provider")
+			require.Zero(t, w.preferredModelCalls, "Update must only queue model persistence")
 			messages := collectCommandMessages(command)
+			require.Equal(t, 1, w.preferredModelCalls)
 			var applied bool
 			for _, message := range messages {
-				if result, ok := message.(modelSelectionAppliedMsg); ok {
+				if result, ok := message.(modelSelectionCompletedMsg); ok {
 					require.Equal(t, "copilot", result.providerID)
 					applied = true
 				}
@@ -176,6 +177,8 @@ func TestCopilotImportSelectionBranches(t *testing.T) {
 			command := ui.handleSelectModel(action)
 			require.NotNil(t, command)
 			if mode == "configured" {
+				require.Zero(t, w.preferredModelCalls)
+				collectCommandMessages(command)
 				require.Equal(t, 1, w.preferredModelCalls)
 				require.Zero(t, calls)
 				require.Nil(t, ui.cancelCopilotImport)

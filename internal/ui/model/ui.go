@@ -54,7 +54,6 @@ import (
 	"github.com/example-git/crux/internal/question"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/skills"
-	"github.com/example-git/crux/internal/stringext"
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/example-git/crux/internal/tmuxsession"
 	"github.com/example-git/crux/internal/ui/anim"
@@ -124,12 +123,6 @@ type openEditorMsg struct {
 }
 
 type initialSessionUnavailableMsg struct{}
-
-type modelSelectionAppliedMsg struct {
-	providerID string
-	modelType  config.SelectedModelType
-	modelName  string
-}
 
 type tmuxAttachPreparedMsg struct {
 	lease *tmuxsession.Lease
@@ -457,6 +450,7 @@ type UI struct {
 	// when unknown or unsupported.
 	providerUsage            *oauthusage.Usage
 	usageFetchGen            uint64
+	modelSelectionLanes      map[workspace.Workspace]*modelSelectionLane
 	modelSelectionGen        uint64
 	cancelCopilotImport      context.CancelFunc
 	authenticationReads      map[*dialog.AccountAuthentication]*authenticationRead
@@ -923,15 +917,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if cmd := m.dispatchBusyRefresh(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
-	case modelSelectionAppliedMsg:
-		m.invalidateBusyCaches()
-		if cmd := m.dispatchBusyRefresh(); cmd != nil {
-			cmds = append(cmds, cmd)
-		}
-		cmds = append(cmds, util.ReportInfo(fmt.Sprintf("%s model changed to %s", stringext.Capitalize(string(msg.modelType)), msg.modelName)))
-		if msg.modelType == config.SelectedModelTypeLarge {
-			cmds = append(cmds, m.fetchProviderUsageFor(msg.providerID))
-		}
+	case modelSelectionCompletedMsg:
+		cmds = append(cmds, m.completeModelSelection(msg))
 	case initialSessionUnavailableMsg:
 		if cmd := m.sendInitialPrompt(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -2508,36 +2495,7 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		}
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionToggleThinking:
-		cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-			cfg := m.com.Config()
-			if cfg == nil {
-				return util.ReportError(errors.New("configuration not found"))()
-			}
-
-			agentCfg, ok := cfg.Agents[config.AgentCoder]
-			if !ok {
-				return util.ReportError(errors.New("agent configuration not found"))()
-			}
-
-			currentModel := cfg.Models[agentCfg.Model]
-			currentModel.Think = !currentModel.Think
-			owner, err := selectedModelOwner(cfg, currentModel)
-			if err != nil {
-				return util.ReportError(err)()
-			}
-			state, err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel, owner)
-			if err != nil {
-				return util.ReportError(err)()
-			}
-			if err := m.com.Workspace.UpdateAgentModel(context.TODO(), state); err != nil {
-				return util.ReportError(err)()
-			}
-			status := "disabled"
-			if currentModel.Think {
-				status = "enabled"
-			}
-			return util.NewInfoMsg("Thinking mode " + status)
-		}))
+		cmds = append(cmds, m.queueModelControl("thinking", ""))
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionToggleTransparentBackground:
 		cmds = append(cmds, func() tea.Msg {
@@ -2596,38 +2554,7 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 			cmds = append(cmds, util.ReportWarn("Agent is busy, please wait..."))
 			break
 		}
-
-		cfg := m.com.Config()
-		if cfg == nil {
-			cmds = append(cmds, util.ReportError(errors.New("configuration not found")))
-			break
-		}
-
-		agentCfg, ok := cfg.Agents[config.AgentCoder]
-		if !ok {
-			cmds = append(cmds, util.ReportError(errors.New("agent configuration not found")))
-			break
-		}
-
-		currentModel := cfg.Models[agentCfg.Model]
-		currentModel.ReasoningEffort = msg.Effort
-		owner, err := selectedModelOwner(cfg, currentModel)
-		if err != nil {
-			cmds = append(cmds, util.ReportError(err))
-			break
-		}
-		state, err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, agentCfg.Model, currentModel, owner)
-		if err != nil {
-			cmds = append(cmds, util.ReportError(err))
-			break
-		}
-
-		cmds = append(cmds, m.updateAgentModelCmd(func() tea.Msg {
-			if err := m.com.Workspace.UpdateAgentModel(context.TODO(), state); err != nil {
-				return util.ReportError(err)()
-			}
-			return util.NewInfoMsg("Reasoning effort set to " + msg.Effort)
-		}))
+		cmds = append(cmds, m.queueModelControl("reasoning", msg.Effort))
 		m.dialog.CloseDialog(dialog.ReasoningID)
 	case dialog.ActionPermissionResponse:
 		m.dialog.CloseDialog(dialog.PermissionsID)
@@ -2801,39 +2728,12 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 		slog.Error("Failed to restore model from session", "error", err)
 		return nil
 	}
-	state, err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeLarge, selectedModel, owner)
-	if err != nil {
-		slog.Error("Failed to restore model from session", "error", err)
-		return nil
+	m.modelSelectionGen++
+	if m.cancelCopilotImport != nil {
+		m.cancelCopilotImport()
+		m.cancelCopilotImport = nil
 	}
-
-	m.applyThemeForProvider(lastAssistant.Provider)
-
-	if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
-		smallModel, err := m.com.Workspace.GetDefaultSmallModel(lastAssistant.Provider)
-		if err != nil {
-			return util.ReportError(err)
-		}
-		smallOwner, ownerErr := selectedModelOwner(cfg, smallModel)
-		if ownerErr != nil {
-			return util.ReportError(ownerErr)
-		}
-		state, err = m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeSmall, smallModel, smallOwner)
-		if err != nil {
-			slog.Error("Failed to set small model during session restore", "error", err)
-			return util.ReportError(err)
-		}
-	}
-
-	return m.updateAgentModelCmd(func() tea.Msg {
-		if err := m.com.Workspace.UpdateAgentModel(context.TODO(), state); err != nil {
-			return util.ReportError(err)
-		}
-		slog.Info("Restored model from session",
-			"provider", lastAssistant.Provider,
-			"model", lastAssistant.Model)
-		return nil
-	})
+	return m.enqueueModelSelection(dialog.ActionSelectModel{Provider: (&config.ProviderConfig{ID: selectedModel.Provider}).ToProvider(), Model: selectedModel, ModelType: config.SelectedModelTypeLarge, ProviderOwner: owner, ProviderOwnerSet: true}, "", "Restored model from session")
 }
 
 // handleSelectModel performs model selection for the requested provider.
@@ -2861,7 +2761,6 @@ func (m *UI) handleSelectModelAfterImport(msg dialog.ActionSelectModel, allowImp
 	var (
 		isCopilot    = msg.ProviderOwner.Construction == providerregistry.ConstructionCopilot
 		isConfigured = func() bool { _, ok := cfg.Providers.Get(providerID); return ok }
-		isOnboarding = m.state == uiOnboarding
 	)
 
 	// Attempt to import GitHub Copilot tokens from VSCode if available.
@@ -2877,84 +2776,11 @@ func (m *UI) handleSelectModelAfterImport(msg dialog.ActionSelectModel, allowImp
 		return tea.Batch(cmds...)
 	}
 
-	state, err := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, msg.ModelType, msg.Model, msg.ProviderOwner)
-	if err != nil {
-		cmds = append(cmds, util.ReportError(err))
-	} else {
-		updateAgent := true
-		if msg.ModelType == config.SelectedModelTypeLarge {
-			// Swap the theme live based on the newly selected large
-			// model's provider. Skipped when the provider resolves to
-			// the already-active theme, which avoids a full markdown
-			// re-render of the transcript on every selection.
-			m.applyThemeForProvider(providerID)
-		}
-		if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
-			// Ensure small model is set is unset.
-			smallModel, err := m.com.Workspace.GetDefaultSmallModel(providerID)
-			if err != nil {
-				cmds = append(cmds, util.ReportError(err))
-				updateAgent = false
-			} else if smallOwner, ownerErr := selectedModelOwner(cfg, smallModel); ownerErr != nil {
-				cmds = append(cmds, util.ReportError(ownerErr))
-				updateAgent = false
-			} else {
-				nextState, updateErr := m.com.Workspace.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeSmall, smallModel, smallOwner)
-				if updateErr != nil {
-					cmds = append(cmds, util.ReportError(updateErr))
-					updateAgent = false
-				} else {
-					state = nextState
-				}
-			}
-		}
-		if updateAgent {
-			if isOnboarding {
-				m.com.SetupAgents()
-				if err := m.com.Workspace.InitCoderAgent(context.TODO()); err != nil {
-					cmds = append(cmds, util.ReportError(err))
-				} else {
-					if needsInitialization, _ := m.com.Workspace.ProjectNeedsInitialization(); needsInitialization {
-						m.setState(uiInitialize, uiFocusEditor)
-					} else {
-						m.setState(uiLanding, uiFocusEditor)
-					}
-					m.invalidateBusyCaches()
-					if cmd := m.dispatchBusyRefresh(); cmd != nil {
-						cmds = append(cmds, cmd)
-					}
-					if cmd := m.continueStartup(); cmd != nil {
-						cmds = append(cmds, cmd)
-					}
-					if msg.ModelType == config.SelectedModelTypeLarge {
-						cmds = append(cmds, m.fetchProviderUsageFor(providerID))
-					}
-				}
-			} else {
-				cmds = append(cmds, func() tea.Msg {
-					if err := m.com.Workspace.UpdateAgentModel(context.TODO(), state); err != nil {
-						return util.ReportError(err)()
-					}
-
-					modelName := msg.Model.Model
-					if catalogModel := cfg.GetModel(msg.Model.Provider, msg.Model.Model); catalogModel != nil && catalogModel.Name != "" {
-						modelName = catalogModel.Name
-					}
-					return modelSelectionAppliedMsg{
-						providerID: providerID,
-						modelType:  msg.ModelType,
-						modelName:  modelName,
-					}
-				})
-			}
-		}
-	}
-
+	cmd := m.enqueueModelSelection(msg, "", "")
 	m.dialog.CloseDialog(dialog.APIKeyInputID)
 	m.dialog.CloseDialog(dialog.LoginID)
 	m.dialog.CloseDialog(dialog.ModelsID)
-
-	return tea.Batch(cmds...)
+	return cmd
 }
 
 func (m *UI) openAuthenticationDialog(selection dialog.ActionSelectModel) tea.Cmd {
