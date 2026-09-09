@@ -24,6 +24,7 @@ type authenticationRead struct {
 	generation uint64
 	cancel     context.CancelFunc
 	completed  bool
+	rows       []dialog.AuthenticationRow
 }
 type authenticationLoadedMsg struct {
 	read *authenticationRead
@@ -44,6 +45,7 @@ type authenticationOperation struct {
 	blockNew                             bool
 	recovery                             *workspace.ProviderAuthenticationRecoveryRequest
 	recoveryPreparing                    *authenticationRecoveryPreparation
+	accountChoices                       []dialog.AuthenticationRow
 }
 type authenticationPreparedMsg struct {
 	operation *authenticationOperation
@@ -73,6 +75,7 @@ func (m *UI) authenticationDialogOpen(d *dialog.AccountAuthentication) bool {
 	return ok && current.AuthenticationState() == d
 }
 func (m *UI) pruneAuthenticationReads() {
+	m.pruneAuthenticationReconciliations()
 	for d, read := range m.authenticationReads {
 		if read.workspace != m.com.Workspace || !m.authenticationDialogOpen(d) {
 			read.cancel()
@@ -117,11 +120,17 @@ func (m *UI) openAuthenticationAccounts(logout bool) tea.Cmd {
 }
 func (m *UI) showAuthenticationOperation(d *dialog.AccountAuthentication) {
 	if operation := m.authenticationOperations[m.com.Workspace]; operation != nil {
-		d.SetOperation(operation.message, operation.pending || operation.preparing || operation.recoveryPreparing != nil, operation.retry)
+		message := operation.message
+		if state := m.authenticationReconciliations[operation]; state != nil && state.message != "" {
+			message += "\nSeparate review: " + state.message
+		}
+		d.SetOperation(message, operation.pending || operation.preparing || operation.recoveryPreparing != nil || m.authenticationReconciliationBusy(operation), operation.retry)
 		d.SetRecovery(operation.retry && operation.blockNew && operation.recoverer != nil, operation.retry && operation.recovery != nil)
+		d.SetReview(operation.retry || m.authenticationReconciliations[operation] != nil)
 	} else {
 		d.SetOperation("", false, false)
 		d.SetRecovery(false, false)
+		d.SetReview(false)
 	}
 }
 func (m *UI) loadAuthenticationAccounts(d *dialog.AccountAuthentication) tea.Cmd {
@@ -152,6 +161,7 @@ func (m *UI) completeAuthenticationRead(msg authenticationLoadedMsg) {
 	// Retain the source identity while its rows remain selectable. A different
 	// Workspace must never execute a row loaded by this one.
 	read.completed = true
+	read.rows = append([]dialog.AuthenticationRow(nil), msg.rows...)
 	read.cancel()
 	if m.com.Workspace == read.workspace && m.authenticationDialogOpen(read.dialog) {
 		read.dialog.CompleteRead(read.generation, msg.rows, msg.err)
@@ -166,12 +176,13 @@ func (m *UI) beginAuthenticationOperation(action dialog.ActionAuthenticationSele
 		return util.ReportError(errors.New("authentication workspace changed; reload status before selecting an account"))
 	}
 	if current := m.authenticationOperations[m.com.Workspace]; current != nil {
-		if current.pending || current.preparing || current.recoveryPreparing != nil {
+		if current.pending || current.preparing || current.recoveryPreparing != nil || m.authenticationReconciliationBusy(current) {
 			return nil
 		}
 		if current.blockNew {
 			return util.ReportError(errors.New("Resolve the original " + current.description() + " before selecting another account. Ctrl+T retries its original receipt; Alt+R attempts recovery using that receipt."))
 		}
+		delete(m.authenticationReconciliations, current)
 	}
 	if err := action.Row.Target.Validate(); err != nil {
 		return util.ReportError(err)
@@ -180,6 +191,11 @@ func (m *UI) beginAuthenticationOperation(action dialog.ActionAuthenticationSele
 		m.authenticationOperations = make(map[workspace.Workspace]*authenticationOperation)
 	}
 	operation := &authenticationOperation{workspace: m.com.Workspace, dialog: action.Dialog, generation: action.Generation, row: action.Row, logout: action.Dialog.ID() == dialog.LogoutID, preparing: true, message: "Preparing authentication operation…"}
+	for _, row := range read.rows {
+		if row.Target.Owner == action.Row.Target.Owner && row.AccountID != "" {
+			operation.accountChoices = append(operation.accountChoices, row)
+		}
+	}
 	if recoverer, ok := operation.workspace.(workspace.ProviderAuthenticationRecoverer); ok && recoverer.CanRecoverProviderAuthentication() {
 		operation.recoverer = recoverer
 	}
@@ -218,7 +234,7 @@ func (m *UI) retryAuthenticationOperation(action dialog.ActionAuthenticationRetr
 		return nil
 	}
 	operation := m.authenticationOperations[m.com.Workspace]
-	if operation == nil || !operation.retry || operation.pending || operation.preparing || operation.recoveryPreparing != nil {
+	if operation == nil || !operation.retry || operation.pending || operation.preparing || operation.recoveryPreparing != nil || m.authenticationReconciliationBusy(operation) {
 		return nil
 	}
 	return m.dispatchAuthenticationOperation(operation)

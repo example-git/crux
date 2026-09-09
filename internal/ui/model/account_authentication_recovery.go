@@ -32,7 +32,7 @@ func (m *UI) beginAuthenticationRecovery(action dialog.ActionAuthenticationRecov
 		return nil
 	}
 	operation := m.authenticationOperations[m.com.Workspace]
-	if operation == nil || operation.recoverer == nil || !operation.retry || !operation.blockNew || operation.pending || operation.preparing || operation.recoveryPreparing != nil {
+	if operation == nil || operation.recoverer == nil || !operation.retry || !operation.blockNew || operation.pending || operation.preparing || operation.recoveryPreparing != nil || m.authenticationReconciliationBusy(operation) {
 		return nil
 	}
 	if action.Retry {
