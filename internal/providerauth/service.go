@@ -32,6 +32,8 @@ type Service struct {
 	workers     sync.WaitGroup
 	logins      map[string]*oauthLoginSession
 	loginIDs    []string
+	reloads     map[string]reloadReceipt
+	reloadIDs   []string
 }
 
 func New(store *config.ConfigStore, workspaceID string) *Service {

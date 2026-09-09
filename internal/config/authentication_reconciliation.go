@@ -3,7 +3,9 @@ package config
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -23,14 +25,17 @@ var (
 )
 
 // AuthenticationReconciliationEffect states what already-saved state must prove.
-// Exactly one of Logout, AccountID, or OAuthTokenID identifies the effect.
+// Exactly one of Logout, AccountID, OAuthTokenID, or the selected credential
+// ID/effect fingerprint pair identifies the effect.
 // OAuthTokenID is a private fingerprint of the complete namespace-free token,
 // including its client settings. It is never a public account identifier.
 // This is validation, never authorization to repeat or repair a transaction.
 type AuthenticationReconciliationEffect struct {
-	Logout       bool
-	AccountID    string
-	OAuthTokenID string
+	Logout             bool
+	AccountID          string
+	OAuthTokenID       string
+	CredentialID       string
+	CredentialEffectID string
 }
 
 // AuthenticationReconciliationPreparation retains one verified current capture.
@@ -86,6 +91,13 @@ func (s *ConfigStore) PrepareAuthenticationReconciliation(ctx context.Context, c
 		}
 		effects++
 	}
+	if effect.CredentialID != "" || effect.CredentialEffectID != "" {
+		digest, err := hex.DecodeString(effect.CredentialEffectID)
+		if effect.CredentialID == "" || err != nil || len(digest) != 32 {
+			return zero, reconciliationConflict("invalid expected saved credential")
+		}
+		effects++
+	}
 	if effects != 1 || owner.ProviderID == "" {
 		return zero, reconciliationConflict("invalid expected effect or owner")
 	}
@@ -137,6 +149,11 @@ func (s *ConfigStore) PrepareAuthenticationReconciliation(ctx context.Context, c
 				return zero, reconciliationConflict("logout retains an accepted construction account")
 			}
 		}
+	} else if effect.CredentialID != "" {
+		identity, err := current.ConfiguredCredentialEffectID(owner, effect.CredentialID)
+		if err != nil || identity != effect.CredentialEffectID {
+			return zero, reconciliationConflict("the saved credential does not match the selected exact slot effect")
+		}
 	} else if effect.OAuthTokenID != "" {
 		identity, err := current.ConfiguredOAuthTokenCredentialID(owner)
 		if err != nil || identity != effect.OAuthTokenID {
@@ -185,12 +202,17 @@ func (s *ConfigStore) PrepareAuthenticationReconciliation(ctx context.Context, c
 		definitions[actual] = digest
 		value, _ := current.runtime.config.Providers.Get(id)
 		if err := current.runtime.config.ValidateProviderConfiguration(id, value.Configuration); err != nil {
-			return zero, reconciliationConflict("a selected provider configuration is invalid")
+			if pending, setupErr := validateProviderCredentialSetup(current.runtime, value); setupErr != nil || !pending {
+				return zero, reconciliationConflict("a selected provider configuration is invalid")
+			}
+		}
+		if providerMissingConfigurationCredentials(current.runtime, value) {
+			continue
 		}
 		if id == owner.ProviderID && effect.Logout || value.Disable || errors.Is(current.runtime.AuthenticationRevocation(id), ErrAuthenticationRevoked) {
 			continue
 		}
-		if actual.HasOAuth || value.OAuthToken != nil {
+		if value.resolvedAPIKey == nil && (actual.HasOAuth || value.OAuthToken != nil) {
 			if actual.AccountNamespace == "" {
 				if _, err := current.ConfiguredOAuthTokenCredentialID(actual); err != nil {
 					return zero, err
@@ -294,4 +316,52 @@ func reconciliationObservationError(ctx context.Context, _ error) error {
 		return err
 	}
 	return reconciliationConflict("the captured saved state could not be verified")
+}
+
+// ConfiguredCredentialEffectID fingerprints an accepted source and literal for
+// one exact declared slot. It performs no resolution, I/O or connection probe.
+// This proves saved intent, never a historical Check's successful probe.
+func (current AuthenticationCapture) ConfiguredCredentialEffectID(owner providerregistry.RegistrationOwner, id string) (string, error) {
+	if !slices.Contains(current.owners, owner) || !current.inputs.valid || current.runtime.config == nil {
+		return "", reconciliationConflict("a current saved owner capture is required")
+	}
+	provider, found := current.runtime.config.authenticationCollectionProvider(owner.ProviderID)
+	actual, active := current.runtime.ProviderOwnerFor(owner.ProviderID, provider)
+	if !found || !active || actual != owner {
+		return "", reconciliationConflict("saved credential owner changed")
+	}
+	slot, err := providerCredentialSlot(current.runtime, provider, id)
+	if err != nil || !slot.Configured {
+		return "", reconciliationConflict("the selected saved credential is absent or undeclared")
+	}
+	source, literal := "", ""
+	if slot.Property == "" {
+		binding := provider.resolvedAPIKey
+		if binding == nil || binding.owner != owner || !binding.matches(provider) {
+			return "", fmt.Errorf("%w: reload to capture the primary credential source and literal", ErrAuthenticationReconciliationReloadRequired)
+		}
+		source, literal = binding.source, binding.literal
+	} else {
+		if err := current.runtime.validateResolvedConfigurationCredentials(provider); err != nil {
+			return "", err
+		}
+		for _, binding := range provider.resolvedCredentials {
+			if binding != nil && binding.owner == owner && binding.property == slot.Property && binding.matches(provider) {
+				source, literal = binding.source, binding.literal
+				break
+			}
+		}
+	}
+	if source == "" || literal == "" {
+		return "", fmt.Errorf("%w: saved credential has no accepted source and literal", ErrAuthenticationReconciliationReloadRequired)
+	}
+	data, err := json.Marshal(struct {
+		Owner                           providerregistry.RegistrationOwner
+		Slot, Property, Source, Literal string
+	}{owner, id, slot.Property, source, literal})
+	if err != nil {
+		return "", reconciliationConflict("saved credential identity is unavailable")
+	}
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:]), nil
 }

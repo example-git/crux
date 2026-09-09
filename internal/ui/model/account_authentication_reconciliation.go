@@ -11,12 +11,14 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/ui/util"
 	"github.com/example-git/crux/internal/workspace"
 )
 
 type authenticationReconciliation struct {
+	fresh             bool
 	operation         *authenticationOperation
 	oauthLogin        *oauthLoginOperation
 	dialog            *dialog.AuthenticationReconciliation
@@ -166,6 +168,8 @@ func authenticationReviewSummaryText(s workspace.ProviderAuthenticationReviewSum
 		choice = "saved logout"
 	} else if s.Choice.Kind == "saved-oauth-token" {
 		choice = "saved OAuth credential"
+	} else if s.Choice.Kind == "saved-credential" {
+		choice = "saved credential slot " + s.Choice.CredentialID
 	} else if s.OriginalOAuthToken {
 		choice = "original complete OAuth credential"
 	}
@@ -182,6 +186,9 @@ func authenticationReviewSummaryText(s workspace.ProviderAuthenticationReviewSum
 		active = "none"
 	}
 	credential := "Saved active account: " + active
+	if s.Choice.Kind == "saved-credential" {
+		credential = "Saved credential: exact source and literal captured; no historical connection probe asserted"
+	}
 	if s.SavedOAuthToken {
 		credential = "Saved OAuth credential: present; no account selection"
 	}
@@ -275,6 +282,12 @@ func (m *UI) completeAuthenticationReconciliationPreparation(msg authenticationR
 	}
 	if p.kind == "review" {
 		request := workspace.ProviderAuthenticationReviewRequest{OperationID: s.operation.id, OriginalTarget: s.operation.row.Target, ReviewID: msg.id, ReviewSequence: s.sequence + 1, Choice: p.choice}
+		if s.fresh {
+			request.FreshSaved = true
+			request.SavedTarget = s.operation.row.Target
+			request.OriginalTarget = providerauth.Target{}
+			request.OperationID = ""
+		}
 		if err := request.Validate(); err != nil {
 			s.message = err.Error()
 			m.showAuthenticationReconciliation(s)
@@ -290,7 +303,7 @@ func (m *UI) completeAuthenticationReconciliationPreparation(msg authenticationR
 	if s.request == nil || s.summary == nil || s.request.Choice != p.choice {
 		return nil
 	}
-	request := workspace.ProviderAuthenticationApplyRequest{OperationID: s.operation.id, OriginalTarget: s.operation.row.Target, ReviewID: s.request.ReviewID, PreviewID: s.summary.PreviewID, ApplyID: msg.id}
+	request := workspace.ProviderAuthenticationApplyRequest{OperationID: s.request.OperationID, OriginalTarget: s.request.OriginalTarget, FreshSaved: s.request.FreshSaved, SavedTarget: s.request.SavedTarget, ReviewID: s.request.ReviewID, PreviewID: s.summary.PreviewID, ApplyID: msg.id}
 	if err := request.Validate(); err != nil {
 		return util.ReportError(err)
 	}

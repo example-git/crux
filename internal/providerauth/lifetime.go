@@ -32,6 +32,7 @@ func (s *Service) Close() {
 		s.logins, s.loginIDs = nil, nil
 		s.keyChecks, s.keyCheckIDs = nil, nil
 		s.receipts, s.receiptIDs = nil, nil
+		s.reloads, s.reloadIDs = nil, nil
 		<-s.gate
 	})
 }

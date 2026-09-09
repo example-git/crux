@@ -79,6 +79,9 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 	if original.request.target != request.Target || original.principal != a.principal {
 		return initial, providerauth.ErrOperationConflict
 	}
+	if original.savedStateSupersededBy != "" {
+		return clientAuthenticationOutcome(original, errors.New("a separate fresh saved-state action superseded this publication; the original result is unchanged"))
+	}
 	if original.reconciledBy != "" {
 		return clientAuthenticationOutcome(original, errors.New("saved authentication was published by a separate reviewed action; the original mutation result is unchanged"))
 	}
@@ -238,7 +241,7 @@ func (a *clientAuthority) unacknowledgedClientAuthentication(id string) bool {
 		return true
 	}
 	for _, receipt := range a.authenticationReceipts {
-		if receipt.request.target.WorkspaceID == id && receipt.reconciledBy == "" && (!receipt.acknowledged || !receipt.adopted) && clientAuthenticationChanged(receipt.outcome.Progress) {
+		if receipt.request.target.WorkspaceID == id && receipt.reconciledBy == "" && receipt.savedStateSupersededBy == "" && (!receipt.acknowledged || !receipt.adopted) && clientAuthenticationChanged(receipt.outcome.Progress) {
 			return true
 		}
 	}
