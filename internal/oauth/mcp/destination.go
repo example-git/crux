@@ -21,23 +21,50 @@ func ResourceHTTPClient(base *http.Client, endpoint string) *http.Client {
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	client.Transport = &resourceDestinationTransport{base: transport, guard: guard}
+	bound := &resourceDestinationTransport{base: transport, guard: guard}
+	redirect := client.CheckRedirect
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		err := redirect(request, via)
+		bound.refusal.record(err)
+		return err
+	}
+	client.Transport = bound
 	return client
 }
 
 type resourceDestinationTransport struct {
-	base  http.RoundTripper
-	guard func(*http.Request, []*http.Request) error
+	base    http.RoundTripper
+	guard   func(*http.Request, []*http.Request) error
+	refusal oauthFlowState
 }
 
 func (t *resourceDestinationTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if err := t.guard(request, nil); err != nil {
+		t.refusal.record(err)
 		if request != nil && request.Body != nil {
 			_ = request.Body.Close()
 		}
 		return nil, err
 	}
-	return t.base.RoundTrip(request)
+	response, err := t.base.RoundTrip(request)
+	t.refusal.record(err)
+	return response, err
+}
+
+// ResourceHTTPError preserves an initialization refusal when the MCP SDK's
+// protocol fallback replaces a failed SSE Write with a final connection EOF.
+// The client belongs to one session attempt. This only annotates a failed
+// result; it neither replaces success nor disables later protocol requests.
+func ResourceHTTPError(client *http.Client, err error) error {
+	if client == nil || err == nil {
+		return err
+	}
+	if bound, ok := client.Transport.(*resourceDestinationTransport); ok {
+		if refusal := bound.refusal.current(); refusal != nil && !errors.Is(err, refusal) {
+			return errors.Join(refusal, err)
+		}
+	}
+	return err
 }
 
 // discoveredEndpointHTTPClient retains each request's selected origin rather
