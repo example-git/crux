@@ -424,7 +424,7 @@ waitingForRefresh:
 	recovered, err := c.GetWorkspace(t.Context(), w.WorkspaceIDForTest())
 	require.NoError(t, err)
 	require.Equal(t, created.DataDir, recovered.DataDir)
-	require.Equal(t, remoteDataRoot, recovered.RequestedDataDir)
+	require.Equal(t, canonicalDataRoot, recovered.RequestedDataDir)
 	recoveredReceiver, err := s.Backend().GetWorkspace(recovered.ID)
 	require.NoError(t, err)
 	recoveredProvider, ok := recoveredReceiver.Cfg.Config().Providers.Get(additionalOwner.ProviderID)
