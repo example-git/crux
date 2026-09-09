@@ -3,13 +3,50 @@ package config
 import (
 	"strings"
 
+	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/redact"
 )
 
 func registerAccountSecrets(entry accounts.Entry) {
 	redact.Register(entry.AccessToken, entry.RefreshToken)
 	redact.RegisterJSONBytes(entry.Raw)
+}
+
+func registerOAuthTokenSecrets(token *oauth.Token) {
+	if token == nil {
+		return
+	}
+	redact.Register(token.AccessToken, token.RefreshToken)
+	if token.Client != nil {
+		redact.Register(token.Client.ClientSecret)
+	}
+}
+
+func registerProviderSecrets(provider ProviderConfig, registration providerregistry.Registration, registered bool) {
+	redact.Register(provider.APIKey, provider.APIKeyTemplate)
+	registerOAuthTokenSecrets(provider.OAuthToken)
+	for name, value := range provider.ExtraHeaders {
+		if provider.Preset != nil || secretHeaderName(name) {
+			redact.Register(value)
+		}
+	}
+	if provider.Preset != nil {
+		redact.Register(provider.BaseURL, provider.SystemPromptPrefix)
+		redact.RegisterJSONValue(provider.ExtraBody)
+		redact.RegisterJSONValue(provider.ProviderOptions)
+		redact.RegisterJSONValue(provider.Configuration)
+		redact.RegisterJSONValue(provider.ExtraParams)
+		return
+	}
+	if registered && registration.Manifest != nil {
+		for field, display := range registration.Manifest.Configuration.Fields {
+			if display.Secret {
+				redact.RegisterJSONValue(provider.Configuration[field])
+			}
+		}
+	}
 }
 
 func registerConfigSecrets(cfg *Config) {
@@ -23,31 +60,13 @@ func registerConfigSecrets(cfg *Config) {
 	}
 	if cfg.Providers != nil {
 		for id, provider := range cfg.Providers.Seq2() {
-			redact.Register(provider.APIKey, provider.APIKeyTemplate)
-			if provider.OAuthToken != nil {
-				redact.Register(provider.OAuthToken.AccessToken, provider.OAuthToken.RefreshToken)
-			}
-			for name, value := range provider.ExtraHeaders {
-				if provider.Preset != nil || secretHeaderName(name) {
-					redact.Register(value)
-				}
-			}
-			if provider.Preset != nil {
-				redact.Register(provider.BaseURL, provider.SystemPromptPrefix)
-				redact.RegisterJSONValue(provider.ExtraBody)
-				redact.RegisterJSONValue(provider.ProviderOptions)
-				redact.RegisterJSONValue(provider.Configuration)
-				redact.RegisterJSONValue(provider.ExtraParams)
-				continue
-			}
-			if registration, ok := cfg.ProviderRegistration(id); ok && registration.Manifest != nil {
-				for field, display := range registration.Manifest.Configuration.Fields {
-					if display.Secret {
-						redact.RegisterJSONValue(provider.Configuration[field])
-					}
-				}
-			}
+			registration, registered := cfg.ProviderRegistration(id)
+			registerProviderSecrets(provider, registration, registered)
 		}
+	}
+	for id, provider := range cfg.authenticationCandidates {
+		registration, registered := providerRegistrationForProvider(cfg.providerCapabilities(), id, provider)
+		registerProviderSecrets(provider, registration, registered)
 	}
 	for _, mcp := range cfg.MCP {
 		redact.Register(mcp.OAuthClientSecret)
