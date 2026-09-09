@@ -140,7 +140,7 @@ var connectionsRevokeCmd = &cobra.Command{
 		if err := connection.RevokeClient(cmd.Context(), name); err != nil {
 			return err
 		}
-		cmd.Printf("Revoked client %s. Restart the server to apply the updated trust list.\n", name)
+		cmd.Printf("Revoked stored authorization for client %s. Servers with live authorization checks reject subsequent authenticated requests; already-running work must be stopped separately.\n", name)
 		return nil
 	},
 }

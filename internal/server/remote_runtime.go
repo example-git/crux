@@ -13,6 +13,7 @@ import (
 
 	"github.com/example-git/crux/internal/backend"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/connection"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
@@ -20,6 +21,22 @@ import (
 )
 
 const maxRemoteRequestBytes = config.MaxRemoteRuntimeBytes + (1 << 20)
+
+// Admission wraps the entire router, including documentation and unknown
+// routes, so keepalive and multiplexed requests cannot reuse a revoked grant.
+// Local sockets and explicitly unauthenticated loopback servers retain their
+// existing authority model.
+func (s *Server) authorizeRequest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.tlsConfig != nil || s.remoteManagement() {
+			if r.TLS == nil || s.clientAuthorization.Authorize(r.Context(), *r.TLS) != nil {
+				jsonError(w, http.StatusForbidden, connection.ErrClientAuthorization.Error())
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 
 func requestPrincipal(r *http.Request) string {
 	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 || len(r.TLS.VerifiedChains) == 0 || len(r.TLS.VerifiedChains[0]) == 0 {

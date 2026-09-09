@@ -99,9 +99,10 @@ type Server struct {
 	Addr    string
 	network string
 
-	h         *http.Server
-	ln        net.Listener
-	tlsConfig *tls.Config
+	h                   *http.Server
+	ln                  net.Listener
+	tlsConfig           *tls.Config
+	clientAuthorization *connection.ClientAuthorization
 
 	backend        *backend.Backend
 	logger         *slog.Logger
@@ -124,11 +125,12 @@ func (s *Server) EnableNetworkAuth(ctx context.Context) error {
 	if s.network != "tcp" {
 		return errors.New("network authentication is only available for TCP servers")
 	}
-	tlsConfig, err := connection.ServerTLSConfig(ctx)
+	tlsConfig, authorization, err := connection.ServerTLSConfigWithAuthorization(ctx)
 	if err != nil {
 		return err
 	}
 	s.tlsConfig = tlsConfig
+	s.clientAuthorization = authorization
 	if s.remoteManagement() {
 		s.backend.SetPersistent(true)
 	}
@@ -349,7 +351,7 @@ func (s *Server) installHandler() {
 	mux.Handle("/v1/docs/", httpswagger.WrapHandler)
 	s.h = &http.Server{
 		Protocols:         &p,
-		Handler:           cruxlog.TraceHTTPHandler(s.recoverHandler(s.loggingHandler(mux))),
+		Handler:           cruxlog.TraceHTTPHandler(s.recoverHandler(s.loggingHandler(s.authorizeRequest(mux)))),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       90 * time.Second,
 		MaxHeaderBytes:    64 << 10,
