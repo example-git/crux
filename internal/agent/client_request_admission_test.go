@@ -33,7 +33,7 @@ func TestClientRetainedRequestAdmissionUsesCurrentAuthority(t *testing.T) {
 	replacement := clientResponsesProposal(t, host.URL+"/v1")
 	id := replacement.Providers[0].Config.ID
 	principal := strings.Repeat("a", 64)
-	for _, mode := range []string{"newer available", "disabled", "exact owner replacement", "principal", "server mode", "older revision", "same revision changed"} {
+	for _, mode := range []string{"newer available", "captured unavailable", "disabled", "exact owner replacement", "principal", "server mode", "older revision", "same revision changed"} {
 		t.Run(mode, func(t *testing.T) {
 			selected := config.SelectedModel{Provider: id, Model: "model"}
 			proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1, Providers: []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: id, Type: catalog.TypeOpenAICompat, BaseURL: host.URL + "/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model", Name: "Model", ContextWindow: 8192, DefaultMaxTokens: 1024}}}}}, Models: map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: selected, config.SelectedModelTypeSmall: selected}, Credentials: []config.RemoteCredentialBinding{{Owner: providerregistry.RegistrationOwner{ProviderID: id}, Generation: 1, APIKey: "synthetic-captured"}}}
@@ -48,6 +48,10 @@ func TestClientRetainedRequestAdmissionUsesCurrentAuthority(t *testing.T) {
 				proposal.Revision = 2
 				proposal.Credentials[0].Generation = 2
 			}
+			if mode == "captured unavailable" {
+				proposal.Credentials[0].APIKey = ""
+				proposal.Credentials[0].Unavailable = true
+			}
 			store := compile(proposal, principal)
 			coord := &coordinator{cfg: store}
 			snapshot := store.RuntimeSnapshot()
@@ -58,22 +62,43 @@ func TestClientRetainedRequestAdmissionUsesCurrentAuthority(t *testing.T) {
 			require.NoError(t, err)
 			call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("initial request")}}
 			_, err = retained.Generate(t.Context(), call)
-			require.NoError(t, err)
+			if mode == "captured unavailable" {
+				require.ErrorContains(t, err, "has no credential")
+			} else {
+				require.NoError(t, err)
+			}
 			mu.Lock()
 			before := len(credentials)
 			mu.Unlock()
 			expected := "current client runtime authority changed"
 			switch mode {
-			case "newer available", "disabled":
+			case "newer available", "captured unavailable", "disabled":
 				proposal.Revision = 2
 				proposal.Credentials[0].Generation = 2
 				proposal.Credentials[0].APIKey = "synthetic-current"
+				proposal.Credentials[0].Unavailable = false
 				proposal.Controls.ResponseVerbosity = "high"
 				proposal.Providers[0].Config.Disable = mode == "disabled"
 				sealClientResponsesProposal(t, &proposal)
 				_, err = store.ReplaceRemoteRuntime(t.Context(), proposal, principal, 1)
 				require.NoError(t, err)
 				expected = "disabled"
+				if mode == "captured unavailable" {
+					expected = "has no credential"
+					current := store.RuntimeSnapshot()
+					currentProvider, _ := current.Config().Providers.Get(id)
+					currentBuilt, buildErr := coord.buildProvider(current, currentProvider, selected, false)
+					require.NoError(t, buildErr)
+					currentModel, modelErr := currentBuilt.LanguageModel(t.Context(), selected.Model)
+					require.NoError(t, modelErr)
+					_, requestErr := currentModel.Generate(t.Context(), call)
+					require.NoError(t, requestErr)
+					mu.Lock()
+					require.Len(t, credentials, before+1)
+					require.Equal(t, "Bearer synthetic-current", credentials[len(credentials)-1])
+					before = len(credentials)
+					mu.Unlock()
+				}
 			case "exact owner replacement":
 				next := replacement
 				next.Revision = 2
