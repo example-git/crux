@@ -218,8 +218,8 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	// Arm initialization synchronously before launching it so WaitForInit
 	// blocks for the in-flight init instead of racing the goroutine and
 	// returning before any MCP tools register.
-	mcp.ArmInit()
-	go mcp.Initialize(ctx, app.Permissions, store)
+	mcp.For(app.config).ArmInit()
+	go mcp.For(app.config).Initialize(ctx, app.Permissions, store)
 
 	// Start herdr integration when running inside a herdr pane.
 	app.herdrClient = herdr.Init()
@@ -240,7 +240,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 			return nil
 		},
 		func(context.Context) error { return db.Release(dataDir) },
-		func(ctx context.Context) error { return mcp.Close(ctx) },
+		func(ctx context.Context) error { return mcp.For(app.config).Close(ctx) },
 	)
 
 	// TODO: remove the concept of agent config, most likely.
@@ -417,7 +417,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	// waits again for the same reason (it is the gate the client/server path
 	// goes through); doing it here too surfaces the failure before we create a
 	// session, and lets the UpdateModels below see every MCP tool.
-	if err := mcp.WaitForInit(ctx); err != nil {
+	if err := mcp.For(app.config).WaitForInit(ctx); err != nil {
 		return fmt.Errorf("failed to wait for MCP initialization: %w", err)
 	}
 
@@ -772,7 +772,7 @@ func (app *App) setupEvents() {
 	setupSubscriber(ctx, app.serviceEventsWG, "shell-task-notifications", app.BackgroundShells.SubscribeNotifications, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "agent-task-notifications", app.BackgroundAgents.SubscribeNotifications, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "image-task-notifications", app.BackgroundImages.SubscribeNotifications, app.events)
-	setupSubscriber(ctx, app.serviceEventsWG, "mcp", mcp.SubscribeEvents, app.events)
+	setupSubscriber(ctx, app.serviceEventsWG, "mcp", mcp.For(app.config).SubscribeEvents, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "lsp", SubscribeLSPEvents, app.events)
 	if app.Skills != nil {
 		setupSubscriber(ctx, app.serviceEventsWG, "skills", app.Skills.SubscribeEvents, app.events)

@@ -180,13 +180,13 @@ func channelEnabled(enabled []string, name string) bool {
 // represent ordered inbound messages (chat, alerts) rather than disposable UI
 // updates, so a stalled subscriber must not permanently lose them the way
 // lossy Publish would. Malformed payloads are dropped (fail closed).
-func publishChannelMessage(ctx context.Context, name string, raw json.RawMessage) {
+func (runtime *Manager) publishChannelMessage(ctx context.Context, name string, raw json.RawMessage) {
 	p, ok := parseChannelParams(raw)
 	if !ok {
 		slog.Warn("Dropping malformed channel notification", "server", name)
 		return
 	}
-	broker.PublishMustDeliver(ctx, pubsub.CreatedEvent, Event{
+	runtime.broker.PublishMustDeliver(ctx, pubsub.CreatedEvent, Event{
 		Type:           EventChannelMessage,
 		Name:           name,
 		ChannelMessage: renderChannel(name, p),
@@ -279,9 +279,10 @@ func (g *channelGate) accept(raw json.RawMessage) json.RawMessage {
 // methods before any client-side handler or middleware runs, so the only place
 // to observe a custom notification is the transport's own connection.
 type channelTransport struct {
-	inner mcp.Transport
-	name  string
-	gate  *channelGate
+	runtime *Manager
+	inner   mcp.Transport
+	name    string
+	gate    *channelGate
 }
 
 // Connect implements mcp.Transport.
@@ -290,12 +291,13 @@ func (t *channelTransport) Connect(ctx context.Context) (mcp.Connection, error) 
 	if err != nil {
 		return nil, err
 	}
-	return &channelConn{Connection: conn, name: t.name, gate: t.gate}, nil
+	return &channelConn{runtime: t.runtime, Connection: conn, name: t.name, gate: t.gate}, nil
 }
 
 // channelConn wraps an mcp.Connection and filters channel notifications out of
 // the stream the SDK sees, dispatching them to the channel handler instead.
 type channelConn struct {
+	runtime *Manager
 	mcp.Connection
 	name string
 	gate *channelGate
@@ -317,7 +319,7 @@ func (c *channelConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 			return msg, nil
 		}
 		if raw := c.gate.accept(req.Params); raw != nil {
-			publishChannelMessage(ctx, c.name, raw)
+			c.runtime.publishChannelMessage(ctx, c.name, raw)
 		}
 	}
 }

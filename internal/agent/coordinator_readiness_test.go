@@ -66,8 +66,8 @@ func TestBuildAgentReadinessSurvivesCallerCancellation(t *testing.T) {
 	// Arm the MCP init gate. We never complete init; the readiness goroutines
 	// must not care, since they build the tool list from the registry as it
 	// stands rather than waiting for initialization to finish.
-	mcp.ArmInit()
-	t.Cleanup(mcp.DisarmInit)
+	mcp.For(cfg).ArmInit()
+	t.Cleanup(mcp.For(cfg).DisarmInit)
 
 	p, err := coderPrompt(prompt.WithWorkingDir(env.workingDir))
 	require.NoError(t, err)

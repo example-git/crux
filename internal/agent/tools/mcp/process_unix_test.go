@@ -3,6 +3,7 @@
 package mcp
 
 import (
+	"context"
 	"testing"
 
 	"github.com/example-git/crux/internal/config"
@@ -15,10 +16,12 @@ import (
 // lets Crux reap a server's descendant processes (e.g. signal-cli launched by
 // signal-mcp) when the session context is cancelled, instead of orphaning them.
 func TestCreateTransport_StdioProcessGroup(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	t.Parallel()
 
 	m := config.MCPConfig{Type: config.MCPStdio, Command: "echo", Args: []string{"hi"}}
-	tr, _, err := createTransport(t.Context(), nil, "test", m, shellResolverWithPath(t, nil))
+	tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, shellResolverWithPath(t, nil))
 	require.NoError(t, err)
 
 	ct, ok := tr.(*mcp.CommandTransport)

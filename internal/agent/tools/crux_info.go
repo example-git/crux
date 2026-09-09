@@ -45,7 +45,7 @@ func buildCruxInfo(cfg *config.ConfigStore, lspManager *lsp.Manager, allSkills [
 	writeModels(&b, cfg)
 	writeProviders(&b, cfg)
 	writeLSP(&b, lspManager, cfg)
-	writeMCP(&b, mcp.GetStates(), cfg)
+	writeMCP(&b, mcp.For(cfg).GetStates(), cfg)
 	writeSkills(&b, allSkills, activeSkills, skillTracker, cfg)
 	writeHooks(&b, cfg)
 	writePermissions(&b, cfg)

@@ -344,6 +344,7 @@ func (s *Server) installHandler() {
 	route("POST /v1/workspaces/{id}/mcp/read-resource", c.handlePostWorkspaceMCPReadResource)
 	route("GET /v1/workspaces/{id}/mcp/prompts", c.handleGetWorkspaceMCPPrompts)
 	route("POST /v1/workspaces/{id}/mcp/get-prompt", c.handlePostWorkspaceMCPGetPrompt)
+	route("GET /v1/workspaces/{id}/mcp/resources", c.handleGetWorkspaceMCPResources)
 	route("GET /v1/workspaces/{id}/mcp/states", c.handleGetWorkspaceMCPStates)
 	route("GET /v1/workspaces/{id}/mcp/pending-auth", c.handleGetWorkspaceMCPPendingAuth)
 	route("GET /v1/workspaces/{id}/mcp/auth-url", c.handleGetWorkspaceMCPAuthURL)

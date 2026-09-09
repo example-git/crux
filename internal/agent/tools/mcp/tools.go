@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/example-git/crux/internal/config"
-	"github.com/example-git/crux/internal/csync"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -25,21 +24,30 @@ type ToolResult struct {
 	MediaType string
 }
 
-var allTools = csync.NewMap[string, []*Tool]()
-
 // Tools returns all available MCP tools.
-func Tools() iter.Seq2[string, []*Tool] {
-	return allTools.Seq2()
+func (runtime *Manager) Tools() iter.Seq2[string, []*Tool] {
+	if runtime.ctx.Err() != nil {
+		return func(func(string, []*Tool) bool) {}
+	}
+	return runtime.allTools.Seq2()
 }
 
 // RunTool runs an MCP tool with the given input parameters.
-func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string, input string) (ToolResult, error) {
+func (runtime *Manager) RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string, input string) (ToolResult, error) {
+	if err := runtime.requireStore(cfg); err != nil {
+		return ToolResult{}, err
+	}
+	ctx, done, admissionErr := runtime.admit(ctx)
+	if admissionErr != nil {
+		return ToolResult{}, admissionErr
+	}
+	defer done()
 	var args map[string]any
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return ToolResult{}, fmt.Errorf("error parsing parameters: %s", err)
 	}
 
-	c, err := getOrRenewClient(ctx, cfg, name)
+	c, err := runtime.getOrRenewClient(ctx, cfg, name)
 	if err != nil {
 		return ToolResult{}, err
 	}
@@ -109,9 +117,17 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 }
 
 // RefreshTools gets the updated list of tools from the MCP and updates the
-// global state.
-func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
-	session, ok := sessions.Get(name)
+// workspace state.
+func (runtime *Manager) RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
+	if err := runtime.requireStore(cfg); err != nil {
+		return
+	}
+	ctx, done, admissionErr := runtime.serverOperation(ctx, name)
+	if admissionErr != nil {
+		return
+	}
+	defer done()
+	session, ok := runtime.sessions.Get(name)
 	if !ok {
 		slog.Warn("Refresh tools: no session", "name", name)
 		return
@@ -119,15 +135,15 @@ func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
 
 	tools, err := getTools(ctx, session)
 	if err != nil {
-		updateState(name, StateError, err, nil, Counts{})
+		runtime.updateState(name, StateError, err, nil, Counts{})
 		return
 	}
 
-	toolCount := updateTools(cfg, name, tools)
+	toolCount := runtime.updateTools(cfg, name, tools)
 
-	prev, _ := states.Get(name)
+	prev, _ := runtime.states.Get(name)
 	prev.Counts.Tools = toolCount
-	updateState(name, StateConnected, nil, session, prev.Counts)
+	runtime.updateState(name, StateConnected, nil, session, prev.Counts)
 }
 
 // registerSessionTools lists the tools a live session exposes and writes them
@@ -136,12 +152,12 @@ func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
 // (re)connected session's tools enter the registry, so both the initial
 // connect and a lazy renew repopulate the tool list the agent sends to the LLM
 // instead of leaving it empty.
-func registerSessionTools(ctx context.Context, cfg *config.ConfigStore, name string, sess *ClientSession) (int, error) {
+func (runtime *Manager) registerSessionTools(ctx context.Context, cfg *config.ConfigStore, name string, sess *ClientSession) (int, error) {
 	tools, err := getTools(ctx, sess)
 	if err != nil {
 		return 0, err
 	}
-	return updateTools(cfg, name, tools), nil
+	return runtime.updateTools(cfg, name, tools), nil
 }
 
 func getTools(ctx context.Context, session *ClientSession) ([]*Tool, error) {
@@ -155,16 +171,16 @@ func getTools(ctx context.Context, session *ClientSession) ([]*Tool, error) {
 	return result.Tools, nil
 }
 
-func updateTools(cfg *config.ConfigStore, name string, tools []*Tool) int {
+func (runtime *Manager) updateTools(cfg *config.ConfigStore, name string, tools []*Tool) int {
 	mcpCfg, ok := cfg.Config().MCP[name]
 	if ok {
 		tools = filterTools(mcpCfg, tools)
 	}
 	if len(tools) == 0 {
-		allTools.Del(name)
+		runtime.allTools.Del(name)
 		return 0
 	}
-	allTools.Set(name, tools)
+	runtime.allTools.Set(name, tools)
 	return len(tools)
 }
 

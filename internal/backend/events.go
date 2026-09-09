@@ -94,18 +94,30 @@ func (b *Backend) LSPStopAll(ctx context.Context, workspaceID string) error {
 }
 
 // MCPGetStates returns the current state of all MCP clients.
-func (b *Backend) MCPGetStates(_ string) map[string]mcptools.ClientInfo {
-	return mcptools.GetStates()
+func (b *Backend) MCPGetStates(workspaceID string) map[string]mcptools.ClientInfo {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil
+	}
+	return mcptools.For(ws.Cfg).GetStates()
 }
 
 // MCPRefreshPrompts refreshes prompts for a named MCP client.
-func (b *Backend) MCPRefreshPrompts(ctx context.Context, _ string, name string) {
-	mcptools.RefreshPrompts(ctx, name)
+func (b *Backend) MCPRefreshPrompts(ctx context.Context, workspaceID string, name string) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return
+	}
+	mcptools.For(ws.Cfg).RefreshPrompts(ctx, name)
 }
 
 // MCPRefreshResources refreshes resources for a named MCP client.
-func (b *Backend) MCPRefreshResources(ctx context.Context, _ string, name string) {
-	mcptools.RefreshResources(ctx, name)
+func (b *Backend) MCPRefreshResources(ctx context.Context, workspaceID string, name string) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return
+	}
+	mcptools.For(ws.Cfg).RefreshResources(ctx, name)
 }
 
 // MCPPendingAuth returns the MCP servers awaiting OAuth authentication,
@@ -116,13 +128,17 @@ func (b *Backend) MCPPendingAuth(workspaceID string) ([]mcptools.PendingAuthServ
 	if err != nil {
 		return nil, err
 	}
-	return mcptools.PendingAuthMCPs(ws.Cfg), nil
+	return mcptools.For(ws.Cfg).PendingAuthMCPs(ws.Cfg), nil
 }
 
 // MCPAuthURL returns the current OAuth authorization URL for a named
 // server, if a flow is in progress.
-func (b *Backend) MCPAuthURL(name string) string {
-	return mcptools.MCPAuthURL(name)
+func (b *Backend) MCPAuthURL(workspaceID, name string) string {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return ""
+	}
+	return mcptools.For(ws.Cfg).MCPAuthURL(name)
 }
 
 // MCPAuthenticate runs the OAuth flow for a named MCP server with the
@@ -136,7 +152,7 @@ func (b *Backend) MCPAuthenticate(ctx context.Context, workspaceID, name string)
 	if err != nil {
 		return err
 	}
-	finish, cancel, err := mcptools.BeginAuth(ws.Cfg, name)
+	finish, cancel, err := mcptools.For(ws.Cfg).BeginAuth(ws.Cfg, name)
 	if err != nil {
 		return err
 	}

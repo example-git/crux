@@ -1699,6 +1699,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case util.ClearStatusMsg:
 		m.status.ClearInfoMsg()
 	case completions.CompletionItemsLoadedMsg:
+		if msg.Scope != m.com.Workspace {
+			break
+		}
+		if msg.Error != nil {
+			cmds = append(cmds, util.ReportError(msg.Error))
+		}
 		if m.completionsOpen {
 			m.completions.SetItems(msg.Files, msg.Resources)
 		}
@@ -3212,7 +3218,12 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 						m.completionsStartIndex = curIdx
 						m.completionsPositionStart = m.completionsPosition()
 						depth, limit := m.com.Config().Options.TUI.Completions.Limits()
-						cmds = append(cmds, m.completions.Open(depth, limit))
+						workspace := m.com.Workspace
+						cmds = append(cmds, m.completions.Open(depth, limit, workspace, func() ([]proto.MCPResource, error) {
+							ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+							defer cancel()
+							return workspace.MCPResources(ctx)
+						}))
 					}
 				}
 

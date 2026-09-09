@@ -9,6 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/ui/dialog"
 )
 
@@ -62,14 +63,17 @@ func (m *UI) openMCPAuthDialog() tea.Cmd {
 // checks whether any OAuth MCPs need authentication. This runs as a
 // Bubble Tea command so it doesn't block the UI.
 func (m *UI) checkPendingMCPAuth() tea.Cmd {
+	workspace := m.com.Workspace
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err := mcp.WaitForInit(ctx); err != nil {
-			return nil
+		if local, ok := workspace.(interface{ Store() *config.ConfigStore }); ok {
+			if err := mcp.For(local.Store()).WaitForInit(ctx); err != nil {
+				return nil
+			}
 		}
 		return mcpStateChangedMsg{
-			states: m.com.Workspace.MCPGetStates(),
+			states: workspace.MCPGetStates(),
 		}
 	}
 }

@@ -268,6 +268,7 @@ type Workspace interface {
 
 	// MCP operations (server-side in client mode)
 	MCPGetStates() map[string]mcptools.ClientInfo
+	MCPResources(context.Context) ([]proto.MCPResource, error)
 	MCPRefreshPrompts(ctx context.Context, name string)
 	MCPRefreshResources(ctx context.Context, name string)
 	RefreshMCPTools(ctx context.Context, name string)

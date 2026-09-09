@@ -23,7 +23,7 @@ var whitelistDockerTools = []string{
 // GetMCPTools gets all the currently available MCP tools.
 func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd string) []*Tool {
 	var result []*Tool
-	for mcpName, tools := range mcp.Tools() {
+	for mcpName, tools := range mcp.For(cfg).Tools() {
 		for _, tool := range tools {
 			result = append(result, &Tool{
 				mcpName:     mcpName,
@@ -125,7 +125,7 @@ func (m *Tool) Run(ctx context.Context, params fantasy.ToolCall) (fantasy.ToolRe
 		}
 	}
 
-	result, err := mcp.RunTool(ctx, m.cfg, m.mcpName, m.tool.Name, params.Input)
+	result, err := mcp.For(m.cfg).RunTool(ctx, m.cfg, m.mcpName, m.tool.Name, params.Input)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 
 	"github.com/example-git/crux/internal/config"
-	"github.com/example-git/crux/internal/csync"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -16,16 +15,40 @@ type Resource = mcp.Resource
 
 type ResourceContents = mcp.ResourceContents
 
-var allResources = csync.NewMap[string, []*Resource]()
-
 // Resources returns all available MCP resources.
-func Resources() iter.Seq2[string, []*Resource] {
-	return allResources.Seq2()
+func (runtime *Manager) Resources() iter.Seq2[string, []*Resource] {
+	if runtime.ctx.Err() != nil {
+		return func(func(string, []*Resource) bool) {}
+	}
+	return runtime.allResources.Seq2()
+}
+
+// ResourceSnapshot reads only this workspace's cached metadata. A closed
+// runtime is an error, distinct from a live workspace with no cached resources.
+func (runtime *Manager) ResourceSnapshot(ctx context.Context) (map[string][]*Resource, error) {
+	ctx, done, err := runtime.admit(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+	resources := runtime.allResources.Copy()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return resources, nil
 }
 
 // ListResources returns the current resources for an MCP server.
-func ListResources(ctx context.Context, cfg *config.ConfigStore, name string) ([]*Resource, error) {
-	session, err := getOrRenewClient(ctx, cfg, name)
+func (runtime *Manager) ListResources(ctx context.Context, cfg *config.ConfigStore, name string) ([]*Resource, error) {
+	if err := runtime.requireStore(cfg); err != nil {
+		return nil, err
+	}
+	ctx, done, admissionErr := runtime.admit(ctx)
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	defer done()
+	session, err := runtime.getOrRenewClient(ctx, cfg, name)
 	if err != nil {
 		return nil, err
 	}
@@ -35,16 +58,32 @@ func ListResources(ctx context.Context, cfg *config.ConfigStore, name string) ([
 		return nil, err
 	}
 
-	resourceCount := updateResources(name, resources)
-	prev, _ := states.Get(name)
+	ctx, release, err := runtime.serverOperation(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if current, ok := runtime.sessions.Get(name); !ok || current != session {
+		return nil, errors.New("MCP server changed while listing resources")
+	}
+	resourceCount := runtime.updateResources(name, resources)
+	prev, _ := runtime.states.Get(name)
 	prev.Counts.Resources = resourceCount
-	updateState(name, StateConnected, nil, session, prev.Counts)
+	runtime.updateState(name, StateConnected, nil, session, prev.Counts)
 	return resources, nil
 }
 
 // ReadResource reads the contents of a resource from an MCP server.
-func ReadResource(ctx context.Context, cfg *config.ConfigStore, name, uri string) ([]*ResourceContents, error) {
-	session, err := getOrRenewClient(ctx, cfg, name)
+func (runtime *Manager) ReadResource(ctx context.Context, cfg *config.ConfigStore, name, uri string) ([]*ResourceContents, error) {
+	if err := runtime.requireStore(cfg); err != nil {
+		return nil, err
+	}
+	ctx, done, admissionErr := runtime.admit(ctx)
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	defer done()
+	session, err := runtime.getOrRenewClient(ctx, cfg, name)
 	if err != nil {
 		return nil, err
 	}
@@ -56,9 +95,14 @@ func ReadResource(ctx context.Context, cfg *config.ConfigStore, name, uri string
 }
 
 // RefreshResources gets the updated list of resources from the MCP and updates the
-// global state.
-func RefreshResources(ctx context.Context, name string) {
-	session, ok := sessions.Get(name)
+// workspace state.
+func (runtime *Manager) RefreshResources(ctx context.Context, name string) {
+	ctx, done, admissionErr := runtime.serverOperation(ctx, name)
+	if admissionErr != nil {
+		return
+	}
+	defer done()
+	session, ok := runtime.sessions.Get(name)
 	if !ok {
 		slog.Warn("Refresh resources: no session", "name", name)
 		return
@@ -66,15 +110,15 @@ func RefreshResources(ctx context.Context, name string) {
 
 	resources, err := getResources(ctx, session)
 	if err != nil {
-		updateState(name, StateError, err, nil, Counts{})
+		runtime.updateState(name, StateError, err, nil, Counts{})
 		return
 	}
 
-	resourceCount := updateResources(name, resources)
+	resourceCount := runtime.updateResources(name, resources)
 
-	prev, _ := states.Get(name)
+	prev, _ := runtime.states.Get(name)
 	prev.Counts.Resources = resourceCount
-	updateState(name, StateConnected, nil, session, prev.Counts)
+	runtime.updateState(name, StateConnected, nil, session, prev.Counts)
 }
 
 func getResources(ctx context.Context, c *ClientSession) ([]*Resource, error) {
@@ -99,11 +143,11 @@ func isMethodNotFoundError(err error) bool {
 	return errors.As(err, &rpcErr) && rpcErr != nil && rpcErr.Code == jsonrpc.CodeMethodNotFound
 }
 
-func updateResources(name string, resources []*Resource) int {
+func (runtime *Manager) updateResources(name string, resources []*Resource) int {
 	if len(resources) == 0 {
-		allResources.Del(name)
+		runtime.allResources.Del(name)
 		return 0
 	}
-	allResources.Set(name, resources)
+	runtime.allResources.Set(name, resources)
 	return len(resources)
 }

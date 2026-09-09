@@ -6,22 +6,30 @@ import (
 	"log/slog"
 
 	"github.com/example-git/crux/internal/config"
-	"github.com/example-git/crux/internal/csync"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Prompt = mcp.Prompt
 
-var allPrompts = csync.NewMap[string, []*Prompt]()
-
 // Prompts returns all available MCP prompts.
-func Prompts() iter.Seq2[string, []*Prompt] {
-	return allPrompts.Seq2()
+func (runtime *Manager) Prompts() iter.Seq2[string, []*Prompt] {
+	if runtime.ctx.Err() != nil {
+		return func(func(string, []*Prompt) bool) {}
+	}
+	return runtime.allPrompts.Seq2()
 }
 
 // GetPromptMessages retrieves the content of an MCP prompt with the given arguments.
-func GetPromptMessages(ctx context.Context, cfg *config.ConfigStore, clientName, promptName string, args map[string]string) ([]string, error) {
-	c, err := getOrRenewClient(ctx, cfg, clientName)
+func (runtime *Manager) GetPromptMessages(ctx context.Context, cfg *config.ConfigStore, clientName, promptName string, args map[string]string) ([]string, error) {
+	if err := runtime.requireStore(cfg); err != nil {
+		return nil, err
+	}
+	ctx, done, admissionErr := runtime.admit(ctx)
+	if admissionErr != nil {
+		return nil, admissionErr
+	}
+	defer done()
+	c, err := runtime.getOrRenewClient(ctx, cfg, clientName)
 	if err != nil {
 		return nil, err
 	}
@@ -46,9 +54,14 @@ func GetPromptMessages(ctx context.Context, cfg *config.ConfigStore, clientName,
 }
 
 // RefreshPrompts gets the updated list of prompts from the MCP and updates the
-// global state.
-func RefreshPrompts(ctx context.Context, name string) {
-	session, ok := sessions.Get(name)
+// workspace state.
+func (runtime *Manager) RefreshPrompts(ctx context.Context, name string) {
+	ctx, done, admissionErr := runtime.serverOperation(ctx, name)
+	if admissionErr != nil {
+		return
+	}
+	defer done()
+	session, ok := runtime.sessions.Get(name)
 	if !ok {
 		slog.Warn("Refresh prompts: no session", "name", name)
 		return
@@ -56,15 +69,15 @@ func RefreshPrompts(ctx context.Context, name string) {
 
 	prompts, err := getPrompts(ctx, session)
 	if err != nil {
-		updateState(name, StateError, err, nil, Counts{})
+		runtime.updateState(name, StateError, err, nil, Counts{})
 		return
 	}
 
-	updatePrompts(name, prompts)
+	runtime.updatePrompts(name, prompts)
 
-	prev, _ := states.Get(name)
+	prev, _ := runtime.states.Get(name)
 	prev.Counts.Prompts = len(prompts)
-	updateState(name, StateConnected, nil, session, prev.Counts)
+	runtime.updateState(name, StateConnected, nil, session, prev.Counts)
 }
 
 func getPrompts(ctx context.Context, c *ClientSession) ([]*Prompt, error) {
@@ -78,11 +91,11 @@ func getPrompts(ctx context.Context, c *ClientSession) ([]*Prompt, error) {
 	return result.Prompts, nil
 }
 
-// updatePrompts updates the global mcpPrompts and mcpClient2Prompts maps
-func updatePrompts(mcpName string, prompts []*Prompt) {
+// updatePrompts updates this workspace's prompt cache.
+func (runtime *Manager) updatePrompts(mcpName string, prompts []*Prompt) {
 	if len(prompts) == 0 {
-		allPrompts.Del(mcpName)
+		runtime.allPrompts.Del(mcpName)
 		return
 	}
-	allPrompts.Set(mcpName, prompts)
+	runtime.allPrompts.Set(mcpName, prompts)
 }

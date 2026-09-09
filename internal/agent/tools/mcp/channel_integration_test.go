@@ -35,10 +35,12 @@ func (t *injectTransport) Connect(ctx context.Context) (mcp.Connection, error) {
 // two-way reply-tool discovery, and a real server-pushed notification flowing
 // through the transport wrapper into an EventChannelMessage.
 func TestChannelEndToEnd(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	sub := broker.Subscribe(ctx)
+	sub := runtime.broker.Subscribe(ctx)
 
 	serverT, clientT := mcp.NewInMemoryTransports()
 
@@ -72,7 +74,7 @@ func TestChannelEndToEnd(t *testing.T) {
 
 	gate := newChannelGate()
 	client := mcp.NewClient(&mcp.Implementation{Name: "crux", Version: "test"}, nil)
-	session, err := client.Connect(ctx, &channelTransport{inner: clientT, name: "chan", gate: gate}, nil)
+	session, err := client.Connect(ctx, &channelTransport{runtime: runtime, inner: clientT, name: "chan", gate: gate}, nil)
 	if err != nil {
 		t.Fatalf("client connect: %v", err)
 	}
@@ -85,7 +87,7 @@ func TestChannelEndToEnd(t *testing.T) {
 	if channelEnabled([]string{"chan"}, "chan") && hasChannelCapability(session.InitializeResult()) {
 		buffered := gate.resolve(true)
 		for _, raw := range buffered {
-			publishChannelMessage(ctx, "chan", raw)
+			runtime.publishChannelMessage(ctx, "chan", raw)
 		}
 	} else {
 		gate.resolve(false)

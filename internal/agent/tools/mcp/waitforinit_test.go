@@ -8,30 +8,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// swapInitGate replaces the package-global initDone channel that WaitForInit
-// waits on with a fresh, open one for the duration of the test, restoring the
-// original in cleanup. This lets each test drive WaitForInit deterministically
-// (by closing the returned channel to signal "init complete") instead of
-// branching on whether an earlier test already closed the process-wide
-// one-shot. The tests that use it are not parallel and nothing else touches the
-// gate during a unit-test run, so the swap is race-free.
-func swapInitGate(t *testing.T) chan struct{} {
+// swapInitGate installs an armed gate on this test's private manager, so the
+// test can drive startup completion without launching a transport.
+func swapInitGate(t *testing.T, runtime *Manager) chan struct{} {
 	t.Helper()
-	orig := initDone
-	initDone = make(chan struct{})
+	orig := runtime.initDone
+	runtime.initDone = make(chan struct{})
 
-	initMu.Lock()
-	origStarted := initStarted
-	initStarted = true
-	initMu.Unlock()
+	runtime.initMu.Lock()
+	origStarted := runtime.initStarted
+	runtime.initStarted = true
+	runtime.initMu.Unlock()
 
 	t.Cleanup(func() {
-		initDone = orig
-		initMu.Lock()
-		initStarted = origStarted
-		initMu.Unlock()
+		runtime.initDone = orig
+		runtime.initMu.Lock()
+		runtime.initStarted = origStarted
+		runtime.initMu.Unlock()
 	})
-	return initDone
+	return runtime.initDone
 }
 
 // TestWaitForInit_BlocksUntilInitCompletes pins the contract the
@@ -43,17 +38,19 @@ func swapInitGate(t *testing.T) chan struct{} {
 // TUI's first prompt); they build the tool palette from whatever is registered
 // at send time and pick up late servers on later runs. See coordinator.run.
 func TestWaitForInit_BlocksUntilInitCompletes(t *testing.T) {
-	gate := swapInitGate(t)
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
+	gate := swapInitGate(t, runtime)
 
 	// Init not done yet: WaitForInit must block until the context expires.
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	require.ErrorIs(t, WaitForInit(ctx), context.DeadlineExceeded,
+	require.ErrorIs(t, runtime.WaitForInit(ctx), context.DeadlineExceeded,
 		"WaitForInit must block while initialization is in flight")
 
 	// Once initialization completes (the gate closes), WaitForInit returns nil.
-	close(gate)
-	require.NoError(t, WaitForInit(context.Background()),
+	runtime.initOnce.Do(func() { close(gate) })
+	require.NoError(t, runtime.WaitForInit(context.Background()),
 		"WaitForInit must return once initialization has completed")
 }
 
@@ -63,20 +60,22 @@ func TestWaitForInit_BlocksUntilInitCompletes(t *testing.T) {
 // blocking on a channel that will never close. Before the fix it blocked
 // until ctx was cancelled, hanging RunNonInteractive's gate forever.
 func TestWaitForInit_ReturnsWhenNotArmed(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	// Ensure the gate looks unarmed regardless of test ordering.
-	initMu.Lock()
-	orig := initStarted
-	initStarted = false
-	initMu.Unlock()
+	runtime.initMu.Lock()
+	orig := runtime.initStarted
+	runtime.initStarted = false
+	runtime.initMu.Unlock()
 	t.Cleanup(func() {
-		initMu.Lock()
-		initStarted = orig
-		initMu.Unlock()
+		runtime.initMu.Lock()
+		runtime.initStarted = orig
+		runtime.initMu.Unlock()
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	require.NoError(t, WaitForInit(ctx),
+	require.NoError(t, runtime.WaitForInit(ctx),
 		"WaitForInit must return immediately when initialization was never armed")
 }
 
@@ -87,32 +86,34 @@ func TestWaitForInit_ReturnsWhenNotArmed(t *testing.T) {
 // registry ungated and picks up late tools on subsequent runs); this test
 // keeps the guarantee for non-interactive runs, which still wait.
 func TestWaitForInit_ToolsVisibleAfterInit(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	const name = "test-waitforinit-tools"
 	t.Cleanup(func() {
-		if s, ok := sessions.Take(name); ok {
+		if s, ok := runtime.sessions.Take(name); ok {
 			_ = s.Close()
 		}
-		allTools.Del(name)
-		states.Del(name)
+		runtime.allTools.Del(name)
+		runtime.states.Del(name)
 	})
 
 	sess, _ := liveSession(t, "slow_tool")
-	gate := swapInitGate(t)
+	gate := swapInitGate(t, runtime)
 
 	// A slow MCP server registers its tools, then initialization completes
-	// (the gate closes). close(gate) happens-after the registration, and
+	// (the gate closes). runtime.initOnce.Do(func(){close(gate)}) happens-after the registration, and
 	// WaitForInit returning happens-after observing the close, so the tools are
 	// guaranteed visible once WaitForInit returns.
 	go func() {
-		sessions.Set(name, sess)
-		allTools.Set(name, []*Tool{{Name: "slow_tool"}})
-		updateState(name, StateConnected, nil, sess, Counts{Tools: 1})
-		close(gate)
+		runtime.sessions.Set(name, sess)
+		runtime.allTools.Set(name, []*Tool{{Name: "slow_tool"}})
+		runtime.updateState(name, StateConnected, nil, sess, Counts{Tools: 1})
+		runtime.initOnce.Do(func() { close(gate) })
 	}()
 
-	require.NoError(t, WaitForInit(context.Background()))
+	require.NoError(t, runtime.WaitForInit(context.Background()))
 
-	tools, ok := allTools.Get(name)
+	tools, ok := runtime.allTools.Get(name)
 	require.True(t, ok, "a slow server's tools must be visible after WaitForInit returns")
 	require.Len(t, tools, 1)
 	require.Equal(t, "slow_tool", tools[0].Name)

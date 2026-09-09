@@ -69,8 +69,13 @@ var callbackPorts = []int{
 // InitialTokenSource injects a restored token at startup. That removes
 // the need to hand-roll authorization-server discovery.
 type Handler struct {
-	inner    auth.OAuthHandler
-	receiver *callbackReceiver
+	lifetime  context.Context
+	cancel    context.CancelFunc
+	lifecycle sync.Mutex
+	closed    bool
+	saves     sync.WaitGroup
+	inner     auth.OAuthHandler
+	receiver  *callbackReceiver
 
 	// openURL opens the authorization URL in the user's browser. It is
 	// a field so tests can simulate a headless environment or drive the
@@ -116,7 +121,29 @@ func NewHandler(
 	interactive bool,
 	callbackPort int,
 ) (*Handler, error) {
+	return NewHandlerWithContext(context.Background(), serverName, serverURL, savedToken, preregistered, onTokenRefresh, interactive, callbackPort)
+}
+
+// NewHandlerWithContext binds metadata, refresh and callback activity to one MCP session.
+func NewHandlerWithContext(
+	lifetime context.Context,
+	serverName string,
+	serverURL string,
+	savedToken *oauth.Token,
+	preregistered *oauth.OAuthClient,
+	onTokenRefresh func(*oauth.Token),
+	interactive bool,
+	callbackPort int,
+) (*Handler, error) {
+	lifetime, cancel := context.WithCancel(lifetime)
+	success := false
+	defer func() {
+		if !success {
+			cancel()
+		}
+	}()
 	receiver := &callbackReceiver{
+		lifetime:   lifetime,
 		serverName: serverName,
 		fixedPort:  callbackPort,
 	}
@@ -138,7 +165,7 @@ func NewHandler(
 	if port == 0 {
 		lc := &net.ListenConfig{}
 		for _, p := range callbackPorts {
-			probe, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("localhost:%d", p))
+			probe, err := lc.Listen(lifetime, "tcp", fmt.Sprintf("localhost:%d", p))
 			if err == nil {
 				_ = probe.Close()
 				port = p
@@ -154,6 +181,7 @@ func NewHandler(
 	redirectURL := fmt.Sprintf("http://localhost:%d%s", port, callbackPath)
 
 	h := &Handler{
+		lifetime: lifetime, cancel: cancel,
 		receiver:       receiver,
 		serverURL:      serverURL,
 		openURL:        browser.OpenURL,
@@ -170,7 +198,7 @@ func NewHandler(
 	// later start can refresh without rediscovery.
 	newTokenSource := func(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
 		h.persist(cfg, tok)
-		base := cfg.TokenSource(ctx, tok)
+		base := cfg.TokenSource(context.WithValue(lifetime, oauth2.HTTPClient, NewSessionHTTPClient(lifetime)), tok)
 		return NewSavingTokenSource(base, cfg, tok, func(c *oauth2.Config, t *oauth2.Token) {
 			h.persist(c, t)
 		}), nil
@@ -186,7 +214,7 @@ func NewHandler(
 		// validation. Also rewrite internal-cluster redirects back to the
 		// external hostname so the flow works outside the cluster.
 		// Based on Bruno Krugel's fix from PR #3396.
-		Client: newOAuthMetadataClient(http.DefaultTransport, serverURL),
+		Client: newOAuthMetadataClient(NewSessionHTTPClient(lifetime).Transport, serverURL),
 		DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{
 			Metadata: &oauthex.ClientRegistrationMetadata{
 				ClientName:   "Crux",
@@ -237,7 +265,7 @@ func NewHandler(
 				AuthStyle: oauth2.AuthStyle(savedToken.Client.AuthStyle),
 			},
 		}
-		base := oc.TokenSource(context.Background(), restored)
+		base := oc.TokenSource(context.WithValue(lifetime, oauth2.HTTPClient, NewSessionHTTPClient(lifetime)), restored)
 		cfg.InitialTokenSource = NewSavingTokenSource(base, oc, restored, func(c *oauth2.Config, t *oauth2.Token) {
 			h.persist(c, t)
 		})
@@ -258,6 +286,7 @@ func NewHandler(
 		"restored_token", h.cachedToken != nil,
 	)
 
+	success = true
 	return h, nil
 }
 
@@ -303,6 +332,9 @@ func (h *Handler) Token() *oauth2.Token {
 // handler, whose token source is already wrapped for persistence via
 // NewTokenSource and seeded (when restoring) via InitialTokenSource.
 func (h *Handler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
+	if h.lifetime != nil && h.lifetime.Err() != nil {
+		return nil, h.lifetime.Err()
+	}
 	return h.inner.TokenSource(ctx)
 }
 
@@ -310,6 +342,15 @@ func (h *Handler) TokenSource(ctx context.Context) (oauth2.TokenSource, error) {
 // flow; the resulting token is captured and persisted through the
 // NewTokenSource saver.
 func (h *Handler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
+	if h.lifetime != nil {
+		if err := h.lifetime.Err(); err != nil {
+			return err
+		}
+		work, cancel := context.WithCancel(ctx)
+		stop := context.AfterFunc(h.lifetime, cancel)
+		defer func() { stop(); cancel() }()
+		ctx = work
+	}
 	// Never open a browser for a background connection (e.g. startup). The
 	// caller surfaces a needs-auth state and the user triggers the
 	// interactive flow via a handler created with interactive=true.
@@ -347,6 +388,16 @@ func (h *Handler) Authorize(ctx context.Context, req *http.Request, resp *http.R
 // copy (including the client registration and endpoints from cfg) to the
 // caller-supplied saver.
 func (h *Handler) persist(cfg *oauth2.Config, tok *oauth2.Token) {
+	// Admission and Close share a lock so no saver can begin after shutdown
+	// starts. Already admitted callbacks may finish, and Close joins them.
+	h.lifecycle.Lock()
+	if h.closed || h.lifetime != nil && h.lifetime.Err() != nil {
+		h.lifecycle.Unlock()
+		return
+	}
+	h.saves.Add(1)
+	h.lifecycle.Unlock()
+	defer h.saves.Done()
 	h.mu.Lock()
 	h.cachedToken = tok
 	h.mu.Unlock()
@@ -375,9 +426,17 @@ func (h *Handler) persist(cfg *oauth2.Config, tok *oauth2.Token) {
 	h.onTokenRefresh(out)
 }
 
-// Close shuts down the callback server.
+// Close cancels session activity, closes the callback server, and waits for
+// token saves admitted before shutdown. A saver must not call Close itself.
 func (h *Handler) Close() {
+	h.lifecycle.Lock()
+	h.closed = true
+	h.lifecycle.Unlock()
+	if h.cancel != nil {
+		h.cancel()
+	}
 	h.receiver.close()
+	h.saves.Wait()
 }
 
 // callbackReceiver owns the localhost listener that the authorization
@@ -390,7 +449,8 @@ func (h *Handler) Close() {
 // the callback port is occupied only for the few seconds an actual login
 // is in flight.
 type callbackReceiver struct {
-	handler *Handler
+	lifetime context.Context
+	handler  *Handler
 	// serverName labels the callback page so the user can see which MCP
 	// server they just authorized.
 	serverName string
@@ -496,7 +556,11 @@ func (r *callbackReceiver) bindLocked() error {
 	server := &http.Server{Handler: mux}
 
 	lc := &net.ListenConfig{}
-	listener, err := lc.Listen(context.Background(), "tcp", fmt.Sprintf("localhost:%d", r.fixedPort))
+	lifetime := r.lifetime
+	if lifetime == nil {
+		lifetime = context.Background()
+	}
+	listener, err := lc.Listen(lifetime, "tcp", fmt.Sprintf("localhost:%d", r.fixedPort))
 	if err != nil {
 		return fmt.Errorf("failed to bind OAuth callback port %d: %w", r.fixedPort, err)
 	}
