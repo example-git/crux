@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -274,31 +275,8 @@ func (layers authenticationLayers) stageCredentials(ctx context.Context, path, p
 		if desired.ID != providerID || desired.OAuthToken == nil || desired.Owner == nil {
 			return authenticationCredentialEdit{}, errors.New("authentication switch requires its exact OAuth provider and owner")
 		}
-		// OAuth is merged as an object by the normal loader. Explicit empty
-		// optional fields prevent a lower layer's previous account refresh
-		// token or OAuth client from silently joining the selected account.
-		token := desired.OAuthToken
-		var client any
-		if token.Client != nil {
-			client = map[string]any{
-				"client_id": token.Client.ClientID, "client_secret": token.Client.ClientSecret,
-				"auth_url": token.Client.AuthURL, "token_url": token.Client.TokenURL,
-				"auth_style": token.Client.AuthStyle,
-			}
-		}
-		values = map[string]any{"api_key": desired.APIKey, "oauth": map[string]any{
-			"access_token": token.AccessToken, "refresh_token": token.RefreshToken,
-			"expires_in": token.ExpiresIn, "expires_at": token.ExpiresAt, "client": client,
-		}, "owner": desired.Owner}
-		fields = append(fields, "owner")
-		if desired.Plugin != nil {
-			fields = append(fields, "plugin")
-			values["plugin"] = desired.Plugin
-		}
-		if desired.Preset != nil {
-			fields = append(fields, "preset")
-			values["preset"] = desired.Preset
-		}
+		values = authenticationCredentialValues(desired)
+		fields = slices.Sorted(maps.Keys(values))
 	}
 	for _, field := range fields {
 		var value json.RawMessage
@@ -340,4 +318,33 @@ func (layers authenticationLayers) stageCredentials(ctx context.Context, path, p
 		}
 	}
 	return authenticationCredentialEdit{path: path, data: bytes.Clone(data), before: before, after: after}, ctx.Err()
+}
+
+// authenticationCredentialValues is the shared exact scoped-write receipt.
+// Empty optional OAuth/client fields intentionally mask inherited sibling
+// values during the ordinary loader's object merge.
+func authenticationCredentialValues(desired *ProviderConfig) map[string]any {
+	if desired == nil {
+		return map[string]any{"api_key": nil, "oauth": nil}
+	}
+	token := desired.OAuthToken
+	var client any
+	if token.Client != nil {
+		client = map[string]any{
+			"client_id": token.Client.ClientID, "client_secret": token.Client.ClientSecret,
+			"auth_url": token.Client.AuthURL, "token_url": token.Client.TokenURL,
+			"auth_style": token.Client.AuthStyle,
+		}
+	}
+	values := map[string]any{"api_key": desired.APIKey, "oauth": map[string]any{
+		"access_token": token.AccessToken, "refresh_token": token.RefreshToken,
+		"expires_in": token.ExpiresIn, "expires_at": token.ExpiresAt, "client": client,
+	}, "owner": desired.Owner}
+	if desired.Plugin != nil {
+		values["plugin"] = desired.Plugin
+	}
+	if desired.Preset != nil {
+		values["preset"] = desired.Preset
+	}
+	return values
 }

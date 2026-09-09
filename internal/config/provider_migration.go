@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -254,15 +255,125 @@ type providerMigrationPrecondition struct {
 	exists bool
 }
 
+// providerMigrationReceipt binds automatic rollback to this writer's exact
+// transaction, independently of whichever journal a later process installs.
+type providerMigrationReceipt struct {
+	fields  map[string]any
+	journal providerMigrationJournal
+}
+
+func (r providerMigrationReceipt) written() bool {
+	return len(r.fields) > 0 && r.journal.Config.Path != "" && r.journal.Config.AfterHash != ""
+}
+
+func (providerMigrationReceipt) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("provider migration receipt is private")
+}
+
+func (providerMigrationReceipt) Format(state fmt.State, _ rune) {
+	_, _ = state.Write([]byte("[private provider migration receipt]"))
+}
+
 func (s *ConfigStore) migrateProviderReferences(owners map[string]ProviderOwnerReference, plugins map[string]ProviderPluginReference, presets map[string]ProviderPresetReference) error {
 	return s.migrateProviderReferencesWithPrecondition(owners, plugins, presets, nil)
 }
 
-func (s *ConfigStore) migrateProviderReferencesIfCurrent(owners map[string]ProviderOwnerReference, plugins map[string]ProviderPluginReference, presets map[string]ProviderPresetReference, expectedData []byte, expectedExists bool) error {
-	return s.migrateProviderReferencesWithPrecondition(owners, plugins, presets, &providerMigrationPrecondition{hash: hashBytes(expectedData), exists: expectedExists})
+func (s *ConfigStore) migrateProviderReferencesIfCurrent(owners map[string]ProviderOwnerReference, plugins map[string]ProviderPluginReference, presets map[string]ProviderPresetReference, expectedData []byte, expectedExists bool, receipts ...*providerMigrationReceipt) error {
+	return s.migrateProviderReferencesWithPrecondition(owners, plugins, presets, &providerMigrationPrecondition{hash: hashBytes(expectedData), exists: expectedExists}, receipts...)
 }
 
-func (s *ConfigStore) migrateProviderReferencesWithPrecondition(owners map[string]ProviderOwnerReference, plugins map[string]ProviderPluginReference, presets map[string]ProviderPresetReference, precondition *providerMigrationPrecondition) error {
+// selectProviderReferenceMigrationFields is the exact conditional field receipt
+// shared by migration planning and persistence. It does not read or mutate disk.
+func selectProviderReferenceMigrationFields(configData []byte, owners map[string]ProviderOwnerReference, plugins map[string]ProviderPluginReference, presets map[string]ProviderPresetReference) (map[string]any, []string) {
+	providerSet := make(map[string]bool, len(owners)+len(plugins)+len(presets))
+	values := make(map[string]any, len(owners)+len(plugins)+len(presets))
+	for providerID, owner := range owners {
+		if owner.Type == "" || owner.Construction == "" {
+			continue
+		}
+		if owner.Type == ProviderOwnerPlugin {
+			plugin, exact := plugins[providerID]
+			if !exact || plugin.ID == "" || plugin.Version == "" {
+				continue
+			}
+		}
+		if owner.Type == ProviderOwnerPreset {
+			preset, exact := presets[providerID]
+			if !exact || preset.ID == "" || preset.Version == "" || preset.Digest == "" {
+				continue
+			}
+		}
+		key := fmt.Sprintf("providers.%s.owner", providerID)
+		current := gjson.GetBytes(configData, key)
+		if current.Exists() {
+			currentType := current.Get("type").String()
+			currentConstruction := current.Get("construction").String()
+			currentAdapter := current.Get("compatibility_adapter").String()
+			if currentType != "" && currentType != string(owner.Type) ||
+				currentConstruction != "" && currentConstruction != string(owner.Construction) ||
+				currentAdapter != "" && currentAdapter != string(owner.CompatibilityAdapter) {
+				continue
+			}
+			if currentType == string(owner.Type) && currentConstruction == string(owner.Construction) && currentAdapter == string(owner.CompatibilityAdapter) {
+				continue
+			}
+		}
+		providerSet[providerID] = true
+		values[key] = owner
+	}
+	for providerID, plugin := range plugins {
+		if plugin.ID == "" || plugin.Version == "" {
+			continue
+		}
+		key := fmt.Sprintf("providers.%s.plugin", providerID)
+		current := gjson.GetBytes(configData, key)
+		if current.Exists() {
+			currentID := current.Get("id").String()
+			currentVersion := current.Get("version").String()
+			if currentID != "" && currentID != plugin.ID || currentVersion != "" && currentVersion != plugin.Version {
+				continue
+			}
+			if currentID == plugin.ID && currentVersion == plugin.Version {
+				continue
+			}
+		}
+		providerSet[providerID] = true
+		values[key] = plugin
+	}
+	for providerID, preset := range presets {
+		if _, pluginOwned := plugins[providerID]; pluginOwned || preset.ID == "" || preset.Version == "" || preset.Digest == "" {
+			continue
+		}
+		key := fmt.Sprintf("providers.%s.preset", providerID)
+		current := gjson.GetBytes(configData, key)
+		if current.Exists() {
+			currentID := current.Get("id").String()
+			currentVersion := current.Get("version").String()
+			currentDigest := current.Get("digest").String()
+			if currentID != "" && currentID != preset.ID || currentVersion != "" && currentVersion != preset.Version ||
+				currentDigest != "" && currentDigest != preset.Digest {
+				continue
+			}
+			if currentID == preset.ID && currentVersion == preset.Version && currentDigest == preset.Digest {
+				continue
+			}
+		}
+		providerSet[providerID] = true
+		values[key] = preset
+	}
+	providers := make([]string, 0, len(providerSet))
+	for providerID := range providerSet {
+		providers = append(providers, providerID)
+	}
+	slices.Sort(providers)
+	return values, providers
+}
+
+func (s *ConfigStore) migrateProviderReferencesWithPrecondition(owners map[string]ProviderOwnerReference, plugins map[string]ProviderPluginReference, presets map[string]ProviderPresetReference, precondition *providerMigrationPrecondition, receipts ...*providerMigrationReceipt) (resultErr error) {
+	if len(receipts) > 0 && receipts[0] != nil {
+		*receipts[0] = providerMigrationReceipt{}
+	}
+
 	if len(owners) == 0 && len(plugins) == 0 && len(presets) == 0 {
 		return nil
 	}
@@ -298,94 +409,27 @@ func (s *ConfigStore) migrateProviderReferencesWithPrecondition(owners map[strin
 	if !exists {
 		configData = []byte("{}")
 	}
-	providerSet := make(map[string]bool, len(owners)+len(plugins)+len(presets))
-	keys := make([]string, 0, len(owners)+len(plugins)+len(presets))
-	values := make(map[string]any, len(owners)+len(plugins)+len(presets))
-	for providerID, owner := range owners {
-		if owner.Type == "" || owner.Construction == "" {
-			continue
-		}
-		if owner.Type == ProviderOwnerPlugin {
-			plugin, exact := plugins[providerID]
-			if !exact || plugin.ID == "" || plugin.Version == "" {
-				continue
-			}
-		}
-		if owner.Type == ProviderOwnerPreset {
-			preset, exact := presets[providerID]
-			if !exact || preset.ID == "" || preset.Version == "" || preset.Digest == "" {
-				continue
-			}
-		}
-		key := fmt.Sprintf("providers.%s.owner", providerID)
-		current := gjson.GetBytes(configData, key)
-		if current.Exists() {
-			currentType := current.Get("type").String()
-			currentConstruction := current.Get("construction").String()
-			currentAdapter := current.Get("compatibility_adapter").String()
-			if currentType != "" && currentType != string(owner.Type) ||
-				currentConstruction != "" && currentConstruction != string(owner.Construction) ||
-				currentAdapter != "" && currentAdapter != string(owner.CompatibilityAdapter) {
-				continue
-			}
-			if currentType == string(owner.Type) && currentConstruction == string(owner.Construction) && currentAdapter == string(owner.CompatibilityAdapter) {
-				continue
-			}
-		}
-		providerSet[providerID] = true
+	values, providers := selectProviderReferenceMigrationFields(configData, owners, plugins, presets)
+	keys := make([]string, 0, len(values))
+	for key := range values {
 		keys = append(keys, key)
-		values[key] = owner
-	}
-	for providerID, plugin := range plugins {
-		if plugin.ID == "" || plugin.Version == "" {
-			continue
-		}
-		key := fmt.Sprintf("providers.%s.plugin", providerID)
-		current := gjson.GetBytes(configData, key)
-		if current.Exists() {
-			currentID := current.Get("id").String()
-			currentVersion := current.Get("version").String()
-			if currentID != "" && currentID != plugin.ID || currentVersion != "" && currentVersion != plugin.Version {
-				continue
-			}
-			if currentID == plugin.ID && currentVersion == plugin.Version {
-				continue
-			}
-		}
-		providerSet[providerID] = true
-		keys = append(keys, key)
-		values[key] = plugin
-	}
-	for providerID, preset := range presets {
-		if _, pluginOwned := plugins[providerID]; pluginOwned || preset.ID == "" || preset.Version == "" || preset.Digest == "" {
-			continue
-		}
-		key := fmt.Sprintf("providers.%s.preset", providerID)
-		current := gjson.GetBytes(configData, key)
-		if current.Exists() {
-			currentID := current.Get("id").String()
-			currentVersion := current.Get("version").String()
-			currentDigest := current.Get("digest").String()
-			if currentID != "" && currentID != preset.ID || currentVersion != "" && currentVersion != preset.Version ||
-				currentDigest != "" && currentDigest != preset.Digest {
-				continue
-			}
-			if currentID == preset.ID && currentVersion == preset.Version && currentDigest == preset.Digest {
-				continue
-			}
-		}
-		providerSet[providerID] = true
-		keys = append(keys, key)
-		values[key] = preset
 	}
 	if len(keys) == 0 {
 		return nil
 	}
-	providers := make([]string, 0, len(providerSet))
-	for providerID := range providerSet {
-		providers = append(providers, providerID)
-	}
-	slices.Sort(providers)
+	// Publish the exact authored fields and intended journal before releasing
+	// the writer's locks. A later disk read must never manufacture this receipt.
+	var committedJournal providerMigrationJournal
+	defer func() {
+		if resultErr == nil && len(receipts) > 0 && receipts[0] != nil {
+			written := make(map[string]any, len(values))
+			for key, value := range values {
+				written[key] = value
+			}
+			committedJournal.Providers = slices.Clone(committedJournal.Providers)
+			*receipts[0] = providerMigrationReceipt{fields: written, journal: committedJournal}
+		}
+	}()
 	slices.Sort(keys)
 	updated := string(configData)
 	for _, key := range keys {
@@ -461,7 +505,7 @@ func (s *ConfigStore) migrateProviderReferencesWithPrecondition(owners map[strin
 		cleanupErr := cleanupAbortedProviderMigration(configPath, configBackup.Backup, previousJournalData, previousJournalExisted, !migrationDirExisted)
 		return errors.Join(fmt.Errorf("verify prepared provider ownership migration journal: %w", err), cleanupErr)
 	}
-	if persistedJournal.Config != journal.Config || persistedJournal.Version != journal.Version || persistedJournal.State != journal.State || !slices.Equal(persistedJournal.Providers, journal.Providers) {
+	if !reflect.DeepEqual(persistedJournal, journal) {
 		cleanupErr := cleanupAbortedProviderMigration(configPath, configBackup.Backup, previousJournalData, previousJournalExisted, !migrationDirExisted)
 		return errors.Join(errors.New("verify prepared provider ownership migration journal: persisted journal does not match staged migration"), cleanupErr)
 	}
@@ -477,11 +521,18 @@ func (s *ConfigStore) migrateProviderReferencesWithPrecondition(owners map[strin
 		if readErr == nil && !preparedExists {
 			readErr = errors.New("prepared recovery journal is missing")
 		}
+		if readErr == nil && !reflect.DeepEqual(prepared, persistedJournal) && !reflect.DeepEqual(prepared, journal) {
+			readErr = errors.New("prepared recovery journal does not match this migration")
+		}
 		if readErr == nil {
 			readErr = validateProviderMigrationRecovery(configPath, prepared)
 		}
 		if readErr == nil {
-			slog.Warn("Provider ownership migration committed with a prepared recovery journal", "error", err)
+			slog.Warn("Provider ownership migration committed with a validated recovery journal", "error", err)
+			committedJournal = persistedJournal
+			if reflect.DeepEqual(prepared, journal) {
+				committedJournal = journal
+			}
 			return nil
 		}
 		var restoreErr error
@@ -496,6 +547,7 @@ func (s *ConfigStore) migrateProviderReferencesWithPrecondition(owners map[strin
 		}
 		return errors.Join(fmt.Errorf("complete provider ownership migration journal: %w", err), fmt.Errorf("prepared recovery is invalid: %w", readErr), restoreErr, cleanupErr)
 	}
+	committedJournal = journal
 	return nil
 }
 
@@ -503,16 +555,26 @@ func (s *ConfigStore) migrateProviderReferencesWithPrecondition(owners map[strin
 // current files still match the journaled post-images. This compare-and-swap
 // check prevents rollback from overwriting later user edits.
 func RollbackProviderMigration() error {
-	return rollbackProviderMigration(GlobalConfigData())
+	return rollbackProviderMigration(GlobalConfigData(), nil)
 }
 
-func (s *ConfigStore) rollbackProviderMigration() error {
-	return rollbackProviderMigration(s.globalDataPath)
+func (s *ConfigStore) rollbackProviderMigration(receipt providerMigrationReceipt) error {
+	return rollbackProviderMigration(s.globalDataPath, &receipt)
 }
 
-func rollbackProviderMigration(configPath string) error {
+func rollbackProviderMigration(configPath string, expected *providerMigrationReceipt) error {
+	if expected != nil && !expected.written() {
+		return nil
+	}
 	providerMigrationMu.Lock()
 	defer providerMigrationMu.Unlock()
+	// Callers have released migration/config locks. Keep the same order as the
+	// writer and hold the file lock across journal selection, CAS and restore.
+	unlock, err := lockStartupCorrection(&ConfigStore{globalDataPath: configPath}, configPath)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	data, err := os.ReadFile(providerMigrationJournalPathForConfig(configPath))
 	if err != nil {
 		return err
@@ -521,8 +583,14 @@ func rollbackProviderMigration(configPath string) error {
 	if err := json.Unmarshal(data, &journal); err != nil {
 		return fmt.Errorf("decode provider migration journal: %w", err)
 	}
-	if journal.Version != providerOwnershipMigrationVersion || journal.State != "completed" {
+	if expected != nil && !reflect.DeepEqual(journal, expected.journal) {
+		return errors.New("refusing provider migration rollback: journal belongs to a different transaction")
+	}
+	if journal.Version != providerOwnershipMigrationVersion || journal.State != "completed" && !(expected != nil && journal.State == "prepared") {
 		return fmt.Errorf("provider migration is not rollbackable (version=%d state=%q)", journal.Version, journal.State)
+	}
+	if err := validateProviderMigrationMetadata(configPath, journal); err != nil {
+		return err
 	}
 	_, currentHash, exists, err := fileBytesAndHash(journal.Config.Path)
 	if err != nil {

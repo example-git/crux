@@ -29,6 +29,7 @@ const (
 	accountCheck accountChangeKind = iota
 	accountSwitch
 	accountLogout
+	accountRefresh
 )
 
 // PendingChange holds the process mutex and captured-path account file lock.
@@ -47,6 +48,7 @@ type pendingAccountChange struct {
 	staged    []byte
 	selected  *Entry
 	release   func()
+	validate  Validator // private refresh owner fence; never mutates account state
 	committed bool
 	closed    bool
 }
@@ -201,6 +203,14 @@ func (change *PendingChange) Commit(ctx context.Context) (CommitResult, error) {
 	if err := ctx.Err(); err != nil {
 		return CommitResult{}, err
 	}
+	if state.validate != nil {
+		if err := state.validate(); err != nil {
+			return CommitResult{}, err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return CommitResult{}, err
+	}
 	if err := os.Rename(temporary, state.before.path); err != nil {
 		return CommitResult{}, privateSnapshotError(err)
 	}
@@ -214,6 +224,11 @@ func (change *PendingChange) Commit(ctx context.Context) (CommitResult, error) {
 	}
 	if !after.file.exists || after.content != sha256.Sum256(state.staged) {
 		return result, ErrStateChanged
+	}
+	if state.validate != nil {
+		if err := state.validate(); err != nil {
+			return result, err
+		}
 	}
 	result.Snapshot = after
 	return result, nil
@@ -247,6 +262,7 @@ func (change *PendingChange) Close() {
 		state.release = nil
 	}
 	state.staged, state.selected = nil, nil
+	state.validate = nil
 	state.before = Snapshot{}
 }
 

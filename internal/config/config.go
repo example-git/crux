@@ -800,6 +800,7 @@ type Config struct {
 	providerScan              *ProviderScan
 	transportProviderOwners   map[string]providerregistry.RegistrationOwner
 	authenticationRevocations map[string]providerregistry.RegistrationOwner
+	authenticationBasis       *authenticationLoadBasis
 	explicitModels            map[SelectedModelType]bool
 }
 

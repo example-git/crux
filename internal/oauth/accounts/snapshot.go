@@ -206,6 +206,10 @@ func privateSnapshotError(err error) error {
 	if errors.As(err, &pathErr) {
 		return fmt.Errorf("capture account database: %w", pathErr.Err)
 	}
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return fmt.Errorf("commit account database: %w", linkErr.Err)
+	}
 	return err
 }
 

@@ -571,6 +571,7 @@ func (s *ConfigStore) ApplyEphemeralProviderState(providers map[string]ProviderC
 		return fmt.Errorf("apply ephemeral provider defaults: %w", err)
 	}
 	merged.explicitModels = maps.Clone(current.explicitModels)
+	merged.authenticationBasis = current.authenticationBasis
 	if current.providerScan != nil {
 		merged.bindProviderScan(*current.providerScan)
 	}
@@ -1287,6 +1288,7 @@ func (s *ConfigStore) updateLocked(scope Scope, mutate func(*Config) map[string]
 		// our own write as an external change. Safe to touch the snapshot map
 		// here because we hold writeMu.
 		if path, err := s.configPath(scope); err == nil {
+			nc.advanceAuthenticationBasis(path, fields, nil)
 			s.captureStalenessSnapshot(append(slices.Clone(s.loadedPaths), path))
 		}
 	}
@@ -1752,10 +1754,11 @@ func (s *ConfigStore) RemoveProviderCredentials(scope Scope, expected providerre
 		}); err != nil {
 			return err
 		}
-		s.setConfig(next)
 		if path, err := s.configPath(scope); err == nil {
+			next.advanceAuthenticationBasis(path, nil, keys)
 			s.captureStalenessSnapshot(append(slices.Clone(s.loadedPaths), path))
 		}
+		s.setConfig(next)
 		return nil
 	})
 }
@@ -2435,8 +2438,13 @@ func (s *ConfigStore) loadReloadConfigInputs(
 	ephemeralProviders map[string]ProviderConfig,
 	overrides RuntimeOverrides,
 	validateEphemeral bool,
+	bases ...*authenticationLoadBasis,
 ) (*Config, []string, string, error) {
-	cfg, loadedPaths, err := loadFromConfigPathsWithOverrides(ctx, configPaths, fileOverrides, baseEnvironment)
+	var basis *authenticationLoadBasis
+	if len(bases) > 0 {
+		basis = bases[0]
+	}
+	cfg, loadedPaths, err := loadFromConfigPathsObserved(ctx, configPaths, fileOverrides, baseEnvironment, basis)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("failed to reload config: %w", err)
 	}
@@ -2449,6 +2457,10 @@ func (s *ConfigStore) loadReloadConfigInputs(
 	var workspaceErr error
 	if !workspaceOverridden {
 		workspaceData, workspaceErr = os.ReadFile(workspacePath)
+	}
+	basis.source(workspacePath, workspaceData, workspaceData, workspaceErr == nil)
+	if basis != nil && workspaceErr != nil && !errors.Is(workspaceErr, os.ErrNotExist) {
+		basis.valid = false
 	}
 	if workspaceErr == nil && len(workspaceData) > 0 {
 		if !json.Valid(workspaceData) {
@@ -2492,7 +2504,7 @@ func (s *ConfigStore) loadReloadConfigInputs(
 	if err := cfg.ValidateHooks(); err != nil {
 		return nil, nil, "", fmt.Errorf("invalid hook configuration on reload: %w", err)
 	}
-	if err := cfg.restoreDeliveryPreference(globalConfigDataFromEnvironment(appName, baseEnvironment)); err != nil {
+	if err := cfg.restoreDeliveryPreference(globalConfigDataFromEnvironment(appName, baseEnvironment), basis); err != nil {
 		return nil, nil, "", err
 	}
 	if err := cfg.Options.validatePromptOptions(); err != nil {
@@ -2503,6 +2515,8 @@ func (s *ConfigStore) loadReloadConfigInputs(
 		cfg.Models[modelType] = cloneSelectedModel(model)
 		cfg.markModelExplicit(modelType)
 	}
+	basis.configuration(cfg)
+	cfg.authenticationBasis = basis
 	return cfg, loadedPaths, workspacePath, nil
 }
 
@@ -2564,6 +2578,9 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("capture reload config state: %w", err)
 	}
+	if err := notificationMigration.validatePreimages(preimages); err != nil {
+		return err
+	}
 	configPaths := lookupConfigsFromEnvironment(s.workingDir, baseEnvironment)
 	var dataDir string
 	if current := s.Config(); current != nil && current.Options != nil {
@@ -2571,6 +2588,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	}
 	ephemeralProviders := s.ephemeralProviderSnapshot()
 	overrides := cloneRuntimeOverrides(s.overrides)
+	basis := newAuthenticationLoadBasis()
 	cfg, loadedPaths, workspacePath, err := s.loadReloadConfigInputs(
 		ctx,
 		configPaths,
@@ -2580,6 +2598,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		ephemeralProviders,
 		overrides,
 		true,
+		basis,
 	)
 	if err != nil {
 		return err
@@ -2625,6 +2644,17 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	}
 	cfg.SetupAgents()
 
+	// Finalize the intended receipts on the unpublished configuration. Runtime
+	// preparation may retain this exact pointer and immediately start readers;
+	// neither the configuration nor its accepted basis may change afterward.
+	basis = basis.startupCorrections(notificationMigration, nil, globalDataPath)
+	migrationSource := basis.sources[filepath.Clean(globalDataPath)]
+	expectedMigrationFields, _ := selectProviderReferenceMigrationFields(migrationSource.raw, pendingOwners, pendingPlugins, pendingPresets)
+	if len(expectedMigrationFields) > 0 {
+		basis = basis.authored(globalDataPath, expectedMigrationFields, nil)
+	}
+	cfg.authenticationBasis = basis
+
 	s.configMu.Lock()
 	candidateSnapshot := s.runtimeSnapshotLocked(cfg, resolver, scan.Registry, candidateEnv)
 	s.configMu.Unlock()
@@ -2635,7 +2665,6 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	if runtimeCandidate.Abort != nil {
 		defer runtimeCandidate.Abort()
 	}
-
 	if err := commitStartupCorrections(s, notificationMigration, nil, preimages); err != nil {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return errors.Join(fmt.Errorf("commit reload config corrections: %w", err), rollbackErr)
@@ -2649,21 +2678,27 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return errors.Join(fmt.Errorf("resolve reload provider ownership migration postimage: %w", err), rollbackErr)
 	}
-	_, migrationBeforeHash, migrationBeforeExists, err := fileBytesAndHash(globalDataPath)
+	_, _, _, err = fileBytesAndHash(globalDataPath)
 	if err != nil {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return errors.Join(fmt.Errorf("capture reload provider ownership migration preimage: %w", err), rollbackErr)
 	}
-	if err := s.migrateProviderReferencesIfCurrent(pendingOwners, pendingPlugins, pendingPresets, migrationExpectedData, migrationExpectedExists); err != nil {
+	var migrationReceipt providerMigrationReceipt
+	if err := s.migrateProviderReferencesIfCurrent(pendingOwners, pendingPlugins, pendingPresets, migrationExpectedData, migrationExpectedExists, &migrationReceipt); err != nil {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return errors.Join(fmt.Errorf("migrate provider ownership during reload: %w", err), rollbackErr)
 	}
-	_, migrationAfterHash, migrationAfterExists, migrationInspectErr := fileBytesAndHash(globalDataPath)
-	ownershipChanged := migrationBeforeExists != migrationAfterExists || migrationBeforeHash != migrationAfterHash
+	migrationFields := migrationReceipt.fields
+	_, _, _, migrationInspectErr := fileBytesAndHash(globalDataPath)
+	// Only this operation's successful authored receipt permits rollback.
+	ownershipChanged := migrationReceipt.written()
+	if !maps.EqualFunc(expectedMigrationFields, migrationFields, reflect.DeepEqual) {
+		migrationInspectErr = errors.Join(migrationInspectErr, errors.New("provider ownership migration receipt changed after runtime preparation"))
+	}
 	if migrationInspectErr != nil {
 		var migrationRollbackErr error
 		if ownershipChanged {
-			migrationRollbackErr = s.rollbackProviderMigration()
+			migrationRollbackErr = s.rollbackProviderMigration(migrationReceipt)
 		}
 		rollbackErr := restoreConfigPreimages(preimages)
 		return errors.Join(fmt.Errorf("inspect reload provider ownership migration: %w", migrationInspectErr), migrationRollbackErr, rollbackErr)
@@ -2719,7 +2754,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	if publishErr != nil {
 		var migrationRollbackErr error
 		if ownershipChanged {
-			migrationRollbackErr = s.rollbackProviderMigration()
+			migrationRollbackErr = s.rollbackProviderMigration(migrationReceipt)
 		}
 		rollbackErr := restoreConfigPreimages(preimages)
 		return errors.Join(fmt.Errorf("publish reloaded configuration generation: %w", publishErr), migrationRollbackErr, rollbackErr)

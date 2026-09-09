@@ -35,12 +35,15 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-func (c *Config) restoreDeliveryPreference(path string) error {
+func (c *Config) restoreDeliveryPreference(path string, bases ...*authenticationLoadBasis) error {
 	tui := c.ensureTUI()
 	if tui.DeliveryMode != "" && tui.DeliveryMode != "queue" && tui.DeliveryMode != "steer" {
 		return fmt.Errorf("invalid delivery mode %q: expected queue or steer", tui.DeliveryMode)
 	}
 	data, err := os.ReadFile(path)
+	if len(bases) > 0 && bases[0] != nil {
+		bases[0].deliverySource(path, data, err == nil)
+	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read delivery preference: %w", err)
 	}
@@ -90,9 +93,13 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 	if err != nil {
 		return nil, fmt.Errorf("capture startup config state: %w", err)
 	}
+	if err := notificationMigration.validatePreimages(preimages); err != nil {
+		return nil, err
+	}
 	configPaths := lookupConfigsFromEnvironment(workingDir, baseEnvironment)
 
-	cfg, loadedPaths, err := loadFromConfigPathsWithOverrides(context.Background(), configPaths, notificationMigration.overrides, baseEnvironment)
+	basis := newAuthenticationLoadBasis()
+	cfg, loadedPaths, err := loadFromConfigPathsObserved(context.Background(), configPaths, notificationMigration.overrides, baseEnvironment, basis)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config from paths %v: %w", configPaths, err)
 	}
@@ -117,7 +124,12 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 	}
 
 	// Load workspace config last so it has highest priority.
-	if wsData, err := os.ReadFile(store.workspacePath); err == nil && len(wsData) > 0 {
+	wsData, workspaceReadErr := os.ReadFile(store.workspacePath)
+	basis.source(store.workspacePath, wsData, wsData, workspaceReadErr == nil)
+	if workspaceReadErr != nil && !errors.Is(workspaceReadErr, os.ErrNotExist) {
+		basis.valid = false
+	}
+	if workspaceReadErr == nil && len(wsData) > 0 {
 		if !json.Valid(wsData) {
 			return nil, fmt.Errorf("invalid JSON in config file %s", store.workspacePath)
 		}
@@ -140,7 +152,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 	if err := cfg.ValidateHooks(); err != nil {
 		return nil, fmt.Errorf("invalid hook configuration: %w", err)
 	}
-	if err := cfg.restoreDeliveryPreference(globalDataPath); err != nil {
+	if err := cfg.restoreDeliveryPreference(globalDataPath, basis); err != nil {
 		return nil, err
 	}
 	if err := cfg.Options.validatePromptOptions(); err != nil {
@@ -162,6 +174,8 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		assignIfNil(&cfg.Options.TUI.Transparent, true)
 	}
 
+	basis.configuration(cfg)
+	cfg.authenticationBasis = basis
 	candidateEnv, valueResolver, resolvedEnv, err := cfg.buildEnvironmentFrom(baseEnvironment)
 	if err != nil {
 		return nil, fmt.Errorf("build candidate environment: %w", err)
@@ -220,6 +234,8 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		rollbackErr := restoreConfigPreimages(preimages)
 		return nil, errors.Join(fmt.Errorf("commit startup config corrections: %w", err), rollbackErr)
 	}
+	basis = basis.startupCorrections(notificationMigration, pendingModelFields, store.globalDataPath)
+	cfg.authenticationBasis = basis
 	if err := captureConfigPostimages(preimages); err != nil {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return nil, errors.Join(fmt.Errorf("capture startup config correction postimages: %w", err), rollbackErr)
@@ -229,22 +245,29 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		rollbackErr := restoreConfigPreimages(preimages)
 		return nil, errors.Join(fmt.Errorf("resolve startup provider ownership migration postimage: %w", err), rollbackErr)
 	}
-	_, migrationBeforeHash, migrationBeforeExists, err := fileBytesAndHash(store.globalDataPath)
+	_, _, _, err = fileBytesAndHash(store.globalDataPath)
 	if err != nil {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return nil, errors.Join(fmt.Errorf("capture provider ownership migration preimage: %w", err), rollbackErr)
 	}
-	if err := store.migrateProviderReferencesIfCurrent(pendingOwners, pendingPlugins, pendingPresets, migrationExpectedData, migrationExpectedExists); err != nil {
+	var migrationReceipt providerMigrationReceipt
+	if err := store.migrateProviderReferencesIfCurrent(pendingOwners, pendingPlugins, pendingPresets, migrationExpectedData, migrationExpectedExists, &migrationReceipt); err != nil {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return nil, errors.Join(fmt.Errorf("migrate provider ownership: %w", err), rollbackErr)
 	}
-	_, migrationAfterHash, migrationAfterExists, migrationInspectErr := fileBytesAndHash(store.globalDataPath)
-	ownershipChanged := migrationBeforeExists != migrationAfterExists || migrationBeforeHash != migrationAfterHash
+	migrationFields := migrationReceipt.fields
+	if len(migrationFields) > 0 {
+		basis = basis.authored(store.globalDataPath, migrationFields, nil)
+		cfg.authenticationBasis = basis
+	}
+	_, _, _, migrationInspectErr := fileBytesAndHash(store.globalDataPath)
+	// Only this operation's successful authored receipt permits rollback.
+	ownershipChanged := migrationReceipt.written()
 	_, startupInspectErr := inspectStartupConfigPreimageChanged(preimages, store.globalDataPath)
 	if err := errors.Join(migrationInspectErr, startupInspectErr); err != nil {
 		var migrationRollbackErr error
 		if ownershipChanged {
-			migrationRollbackErr = store.rollbackProviderMigration()
+			migrationRollbackErr = store.rollbackProviderMigration(migrationReceipt)
 		}
 		rollbackErr := restoreConfigPreimages(preimages)
 		return nil, errors.Join(fmt.Errorf("inspect provider ownership migration: %w", err), migrationRollbackErr, rollbackErr)
@@ -276,7 +299,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 	if publishErr != nil {
 		var migrationRollbackErr error
 		if ownershipChanged {
-			migrationRollbackErr = store.rollbackProviderMigration()
+			migrationRollbackErr = store.rollbackProviderMigration(migrationReceipt)
 		}
 		rollbackErr := restoreConfigPreimages(preimages)
 		return nil, errors.Join(fmt.Errorf("publish startup generation: %w", publishErr), migrationRollbackErr, rollbackErr)
@@ -1322,6 +1345,12 @@ func loadFromConfigPathsWithOverrides(ctx context.Context, configPaths []string,
 	if len(environments) > 0 && environments[0] != nil {
 		environment = environments[0]
 	}
+	return loadFromConfigPathsObserved(ctx, configPaths, overrides, environment, nil)
+}
+
+// loadFromConfigPathsObserved retains the exact reads and shell evaluations
+// already required by loading. It never performs a second provenance read.
+func loadFromConfigPathsObserved(ctx context.Context, configPaths []string, overrides map[string][]byte, environment env.Env, basis *authenticationLoadBasis) (*Config, []string, error) {
 	var configs [][]byte
 	var loaded []string
 
@@ -1342,11 +1371,13 @@ func loadFromConfigPathsWithOverrides(ctx context.Context, configPaths []string,
 		}
 		if err != nil {
 			if os.IsNotExist(err) {
+				basis.source(path, nil, nil, false)
 				continue
 			}
 			return nil, nil, fmt.Errorf("failed to open config file %s: %w", path, err)
 		}
 		if len(data) == 0 {
+			basis.source(path, data, nil, true)
 			continue
 		}
 
@@ -1356,6 +1387,7 @@ func loadFromConfigPathsWithOverrides(ctx context.Context, configPaths []string,
 			if err != nil {
 				return nil, nil, fmt.Errorf("failed to load shell config %s: %w", path, err)
 			}
+			basis.source(path, data, jsonBytes, true)
 			if len(jsonBytes) > 0 {
 				if !json.Valid(jsonBytes) {
 					return nil, nil, fmt.Errorf("shell config %s produced invalid JSON", path)
@@ -1365,6 +1397,7 @@ func loadFromConfigPathsWithOverrides(ctx context.Context, configPaths []string,
 				loaded = append(loaded, path)
 			}
 		} else {
+			basis.source(path, data, data, true)
 			if !json.Valid(data) {
 				return nil, nil, fmt.Errorf("invalid JSON in config file %s", path)
 			}
@@ -1445,11 +1478,18 @@ type configPreimage struct {
 	exists         bool
 	expectedData   []byte
 	expectedExists bool
+	written        bool // only an explicit successful write permits rollback
 }
 
 func captureConfigPreimages(paths ...string) ([]configPreimage, error) {
 	result := make([]configPreimage, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
 	for _, path := range paths {
+		path = filepath.Clean(path)
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
 		data, err := os.ReadFile(path)
 		if err != nil && !os.IsNotExist(err) {
 			return nil, fmt.Errorf("read %s: %w", path, err)
@@ -1483,21 +1523,23 @@ func configPreimageChanged(preimages []configPreimage, path string) (bool, error
 	return false, nil
 }
 
+// captureConfigPostimages verifies the original or explicitly authored receipt.
+// A later disk observation never becomes authority to overwrite a peer's bytes.
 func captureConfigPostimages(preimages []configPreimage) error {
 	var result error
-	for index := range preimages {
-		data, err := os.ReadFile(preimages[index].path)
+	for _, preimage := range preimages {
+		data, err := os.ReadFile(preimage.path)
+		exists := err == nil
 		if os.IsNotExist(err) {
-			preimages[index].expectedData = nil
-			preimages[index].expectedExists = false
-			continue
+			err = nil
 		}
 		if err != nil {
-			result = errors.Join(result, fmt.Errorf("read %s after correction: %w", preimages[index].path, err))
+			result = errors.Join(result, fmt.Errorf("read %s after correction: %w", preimage.path, err))
 			continue
 		}
-		preimages[index].expectedData = data
-		preimages[index].expectedExists = true
+		if exists != preimage.expectedExists || !slices.Equal(data, preimage.expectedData) {
+			result = errors.Join(result, fmt.Errorf("config %s changed after correction", preimage.path))
+		}
 	}
 	return result
 }
@@ -1516,6 +1558,7 @@ func recordConfigPostimage(preimages []configPreimage, path string, data []byte)
 		if preimages[index].path == path {
 			preimages[index].expectedData = slices.Clone(data)
 			preimages[index].expectedExists = true
+			preimages[index].written = true
 			return nil
 		}
 	}
@@ -1525,6 +1568,9 @@ func recordConfigPostimage(preimages []configPreimage, path string, data []byte)
 func restoreConfigPreimages(preimages []configPreimage) error {
 	var result error
 	for _, preimage := range preimages {
+		if !preimage.written {
+			continue
+		}
 		if err := os.MkdirAll(filepath.Dir(preimage.path), 0o755); err != nil {
 			result = errors.Join(result, fmt.Errorf("create restore directory for %s: %w", preimage.path, err))
 			continue
@@ -1566,7 +1612,13 @@ func restoreConfigPreimages(preimages []configPreimage) error {
 	return result
 }
 
+type notificationMigrationSource struct {
+	data   []byte
+	exists bool
+}
+
 type notificationMigrationPlan struct {
+	sources          map[string]notificationMigrationSource
 	overrides        map[string][]byte
 	cleanPaths       map[string]bool
 	value            string
@@ -1575,12 +1627,17 @@ type notificationMigrationPlan struct {
 }
 
 func prepareDisableNotificationsMigration(globalConfig, dataConfig string) notificationMigrationPlan {
+	globalConfig, dataConfig = filepath.Clean(globalConfig), filepath.Clean(dataConfig)
 	originals := make(map[string][]byte)
+	sources := make(map[string]notificationMigrationSource)
 	filesToClean := make([]string, 0, 2)
 	var wasDisabled bool
 	var styleValue string
-	for _, path := range []string{globalConfig, dataConfig} {
+	for _, path := range slices.Compact([]string{globalConfig, dataConfig}) {
 		data, err := os.ReadFile(path)
+		if err == nil || os.IsNotExist(err) {
+			sources[path] = notificationMigrationSource{data: slices.Clone(data), exists: err == nil}
+		}
 		if err != nil {
 			continue
 		}
@@ -1602,7 +1659,7 @@ func prepareDisableNotificationsMigration(globalConfig, dataConfig string) notif
 			filesToClean = append(filesToClean, path)
 		}
 	}
-	plan := notificationMigrationPlan{overrides: make(map[string][]byte), cleanPaths: make(map[string]bool), value: styleValue, dataConfig: dataConfig}
+	plan := notificationMigrationPlan{sources: sources, overrides: make(map[string][]byte), cleanPaths: make(map[string]bool), value: styleValue, dataConfig: dataConfig}
 	if plan.value == "" && wasDisabled {
 		plan.value = "disabled"
 	}
@@ -1627,6 +1684,18 @@ func prepareDisableNotificationsMigration(globalConfig, dataConfig string) notif
 		}
 	}
 	return plan
+}
+
+// validatePreimages binds planning to the exact source, including fields the
+// migration removes. Equal transformed JSON cannot prove equal original input.
+func (p notificationMigrationPlan) validatePreimages(preimages []configPreimage) error {
+	for _, preimage := range preimages {
+		source, found := p.sources[preimage.path]
+		if !found || source.exists != preimage.exists || !slices.Equal(source.data, preimage.data) {
+			return fmt.Errorf("notification migration source %s changed before capture", preimage.path)
+		}
+	}
+	return nil
 }
 
 func (p notificationMigrationPlan) apply(path string, data []byte) ([]byte, error) {
@@ -1657,6 +1726,9 @@ var (
 )
 
 func commitStartupCorrections(store *ConfigStore, notification notificationMigrationPlan, modelFields map[string]any, preimages []configPreimage) error {
+	if err := notification.validatePreimages(preimages); err != nil {
+		return err
+	}
 	paths := make(map[string]bool, len(notification.overrides)+1)
 	for path := range notification.overrides {
 		paths[path] = true
@@ -1673,18 +1745,30 @@ func commitStartupCorrections(store *ConfigStore, notification notificationMigra
 		orderedPaths = append(slices.DeleteFunc(orderedPaths, func(path string) bool { return path == store.globalDataPath }), store.globalDataPath)
 	}
 	for _, path := range orderedPaths {
-		var unlock func()
-		if path == store.globalDataPath {
-			var err error
-			unlock, err = store.lockConfig(ScopeGlobal)
-			if err != nil {
-				return err
+		var before *configPreimage
+		for index := range preimages {
+			if preimages[index].path == path {
+				before = &preimages[index]
+				break
 			}
 		}
+		if before == nil {
+			return fmt.Errorf("config preimage for %s was not captured", path)
+		}
+		unlock, err := lockStartupCorrection(store, path)
+		if err != nil {
+			return err
+		}
 		data, err := os.ReadFile(path)
+		exists := err == nil
 		if os.IsNotExist(err) {
-			data = []byte("{}")
 			err = nil
+		}
+		if err == nil && (exists != before.exists || !slices.Equal(data, before.data)) {
+			err = errors.New("config source changed before correction")
+		}
+		if err == nil && !exists {
+			data = []byte("{}")
 		}
 		if err == nil {
 			data, err = notification.apply(path, data)
@@ -1710,14 +1794,25 @@ func commitStartupCorrections(store *ConfigStore, notification notificationMigra
 		if err == nil {
 			err = recordConfigPostimage(preimages, path, data)
 		}
-		if unlock != nil {
-			unlock()
-		}
+		unlock()
 		if err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
 	}
 	return nil
+}
+
+// Both startup input files use the same lock pathname as their ordinary writers.
+func lockStartupCorrection(store *ConfigStore, path string) (func(), error) {
+	if path == store.globalDataPath {
+		return store.lockConfig(ScopeGlobal)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), configLockDeadline)
+	defer cancel()
+	return lock.File(ctx, path+".lock")
 }
 
 func (p notificationMigrationPlan) commit() {

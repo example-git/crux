@@ -336,3 +336,67 @@ func TestProviderOwnershipMigrationRollbackRejectsLaterEdits(t *testing.T) {
 	require.NoError(t, readErr)
 	require.True(t, gjson.GetBytes(current, "later_user_edit").Bool())
 }
+
+func TestProviderMigrationSelectedFieldsMatchDurableReceipt(t *testing.T) {
+	custom := ProviderOwnerReference{Type: ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}
+	pluginOwner := ProviderOwnerReference{Type: ProviderOwnerPlugin, Construction: providerregistry.ConstructionOpenAICompat}
+	presetOwner := ProviderOwnerReference{Type: ProviderOwnerPreset, Construction: providerregistry.ConstructionOpenAICompat}
+	plugin := ProviderPluginReference{ID: "fixture-plugin", Version: "1.0.0"}
+	preset := ProviderPresetReference{ID: "fixture-preset", Version: "1.0.0", Digest: "fixture-digest"}
+	for _, test := range []struct {
+		name       string
+		raw        string
+		owner      ProviderOwnerReference
+		plugin     *ProviderPluginReference
+		preset     *ProviderPresetReference
+		wantedKeys []string
+	}{
+		{name: "missing", raw: `{}`, owner: custom, wantedKeys: []string{"providers.fixture.owner"}},
+		{name: "exact", raw: `{"providers":{"fixture":{"owner":{"type":"custom","construction":"openai-compat"}}}}`, owner: custom},
+		{name: "partial", raw: `{"providers":{"fixture":{"owner":{"type":"custom"}}}}`, owner: custom, wantedKeys: []string{"providers.fixture.owner"}},
+		{name: "conflicting", raw: `{"providers":{"fixture":{"owner":{"type":"builtin"}}}}`, owner: custom},
+		{name: "incomplete-owner", raw: `{}`, owner: ProviderOwnerReference{Type: ProviderOwnerCustom}},
+		{name: "plugin-without-reference", raw: `{}`, owner: pluginOwner},
+		{name: "partial-plugin", raw: `{"providers":{"fixture":{"plugin":{"id":"fixture-plugin"}}}}`, owner: pluginOwner, plugin: &plugin, wantedKeys: []string{"providers.fixture.owner", "providers.fixture.plugin"}},
+		{name: "conflicting-plugin", raw: `{"providers":{"fixture":{"owner":{"type":"plugin","construction":"openai-compat"},"plugin":{"id":"another"}}}}`, owner: pluginOwner, plugin: &plugin},
+		{name: "partial-preset", raw: `{"providers":{"fixture":{"preset":{"id":"fixture-preset"}}}}`, owner: presetOwner, preset: &preset, wantedKeys: []string{"providers.fixture.owner", "providers.fixture.preset"}},
+		{name: "conflicting-preset", raw: `{"providers":{"fixture":{"owner":{"type":"preset","construction":"openai-compat"},"preset":{"digest":"another"}}}}`, owner: presetOwner, preset: &preset},
+		{name: "invalid-plugin-still-excludes-preset", raw: `{}`, plugin: &ProviderPluginReference{}, preset: &preset},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			owners := map[string]ProviderOwnerReference{"fixture": test.owner}
+			plugins := map[string]ProviderPluginReference{}
+			presets := map[string]ProviderPresetReference{}
+			if test.plugin != nil {
+				plugins["fixture"] = *test.plugin
+			}
+			if test.preset != nil {
+				presets["fixture"] = *test.preset
+			}
+			fields, ids := selectProviderReferenceMigrationFields([]byte(test.raw), owners, plugins, presets)
+			require.Len(t, fields, len(test.wantedKeys))
+			for _, key := range test.wantedKeys {
+				require.Contains(t, fields, key)
+			}
+			if len(test.wantedKeys) == 0 {
+				require.Empty(t, ids)
+			} else {
+				require.Equal(t, []string{"fixture"}, ids)
+			}
+			path := filepath.Join(t.TempDir(), "crux.json")
+			require.NoError(t, os.WriteFile(path, []byte(test.raw), 0o600))
+			store := &ConfigStore{globalDataPath: path}
+			var receipt providerMigrationReceipt
+			require.NoError(t, store.migrateProviderReferencesIfCurrent(owners, plugins, presets, []byte(test.raw), true, &receipt))
+			require.Len(t, receipt.fields, len(fields))
+			for key, value := range fields {
+				require.Equal(t, value, receipt.fields[key])
+			}
+			if len(fields) == 0 {
+				after, err := os.ReadFile(path)
+				require.NoError(t, err)
+				require.Equal(t, test.raw, string(after))
+			}
+		})
+	}
+}

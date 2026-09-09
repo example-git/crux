@@ -169,6 +169,18 @@ func setReloadBoundaryMutation(store *ConfigStore, mutate func()) *reloadRuntime
 	return state
 }
 
+func setReloadPublicationMutation(t *testing.T, store *ConfigStore, mutate func()) *reloadRuntimeCandidateState {
+	t.Helper()
+	state := setReloadBoundaryMutation(store, func() {})
+	original := publishReloadProviderScan
+	publishReloadProviderScan = func(scan ProviderScan, publish func(ProviderScan) error) error {
+		mutate()
+		return original(scan, publish)
+	}
+	t.Cleanup(func() { publishReloadProviderScan = original })
+	return state
+}
+
 func requireReloadRevalidationFailure(t *testing.T, store *ConfigStore, previous *Config, state *reloadRuntimeCandidateState, err error, message string) {
 	t.Helper()
 	require.ErrorContains(t, err, "revalidate reloaded configuration generation")
@@ -706,10 +718,12 @@ func TestReloadRevalidatesPresetDigestBeforePublishing(t *testing.T) {
 	dataPath := GlobalConfigData()
 	dataBefore, err := os.ReadFile(dataPath)
 	require.NoError(t, err)
-	state := setReloadBoundaryMutation(store, func() {
-		value, err := sjson.SetBytes(dataBefore, "providers.deepseek.preset.digest", "sha256:replacement")
+	var peer []byte
+	state := setReloadPublicationMutation(t, store, func() {
+		var err error
+		peer, err = sjson.SetBytes(dataBefore, "providers.deepseek.preset.digest", "sha256:replacement")
 		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(dataPath, value, 0o600))
+		require.NoError(t, os.WriteFile(dataPath, peer, 0o600))
 	})
 
 	err = store.ReloadFromDisk(t.Context())
@@ -719,7 +733,7 @@ func TestReloadRevalidatesPresetDigestBeforePublishing(t *testing.T) {
 	require.Equal(t, active, published)
 	dataAfter, readErr := os.ReadFile(dataPath)
 	require.NoError(t, readErr)
-	require.Equal(t, dataBefore, dataAfter)
+	require.Equal(t, peer, dataAfter, "late revalidation must preserve the peer owner edit")
 }
 
 func TestReloadRevalidatesCompleteSelectedValuesBeforePublishing(t *testing.T) {
@@ -729,12 +743,13 @@ func TestReloadRevalidatesCompleteSelectedValuesBeforePublishing(t *testing.T) {
 	smallBefore := previous.Models[SelectedModelTypeSmall]
 	configBefore, err := os.ReadFile(configPath)
 	require.NoError(t, err)
-	state := setReloadBoundaryMutation(store, func() {
+	var peer []byte
+	state := setReloadPublicationMutation(t, store, func() {
 		value, err := sjson.SetBytes(configBefore, "models.large.provider_options.nested.enabled", false)
 		require.NoError(t, err)
-		value, err = sjson.SetBytes(value, "models.small.max_tokens", 7777)
+		peer, err = sjson.SetBytes(value, "models.small.max_tokens", 7777)
 		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(configPath, value, 0o600))
+		require.NoError(t, os.WriteFile(configPath, peer, 0o600))
 	})
 
 	err = store.ReloadFromDisk(t.Context())
@@ -743,7 +758,7 @@ func TestReloadRevalidatesCompleteSelectedValuesBeforePublishing(t *testing.T) {
 	require.Equal(t, smallBefore, store.Config().Models[SelectedModelTypeSmall])
 	configAfter, readErr := os.ReadFile(configPath)
 	require.NoError(t, readErr)
-	require.Equal(t, configBefore, configAfter)
+	require.Equal(t, peer, configAfter, "late revalidation must preserve the peer selection edit")
 }
 
 func TestReloadRevalidatesAfterPublicationWaitAndPreservesLaterEdit(t *testing.T) {
