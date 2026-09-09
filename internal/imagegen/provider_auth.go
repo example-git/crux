@@ -132,7 +132,7 @@ func configuredOpenAIAuth(store *config.ConfigStore, snapshot config.RuntimeSnap
 	}
 	baseURL := OpenAIBaseURL
 	if strings.TrimSpace(provider.BaseURL) != "" {
-		baseURL, err = snapshot.Resolve(provider.BaseURL)
+		baseURL, err = snapshot.ResolveProviderEndpoint(provider)
 		if err != nil {
 			return resolvedAuth{}, true, err
 		}

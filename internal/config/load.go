@@ -400,6 +400,9 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 			if err := snapshot.validateResolvedProviderAPIKeyOwner(provider); err != nil {
 				return err
 			}
+			if err := snapshot.validateResolvedProviderEndpointOwner(provider); err != nil {
+				return err
+			}
 		}
 	}
 	if err := prepareConfiguredProviderOwners(c); err != nil {
@@ -623,6 +626,7 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 			BaseURL:        pc.BaseURL,
 			APIKey:         pc.APIKey,
 			APIKeyLiteral:  providerHasLiteralAPIKey(pc),
+			BaseURLLiteral: pc.resolvedEndpoint.matches(pc),
 			ExtraHeaders:   pc.ExtraHeaders,
 			ExistingModels: pc.Models,
 		}
@@ -709,7 +713,7 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 		if apiKey == "" || err != nil {
 			slog.Warn("Provider is missing API key, this might be OK for local providers", "provider", id)
 		}
-		baseURL, err := resolver.ResolveValue(providerConfig.BaseURL)
+		baseURL, err := ResolveProviderEndpoint(providerConfig, resolver.ResolveValue)
 		if baseURL == "" || err != nil {
 			slog.Warn("Skipping custom provider due to missing API endpoint", "provider", id, "error", err)
 			c.Providers.Del(id)

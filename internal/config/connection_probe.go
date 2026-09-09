@@ -167,7 +167,7 @@ func (c *ProviderConfig) ProbeConnection(ctx context.Context, resolver VariableR
 	if exactPreset && providerID == catalog.ProviderZAI {
 		result.Policy = ConnectionProbePolicyNon401
 	}
-	baseURL, err := resolve(c.BaseURL)
+	baseURL, err := ResolveProviderEndpoint(*c, resolve)
 	if err != nil {
 		return result, fmt.Errorf("resolve provider %s base URL: %w", c.ID, err)
 	}

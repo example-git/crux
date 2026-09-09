@@ -65,6 +65,24 @@ func (c AuthenticationCapture) finalizeRuntimeAuthenticationAccounts(candidate *
 			return errors.New("runtime authentication logout candidate retains credentials")
 		}
 	}
+	return c.finalizeRuntimeAuthenticationAuthority(candidate, target, desired)
+}
+
+// The checked API key owns this credential slot while stored OAuth selection
+// remains unchanged. Other captured account owners retain their exact entries.
+func (c AuthenticationCapture) finalizeRuntimeCheckedAPIKey(candidate *Config, target providerregistry.RegistrationOwner) error {
+	if candidate == nil || candidate == c.runtime.config || !slices.Contains(c.owners, target) {
+		return errors.New("checked runtime requires an unpublished captured candidate")
+	}
+	provider, ok := candidate.Providers.Get(target.ProviderID)
+	actual, active := candidate.ProviderOwner(target.ProviderID)
+	if !ok || !active || actual != target || !provider.resolvedAPIKey.matches(provider) || provider.resolvedAPIKey.owner != target {
+		return errResolvedProviderAPIKeyStale
+	}
+	return c.finalizeRuntimeAuthenticationAuthority(candidate, target, nil)
+}
+
+func (c AuthenticationCapture) finalizeRuntimeAuthenticationAuthority(candidate *Config, target providerregistry.RegistrationOwner, desired *accounts.Entry) error {
 	next := &authenticationRuntimeAccounts{target: target, entries: make(map[providerregistry.RegistrationOwner]*accounts.Entry)}
 	for _, owner := range c.owners {
 		if owner.AccountNamespace == "" {

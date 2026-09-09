@@ -155,7 +155,7 @@ func imageProviderCredential(ctx context.Context, snapshot config.RuntimeSnapsho
 	if key == "" && access == "" {
 		return nil, errors.New("image provider has no usable credential")
 	}
-	baseURL, err := snapshot.Resolve(provider.BaseURL)
+	baseURL, err := snapshot.ResolveProviderEndpoint(provider)
 	if err != nil {
 		return nil, errors.New("image provider endpoint resolution failed")
 	}

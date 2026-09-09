@@ -52,7 +52,7 @@ func (e *ollamaEnricher) EnrichModels(ctx context.Context, cfg Config, resolver 
 			defer func() { <-sem }()
 
 			resp, err := doRequest(ctx, http.MethodPost, stripV1Suffix(cfg.BaseURL), "/api/show",
-				cfg.APIKey, cfg.APIKeyLiteral, cfg.ExtraHeaders, resolver,
+				cfg.APIKey, cfg.APIKeyLiteral, cfg.BaseURLLiteral, cfg.ExtraHeaders, resolver,
 				map[string]string{"model": models[idx].ID})
 			if err != nil {
 				return
