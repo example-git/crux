@@ -124,6 +124,13 @@ reauthentication or recollection; a different token found on disk is never
 silently treated as the result of that exchange. Unresolved records are retained
 instead of being evicted to permit another exchange.
 
+Automatic connected refresh writes back to the JSON source that supplied the
+captured token and access key, including a discovered project configuration.
+It does not default to the global file. Credentials assembled across different
+layers, shell-generated credentials, or a changed source require explicit
+reconciliation before exchange. A manually requested refresh continues to use
+its explicitly selected global or workspace scope.
+
 Integrated, compatibility-backed, and plugin-native implementations must use the same logical provider ID. One immutable registry generation has exactly one owner for that ID. Bundle presence and discovery order never select ownership.
 
 `provider.aliases`, `provider.login_order`, `provider.account_order`, and both brand gradient colors are explicit presentation/account declarations. `legacy_account_aliases` declares migration aliases only. It does not create additional credential stores. `default_large_model` and `default_small_model` must reference entries in the same manifest; no first-model fallback is applied.
