@@ -1,0 +1,860 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/example-git/crux/main/remote-workspace-runtime.schema.json",
+  "$ref": "#/$defs/RemoteRuntimeProposal",
+  "$defs": {
+    "BrowserCookie": {
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        },
+        "domain": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "secure": {
+          "type": "boolean"
+        },
+        "http_only": {
+          "type": "boolean"
+        },
+        "expires": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "host",
+        "name",
+        "value",
+        "domain",
+        "path",
+        "secure",
+        "http_only",
+        "expires"
+      ]
+    },
+    "Entry": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "accessToken": {
+          "type": "string"
+        },
+        "refreshToken": {
+          "type": "string"
+        },
+        "expiresAt": {
+          "type": "integer"
+        },
+        "raw": true
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "displayName",
+        "accessToken"
+      ]
+    },
+    "ImageConfiguration": {
+      "properties": {
+        "preferred": {
+          "items": {
+            "$ref": "#/$defs/ImageOwner"
+          },
+          "type": "array",
+          "description": "Ordered exact image owners for automatic selection"
+        },
+        "providers": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ImageProviderConfiguration"
+          },
+          "type": "object",
+          "description": "Execution-host image plugin configuration keyed by backend"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ImageOwner": {
+      "properties": {
+        "backend": {
+          "type": "string"
+        },
+        "plugin_id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "backend",
+        "plugin_id",
+        "version",
+        "digest"
+      ]
+    },
+    "ImageProviderConfiguration": {
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/ImageOwner"
+        },
+        "configuration": {
+          "type": "object"
+        },
+        "credentials": {
+          "additionalProperties": {
+            "$ref": "#/$defs/RegistrationOwner"
+          },
+          "type": "object"
+        },
+        "browser_profiles": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "owner"
+      ]
+    },
+    "Model": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "cost_per_1m_in": {
+          "type": "number"
+        },
+        "cost_per_1m_out": {
+          "type": "number"
+        },
+        "cost_per_1m_in_cached": {
+          "type": "number"
+        },
+        "cost_per_1m_out_cached": {
+          "type": "number"
+        },
+        "context_window": {
+          "type": "integer"
+        },
+        "default_max_tokens": {
+          "type": "integer"
+        },
+        "can_reason": {
+          "type": "boolean"
+        },
+        "reasoning_levels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "default_reasoning_effort": {
+          "type": "string"
+        },
+        "supports_attachments": {
+          "type": "boolean"
+        },
+        "options": {
+          "$ref": "#/$defs/ModelOptions"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "cost_per_1m_in",
+        "cost_per_1m_out",
+        "cost_per_1m_in_cached",
+        "cost_per_1m_out_cached",
+        "context_window",
+        "default_max_tokens",
+        "can_reason",
+        "supports_attachments"
+      ]
+    },
+    "ModelOptions": {
+      "properties": {
+        "temperature": {
+          "type": "number"
+        },
+        "top_p": {
+          "type": "number"
+        },
+        "top_k": {
+          "type": "integer"
+        },
+        "frequency_penalty": {
+          "type": "number"
+        },
+        "presence_penalty": {
+          "type": "number"
+        },
+        "provider_options": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "NativeIdentity": {
+      "properties": {
+        "user_agent": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "originator": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "user_agent"
+      ]
+    },
+    "OAuthClient": {
+      "properties": {
+        "client_id": {
+          "type": "string"
+        },
+        "client_secret": {
+          "type": "string"
+        },
+        "auth_url": {
+          "type": "string"
+        },
+        "token_url": {
+          "type": "string"
+        },
+        "auth_style": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ProviderConfig": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the provider",
+          "examples": [
+            "openai"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable name for the provider",
+          "examples": [
+            "OpenAI"
+          ]
+        },
+        "base_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Base URL for the provider's API",
+          "examples": [
+            "https://api.openai.com/v1"
+          ]
+        },
+        "type": {
+          "type": "string",
+          "description": "OpenAI-compatible provider type",
+          "default": "openai-compat"
+        },
+        "api_key": {
+          "type": "string",
+          "description": "API key for authentication with the provider",
+          "examples": [
+            "$OPENAI_API_KEY"
+          ]
+        },
+        "oauth": {
+          "$ref": "#/$defs/Token",
+          "description": "OAuth2 token for authentication with the provider"
+        },
+        "owner": {
+          "$ref": "#/$defs/ProviderOwnerReference",
+          "description": "Exact provider ownership and construction reference"
+        },
+        "plugin": {
+          "$ref": "#/$defs/ProviderPluginReference",
+          "description": "Provider-plugin ownership reference"
+        },
+        "preset": {
+          "$ref": "#/$defs/ProviderPresetReference",
+          "description": "Provider-preset catalog ownership reference"
+        },
+        "disable": {
+          "type": "boolean",
+          "description": "Whether this provider is disabled",
+          "default": false
+        },
+        "system_prompt_prefix": {
+          "type": "string",
+          "description": "Custom prefix to add to system prompts for this provider"
+        },
+        "tooling_instructions": {
+          "type": "string",
+          "enum": [
+            "crux",
+            "native"
+          ],
+          "description": "Tooling instruction profile for this provider",
+          "default": "crux"
+        },
+        "extra_headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object",
+          "description": "Additional HTTP headers to send with requests"
+        },
+        "extra_body": {
+          "type": "object",
+          "description": "Additional fields to include in request bodies, only works with openai-compatible providers"
+        },
+        "provider_options": {
+          "type": "object",
+          "description": "Additional provider-specific options for this provider"
+        },
+        "configuration": {
+          "type": "object",
+          "description": "Declarative provider-plugin configuration values"
+        },
+        "flat_rate": {
+          "type": "boolean",
+          "description": "Flat-rate mode for this provider"
+        },
+        "discover_models": {
+          "type": "boolean",
+          "description": "Auto-discover models from /v1/models endpoint. When true with existing models they are merged (yours win)",
+          "default": true
+        },
+        "models": {
+          "items": {
+            "$ref": "#/$defs/Model"
+          },
+          "type": "array",
+          "description": "List of models available from this provider"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "ProviderOwnerReference": {
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "core",
+            "custom",
+            "plugin",
+            "preset"
+          ],
+          "description": "Provider owner class"
+        },
+        "construction": {
+          "type": "string",
+          "description": "Exact host construction selected for this provider owner"
+        },
+        "compatibility_adapter": {
+          "type": "string",
+          "description": "Exact compatibility adapter delegated by a plugin owner"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "type",
+        "construction"
+      ]
+    },
+    "ProviderPluginReference": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable provider-plugin identity"
+        },
+        "version": {
+          "type": "string",
+          "description": "Plugin version that last owned this configuration"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id"
+      ]
+    },
+    "ProviderPresetReference": {
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable provider-preset identity"
+        },
+        "version": {
+          "type": "string",
+          "description": "Preset version that last supplied this provider catalog"
+        },
+        "digest": {
+          "type": "string",
+          "description": "Canonical digest of the provider-preset bundle"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id"
+      ]
+    },
+    "RegistrationOwner": {
+      "properties": {
+        "provider_id": {
+          "type": "string"
+        },
+        "account_namespace": {
+          "type": "string"
+        },
+        "construction": {
+          "type": "string"
+        },
+        "compatibility_adapter": {
+          "type": "string"
+        },
+        "has_oauth": {
+          "type": "boolean"
+        },
+        "oauth_adapter": {
+          "type": "string"
+        },
+        "oauth_flow_id": {
+          "type": "string"
+        },
+        "has_manifest": {
+          "type": "boolean"
+        },
+        "manifest_id": {
+          "type": "string"
+        },
+        "manifest_version": {
+          "type": "string"
+        },
+        "has_preset": {
+          "type": "boolean"
+        },
+        "preset_id": {
+          "type": "string"
+        },
+        "preset_version": {
+          "type": "string"
+        },
+        "preset_digest": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "provider_id"
+      ]
+    },
+    "RemoteCredentialBinding": {
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/RegistrationOwner"
+        },
+        "generation": {
+          "type": "integer"
+        },
+        "api_key": {
+          "type": "string"
+        },
+        "unavailable": {
+          "type": "boolean"
+        },
+        "account": {
+          "$ref": "#/$defs/Entry"
+        },
+        "oauth_token": {
+          "$ref": "#/$defs/Token"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "owner",
+        "generation"
+      ]
+    },
+    "RemoteImageBrowserCredential": {
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/ImageOwner"
+        },
+        "credential_id": {
+          "type": "string"
+        },
+        "profile_id": {
+          "type": "string"
+        },
+        "cookies": {
+          "items": {
+            "$ref": "#/$defs/BrowserCookie"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "owner",
+        "credential_id",
+        "profile_id",
+        "cookies"
+      ]
+    },
+    "RemoteImageClientIdentity": {
+      "properties": {
+        "owner": {
+          "$ref": "#/$defs/ImageOwner"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "user_agent": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "owner",
+        "name",
+        "version",
+        "user_agent",
+        "os",
+        "arch"
+      ]
+    },
+    "RemoteProviderDefinition": {
+      "properties": {
+        "config": {
+          "$ref": "#/$defs/ProviderConfig"
+        },
+        "bundle_digest": {
+          "type": "string"
+        },
+        "gemini_project_id": {
+          "type": "string"
+        },
+        "native_identity": {
+          "$ref": "#/$defs/NativeIdentity"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "config"
+      ]
+    },
+    "RemoteRuntimeControls": {
+      "properties": {
+        "disable_auto_summarize": {
+          "type": "boolean"
+        },
+        "summarization_context_cap": {
+          "type": "integer"
+        },
+        "summarization_max_tokens": {
+          "type": "integer"
+        },
+        "summarization_fast_mode": {
+          "type": "boolean"
+        },
+        "codex_compaction_v2": {
+          "type": "boolean"
+        },
+        "instruction_mode": {
+          "type": "string"
+        },
+        "disabled_instruction_sections": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "response_verbosity": {
+          "type": "string"
+        },
+        "analysis_effort": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
+    "RemoteRuntimeProposal": {
+      "properties": {
+        "version": {
+          "type": "integer"
+        },
+        "revision": {
+          "type": "integer"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "bundles": {
+          "items": {
+            "$ref": "#/$defs/TransportBundle"
+          },
+          "type": "array"
+        },
+        "providers": {
+          "items": {
+            "$ref": "#/$defs/RemoteProviderDefinition"
+          },
+          "type": "array"
+        },
+        "models": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SelectedModel"
+          },
+          "type": "object"
+        },
+        "controls": {
+          "$ref": "#/$defs/RemoteRuntimeControls"
+        },
+        "credentials": {
+          "items": {
+            "$ref": "#/$defs/RemoteCredentialBinding"
+          },
+          "type": "array"
+        },
+        "images": {
+          "$ref": "#/$defs/ImageConfiguration"
+        },
+        "image_browser_credentials": {
+          "items": {
+            "$ref": "#/$defs/RemoteImageBrowserCredential"
+          },
+          "type": "array"
+        },
+        "image_client_identities": {
+          "items": {
+            "$ref": "#/$defs/RemoteImageClientIdentity"
+          },
+          "type": "array"
+        },
+        "credential_environment": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "provider_context_instructions": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "version",
+        "revision",
+        "digest",
+        "bundles",
+        "providers",
+        "models",
+        "controls",
+        "credentials"
+      ]
+    },
+    "SelectedModel": {
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "The model ID as used by the provider API",
+          "examples": [
+            "gpt-4o"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "description": "The model provider ID that matches a key in the providers config",
+          "examples": [
+            "openai"
+          ]
+        },
+        "reasoning_effort": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "Reasoning effort level for OpenAI models that support it"
+        },
+        "think": {
+          "type": "boolean",
+          "description": "Enable provider reasoning mode when supported"
+        },
+        "max_tokens": {
+          "type": "integer",
+          "maximum": 200000,
+          "description": "Maximum number of tokens for model responses",
+          "examples": [
+            4096
+          ]
+        },
+        "temperature": {
+          "type": "number",
+          "maximum": 1,
+          "minimum": 0,
+          "description": "Sampling temperature",
+          "examples": [
+            0.7
+          ]
+        },
+        "top_p": {
+          "type": "number",
+          "maximum": 1,
+          "minimum": 0,
+          "description": "Top-p (nucleus) sampling parameter",
+          "examples": [
+            0.9
+          ]
+        },
+        "top_k": {
+          "type": "integer",
+          "description": "Top-k sampling parameter"
+        },
+        "frequency_penalty": {
+          "type": "number",
+          "description": "Frequency penalty to reduce repetition"
+        },
+        "presence_penalty": {
+          "type": "number",
+          "description": "Presence penalty to increase topic diversity"
+        },
+        "provider_options": {
+          "type": "object",
+          "description": "Additional provider-specific options for the model"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "model",
+        "provider"
+      ]
+    },
+    "Token": {
+      "properties": {
+        "access_token": {
+          "type": "string"
+        },
+        "refresh_token": {
+          "type": "string"
+        },
+        "expires_in": {
+          "type": "integer"
+        },
+        "expires_at": {
+          "type": "integer"
+        },
+        "client": {
+          "$ref": "#/$defs/OAuthClient"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "access_token",
+        "expires_in",
+        "expires_at"
+      ]
+    },
+    "TransportBundle": {
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/TransportFile"
+          },
+          "type": "array"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "digest",
+        "files"
+      ]
+    },
+    "TransportFile": {
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "data": {
+          "type": "string",
+          "contentEncoding": "base64"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path",
+        "data"
+      ]
+    }
+  },
+  "title": "Private client-owned remote workspace runtime",
+  "description": "Private admission/update input, never public workspace discovery. Structural schema only: authenticated negotiation, byte budgets, digests, manifest semantics, exact credential owners and permitted destinations are also required by runtime admission."
+}
