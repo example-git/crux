@@ -24,7 +24,16 @@ import (
 // commits a coherent selected local account/config. A receiver cannot execute
 // this operation for a client-owned runtime, including its disk-read phase.
 func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerregistry.RegistrationOwner) (*oauth.Token, bool, error) {
-	snapshot := s.RuntimeSnapshot()
+	if err := lockAuthenticationMutex(ctx, s.writeMu.TryRLock, s.writeMu.RUnlock); err != nil {
+		return nil, false, err
+	}
+	if err := lockAuthenticationMutex(ctx, s.configMu.TryLock, s.configMu.Unlock); err != nil {
+		s.writeMu.RUnlock()
+		return nil, false, err
+	}
+	snapshot := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
+	s.configMu.Unlock()
+	s.writeMu.RUnlock()
 	if snapshot.IsClientOwned() {
 		return nil, false, ErrClientRuntimeManaged
 	}

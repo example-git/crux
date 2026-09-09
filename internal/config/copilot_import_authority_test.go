@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -138,4 +139,53 @@ func TestCopilotImportDoesNotOverwriteAccountChangedDuringExchange(t *testing.T)
 	actual, err := os.ReadFile(store.globalDataPath)
 	require.NoError(t, err)
 	require.Equal(t, disk, actual)
+}
+
+func TestCopilotImportInitialSnapshotWaitIsCancelable(t *testing.T) {
+	for _, mode := range []string{"already canceled", "canceled while waiting"} {
+		t.Run(mode, func(t *testing.T) {
+			var calls atomic.Int32
+			store, owner := copilotImportAuthorityStore(t, func(context.Context) (*oauth.Token, bool, error) {
+				calls.Add(1)
+				return selectedRefreshToken(), true, nil
+			})
+			before := store.Config()
+			disk, err := os.ReadFile(store.globalDataPath)
+			require.NoError(t, err)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			store.writeMu.Lock()
+			if mode == "already canceled" {
+				cancel()
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, _, err := store.ImportCopilotForOwner(ctx, owner)
+				done <- err
+			}()
+			if mode == "canceled while waiting" {
+				select {
+				case err := <-done:
+					store.writeMu.Unlock()
+					t.Fatalf("import bypassed held initial snapshot lock: %v", err)
+				case <-time.After(20 * time.Millisecond):
+				}
+				cancel()
+			}
+			select {
+			case err := <-done:
+				store.writeMu.Unlock()
+				require.ErrorIs(t, err, context.Canceled)
+			case <-time.After(time.Second):
+				store.writeMu.Unlock()
+				<-done
+				t.Fatal("canceled import waited for the initial snapshot lock")
+			}
+			require.Zero(t, calls.Load())
+			require.Same(t, before, store.Config())
+			actual, err := os.ReadFile(store.globalDataPath)
+			require.NoError(t, err)
+			require.Equal(t, disk, actual)
+		})
+	}
 }
