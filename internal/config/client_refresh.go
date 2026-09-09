@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/google/uuid"
 )
@@ -69,11 +68,10 @@ func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted Runtime
 		return RuntimeSnapshot{}, err
 	}
 	authority := admitted.RemoteAuthority()
-	account, ok := admitted.EphemeralAccount(owner)
-	if authority == nil || !ok || account.ID == "" {
-		return RuntimeSnapshot{}, errors.New("client refresh requires an admitted account runtime")
+	accountID, credentialID, ok := admitted.clientRefreshCredential(owner)
+	if authority == nil || !ok {
+		return RuntimeSnapshot{}, errors.New("client refresh requires an admitted OAuth credential runtime")
 	}
-	credentialID := accounts.CredentialID(*account)
 	providerDigest, err := admitted.clientRuntime.proposal.ProviderDefinitionDigest(owner.ProviderID)
 	if err != nil {
 		return RuntimeSnapshot{}, err
@@ -108,7 +106,7 @@ func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted Runtime
 		}
 		call = &clientRefreshCall{done: make(chan struct{}), providerDigest: providerDigest, request: ClientRefreshRequest{
 			ID: uuid.NewString(), Principal: authority.Principal, Revision: authority.Revision, Digest: authority.Digest,
-			Owner: owner, AccountID: account.ID, CredentialID: credentialID, Deadline: time.Now().Add(3 * time.Minute).UnixMilli(),
+			Owner: owner, AccountID: accountID, CredentialID: credentialID, Deadline: time.Now().Add(3 * time.Minute).UnixMilli(),
 		}}
 		s.clientRefreshes[key] = call
 	}
@@ -170,8 +168,8 @@ func (s *ConfigStore) CompleteClientRefresh(principal string, response ClientRef
 		} else {
 			snapshot := s.RuntimeSnapshot()
 			authority := snapshot.RemoteAuthority()
-			account, ok := snapshot.EphemeralAccount(call.request.Owner)
-			if authority == nil || authority.Principal != principal || authority.Revision != response.Revision || authority.Revision <= call.request.Revision || authority.Digest != response.Digest || !ok || account.ID != call.request.AccountID || accounts.CredentialID(*account) != response.CredentialID || response.CredentialID == call.request.CredentialID {
+			accountID, credentialID, ok := snapshot.clientRefreshCredential(call.request.Owner)
+			if authority == nil || authority.Principal != principal || authority.Revision != response.Revision || authority.Revision <= call.request.Revision || authority.Digest != response.Digest || !ok || accountID != call.request.AccountID || credentialID != response.CredentialID || response.CredentialID == call.request.CredentialID {
 				return errors.New("client refresh completion does not match an accepted account rotation")
 			}
 			digest, err := snapshot.clientRuntime.proposal.ProviderDefinitionDigest(call.request.Owner.ProviderID)

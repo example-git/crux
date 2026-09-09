@@ -129,6 +129,12 @@ func (before Snapshot) beginChange(ctx context.Context, kind accountChangeKind, 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if before.empty() {
+		if kind != accountCheck {
+			return nil, errors.New("empty account capture only permits checking")
+		}
+		return &PendingChange{state: &pendingAccountChange{before: before, kind: accountCheck, release: func() {}}}, nil
+	}
 	if !before.valid || !filepath.IsAbs(before.path) {
 		return nil, errors.New("conditional account change requires a captured snapshot")
 	}
@@ -304,6 +310,9 @@ func (change *PendingChange) VerifyCommitted(ctx context.Context) (Snapshot, err
 	if state.closed || state.release == nil || !state.verified.valid {
 		return Snapshot{}, errors.New("pending account change has no open verified commit")
 	}
+	if state.verified.empty() {
+		return state.verified, ctx.Err()
+	}
 	current, err := captureStateAtLocked(ctx, state.verified.path, state.verified.namespaces)
 	if err != nil {
 		return Snapshot{}, privateSnapshotError(err)
@@ -318,6 +327,9 @@ func (change *PendingChange) VerifyCommitted(ctx context.Context) (Snapshot, err
 }
 
 func (change *pendingAccountChange) checkCurrent(ctx context.Context) (Snapshot, error) {
+	if change.before.empty() && change.kind == accountCheck {
+		return change.before, ctx.Err()
+	}
 	current, err := captureStateAtLocked(ctx, change.before.path, change.before.namespaces)
 	if err != nil {
 		return Snapshot{}, privateSnapshotError(err)

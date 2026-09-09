@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"reflect"
 	"runtime"
 	"slices"
@@ -112,18 +111,7 @@ func (s *ConfigStore) CaptureAuthentication(ctx context.Context) (Authentication
 			namespaces = append(namespaces, owner.AccountNamespace)
 		}
 	}
-	root := runtime.Getenv("AI_CLI_DIR")
-	if root == "" {
-		home := runtime.Getenv(authenticationHomeVariable())
-		if !filepath.IsAbs(home) {
-			return AuthenticationCapture{}, errors.New("captured account home is unavailable or not absolute")
-		}
-		root = filepath.Join(home, ".ai-cli")
-	}
-	if !filepath.IsAbs(root) {
-		return AuthenticationCapture{}, errors.New("captured account directory is not absolute")
-	}
-	state, err := accounts.CaptureStateAt(ctx, filepath.Join(root, "accounts.json"), namespaces)
+	state, err := captureRuntimeAccounts(ctx, runtime, namespaces)
 	if err != nil {
 		if ctx.Err() != nil {
 			return AuthenticationCapture{}, ctx.Err()
@@ -135,7 +123,7 @@ func (s *ConfigStore) CaptureAuthentication(ctx context.Context) (Authentication
 	if err != nil {
 		return AuthenticationCapture{}, err
 	}
-	second, err := accounts.CaptureStateAt(ctx, filepath.Join(root, "accounts.json"), namespaces)
+	second, err := captureRuntimeAccounts(ctx, runtime, namespaces)
 	if err != nil {
 		if ctx.Err() != nil {
 			return AuthenticationCapture{}, ctx.Err()
@@ -369,6 +357,10 @@ func (c AuthenticationCapture) ValidateAcceptedAuthentication(accepted RemoteRun
 				}
 			}
 			if !found {
+				return pending
+			}
+		} else if binding.OAuthToken != nil {
+			if !owner.HasOAuth || owner.AccountNamespace != "" || provider.APIKey != binding.OAuthToken.AccessToken || !reflect.DeepEqual(provider.OAuthToken, binding.OAuthToken) {
 				return pending
 			}
 		} else if provider.APIKey != binding.APIKey {

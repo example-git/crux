@@ -17,6 +17,7 @@ import (
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
@@ -48,6 +49,7 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 		redact.RegisterJSONValue(content)
 	}
 	for _, binding := range snapshot.clientRuntime.proposal.Credentials {
+		registerOAuthTokenSecrets(binding.OAuthToken)
 		if binding.Account != nil {
 			registerAccountSecrets(*binding.Account)
 		}
@@ -56,7 +58,7 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion      = 1
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v19"
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v20"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -94,6 +96,7 @@ type RemoteCredentialBinding struct {
 	APIKey      string                             `json:"api_key,omitempty"`
 	Unavailable bool                               `json:"unavailable,omitempty"`
 	Account     *accounts.Entry                    `json:"account,omitempty"`
+	OAuthToken  *oauth.Token                       `json:"oauth_token,omitempty"`
 }
 
 // RemoteAuthority is the redacted acknowledgement, bound by the receiver to the
@@ -509,20 +512,30 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			return nil, errors.New("client credential does not match its exact provider owner")
 		}
 		credentialProviders[id] = true
-		if binding.Unavailable && (binding.APIKey != "" || binding.Account != nil) {
+		if binding.Unavailable && (binding.APIKey != "" || binding.Account != nil || binding.OAuthToken != nil) {
 			return nil, errors.New("unavailable client credential cannot contain a secret")
 		}
 		unavailable[id] = binding.Unavailable
 		identity := RemoteAccountIdentity{ProviderID: id, Generation: binding.Generation}
 		if binding.Account != nil {
 			registration, ok := cfg.ProviderRegistration(id)
-			if !ok || registration.OAuth == nil || binding.Account.ID == "" || binding.Account.AccessToken == "" || binding.APIKey != "" {
+			if !ok || registration.OAuth == nil || expected.AccountNamespace == "" || binding.Account.ID == "" || binding.Account.AccessToken == "" || binding.APIKey != "" || binding.OAuthToken != nil {
 				return nil, errors.New("invalid client OAuth account binding")
 			}
 			provider.OAuthToken = binding.Account.Token()
 			provider.APIKey = binding.Account.AccessToken
 			identity.AccountID = binding.Account.ID
 			forwarded[expected.AccountNamespace] = ForwardedAccount{Owner: expected, Entry: *binding.Account}
+		} else if binding.OAuthToken != nil {
+			registration, ok := cfg.ProviderRegistration(id)
+			if !ok || registration.OAuth == nil || !expected.HasOAuth || expected.AccountNamespace != "" || binding.APIKey != "" {
+				return nil, errors.New("invalid namespace-free client OAuth token binding")
+			}
+			if err := validateRemoteOAuthToken(binding.OAuthToken); err != nil {
+				return nil, err
+			}
+			provider.OAuthToken = cloneOAuthToken(binding.OAuthToken)
+			provider.APIKey = binding.OAuthToken.AccessToken
 		} else {
 			provider.APIKey = binding.APIKey
 		}

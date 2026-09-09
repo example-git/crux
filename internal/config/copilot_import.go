@@ -239,6 +239,9 @@ func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerr
 }
 
 func captureRuntimeAccounts(ctx context.Context, snapshot RuntimeSnapshot, namespaces []string) (accounts.Snapshot, error) {
+	if len(namespaces) == 0 {
+		return accounts.EmptySnapshot(ctx)
+	}
 	root := snapshot.Getenv("AI_CLI_DIR")
 	if root == "" {
 		home := snapshot.Getenv(authenticationHomeVariable())
