@@ -27,7 +27,7 @@ type HTTPRoundTripLogger struct {
 
 // RoundTrip implements http.RoundTripper interface with logging.
 func (h *HTTPRoundTripLogger) RoundTrip(req *http.Request) (*http.Response, error) {
-	if isPrivateAPIKeyCheck(req) {
+	if isPrivateProviderAuthentication(req) {
 		// Never inspect arbitrary source input or a rejected response echo.
 		return h.Transport.RoundTrip(req)
 	}
