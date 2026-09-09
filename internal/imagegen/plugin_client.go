@@ -3,10 +3,12 @@ package imagegen
 import (
 	"context"
 	"errors"
+	"net/http"
 	"path/filepath"
 
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/providerplugin"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
 )
 
@@ -70,6 +72,7 @@ func clientPluginRuntimeSnapshot(store *config.ConfigStore, snapshot config.Runt
 		return config.ImageProviderConfiguration{Owner: owner}, nil
 	}
 	runtime := &PluginRuntime{Source: source, UploadDirectory: filepath.Join(snapshot.Config().Options.DataDirectory, "image-uploads")}
+	runtime.ClientIdentities = snapshot.ClientImageIdentities
 	runtime.ResolveOwner = func(backend string) (providerplugin.ImageOwner, error) {
 		if images != nil {
 			if value, ok := images.Providers[backend]; ok {
@@ -99,7 +102,9 @@ func clientPluginRuntimeSnapshot(store *config.ConfigStore, snapshot config.Runt
 		if err != nil {
 			return PluginCredentials{}, err
 		}
-		return resolvePluginCredentialsSnapshot(ctx, store, snapshot, bundle, PluginCredentialBindings{Providers: value.Credentials})
+		return resolvePluginCredentialsSnapshot(ctx, store, snapshot, bundle, PluginCredentialBindings{Providers: value.Credentials, Browser: func(_ context.Context, declaration manifest.ImageCredential) (http.CookieJar, string, error) {
+			return snapshot.ClientImageBrowserCredential(bundle.Owner(), declaration.ID)
+		}})
 	}
 	return runtime
 }

@@ -104,6 +104,7 @@ type RuntimeSnapshot struct {
 	ephemeralAccounts   map[string]ForwardedAccount
 	clientRuntime       *clientRuntimeState
 	nativeIdentities    *nativeIdentityCapture
+	imageInputs         *imageRuntimeCapture
 }
 
 type RuntimeGenerationCandidate struct {
@@ -355,6 +356,7 @@ type ConfigStore struct {
 	baseEnvironment          env.Env
 	effectiveEnvironment     env.Env
 	nativeIdentities         *nativeIdentityCapture
+	imageInputs              *imageRuntimeCapture
 	appliedEnvironment       map[string]string
 	publishProcessState      bool
 	globalDataPath           string   // ~/.ai-cli/data/crux/crux.json
@@ -447,6 +449,13 @@ func (s *ConfigStore) WithRuntimeSnapshot(build func(RuntimeSnapshot) error) err
 // for reading or writing. Capturing a hand-built store initializes its fence;
 // a prospective reload config must not inherit the accepted config's identity.
 func (s *ConfigStore) runtimeSnapshotLocked(cfg *Config, resolver VariableResolver, registry *providerregistry.Registry, environment env.Env) RuntimeSnapshot {
+	browsers := s.imageInputs
+	if !browsers.matches(cfg, environmentEntries(environment)) {
+		browsers = newImageRuntimeCapture(cfg, environmentEntries(environment))
+		if cfg == s.config {
+			s.imageInputs = browsers
+		}
+	}
 	capture := s.nativeIdentities
 	if !capture.matches(environmentEntries(environment)) {
 		capture = newNativeIdentityCapture(environmentEntries(environment))
@@ -457,6 +466,7 @@ func (s *ConfigStore) runtimeSnapshotLocked(cfg *Config, resolver VariableResolv
 	}
 	snapshot := RuntimeSnapshot{
 		nativeIdentities:  capture,
+		imageInputs:       browsers,
 		config:            cfg,
 		resolver:          resolver,
 		environment:       cloneEnvironment(environment),

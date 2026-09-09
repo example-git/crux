@@ -64,6 +64,7 @@ type PluginRuntime struct {
 	Client             *http.Client
 	ResolveCredentials func(context.Context, providerplugin.RegisteredImageBundle) (PluginCredentials, error)
 	Configuration      func(providerplugin.ImageOwner) (map[string]any, error)
+	ClientIdentities   func(providerplugin.ImageOwner) (map[string]any, error)
 	mu                 sync.Mutex
 	sessions           map[providerplugin.ImageOwner]*imagePluginSession
 }
@@ -319,12 +320,19 @@ func (r *PluginRuntime) Execute(ctx context.Context, owner providerplugin.ImageO
 	}
 	values["request"].(map[string]any)["aspect_ratio"] = ratio
 	identities := map[string]any{}
-	for name, declaration := range value.ClientIdentities {
-		version, agent, err := clientidentity.ResolveWithEnvironment(providertransport.ContextWithOwnerValidator(ctx, host.ValidateOwner), &declaration, r.Environment)
+	if r.ClientIdentities != nil {
+		identities, err = r.ClientIdentities(owner)
 		if err != nil {
 			return nil, err
 		}
-		identities[name] = map[string]any{"version": version, "user_agent": agent}
+	} else {
+		for name, declaration := range value.ClientIdentities {
+			version, agent, err := clientidentity.ResolveWithEnvironment(providertransport.ContextWithOwnerValidator(ctx, host.ValidateOwner), &declaration, r.Environment)
+			if err != nil {
+				return nil, err
+			}
+			identities[name] = map[string]any{"version": version, "user_agent": agent}
+		}
 	}
 	values["clients"] = identities
 	if value.Session != "" {

@@ -36,6 +36,10 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 		return
 	}
 	registerConfigSecrets(snapshot.Config())
+	registerImageBrowserSecrets(snapshot.clientRuntime.proposal.ImageBrowserCredentials)
+	for _, identity := range snapshot.clientRuntime.proposal.ImageClientIdentities {
+		redact.Register(identity.Version, identity.UserAgent)
+	}
 	redact.RegisterJSONValue(snapshot.clientRuntime.proposal.CredentialEnvironment)
 	for _, definition := range snapshot.clientRuntime.proposal.Providers {
 		if definition.NativeIdentity != nil {
@@ -58,7 +62,7 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion      = 1
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v20"
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v21"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -79,6 +83,8 @@ type RemoteRuntimeProposal struct {
 	Controls                    RemoteRuntimeControls               `json:"controls"`
 	Credentials                 []RemoteCredentialBinding           `json:"credentials"`
 	Images                      *ImageConfiguration                 `json:"images,omitempty"`
+	ImageBrowserCredentials     []RemoteImageBrowserCredential      `json:"image_browser_credentials,omitempty"`
+	ImageClientIdentities       []RemoteImageClientIdentity         `json:"image_client_identities,omitempty"`
 	CredentialEnvironment       map[string]string                   `json:"credential_environment,omitempty"`
 	ProviderContextInstructions map[string]string                   `json:"provider_context_instructions,omitempty"`
 }
@@ -585,6 +591,12 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	}
 	if len(proposal.CredentialEnvironment) > 256 {
 		return nil, errors.New("too many client image environment credentials")
+	}
+	if err := validateRemoteImageBrowsers(proposal, bundles); err != nil {
+		return nil, err
+	}
+	if err := validateRemoteImageIdentities(proposal, bundles); err != nil {
+		return nil, err
 	}
 	for name, value := range proposal.CredentialEnvironment {
 		if !declaredEnvironment[name] || len(value) > 1<<20 {
