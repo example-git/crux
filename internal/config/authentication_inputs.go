@@ -97,11 +97,11 @@ func (a authenticationConfigInputs) file(path string) (authenticationInputFile, 
 // captureAuthenticationInputsLocked requires writeMu for reading or writing.
 // It never resolves values, executes shell configuration, publishes a runtime,
 // creates a config lock, or falls back to live process environment variables.
-func (s *ConfigStore) captureAuthenticationInputsLocked(ctx context.Context, snapshot RuntimeSnapshot) (authenticationConfigInputs, error) {
+func (s *ConfigStore) captureAuthenticationInputsLocked(ctx context.Context, snapshot RuntimeSnapshot, workspacePaths ...string) (authenticationConfigInputs, error) {
 	if snapshot.IsClientOwned() {
 		return authenticationConfigInputs{}, ErrClientRuntimeManaged
 	}
-	order, paths, err := s.authenticationInputPathsLocked(ctx, snapshot)
+	order, paths, err := s.authenticationInputPathsLocked(ctx, snapshot, workspacePaths...)
 	if err != nil {
 		return authenticationConfigInputs{}, authenticationInputError(err)
 	}
@@ -113,7 +113,7 @@ func (s *ConfigStore) captureAuthenticationInputsLocked(ctx context.Context, sna
 		}
 		result.files = append(result.files, file)
 	}
-	finalOrder, finalPaths, err := s.authenticationInputPathsLocked(ctx, snapshot)
+	finalOrder, finalPaths, err := s.authenticationInputPathsLocked(ctx, snapshot, workspacePaths...)
 	if err != nil {
 		return authenticationConfigInputs{}, authenticationInputError(err)
 	}
@@ -123,9 +123,13 @@ func (s *ConfigStore) captureAuthenticationInputsLocked(ctx context.Context, sna
 	return result, nil
 }
 
-func (s *ConfigStore) authenticationInputPathsLocked(ctx context.Context, snapshot RuntimeSnapshot) ([]string, []string, error) {
+func (s *ConfigStore) authenticationInputPathsLocked(ctx context.Context, snapshot RuntimeSnapshot, workspacePaths ...string) ([]string, []string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
+	}
+	workspacePath := s.workspacePath
+	if len(workspacePaths) > 0 {
+		workspacePath = workspacePaths[0]
 	}
 	var order []string
 	if s.workingDir != "" {
@@ -154,13 +158,13 @@ func (s *ConfigStore) authenticationInputPathsLocked(ctx context.Context, snapsh
 		slices.Reverse(found)
 		order = append(order, found...)
 	}
-	if s.workspacePath != "" {
-		order = append(order, s.workspacePath)
+	if workspacePath != "" {
+		order = append(order, workspacePath)
 	}
 	// Pathless test/manual stores have no implicit host-global discovery. Their
 	// explicit loaded inputs and persistence targets are still observed.
 	paths := append(slices.Clone(order), s.loadedPaths...)
-	paths = append(paths, s.globalDataPath, s.workspacePath)
+	paths = append(paths, s.globalDataPath, workspacePath)
 	clean := func(values []string, unique bool) ([]string, error) {
 		result := make([]string, 0, len(values))
 		seen := map[string]bool{}

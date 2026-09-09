@@ -2641,6 +2641,14 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context, retained ...*Con
 		return err
 	}
 	expectedSelected := captureReloadSelectedValues(cfg)
+	var resolvedInputs *resolvedReloadInputs
+	if len(retained) > 0 && configHasResolvedInputs(retained[0]) {
+		observed, err := s.captureResolvedReloadInputs(ctx, cfg, basis, workspacePath, baseEnvironment, notificationMigration)
+		if err != nil {
+			return err
+		}
+		resolvedInputs = &observed
+	}
 
 	candidateEnv, resolver, resolvedEnv, environmentErr := cfg.buildEnvironmentFrom(baseEnvironment)
 	if environmentErr != nil {
@@ -2711,6 +2719,11 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context, retained ...*Con
 	if runtimeCandidate.Abort != nil {
 		defer runtimeCandidate.Abort()
 	}
+	if resolvedInputs != nil {
+		if err := s.verifyResolvedReloadInputs(ctx, *resolvedInputs, nil, nil); err != nil {
+			return err
+		}
+	}
 	if err := commitStartupCorrections(s, notificationMigration, nil, preimages); err != nil {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return errors.Join(fmt.Errorf("commit reload config corrections: %w", err), rollbackErr)
@@ -2765,6 +2778,11 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context, retained ...*Con
 		}
 		if err := verifyAuthenticationWriteTopology(ctx, basis, authoredPaths, s.workingDir, workspacePath, baseEnvironment); err != nil {
 			return fmt.Errorf("revalidate reloaded configuration generation: %w", err)
+		}
+		if resolvedInputs != nil {
+			if err := s.verifyResolvedReloadInputs(ctx, *resolvedInputs, basis, authoredPaths); err != nil {
+				return err
+			}
 		}
 		if s.publishProcessState {
 			if err := s.applyProcessEnvironment(baseEnvironment, s.appliedEnvironment, resolvedEnv); err != nil {
