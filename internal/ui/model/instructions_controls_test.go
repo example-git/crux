@@ -58,6 +58,20 @@ func drawRuntimeControlDialog(instructions *dialog.Instructions) string {
 	return ansi.Strip(screen.String())
 }
 
+func runtimeControlUICommandMessages(command tea.Cmd) []tea.Msg {
+	var messages []tea.Msg
+	for _, message := range collectCommandMessages(command) {
+		switch message.(type) {
+		case busyStateMsg, lspStatesMsg:
+			// The Update TTL backstop is independent of instruction control
+			// completion. Its command still executes through the actual SDK.
+		default:
+			messages = append(messages, message)
+		}
+	}
+	return messages
+}
+
 func TestInstructionRuntimeControlUsesWorkspaceSDKAndMainUICompletion(t *testing.T) {
 	for _, tc := range []struct {
 		name, kind, input string
@@ -152,6 +166,10 @@ func TestInstructionRuntimeControlUsesWorkspaceSDKAndMainUICompletion(t *testing
 					require.NoError(t, json.NewEncoder(w).Encode(runtimeControlUIState(t, current, request.Target)))
 				case "GET /v1/workspaces/instructions":
 					require.NoError(t, json.NewEncoder(w).Encode(current))
+				case "GET /v1/workspaces/instructions/agent":
+					require.NoError(t, json.NewEncoder(w).Encode(proto.AgentInfo{}))
+				case "GET /v1/workspaces/instructions/permissions/skip":
+					require.NoError(t, json.NewEncoder(w).Encode(proto.PermissionSkipRequest{}))
 				case "POST /v1/workspaces/instructions/agent/update":
 					rebuilds.Add(1)
 					var request proto.AgentUpdateRequest
@@ -189,19 +207,19 @@ func TestInstructionRuntimeControlUsesWorkspaceSDKAndMainUICompletion(t *testing
 				instructions.HandleMsg(tea.KeyPressMsg{Code: tea.KeyDown})
 			}
 			require.Contains(t, drawRuntimeControlDialog(instructions), "Loading")
-			loaded := collectCommandMessages(command)[0].(dialog.ActionInstructionControlsLoaded)
+			loaded := runtimeControlUICommandMessages(command)[0].(dialog.ActionInstructionControlsLoaded)
 			require.Contains(t, drawRuntimeControlDialog(instructions), "Loading", "read command cannot edit UI state")
 			if tc.name == "closed-read-rejected" {
 				ui.dialog.CloseDialog(dialog.InstructionsID)
 			}
 			_, command = ui.Update(loaded)
 			if strings.HasSuffix(tc.name, "read-rejected") {
-				requireCommandError(t, collectCommandMessages(command), "pending acknowledgement")
+				requireCommandError(t, runtimeControlUICommandMessages(command), "pending acknowledgement")
 				require.Zero(t, writes.Load())
 				require.Zero(t, rebuilds.Load())
 				return
 			}
-			require.Empty(t, collectCommandMessages(command))
+			require.Empty(t, runtimeControlUICommandMessages(command))
 			if tc.name == "reset" {
 				require.Contains(t, drawRuntimeControlDialog(instructions), "saved · model")
 				command = ui.handleDialogAction(instructions.HandleMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl}))
@@ -218,7 +236,7 @@ func TestInstructionRuntimeControlUsesWorkspaceSDKAndMainUICompletion(t *testing
 				command = ui.handleDialogAction(instructions.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter}))
 			}
 			require.Zero(t, writes.Load())
-			completed := collectCommandMessages(command)[0].(dialog.ActionInstructionMutationCompleted)
+			completed := runtimeControlUICommandMessages(command)[0].(dialog.ActionInstructionMutationCompleted)
 			require.EqualValues(t, 1, writes.Load())
 			require.Zero(t, rebuilds.Load())
 			switch tc.name {
@@ -240,7 +258,7 @@ func TestInstructionRuntimeControlUsesWorkspaceSDKAndMainUICompletion(t *testing
 			}
 			_, command = ui.Update(completed)
 			require.Zero(t, rebuilds.Load(), "rebuild must be scheduled, not run in Update")
-			messages := collectCommandMessages(command)
+			messages := runtimeControlUICommandMessages(command)
 			if rejected {
 				requireCommandError(t, messages, "fixture control rejected")
 				require.Zero(t, rebuilds.Load())
@@ -264,7 +282,7 @@ func TestInstructionRuntimeControlUsesWorkspaceSDKAndMainUICompletion(t *testing
 			}
 			require.Len(t, messages, 1, "successful metadata edit refreshes effective sibling controls")
 			_, command = ui.Update(messages[0])
-			require.Empty(t, collectCommandMessages(command))
+			require.Empty(t, runtimeControlUICommandMessages(command))
 			require.EqualValues(t, 2, reads.Load())
 			if tc.name == "empty" {
 				require.Contains(t, drawRuntimeControlDialog(instructions), `"" · model`)

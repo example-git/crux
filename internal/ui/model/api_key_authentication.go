@@ -158,17 +158,9 @@ func (m *UI) completeAPIKeyStatus(msg apiKeyStatusMsg) tea.Cmd {
 	// Status from the credential owner decides the authentication family. A
 	// missing local OAuth registration must never turn into an API-key fallback.
 	if found.Owner.HasOAuth && m.apiKeyOperations[s.workspace] == nil {
-		login, cmd, err := dialog.NewLoginForModel(m.com, s.selection)
-		if err != nil {
-			s.ready = false
-			s.dialog.SetPresentation(dialog.APIKeyPresentation{Message: "This workspace provider requires OAuth. Its sign-in flow is not available in this UI; an API key is not a substitute.", Reload: true})
-			return util.ReportError(errors.New("OAuth sign-in for this workspace provider is not available in this UI"))
-		}
 		m.dialog.CloseDialog(dialog.APIKeyInputID)
 		m.pruneAPIKeySessions()
-		m.dialog.CloseDialog(dialog.LoginID)
-		m.dialog.OpenDialogWithGrace(login)
-		return cmd
+		return m.openOAuthAuthentication(&s.selection, &found.Owner)
 	}
 	s.dialog.SetPresentation(dialog.APIKeyPresentation{Message: "Enter an API key or expression to check on the selected workspace. Enter checks; saving is a separate action.", Editable: true, Reload: true})
 	m.showAPIKeyOperation(s.dialog)
