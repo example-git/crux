@@ -47,7 +47,7 @@ func (r ProviderOAuthLoginResponse) ValidateRecover(request providerauth.OAuthLo
 	if err := request.Validate(); err != nil {
 		return err
 	}
-	if r.RecoveryOperationID != request.OriginalOperationID || r.State != nil && !r.State.MatchesOAuthLoginRecovery(request.OriginalOperationID) {
+	if r.RecoveryWorkspaceID != request.OriginalWorkspaceID || r.RecoveryOperationID != request.OriginalOperationID || r.State != nil && !r.State.MatchesOAuthLoginRecovery(request.OriginalWorkspaceID, request.OriginalOperationID) {
 		return errors.New("OAuth recovery response changed the original operation")
 	}
 	return r.validate(request.Login, "", 0, "")

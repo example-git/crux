@@ -81,15 +81,15 @@ func (w *AppWorkspace) CompleteProviderOAuthLogin(ctx context.Context, ref provi
 }
 
 func (w *ClientWorkspace) BeginProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRequest) (providerauth.OAuthLoginState, error) {
-	return w.beginProviderOAuthLogin(ctx, request, "")
+	return w.beginProviderOAuthLogin(ctx, request, "", "")
 }
 func (w *ClientWorkspace) RecoverProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRecoveryRequest) (providerauth.OAuthLoginState, error) {
 	if err := request.Validate(); err != nil {
 		return providerauth.OAuthLoginState{}, err
 	}
-	return w.beginProviderOAuthLogin(ctx, request.Login, request.OriginalOperationID)
+	return w.beginProviderOAuthLogin(ctx, request.Login, request.OriginalWorkspaceID, request.OriginalOperationID)
 }
-func (w *ClientWorkspace) beginProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRequest, originalOperationID string) (providerauth.OAuthLoginState, error) {
+func (w *ClientWorkspace) beginProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRequest, originalWorkspaceID, originalOperationID string) (providerauth.OAuthLoginState, error) {
 	if err := request.Validate(); err != nil {
 		return providerauth.OAuthLoginState{}, err
 	}
@@ -101,7 +101,7 @@ func (w *ClientWorkspace) beginProviderOAuthLogin(ctx context.Context, request p
 	if !w.clientOwned() {
 		return w.remoteOAuthSession(ctx, request, func(ctx context.Context, id string) (proto.ProviderOAuthLoginResponse, error) {
 			if originalOperationID != "" {
-				return w.client.RecoverProviderOAuthLogin(ctx, id, providerauth.OAuthLoginRecoveryRequest{Login: request, OriginalOperationID: originalOperationID})
+				return w.client.RecoverProviderOAuthLogin(ctx, id, providerauth.OAuthLoginRecoveryRequest{Login: request, OriginalWorkspaceID: originalWorkspaceID, OriginalOperationID: originalOperationID})
 			}
 			return w.client.BeginProviderOAuthLogin(ctx, id, request)
 		})
@@ -127,7 +127,7 @@ func (w *ClientWorkspace) beginProviderOAuthLogin(ctx context.Context, request p
 		service := a.providerAuth
 		state, err := service.WaitOAuthLogin(ctx, request, 0)
 		if !errors.Is(err, providerauth.ErrOAuthLoginUnavailable) {
-			if state.Login.LoginID != "" && !state.MatchesOAuthLoginRecovery(originalOperationID) {
+			if state.Login.LoginID != "" && !state.MatchesOAuthLoginRecovery(originalWorkspaceID, originalOperationID) {
 				return providerauth.OAuthLoginState{}, providerauth.ErrOperationConflict
 			}
 			if check := w.verifyClientOAuthSession(id, a, service); check != nil {
@@ -146,7 +146,7 @@ func (w *ClientWorkspace) beginProviderOAuthLogin(ctx context.Context, request p
 	var state providerauth.OAuthLoginState
 	var err error
 	if originalOperationID != "" {
-		state, err = service.RecoverOAuthLoginForAccepted(ctx, providerauth.OAuthLoginRecoveryRequest{Login: request, OriginalOperationID: originalOperationID}, a.accepted, a.configView())
+		state, err = service.RecoverOAuthLoginForAccepted(ctx, providerauth.OAuthLoginRecoveryRequest{Login: request, OriginalWorkspaceID: originalWorkspaceID, OriginalOperationID: originalOperationID}, a.accepted, a.configView())
 	} else {
 		state, err = service.BeginOAuthLoginForAccepted(ctx, request, a.accepted, a.configView())
 	}

@@ -10,9 +10,11 @@ import (
 // OAuthLoginRecovery identifies an observed token result, never a successful
 // original save or runtime acknowledgement. It contains no credential data.
 type OAuthLoginRecovery struct {
+	OriginalWorkspaceID string `json:"original_workspace_id"`
 	OriginalOperationID string `json:"original_operation_id"`
 }
 type OAuthLoginRecoveryRequest struct {
+	OriginalWorkspaceID string            `json:"original_workspace_id"`
 	Login               OAuthLoginRequest `json:"login"`
 	OriginalOperationID string            `json:"original_operation_id"`
 }
@@ -20,6 +22,9 @@ type OAuthLoginRecoveryRequest struct {
 func (r OAuthLoginRecoveryRequest) Validate() error {
 	if err := r.Login.Validate(); err != nil {
 		return err
+	}
+	if !validText(r.OriginalWorkspaceID, 512, true) {
+		return errors.New("OAuth recovery requires the original workspace")
 	}
 	if !validOperationID(r.OriginalOperationID) || r.OriginalOperationID == r.Login.OperationID || r.OriginalOperationID == r.Login.LoginID {
 		return errors.New("OAuth recovery requires a distinct original operation")
@@ -32,16 +37,17 @@ func sameOAuthRecovery(a, b *OAuthLoginRecovery) bool {
 
 // MatchesOAuthLoginRecovery keeps a fresh session's recovery provenance exact
 // across Begin/Recover retries and later state observations.
-func (s OAuthLoginState) MatchesOAuthLoginRecovery(originalOperationID string) bool {
+func (s OAuthLoginState) MatchesOAuthLoginRecovery(originalWorkspaceID, originalOperationID string) bool {
 	if originalOperationID == "" {
-		return s.Recovery == nil
+		return originalWorkspaceID == "" && s.Recovery == nil
 	}
-	return s.Recovery != nil && s.Recovery.OriginalOperationID == originalOperationID
+	return s.Recovery != nil && s.Recovery.OriginalWorkspaceID == originalWorkspaceID && s.Recovery.OriginalOperationID == originalOperationID
 }
 
 type OAuthLoginRecordedResult struct {
-	OperationID string `json:"operation_id"`
-	State       string `json:"state"`
+	OriginalWorkspaceID string `json:"original_workspace_id"`
+	OperationID         string `json:"operation_id"`
+	State               string `json:"state"`
 }
 type OAuthLoginRecoveryList struct {
 	Target  Target                     `json:"target"`
@@ -55,15 +61,15 @@ func (r OAuthLoginRecoveryList) Validate() error {
 	if !r.Target.Owner.HasOAuth || len(r.Results) > 128 {
 		return errors.New("invalid OAuth recovery listing")
 	}
-	seen := make(map[string]struct{}, len(r.Results))
+	seen := make(map[[2]string]struct{}, len(r.Results))
 	for _, result := range r.Results {
-		if !validOperationID(result.OperationID) {
+		if !validText(result.OriginalWorkspaceID, 512, true) || !validOperationID(result.OperationID) {
 			return errors.New("invalid recorded OAuth operation")
 		}
-		if _, exists := seen[result.OperationID]; exists {
+		if _, exists := seen[[2]string{result.OriginalWorkspaceID, result.OperationID}]; exists {
 			return errors.New("duplicate recorded OAuth operation")
 		}
-		seen[result.OperationID] = struct{}{}
+		seen[[2]string{result.OriginalWorkspaceID, result.OperationID}] = struct{}{}
 		switch result.State {
 		case "not-started", "exchange-outcome-unknown", "token-result-recorded":
 		default:
@@ -76,13 +82,13 @@ func (s *Service) RecoverOAuthLogin(ctx context.Context, request OAuthLoginRecov
 	if err := request.Validate(); err != nil {
 		return OAuthLoginState{}, err
 	}
-	return s.beginOAuthLogin(ctx, request.Login, nil, nil, &OAuthLoginRecovery{OriginalOperationID: request.OriginalOperationID})
+	return s.beginOAuthLogin(ctx, request.Login, nil, nil, &OAuthLoginRecovery{OriginalWorkspaceID: request.OriginalWorkspaceID, OriginalOperationID: request.OriginalOperationID})
 }
 func (s *Service) RecoverOAuthLoginForAccepted(ctx context.Context, request OAuthLoginRecoveryRequest, accepted config.RemoteRuntimeProposal, view *config.Config) (OAuthLoginState, error) {
 	if err := request.Validate(); err != nil {
 		return OAuthLoginState{}, err
 	}
-	return s.beginOAuthLogin(ctx, request.Login, &accepted, view, &OAuthLoginRecovery{OriginalOperationID: request.OriginalOperationID})
+	return s.beginOAuthLogin(ctx, request.Login, &accepted, view, &OAuthLoginRecovery{OriginalWorkspaceID: request.OriginalWorkspaceID, OriginalOperationID: request.OriginalOperationID})
 }
 func (s *Service) ListOAuthLoginResults(ctx context.Context, target Target) (OAuthLoginRecoveryList, error) {
 	return s.listOAuthLoginResults(ctx, target, nil, nil)
@@ -115,14 +121,21 @@ func (s *Service) listOAuthLoginResults(ctx context.Context, target Target, acce
 		if PublicOwner(provider.Owner) != target.Owner {
 			continue
 		}
-		records, err := s.store.PendingOAuthLoginResults(ctx, s.workspaceID)
+		records, err := s.store.PendingOAuthLoginResultsForScope(ctx)
 		if err != nil {
 			return result, err
 		}
 		for _, record := range records {
 			if record.Owner == provider.Owner {
-				result.Results = append(result.Results, OAuthLoginRecordedResult{OperationID: record.OperationID, State: record.State})
+				result.Results = append(result.Results, OAuthLoginRecordedResult{OriginalWorkspaceID: record.OriginalWorkspaceID, OperationID: record.OperationID, State: record.State})
 			}
+		}
+		latest, _, err := s.capture(ctx, accepted, view)
+		if err != nil {
+			return OAuthLoginRecoveryList{Target: target}, err
+		}
+		if latest.Generation != target.Generation {
+			return OAuthLoginRecoveryList{Target: target}, ErrStale
 		}
 		if err := result.Validate(); err != nil {
 			return OAuthLoginRecoveryList{Target: target}, err

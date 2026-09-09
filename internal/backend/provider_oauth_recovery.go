@@ -9,7 +9,7 @@ import (
 )
 
 func (b *Backend) RecoverProviderOAuthLogin(ctx context.Context, id string, request providerauth.OAuthLoginRecoveryRequest) (proto.ProviderOAuthLoginResponse, error) {
-	return b.providerOAuthInteraction(ctx, id, proto.ProviderOAuthLoginResponse{Login: request.Login, RecoveryOperationID: request.OriginalOperationID}, request.Validate,
+	return b.providerOAuthInteraction(ctx, id, proto.ProviderOAuthLoginResponse{Login: request.Login, RecoveryWorkspaceID: request.OriginalWorkspaceID, RecoveryOperationID: request.OriginalOperationID}, request.Validate,
 		func(ctx context.Context, service *providerauth.Service) (providerauth.OAuthLoginState, error) {
 			return service.RecoverOAuthLogin(ctx, request)
 		},

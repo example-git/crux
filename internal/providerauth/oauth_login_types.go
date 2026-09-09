@@ -140,7 +140,7 @@ func (s OAuthLoginState) Validate() error {
 		return err
 	}
 	if s.Recovery != nil {
-		if err := (OAuthLoginRecoveryRequest{Login: s.Login, OriginalOperationID: s.Recovery.OriginalOperationID}).Validate(); err != nil {
+		if err := (OAuthLoginRecoveryRequest{Login: s.Login, OriginalWorkspaceID: s.Recovery.OriginalWorkspaceID, OriginalOperationID: s.Recovery.OriginalOperationID}).Validate(); err != nil {
 			return err
 		}
 		switch s.Phase {
