@@ -34,7 +34,7 @@ func TestNativeCredentialDestinationsThroughHTTPS(t *testing.T) {
 		require.NoError(t, os.MkdirAll(path, 0o700))
 		t.Setenv(name, path)
 	}
-	values := []string{"CODEX_OAUTH_CLIENT_ID=synthetic-client", "CODEX_CLI_VERSION=1.2.3", "CODEX_ORIGINATOR=synthetic-originator", "GEMINI_OAUTH_CLIENT_ID=synthetic-client", "GEMINI_OAUTH_CLIENT_SECRET=synthetic-client-secret", "ANTIGRAVITY_CLI_VERSION=1.2.3", "COPILOT_CLI_VERSION=1.2.3", "COPILOT_ADVERTISE_MODE=cli"}
+	values := []string{"CODEX_OAUTH_CLIENT_ID=synthetic-client", "CODEX_VERSION=1.2.3", "CODEX_ORIGINATOR=synthetic-originator", "GEMINI_OAUTH_CLIENT_ID=synthetic-client", "GEMINI_OAUTH_CLIENT_SECRET=synthetic-client-secret", "ANTIGRAVITY_CLI_VERSION=1.2.3", "COPILOT_CLI_VERSION=1.2.3", "COPILOT_ADVERTISE_MODE=cli"}
 	for _, value := range values {
 		key, value, _ := strings.Cut(value, "=")
 		t.Setenv(key, value)
