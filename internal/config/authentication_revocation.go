@@ -43,6 +43,9 @@ func (c *Config) WithAuthenticationRevocation(owner providerregistry.Registratio
 // Disabled providers remain eligible so logout can publish their cleanup without
 // constructing an authenticated provider or altering the selected model state.
 func (s RuntimeSnapshot) AuthenticationRevocation(providerID string) error {
+	if err := s.RuntimeRevocation(); err != nil {
+		return err
+	}
 	if s.config == nil || s.config.Providers == nil {
 		return nil
 	}

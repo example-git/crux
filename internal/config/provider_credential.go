@@ -162,6 +162,9 @@ func (s RuntimeSnapshot) UsesResolvedProviderAPIKey(providerID string) (bool, er
 }
 
 func (s RuntimeSnapshot) ResolveProviderAPIKey(provider ProviderConfig) (string, error) {
+	if err := s.RuntimeRevocation(); err != nil {
+		return "", err
+	}
 	if err := s.validateResolvedProviderAPIKeyOwner(provider); err != nil {
 		return "", err
 	}

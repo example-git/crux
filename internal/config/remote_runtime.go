@@ -170,6 +170,9 @@ func (s RuntimeSnapshot) RemoteAuthority() *RemoteAuthority {
 // ClientImageBundle distinguishes an absent client binding from server-owned
 // mode. handled=true errors must never fall back to the host plugin manager.
 func (s RuntimeSnapshot) ClientImageBundle(owner providerplugin.ImageOwner) (bundle providerplugin.RegisteredImageBundle, handled bool, err error) {
+	if err := s.RuntimeRevocation(); err != nil {
+		return bundle, true, err
+	}
 	if s.clientRuntime == nil {
 		return bundle, false, nil
 	}
@@ -188,6 +191,9 @@ func (s RuntimeSnapshot) ClientImageBundle(owner providerplugin.ImageOwner) (bun
 // principal/revision checks and dependent runtime preparation succeed. Readers
 // retain their prior captured Config, accounts, assets and revision unchanged.
 func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteRuntimeProposal, principal string, expectedRevision uint64) (*RemoteAuthority, error) {
+	if err := s.RuntimeRevocation(); err != nil {
+		return nil, err
+	}
 	s.writeMu.RLock()
 	if s.clientRuntime == nil || s.clientRuntime.authority.Principal != principal {
 		s.writeMu.RUnlock()
@@ -200,8 +206,14 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 	if err != nil {
 		return nil, err
 	}
+	// Prepared models inherit the live store's retirement even though their
+	// publication identity remains the unpublished candidate's identity.
+	candidate.runtimeParent = s
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.RuntimeRevocation(); err != nil {
+		return nil, err
+	}
 	if s.clientRuntime == nil || s.clientRuntime.authority.Principal != principal {
 		return nil, errors.New("client runtime ownership changed")
 	}
@@ -643,6 +655,9 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 // ClientProviderUnavailable returns an explicit accepted client availability
 // state. A missing unmarked binding remains an admission error.
 func (s RuntimeSnapshot) ClientProviderUnavailable(id string) error {
+	if err := s.RuntimeRevocation(); err != nil {
+		return err
+	}
 	if !s.IsClientOwned() {
 		return nil
 	}

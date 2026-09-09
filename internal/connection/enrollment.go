@@ -343,6 +343,7 @@ func (e *EnrollmentListener) authorizeWithResponse(ctx context.Context, name, ce
 		e.finish(enrollmentOutcome{err: err})
 		return err
 	}
+	ctx = context.WithValue(ctx, explicitApprovalKey{}, true)
 	err = e.authorizeClient(ctx, name, certificate, func(persist func() error) error {
 		e.mu.Lock()
 		defer e.mu.Unlock()

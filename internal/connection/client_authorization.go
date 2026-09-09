@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/example-git/crux/internal/lock"
@@ -24,6 +25,8 @@ var ErrClientAuthorization = errors.New("client authorization is unavailable or 
 type ClientAuthorization struct {
 	path              string
 	serverCertificate []byte
+	liveMu            sync.Mutex
+	live              *liveAuthorization
 }
 
 func (a *ClientAuthorization) roots(data *store) (*x509.CertPool, error) {
@@ -212,6 +215,10 @@ func clientAuthorizationMemberShape(shape, name string) (string, error) {
 			return "identity", nil
 		case "connections":
 			return "connections", nil
+		case "authorization_records":
+			return "authorization_records", nil
+		case "revocations":
+			return "revocations", nil
 		}
 	case "identity":
 		if name == "certificate" || name == "private_key" {
@@ -219,6 +226,20 @@ func clientAuthorizationMemberShape(shape, name string) (string, error) {
 		}
 	case "connections":
 		return "connection", nil
+	case "authorization_records":
+		return "authorization_record", nil
+	case "revocations":
+		return "revocation_record", nil
+	case "authorization_record":
+		switch name {
+		case "name", "fingerprint", "grant_id", "created_at", "approved_at", "last_used_at", "revoked_at":
+			return "", nil
+		}
+	case "revocation_record":
+		switch name {
+		case "operation_id", "name", "principal", "grant_id", "server_fingerprint", "revoked_at":
+			return "", nil
+		}
 	case "connection":
 		switch name {
 		case "name", "address", "server_certificate":

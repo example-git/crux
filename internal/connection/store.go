@@ -54,10 +54,12 @@ type AuthorizedClient struct {
 }
 
 type store struct {
-	Version           int                   `json:"version"`
-	Server            *Identity             `json:"server,omitempty"`
-	AuthorizedClients map[string]string     `json:"authorized_clients,omitempty"`
-	Connections       map[string]Connection `json:"connections,omitempty"`
+	Version              int                            `json:"version"`
+	Server               *Identity                      `json:"server,omitempty"`
+	AuthorizedClients    map[string]string              `json:"authorized_clients,omitempty"`
+	Connections          map[string]Connection          `json:"connections,omitempty"`
+	AuthorizationRecords map[string]AuthorizationRecord `json:"authorization_records,omitempty"`
+	Revocations          map[string]RevocationRecord    `json:"revocations,omitempty"`
 }
 
 func EnsureServerIdentity(ctx context.Context) (string, error) {
@@ -240,6 +242,7 @@ func authorizeClientAt(ctx context.Context, path string, expectedServer *Identit
 			}
 		}
 		data.AuthorizedClients[name] = clientCertificate
+		recordAuthorization(ctx, data, name, fingerprint)
 		return nil
 	}, commit)
 }
@@ -262,17 +265,8 @@ func ListAuthorizedClients(ctx context.Context) ([]AuthorizedClient, error) {
 }
 
 func RevokeClient(ctx context.Context, name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return errors.New("client name cannot be empty")
-	}
-	return update(ctx, func(data *store) error {
-		if _, exists := data.AuthorizedClients[name]; !exists {
-			return fmt.Errorf("authorized client not found: %s", name)
-		}
-		delete(data.AuthorizedClients, name)
-		return nil
-	})
+	_, _, err := persistRevocation(ctx, name, "")
+	return err
 }
 
 func Get(ctx context.Context, name string) (Connection, bool, error) {

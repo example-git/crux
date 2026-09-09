@@ -65,6 +65,9 @@ func (s RuntimeSnapshot) validateResolvedProviderEndpointOwner(p ProviderConfig)
 	return nil
 }
 func (s RuntimeSnapshot) ResolveProviderEndpoint(p ProviderConfig) (string, error) {
+	if err := s.RuntimeRevocation(); err != nil {
+		return "", err
+	}
 	if err := s.validateResolvedProviderEndpointOwner(p); err != nil {
 		return "", err
 	}

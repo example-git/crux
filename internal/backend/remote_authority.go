@@ -24,6 +24,9 @@ func (b *Backend) BindClientPrincipal(clientID, principal string) error {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if lifetime := b.principalLocked(principal); lifetime != nil && lifetime.revoked {
+		return ErrPrincipalRevoked
+	}
 	if b.clientPrincipals == nil {
 		b.clientPrincipals = make(map[string]string)
 	}
@@ -35,6 +38,11 @@ func (b *Backend) BindClientPrincipal(clientID, principal string) error {
 }
 
 func (b *Backend) AuthorizeWorkspace(id, principal string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if lifetime := b.principals[principal]; lifetime != nil && lifetime.revoked {
+		return ErrPrincipalRevoked
+	}
 	ws, err := b.GetWorkspace(id)
 	if err != nil {
 		return err

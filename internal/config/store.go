@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/example-git/crux/foundation/catalog"
@@ -95,6 +96,7 @@ type ForwardedAccount struct {
 }
 
 type RuntimeSnapshot struct {
+	lifetimeStore       *ConfigStore
 	publicationStore    *ConfigStore
 	publicationSequence uint64
 	config              *Config
@@ -272,6 +274,9 @@ func validateCompleteProviderOwner(providerID string, provider ProviderConfig) e
 }
 
 func (s RuntimeSnapshot) ProviderForConstruction(providerID string, provider ProviderConfig) (ProviderConfig, providerregistry.Registration, bool, error) {
+	if err := s.RuntimeRevocation(); err != nil {
+		return ProviderConfig{}, providerregistry.Registration{}, false, err
+	}
 	if s.config == nil || s.config.Providers == nil {
 		return ProviderConfig{}, providerregistry.Registration{}, false, fmt.Errorf("provider %q cannot be constructed without a configuration snapshot", providerID)
 	}
@@ -343,6 +348,11 @@ func (s RuntimeSnapshot) EphemeralAccount(expected providerregistry.Registration
 }
 
 type ConfigStore struct {
+	runtimeParent            *ConfigStore
+	runtimeRevoked           atomic.Bool
+	runtimeLifetimeOnce      sync.Once
+	runtimeContext           context.Context
+	runtimeCancel            context.CancelFunc
 	mcpRuntime               mcpRuntimeSlot
 	mcpRuntimeOnce           sync.Once
 	config                   *Config
@@ -465,6 +475,7 @@ func (s *ConfigStore) runtimeSnapshotLocked(cfg *Config, resolver VariableResolv
 		}
 	}
 	snapshot := RuntimeSnapshot{
+		lifetimeStore:     s,
 		nativeIdentities:  capture,
 		imageInputs:       browsers,
 		config:            cfg,
@@ -659,6 +670,9 @@ func (s *ConfigStore) applyEphemeralToken(token *oauth.Token, expected providerr
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.RuntimeRevocation(); err != nil {
+		return err
+	}
 
 	cfg := s.Config()
 	registration, err := exactOAuthRegistrationFor(cfg, s.providerRegistry, expected.ProviderID)
@@ -860,6 +874,9 @@ func (s *ConfigStore) validateRegistrationOwnerLocked(cfg *Config, expected prov
 }
 
 func (s *ConfigStore) ValidateRegistrationOwner(expected providerregistry.RegistrationOwner) error {
+	if err := s.RuntimeRevocation(); err != nil {
+		return err
+	}
 	s.writeMu.RLock()
 	defer s.writeMu.RUnlock()
 	return s.validateRegistrationOwnerLocked(s.Config(), expected)
@@ -884,6 +901,9 @@ func (s *ConfigStore) validateActiveProviderOwnerLocked(cfg *Config, expected pr
 }
 
 func (s *ConfigStore) ValidateActiveProviderOwner(expected providerregistry.RegistrationOwner) error {
+	if err := s.RuntimeRevocation(); err != nil {
+		return err
+	}
 	s.writeMu.RLock()
 	defer s.writeMu.RUnlock()
 	return s.validateActiveProviderOwnerLocked(s.Config(), expected)
@@ -1710,6 +1730,9 @@ func (s *ConfigStore) setProviderOAuthTokenLocked(scope Scope, providerID string
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.RuntimeRevocation(); err != nil {
+		return err
+	}
 
 	cfg := s.Config()
 	registration, err := exactOAuthRegistrationFor(cfg, s.providerRegistry, providerID)
@@ -1846,6 +1869,11 @@ func (s *ConfigStore) RemoveProviderCredentials(scope Scope, expected providerre
 //     time. A process that acquires the lock after a peer rotated finds the
 //     peer's fresh token on disk and adopts it instead of exchanging.
 func (s *ConfigStore) RefreshOAuthTokenForOwner(ctx context.Context, scope Scope, expected providerregistry.RegistrationOwner) (*oauth.Token, error) {
+	ctx, cancelRuntime := s.BindRuntimeContext(ctx)
+	defer cancelRuntime()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if s.RemoteAuthority() != nil {
 		return nil, ErrClientRuntimeManaged
 	}
@@ -2132,6 +2160,9 @@ func (s *ConfigStore) applyToken(token *oauth.Token, providerID string, expected
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.RuntimeRevocation(); err != nil {
+		return err
+	}
 
 	cfg := s.Config()
 	registration, err := exactOAuthRegistrationFor(cfg, s.providerRegistry, providerID)
