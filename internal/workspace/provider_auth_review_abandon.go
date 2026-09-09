@@ -24,7 +24,13 @@ func (r ProviderAuthenticationReviewAbandonRequest) Validate() error {
 	if r.Revision == 0 || r.AbandonID == r.Review.ReviewID || r.AbandonID == r.PreviewID || r.AbandonID == r.Review.OperationID {
 		return errors.New("exact review revision and distinct abandonment ID are required")
 	}
-	return validateAuthenticationReviewIDs(clientAuthenticationReviewRequest(r.Review).target(), r.WorkspaceID, r.PreviewID, r.AbandonID)
+	target := clientAuthenticationReviewRequest(r.Review).target()
+	current := target
+	current.WorkspaceID = r.WorkspaceID
+	if err := current.Validate(); err != nil {
+		return err
+	}
+	return validateAuthenticationReviewIDs(target, r.PreviewID, r.AbandonID)
 }
 
 type ProviderAuthenticationReviewAbandonOutcome struct {

@@ -21,7 +21,12 @@ func (r ProviderAuthenticationAbandonRequest) Validate() error {
 	if r.WorkspaceID == "" || r.Revision == 0 || r.AbandonID == r.OperationID {
 		return errors.New("exact current workspace, original revision and distinct abandonment ID are required")
 	}
-	if err := validateAuthenticationReviewIDs(r.Target, r.OperationID, r.AbandonID, r.WorkspaceID); err != nil {
+	current := r.Target
+	current.WorkspaceID = r.WorkspaceID
+	if err := current.Validate(); err != nil {
+		return err
+	}
+	if err := validateAuthenticationReviewIDs(r.Target, r.OperationID, r.AbandonID); err != nil {
 		return err
 	}
 	return nil
