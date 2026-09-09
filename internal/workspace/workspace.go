@@ -231,6 +231,8 @@ type Workspace interface {
 	ProviderAccounts(context.Context, providerauth.Target) (providerauth.AccountsState, error)
 	SwitchProviderAccount(context.Context, providerauth.SwitchRequest) (providerauth.MutationOutcome, error)
 	LogoutProvider(context.Context, providerauth.LogoutRequest) (providerauth.MutationOutcome, error)
+	CheckProviderAPIKey(context.Context, providerauth.APIKeyCheckRequest) (providerauth.APIKeyCheckOutcome, error)
+	SaveCheckedProviderAPIKey(context.Context, providerauth.APIKeySaveRequest) (providerauth.MutationOutcome, error)
 	WorkingDir() string
 	Resolver() config.VariableResolver
 
