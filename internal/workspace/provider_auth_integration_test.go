@@ -49,10 +49,21 @@ func testProviderAuthenticationThroughTLS(t *testing.T, mode string) {
 			key = "$(printf x >> '" + expressionMarker + "'; printf synthetic-client-key)"
 			endpoint = "$AUTH_STATUS_ENDPOINT"
 		}
+		codex := map[string]any{"api_key": entry.AccessToken, "oauth": entry.Token(), "owner": map[string]any{"type": "core", "construction": "integrated-codex"}, "models": []map[string]string{{"id": "fixture", "name": "Fixture"}}}
+		if who == "server" && mode == "server" {
+			// The positive logout case owns credentials in its writable scope.
+			// Inherited credentials are separately tested as a prewrite refusal.
+			credentials, err := json.Marshal(map[string]any{"providers": map[string]any{"codex": map[string]any{"api_key": entry.AccessToken, "oauth": entry.Token()}}})
+			require.NoError(t, err)
+			require.NoError(t, os.MkdirAll(os.Getenv("CRUX_GLOBAL_DATA"), 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(os.Getenv("CRUX_GLOBAL_DATA"), "crux.json"), credentials, 0o600))
+			delete(codex, "api_key")
+			delete(codex, "oauth")
+		}
 		data, err := json.Marshal(map[string]any{
 			"providers": map[string]any{
 				"initial": map[string]any{"id": "initial", "type": "openai-compat", "api_key": key, "base_url": endpoint, "models": []map[string]string{{"id": "fixture", "name": "Fixture"}}},
-				"codex":   map[string]any{"api_key": entry.AccessToken, "oauth": entry.Token(), "owner": map[string]any{"type": "core", "construction": "integrated-codex"}, "models": []map[string]string{{"id": "fixture", "name": "Fixture"}}},
+				"codex":   codex,
 			},
 			"models": map[string]any{"large": map[string]string{"provider": "initial", "model": "fixture"}, "small": map[string]string{"provider": "initial", "model": "fixture"}},
 		})
@@ -233,6 +244,37 @@ func testProviderAuthenticationThroughTLS(t *testing.T, mode string) {
 		require.Equal(t, putsBefore, publications.Load(), "read must not republish saved changes")
 		accepted, _ := receiver.Cfg.Config().Providers.Get("initial")
 		require.Equal(t, "synthetic-client-key", accepted.APIKey)
+	}
+	if mode == "server" {
+		// Exercise the public server-owned Workspace mutation path through
+		// mutual TLS. Its view must bind the retained complete host owners.
+		selected := accounts.Entry{ID: "selected-server", DisplayName: "Selected server", AccessToken: "synthetic-selected-server", RefreshToken: "synthetic-selected-server-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
+		require.NoError(t, accounts.SaveWithoutActivating(t.Context(), accounts.ProviderCodex, selected))
+		current, err := w.ProviderAuthentication(t.Context())
+		require.NoError(t, err)
+		currentStatus := providerAuthenticationStatus(t, current, "codex")
+		request := providerauth.SwitchRequest{OperationID: strings.Repeat("a", 32), Target: providerauth.Target{WorkspaceID: current.WorkspaceID, Generation: current.Generation, Owner: currentStatus.Owner}, AccountID: selected.ID}
+		models := w.Config().Models
+		outcome, err := w.SwitchProviderAccount(t.Context(), request)
+		require.NoError(t, err)
+		require.NoError(t, outcome.ValidateSwitch(request))
+		require.False(t, outcome.Superseded)
+		require.Equal(t, models, w.Config().Models)
+		configured, _ := receiver.Cfg.Config().Providers.Get("codex")
+		require.Equal(t, selected.AccessToken, configured.APIKey)
+		retained, ok := receiver.Cfg.RuntimeSnapshot().ProviderOwner("codex")
+		require.True(t, ok)
+		bound, ok := w.Config().ProviderOwner("codex")
+		require.True(t, ok)
+		require.Equal(t, retained, bound)
+		logout := providerauth.LogoutRequest{OperationID: strings.Repeat("b", 32), Target: outcome.Change.Current.Target}
+		outcome, err = w.LogoutProvider(t.Context(), logout)
+		require.NoError(t, err)
+		require.NoError(t, outcome.ValidateLogout(logout))
+		require.Equal(t, models, w.Config().Models)
+		require.Equal(t, beforeClientAccounts, readFile(filepath.Join(clientAccounts, "accounts.json")))
+		require.Equal(t, beforeClientConfig, readFile(clientConfig))
+		require.Zero(t, publications.Load(), "server-owned authentication must not publish a client runtime")
 	}
 	t.Logf("%s authority: exact account status/list, stable and stale generations, credential-free TLS, foreign principal rejection, captured paths, and zero read-triggered publication verified", mode)
 }

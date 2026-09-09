@@ -629,9 +629,10 @@ func (w *ClientWorkspace) ProviderSurfaces() []providerregistry.Surface {
 	if w.authority != nil {
 		return config.ProviderSurfaces(w.authority.configView())
 	}
-	surfaces := w.cached().ProviderSurfaces
-	for i := range surfaces {
-		surfaces[i] = surfaces[i].Clone()
+	retained := w.cached().ProviderSurfaces
+	surfaces := make([]providerregistry.Surface, len(retained))
+	for i := range retained {
+		surfaces[i] = retained[i].Clone()
 	}
 	return surfaces
 }
