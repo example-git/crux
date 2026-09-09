@@ -58,6 +58,12 @@ func TestAccountRemovalClientTLSActiveInactiveAndLastInference(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, []string{"Bearer " + f.first.AccessToken, "Bearer " + expected}, f.observed())
 			infos, bodies = clientAuthenticationFiles(t, f.path, f.accountsPath)
+			// Discard the in-memory receipt so the public retry must restore the
+			// original removal and its exact outcome from the durable journal.
+			f.w.authority.mu.Lock()
+			f.w.authority.authenticationReceipts = nil
+			f.w.authority.authenticationReceiptIDs = nil
+			f.w.authority.mu.Unlock()
 			again, err := f.w.RemoveProviderAccount(t.Context(), request)
 			require.NoError(t, err)
 			require.Equal(t, result, again)
@@ -267,6 +273,45 @@ func TestAccountRemovalClientTLSPartialSavedStateReview(t *testing.T) {
 			replay, err := f.w.RemoveProviderAccount(t.Context(), request)
 			require.ErrorContains(t, err, "separate reviewed action")
 			require.Equal(t, original, replay)
+		})
+	}
+}
+
+func TestAccountRemovalStoredIntentSelectsOneAction(t *testing.T) {
+	base := clientAuthenticationStoredRequest{
+		OperationID: strings.Repeat("a", 32),
+		Target: providerauth.Target{
+			WorkspaceID: "removal-workspace",
+			Owner:       providerauth.Owner{ProviderID: "removal-provider", HasOAuth: true},
+			Generation:  providerauth.Generation{Epoch: strings.Repeat("b", 32), Sequence: 1},
+		},
+		AccountID: "removed-account", RemovedAccountID: "removed-account",
+	}
+	for _, test := range []struct {
+		name   string
+		change func(*clientAuthenticationStoredRequest)
+		valid  bool
+	}{
+		{"original-equal-ids", func(*clientAuthenticationStoredRequest) {}, true},
+		{"removal-only", func(r *clientAuthenticationStoredRequest) { r.AccountID = "" }, true},
+		{"switch-only", func(r *clientAuthenticationStoredRequest) { r.RemovedAccountID = "" }, true},
+		{"conflicting-account", func(r *clientAuthenticationStoredRequest) { r.AccountID = "other-account" }, false},
+		{"removal-with-logout", func(r *clientAuthenticationStoredRequest) { r.Logout = true }, false},
+		{"removal-with-check", func(r *clientAuthenticationStoredRequest) { r.CheckID = strings.Repeat("c", 32) }, false},
+		{"removal-with-login", func(r *clientAuthenticationStoredRequest) { r.LoginID = strings.Repeat("d", 32) }, false},
+		{"no-action", func(r *clientAuthenticationStoredRequest) { r.AccountID, r.RemovedAccountID = "", "" }, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := base
+			test.change(&request)
+			original := request
+			err := request.validate()
+			if test.valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			require.Equal(t, original, request, "validation must preserve exact recorded retry identity")
 		})
 	}
 }
