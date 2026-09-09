@@ -2003,11 +2003,25 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 	}
 	validateOwner := func() error {
 		if snapshot.IsClientOwned() {
-			current, ok := snapshot.ProviderOwner(owner.ProviderID)
-			if !ok || current != owner {
-				return fmt.Errorf("captured client provider owner is unavailable")
+			// Credentials and request configuration remain captured. Admission
+			// still follows the current receiver authority so a retained model
+			// cannot start another request after its owner is removed or disabled.
+			if c.cfg == nil {
+				return fmt.Errorf("current client runtime authority is unavailable")
 			}
-			return snapshot.ClientProviderUnavailable(owner.ProviderID)
+			currentSnapshot := c.cfg.RuntimeSnapshot()
+			admittedAuthority, currentAuthority := snapshot.RemoteAuthority(), currentSnapshot.RemoteAuthority()
+			if currentAuthority == nil || currentAuthority.Mode != "client" ||
+				currentAuthority.Principal != admittedAuthority.Principal ||
+				currentAuthority.Revision < admittedAuthority.Revision ||
+				currentAuthority.Revision == admittedAuthority.Revision && currentAuthority.Digest != admittedAuthority.Digest {
+				return fmt.Errorf("current client runtime authority changed")
+			}
+			current, ok := currentSnapshot.ProviderOwner(owner.ProviderID)
+			if !ok || current != owner {
+				return fmt.Errorf("current client provider owner is unavailable or changed")
+			}
+			return currentSnapshot.ClientProviderUnavailable(owner.ProviderID)
 		}
 		if revoked := c.cfg.RuntimeSnapshot().AuthenticationRevocation(owner.ProviderID); revoked != nil {
 			return revoked
