@@ -191,8 +191,20 @@ func (authenticationCandidateForbiddenResolver) ResolveValue(string) (string, er
 	panic("candidate resolved an accepted value")
 }
 
-func TestAuthenticationCandidateReconstructsUnconfiguredPlugin(t *testing.T) {
-	fixture := newAuthenticationCandidateFixture(t, "example-responses", false, false, "")
+func TestAuthenticationCandidateReusesPreparedUnconfiguredPlugin(t *testing.T) {
+	var exchanges atomic.Int32
+	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		exchanges.Add(1)
+		require.NoError(t, r.ParseForm())
+		require.Equal(t, "captured-client", r.Form.Get("client_id"))
+		require.Equal(t, "synthetic-code", r.Form.Get("code"))
+		_, _ = fmt.Fprint(w, `{"access_token":"synthetic-selected","refresh_token":"synthetic-refresh","expires_in":3600}`)
+	}))
+	t.Cleanup(host.Close)
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = host.Client().Transport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	fixture := newAuthenticationCandidateFixture(t, "example-responses", false, false, host.URL+"/token")
 	t.Setenv("CAPTURED_HEADER", "wrong-live-value")
 	before := fixture.before.runtime.Config()
 	registration, err := authenticationRegistration(fixture.before, fixture.owner)
@@ -200,8 +212,26 @@ func TestAuthenticationCandidateReconstructsUnconfiguredPlugin(t *testing.T) {
 	require.Equal(t, fixture.owner, registration.Owner())
 	require.NotNil(t, registration.OAuth.Refresh)
 	require.NoFileExists(t, fixture.marker, "pure registration lookup must not run headers")
-	prepared, err := prepareAuthenticationProvider(t.Context(), fixture.before, fixture.owner, &oauth.Token{AccessToken: "synthetic-selected"})
+	// Service.BeginOAuthLogin uses this owning preparation API. Complete code
+	// authorization through the installed manifest and real disposable HTTPS;
+	// do not manufacture an authorized provider from an exported token helper.
+	login, err := fixture.store.PrepareOAuthLogin(t.Context(), fixture.before, fixture.owner)
 	require.NoError(t, err)
+	code, err := fixture.store.PrepareOAuthCodeChallenge(t.Context(), login, 32123)
+	require.NoError(t, err)
+	defer code.Close()
+	address, err := url.Parse(code.AuthorizationURL())
+	require.NoError(t, err)
+	callback, err := url.Parse(address.Query().Get("redirect_uri"))
+	require.NoError(t, err)
+	query := callback.Query()
+	query.Set("state", address.Query().Get("state"))
+	query.Set("code", "synthetic-code")
+	callback.RawQuery = query.Encode()
+	authorized, err := fixture.store.ExchangeOAuthCode(t.Context(), code, callback.RawQuery)
+	require.NoError(t, err)
+	prepared := authorized.state.provider
+	require.EqualValues(t, 1, exchanges.Load())
 	require.Equal(t, "synthetic-selected", prepared.APIKey)
 	require.Empty(t, prepared.APIKeyTemplate)
 	require.Equal(t, "https://api.example.invalid/custom", prepared.BaseURL)
@@ -215,20 +245,16 @@ func TestAuthenticationCandidateReconstructsUnconfiguredPlugin(t *testing.T) {
 	require.Equal(t, "accepted-header", prepared.ExtraHeaders["X-Captured"])
 	require.Equal(t, "command-header", prepared.ExtraHeaders["X-Once"])
 	require.NotContains(t, prepared.ExtraHeaders, "X-Empty")
-	count, err := os.ReadFile(fixture.marker)
-	require.NoError(t, err)
-	require.Equal(t, "x", string(count))
+	require.NoFileExists(t, fixture.marker, "the loader's accepted header command must not run again during OAuth")
 	candidate, err := authenticationConfigCandidate(fixture.before, fixture.owner, &prepared)
 	require.NoError(t, err)
 	assertAuthenticationCandidatePreservesSiblings(t, before, candidate, prepared.ID)
-	count, err = os.ReadFile(fixture.marker)
-	require.NoError(t, err)
-	require.Equal(t, "x", string(count), "candidate assembly must not run headers again")
+	require.NoFileExists(t, fixture.marker, "candidate assembly must not run accepted headers again")
 	_, exists := before.Providers.Get(prepared.ID)
 	require.False(t, exists)
 }
 
-func TestAuthenticationCandidateUsesExactCapturedBasisAndCatalogHeaders(t *testing.T) {
+func TestAuthenticationUnconfiguredReconstructionPreservesExactBasisAndCatalogHeaders(t *testing.T) {
 	fixture := newAuthenticationCandidateFixture(t, "example-responses", false, false, "")
 	before := fixture.before
 	before.runtime.config = before.runtime.config.cloneForWrite()
@@ -248,12 +274,18 @@ func TestAuthenticationCandidateUsesExactCapturedBasisAndCatalogHeaders(t *testi
 		}
 	}
 	before.runtime.config.providerScan = &scan
-	prepared, err := prepareAuthenticationProvider(t.Context(), before, fixture.owner, &oauth.Token{AccessToken: "synthetic-selected"})
+	// Exercise the reconstruction helper's byte-to-provider contract directly.
+	// An explicit provider already retained by the loader uses its private
+	// candidate instead; the preceding HTTPS test covers that production path.
+	registration, ok := before.runtime.registry.Lookup(fixture.owner.ProviderID)
+	require.True(t, ok)
+	prepared, err := authenticationUnconfiguredProvider(before, fixture.owner, registration)
 	require.NoError(t, err)
 	require.Equal(t, json.Number("9007199254740993"), prepared.ExtraBody["precise"])
-	require.Equal(t, "accepted-header", prepared.ExtraHeaders["X-Catalog"])
-	require.Equal(t, "accepted-header", prepared.ExtraHeaders["X-Captured"], "user input overrides the catalog header before expansion")
-	require.NotContains(t, prepared.ExtraHeaders, "X-Catalog-Empty")
+	require.Equal(t, "$CAPTURED_HEADER", prepared.ExtraHeaders["X-Catalog"])
+	require.Equal(t, "$CAPTURED_HEADER", prepared.ExtraHeaders["X-Captured"], "user input overrides the catalog header before expansion")
+	require.Equal(t, "${ABSENT_CANDIDATE_HEADER:-}", prepared.ExtraHeaders["X-Catalog-Empty"])
+	require.NoFileExists(t, fixture.marker, "reconstruction itself must not execute headers")
 	for _, known := range scan.Providers {
 		if string(known.ID) == fixture.owner.ProviderID {
 			require.Equal(t, "$CAPTURED_HEADER", known.DefaultHeaders["X-Catalog"], "captured catalog is immutable")
@@ -393,7 +425,21 @@ func TestAuthenticationCandidateRejectsInvalidPreparationBeforeEffects(t *testin
 				require.NoError(t, err)
 				before.runtime.config.authenticationBasis = basis
 			}
-			_, err := prepareAuthenticationProvider(t.Context(), before, owner, token)
+			var err error
+			switch test {
+			case "missing-catalog", "duplicate-catalog", "missing-basis", "conflicting-raw-owner", "invalid-configuration":
+				// These validate raw reconstruction, not an already prepared
+				// private candidate. Keep invalid explicit input rejection intact.
+				registration, ok := before.runtime.registry.Lookup(owner.ProviderID)
+				require.True(t, ok)
+				var provider ProviderConfig
+				provider, err = authenticationUnconfiguredProvider(before, owner, registration)
+				if err == nil {
+					_, err = authenticationPreparedRegistration(before, owner, provider)
+				}
+			default:
+				_, err = prepareAuthenticationProvider(t.Context(), before, owner, token)
+			}
 			require.Error(t, err)
 			require.NotContains(t, err.Error(), "must-not-leak")
 			require.NotContains(t, err.Error(), "synthetic-private-value")
@@ -430,12 +476,23 @@ func TestAuthenticationCandidateRejectsInvalidPreparedCredentials(t *testing.T) 
 }
 
 func TestAuthenticationCandidateHeaderCancellationAndSafeFailure(t *testing.T) {
-	fixture := newAuthenticationCandidateFixture(t, "example-responses", false, false, "")
 	for _, canceled := range []bool{false, true} {
 		t.Run(fmt.Sprint(canceled), func(t *testing.T) {
-			before := fixture.before
+			// A genuinely absent native provider has no loader-prepared private
+			// candidate. Capture its synthetic catalog header before admitting
+			// OAuth, rather than replacing a resolver after a prepared capture.
+			fixture := newAuthenticationCandidateFixture(t, "codex", false, false, "")
+			next := fixture.store.Config().cloneForWrite()
+			scan := cloneProviderScan(*next.providerScan)
+			for i := range scan.Providers {
+				if string(scan.Providers[i].ID) == fixture.owner.ProviderID {
+					scan.Providers[i].DefaultHeaders = map[string]string{"X-Fixture": "$(synthetic-header)"}
+				}
+			}
+			next.providerScan = &scan
+			fixture.store.setConfig(next)
 			entered := make(chan struct{})
-			before.runtime.resolver = NewShellVariableResolver(env.NewFromMap(nil), WithExpander(func(ctx context.Context, _ string, _ []string) (string, error) {
+			fixture.store.resolver = NewShellVariableResolver(env.NewFromMap(nil), WithExpander(func(ctx context.Context, _ string, _ []string) (string, error) {
 				if !canceled {
 					return "", errors.New("synthetic-private-error-payload")
 				}
@@ -443,6 +500,10 @@ func TestAuthenticationCandidateHeaderCancellationAndSafeFailure(t *testing.T) {
 				<-ctx.Done()
 				return "", ctx.Err()
 			}))
+			before, err := fixture.store.CaptureAuthentication(t.Context())
+			require.NoError(t, err)
+			_, err = fixture.store.PrepareOAuthLogin(t.Context(), before, fixture.owner)
+			require.NoError(t, err, "real owning preparation must accept the absent target without evaluating its headers")
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			result := make(chan error, 1)
@@ -451,7 +512,13 @@ func TestAuthenticationCandidateHeaderCancellationAndSafeFailure(t *testing.T) {
 				result <- err
 			}()
 			if canceled {
-				<-entered
+				select {
+				case <-entered:
+				case err := <-result:
+					t.Fatalf("header preparation returned before entering the resolver: %v", err)
+				case <-time.After(3 * time.Second):
+					t.Fatal("header preparation never entered the captured resolver")
+				}
 				cancel()
 			}
 			select {

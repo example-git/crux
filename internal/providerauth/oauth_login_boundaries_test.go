@@ -2,6 +2,7 @@ package providerauth
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -136,6 +137,14 @@ func TestOAuthLoginServiceCloseJoinsAdmittedConfigurationPreparation(t *testing.
 	awaitOAuthServicePhase(t, f, OAuthLoginAuthorized)
 	root := filepath.Dir(filepath.Dir(f.path))
 	originalConfig := f.store.Config()
+	journal, err := f.store.CaptureAuthenticationJournal(t.Context())
+	require.NoError(t, err)
+	localKey := config.AuthenticationJournalKey{Kind: config.AuthenticationJournalLocal, WorkspaceID: f.ref.Target.WorkspaceID, OperationID: f.ref.OperationID}
+	oauthKey := localKey
+	oauthKey.Kind = config.AuthenticationJournalOAuth
+	oauthBefore, found, err := journal.Load(t.Context(), oauthKey)
+	require.NoError(t, err)
+	require.True(t, found)
 	entered, release := make(chan struct{}), make(chan struct{})
 	defer func() {
 		select {
@@ -156,10 +165,14 @@ func TestOAuthLoginServiceCloseJoinsAdmittedConfigurationPreparation(t *testing.
 	case <-time.After(5 * time.Second):
 		t.Fatal("commit not admitted")
 	}
-	// Preparation has acquired its ordinary coordination locks. Freeze here
-	// so this assertion measures effects after cancellation, including writes
-	// that might otherwise outlive the acknowledged Close.
+	// Preparation has acquired its ordinary coordination locks and journaled
+	// intent. Cancellation must finish that record as no-effects before Close
+	// returns, while preserving credentials, configuration, and runtime.
 	files := authenticationInputsTree(t, root)
+	localBefore, found, err := journal.Load(t.Context(), localKey)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.False(t, localBefore.Completed())
 	closed := make(chan struct{})
 	go func() { f.service.Close(); close(closed) }()
 	select {
@@ -178,7 +191,52 @@ func TestOAuthLoginServiceCloseJoinsAdmittedConfigurationPreparation(t *testing.
 	case <-time.After(5 * time.Second):
 		t.Fatal("close did not join released commit")
 	}
-	require.ErrorIs(t, <-completion, context.Canceled)
+	select {
+	case err := <-completion:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("completion did not return after Close joined its worker")
+	}
 	require.Same(t, originalConfig, f.store.Config())
-	require.Equal(t, files, authenticationInputsTree(t, root), "cancellation before durable commit cannot publish later")
+	localAfter, found, err := journal.Load(t.Context(), localKey)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.True(t, localAfter.Completed())
+	require.Equal(t, localBefore.Revision()+1, localAfter.Revision())
+	var beforePayload, afterPayload map[string]any
+	require.NoError(t, json.Unmarshal(localBefore.Payload(), &beforePayload))
+	require.NoError(t, json.Unmarshal(localAfter.Payload(), &afterPayload))
+	require.Equal(t, false, beforePayload["finished"])
+	require.Equal(t, false, beforePayload["no_effects"])
+	require.Equal(t, true, afterPayload["finished"])
+	require.Equal(t, true, afterPayload["no_effects"])
+	afterPayload["finished"], afterPayload["no_effects"] = false, false
+	require.Equal(t, beforePayload, afterPayload, "only the terminal no-effects disposition may change")
+	local, found, err := f.store.LoadAuthenticationLocalChange(t.Context(), localKey)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.True(t, local.Summary().NoEffects)
+	require.Equal(t, config.LocalAuthenticationProgress{}, local.Summary().Original)
+	oauthAfter, found, err := journal.Load(t.Context(), oauthKey)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, oauthBefore, oauthAfter, "the observed OAuth result remains available for explicit recovery")
+	afterClose := authenticationInputsTree(t, root)
+	require.Len(t, afterClose, len(files))
+	journalPath := f.path + ".authentication-journal.json"
+	for path, before := range files {
+		after, found := afterClose[path]
+		require.True(t, found, path)
+		switch path {
+		case journalPath:
+			require.Equal(t, before.mode, after.mode, "terminal bookkeeping must retain private file mode")
+		case filepath.Dir(journalPath):
+			after.mtime = before.mtime // Atomic replacement changes only the parent directory timestamp.
+			require.Equal(t, before, after, path)
+		default:
+			require.Equal(t, before, after, "no account/config/input write is permitted: %s", path)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	require.Equal(t, afterClose, authenticationInputsTree(t, root), "no write, including journal bookkeeping, may outlive Close")
 }
