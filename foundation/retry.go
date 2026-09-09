@@ -66,7 +66,7 @@ func getRetryDelayInMs(err error, exponentialBackoffDelay time.Duration) time.Du
 func RetryWithExponentialBackoffRespectingRetryHeaders[T any](options RetryOptions) RetryFunction[T] {
 	return func(ctx context.Context, fn RetryFn[T]) (T, error) {
 		result, err := retryWithExponentialBackoff(ctx, fn, options, nil)
-		if err == nil || options.OnAuthRefresh == nil {
+		if err == nil || options.OnAuthRefresh == nil || isNonRetryableError(err) {
 			return result, err
 		}
 		var authErr *ProviderError
@@ -129,7 +129,7 @@ func retryWithExponentialBackoff[T any](ctx context.Context, fn RetryFn[T], opti
 		if err == nil {
 			return result, nil
 		}
-		if isAbortError(err) {
+		if isAbortError(err) || isNonRetryableError(err) {
 			return zero, err
 		}
 
@@ -192,6 +192,9 @@ func isAuthError(err *ProviderError) bool {
 // level transport errors. The latter two categories may not be wrapped
 // in ProviderError when they occur outside the provider's error handler.
 func isRetryableError(err error) bool {
+	if isNonRetryableError(err) {
+		return false
+	}
 	var providerErr *ProviderError
 	if errors.As(err, &providerErr) {
 		return providerErr.IsRetryable()

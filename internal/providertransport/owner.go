@@ -21,6 +21,11 @@ func (err *OwnerValidationError) Unwrap() error {
 	return err.Err
 }
 
+// NonRetryable marks a local admission refusal, including after net/http wraps
+// it in url.Error. A network retry or credential refresh cannot admit this
+// request. Keep the error chain intact for the caller's exact refusal reason.
+func (*OwnerValidationError) NonRetryable() bool { return true }
+
 func IsOwnerValidationError(err error) bool {
 	var ownerError *OwnerValidationError
 	return errors.As(err, &ownerError)
