@@ -75,6 +75,7 @@ func (m *UI) authenticationDialogOpen(d *dialog.AccountAuthentication) bool {
 	return ok && current.AuthenticationState() == d
 }
 func (m *UI) pruneAuthenticationReads() {
+	m.pruneAuthenticationHistory()
 	m.pruneAuthenticationReconciliations()
 	for d, read := range m.authenticationReads {
 		if read.workspace != m.com.Workspace || !m.authenticationDialogOpen(d) {
