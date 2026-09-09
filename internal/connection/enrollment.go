@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -91,13 +92,18 @@ func StartEnrollment(ctx context.Context, listenAddress, advertisedAddress strin
 	if err != nil {
 		return nil, fmt.Errorf("invalid enrollment listen address: %w", err)
 	}
-	serverIdentity, exists, err := ServerIdentity(ctx)
+	storagePath, err := filepath.Abs(storePath())
 	if err != nil {
 		return nil, err
 	}
-	if !exists {
+	stored, err := loadStoreAt(ctx, storagePath)
+	if err != nil {
+		return nil, err
+	}
+	if stored.Server == nil {
 		return nil, errors.New("server identity is not initialized")
 	}
+	serverIdentity := *stored.Server
 	serverCertificate, serverPrivateKey, err := parseIdentity(serverIdentity, x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return nil, fmt.Errorf("load server identity: %w", err)
@@ -141,15 +147,17 @@ func StartEnrollment(ctx context.Context, listenAddress, advertisedAddress strin
 		return nil, err
 	}
 	enrollment := &EnrollmentListener{
-		setup:           setup,
-		code:            base64.RawURLEncoding.EncodeToString(codeBytes),
-		listener:        listener,
-		ctx:             ctx,
-		done:            make(chan struct{}),
-		closed:          make(chan struct{}),
-		expiresAt:       expiresAt,
-		admission:       newEnrollmentAdmission(),
-		authorizeClient: authorizeClientWithCommit,
+		setup:     setup,
+		code:      base64.RawURLEncoding.EncodeToString(codeBytes),
+		listener:  listener,
+		ctx:       ctx,
+		done:      make(chan struct{}),
+		closed:    make(chan struct{}),
+		expiresAt: expiresAt,
+		admission: newEnrollmentAdmission(),
+		authorizeClient: func(ctx context.Context, name, certificate string, commit authorizationCommit) error {
+			return authorizeClientAt(ctx, storagePath, &serverIdentity, name, certificate, commit)
+		},
 	}
 	enrollment.listener = &enrollmentAdmissionListener{Listener: listener, admission: enrollment.admission}
 	mux := http.NewServeMux()
