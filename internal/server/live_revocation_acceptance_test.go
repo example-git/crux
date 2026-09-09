@@ -50,14 +50,15 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
 	entered := make(chan struct{})
+	titleEntered := make(chan struct{})
 	childSessionHashes := make(chan string, 1)
 	var parentSessionHash atomic.Value
 	parentSessionHash.Store("")
 	const childPrompt = "synthetic detached credential drain marker"
 	const toolCallID = "call_detached_revocation"
-	var enterOnce sync.Once
+	var enterOnce, titleOnce sync.Once
 	var toolCalls atomic.Int32
-	var active, cancelled, conversationCancelled, retainedCalls atomic.Int32
+	var active, cancelled, conversationCancelled, titleCancelled, retainedCalls atomic.Int32
 	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -127,10 +128,16 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 					close(entered)
 				})
 			}
+			if r.Header.Get("x-request-purpose") == "title" {
+				titleOnce.Do(func() { close(titleEntered) })
+			}
 			<-r.Context().Done()
 			cancelled.Add(1)
 			if conversation {
 				conversationCancelled.Add(1)
+			}
+			if r.Header.Get("x-request-purpose") == "title" {
+				titleCancelled.Add(1)
 			}
 		case "Bearer synthetic-retained-credential":
 			retainedCalls.Add(1)
@@ -164,14 +171,27 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(tls.NewListener(listener, tlsConfig)) }()
 	t.Cleanup(func() {
-		_ = srv.Close()
-		for _, listed := range srv.Backend().ListWorkspaces() {
-			ws, err := srv.Backend().GetWorkspace(listed.ID)
-			if err == nil {
-				ws.Shutdown()
+		// This runs only after the acceptance assertions. Force fixture sockets
+		// closed so a failed cancellation assertion is reported instead of being
+		// hidden behind httptest.Close waiting forever for the leaked request.
+		provider.CloseClientConnections()
+		shutdown := make(chan struct{})
+		go func() {
+			_ = srv.Close()
+			for _, listed := range srv.Backend().ListWorkspaces() {
+				ws, err := srv.Backend().GetWorkspace(listed.ID)
+				if err == nil {
+					ws.Shutdown()
+				}
 			}
+			srv.Backend().Shutdown()
+			close(shutdown)
+		}()
+		select {
+		case <-shutdown:
+		case <-time.After(10 * time.Second):
+			t.Error("production workspace cleanup did not finish after fixture sockets closed")
 		}
-		srv.Backend().Shutdown()
 		select {
 		case err := <-served:
 			require.ErrorIs(t, err, http.ErrServerClosed)
@@ -236,6 +256,13 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 	case <-ctx.Done():
 		t.Fatal("real inference did not reach the disposable provider")
 	}
+	if !detached {
+		select {
+		case <-titleEntered:
+		case <-ctx.Done():
+			t.Fatal("detached title did not reach the disposable provider")
+		}
+	}
 	require.Positive(t, active.Load())
 	var detachedTask managedtask.View
 	var taskCoordinator agent.TaskCoordinator
@@ -278,6 +305,9 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 	require.Len(t, outcome.Daemons, 1)
 	require.True(t, outcome.Daemons[0].Acknowledged)
 	require.Eventually(t, func() bool { return active.Load() == 0 && cancelled.Load() > 0 && conversationCancelled.Load() > 0 }, 5*time.Second, 10*time.Millisecond, "credential-bearing provider transport must observe real cancellation")
+	if !detached {
+		require.Positive(t, titleCancelled.Load(), "acknowledgement must include physical cancellation of the detached title")
+	}
 	if detached {
 		// Read the real retained manager after the workspace has been retired;
 		// do not call Drain or Stop from the test to manufacture a terminal task.

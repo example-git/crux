@@ -237,6 +237,7 @@ type InstalledRuntime struct {
 }
 
 type sessionAgent struct {
+	beginAuxiliary      func(context.Context) (context.Context, func(), error)
 	mcpRuntime          *mcp.Manager
 	largeModel          *csync.Value[Model]
 	smallModel          *csync.Value[Model]
@@ -304,6 +305,7 @@ type sessionAgent struct {
 }
 
 type SessionAgentOptions struct {
+	beginAuxiliary          func(context.Context) (context.Context, func(), error)
 	MCPRuntime              *mcp.Manager
 	LargeModel              Model
 	SmallModel              Model
@@ -337,6 +339,7 @@ func NewSessionAgent(
 		)
 	}
 	return &sessionAgent{
+		beginAuxiliary:          opts.beginAuxiliary,
 		largeModel:              csync.NewValue(cloneModelEfficiency(opts.LargeModel)),
 		smallModel:              csync.NewValue(cloneModelEfficiency(opts.SmallModel)),
 		mcpRuntime:              opts.MCPRuntime,
@@ -886,7 +889,8 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// Generate title from the first real (non-shell) user prompt.
 	// can take tens of seconds. Blocking Run on it delays the
 	// response to the caller. Use a detached context so the title
-	// goroutine survives Run's cancel.
+	// goroutine survives Run's cancel. Auxiliary admission still binds the
+	// actual request and its final session write to the coordinator lifetime.
 	if !a.isSubAgent && !hasUserTextMessage(msgs) {
 		titleCtx := context.WithoutCancel(ctx)
 		go a.generateTitleWithRuntime(titleCtx, call.SessionID, call.Prompt, runtime)
@@ -1631,6 +1635,11 @@ func (a *sessionAgent) Summarize(ctx context.Context, sessionID string, opts fan
 }
 
 func (a *sessionAgent) SummarizeWithRuntime(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, runtime InstalledRuntime) error {
+	ctx, finish, err := a.beginAuxiliaryWork(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	owner := &activeCancel{cancel: cancel}
@@ -1668,7 +1677,7 @@ func (a *sessionAgent) SummarizeWithRuntime(ctx context.Context, sessionID strin
 	a.messageQueue.Set(sessionID, append(queuedMessages[:index], queuedMessages[index+1:]...))
 	firstQueuedMessage.Accepted = a.BeginAccepted(sessionID)
 	mu.Unlock()
-	_, err := a.Run(ctx, firstQueuedMessage)
+	_, err = a.Run(ctx, firstQueuedMessage)
 	return err
 }
 
@@ -2361,6 +2370,11 @@ func (a *sessionAgent) GenerateMemory(ctx context.Context, purpose, prompt strin
 	if purpose != "memory_extraction" && purpose != "memory_consolidation" {
 		return "", fmt.Errorf("invalid memory request purpose %q", purpose)
 	}
+	ctx, finish, err := a.beginAuxiliaryWork(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer finish()
 	runtime := a.Runtime()
 	smallModel := runtime.SmallModel
 	instructions := auxiliaryInstructions("You maintain a private persistent memory index. Follow the requested JSON schema exactly and do not use tools.\n /no_think", smallModel)
@@ -2390,6 +2404,11 @@ func (a *sessionAgent) GenerateMemory(ctx context.Context, purpose, prompt strin
 // small model with a minimal call. It returns an empty string (no
 // error) when there is no meaningful suggestion.
 func (a *sessionAgent) SuggestPrompt(ctx context.Context, sessionID string) (string, error) {
+	ctx, finish, err := a.beginAuxiliaryWork(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer finish()
 	if a.IsSessionBusy(sessionID) {
 		return "", nil
 	}
@@ -2520,6 +2539,11 @@ func (a *sessionAgent) generateTitleWithRuntime(ctx context.Context, sessionID s
 	if userPrompt == "" {
 		return
 	}
+	ctx, finish, admissionErr := a.beginAuxiliaryWork(ctx)
+	if admissionErr != nil {
+		return
+	}
+	defer finish()
 
 	// Ensure the session always gets a title even if every path below
 	// fails or the context is cancelled before we finish.
