@@ -103,6 +103,7 @@ func startAuthorizationControl(l *liveAuthorization) (*authorizationControl, err
 		return nil, err
 	}
 	mux := http.NewServeMux()
+	registerAuthorizationUseControl(mux, l, record)
 	mux.HandleFunc("POST "+authorizationControlPath, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+record.Token)) != 1 {
@@ -164,7 +165,7 @@ func reconcileAuthorizationDaemons(ctx context.Context, path string, receipt Rev
 
 func readAuthorizationDaemon(path string) (authorizationDaemon, error) {
 	var value authorizationDaemon
-	file, err := os.Open(path)
+	file, err := openClientAuthorization(path)
 	if err != nil {
 		return value, err
 	}

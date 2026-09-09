@@ -160,6 +160,15 @@ func (a *ClientAuthorization) grants(data *store) (map[string]string, error) {
 }
 
 func (l *liveAuthorization) reconcileLocked(grants map[string]string) {
+	// Unreadable authority cancels active work below but does not erase an
+	// observation. Only a successful snapshot establishes grant replacement.
+	if grants != nil {
+		for principal, use := range l.uses {
+			if grant, ok := grants[principal]; !ok || grant != use.grantID {
+				delete(l.uses, principal)
+			}
+		}
+	}
 	for principal, entry := range l.current {
 		grant, ok := grants[principal]
 		if !ok || grant != entry.grantID {
@@ -249,7 +258,6 @@ func (l *liveAuthorization) reconcileReceipt(ctx context.Context, receipt Revoca
 func (l *liveAuthorization) watch() {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
-	lastFlush := time.Now()
 	for {
 		select {
 		case <-l.ctx.Done():
@@ -264,51 +272,8 @@ func (l *liveAuthorization) watch() {
 			}
 			l.reconcileLocked(grants) // Unreadable or replaced authority fails closed.
 			l.mu.Unlock()
-			if time.Since(lastFlush) >= time.Second {
-				l.flushUses()
-				lastFlush = time.Now()
-			}
 		}
 	}
-}
-
-func (l *liveAuthorization) flushUses() {
-	l.mu.Lock()
-	uses := l.uses
-	l.uses = map[string]observedAuthorizationUse{}
-	l.mu.Unlock()
-	if len(uses) == 0 {
-		return
-	}
-	_ = updateStoreAt(l.ctx, l.authorization.path, func(data *store) error {
-		grants, err := l.authorization.grants(data)
-		if err != nil {
-			return err
-		}
-		if data.AuthorizationRecords == nil {
-			data.AuthorizationRecords = map[string]AuthorizationRecord{}
-		}
-		for principal, used := range uses {
-			grant, ok := grants[principal]
-			if !ok || grant != used.grantID {
-				continue
-			}
-			record := data.AuthorizationRecords[principal]
-			if record.LastUsedAt != nil && !record.LastUsedAt.Before(used.at) {
-				continue
-			}
-			record.Fingerprint, record.LastUsedAt = principal, &used.at
-			for name, code := range data.AuthorizedClients {
-				cert, err := parseCertificate(code, x509.ExtKeyUsageClientAuth)
-				if err == nil && certificateFingerprint(cert) == principal {
-					record.Name = name
-					break
-				}
-			}
-			data.AuthorizationRecords[principal] = record
-		}
-		return nil
-	}, nil)
 }
 
 func (l *liveAuthorization) beginClose() {
