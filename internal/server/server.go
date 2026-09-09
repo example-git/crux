@@ -245,6 +245,7 @@ func (s *Server) installHandler() {
 	mux := http.NewServeMux()
 	route := func(pattern string, handler http.HandlerFunc) { mux.HandleFunc(pattern, s.authorizeRoute(handler)) }
 	route("GET /v1/health", c.handleGetHealth)
+	route("GET /v1/authorization", c.handleGetAuthorization)
 	route("GET /v1/version", c.handleGetVersion)
 	route("GET /v1/runtime-capabilities", c.handleGetRemoteRuntimeCapabilities)
 	route("PUT /v1/workspaces/{id}/runtime", c.handlePutWorkspaceRuntime)
