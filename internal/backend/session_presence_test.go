@@ -38,18 +38,30 @@ func TestSessionPresenceReceiverGenerationAndClaimRearm(t *testing.T) {
 			b.registerClient(ws, id)
 			b.mu.Unlock()
 			require.NoError(t, b.AttachClient(ws.ID, id))
+			if pendingResponse {
+				b.completeWorkspaceResponse(id)
+				b.mu.Lock()
+				pending := b.pendingResponses[id]
+				b.mu.Unlock()
+				require.Zero(t, pending, "the attached stream must outlive the completed HTTP response hold")
+			}
 			require.NoError(t, b.SetCurrentSessionSelection(ws.ID, id, numberedSessionPresence("A-after-rearm", 1)))
 			ws.clientsMu.Lock()
-			require.Equal(t, "B", ws.clients[id].currentSessionID)
-			require.EqualValues(t, 2, ws.clients[id].currentSessionGeneration)
-			require.Equal(t, "other-legacy", ws.clients[other].currentSessionID)
+			currentID := ws.clients[id].currentSessionID
+			currentGeneration := ws.clients[id].currentSessionGeneration
+			otherID := ws.clients[other].currentSessionID
 			ws.clientsMu.Unlock()
+			require.Equal(t, "B", currentID)
+			require.EqualValues(t, 2, currentGeneration)
+			require.Equal(t, "other-legacy", otherID)
 			require.NoError(t, b.SetCurrentSessionSelection(ws.ID, id, numberedSessionPresence("", 3)))
 			require.NoError(t, b.SetCurrentSessionSelection(ws.ID, id, numberedSessionPresence("B", 2)))
 			ws.clientsMu.Lock()
-			require.Empty(t, ws.clients[id].currentSessionID)
-			require.EqualValues(t, 3, ws.clients[id].currentSessionGeneration)
+			currentID = ws.clients[id].currentSessionID
+			currentGeneration = ws.clients[id].currentSessionGeneration
 			ws.clientsMu.Unlock()
+			require.Empty(t, currentID)
+			require.EqualValues(t, 3, currentGeneration)
 		})
 	}
 }
