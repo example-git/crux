@@ -226,31 +226,7 @@ func JSON(value []byte) ([]byte, error) {
 func redactJSONValue(value any) any {
 	switch typed := value.(type) {
 	case string:
-		redacted := String(typed)
-		if redacted == Replacement {
-			return redacted
-		}
-		// Task results and tool outputs can carry a JSON document inside a
-		// JSON string. Apply the same value-aware redaction to that document:
-		// matching punctuation must not corrupt its structure. A complete
-		// registered secret remains opaque even when it happens to be JSON.
-		trimmed := strings.TrimSpace(typed)
-		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid([]byte(trimmed)) {
-			decoder := json.NewDecoder(strings.NewReader(trimmed))
-			decoder.UseNumber()
-			var document any
-			if decoder.Decode(&document) == nil {
-				before, beforeErr := json.Marshal(document)
-				after, afterErr := json.Marshal(redactJSONValue(document))
-				if beforeErr == nil && afterErr == nil {
-					if bytes.Equal(before, after) {
-						return typed
-					}
-					return string(after)
-				}
-			}
-		}
-		return redacted
+		return redactJSONString(typed)
 	case map[string]any:
 		for key, item := range typed {
 			typed[key] = redactJSONValue(item)
@@ -261,4 +237,146 @@ func redactJSONValue(value any) any {
 		}
 	}
 	return value
+}
+
+// registeredValue checks one complete value against the immutable fingerprint
+// index. Embedded containers need an exact whole-secret check, not repeated
+// substring scans of all their descendants.
+func registeredValue(value string) bool {
+	snapshot := registry.snapshot.Load()
+	if snapshot == nil || value == "" {
+		return false
+	}
+	prefixLength := min(len(value), 16)
+	prefix := secretPrefix{length: prefixLength, hash: maphash.String(prefixSeed, value[:prefixLength])}
+	var digest [sha256.Size]byte
+	hashed := false
+	for _, candidate := range snapshot.index[prefix] {
+		if candidate.length != len(value) {
+			continue
+		}
+		if !hashed {
+			digest = fingerprint(value)
+			hashed = true
+		}
+		if hmac.Equal(digest[:], candidate.digest[:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactJSONString treats valid object/array documents inside strings as JSON,
+// while ordinary text retains substring redaction. A registered whole document
+// stays opaque, including when its caller added surrounding whitespace.
+func redactJSONString(value string) string {
+	redacted := String(value)
+	if redacted == Replacement {
+		return redacted
+	}
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') || !json.Valid([]byte(trimmed)) {
+		return redacted
+	}
+	if registeredValue(trimmed) {
+		return redacted
+	}
+	document, changed, err := redactEmbeddedJSON([]byte(trimmed))
+	if err != nil {
+		return redacted
+	}
+	if !changed {
+		return value
+	}
+	return string(document)
+}
+
+// redactEmbeddedJSON checks every occurrence, including duplicate object keys.
+// Decoding into a map would discard earlier duplicate values and could restore
+// their secrets when returning the original text. Rebuild only changed nodes;
+// untouched documents retain their formatting and numeric representations.
+func redactEmbeddedJSON(raw []byte) ([]byte, bool, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, false, fmt.Errorf("empty embedded JSON value")
+	}
+	switch raw[0] {
+	case '"':
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, false, err
+		}
+		redacted := redactJSONString(value)
+		if redacted == value {
+			return raw, false, nil
+		}
+		encoded, err := json.Marshal(redacted)
+		return encoded, true, err
+	case '{', '[':
+		// A complete registered JSON object/array is itself a secret, even
+		// if none of its individual values was independently registered.
+		if registeredValue(string(raw)) {
+			encoded, err := json.Marshal(Replacement)
+			return encoded, true, err
+		}
+	default:
+		// Keep numbers, booleans and null typed, just as outer JSON does.
+		return raw, false, nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	if _, err := decoder.Token(); err != nil {
+		return nil, false, err
+	}
+	object := raw[0] == '{'
+	var result bytes.Buffer
+	result.WriteByte(raw[0])
+	changed, first := false, true
+	for decoder.More() {
+		if !first {
+			result.WriteByte(',')
+		}
+		first = false
+		if object {
+			token, err := decoder.Token()
+			if err != nil {
+				return nil, false, err
+			}
+			key, ok := token.(string)
+			if !ok {
+				return nil, false, fmt.Errorf("invalid embedded JSON object key")
+			}
+			redacted := String(key)
+			changed = changed || redacted != key
+			encoded, err := json.Marshal(redacted)
+			if err != nil {
+				return nil, false, err
+			}
+			result.Write(encoded)
+			result.WriteByte(':')
+		}
+		var child json.RawMessage
+		if err := decoder.Decode(&child); err != nil {
+			return nil, false, err
+		}
+		encoded, childChanged, err := redactEmbeddedJSON(child)
+		if err != nil {
+			return nil, false, err
+		}
+		changed = changed || childChanged
+		result.Write(encoded)
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil, false, err
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	if object {
+		result.WriteByte('}')
+	} else {
+		result.WriteByte(']')
+	}
+	return result.Bytes(), true, nil
 }

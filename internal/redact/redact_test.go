@@ -95,3 +95,83 @@ func TestRegisterIsConcurrent(t *testing.T) {
 		require.NotContains(t, String(fmt.Sprintf("concurrent-secret-%d", index)), "concurrent-secret")
 	}
 }
+
+func embeddedJSONOutput(t *testing.T, document string) string {
+	t.Helper()
+	outer, err := json.Marshal(map[string]string{"output": document})
+	require.NoError(t, err)
+	redacted, err := JSON(outer)
+	require.NoError(t, err)
+	var result map[string]string
+	require.NoError(t, json.Unmarshal(redacted, &result))
+	return result["output"]
+}
+
+func TestJSONEmbeddedRedactsSecretKeysAndEveryDuplicateOccurrence(t *testing.T) {
+	const keySecret = "embedded-key-secret"
+	const valueSecret = "embedded-duplicate-secret"
+	const quotedKey = "embedded-key-\"quoted\"-secret"
+	Register(keySecret, valueSecret, quotedKey)
+	cases := []struct{ name, document, expected string }{
+		{"key", `{"embedded-key-secret":1}`, `{"[REDACTED]":1}`},
+		{"duplicate-first", `{"x":"embedded-duplicate-secret","x":"safe"}`, `{"x":"[REDACTED]","x":"safe"}`},
+		{"duplicate-all", `{"x":"embedded-duplicate-secret","x":"embedded-duplicate-secret"}`, `{"x":"[REDACTED]","x":"[REDACTED]"}`},
+		{"duplicate-key", `{"embedded-key-secret":"one","embedded-key-secret":"two"}`, `{"[REDACTED]":"one","[REDACTED]":"two"}`},
+		{"escaped-key", `{"embedded-key-\"quoted\"-secret":true}`, `{"[REDACTED]":true}`},
+		{"escaped-duplicate", `{"x":"embedded-duplicate-\u0073ecret","x":"safe"}`, `{"x":"[REDACTED]","x":"safe"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := embeddedJSONOutput(t, tc.document)
+			require.True(t, json.Valid([]byte(actual)))
+			require.Equal(t, tc.expected, actual)
+			require.NotContains(t, actual, keySecret)
+			require.NotContains(t, actual, valueSecret)
+		})
+	}
+}
+
+func TestJSONEmbeddedKeepsWhitespaceWrappedAndNestedRegisteredDocumentsOpaque(t *testing.T) {
+	const object = `{"opaque-nested-object":"registered-object-secret-only"}`
+	const array = `["registered-array-secret-only"]`
+	Register(object, array, ":true")
+	cases := []struct{ name, document, expected string }{
+		{"whitespace-object", " \t" + object + "\n", " \t" + Replacement + "\n"},
+		{"whitespace-array", "\n" + array + "  ", "\n" + Replacement + "  "},
+		{"object-in-array", "[" + object + `,{"safe":true}]`, `["[REDACTED]",{"safe":true}]`},
+		{"array-in-object", `{"payload":` + array + `,"safe":true}`, `{"payload":"[REDACTED]","safe":true}`},
+		{"duplicate-opaque", `{"x":` + object + `,"x":` + array + `}`, `{"x":"[REDACTED]","x":"[REDACTED]"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			actual := embeddedJSONOutput(t, tc.document)
+			require.Equal(t, tc.expected, actual)
+			require.NotContains(t, actual, "registered-object-secret-only")
+			require.NotContains(t, actual, "registered-array-secret-only")
+			if tc.name != "whitespace-object" && tc.name != "whitespace-array" {
+				require.True(t, json.Valid([]byte(actual)))
+			}
+		})
+	}
+}
+
+func TestJSONEmbeddedPreservesUnchangedDuplicatesAndStructuralScalars(t *testing.T) {
+	const number = "9876543210123456789"
+	Register(":true", number)
+	const document = " \n{ \"x\" : [9876543210123456789, true, false, null, 1.00e+03], \"x\" : {\"safe\":true} }\t"
+	require.Equal(t, document, embeddedJSONOutput(t, document))
+	// A registered numeric string remains redacted when used as string data.
+	require.Equal(t, `["[REDACTED]",9876543210123456789]`, embeddedJSONOutput(t, `["9876543210123456789",9876543210123456789]`))
+}
+
+func TestJSONEmbeddedPreservesRegularTextRedaction(t *testing.T) {
+	const secret = "embedded-regular-text-secret"
+	Register(secret)
+	for _, text := range []string{
+		"prefix " + secret + " suffix",
+		`prefix {"token":"` + secret + `"} suffix`,
+		`{"incomplete":"` + secret,
+	} {
+		require.Equal(t, String(text), embeddedJSONOutput(t, text))
+	}
+}
