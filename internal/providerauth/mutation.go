@@ -28,6 +28,7 @@ type mutationRequest struct {
 	target      Target
 	accountID   string
 	logout      bool
+	checkID     string
 }
 
 type mutationReceipt struct {
@@ -203,7 +204,7 @@ func (s *Service) retain(receipt mutationReceipt) {
 func (s *Service) replay(ctx context.Context, receipt mutationReceipt) (MutationResult, error) {
 	outcome, err := cloneMutationOutcome(receipt.outcome)
 	if err != nil {
-		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner}, safeMutationError(err)
+		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner}, safeMutationError(err)
 	}
 	result := MutationResult{Outcome: outcome, originalOwner: receipt.originalOwner}
 	if receipt.err != nil {
@@ -255,10 +256,13 @@ func validateMutationEffect(request mutationRequest, outcome MutationOutcome) er
 	if err := outcome.Validate(); err != nil {
 		return err
 	}
-	if outcome.Change == nil || outcome.Change.OperationID != request.operationID || outcome.Change.Previous != request.target {
+	if outcome.Change == nil || outcome.Change.OperationID != request.operationID || outcome.Change.Previous != request.target || outcome.CheckID != request.checkID {
 		return errors.New("authentication transaction has no matching change receipt")
 	}
 	current := outcome.Change.Current
+	if request.checkID != "" {
+		return validateAPIKeySaveEffect(outcome)
+	}
 	if request.logout {
 		if current.Status.ActiveAccountID != "" || current.Status.AccountState != "none" || len(current.Accounts) != 0 {
 			return errors.New("authentication logout did not clear the selected owner's accounts")

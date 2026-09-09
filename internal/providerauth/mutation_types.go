@@ -61,6 +61,7 @@ type Change struct {
 // adoption. Owning clients still require their separate remote acknowledgement.
 type MutationOutcome struct {
 	OperationID string           `json:"operation_id"`
+	CheckID     string           `json:"check_id,omitempty"`
 	Previous    Target           `json:"previous"`
 	Progress    MutationProgress `json:"progress"`
 	Change      *Change          `json:"change,omitempty"`
@@ -190,6 +191,9 @@ func (o MutationOutcome) Validate() error {
 	if !validOperationID(o.OperationID) {
 		return errors.New("invalid authentication outcome operation")
 	}
+	if o.CheckID != "" && !validOperationID(o.CheckID) {
+		return errors.New("invalid authentication outcome check")
+	}
 	if err := o.Previous.Validate(); err != nil {
 		return err
 	}
@@ -226,7 +230,7 @@ func (o MutationOutcome) validateRequest(request mutationRequest) error {
 	if err := o.Validate(); err != nil {
 		return err
 	}
-	if o.OperationID != request.operationID || o.Previous != request.target {
+	if o.OperationID != request.operationID || o.Previous != request.target || o.CheckID != request.checkID {
 		return errors.New("authentication outcome does not match the requested operation")
 	}
 	if o.Change == nil {
