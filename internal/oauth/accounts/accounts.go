@@ -563,7 +563,15 @@ func removeProvider(ctx context.Context, provider string, validate Validator) er
 		for _, entry := range s.Accounts[provider] {
 			s.markMutation(provider, entry.ID)
 		}
-		s.markSelection(provider, "")
+		// An explicit logout also invalidates imports begun with no active account.
+		if s.Active[provider] == "" {
+			if s.Selections == nil {
+				s.Selections = map[string]uint64{}
+			}
+			s.Selections[provider]++
+		} else {
+			s.markSelection(provider, "")
+		}
 		delete(s.Rotations, provider)
 		delete(s.Accounts, provider)
 		delete(s.Active, provider)

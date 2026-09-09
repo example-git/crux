@@ -455,8 +455,10 @@ type UI struct {
 	// providerUsage is the latest quota usage snapshot for the current
 	// provider (Claude, Codex, or Gemini/Antigravity OAuth). It is nil
 	// when unknown or unsupported.
-	providerUsage *oauthusage.Usage
-	usageFetchGen uint64
+	providerUsage       *oauthusage.Usage
+	usageFetchGen       uint64
+	modelSelectionGen   uint64
+	cancelCopilotImport context.CancelFunc
 
 	// brand is the provider wordmark branding for the current large
 	// model provider; nil renders the default Crux branding.
@@ -831,6 +833,18 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch msg := msg.(type) {
+	case copilotImportDoneMsg:
+		if msg.generation != m.modelSelectionGen {
+			break
+		}
+		m.cancelCopilotImport = nil
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+			break
+		}
+		if cmd := m.handleSelectModelAfterImport(msg.selection, false); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case tea.EnvMsg:
 		// Is this Windows Terminal?
 		if !m.sendProgressBar {
@@ -2458,6 +2472,11 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		})
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionQuit:
+		m.modelSelectionGen++
+		if m.cancelCopilotImport != nil {
+			m.cancelCopilotImport()
+			m.cancelCopilotImport = nil
+		}
 		done := m.deliverySaveDone
 		cmds = append(cmds, func() tea.Msg {
 			if done != nil {
@@ -2730,6 +2749,15 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 
 // handleSelectModel performs model selection for the requested provider.
 func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
+	m.modelSelectionGen++
+	if m.cancelCopilotImport != nil {
+		m.cancelCopilotImport()
+		m.cancelCopilotImport = nil
+	}
+	return m.handleSelectModelAfterImport(msg, true)
+}
+
+func (m *UI) handleSelectModelAfterImport(msg dialog.ActionSelectModel, allowImport bool) tea.Cmd {
 	var cmds []tea.Cmd
 
 	cfg := m.com.Config()
@@ -2741,16 +2769,15 @@ func (m *UI) handleSelectModel(msg dialog.ActionSelectModel) tea.Cmd {
 	if err := msg.ValidateProviderOwner(cfg); err != nil {
 		return util.ReportError(err)
 	}
-	registration, registered := cfg.ProviderRegistration(providerID)
 	var (
-		isCopilot    = registered && registration.Construction == providerregistry.ConstructionCopilot
+		isCopilot    = msg.ProviderOwner.Construction == providerregistry.ConstructionCopilot
 		isConfigured = func() bool { _, ok := cfg.Providers.Get(providerID); return ok }
 		isOnboarding = m.state == uiOnboarding
 	)
 
 	// Attempt to import GitHub Copilot tokens from VSCode if available.
-	if isCopilot && !isConfigured() && !msg.ReAuthenticate {
-		m.com.Workspace.ImportCopilot()
+	if allowImport && isCopilot && !isConfigured() && !msg.ReAuthenticate {
+		return m.importCopilotCmd(msg)
 	}
 
 	if !isConfigured() || msg.ReAuthenticate {

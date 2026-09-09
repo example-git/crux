@@ -478,6 +478,7 @@ func coreCopilotOwnerTestRegistration(t *testing.T) providerregistry.Registratio
 }
 
 func TestImportCopilotUsesCapturedOwnerCapability(t *testing.T) {
+	t.Setenv("AI_CLI_DIR", t.TempDir())
 	registration := coreCopilotOwnerTestRegistration(t)
 	imported := &oauth.Token{AccessToken: "imported-access", RefreshToken: "imported-refresh", ExpiresAt: time.Now().Add(time.Hour).Unix()}
 	calls := 0
@@ -492,8 +493,10 @@ func TestImportCopilotUsesCapturedOwnerCapability(t *testing.T) {
 			Owner: providerOwnerReferenceForRegistration(registration),
 		},
 	})}, registration)
+	store.Config().bindProviderScan(ProviderScan{Registry: store.providerRegistry})
 
-	token, ok := store.ImportCopilot()
+	token, ok, importErr := store.ImportCopilotForOwner(t.Context(), registration.Owner())
+	require.NoError(t, importErr)
 	require.True(t, ok)
 	require.Same(t, imported, token)
 	require.Equal(t, 1, calls)
@@ -508,6 +511,7 @@ func TestImportCopilotUsesCapturedOwnerCapability(t *testing.T) {
 }
 
 func TestImportCopilotRejectsGenerationReplacementAfterExternalRefresh(t *testing.T) {
+	t.Setenv("AI_CLI_DIR", t.TempDir())
 	initiating := coreCopilotOwnerTestRegistration(t)
 	replacement := initiating.Clone()
 	replacement.OAuth.FlowID = "github-copilot-replacement"
@@ -541,6 +545,7 @@ func TestImportCopilotRejectsGenerationReplacementAfterExternalRefresh(t *testin
 			Owner: providerOwnerReferenceForRegistration(initiating),
 		},
 	})}, initiating)
+	store.Config().bindProviderScan(ProviderScan{Registry: store.providerRegistry})
 	beforeDisk, err := os.ReadFile(path)
 	require.NoError(t, err)
 

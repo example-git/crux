@@ -1,6 +1,7 @@
 package copilot
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -8,7 +9,30 @@ import (
 )
 
 func RefreshTokenFromDisk() (string, bool) {
-	data, err := os.ReadFile(tokenFilePath())
+	return refreshTokenFromFile(tokenFilePath())
+}
+
+type importPathKey struct{}
+
+// ContextWithImportEnvironment captures only the platform's token-file path.
+// Even an absent root is explicit; it must not fall back to another process
+// environment when an owning-client runtime initiated the import.
+func ContextWithImportEnvironment(ctx context.Context, getenv func(string) string) context.Context {
+	return context.WithValue(ctx, importPathKey{}, tokenFilePathForEnvironment(getenv))
+}
+
+func RefreshTokenFromDiskForContext(ctx context.Context) (string, bool) {
+	if path, captured := ctx.Value(importPathKey{}).(string); captured {
+		return refreshTokenFromFile(path)
+	}
+	return RefreshTokenFromDisk()
+}
+
+func refreshTokenFromFile(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", false
 	}
@@ -27,10 +51,19 @@ func RefreshTokenFromDisk() (string, bool) {
 }
 
 func tokenFilePath() string {
+	return tokenFilePathForEnvironment(os.Getenv)
+}
+
+func tokenFilePathForEnvironment(getenv func(string) string) string {
 	switch runtime.GOOS {
 	case "windows":
-		return filepath.Join(os.Getenv("LOCALAPPDATA"), "github-copilot/apps.json")
+		if root := getenv("LOCALAPPDATA"); root != "" {
+			return filepath.Join(root, "github-copilot/apps.json")
+		}
 	default:
-		return filepath.Join(os.Getenv("HOME"), ".config/github-copilot/apps.json")
+		if root := getenv("HOME"); root != "" {
+			return filepath.Join(root, ".config/github-copilot/apps.json")
+		}
 	}
+	return ""
 }

@@ -18,7 +18,6 @@ import (
 	"github.com/example-git/crux/internal/history"
 	"github.com/example-git/crux/internal/lsp"
 	"github.com/example-git/crux/internal/message"
-	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/projects"
 	"github.com/example-git/crux/internal/proto"
@@ -537,10 +536,6 @@ func (w *AppWorkspace) RemoveConfigField(scope config.Scope, key string) error {
 	}
 	go mcptools.Reinitialize(context.Background(), w.store)
 	return nil
-}
-
-func (w *AppWorkspace) ImportCopilot() (*oauth.Token, bool) {
-	return w.store.ImportCopilot()
 }
 
 func (w *AppWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Scope, owner providerregistry.RegistrationOwner) error {

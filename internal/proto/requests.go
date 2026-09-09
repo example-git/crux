@@ -134,9 +134,13 @@ type ConfigRefreshOAuthRequest struct {
 	Owner providerregistry.RegistrationOwner `json:"owner"`
 }
 
-// ImportCopilotResponse represents the response from importing Copilot credentials.
+// ImportCopilotRequest binds import to the UI's initiating provider owner.
+type ImportCopilotRequest struct {
+	Owner providerregistry.RegistrationOwner `json:"owner"`
+}
+
+// ImportCopilotResponse reports an acknowledged import without exposing tokens.
 type ImportCopilotResponse struct {
-	Token   any  `json:"token"`
 	Success bool `json:"success"`
 }
 

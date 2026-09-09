@@ -468,7 +468,7 @@ func Integrated() []Registration {
 			OAuth: &OAuthCapability{
 				Adapter: LoginDeviceCode, FlowID: "github-copilot", Refresh: copilot.RefreshToken,
 				Import: func(ctx context.Context) (*oauth.Token, bool, error) {
-					refreshToken, ok := copilot.RefreshTokenFromDisk()
+					refreshToken, ok := copilot.RefreshTokenFromDiskForContext(ctx)
 					if !ok {
 						return nil, false, nil
 					}
