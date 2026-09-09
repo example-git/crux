@@ -7,7 +7,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -62,7 +61,7 @@ func TestAuthenticationRemoveRefreshesExactSuccessorOverHTTPS(t *testing.T) {
 	provider, ok := f.store.Config().Providers.Get(f.owner.ProviderID)
 	require.True(t, ok)
 	require.Equal(t, "synthetic-refreshed-access", provider.APIKey)
-	count, err := os.ReadFile(f.marker)
-	require.NoError(t, err)
-	require.Equal(t, "x", string(count), "unconfigured candidate headers evaluate once")
+	require.Equal(t, "accepted-header", provider.ExtraHeaders["X-Captured"])
+	require.Equal(t, "command-header", provider.ExtraHeaders["X-Once"])
+	require.NoFileExists(t, f.marker, "retained candidate headers must not execute again")
 }
