@@ -197,6 +197,9 @@ func renderHeaderDetails(
 	cwd = t.Header.WorkingDir.Render(cwd)
 
 	result := cwd + metadata
+	if label := workspaceAuthorityLabel(cachedWorkspaceAuthority(com)); label != "" {
+		result = t.Header.WorkingDir.Render(label) + dot + result
+	}
 	return ansi.Truncate(result, max(0, availWidth), "…")
 }
 
