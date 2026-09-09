@@ -36,7 +36,7 @@ func TestEnrollmentCapturesServerStoreAcrossClientEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, clientData.Server)
 	require.Empty(t, clientData.AuthorizedClients)
-	require.Equal(t, saved, clientData.Connections["separate-client"])
+	require.True(t, saved == clientData.Connections["separate-client"], "the client store must retain the exact saved identity")
 }
 
 func TestEnrollmentRejectsReplacedServerIdentityBeforeAuthorization(t *testing.T) {
@@ -82,7 +82,7 @@ func TestConnectionStoreCommitRetainsCapturedDestination(t *testing.T) {
 	}))
 	data, err := loadStoreAt(t.Context(), originalPath)
 	require.NoError(t, err)
-	require.Equal(t, created, data.Connections[created.Name])
+	require.True(t, created == data.Connections[created.Name], "the original store must contain the exact connection")
 	_, err = os.Stat(filepath.Join(otherRoot, "connections.json"))
 	require.ErrorIs(t, err, os.ErrNotExist)
 	_, err = os.Stat(filepath.Join(otherRoot, "connections.json.lock"))
