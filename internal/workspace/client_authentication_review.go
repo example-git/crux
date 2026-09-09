@@ -20,7 +20,7 @@ import (
 // Review and apply are separate explicit actions. They publish already coherent
 // saved state, never repeat or repair the original authentication transaction.
 type clientAuthenticationReviewChoice struct {
-	Kind      string // empty: original intent; saved-account or saved-logout: new explicit choice
+	Kind      string // empty: original intent; saved-account, saved-logout, saved-oauth-token: explicit choice
 	AccountID string
 }
 
@@ -54,6 +54,8 @@ type clientAuthenticationReviewSummary struct {
 	OriginalLogout                   bool
 	OriginalAccountID                string
 	OriginalLoginID                  string
+	OriginalOAuthToken               bool
+	SavedOAuthToken                  bool
 	Choice                           clientAuthenticationReviewChoice
 	ActiveAccountID                  string
 	Configured, Disabled             bool
@@ -119,9 +121,12 @@ func (r clientAuthenticationReviewRequest) validate() error {
 		return errors.New("authentication review sequence is required")
 	}
 	switch r.Choice.Kind {
-	case "", "saved-logout":
+	case "", "saved-logout", "saved-oauth-token":
 		if r.Choice.AccountID != "" {
 			return errors.New("authentication review choice has an unexpected account")
+		}
+		if r.Choice.Kind == "saved-oauth-token" && !r.OriginalTarget.Owner.HasOAuth {
+			return errors.New("saved OAuth credential review requires an OAuth owner")
 		}
 	case "saved-account":
 		return (providerauth.SwitchRequest{OperationID: r.ReviewID, Target: r.OriginalTarget, AccountID: r.Choice.AccountID}).Validate()
@@ -189,6 +194,7 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	review.summary.OriginalProgress = original.outcome.Progress
 	review.summary.OriginalLogout, review.summary.OriginalAccountID = original.request.logout, original.request.accountID
 	review.summary.OriginalLoginID = original.request.loginID
+	review.summary.OriginalOAuthToken = original.oauthTokenID != ""
 	if original.removalAdmitted {
 		review.summary.OriginalLogout = original.removalSuccessor == ""
 		review.summary.OriginalAccountID = original.removalSuccessor
@@ -209,8 +215,8 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	if original.request.loginID == "" && !original.request.logout && original.request.accountID == "" {
 		return fail(errors.New("saved API-key authentication reconciliation is not supported"))
 	}
-	if original.request.loginID != "" && review.summary.OriginalAccountID == "" && request.Choice.Kind == "" {
-		return fail(errors.New("saved OAuth login has no confirmed account selection for review; use exact completed-capture recovery or a separate explicit saved-state choice"))
+	if original.request.loginID != "" && review.summary.OriginalAccountID == "" && original.oauthTokenID == "" && request.Choice.Kind == "" {
+		return fail(errors.New("saved OAuth login has no confirmed credential selection for review; use exact completed-capture recovery or a separate explicit saved-state choice"))
 	}
 	if err := w.lockAuthenticationReviewWorkspace(ctx); err != nil {
 		return fail(err)
@@ -251,17 +257,24 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 			}
 		}
 	}
-	effect := config.AuthenticationReconciliationEffect{Logout: review.summary.OriginalLogout, AccountID: review.summary.OriginalAccountID}
+	effect := config.AuthenticationReconciliationEffect{Logout: review.summary.OriginalLogout, AccountID: review.summary.OriginalAccountID, OAuthTokenID: original.oauthTokenID}
 	switch request.Choice.Kind {
 	case "saved-account":
 		effect = config.AuthenticationReconciliationEffect{AccountID: request.Choice.AccountID}
 	case "saved-logout":
 		effect = config.AuthenticationReconciliationEffect{Logout: true}
+	case "saved-oauth-token":
+		identity, err := current.ConfiguredOAuthTokenCredentialID(original.owner)
+		if err != nil {
+			return fail(err)
+		}
+		effect = config.AuthenticationReconciliationEffect{OAuthTokenID: identity}
 	}
 	prepared, err := a.store.PrepareAuthenticationReconciliation(ctx, current, original.owner, effect)
 	if err != nil {
 		return fail(err)
 	}
+	review.summary.SavedOAuthToken = effect.OAuthTokenID != ""
 	var valid bool
 	review.capture, valid = prepared.AuthenticationCapture()
 	if !valid {

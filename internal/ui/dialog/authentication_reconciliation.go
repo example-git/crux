@@ -85,7 +85,7 @@ func (d *AuthenticationReconciliation) HandleMsg(msg tea.Msg) Action {
 			return nil
 		}
 		switch kp.String() {
-		case "alt+1", "alt+2", "alt+3":
+		case "alt+1", "alt+2", "alt+3", "alt+4":
 			choice := workspace.ProviderAuthenticationReviewChoice{}
 			if kp.String() == "alt+2" {
 				choice.Kind, choice.AccountID = "saved-account", d.input.Value()
@@ -95,6 +95,8 @@ func (d *AuthenticationReconciliation) HandleMsg(msg tea.Msg) Action {
 				}
 			} else if kp.String() == "alt+3" {
 				choice.Kind = "saved-logout"
+			} else if kp.String() == "alt+4" {
+				choice.Kind = "saved-oauth-token"
 			}
 			d.SetChoice(choice)
 			return ActionAuthenticationReconciliation{Dialog: d, Kind: "choice", Choice: choice}
@@ -168,8 +170,10 @@ func (d *AuthenticationReconciliation) Draw(scr uv.Screen, area uv.Rectangle) *t
 		choice = "Saved account: " + d.choice.AccountID
 	} else if d.choice.Kind == "saved-logout" {
 		choice = "Saved logout"
+	} else if d.choice.Kind == "saved-oauth-token" {
+		choice = "Saved OAuth credential"
 	}
-	text := "Publish reviewed saved state; the original operation is not repeated.\nAlt+1 original intent · Alt+2 saved account · Alt+3 saved logout\nChoice: " + choice
+	text := "Publish reviewed saved state; the original operation is not repeated.\nAlt+1 original intent · Alt+2 saved account · Alt+3 saved logout · Alt+4 saved OAuth credential\nChoice: " + choice
 	if d.finished {
 		text = "Reviewed publication completed.\nChoice: " + choice
 	}

@@ -51,9 +51,10 @@ func (o clientAuthenticationReconciliationOutcome) Validate(r ProviderAuthentica
 }
 
 // ProviderAuthenticationReconciler is optional. It is supported only by the
-// owning client and its retained switch/logout or confirmed OAuth account
-// receipts. Checked keys and OAuth without a confirmed account require their
-// distinct saved-credential validators and currently fail visibly.
+// owning client and its retained switch/logout or confirmed OAuth credential
+// receipts. Namespace-free login intent uses a private complete-token identity;
+// an alternate saved token requires its separate explicit review choice.
+// Checked-key reconciliation remains unsupported.
 type ProviderAuthenticationReconciler interface {
 	CanReconcileProviderAuthentication() bool
 	ReviewProviderAuthentication(context.Context, ProviderAuthenticationReviewRequest) (ProviderAuthenticationReviewSummary, error)

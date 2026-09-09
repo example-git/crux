@@ -2292,6 +2292,8 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		cmds = append(cmds, m.reloadOAuthLogin(msg.Dialog))
 	case dialog.ActionOAuthLoginRecover:
 		cmds = append(cmds, m.recoverOAuthLogin(msg))
+	case dialog.ActionOAuthLoginReview:
+		cmds = append(cmds, m.openOAuthLoginReconciliation(msg))
 	case dialog.ActionOAuthLoginOpen:
 		if op := m.oauthLogins[m.com.Workspace]; op != nil && op.dialog == msg.Dialog && m.oauthDialogOpen(msg.Dialog) {
 			cmds = append(cmds, m.openOAuthBrowser(op))

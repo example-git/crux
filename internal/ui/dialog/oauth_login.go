@@ -28,7 +28,7 @@ type OAuthLoginProvider struct {
 type OAuthLoginPresentation struct {
 	Message, AuthorizationURL, UserCode string
 
-	Editable, Retry, Open, Reload, Recover, RetryRecovery, CompleteDispatched bool
+	Editable, Retry, Open, Reload, Recover, RetryRecovery, Review, CompleteDispatched bool
 }
 
 type ActionOAuthLoginSelect struct {
@@ -39,6 +39,7 @@ type ActionOAuthLoginSubmit struct{ Dialog *OAuthLogin }
 type ActionOAuthLoginRetry struct{ Dialog *OAuthLogin }
 type ActionOAuthLoginOpen struct{ Dialog *OAuthLogin }
 type ActionOAuthLoginReload struct{ Dialog *OAuthLogin }
+type ActionOAuthLoginReview struct{ Dialog *OAuthLogin }
 type ActionOAuthLoginRecover struct {
 	Dialog *OAuthLogin
 	Retry  bool
@@ -59,7 +60,7 @@ type OAuthLogin struct {
 	details      viewport.Model
 	help         help.Model
 
-	submit, choose, previous, next, close, open, retry, reload, recover, retryRecovery, scroll key.Binding
+	submit, choose, previous, next, close, open, retry, reload, recover, retryRecovery, review, scroll key.Binding
 }
 
 func NewOAuthLogin(com *common.Common, isOnboarding bool, providerName string) *OAuthLogin {
@@ -85,6 +86,7 @@ func NewOAuthLogin(com *common.Common, isOnboarding bool, providerName string) *
 	m.reload = key.NewBinding(key.WithKeys("ctrl+n"), key.WithHelp("ctrl+n", "reload sign-in status"))
 	m.recover = key.NewBinding(key.WithKeys("alt+r"), key.WithHelp("alt+r", "attempt saved change recovery"))
 	m.retryRecovery = key.NewBinding(key.WithKeys("alt+t"), key.WithHelp("alt+t", "retry recovery receipt"))
+	m.review = key.NewBinding(key.WithKeys("alt+s"), key.WithHelp("alt+s", "review saved authentication"))
 	m.scroll = key.NewBinding(key.WithKeys("pgup", "pgdown"), key.WithHelp("pgup/pgdn", "scroll"))
 	m.SetPresentation(OAuthLoginPresentation{Message: "Loading sign-in status from the selected workspace…"})
 	return m
@@ -119,6 +121,7 @@ func (m *OAuthLogin) setBindings() {
 	m.reload.SetEnabled(p.Reload)
 	m.recover.SetEnabled(p.Recover)
 	m.retryRecovery.SetEnabled(p.RetryRecovery)
+	m.review.SetEnabled(p.Review)
 	if p.CompleteDispatched {
 		m.close.SetHelp("esc", "close; receipt retained")
 	} else {
@@ -168,6 +171,8 @@ func (m *OAuthLogin) HandleMsg(msg tea.Msg) Action {
 			return ActionOAuthLoginRecover{Dialog: m}
 		case key.Matches(press, m.retryRecovery):
 			return ActionOAuthLoginRecover{Dialog: m, Retry: true}
+		case key.Matches(press, m.review):
+			return ActionOAuthLoginReview{m}
 		case key.Matches(press, m.submit):
 			return ActionOAuthLoginSubmit{m}
 		case key.Matches(press, m.scroll):
@@ -329,7 +334,7 @@ func (m *OAuthLogin) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 }
 
 func (m *OAuthLogin) ShortHelp() []key.Binding {
-	return []key.Binding{m.choose, m.previous, m.submit, m.open, m.retry, m.reload, m.recover, m.retryRecovery, m.close, m.scroll}
+	return []key.Binding{m.choose, m.previous, m.submit, m.open, m.retry, m.reload, m.recover, m.retryRecovery, m.review, m.close, m.scroll}
 }
 func (m *OAuthLogin) FullHelp() [][]key.Binding { return [][]key.Binding{m.ShortHelp()} }
 

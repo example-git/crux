@@ -18,6 +18,7 @@ import (
 
 type authenticationReconciliation struct {
 	operation         *authenticationOperation
+	oauthLogin        *oauthLoginOperation
 	dialog            *dialog.AuthenticationReconciliation
 	capability        workspace.ProviderAuthenticationReconciler
 	sequence, attempt uint64
@@ -87,6 +88,36 @@ func (m *UI) openAuthenticationReconciliation(action dialog.ActionAuthentication
 	if operation == nil || operation.pending || operation.preparing || operation.recoveryPreparing != nil {
 		return nil
 	}
+	return m.openAuthenticationReconciliationOperation(operation)
+}
+
+func (m *UI) openOAuthLoginReconciliation(action dialog.ActionOAuthLoginReview) tea.Cmd {
+	op := m.oauthLogins[m.com.Workspace]
+	if op == nil || op.dialog != action.Dialog || !m.oauthDialogOpen(action.Dialog) || !op.completeSent || op.busy || op.preparing || op.relayBusy || oauthLoginReviewBusy(op) || oauthLoginReviewResolved(op) {
+		return nil
+	}
+	var operation *authenticationOperation
+	if op.review != nil {
+		operation = op.review.operation
+	} else {
+		// This coordinator carries the original login identity only. It is
+		// never installed in authenticationOperations or dispatched as a switch.
+		operation = &authenticationOperation{workspace: op.workspace, id: op.ref.OperationID, row: dialog.AuthenticationRow{Target: op.ref.Target}, message: op.message}
+		if op.outcome.Change != nil {
+			for _, account := range op.outcome.Change.Current.Accounts {
+				operation.accountChoices = append(operation.accountChoices, dialog.AuthenticationRow{Target: op.ref.Target, AccountID: account.ID, Label: account.DisplayName})
+			}
+		}
+	}
+	command := m.openAuthenticationReconciliationOperation(operation)
+	if state := m.authenticationReconciliations[operation]; state != nil {
+		state.oauthLogin, op.review = op, state
+		m.showOAuthLogin(op)
+	}
+	return command
+}
+
+func (m *UI) openAuthenticationReconciliationOperation(operation *authenticationOperation) tea.Cmd {
 	capability, ok := operation.workspace.(workspace.ProviderAuthenticationReconciler)
 	if !ok || !capability.CanReconcileProviderAuthentication() {
 		return util.ReportError(errors.New("Saved authentication review/apply is available only in the owning client workspace. Server-owned and local workspaces are not supported; no alternative action was run."))
@@ -123,6 +154,9 @@ func (m *UI) showAuthenticationReconciliation(s *authenticationReconciliation) {
 	adopted := s.resolved
 	s.dialog.SetFinished(adopted)
 	s.dialog.SetState(s.message, preview, s.preparing != nil || s.pending != "", matching && !adopted, matching && s.summary != nil && s.apply == nil && !adopted, matching && s.apply != nil && !adopted)
+	if s.oauthLogin != nil {
+		m.showOAuthLogin(s.oauthLogin)
+	}
 }
 func authenticationReviewSummaryText(s workspace.ProviderAuthenticationReviewSummary) string {
 	choice := "original intent"
@@ -130,6 +164,10 @@ func authenticationReviewSummaryText(s workspace.ProviderAuthenticationReviewSum
 		choice = "saved account " + s.Choice.AccountID
 	} else if s.Choice.Kind == "saved-logout" {
 		choice = "saved logout"
+	} else if s.Choice.Kind == "saved-oauth-token" {
+		choice = "saved OAuth credential"
+	} else if s.OriginalOAuthToken {
+		choice = "original complete OAuth credential"
 	}
 	var models []string
 	for _, model := range s.Models {
@@ -143,14 +181,24 @@ func authenticationReviewSummaryText(s workspace.ProviderAuthenticationReviewSum
 	if active == "" {
 		active = "none"
 	}
-	return fmt.Sprintf("Preview %s\nProvider: %s\nExplicit choice: %s\nSaved active account: %s; configured: %t; disabled: %t\nModels: %s\nChanged sections: %s\nReceiver: %s, revision %d\nCtrl+Y applies only this preview. The original operation result remains unchanged.", s.PreviewID, s.Owner.ProviderID, choice, active, s.Configured, s.Disabled, strings.Join(models, "; "), changed, s.Receiver.Principal, s.Receiver.Revision)
+	credential := "Saved active account: " + active
+	if s.SavedOAuthToken {
+		credential = "Saved OAuth credential: present; no account selection"
+	}
+	return fmt.Sprintf("Preview %s\nProvider: %s\nExplicit choice: %s\n%s; configured: %t; disabled: %t\nModels: %s\nChanged sections: %s\nReceiver: %s, revision %d\nCtrl+Y applies only this preview. The original operation result remains unchanged.", s.PreviewID, s.Owner.ProviderID, choice, credential, s.Configured, s.Disabled, strings.Join(models, "; "), changed, s.Receiver.Principal, s.Receiver.Revision)
 }
 func (m *UI) handleAuthenticationReconciliation(action dialog.ActionAuthenticationReconciliation) tea.Cmd {
-	operation := m.authenticationOperations[m.com.Workspace]
-	s := m.authenticationReconciliations[operation]
+	var s *authenticationReconciliation
+	for _, candidate := range m.authenticationReconciliations {
+		if candidate.dialog == action.Dialog && candidate.operation.workspace == m.com.Workspace {
+			s = candidate
+			break
+		}
+	}
 	if s == nil || s.dialog != action.Dialog || !m.authenticationReconciliationOpen(s) {
 		return nil
 	}
+	operation := s.operation
 	if action.Kind == "cancel" {
 		if s.cancel != nil {
 			s.cancel()
@@ -162,7 +210,7 @@ func (m *UI) handleAuthenticationReconciliation(action dialog.ActionAuthenticati
 		m.showAuthenticationReconciliation(s)
 		return nil
 	}
-	if s.preparing != nil || s.pending != "" || operation.pending || operation.preparing || operation.recoveryPreparing != nil {
+	if s.preparing != nil || s.pending != "" || operation.pending || operation.preparing || operation.recoveryPreparing != nil || s.oauthLogin != nil && (s.oauthLogin.busy || s.oauthLogin.preparing) {
 		return nil
 	}
 	if action.Kind == "choice" {
@@ -334,6 +382,9 @@ func (m *UI) completeAuthenticationReviewedApply(msg authenticationApplyComplete
 		s.resolved = true
 		s.operation.blockNew, s.operation.retry = false, false
 		s.message = "Reviewed saved authentication was acknowledged and adopted. The original operation result remains unchanged."
+		if s.oauthLogin != nil {
+			s.oauthLogin.message = s.message
+		}
 	}
 	m.showAuthenticationReconciliation(s)
 	m.updateAuthenticationDialogs()

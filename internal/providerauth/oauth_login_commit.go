@@ -109,6 +109,9 @@ func (s *Service) completeOAuthLogin(ctx context.Context, ref OAuthLoginRef, acc
 				}
 			}
 		}
+		if failure == nil && owner.AccountNamespace == "" {
+			receipt.oauthTokenID, failure = transaction.After.ConfiguredOAuthTokenCredentialID(owner)
+		}
 		if failure != nil {
 			receipt.outcome.Change = nil
 			receipt.err = safeMutationError(failure)

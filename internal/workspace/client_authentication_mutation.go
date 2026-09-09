@@ -48,6 +48,7 @@ type clientAuthenticationReceipt struct {
 	removalSuccessor string
 	removalActive    bool
 	removalAdmitted  bool
+	oauthTokenID     string
 }
 
 func (clientAuthenticationReceipt) MarshalJSON() ([]byte, error) {
@@ -133,6 +134,7 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	}
 	receipt.outcome, receipt.err = local.Outcome, err
 	receipt.removalSuccessor, receipt.removalActive, receipt.removalAdmitted = local.OriginalRemovalSelection()
+	receipt.oauthTokenID, _ = local.OriginalOAuthTokenCredentialID()
 	var admitted bool
 	receipt.owner, admitted = local.OriginalOwner()
 	if request.loginID != "" && err != nil && !admitted {
