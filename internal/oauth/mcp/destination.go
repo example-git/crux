@@ -32,6 +32,9 @@ type resourceDestinationTransport struct {
 
 func (t *resourceDestinationTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	if err := t.guard(request, nil); err != nil {
+		if request != nil && request.Body != nil {
+			_ = request.Body.Close()
+		}
 		return nil, err
 	}
 	return t.base.RoundTrip(request)
@@ -115,6 +118,9 @@ type oauthFlowTransport struct{ base http.RoundTripper }
 func (t *oauthFlowTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	state := oauthFlowFrom(request.Context())
 	if err := state.current(); err != nil {
+		if request.Body != nil {
+			_ = request.Body.Close()
+		}
 		return nil, err
 	}
 	response, err := t.base.RoundTrip(request)
