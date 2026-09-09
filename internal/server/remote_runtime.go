@@ -352,6 +352,8 @@ func (c *controllerV1) handlePutWorkspaceRuntime(w http.ResponseWriter, r *http.
 		status := http.StatusBadRequest
 		if errors.Is(err, config.ErrRemoteRuntimeRevision) {
 			status = http.StatusConflict
+		} else if errors.Is(err, config.ErrRuntimeRevoked) {
+			status = http.StatusForbidden
 		}
 		jsonError(w, status, err.Error())
 		return
