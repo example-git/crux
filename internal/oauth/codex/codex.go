@@ -149,7 +149,7 @@ func tokenRequest(ctx context.Context, form url.Values) (tokenResponse, error) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(http.DefaultClient, req.URL.String())).Do(req)
 	if err != nil {
 		return tokenResponse{}, err
 	}
@@ -370,7 +370,7 @@ func AccountEmail(ctx context.Context, accessToken string) string {
 	}
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(http.DefaultClient, req.URL.String())).Do(req)
 	if err != nil {
 		return ""
 	}

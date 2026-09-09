@@ -35,9 +35,23 @@ func (t *PolicyTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	if err != nil {
 		return nil, err
 	}
-	clone.URL = base.ResolveReference(reference)
-	if t.Operation.Method != "" {
-		clone.Method = t.Operation.Method
+	if request.Response == nil {
+		clone.URL = base.ResolveReference(reference)
+		if t.Operation.Method != "" {
+			clone.Method = t.Operation.Method
+		}
+	} else {
+		// net/http already selected this redirect's URL and method. Rewriting
+		// it to the operation path would silently turn an allowed redirect
+		// into a loop. Repeat the destination check at the transport boundary
+		// so direct transport users cannot bypass the operation's declaration.
+		policy := EndpointHTTPClient(&http.Client{}, t.Operation.Endpoint)
+		if err := policy.CheckRedirect(clone, nil); err != nil {
+			if err == http.ErrUseLastResponse {
+				return nil, &endpointRedirectError{reason: "following redirects is disabled"}
+			}
+			return nil, err
+		}
 	}
 	for name, value := range t.Headers {
 		clone.Header.Set(name, value)
@@ -61,6 +75,15 @@ func (t *PolicyTransport) RoundTrip(request *http.Request) (*http.Response, erro
 		baseTransport = http.DefaultTransport
 	}
 	response, err := RoundTripWithRetry(clone, baseTransport, t.Operation.Retry, t.Operation.Errors)
+	if err == nil && response != nil && isPolicyRedirect(response) {
+		// The SDK's original URL can differ from the operation's wire path.
+		// Resolve relative Location against the request that actually ran.
+		location, parseErr := url.Parse(response.Header.Get("Location"))
+		if parseErr == nil {
+			response.Header.Set("Location", clone.URL.ResolveReference(location).String())
+		}
+		return response, nil
+	}
 	if err != nil || response == nil || response.Body == nil || t.Operation.ResponseTransform == nil {
 		return response, err
 	}
@@ -84,6 +107,18 @@ func (t *PolicyTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	response.ContentLength = int64(len(rewritten))
 	response.Header.Set("Content-Length", fmt.Sprint(len(rewritten)))
 	return response, nil
+}
+
+func isPolicyRedirect(response *http.Response) bool {
+	if response.Header.Get("Location") == "" {
+		return false
+	}
+	switch response.StatusCode {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
 }
 
 func (t *PolicyTransport) rewriteRequest(ctx context.Context, body []byte) ([]byte, error) {

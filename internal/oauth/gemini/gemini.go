@@ -169,7 +169,7 @@ func tokenRequest(ctx context.Context, form url.Values) (tokenResponse, error) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("User-Agent", "Go-http-client/2.0")
 
-	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(http.DefaultClient, req.URL.String())).Do(req)
 	if err != nil {
 		return tokenResponse{}, err
 	}
@@ -415,7 +415,7 @@ func fetchProject(ctx context.Context, accessToken string) string {
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(http.DefaultClient, req.URL.String())).Do(req)
 	if err != nil {
 		return ""
 	}
@@ -447,7 +447,7 @@ func AccountEmail(ctx context.Context, accessToken string) string {
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("User-Agent", "Go-http-client/2.0")
 
-	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(http.DefaultClient, req.URL.String())).Do(req)
 	if err != nil {
 		return ""
 	}

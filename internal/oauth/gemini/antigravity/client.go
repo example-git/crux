@@ -202,7 +202,10 @@ func (c *client) do(ctx context.Context, method string, stream bool, env *wireEn
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
-			if providertransport.IsOwnerValidationError(err) {
+			// Local owner/destination refusals cannot become permitted through
+			// replay. Preserve ordinary transport retries after this admission fence.
+			var refusal interface{ NonRetryable() bool }
+			if errors.As(err, &refusal) && refusal.NonRetryable() {
 				return nil, err
 			}
 			transportErr := fantasy.WrapTransportError(err)

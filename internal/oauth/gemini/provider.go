@@ -32,14 +32,18 @@ func UserAgentForContext(ctx context.Context) (string, error) {
 //
 // Every model in the lineup (Gemini, GPT-OSS, and Claude ids alike) is served
 // over the Gemini protocol, which is what the endpoint expects.
-func inferenceHTTPClient(operation *providertransport.Operation, validate providertransport.OwnerValidator) *http.Client {
+func inferenceHTTPClient(baseURL string, operation *providertransport.Operation, validate providertransport.OwnerValidator) *http.Client {
 	httpClient := http.DefaultClient
 	if operation != nil {
+		operation = operation.Clone()
+		operation.Endpoint.BaseURL = baseURL
 		httpClient = operation.HTTPClient(http.DefaultClient)
 		httpClient.Transport = providertransport.TransportWithStreamIdleTimeout(
 			providertransport.TransportWithConnectTimeout(httpClient.Transport, operation.ConnectTimeout),
 			operation.StreamIdleTimeout,
 		)
+	} else {
+		httpClient = providertransport.CapturedOriginHTTPClient(httpClient, baseURL)
 	}
 	return providertransport.ClientWithOwnerValidator(httpClient, validate)
 }
@@ -84,7 +88,7 @@ func newProvider(baseURL string, token TokenSource, headers map[string]string, o
 	if identity == nil {
 		identity = &useragent.NativeIdentity{UserAgent: UserAgent()}
 	}
-	httpClient := inferenceHTTPClient(operation, validate)
+	httpClient := inferenceHTTPClient(baseURL, operation, validate)
 	opts := []antigravity.Option{
 		antigravity.WithBaseURL(baseURL),
 		antigravity.WithName(ID),

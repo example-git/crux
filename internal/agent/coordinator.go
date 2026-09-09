@@ -1631,7 +1631,7 @@ func manifestCompaction(registration providerregistry.Registration, registered b
 	}
 }
 
-func (c *coordinator) buildAnthropicProvider(debug bool, baseURL, apiKey string, headers map[string]string, efficiency *anthropic.EfficiencyPolicy, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
+func (c *coordinator) buildAnthropicProvider(debug bool, baseURL, apiKey string, headers map[string]string, efficiency *anthropic.EfficiencyPolicy, operation *providertransport.Operation, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
 	opts := []anthropic.Option{anthropic.WithAPIKey(apiKey)}
 	if efficiency != nil {
 		opts = append(opts, anthropic.WithEfficiencyPolicy(*efficiency))
@@ -1645,6 +1645,16 @@ func (c *coordinator) buildAnthropicProvider(debug bool, baseURL, apiKey string,
 	httpClient := http.DefaultClient
 	if debug {
 		httpClient = log.NewHTTPClient()
+	}
+	if baseURL == "" {
+		baseURL = anthropic.DefaultURL
+	}
+	if operation != nil {
+		operation = operation.Clone()
+		operation.Endpoint.BaseURL = baseURL
+		httpClient = operation.HTTPClient(httpClient)
+	} else {
+		httpClient = providertransport.CapturedOriginHTTPClient(httpClient, baseURL)
 	}
 	opts = append(opts, anthropic.WithHTTPClient(providertransport.ClientWithOwnerValidator(httpClient, validate)))
 	return anthropic.New(opts...)
@@ -1766,13 +1776,13 @@ func (c *coordinator) buildOpenaiProvider(debug bool, options *config.Options, r
 		openai.WithAPIKey(apiKey),
 		openai.WithUseResponsesAPI(),
 		openai.WithResponsesAPIFunc(func(string) bool { return true }),
-		openai.WithHTTPClient(&httpClient),
+		openai.WithHTTPClient(operation.HTTPClient(&httpClient)),
 		openai.WithBaseURL(baseURL),
 	}
 	return openai.New(opts...)
 }
 
-func (c *coordinator) buildOpenaiCompatProvider(debug bool, baseURL, apiKey string, headers map[string]string, extraBody map[string]any, construction providerregistry.Construction, isSubAgent bool, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
+func (c *coordinator) buildOpenaiCompatProvider(debug bool, baseURL, apiKey string, headers map[string]string, extraBody map[string]any, construction providerregistry.Construction, operation *providertransport.Operation, isSubAgent bool, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
 	opts := []openaicompat.Option{
 		openaicompat.WithBaseURL(baseURL),
 		openaicompat.WithAPIKey(apiKey),
@@ -1793,6 +1803,13 @@ func (c *coordinator) buildOpenaiCompatProvider(debug bool, baseURL, apiKey stri
 	}
 	if httpClient == nil && debug {
 		httpClient = log.NewHTTPClient()
+	}
+	if operation != nil {
+		operation = operation.Clone()
+		operation.Endpoint.BaseURL = baseURL
+		httpClient = operation.HTTPClient(httpClient)
+	} else {
+		httpClient = providertransport.CapturedOriginHTTPClient(httpClient, baseURL)
 	}
 	httpClient = providertransport.ClientWithOwnerValidator(httpClient, validate)
 	opts = append(opts, openaicompat.WithHTTPClient(httpClient))
@@ -2119,7 +2136,7 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 			}
 			return c.buildCodexProvider(snapshot, registration, baseURL, apiKey, headers, validateOwner)
 		case providerregistry.ConstructionCopilot:
-			return c.buildOpenaiCompatProvider(debug, baseURL, apiKey, headers, providerCfg.ExtraBody, registration.Construction, isSubAgent, validateOwner)
+			return c.buildOpenaiCompatProvider(debug, baseURL, apiKey, headers, providerCfg.ExtraBody, registration.Construction, registration.Operation, isSubAgent, validateOwner)
 		case providerregistry.ConstructionAnthropicMessages:
 			if registration.Operation == nil {
 				return nil, fmt.Errorf("provider %s has no operation contract", providerCfg.ID)
@@ -2130,7 +2147,7 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 			if registration.Operation.Anthropic != nil {
 				return c.buildManifestAnthropicProvider(debug, registration, baseURL, apiKey, headers, values, validateOwner)
 			}
-			return c.buildAnthropicProvider(debug, baseURL, apiKey, headers, registration.AnthropicEfficiency, validateOwner)
+			return c.buildAnthropicProvider(debug, baseURL, apiKey, headers, registration.AnthropicEfficiency, registration.Operation, validateOwner)
 		case providerregistry.ConstructionOpenAIResponses:
 			if registration.Operation == nil {
 				return nil, fmt.Errorf("provider %s has no operation contract", providerCfg.ID)
@@ -2163,10 +2180,10 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 	switch providerCfg.Owner.Type {
 	case config.ProviderOwnerCustom, config.ProviderOwnerPreset:
 		if providerCfg.Type == openaicompat.Name {
-			return c.buildOpenaiCompatProvider(debug, baseURL, apiKey, headers, openAICompatExtraBody(providerCfg), "", isSubAgent, validateOwner)
+			return c.buildOpenaiCompatProvider(debug, baseURL, apiKey, headers, openAICompatExtraBody(providerCfg), "", nil, isSubAgent, validateOwner)
 		}
 		if discover.IsKnownCustomProvider(string(providerCfg.Type)) {
-			return c.buildOpenaiCompatProvider(debug, baseURL, apiKey, headers, providerCfg.ExtraBody, "", isSubAgent, validateOwner)
+			return c.buildOpenaiCompatProvider(debug, baseURL, apiKey, headers, providerCfg.ExtraBody, "", nil, isSubAgent, validateOwner)
 		}
 		return nil, fmt.Errorf("provider type not supported: %q", providerCfg.Type)
 	default:
