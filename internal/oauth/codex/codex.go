@@ -363,7 +363,7 @@ func AccountEmail(ctx context.Context, accessToken string) string {
 	}
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "*/*")
-	req.Header.Set("originator", useragent.CodexOriginator())
+	req.Header.Set("originator", useragent.CodexOriginatorForContext(ctx))
 	userAgent, err := useragent.CodexForContext(ctx)
 	if err != nil {
 		return ""
