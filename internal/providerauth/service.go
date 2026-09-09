@@ -188,7 +188,7 @@ func accountsState(snapshot Snapshot, capture config.AuthenticationCapture, owne
 		}
 		state := AccountsState{Target: Target{WorkspaceID: snapshot.WorkspaceID, Owner: owner, Generation: snapshot.Generation}, Status: snapshot.Providers[i], Accounts: []AccountSummary{}}
 		for _, account := range accounts {
-			state.Accounts = append(state.Accounts, AccountSummary{ID: account.ID, DisplayName: account.DisplayName, Active: account.Active, CredentialState: account.CredentialState, Refreshable: account.Refreshable})
+			state.Accounts = append(state.Accounts, AccountSummary{ID: account.ID, DisplayName: account.DisplayName, Active: account.Active, CredentialState: account.CredentialState, Refreshable: account.Refreshable, ExpiresAt: account.ExpiresAt})
 		}
 		if err := state.Validate(); err != nil {
 			return AccountsState{}, err

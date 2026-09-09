@@ -43,7 +43,7 @@ func statusFor(t *testing.T, snapshot Snapshot, providerID string) Status {
 }
 
 func TestAuthenticationServiceStableGenerationPrivateStateAndCapturedPath(t *testing.T) {
-	store, owner, _, root := authenticationFixture(t)
+	store, owner, entry, root := authenticationFixture(t)
 	service := New(store, "workspace-one")
 	first, err := service.Status(t.Context())
 	require.NoError(t, err)
@@ -59,6 +59,7 @@ func TestAuthenticationServiceStableGenerationPrivateStateAndCapturedPath(t *tes
 	require.NoError(t, err)
 	require.Len(t, list.Accounts, 1)
 	require.True(t, list.Accounts[0].Active)
+	require.Equal(t, entry.ExpiresAt, list.Accounts[0].ExpiresAt)
 	encoded, err := json.Marshal(struct {
 		Snapshot Snapshot
 		Accounts AccountsState

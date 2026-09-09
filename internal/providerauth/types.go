@@ -74,6 +74,7 @@ type Snapshot struct {
 }
 
 type AccountSummary struct {
+	ExpiresAt       int64  `json:"expires_at,omitempty"` // Unix milliseconds; nonpositive means no recorded expiry.
 	ID              string `json:"id"`
 	DisplayName     string `json:"display_name"`
 	Active          bool   `json:"active"`
