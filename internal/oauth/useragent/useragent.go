@@ -102,10 +102,13 @@ func GeminiVersion() string {
 }
 
 func GeminiVersionForContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := providertransport.ValidateContextOwner(ctx); err != nil {
 		return "", err
 	}
-	if value := os.Getenv("ANTIGRAVITY_CLI_VERSION"); value != "" {
+	if value := environmentOrForContext(ctx, "ANTIGRAVITY_CLI_VERSION", ""); value != "" {
 		return value, nil
 	}
 	return resolveForContext(ctx, "gemini", staticGeminiVersion, func(ctx context.Context) string {
@@ -149,6 +152,32 @@ func isMuslLinux() bool {
 	return err == nil && strings.Contains(string(out), "musl")
 }
 
+func antigravityPlatformForContext(ctx context.Context) string {
+	if runtime.GOOS != "linux" {
+		return antigravityPlatform()
+	}
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+		return ""
+	}
+	platform := "linux_" + runtime.GOARCH
+	if isMuslLinuxForContext(ctx) {
+		platform += "_musl"
+	}
+	return platform
+}
+
+func isMuslLinuxForContext(ctx context.Context) bool {
+	for _, path := range []string{"/lib/libc.musl-x86_64.so.1", "/lib/libc.musl-aarch64.so.1"} {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	output, err := commandCombinedOutputForContext(ctx, "ldd", "/bin/ls")
+	return err == nil && strings.Contains(string(output), "musl")
+}
+
 // fetchAntigravityManifestVersion queries the release manifest for the
 // current platform and returns its "version" field. Returns "" on any
 // failure.
@@ -157,7 +186,7 @@ func fetchAntigravityManifestVersion() string {
 }
 
 func fetchAntigravityManifestVersionForContext(ctx context.Context) string {
-	platform := antigravityPlatform()
+	platform := antigravityPlatformForContext(ctx)
 	if platform == "" {
 		return ""
 	}
@@ -787,14 +816,30 @@ func CodexForContext(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%s/%s (%s %s; %s) %s",
-		CodexOriginator(), version, codexOSType(), osRelease,
-		runtime.GOARCH, codexTerminalToken()), nil
+		CodexOriginatorForContext(ctx), version, codexOSType(), osRelease,
+		runtime.GOARCH, codexTerminalTokenForContext(ctx)), nil
 }
 
 // CodexOriginator returns the originator value presented in the UA and the
 // "originator" header, honoring the same override env var as the Codex CLI.
 func CodexOriginator() string {
 	return envOr("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "codex_cli_rs")
+}
+
+// CodexOriginatorForContext matches the originator used by CodexForContext,
+// including captured absence, so a request's header and User-Agent agree.
+func CodexOriginatorForContext(ctx context.Context) string {
+	return environmentOrForContext(ctx, "CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "codex_cli_rs")
+}
+
+func codexTerminalTokenForContext(ctx context.Context) string {
+	if program := environmentOrForContext(ctx, "TERM_PROGRAM", ""); program != "" {
+		if version := environmentOrForContext(ctx, "TERM_PROGRAM_VERSION", ""); version != "" {
+			return program + "/" + version
+		}
+		return program
+	}
+	return environmentOrForContext(ctx, "TERM", "unknown")
 }
 
 var (
@@ -821,10 +866,13 @@ func CodexVersion() string {
 }
 
 func CodexVersionForContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := providertransport.ValidateContextOwner(ctx); err != nil {
 		return "", err
 	}
-	if value := os.Getenv("CODEX_VERSION"); value != "" {
+	if value := environmentOrForContext(ctx, "CODEX_VERSION", ""); value != "" {
 		return value, nil
 	}
 	return resolveForContext(ctx, "codex", staticCodexVersion, func(ctx context.Context) string {

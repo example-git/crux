@@ -62,6 +62,14 @@ func persistedForContext(ctx context.Context, key string) string {
 // Probe commands inherit only the environment bound to the owner. In
 // particular an absent PATH cannot select an executable from the process PATH.
 func commandOutputForContext(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return commandResultForContext(ctx, false, name, args...)
+}
+
+func commandCombinedOutputForContext(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return commandResultForContext(ctx, true, name, args...)
+}
+
+func commandResultForContext(ctx context.Context, combined bool, name string, args ...string) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -70,7 +78,11 @@ func commandOutputForContext(ctx context.Context, name string, args ...string) (
 	}
 	entries, bound := oauth.EnvironmentFromContext(ctx)
 	if !bound {
-		return exec.CommandContext(ctx, name, args...).Output()
+		command := exec.CommandContext(ctx, name, args...)
+		if combined {
+			return command.CombinedOutput()
+		}
+		return command.Output()
 	}
 	path := environmentOrForContext(ctx, "PATH", "")
 	if path == "" && !filepath.IsAbs(name) {
@@ -91,7 +103,12 @@ func commandOutputForContext(ctx context.Context, name string, args ...string) (
 	command := exec.CommandContext(ctx, resolved, args...)
 	command.Env = entries
 	command.Dir = directory
-	output, err := command.Output()
+	var output []byte
+	if combined {
+		output, err = command.CombinedOutput()
+	} else {
+		output, err = command.Output()
+	}
 	if ownerErr := providertransport.ValidateContextOwner(ctx); ownerErr != nil {
 		return nil, ownerErr
 	}
