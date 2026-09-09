@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/term"
-	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/connection"
 	"github.com/spf13/cobra"
 )
@@ -146,15 +145,11 @@ var connectionsRevokeCmd = &cobra.Command{
 }
 
 func waitForPairedServer(ctx context.Context, saved connection.Connection) error {
-	pairedClient, err := client.NewAuthenticatedClient("", saved)
-	if err != nil {
-		return err
-	}
 	deadline := time.Now().Add(15 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		attemptCtx, cancel := context.WithTimeout(ctx, time.Second)
-		err = pairedClient.Health(attemptCtx)
+		_, err := connection.ConfirmAuthorization(attemptCtx, saved)
 		cancel()
 		if err == nil {
 			return nil
