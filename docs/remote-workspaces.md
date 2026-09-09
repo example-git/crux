@@ -200,6 +200,14 @@ OAuth interaction completion is followed by the persistence/publication transact
 an authorization callback alone does not mean the workspace is using the new
 account. Changing an authentication credential does not select a different model.
 
+The OAuth provider picker also lists retained operation results from the same
+owning configuration scope. **Recover and save recorded result** creates a new
+login action using the selected original workspace and operation IDs. It reuses
+only the recorded token, requires the original owner and captured inputs to
+match, and runs no new OAuth exchange. The normal completion transaction still
+has to save and publish the result. An exchange with no retained token response
+stays unknown; it cannot be resumed by repeating that exchange.
+
 Account commands use the selected workspace's authority:
 
 ```sh
