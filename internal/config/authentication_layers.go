@@ -161,10 +161,14 @@ func authenticationLayerObject(data []byte) bool {
 }
 
 func (layers authenticationLayers) merged(path string, replacement []byte) (*Config, error) {
+	return layers.mergedReplacements(map[string][]byte{path: replacement})
+}
+
+func (layers authenticationLayers) mergedReplacements(replacements map[string][]byte) (*Config, error) {
 	values := make([][]byte, 0, len(layers.order)+len(layers.overlays))
 	for _, source := range layers.order {
 		data := layers.values[source]
-		if source == path {
+		if replacement, changed := replacements[source]; changed {
 			data = replacement
 		}
 		if len(data) > 0 {
@@ -255,6 +259,12 @@ func (layers authenticationLayers) checkPrecision(values [][]byte, merged []byte
 // A non-nil desired is the exact owner-mapped OAuth provider, already prepared
 // from the selected account. It is never a provider-wide replacement.
 func (layers authenticationLayers) stageCredentials(ctx context.Context, path, providerID string, desired *ProviderConfig) (authenticationCredentialEdit, error) {
+	return layers.stageCredentialsAtPaths(ctx, path, providerID, desired, []string{path})
+}
+
+// stageCredentialsAtPaths represents one physical rename observed through its
+// prevalidated aliases. It never creates additional physical writes.
+func (layers authenticationLayers) stageCredentialsAtPaths(ctx context.Context, path, providerID string, desired *ProviderConfig, writtenPaths []string) (authenticationCredentialEdit, error) {
 	if err := ctx.Err(); err != nil {
 		return authenticationCredentialEdit{}, err
 	}
@@ -291,7 +301,14 @@ func (layers authenticationLayers) stageCredentials(ctx context.Context, path, p
 			return authenticationCredentialEdit{}, errors.New("authentication scoped configuration must contain objects")
 		}
 	}
-	after, err := layers.merged(path, data)
+	if !slices.Contains(writtenPaths, path) {
+		return authenticationCredentialEdit{}, errors.New("authentication scope aliases omit the written path")
+	}
+	replacements := make(map[string][]byte, len(writtenPaths))
+	for _, written := range writtenPaths {
+		replacements[written] = data
+	}
+	after, err := layers.mergedReplacements(replacements)
 	if err != nil {
 		return authenticationCredentialEdit{}, err
 	}
