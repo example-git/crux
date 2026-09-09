@@ -68,9 +68,10 @@ var scopes = []string{
 	"openid",
 }
 
-func oauthClientCredentials() (string, string, error) {
-	clientID := strings.TrimSpace(os.Getenv("GEMINI_OAUTH_CLIENT_ID"))
-	clientSecret := strings.TrimSpace(os.Getenv("GEMINI_OAUTH_CLIENT_SECRET"))
+func oauthClientCredentials(ctx context.Context) (string, string, error) {
+	clientID, _ := oauth.LookupEnvironment(ctx, "GEMINI_OAUTH_CLIENT_ID")
+	clientSecret, _ := oauth.LookupEnvironment(ctx, "GEMINI_OAUTH_CLIENT_SECRET")
+	clientID, clientSecret = strings.TrimSpace(clientID), strings.TrimSpace(clientSecret)
 	if clientID == "" || clientSecret == "" {
 		return "", "", errors.New("Gemini OAuth client credentials are not configured; set GEMINI_OAUTH_CLIENT_ID and GEMINI_OAUTH_CLIENT_SECRET")
 	}
@@ -199,10 +200,14 @@ func tokenRequest(ctx context.Context, form url.Values) (tokenResponse, error) {
 
 // ExchangeCode exchanges an authorization code for an access token.
 func ExchangeCode(ctx context.Context, code, verifier string) (*oauth.Token, error) {
-	clientID, clientSecret, err := oauthClientCredentials()
+	clientID, clientSecret, err := oauthClientCredentials(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return exchangeCodeWithClientCredentials(ctx, code, verifier, clientID, clientSecret)
+}
+
+func exchangeCodeWithClientCredentials(ctx context.Context, code, verifier, clientID, clientSecret string) (*oauth.Token, error) {
 	tr, err := tokenRequest(ctx, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
@@ -220,7 +225,7 @@ func ExchangeCode(ctx context.Context, code, verifier string) (*oauth.Token, err
 // Refresh exchanges a refresh token for a fresh access token. Google does not
 // rotate the refresh token here, so the previous one is carried forward.
 func Refresh(ctx context.Context, refreshToken string) (*oauth.Token, error) {
-	clientID, clientSecret, err := oauthClientCredentials()
+	clientID, clientSecret, err := oauthClientCredentials(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -265,7 +270,13 @@ func toToken(tr tokenResponse, clientID string) *oauth.Token {
 // readCode must return whatever the user pasted back, which may be the bare
 // code, a "code=..." fragment, or the full callback URL.
 func Authorize(ctx context.Context, open func(string) error, readCode func() (string, error)) (*oauth.Token, error) {
-	clientID, _, err := oauthClientCredentials()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return nil, err
+	}
+	clientID, clientSecret, err := oauthClientCredentials(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -279,13 +290,28 @@ func Authorize(ctx context.Context, open func(string) error, readCode func() (st
 	}
 
 	authURL := buildAuthorizeURL(challenge, state, clientID)
-	if err := open(authURL); err != nil {
+	if err := providertransport.OpenURLWithContextOwnerValidator(ctx, open, authURL); err != nil {
 		return nil, err
 	}
 
-	pasted, err := readCode()
-	if err != nil {
-		return nil, err
+	if readCode == nil {
+		return nil, errors.New("Gemini OAuth requires pasted callback input")
+	}
+	type codeResult struct {
+		value string
+		err   error
+	}
+	codes := make(chan codeResult, 1)
+	go func() { value, err := readCode(); codes <- codeResult{value, err} }()
+	var pasted string
+	select {
+	case result := <-codes:
+		if result.err != nil {
+			return nil, result.err
+		}
+		pasted = result.value
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 
 	code, gotState, err := parsePastedCode(pasted)
@@ -296,7 +322,17 @@ func Authorize(ctx context.Context, open func(string) error, readCode func() (st
 		return nil, errors.New("OAuth state mismatch — possible CSRF, please try again")
 	}
 
-	return ExchangeCode(ctx, code, verifier)
+	token, err := exchangeCodeWithClientCredentials(ctx, code, verifier, clientID, clientSecret)
+	if err == nil {
+		err = providertransport.ValidateContextOwner(ctx)
+	}
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return token, nil
 }
 
 // parsePastedCode extracts the authorization code (and state, when present)

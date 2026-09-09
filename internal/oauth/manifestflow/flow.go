@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/example-git/crux/internal/oauth"
@@ -92,6 +93,18 @@ func (e *Executor) endpoint(id string) (manifest.Endpoint, *url.URL, error) {
 }
 
 func (e *Executor) Authorize(ctx context.Context, open func(string) error, readCode func() (string, error)) (*oauth.Token, error) {
+	timeout := time.Duration(e.flow.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return nil, err
+	}
 	verifier, challenge, err := createPKCE(e.flow.PKCE)
 	if err != nil {
 		return nil, err
@@ -138,8 +151,18 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 	results := make(chan result, 1)
 	var once sync.Once
 	finish := func(value result) { once.Do(func() { results <- value }) }
+	var claimed atomic.Bool
 	mux := http.NewServeMux()
 	mux.HandleFunc(path, func(w http.ResponseWriter, request *http.Request) {
+		if !claimed.CompareAndSwap(false, true) {
+			http.Error(w, "OAuth callback already received.", http.StatusConflict)
+			return
+		}
+		if err := ctx.Err(); err != nil {
+			http.Error(w, "OAuth authorization has ended.", http.StatusGone)
+			finish(result{err: err})
+			return
+		}
 		query := request.URL.Query()
 		if providerError := query.Get("error"); providerError != "" {
 			detail := query.Get("error_description")
@@ -156,8 +179,14 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 			"oauth.code": query.Get("code"), "oauth.redirect_uri": redirectURI,
 			"oauth.pkce_verifier": verifier, "oauth.state": state,
 		}, "")
+		if exchangeErr == nil {
+			exchangeErr = providertransport.ValidateContextOwner(ctx)
+		}
+		if exchangeErr == nil {
+			exchangeErr = ctx.Err()
+		}
 		if exchangeErr != nil {
-			_ = callback.Serve(w, callback.Result{Subject: e.providerName, ErrorCode: "token_exchange_failed", ErrorDescription: exchangeErr.Error()})
+			_ = callback.Serve(w, callback.Result{Subject: e.providerName, ErrorCode: "token_exchange_failed", ErrorDescription: "Authorization could not be completed."})
 			finish(result{err: exchangeErr})
 			return
 		}
@@ -171,28 +200,25 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 		}
 	}()
 	defer func() {
+		cancel()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
+		_ = server.Close()
 	}()
 	if open != nil {
-		if err := open(authorizationURL); err != nil {
+		if err := providertransport.OpenURLWithContextOwnerValidator(ctx, open, authorizationURL); err != nil {
 			return nil, fmt.Errorf("open authorization URL: %w", err)
 		}
 	}
-	timeout := time.Duration(e.flow.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 5 * time.Minute
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
 	select {
 	case value := <-results:
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return value.token, value.err
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-timer.C:
-		return nil, errors.New("OAuth authorization timed out")
 	}
 }
 
@@ -211,7 +237,7 @@ func (e *Executor) authorizeHostedPaste(ctx context.Context, open func(string) e
 	if err != nil {
 		return nil, err
 	}
-	if err := open(authorizationURL); err != nil {
+	if err := providertransport.OpenURLWithContextOwnerValidator(ctx, open, authorizationURL); err != nil {
 		return nil, fmt.Errorf("open authorization URL: %w", err)
 	}
 	type pastedResult struct {

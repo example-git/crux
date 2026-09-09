@@ -186,7 +186,7 @@ func TestOAuthClientCredentialsRequired(t *testing.T) {
 
 	t.Setenv("GEMINI_OAUTH_CLIENT_ID", "client-id")
 	t.Setenv("GEMINI_OAUTH_CLIENT_SECRET", "client-secret")
-	clientID, clientSecret, err := oauthClientCredentials()
+	clientID, clientSecret, err := oauthClientCredentials(t.Context())
 	if err != nil {
 		t.Fatalf("oauthClientCredentials() error = %v", err)
 	}

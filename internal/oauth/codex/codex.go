@@ -17,9 +17,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/example-git/crux/foundation/catalog"
@@ -58,8 +59,9 @@ var scopes = []string{
 	"api.connectors.read", "api.connectors.invoke",
 }
 
-func oauthClientID() (string, error) {
-	clientID := strings.TrimSpace(os.Getenv("CODEX_OAUTH_CLIENT_ID"))
+func oauthClientID(ctx context.Context) (string, error) {
+	clientID, _ := oauth.LookupEnvironment(ctx, "CODEX_OAUTH_CLIENT_ID")
+	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
 		return "", errors.New("Codex OAuth client ID is not configured; set CODEX_OAUTH_CLIENT_ID")
 	}
@@ -175,10 +177,14 @@ func tokenRequest(ctx context.Context, form url.Values) (tokenResponse, error) {
 
 // ExchangeCode exchanges an authorization code for tokens.
 func ExchangeCode(ctx context.Context, code, verifier, redirectURI string) (*oauth.Token, error) {
-	clientID, err := oauthClientID()
+	clientID, err := oauthClientID(ctx)
 	if err != nil {
 		return nil, err
 	}
+	return exchangeCodeWithClientID(ctx, code, verifier, redirectURI, clientID)
+}
+
+func exchangeCodeWithClientID(ctx context.Context, code, verifier, redirectURI, clientID string) (*oauth.Token, error) {
 	res, err := tokenRequest(ctx, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
@@ -200,7 +206,7 @@ func ExchangeCode(ctx context.Context, code, verifier, redirectURI string) (*oau
 
 // RefreshToken refreshes an expired access token.
 func RefreshToken(ctx context.Context, refreshToken string) (*oauth.Token, error) {
-	clientID, err := oauthClientID()
+	clientID, err := oauthClientID(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +235,15 @@ func RefreshToken(ctx context.Context, refreshToken string) (*oauth.Token, error
 // It binds the fixed loopback port the Codex client registration requires
 // and blocks until the browser completes the callback or ctx is cancelled.
 func Authorize(ctx context.Context, open func(string) error) (*oauth.Token, error) {
-	clientID, err := oauthClientID()
+	ctx, cancel := context.WithTimeout(ctx, authorizeTimeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return nil, err
+	}
+	clientID, err := oauthClientID(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -253,9 +267,21 @@ func Authorize(ctx context.Context, open func(string) error) (*oauth.Token, erro
 		err   error
 	}
 	resultCh := make(chan result, 1)
+	var finishOnce sync.Once
+	finish := func(value result) { finishOnce.Do(func() { resultCh <- value }) }
+	var claimed atomic.Bool
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(redirectPath, func(w http.ResponseWriter, r *http.Request) {
+		if !claimed.CompareAndSwap(false, true) {
+			http.Error(w, "OAuth callback already received.", http.StatusConflict)
+			return
+		}
+		if err := ctx.Err(); err != nil {
+			http.Error(w, "OAuth authorization has ended.", http.StatusGone)
+			finish(result{err: err})
+			return
+		}
 		q := r.URL.Query()
 		if q.Get("state") != state || q.Get("code") == "" {
 			_ = callback.Serve(w, callback.Result{
@@ -263,41 +289,58 @@ func Authorize(ctx context.Context, open func(string) error) (*oauth.Token, erro
 				ErrorCode:        "invalid_request",
 				ErrorDescription: "Invalid OAuth callback.",
 			})
-			resultCh <- result{err: errors.New("codex OAuth callback validation failed")}
+			finish(result{err: errors.New("codex OAuth callback validation failed")})
 			return
 		}
-		token, err := ExchangeCode(r.Context(), q.Get("code"), verifier, redirectURI)
+		token, err := exchangeCodeWithClientID(ctx, q.Get("code"), verifier, redirectURI, clientID)
+		if err == nil {
+			err = providertransport.ValidateContextOwner(ctx)
+		}
+		if err == nil {
+			err = ctx.Err()
+		}
 		if err != nil {
 			_ = callback.Serve(w, callback.Result{
 				Subject:          Name,
 				ErrorCode:        "token_exchange_failed",
-				ErrorDescription: err.Error(),
+				ErrorDescription: "Authorization could not be completed.",
 			})
-			resultCh <- result{err: err}
+			finish(result{err: err})
 			return
 		}
 		_ = callback.Serve(w, callback.Result{Subject: Name})
-		resultCh <- result{token: token}
+		finish(result{token: token})
 	})
 
-	server := &http.Server{Handler: mux}
-	go func() { _ = server.Serve(listener) }()
-	defer server.Close()
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 15 * time.Second}
+	go func() {
+		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			finish(result{err: errors.New("OAuth callback server stopped")})
+		}
+	}()
+	defer func() {
+		cancel()
+		shutdownCtx, stop := context.WithTimeout(context.Background(), time.Second)
+		defer stop()
+		_ = server.Shutdown(shutdownCtx)
+		_ = server.Close()
+	}()
 
 	authURL := buildAuthorizeURL(redirectURI, challenge, state, clientID)
 	if open != nil {
-		if err := open(authURL); err != nil {
+		if err := providertransport.OpenURLWithContextOwnerValidator(ctx, open, authURL); err != nil {
 			return nil, fmt.Errorf("open authorization URL: %w", err)
 		}
 	}
 
 	select {
 	case res := <-resultCh:
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		return res.token, res.err
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(authorizeTimeout):
-		return nil, errors.New("codex OAuth authorization timed out")
 	}
 }
 
