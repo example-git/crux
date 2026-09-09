@@ -823,7 +823,9 @@ type Config struct {
 // and are shared.
 func (c *Config) cloneForWrite() *Config {
 	nc := *c
-	nc.authenticationCandidates = make(map[string]ProviderConfig, len(c.authenticationCandidates))
+	// Preserve absence: durable runtime fingerprints distinguish nil from an
+	// explicitly retained candidate map across a credential-only write.
+	nc.authenticationCandidates = maps.Clone(c.authenticationCandidates)
 	for id, provider := range c.authenticationCandidates {
 		nc.authenticationCandidates[id] = cloneProviderConfig(provider)
 	}

@@ -425,6 +425,9 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 	for id, provider := range c.Providers.Seq2() {
 		provider = c.completeProviderOwner(id, provider)
 		provider.ID = id
+		// Credential bindings compare against this unpublished configuration.
+		// Make its completed owner visible before binding the exact slot.
+		c.Providers.Set(id, provider)
 		var err error
 		provider, err = resolveProviderConfigurationCredentials(snapshot, provider, func(source string) (string, error) {
 			if err := ctx.Err(); err != nil {
