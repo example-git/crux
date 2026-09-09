@@ -108,7 +108,7 @@ var authenticationAbandonCmd = &cobra.Command{
 
 func init() {
 	authenticationAbandonCmd.Flags().Uint64("revision", 0, "Exact journal revision from the reviewed original history record")
-	authenticationAbandonCmd.Flags().String("abandon-id", "", "Distinct action ID; reuse the same ID and revision for an exact retry")
+	authenticationAbandonCmd.Flags().String("abandon-id", "", "Distinct 32-character lowercase hexadecimal action ID; reuse the same ID and revision for an exact retry")
 	authenticationAbandonCmd.Flags().Bool("review", false, "Select a retained attempted review instead of an original operation")
 	_ = authenticationAbandonCmd.MarkFlagRequired("revision")
 	_ = authenticationAbandonCmd.MarkFlagRequired("abandon-id")
