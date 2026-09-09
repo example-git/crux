@@ -23,12 +23,13 @@ func (r ProviderOAuthLoginWaitRequest) Validate() error { return r.Login.Validat
 // A complete interaction state is not a runtime acknowledgement; Complete uses
 // ProviderAuthenticationMutationResponse and its exact transaction receipt.
 type ProviderOAuthLoginResponse struct {
-	Login        providerauth.OAuthLoginRef    `json:"login"`
-	BindingID    string                        `json:"binding_id,omitempty"`
-	Port         uint16                        `json:"port,omitempty"`
-	SubmissionID string                        `json:"submission_id,omitempty"`
-	State        *providerauth.OAuthLoginState `json:"state,omitempty"`
-	Error        *ProviderAuthenticationError  `json:"error,omitempty"`
+	Login               providerauth.OAuthLoginRef    `json:"login"`
+	RecoveryOperationID string                        `json:"recovery_operation_id,omitempty"`
+	BindingID           string                        `json:"binding_id,omitempty"`
+	Port                uint16                        `json:"port,omitempty"`
+	SubmissionID        string                        `json:"submission_id,omitempty"`
+	State               *providerauth.OAuthLoginState `json:"state,omitempty"`
+	Error               *ProviderAuthenticationError  `json:"error,omitempty"`
 }
 
 func (ProviderOAuthLoginResponse) Format(s fmt.State, _ rune) {
@@ -56,6 +57,9 @@ func (r ProviderOAuthLoginResponse) validate(ref providerauth.OAuthLoginRef, bin
 	if err := r.State.Validate(); err != nil {
 		return err
 	}
+	if r.RecoveryOperationID != "" && !r.State.MatchesOAuthLoginRecovery(r.RecoveryOperationID) {
+		return errors.New("OAuth response changed the recorded recovery")
+	}
 	if r.State.Login != ref {
 		return errors.New("OAuth login state changed the requested login")
 	}
@@ -69,6 +73,9 @@ func (r ProviderOAuthLoginResponse) validate(ref providerauth.OAuthLoginRef, bin
 }
 
 func (r ProviderOAuthLoginResponse) ValidateBegin(request providerauth.OAuthLoginRequest) error {
+	if r.RecoveryOperationID != "" || r.State != nil && r.State.Recovery != nil {
+		return errors.New("OAuth begin response substituted a recorded recovery")
+	}
 	return r.validate(request, "", 0, "")
 }
 func (r ProviderOAuthLoginResponse) ValidateBind(request providerauth.OAuthLoginBindRequest) error {

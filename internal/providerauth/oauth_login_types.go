@@ -122,6 +122,7 @@ func (c OAuthLoginCallback) Validate() error {
 // discovery responses; diagnostic formatting always omits them.
 type OAuthLoginState struct {
 	Login            OAuthLoginRef       `json:"login"`
+	Recovery         *OAuthLoginRecovery `json:"recovery,omitempty"`
 	Sequence         uint64              `json:"sequence"`
 	Phase            OAuthLoginPhase     `json:"phase"`
 	ExpiresAt        int64               `json:"expires_at,omitempty"` // Unix milliseconds; zero means no declared deadline.
@@ -137,6 +138,15 @@ func (OAuthLoginState) Format(state fmt.State, _ rune) {
 func (s OAuthLoginState) Validate() error {
 	if err := s.Login.Validate(); err != nil {
 		return err
+	}
+	if s.Recovery != nil {
+		if err := (OAuthLoginRecoveryRequest{Login: s.Login, OriginalOperationID: s.Recovery.OriginalOperationID}).Validate(); err != nil {
+			return err
+		}
+		switch s.Phase {
+		case OAuthLoginWaitingLoopback, OAuthLoginWaitingBrowser, OAuthLoginWaitingCode, OAuthLoginWaitingDevice:
+			return errors.New("recorded OAuth recovery cannot request a new interaction")
+		}
 	}
 	// Zero means the captured adapter declares no overall expiry. The session
 	// remains bound to workspace lifetime and explicit cancellation.

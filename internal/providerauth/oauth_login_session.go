@@ -39,6 +39,10 @@ func (*oauthLoginSession) MarshalJSON() ([]byte, error) {
 }
 
 func cloneOAuthLoginState(state OAuthLoginState) OAuthLoginState {
+	if state.Recovery != nil {
+		copy := *state.Recovery
+		state.Recovery = &copy
+	}
 	if state.Callback != nil {
 		copy := *state.Callback
 		state.Callback = &copy
@@ -167,7 +171,16 @@ func (s *Service) initializeOAuthLogin(login *oauthLoginSession) error {
 	login.mu.Lock()
 	before, owner := login.before, login.owner
 	operation := config.AuthenticationJournalKey{Kind: config.AuthenticationJournalOAuth, WorkspaceID: login.state.Login.Target.WorkspaceID, OperationID: login.state.Login.OperationID}
+	recovery := login.state.Recovery
 	login.mu.Unlock()
+	if recovery != nil {
+		authorized, err := s.store.RecoverOAuthLoginResult(login.ctx, before, owner, operation.WorkspaceID, recovery.OriginalOperationID)
+		if err != nil {
+			return err
+		}
+		login.authorize(authorized)
+		return nil
+	}
 	prepared, err := s.store.PrepareOAuthLogin(config.ContextWithAuthenticationOperation(login.ctx, operation), before, owner)
 	if err != nil {
 		return err

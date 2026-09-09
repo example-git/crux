@@ -35,6 +35,12 @@ type ActionOAuthLoginSelect struct {
 	Dialog *OAuthLogin
 	Owner  providerauth.Owner
 }
+type OAuthLoginResultChoice struct{ OperationID, Label string }
+type ActionOAuthLoginResult struct {
+	Dialog              *OAuthLogin
+	OriginalOperationID string
+}
+
 type ActionOAuthLoginSubmit struct{ Dialog *OAuthLogin }
 type ActionOAuthLoginRetry struct{ Dialog *OAuthLogin }
 type ActionOAuthLoginOpen struct{ Dialog *OAuthLogin }
@@ -52,6 +58,7 @@ type OAuthLogin struct {
 	isOnboarding bool
 	providerName string
 	providers    []OAuthLoginProvider
+	results      []OAuthLoginResultChoice
 	selected     int
 	revealChoice bool
 	presentation OAuthLoginPresentation
@@ -96,8 +103,20 @@ func (m *OAuthLogin) ID() string { return LoginID }
 
 func (m *OAuthLogin) SetProviders(providers []OAuthLoginProvider) {
 	m.providers = slices.Clone(providers)
+	m.results = nil
 	m.selected = 0
 	m.revealChoice = len(providers) > 0
+	m.details.GotoTop()
+	m.setBindings()
+}
+
+// SetRecordedResults includes an explicit new-login choice supplied by the main
+// model. An unknown exchange is displayed in the body, never made recoverable.
+func (m *OAuthLogin) SetRecordedResults(choices []OAuthLoginResultChoice) {
+	m.providers = nil
+	m.results = slices.Clone(choices)
+	m.selected = 0
+	m.revealChoice = len(choices) > 0
 	m.details.GotoTop()
 	m.setBindings()
 }
@@ -112,10 +131,17 @@ func (m *OAuthLogin) SetPresentation(p OAuthLoginPresentation) {
 
 func (m *OAuthLogin) setBindings() {
 	p := m.presentation
-	m.choose.SetEnabled(len(m.providers) > 0)
-	m.previous.SetEnabled(len(m.providers) > 0)
-	m.next.SetEnabled(len(m.providers) > 0)
-	m.submit.SetEnabled(p.Editable && len(m.providers) == 0)
+	m.choose.SetEnabled(len(m.providers)+len(m.results) > 0)
+	if len(m.results) > 0 {
+		m.choose.SetHelp("enter", "select action")
+		m.previous.SetHelp("↑/↓", "actions")
+	} else {
+		m.choose.SetHelp("enter", "select provider")
+		m.previous.SetHelp("↑/↓", "providers")
+	}
+	m.previous.SetEnabled(m.choose.Enabled())
+	m.next.SetEnabled(m.choose.Enabled())
+	m.submit.SetEnabled(p.Editable && !m.choose.Enabled())
 	m.open.SetEnabled(p.Open)
 	m.retry.SetEnabled(p.Retry)
 	m.reload.SetEnabled(p.Reload)
@@ -152,13 +178,16 @@ func (m *OAuthLogin) HandleMsg(msg tea.Msg) Action {
 		case key.Matches(press, m.close):
 			return ActionClose{}
 		case key.Matches(press, m.choose):
+			if len(m.results) > 0 {
+				return ActionOAuthLoginResult{Dialog: m, OriginalOperationID: m.results[m.selected].OperationID}
+			}
 			return ActionOAuthLoginSelect{Dialog: m, Owner: m.providers[m.selected].Owner}
 		case key.Matches(press, m.previous):
 			m.selected = max(0, m.selected-1)
 			m.revealChoice = true
 			return nil
 		case key.Matches(press, m.next):
-			m.selected = min(len(m.providers)-1, m.selected+1)
+			m.selected = min(len(m.providers)+len(m.results)-1, m.selected+1)
 			m.revealChoice = true
 			return nil
 		case key.Matches(press, m.open):
@@ -260,7 +289,14 @@ func (m *OAuthLogin) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	footer := m.actionFooter(inner)
 	var body []string
 	selectedLine := 0
-	for i, provider := range m.providers {
+	labels := make([]string, 0, len(m.providers)+len(m.results))
+	for _, provider := range m.providers {
+		labels = append(labels, provider.Name)
+	}
+	for _, result := range m.results {
+		labels = append(labels, result.Label)
+	}
+	for i, label := range labels {
 		style, marker := t.Dialog.PrimaryText, "  "
 		if i == m.selected {
 			selectedLine = lipgloss.Height(strings.Join(body, "\n"))
@@ -269,7 +305,7 @@ func (m *OAuthLogin) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 			}
 			style, marker = t.Dialog.SelectedItem, "> "
 		}
-		body = append(body, style.Width(inner).Render(marker+provider.Name))
+		body = append(body, style.Width(inner).Render(marker+label))
 	}
 	if m.presentation.CompleteDispatched {
 		body = append(body, t.Dialog.SecondaryText.Width(inner).Render("Closing retains the original completion receipt."))
@@ -340,9 +376,12 @@ func (m *OAuthLogin) FullHelp() [][]key.Binding { return [][]key.Binding{m.Short
 
 func (m *OAuthLogin) actionFooter(width int) string {
 	bindings := m.ShortHelp()
-	descriptions := []string{"select", "providers", "submit", "open", "retry", "reload", "recover", "retry recovery", "cancel", "scroll"}
+	descriptions := []string{"select", "providers", "submit", "open", "retry", "reload", "recover", "retry recovery", "review", "cancel", "scroll"}
+	if len(m.results) > 0 {
+		descriptions[1] = "actions"
+	}
 	if m.presentation.CompleteDispatched {
-		descriptions[8] = "close"
+		descriptions[9] = "close"
 	}
 	textWidth := max(0, width-m.com.Styles.Dialog.HelpView.GetHorizontalFrameSize())
 	var rows []string

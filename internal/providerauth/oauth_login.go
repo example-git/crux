@@ -11,14 +11,14 @@ import (
 )
 
 func (s *Service) BeginOAuthLogin(ctx context.Context, request OAuthLoginRequest) (OAuthLoginState, error) {
-	return s.beginOAuthLogin(ctx, request, nil, nil)
+	return s.beginOAuthLogin(ctx, request, nil, nil, nil)
 }
 
 func (s *Service) BeginOAuthLoginForAccepted(ctx context.Context, request OAuthLoginRequest, accepted config.RemoteRuntimeProposal, view *config.Config) (OAuthLoginState, error) {
-	return s.beginOAuthLogin(ctx, request, &accepted, view)
+	return s.beginOAuthLogin(ctx, request, &accepted, view, nil)
 }
 
-func (s *Service) beginOAuthLogin(ctx context.Context, request OAuthLoginRequest, accepted *config.RemoteRuntimeProposal, view *config.Config) (OAuthLoginState, error) {
+func (s *Service) beginOAuthLogin(ctx context.Context, request OAuthLoginRequest, accepted *config.RemoteRuntimeProposal, view *config.Config, recovery *OAuthLoginRecovery) (OAuthLoginState, error) {
 	ctx, done := s.operationContext(ctx)
 	defer done()
 	if err := request.Validate(); err != nil {
@@ -32,7 +32,7 @@ func (s *Service) beginOAuthLogin(ctx context.Context, request OAuthLoginRequest
 	}
 	defer func() { <-s.gate }()
 	if login, found := s.logins[request.LoginID]; found {
-		if login.state.Login != request {
+		if login.state.Login != request || !sameOAuthRecovery(login.state.Recovery, recovery) {
 			return OAuthLoginState{}, ErrOperationConflict
 		}
 		return login.snapshot()
@@ -69,7 +69,7 @@ func (s *Service) beginOAuthLogin(ctx context.Context, request OAuthLoginRequest
 	// only this reply; the admitted session belongs to the workspace lifetime.
 	s.sequence++
 	lifetime, cancel := context.WithCancel(s.lifetime)
-	login := &oauthLoginSession{ctx: lifetime, cancel: cancel, state: OAuthLoginState{Login: request, Sequence: 1, Phase: OAuthLoginPreparing}, changed: make(chan struct{}), before: before, owner: owner, admittedSequence: s.sequence}
+	login := &oauthLoginSession{ctx: lifetime, cancel: cancel, state: OAuthLoginState{Login: request, Recovery: recovery, Sequence: 1, Phase: OAuthLoginPreparing}, changed: make(chan struct{}), before: before, owner: owner, admittedSequence: s.sequence}
 	if len(s.loginIDs) == mutationReceiptLimit {
 		oldest := s.logins[s.loginIDs[0]]
 		oldest.fail(context.Canceled)

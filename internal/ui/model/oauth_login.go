@@ -21,13 +21,17 @@ import (
 )
 
 type oauthLoginRead struct {
-	workspace  workspace.Workspace
-	dialog     *dialog.OAuthLogin
-	selection  *dialog.ActionSelectModel
-	expected   *providerauth.Owner
-	generation uint64
-	snapshot   providerauth.Snapshot
-	cancel     context.CancelFunc
+	workspace        workspace.Workspace
+	dialog           *dialog.OAuthLogin
+	selection        *dialog.ActionSelectModel
+	expected         *providerauth.Owner
+	generation       uint64
+	snapshot         providerauth.Snapshot
+	recordedOwner    providerauth.Owner
+	recorded         []providerauth.OAuthLoginRecordedResult
+	recordedSequence uint64
+	recordedLoaded   bool
+	cancel           context.CancelFunc
 }
 
 type oauthLoginOperation struct {
@@ -44,6 +48,7 @@ type oauthLoginOperation struct {
 	progress                                                                 providerauth.MutationProgress
 	attempt, relayAttempt                                                    uint64
 	kind, message, openedURL                                                 string
+	recordedOperationID                                                      string
 	busy, preparing, began, completeSent, resolved, continued, closed, ended bool
 	cancel                                                                   context.CancelFunc
 	relay                                                                    *callbackrelay.Relay
@@ -267,7 +272,7 @@ func (m *UI) completeOAuthLoginStatus(msg oauthLoginStatusMsg) tea.Cmd {
 	r.dialog.SetPresentation(dialog.OAuthLoginPresentation{Message: message, Reload: true})
 	return nil
 }
-func (m *UI) beginOAuthLogin(d *dialog.OAuthLogin, owner providerauth.Owner) tea.Cmd {
+func (m *UI) startOAuthLogin(d *dialog.OAuthLogin, owner providerauth.Owner, originalOperationID string) tea.Cmd {
 	r := m.oauthLoginReads[d]
 	if r == nil || r.workspace != m.com.Workspace || !m.oauthDialogOpen(d) {
 		return nil
@@ -293,7 +298,11 @@ func (m *UI) beginOAuthLogin(d *dialog.OAuthLogin, owner providerauth.Owner) tea
 			return util.ReportError(err)
 		}
 	}
-	op := &oauthLoginOperation{workspace: r.workspace, dialog: d, selection: r.selection, chooseProvider: r.expected == nil && r.selection == nil, generation: r.generation, ref: providerauth.OAuthLoginRef{Target: providerauth.Target{WorkspaceID: r.snapshot.WorkspaceID, Owner: owner, Generation: r.snapshot.Generation}}, preparing: true, attempt: 1, kind: "begin", message: "Preparing sign-in for " + owner.ProviderID + "…"}
+	op := &oauthLoginOperation{recordedOperationID: originalOperationID, workspace: r.workspace, dialog: d, selection: r.selection, chooseProvider: r.expected == nil && r.selection == nil, generation: r.generation, ref: providerauth.OAuthLoginRef{Target: providerauth.Target{WorkspaceID: r.snapshot.WorkspaceID, Owner: owner, Generation: r.snapshot.Generation}}, preparing: true, attempt: 1, kind: "begin", message: "Preparing sign-in for " + owner.ProviderID + "…"}
+	if originalOperationID != "" {
+		op.kind = "recover-result"
+		op.message = "Recovering observed result from operation " + originalOperationID + "; no new exchange will run…"
+	}
 	if recoverer, ok := op.workspace.(workspace.ProviderAuthenticationRecoverer); ok && recoverer.CanRecoverProviderAuthentication() {
 		op.recoverer = recoverer
 	}
@@ -351,9 +360,15 @@ func (m *UI) completeOAuthLoginIDs(msg oauthLoginIDsMsg) tea.Cmd {
 	}
 	if op.selection != nil && op.generation != m.modelSelectionGen {
 		op.kind = "begin"
+		if op.recordedOperationID != "" {
+			op.kind = "recover-result"
+		}
 		op.message = "The model selection changed before login began. Retry explicitly to continue the original login."
 		m.showOAuthLogin(op)
 		return util.ReportWarn(op.message)
+	}
+	if op.recordedOperationID != "" {
+		return m.dispatchOAuthLogin(op, "recover-result")
 	}
 	return m.dispatchOAuthLogin(op, "begin")
 }
@@ -365,7 +380,7 @@ func (m *UI) dispatchOAuthLogin(op *oauthLoginOperation, kind string) tea.Cmd {
 	op.busy = true
 	op.kind = kind
 	op.attempt++
-	if kind == "begin" {
+	if kind == "begin" || kind == "recover-result" {
 		op.began = true
 	}
 	if kind == "complete" || kind == "recovery" {
@@ -374,6 +389,7 @@ func (m *UI) dispatchOAuthLogin(op *oauthLoginOperation, kind string) tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	op.cancel = cancel
 	ws, ref, binding, submission, attempt, after, recoverer := op.workspace, op.ref, op.binding, op.submission, op.attempt, op.state.Sequence, op.recoverer
+	originalOperationID := op.recordedOperationID
 	var recovery *workspace.ProviderAuthenticationRecoveryRequest
 	if kind == "recovery" {
 		value := *op.recovery
@@ -395,6 +411,13 @@ func (m *UI) dispatchOAuthLogin(op *oauthLoginOperation, kind string) tea.Cmd {
 		switch kind {
 		case "begin":
 			result.state, result.err = ws.BeginProviderOAuthLogin(ctx, ref)
+		case "recover-result":
+			capability, ok := ws.(workspace.ProviderOAuthRecovery)
+			if !ok {
+				result.err = errors.New("recorded OAuth recovery is unavailable")
+			} else {
+				result.state, result.err = capability.RecoverProviderOAuthLogin(ctx, providerauth.OAuthLoginRecoveryRequest{Login: ref, OriginalOperationID: originalOperationID})
+			}
 		case "bind":
 			result.state, result.err = ws.BindProviderOAuthLogin(ctx, binding)
 		case "code":
@@ -437,6 +460,9 @@ func (m *UI) completeOAuthLoginResult(msg oauthLoginResultMsg) tea.Cmd {
 	switch msg.kind {
 	case "begin":
 		validation = response.ValidateBegin(op.ref)
+	case "recover-result":
+		response.RecoveryOperationID = op.recordedOperationID
+		validation = response.ValidateRecover(providerauth.OAuthLoginRecoveryRequest{Login: op.ref, OriginalOperationID: op.recordedOperationID})
 	case "bind":
 		response.BindingID, response.Port = op.binding.BindingID, op.binding.Port
 		validation = response.ValidateBind(op.binding)
@@ -448,6 +474,9 @@ func (m *UI) completeOAuthLoginResult(msg oauthLoginResultMsg) tea.Cmd {
 	case "cancel":
 		validation = response.ValidateCancel(op.ref)
 	}
+	if response.State != nil && !response.State.MatchesOAuthLoginRecovery(op.recordedOperationID) {
+		validation = providerauth.ErrReceiptUnverified
+	}
 	err := msg.err
 	if validation != nil {
 		err = providerauth.ErrReceiptUnverified
@@ -456,6 +485,9 @@ func (m *UI) completeOAuthLoginResult(msg oauthLoginResultMsg) tea.Cmd {
 	}
 	if err != nil {
 		op.message = "Sign-in did not complete: " + safeOAuthLoginError(err)
+		if op.recordedOperationID != "" && errors.Is(err, providerauth.ErrOAuthLogin) {
+			op.message = "Recorded-result recovery did not complete; no new exchange was run. Reload recorded results or explicitly review saved authentication."
+		}
 		if validation == nil && !op.completeSent && (response.State != nil && oauthLoginEnded(op.state.Phase) || errors.Is(err, providerauth.ErrOAuthLoginUnavailable) || errors.Is(err, providerauth.ErrStale) || errors.Is(err, providerauth.ErrOwner)) {
 			op.ended = true
 		}
@@ -717,6 +749,9 @@ func (m *UI) showOAuthLogin(op *oauthLoginOperation) {
 		return
 	}
 	p := dialog.OAuthLoginPresentation{Message: op.message, CompleteDispatched: op.completeSent}
+	if op.recordedOperationID != "" {
+		p.Message = "Recorded result: " + op.recordedOperationID + ". This session has a new operation identity; the original outcome remains historical.\n" + p.Message
+	}
 	if !op.closed && !op.ended && !op.completeSent {
 		p.AuthorizationURL, p.UserCode = op.state.AuthorizationURL, op.state.UserCode
 		p.Open = p.AuthorizationURL != ""
