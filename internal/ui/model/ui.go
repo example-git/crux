@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -224,11 +225,12 @@ type (
 
 // UI represents the main user interface model.
 type UI struct {
-	com                   *common.Common
-	session               *session.Session
-	sessionFiles          []SessionFile
-	sessionFilesFetchGen  uint64
-	sessionLoadGeneration uint64
+	com                       *common.Common
+	session                   *session.Session
+	sessionFiles              []SessionFile
+	sessionFilesFetchGen      uint64
+	sessionLoadGeneration     uint64
+	sessionPresenceGeneration *atomic.Uint64
 
 	// keeps track of read files while we don't have a session id
 	sessionFileReads []string

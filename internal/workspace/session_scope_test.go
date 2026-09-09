@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ func TestSessionScopeRejectsRecreatedIDBeforeRPC(t *testing.T) {
 	_, err = w.ListAllUserMessages(ctx)
 	require.Error(t, err)
 	require.Error(t, w.SetCurrentSession(ctx, "session"))
-	require.Empty(t, w.lastSession)
+	require.Equal(t, "new-id", w.workspaceID())
 }
 func TestSessionScopeSubscriptionReportsExactIncarnation(t *testing.T) {
 	for _, recreate := range []bool{false, true} {
@@ -97,4 +98,7 @@ func TestSessionScopeAcceptedAuthorityIsDetachedMetadata(t *testing.T) {
 	cancel()
 	_, err := w.GetSession(ctx, "session")
 	require.ErrorIs(t, err, context.Canceled)
+	encoded, err := json.Marshal(ConnectionEvent{Source: w, WorkspaceID: "display", State: ConnectionRecovered})
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "Source")
 }

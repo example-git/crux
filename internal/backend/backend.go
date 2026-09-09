@@ -33,21 +33,23 @@ import (
 
 // Common errors returned by backend operations.
 var (
-	ErrWorkspaceNotFound       = errors.New("workspace not found")
-	ErrLSPClientNotFound       = errors.New("LSP client not found")
-	ErrAgentNotInitialized     = errors.New("agent coordinator not initialized")
-	ErrPathRequired            = errors.New("path is required")
-	ErrInvalidPermissionAction = errors.New("invalid permission action")
-	ErrUnknownCommand          = errors.New("unknown command")
-	ErrInvalidClientID         = errors.New("invalid client_id")
-	ErrClientNotAttached       = errors.New("client not attached")
-	ErrWorkspaceClosing        = errors.New("workspace closing")
-	ErrWorkspaceInUse          = errors.New("workspace has connected clients")
-	ErrServerShuttingDown      = errors.New("server is shutting down")
-	ErrServerNotIdle           = errors.New("server is hosting live workspaces")
-	ErrClientRetired           = errors.New("client has been retired")
-	ErrPluginStatusUnavailable = errors.New("provider plugin status unavailable")
-	ErrChannelOptInMismatch    = errors.New("requested channels differ from the existing workspace; channels are an explicit opt-in and are not shared across duplicate creates")
+	ErrWorkspaceNotFound        = errors.New("workspace not found")
+	ErrLSPClientNotFound        = errors.New("LSP client not found")
+	ErrAgentNotInitialized      = errors.New("agent coordinator not initialized")
+	ErrPathRequired             = errors.New("path is required")
+	ErrInvalidPermissionAction  = errors.New("invalid permission action")
+	ErrUnknownCommand           = errors.New("unknown command")
+	ErrInvalidClientID          = errors.New("invalid client_id")
+	ErrClientNotAttached        = errors.New("client not attached")
+	ErrSessionSelectionInvalid  = errors.New("current-session generation must be positive")
+	ErrSessionSelectionConflict = errors.New("current-session generation conflicts with an accepted selection")
+	ErrWorkspaceClosing         = errors.New("workspace closing")
+	ErrWorkspaceInUse           = errors.New("workspace has connected clients")
+	ErrServerShuttingDown       = errors.New("server is shutting down")
+	ErrServerNotIdle            = errors.New("server is hosting live workspaces")
+	ErrClientRetired            = errors.New("client has been retired")
+	ErrPluginStatusUnavailable  = errors.New("provider plugin status unavailable")
+	ErrChannelOptInMismatch     = errors.New("requested channels differ from the existing workspace; channels are an explicit opt-in and are not shared across duplicate creates")
 )
 
 // DefaultCreateGrace is the window in which a client must open an SSE
@@ -76,8 +78,6 @@ var DefaultIdleShutdownDelay = 60 * time.Second
 // that released its claim first (a clean exit) skips the grace. Overridable
 // via CRUX_SERVER_DETACH_GRACE (seconds; 0 restores immediate teardown).
 var DefaultDetachGrace = 10 * time.Second
-
-var workspaceShutdownTimeout = 5 * time.Second
 
 // ShutdownFunc is called when the backend needs to trigger a server
 // shutdown (e.g. when the last workspace is removed).
@@ -191,11 +191,12 @@ type Backend struct {
 // timer is stopped the moment an SSE stream attaches), but both being
 // zero/nil means the entry has been released and should be removed.
 type clientState struct {
-	streams          int
-	holdTimer        *time.Timer
-	currentSessionID string
-	released         bool
-	responsePending  bool
+	streams                  int
+	holdTimer                *time.Timer
+	currentSessionID         string
+	currentSessionGeneration uint64
+	released                 bool
+	responsePending          bool
 }
 
 // Workspace represents a running [app.App] workspace with its
@@ -1097,9 +1098,10 @@ func (b *Backend) registerClient(ws *Workspace, clientID string) {
 			old.holdTimer.Stop()
 		}
 		if responsePending {
-			ws.clients[clientID] = &clientState{currentSessionID: old.currentSessionID, responsePending: true}
+			ws.clients[clientID] = &clientState{currentSessionID: old.currentSessionID, currentSessionGeneration: old.currentSessionGeneration, responsePending: true}
 		} else {
 			ws.clients[clientID] = b.newHeldClient(ws, clientID, old.currentSessionID, b.createGrace)
+			ws.clients[clientID].currentSessionGeneration = old.currentSessionGeneration
 		}
 		return
 	}
@@ -1356,8 +1358,19 @@ func (b *Backend) CloseIdleWorkspace(id string) error {
 // against ghost presence from a hold-only client that never opened an
 // SSE stream.
 func (b *Backend) SetCurrentSession(workspaceID, clientID, sessionID string) error {
+	return b.SetCurrentSessionSelection(workspaceID, clientID, proto.CurrentSession{SessionID: sessionID})
+}
+
+// SetCurrentSessionSelection orders presence at the actual receiver write.
+// Network cancellation is not an ordering guarantee: an older handler may
+// finish after its caller has stopped waiting. The high-water mark prevents
+// that handler (or an old reconnect replay) from replacing a newer selection.
+func (b *Backend) SetCurrentSessionSelection(workspaceID, clientID string, selection proto.CurrentSession) error {
 	if _, err := validateClientID(clientID); err != nil {
 		return err
+	}
+	if selection.SelectionGeneration != nil && *selection.SelectionGeneration == 0 {
+		return ErrSessionSelectionInvalid
 	}
 	ws, ok := b.workspaces.Get(workspaceID)
 	if !ok {
@@ -1373,7 +1386,24 @@ func (b *Backend) SetCurrentSession(workspaceID, clientID, sessionID string) err
 		// session events.
 		return ErrClientNotAttached
 	}
-	cs.currentSessionID = sessionID
+	if selection.SelectionGeneration == nil {
+		if cs.currentSessionGeneration != 0 {
+			return ErrSessionSelectionConflict
+		}
+	} else {
+		generation := *selection.SelectionGeneration
+		if generation < cs.currentSessionGeneration {
+			return nil
+		}
+		if generation == cs.currentSessionGeneration {
+			if selection.SessionID != cs.currentSessionID {
+				return ErrSessionSelectionConflict
+			}
+			return nil
+		}
+		cs.currentSessionGeneration = generation
+	}
+	cs.currentSessionID = selection.SessionID
 	return nil
 }
 

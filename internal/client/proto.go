@@ -204,12 +204,16 @@ func (c *Client) CloseIdleWorkspace(ctx context.Context, id string) error {
 // as a query parameter so the server can route the update to the
 // correct [clientState] entry.
 func (c *Client) SetCurrentSession(ctx context.Context, workspaceID, sessionID string) error {
+	return c.sendCurrentSession(ctx, workspaceID, proto.CurrentSession{SessionID: sessionID})
+}
+
+func (c *Client) sendCurrentSession(ctx context.Context, workspaceID string, selection proto.CurrentSession) error {
 	q := url.Values{"client_id": []string{c.clientID}}
 	rsp, err := c.post(
 		ctx,
 		fmt.Sprintf("/workspaces/%s/current-session", workspaceID),
 		q,
-		jsonBody(proto.CurrentSession{SessionID: sessionID}),
+		jsonBody(selection),
 		http.Header{"Content-Type": []string{"application/json"}},
 	)
 	if err != nil {
