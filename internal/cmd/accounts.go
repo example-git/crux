@@ -1,20 +1,11 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 	"os/signal"
 
-	"github.com/example-git/crux/internal/config"
-	"github.com/example-git/crux/internal/oauth/accounts"
-	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/spf13/cobra"
 )
-
-// providerArg resolves a provider ID, alias, or registered account namespace.
-func providerArg(cfg *config.Config, name string) (providerregistry.Registration, bool) {
-	return cfg.ProviderRegistrationForAccount(name)
-}
 
 var accountsCmd = &cobra.Command{
 	Use:   "accounts",
@@ -72,23 +63,9 @@ var accountsRemoveCmd = &cobra.Command{
 			return err
 		}
 		defer cleanup()
-		registration, ok := providerArg(ws.Config(), args[0])
-		if !ok {
-			return fmt.Errorf("unknown provider: %s", args[0])
-		}
-		owner := registration.Owner()
-		validate := func() error {
-			current, active := ws.Config().ProviderOwner(registration.ProviderID)
-			if !active || current != owner {
-				return fmt.Errorf("provider account owner %s changed before account removal", args[0])
-			}
-			return nil
-		}
-		if err := accounts.RemoveForOwner(cmd.Context(), registration.AccountNamespace, args[1], validate); err != nil {
-			return err
-		}
-		fmt.Printf("Removed %s account %s.\n", registration.Name, args[1])
-		return nil
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+		defer stop()
+		return removeWorkspaceAccount(ctx, ws, args[0], args[1], cmd.InOrStdin(), cmd.OutOrStdout())
 	},
 }
 

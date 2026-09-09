@@ -333,7 +333,12 @@ func (c *oauthLoginConsole) complete(ctx context.Context, ws workspace.Workspace
 }
 
 func (c *oauthLoginConsole) mutateAuthentication(ctx context.Context, ws workspace.Workspace, operationID string, target providerauth.Target, label string, perform func() (providerauth.MutationOutcome, error), validate func(providerauth.MutationOutcome) error) (providerauth.MutationOutcome, error) {
+	return c.mutateAuthenticationWithCompletion(ctx, ws, operationID, target, label, perform, validate, func(outcome providerauth.MutationOutcome) bool {
+		return outcome.Change != nil && !outcome.Superseded && outcome.Progress.ConfigSaved && outcome.Progress.RuntimePublished
+	})
+}
 
+func (c *oauthLoginConsole) mutateAuthenticationWithCompletion(ctx context.Context, ws workspace.Workspace, operationID string, target providerauth.Target, label string, perform func() (providerauth.MutationOutcome, error), validate func(providerauth.MutationOutcome) error, complete func(providerauth.MutationOutcome) bool) (providerauth.MutationOutcome, error) {
 	var recovery *workspace.ProviderAuthenticationRecoveryRequest
 	var sequence uint64
 	for {
@@ -350,7 +355,7 @@ func (c *oauthLoginConsole) mutateAuthentication(ctx context.Context, ws workspa
 		if err == nil {
 			err = valid
 		}
-		if err == nil && (outcome.Change == nil || outcome.Superseded || !outcome.Progress.ConfigSaved || !outcome.Progress.RuntimePublished) {
+		if err == nil && !complete(outcome) {
 			err = errors.New("authentication change has no current completed receipt")
 		}
 		if err == nil {
@@ -363,9 +368,9 @@ func (c *oauthLoginConsole) mutateAuthentication(ctx context.Context, ws workspa
 		if ctx.Err() != nil {
 			return outcome, errors.Join(err, ctx.Err())
 		}
-		offerRecovery := canRecover && valid == nil && outcome.Change != nil && !outcome.Superseded && outcome.Progress.ConfigSaved && outcome.Progress.RuntimePublished
+		offerRecovery := canRecover && valid == nil && complete(outcome)
 		if offerRecovery {
-			fmt.Fprint(c.output, "Enter r to retry the same request, p to publish the saved change, or c to stop: ")
+			fmt.Fprint(c.output, "Enter r to retry the same request, p to recover the saved change, or c to stop: ")
 		} else {
 			fmt.Fprint(c.output, "Enter r to retry the same request, or c to stop: ")
 		}

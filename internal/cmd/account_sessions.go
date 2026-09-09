@@ -175,3 +175,65 @@ func logoutWorkspaceProvider(ctx context.Context, ws workspace.Workspace, provid
 	_, err = fmt.Fprintf(output, "Logged out of %s.\n", target.Owner.ProviderID)
 	return err
 }
+
+func removeWorkspaceAccount(ctx context.Context, ws workspace.Workspace, providerID, accountID string, input io.Reader, output io.Writer) error {
+	snapshot, err := ws.ProviderAuthentication(ctx)
+	if err != nil {
+		return err
+	}
+	target, err := selectAccountTarget(ws, snapshot, providerID)
+	if err != nil {
+		return err
+	}
+	request := providerauth.RemoveRequest{OperationID: oauthActionID(), Target: target, AccountID: accountID}
+	if err = request.Validate(); err != nil {
+		return err
+	}
+	state, err := ws.ProviderAccounts(ctx, target)
+	if err != nil {
+		return err
+	}
+	if err = state.Validate(); err != nil {
+		return err
+	}
+	if state.Target != target {
+		return providerauth.ErrStale
+	}
+	found, wasActive := false, false
+	for _, account := range state.Accounts {
+		if account.ID == accountID {
+			found, wasActive = true, account.Active
+			break
+		}
+	}
+	if !found {
+		return providerauth.ErrAccount
+	}
+	console, closeInput, err := newAuthenticationConsole(ctx, input, output, nil, nil)
+	if err != nil {
+		return err
+	}
+	defer closeInput()
+	// Keep the original request and selection through every retry. Workspace
+	// receipts retain the admitted successor; the CLI must not select a new one
+	// from a later account list or turn inactive removal into publication.
+	complete := func(outcome providerauth.MutationOutcome) bool {
+		if outcome.Change == nil || outcome.Superseded || !outcome.Progress.AccountsSaved {
+			return false
+		}
+		if wasActive {
+			return outcome.Progress.ConfigSaved && outcome.Progress.RuntimePublished
+		}
+		return !outcome.Progress.AccountRefreshed && !outcome.Progress.ConfigSaved && !outcome.Progress.RuntimePublished
+	}
+	_, err = console.mutateAuthenticationWithCompletion(ctx, ws, request.OperationID, target, "Account removal", func() (providerauth.MutationOutcome, error) {
+		return ws.RemoveProviderAccount(ctx, request)
+	}, func(outcome providerauth.MutationOutcome) error {
+		return outcome.ValidateRemove(request)
+	}, complete)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(output, "Removed %s account %s.\n", target.Owner.ProviderID, accountID)
+	return err
+}
