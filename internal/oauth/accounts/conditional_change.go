@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tidwall/sjson"
 )
@@ -22,6 +23,8 @@ import (
 // ErrStateChanged rejects a conditional operation whose complete private
 // account observation no longer matches. It contains no account identity.
 var ErrStateChanged = errors.New("account state changed; reload authentication state")
+
+const accountCommitCompletionTimeout = 5 * time.Second
 
 type accountChangeKind uint8
 
@@ -50,7 +53,15 @@ type pendingAccountChange struct {
 	release   func()
 	validate  Validator // private refresh owner fence; never mutates account state
 	committed bool
+	verified  Snapshot // successful fixed postimage; never advanced by verification
 	closed    bool
+}
+
+func (*pendingAccountChange) Format(state fmt.State, _ rune) {
+	_, _ = io.WriteString(state, "accounts.pendingAccountChange(private)")
+}
+func (*pendingAccountChange) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("pending account state is private and cannot be serialized")
 }
 
 // CommitResult is host-private. Written records a successful account-file
@@ -159,6 +170,9 @@ func (change *PendingChange) SelectedEntry() (Entry, bool) {
 // Commit applies the fixed staged operation once, retaining the lease until
 // Close. A failed attempt cannot be retried with the same lease. The caller must
 // treat Written=true with an error as account-written/config-pending.
+// Cancellation aborts before rename. Once rename succeeds, directory sync and
+// verification finish under a separate bounded context; caller cancellation
+// cannot undo the durable effect. Blocking filesystem calls are not preemptible.
 func (change *PendingChange) Commit(ctx context.Context) (CommitResult, error) {
 	if change == nil || change.state == nil {
 		return CommitResult{}, errors.New("pending account change is unavailable")
@@ -175,6 +189,10 @@ func (change *PendingChange) Commit(ctx context.Context) (CommitResult, error) {
 		return CommitResult{}, err
 	}
 	if state.kind == accountCheck {
+		if err := ctx.Err(); err != nil {
+			return CommitResult{}, err
+		}
+		state.verified = current
 		return CommitResult{Snapshot: current}, nil
 	}
 	file, err := os.CreateTemp(filepath.Dir(state.before.path), ".accounts-change-*")
@@ -215,10 +233,15 @@ func (change *PendingChange) Commit(ctx context.Context) (CommitResult, error) {
 		return CommitResult{}, privateSnapshotError(err)
 	}
 	result := CommitResult{Written: true}
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountCommitCompletionTimeout)
+	defer cancel()
+	if err := finishCtx.Err(); err != nil {
+		return result, err
+	}
 	if err := syncAccountDirectory(filepath.Dir(state.before.path)); err != nil {
 		return result, privateSnapshotError(err)
 	}
-	after, err := captureStateAtLocked(ctx, state.before.path, state.before.namespaces)
+	after, err := captureStateAtLocked(finishCtx, state.before.path, state.before.namespaces)
 	if err != nil {
 		return result, privateSnapshotError(err)
 	}
@@ -229,9 +252,55 @@ func (change *PendingChange) Commit(ctx context.Context) (CommitResult, error) {
 		if err := state.validate(); err != nil {
 			return result, err
 		}
+		// The owner check may take time. Require the captured account file to
+		// remain the same through it, rather than retain an already-stale proof.
+		current, err := captureStateAtLocked(finishCtx, state.before.path, state.before.namespaces)
+		if err != nil {
+			return result, privateSnapshotError(err)
+		}
+		if !after.SameObservation(current) {
+			return result, ErrStateChanged
+		}
 	}
+	if err := finishCtx.Err(); err != nil {
+		return result, err
+	}
+	state.verified = after
 	result.Snapshot = after
 	return result, nil
+}
+
+// VerifyCommitted rechecks the exact successful commit observation while its
+// original account lease is still held. It does not acquire another account
+// lock, take a new path, write, or adopt intervening account changes. BeginCheck
+// commits also have a verified observation even though they did not write.
+func (change *PendingChange) VerifyCommitted(ctx context.Context) (Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return Snapshot{}, err
+	}
+	if change == nil || change.state == nil {
+		return Snapshot{}, errors.New("pending account change is unavailable")
+	}
+	state := change.state
+	state.guard.Lock()
+	defer state.guard.Unlock()
+	if err := ctx.Err(); err != nil {
+		return Snapshot{}, err
+	}
+	if state.closed || state.release == nil || !state.verified.valid {
+		return Snapshot{}, errors.New("pending account change has no open verified commit")
+	}
+	current, err := captureStateAtLocked(ctx, state.verified.path, state.verified.namespaces)
+	if err != nil {
+		return Snapshot{}, privateSnapshotError(err)
+	}
+	if !state.verified.SameObservation(current) {
+		return Snapshot{}, ErrStateChanged
+	}
+	if err := ctx.Err(); err != nil {
+		return Snapshot{}, err
+	}
+	return state.verified, nil
 }
 
 func (change *pendingAccountChange) checkCurrent(ctx context.Context) (Snapshot, error) {
@@ -264,6 +333,7 @@ func (change *PendingChange) Close() {
 	state.staged, state.selected = nil, nil
 	state.validate = nil
 	state.before = Snapshot{}
+	state.verified = Snapshot{}
 }
 
 func stageAccountChange(document []byte, kind accountChangeKind, namespace, accountID string) ([]byte, *Entry, error) {
