@@ -22,8 +22,11 @@ type Snapshot struct {
 	namespaces []string
 	file       accountFileObservation
 	content    [sha256.Size]byte
-	entries    map[string][]Entry
-	active     map[string]string
+	// Retain the original document privately so fixed conditional changes can
+	// preserve foreign harness fields and untouched entry/namespace bytes.
+	document []byte
+	entries  map[string][]Entry
+	active   map[string]string
 }
 
 type accountFileObservation struct {
@@ -140,7 +143,7 @@ func captureStateAtLocked(ctx context.Context, path string, namespaces []string)
 func snapshotFromStore(path string, namespaces []string, file accountFileObservation, data []byte, state *store) Snapshot {
 	snapshot := Snapshot{
 		valid: true, path: path, namespaces: slices.Clone(namespaces), file: file,
-		content: sha256.Sum256(data), entries: make(map[string][]Entry, len(namespaces)), active: make(map[string]string, len(namespaces)),
+		content: sha256.Sum256(data), document: bytes.Clone(data), entries: make(map[string][]Entry, len(namespaces)), active: make(map[string]string, len(namespaces)),
 	}
 	for _, namespace := range namespaces {
 		snapshot.entries[namespace] = cloneSnapshotEntries(state.Accounts[namespace])

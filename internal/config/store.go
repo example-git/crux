@@ -2611,6 +2611,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	if err := cfg.configureProvidersWithMigration(ctx, s, candidateEnv, resolver, providers, collectMigration); err != nil {
 		return fmt.Errorf("failed to configure providers during reload: %w", err)
 	}
+	cfg.retainAuthenticationRevocations(s.Config())
 
 	if !cfg.IsConfigured() {
 		slog.Warn("No providers configured after reload")

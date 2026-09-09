@@ -797,9 +797,10 @@ type Config struct {
 
 	Agents map[string]Agent `json:"-"`
 
-	providerScan            *ProviderScan
-	transportProviderOwners map[string]providerregistry.RegistrationOwner
-	explicitModels          map[SelectedModelType]bool
+	providerScan              *ProviderScan
+	transportProviderOwners   map[string]providerregistry.RegistrationOwner
+	authenticationRevocations map[string]providerregistry.RegistrationOwner
+	explicitModels            map[SelectedModelType]bool
 }
 
 // cloneForWrite returns a copy of c that the store's typed field mutators
@@ -817,6 +818,12 @@ func (c *Config) cloneForWrite() *Config {
 	nc.Images = cloneImageConfiguration(c.Images)
 	nc.Models = maps.Clone(c.Models)
 	nc.transportProviderOwners = maps.Clone(c.transportProviderOwners)
+	nc.authenticationRevocations = maps.Clone(c.authenticationRevocations)
+	for providerID, owner := range nc.authenticationRevocations {
+		if !c.authenticationRevocationApplies(owner) {
+			delete(nc.authenticationRevocations, providerID)
+		}
+	}
 	nc.explicitModels = maps.Clone(c.explicitModels)
 	nc.RecentModels = maps.Clone(c.RecentModels)
 	if c.Providers != nil {

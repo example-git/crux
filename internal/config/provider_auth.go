@@ -25,6 +25,7 @@ type AuthenticationCapture struct {
 	runtime  RuntimeSnapshot
 	accounts accounts.Snapshot
 	owners   []providerregistry.RegistrationOwner
+	inputs   authenticationConfigInputs
 }
 
 func (AuthenticationCapture) MarshalJSON() ([]byte, error) {
@@ -129,7 +130,25 @@ func (s *ConfigStore) CaptureAuthentication(ctx context.Context) (Authentication
 		// File paths, JSON parse details, and account data never enter public errors.
 		return AuthenticationCapture{}, errors.New("authentication account store cannot be read")
 	}
-	capture.accounts = state
+	inputs, err := s.captureAuthenticationInputsLocked(ctx, runtime)
+	if err != nil {
+		return AuthenticationCapture{}, err
+	}
+	second, err := accounts.CaptureStateAt(ctx, filepath.Join(root, "accounts.json"), namespaces)
+	if err != nil {
+		if ctx.Err() != nil {
+			return AuthenticationCapture{}, ctx.Err()
+		}
+		return AuthenticationCapture{}, errors.New("authentication account store cannot be read")
+	}
+	finalInputs, err := s.captureAuthenticationInputsLocked(ctx, runtime)
+	if err != nil {
+		return AuthenticationCapture{}, err
+	}
+	if err := validateAuthenticationObservations(state, second, inputs, finalInputs); err != nil {
+		return AuthenticationCapture{}, err
+	}
+	capture.accounts, capture.inputs = second, inputs
 	if err := ctx.Err(); err != nil {
 		return AuthenticationCapture{}, err
 	}
@@ -144,7 +163,7 @@ func authenticationHomeVariable() string {
 }
 
 func (c AuthenticationCapture) SameObservation(other AuthenticationCapture) bool {
-	return c.runtime.SamePublication(other.runtime) && c.accounts.SameObservation(other.accounts) && slices.Equal(c.owners, other.owners)
+	return c.runtime.SamePublication(other.runtime) && c.accounts.SameObservation(other.accounts) && c.inputs.sameObservation(other.inputs) && slices.Equal(c.owners, other.owners)
 }
 
 func authenticationCredentialState(access, refresh string) string {
