@@ -10,6 +10,7 @@ import (
 	"net/http/httptrace"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newRemoteAuthorityTLSHarness(t *testing.T) (*httptest.Server, map[string]*http.Client) {
+func newRemoteAuthorityTLSHarness(t *testing.T, configure ...func(*tls.Config)) (*httptest.Server, map[string]*http.Client) {
 	t.Helper()
 	root := t.TempDir()
 	for _, name := range []string{"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CRUX_GLOBAL_DATA", "CRUX_GLOBAL_CONFIG", "CRUX_CACHE_DIR", "AI_CLI_DIR"} {
@@ -48,6 +49,9 @@ func newRemoteAuthorityTLSHarness(t *testing.T) (*httptest.Server, map[string]*h
 	t.Cleanup(srv.backend.Shutdown)
 	require.NoError(t, srv.SetWorkspaceRoots([]string{root}))
 	require.NoError(t, srv.EnableNetworkAuth(t.Context()))
+	for _, apply := range configure {
+		apply(srv.tlsConfig)
+	}
 	hs := httptest.NewUnstartedServer(srv.Handler())
 	hs.TLS = srv.tlsConfig
 	hs.StartTLS()
@@ -102,40 +106,260 @@ func TestRemoteTLSAdmissionBaseline(t *testing.T) {
 	}
 }
 
-// A5 records the same-running-daemon gap, including resumption and keepalive.
-// F4 will invert these expectations after live authorization is implemented.
-func TestRemoteTLSRevocationBaseline(t *testing.T) {
+type observedRemoteSessionCache struct {
+	tls.ClientSessionCache
+	hits atomic.Int64
+}
+
+func (c *observedRemoteSessionCache) Get(key string) (*tls.ClientSessionState, bool) {
+	state, found := c.ClientSessionCache.Get(key)
+	if found && state != nil {
+		c.hits.Add(1)
+	}
+	return state, found
+}
+
+// Current authorization applies without rebuilding the same running server.
+func TestRemoteTLSLiveRevocation(t *testing.T) {
 	hs, clients := newRemoteAuthorityTLSHarness(t)
-	probe := func(client *http.Client) (bool, bool) {
+	transport := clients["revoked"].Transport.(*http.Transport)
+	cache := &observedRemoteSessionCache{ClientSessionCache: transport.TLSClientConfig.ClientSessionCache}
+	transport.TLSClientConfig.ClientSessionCache = cache
+	probe := func(client *http.Client, route string, wantStatus int) (bool, bool, error) {
 		t.Helper()
 		var reused, resumed bool
-		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+route, nil)
 		require.NoError(t, err)
 		request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{GotConn: func(info httptrace.GotConnInfo) { reused = info.Reused }}))
 		response, err := client.Do(request)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusOK, response.StatusCode)
+		if err != nil {
+			return reused, resumed, err
+		}
+		require.Equal(t, wantStatus, response.StatusCode)
 		if response.TLS != nil {
 			resumed = response.TLS.DidResume
 		}
-		_, err = io.Copy(io.Discard, response.Body)
+		body, err := io.ReadAll(response.Body)
 		require.NoError(t, err)
 		require.NoError(t, response.Body.Close())
-		return reused, resumed
+		if wantStatus == http.StatusForbidden {
+			require.Contains(t, string(body), connection.ErrClientAuthorization.Error())
+			require.NotContains(t, string(body), "connections.json")
+		}
+		return reused, resumed, nil
 	}
-	probe(clients["revoked"])
-	probe(clients["retained"])
+	_, _, err := probe(clients["revoked"], "/v1/workspaces", http.StatusOK)
+	require.NoError(t, err)
+	_, _, err = probe(clients["retained"], "/v1/workspaces", http.StatusOK)
+	require.NoError(t, err)
+	// Establish that this fixture actually supports session resumption.
+	retainedTransport := clients["retained"].Transport.(*http.Transport)
+	retainedTransport.CloseIdleConnections()
+	_, resumed, err := probe(clients["retained"], "/v1/workspaces", http.StatusOK)
+	require.NoError(t, err)
+	require.True(t, resumed)
 	require.NoError(t, connection.RevokeClient(t.Context(), "revoked"))
-	reused, _ := probe(clients["revoked"])
-	require.True(t, reused, "must exercise a connection established before revoke")
-	transport := clients["revoked"].Transport.(*http.Transport)
+	for _, route := range []string{"/v1/workspaces", "/v1/workspaces/missing", "/v1/runtime-capabilities", "/v1/docs/index.html", "/not-a-route"} {
+		reused, _, err := probe(clients["revoked"], route, http.StatusForbidden)
+		require.NoError(t, err)
+		require.True(t, reused, "must exercise the connection established before revoke")
+	}
+	cacheHits := cache.hits.Load()
 	transport.CloseIdleConnections()
-	_, resumed := probe(clients["revoked"])
-	require.True(t, resumed, "must exercise TLS session resumption after revoke")
+	_, _, err = probe(clients["revoked"], "/v1/workspaces", http.StatusOK)
+	require.Error(t, err, "revoked session must fail TLS verification before reaching HTTP")
+	require.Greater(t, cache.hits.Load(), cacheHits, "the denied handshake must attempt to reuse its real cached TLS session")
 	fresh := transport.Clone()
 	fresh.TLSClientConfig.ClientSessionCache = nil
 	t.Cleanup(fresh.CloseIdleConnections)
-	_, resumed = probe(&http.Client{Transport: fresh, Timeout: 5 * time.Second})
-	require.False(t, resumed, "must also exercise a full new handshake after revoke")
-	probe(clients["retained"])
+	_, _, err = probe(&http.Client{Transport: fresh, Timeout: 5 * time.Second}, "/v1/workspaces", http.StatusOK)
+	require.Error(t, err, "a fresh handshake must reject the revoked certificate too")
+	_, _, err = probe(clients["retained"], "/v1/workspaces", http.StatusOK)
+	require.NoError(t, err)
+	retainedTransport.CloseIdleConnections()
+	_, resumed, err = probe(clients["retained"], "/v1/workspaces", http.StatusOK)
+	require.NoError(t, err)
+	require.True(t, resumed, "revocation must preserve nonrevoked session resumption")
+}
+
+func TestRemoteTLSRevocationDuringResumedHandshake(t *testing.T) {
+	var revokeAfterClientHello atomic.Bool
+	var deniedResumptions atomic.Int64
+	hs, clients := newRemoteAuthorityTLSHarness(t, func(cfg *tls.Config) {
+		getConfig := cfg.GetConfigForClient
+		cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			candidate, err := getConfig(hello)
+			if err != nil {
+				return nil, err
+			}
+			if revokeAfterClientHello.Swap(false) {
+				// Trust was read while this client was authorized. Revoke at
+				// the actual handshake boundary before VerifyConnection runs.
+				if err := connection.RevokeClient(hello.Context(), "revoked"); err != nil {
+					return nil, err
+				}
+			}
+			verify := candidate.VerifyConnection
+			candidate.VerifyConnection = func(state tls.ConnectionState) error {
+				err := verify(state)
+				if state.DidResume && err != nil {
+					deniedResumptions.Add(1)
+				}
+				return err
+			}
+			return candidate, nil
+		}
+	})
+	client := clients["revoked"]
+	for attempt := range 2 {
+		response, err := client.Get(hs.URL + "/v1/workspaces")
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, response.StatusCode)
+		require.Equal(t, attempt > 0, response.TLS.DidResume)
+		_, err = io.Copy(io.Discard, response.Body)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		client.Transport.(*http.Transport).CloseIdleConnections()
+	}
+	revokeAfterClientHello.Store(true)
+	response, err := client.Get(hs.URL + "/v1/workspaces")
+	if response != nil {
+		response.Body.Close()
+	}
+	require.Error(t, err)
+	require.EqualValues(t, 1, deniedResumptions.Load(), "VerifyConnection must reject the actually resumed session using current grants")
+}
+
+func TestRemoteTLSAuthorizationUsesCapturedStore(t *testing.T) {
+	hs, clients := newRemoteAuthorityTLSHarness(t)
+	originalPath := filepath.Join(config.GlobalWorkspaceDir(), "connections.json")
+	get := func(client *http.Client, want int) {
+		t.Helper()
+		response, err := client.Get(hs.URL + "/v1/workspaces")
+		require.NoError(t, err)
+		defer response.Body.Close()
+		require.Equal(t, want, response.StatusCode)
+		_, err = io.Copy(io.Discard, response.Body)
+		require.NoError(t, err)
+	}
+	get(clients["revoked"], http.StatusOK)
+	get(clients["retained"], http.StatusOK)
+	original, err := os.ReadFile(originalPath)
+	require.NoError(t, err)
+	otherRoot := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(otherRoot, "connections.json"), original, 0o600))
+	t.Setenv("CRUX_GLOBAL_DATA", otherRoot)
+	// Changing process environment must not move the server's authority.
+	require.NoError(t, connection.RevokeClient(t.Context(), "retained"))
+	get(clients["retained"], http.StatusOK)
+	clients["retained"].Transport.(*http.Transport).CloseIdleConnections()
+	get(clients["retained"], http.StatusOK)
+	var current map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(original, &current))
+	var authorized map[string]string
+	require.NoError(t, json.Unmarshal(current["authorized_clients"], &authorized))
+	delete(authorized, "revoked")
+	current["authorized_clients"], err = json.Marshal(authorized)
+	require.NoError(t, err)
+	data, err := json.Marshal(current)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(originalPath, data, 0o600))
+	get(clients["revoked"], http.StatusForbidden)
+	clients["revoked"].Transport.(*http.Transport).CloseIdleConnections()
+	response, err := clients["revoked"].Get(hs.URL + "/v1/workspaces")
+	if response != nil {
+		response.Body.Close()
+	}
+	require.Error(t, err, "TLS must also keep using the original captured path")
+}
+
+func TestRemoteTLSAuthorizationMalformedStoreFailsClosed(t *testing.T) {
+	hs, clients := newRemoteAuthorityTLSHarness(t)
+	path := filepath.Join(config.GlobalWorkspaceDir(), "connections.json")
+	original, err := os.ReadFile(path)
+	require.NoError(t, err)
+	for _, damage := range []string{"invalid-json", "trailing-json", "duplicate-key", "case-alias-clients", "invalid-utf8", "invalid-server-key", "invalid-client-certificate", "directory", "missing"} {
+		t.Run(damage, func(t *testing.T) {
+			response, err := clients["retained"].Get(hs.URL + "/v1/workspaces")
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, response.StatusCode)
+			_, err = io.Copy(io.Discard, response.Body)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			switch damage {
+			case "invalid-json":
+				require.NoError(t, os.WriteFile(path, []byte(`{"secret-client":"synthetic-private-data"`), 0o600))
+			case "trailing-json":
+				require.NoError(t, os.WriteFile(path, append(bytes.Clone(original), []byte(` {}`)...), 0o600))
+			case "duplicate-key":
+				require.NoError(t, os.WriteFile(path, bytes.Replace(original, []byte(`"version": 1`), []byte(`"version": 1, "version": 1`), 1), 0o600))
+			case "invalid-utf8":
+				require.NoError(t, os.WriteFile(path, append(bytes.Clone(original), 0xff), 0o600))
+			case "case-alias-clients", "invalid-server-key", "invalid-client-certificate":
+				var damaged map[string]any
+				require.NoError(t, json.Unmarshal(original, &damaged))
+				if damage == "case-alias-clients" {
+					clients := damaged["authorized_clients"].(map[string]any)
+					damaged["AUTHORIZED_CLIENTS"] = map[string]any{"revoked": clients["revoked"]}
+					delete(clients, "revoked")
+				} else if damage == "invalid-server-key" {
+					damaged["server"].(map[string]any)["private_key"] = "synthetic-private-data"
+				} else {
+					damaged["authorized_clients"].(map[string]any)["secret-client"] = "synthetic-private-data"
+				}
+				data, err := json.Marshal(damaged)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, data, 0o600))
+			case "directory", "missing":
+				require.NoError(t, os.Remove(path))
+				if damage == "directory" {
+					require.NoError(t, os.Mkdir(path, 0o700))
+				}
+			}
+			response, err = clients["retained"].Get(hs.URL + "/v1/workspaces")
+			require.NoError(t, err)
+			require.Equal(t, http.StatusForbidden, response.StatusCode)
+			body, err := io.ReadAll(response.Body)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			require.Contains(t, string(body), connection.ErrClientAuthorization.Error())
+			require.NotContains(t, string(body), path)
+			require.NotContains(t, string(body), "secret-client")
+			require.NotContains(t, string(body), "synthetic-private-data")
+			clients["retained"].Transport.(*http.Transport).CloseIdleConnections()
+			response, err = clients["retained"].Get(hs.URL + "/v1/workspaces")
+			if response != nil {
+				response.Body.Close()
+			}
+			require.Error(t, err, "malformed state must also deny a new TLS handshake")
+			if damage == "case-alias-clients" {
+				response, err = clients["revoked"].Get(hs.URL + "/v1/workspaces")
+				if response != nil {
+					response.Body.Close()
+				}
+				require.Error(t, err, "a case-aliased grant must not restore the removed client")
+			}
+			if damage == "directory" {
+				require.NoError(t, os.Remove(path))
+			}
+			require.NoError(t, os.WriteFile(path, original, 0o600))
+		})
+	}
+}
+
+func TestRemoteTLSNewAuthorizationUsesCurrentTrust(t *testing.T) {
+	hs, clients := newRemoteAuthorityTLSHarness(t)
+	response, err := clients["unauthorized"].Get(hs.URL + "/v1/workspaces")
+	if response != nil {
+		response.Body.Close()
+	}
+	require.Error(t, err)
+	saved, exists, err := connection.Get(t.Context(), "unauthorized")
+	require.NoError(t, err)
+	require.True(t, exists)
+	require.NoError(t, connection.AuthorizeClient(t.Context(), "now-authorized", saved.Client.Certificate))
+	response, err = clients["unauthorized"].Get(hs.URL + "/v1/workspaces")
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
 }
