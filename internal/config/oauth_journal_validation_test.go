@@ -246,6 +246,27 @@ func TestOAuthJournalValidationTerminalRoomAndBytePressure(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, found)
 	})
+	t.Run("oversubscribed read is unchanged", func(t *testing.T) {
+		j := oauthValidationJournal(t)
+		key := oauthValidationKey(102)
+		oauthValidationNearFull(t, j, authenticationJournalRecord{Key: key, Revision: 3, Payload: json.RawMessage(`{}`)}, 0)
+		data, err := os.ReadFile(j.path)
+		require.NoError(t, err)
+		var disk authenticationJournalDisk
+		require.NoError(t, json.Unmarshal(data, &disk))
+		filler := oauthValidationKey(101)
+		record := disk.Records[filler.id()]
+		record.Reserved++
+		disk.Records[filler.id()] = record
+		data, err = json.Marshal(disk)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(j.path, data, 0600))
+		_, _, err = j.Load(t.Context(), key)
+		require.ErrorContains(t, err, "oversubscribed")
+		after, err := os.ReadFile(j.path)
+		require.NoError(t, err)
+		require.Equal(t, data, after)
+	})
 }
 
 func TestOAuthJournalValidationCountLimitAndImmutableCompletion(t *testing.T) {
