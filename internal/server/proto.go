@@ -341,6 +341,17 @@ func (c *controllerV1) handleGetWorkspaceProviders(w http.ResponseWriter, r *htt
 //	@Success		200
 //	@Failure		404	{object}	proto.Error
 //	@Failure		500	{object}	proto.Error
+//
+// @Description The event stream claim must match accepted workspace authority. Client-owned attachment requires the exact mode/revision/digest from a retained creation or replacement acknowledgement. The response echoes the accepted tuple before events. A client UUID or public discovery result alone does not authorize attachment.
+// @Param Crux-Workspace-Authority-Mode header string false "Accepted mode: client or server; required for client-owned attachment"
+// @Param Crux-Workspace-Authority-Revision header string false "Exact accepted decimal revision; required with authority mode"
+// @Param Crux-Workspace-Authority-Digest header string false "Exact accepted runtime digest; required with authority mode"
+// @Header 200 {string} Crux-Workspace-Authority-Mode "Accepted workspace mode"
+// @Header 200 {string} Crux-Workspace-Authority-Revision "Accepted decimal revision"
+// @Header 200 {string} Crux-Workspace-Authority-Digest "Accepted runtime digest"
+// @Failure 403 {object} proto.Error "Client principal does not own the workspace or claim"
+// @Failure 409 {object} proto.Error "Attachment authority differs from the accepted runtime"
+//
 //	@Router			/workspaces/{id}/events [get]
 func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.Request) {
 	flusher := http.NewResponseController(w)
