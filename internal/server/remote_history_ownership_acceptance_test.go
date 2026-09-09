@@ -113,15 +113,17 @@ func TestRemoteHistoryPrincipalIsolationAfterRetirementThroughMTLS(t *testing.T)
 			require.NoError(t, err)
 			var shellID string
 			for _, task := range tasks {
-				if task.Type == managedtask.TypeShell && task.Ownership.OriginToolCallID == callID {
+				if task.Type == managedtask.TypeShell {
+					require.Empty(t, shellID, "the public message creates exactly one managed shell task")
 					shellID = task.ID
-					require.Equal(t, session.ID, task.Ownership.ParentSessionID)
 				}
 			}
 			require.NotEmpty(t, shellID, "the public message must create a real managed shell task")
 			require.NoError(t, os.WriteFile(releaseFile, nil, 0o600))
 			output, err := a.TaskOutput(ctx, created.ID, shellID, true, 5*time.Second)
 			require.NoError(t, err)
+			require.Equal(t, callID, output.Task.Ownership.OriginToolCallID)
+			require.Equal(t, session.ID, output.Task.Ownership.ParentSessionID)
 			require.Equal(t, managedtask.StatusCompleted, output.Task.State.Status)
 			require.Contains(t, output.Output, outputMarker)
 			messages, err := a.ListMessages(ctx, created.ID, session.ID)

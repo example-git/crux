@@ -70,7 +70,7 @@ func TestRemotePresetPublicInferenceUsesClientSelectionThroughMTLS(t *testing.T)
 	serverConfigPath := filepath.Join(os.Getenv("CRUX_GLOBAL_CONFIG"), "crux.json")
 	serverConfig, err := json.Marshal(map[string]any{
 		"providers": map[string]any{"acceptance-preset": map[string]any{
-			"type": "openai-compat", "api_key": "synthetic-server-conflict", "base_url": provider.URL + "/server/v1", "disable": true,
+			"type": "openai-compat", "api_key": "synthetic-server-conflict", "base_url": provider.URL + "/server/v1",
 			"models": []map[string]any{{"id": "server-conflict", "name": "Server conflict", "context_window": 8192, "default_max_tokens": 128}},
 		}},
 		"models": map[string]any{"large": map[string]string{"provider": "acceptance-preset", "model": "server-conflict"}},

@@ -368,8 +368,12 @@ crux connections revoke NAME
 ```
 
 The listing shows public fingerprints, authorization status and known creation,
-approval, last-use and revocation dates. Unknown historical dates remain unknown;
-certificate validity dates are not used as invented activity history.
+approval, historical last-use and revocation dates. It separately reports live
+last-use observations read from registered daemons. These observations remain in
+daemon memory and disappear when that daemon exits; listing them does not save
+them into authorization records. Missing, partial and unavailable live responses
+are reported explicitly. Unknown historical dates remain unknown; certificate
+validity dates are not used as invented activity history.
 
 Revocation first saves an exact operation for the principal and grant. Registered
 running daemons then cancel and join the affected requests, streams, workspaces,
@@ -436,15 +440,16 @@ live cancellation.
 ## Scope and operational limits
 
 The normal provider workflow does not install client bundles or save client
-credentials into server provider/account/configuration stores. Workspace
-databases and task/session metadata are separate durable state. Pairing and
+credentials into server provider/account/configuration stores, and does not
+rewrite authorization, trust or daemon records. Workspace databases and
+task/session metadata are separate durable state. Pairing and explicit
 authorization administration intentionally update their private connection and
-authorization records; live usage tracking can update authorization last-use
-metadata.
+authorization records. Daemon startup and exit update daemon registration.
+Ordinary live usage observations remain in daemon memory.
 
 Forwarded credentials and private bundle contents are excluded from public
-workspace discovery and logged private-request traffic bodies. Secret redaction keeps
-process-keyed fingerprints for delayed logs without retaining plaintext secret
+workspace discovery and logged private-request traffic bodies. Secret redaction
+keeps process-keyed fingerprints for delayed logs without retaining plaintext secret
 registry entries. This is not a guarantee of physical memory zeroization; the
 executing process, a debugger or a process dump can expose live credentials.
 
