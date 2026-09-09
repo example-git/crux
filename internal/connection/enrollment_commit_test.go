@@ -92,7 +92,7 @@ func TestEnrollmentForcedClosePreventsReservedLateCommit(t *testing.T) {
 }
 
 func TestEnrollmentTerminalStateFencesReservedPersistence(t *testing.T) {
-	for _, terminal := range []string{"parent-cancel", "waiter-cancel", "expiry", "close", "attempt-limit"} {
+	for _, terminal := range []string{"parent-cancel", "waiter-cancel", "expiry", "close", "attempt-limit", "malformed-limit"} {
 		t.Run(terminal, func(t *testing.T) {
 			setConnectionRoot(t, t.TempDir())
 			_, err := EnsureServerIdentity(t.Context())
@@ -126,6 +126,12 @@ func TestEnrollmentTerminalStateFencesReservedPersistence(t *testing.T) {
 			}
 			before, err := os.ReadFile(storePath())
 			require.NoError(t, err)
+			busy, err := enrollmentRequestStatus(t.Context(), e.setup, body)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusConflict, busy)
+			e.mu.Lock()
+			require.Zero(t, e.authorizationFailures, "a competing reservation is not a failed admitted authorization")
+			e.mu.Unlock()
 			var closer chan error
 			switch terminal {
 			case "parent-cancel":
@@ -150,6 +156,16 @@ func TestEnrollmentTerminalStateFencesReservedPersistence(t *testing.T) {
 						require.Equal(t, http.StatusTooManyRequests, code)
 					} else {
 						require.Equal(t, http.StatusUnauthorized, code)
+					}
+				}
+			case "malformed-limit":
+				for index := range enrollmentMaxMalformed {
+					code, err := enrollmentRequestStatus(t.Context(), e.setup, []byte(`{}`))
+					require.NoError(t, err)
+					if index == enrollmentMaxMalformed-1 {
+						require.Equal(t, http.StatusTooManyRequests, code)
+					} else {
+						require.Equal(t, http.StatusBadRequest, code)
 					}
 				}
 			}
