@@ -19,6 +19,9 @@ type Service struct {
 	gate        chan struct{}
 	sequence    uint64
 	last        config.AuthenticationCapture
+	mutations   authenticationMutator
+	receipts    map[string]mutationReceipt
+	receiptIDs  []string
 }
 
 func New(store *config.ConfigStore, workspaceID string) *Service {
@@ -26,7 +29,7 @@ func New(store *config.ConfigStore, workspaceID string) *Service {
 	// crypto/rand.Read either fills the buffer or terminates the process on a
 	// broken OS entropy source. No predictable authentication incarnation fallback.
 	_, _ = rand.Read(epoch[:])
-	return &Service{store: store, workspaceID: workspaceID, epoch: hex.EncodeToString(epoch[:]), gate: make(chan struct{}, 1)}
+	return &Service{store: store, workspaceID: workspaceID, epoch: hex.EncodeToString(epoch[:]), gate: make(chan struct{}, 1), mutations: store, receipts: map[string]mutationReceipt{}}
 }
 
 func (s *Service) Status(ctx context.Context) (Snapshot, error) {
@@ -65,17 +68,27 @@ func (s *Service) capture(ctx context.Context, accepted *config.RemoteRuntimePro
 	if err != nil {
 		return Snapshot{}, capture, err
 	}
-	if s.sequence == 0 || !capture.SameObservation(s.last) {
-		if s.sequence == math.MaxUint64 {
-			return Snapshot{}, capture, errors.New("authentication generation exhausted; reopen the workspace")
-		}
-		s.sequence++
-		s.last = capture
+	snapshot, err := s.observe(capture)
+	if err != nil {
+		return Snapshot{}, capture, err
 	}
 	if accepted != nil {
 		if err := capture.ValidateAcceptedAuthentication(*accepted, view); err != nil {
 			return Snapshot{}, capture, err
 		}
+	}
+	return snapshot, capture, ctx.Err()
+}
+
+// observe assigns a generation to an already coherent capture. Mutation
+// completion passes its exact transaction receipt, never a replacement read.
+func (s *Service) observe(capture config.AuthenticationCapture) (Snapshot, error) {
+	if s.sequence == 0 || !capture.SameObservation(s.last) {
+		if s.sequence == math.MaxUint64 {
+			return Snapshot{}, errors.New("authentication generation exhausted; reopen the workspace")
+		}
+		s.sequence++
+		s.last = capture
 	}
 	snapshot := Snapshot{WorkspaceID: s.workspaceID, Generation: Generation{Epoch: s.epoch, Sequence: s.sequence}, Providers: []Status{}}
 	for _, provider := range capture.Providers() {
@@ -90,9 +103,9 @@ func (s *Service) capture(ctx context.Context, accepted *config.RemoteRuntimePro
 		})
 	}
 	if err := snapshot.Validate(); err != nil {
-		return Snapshot{}, capture, err
+		return Snapshot{}, err
 	}
-	return snapshot, capture, ctx.Err()
+	return snapshot, nil
 }
 
 func (s *Service) status(ctx context.Context, accepted *config.RemoteRuntimeProposal, view *config.Config) (Snapshot, error) {
@@ -126,22 +139,30 @@ func (s *Service) accounts(ctx context.Context, target Target, accepted *config.
 	if snapshot.Generation != target.Generation {
 		return AccountsState{}, ErrStale
 	}
+	state, err := accountsState(snapshot, capture, target.Owner)
+	if err != nil {
+		return AccountsState{}, err
+	}
+	return state, ctx.Err()
+}
+
+func accountsState(snapshot Snapshot, capture config.AuthenticationCapture, owner Owner) (AccountsState, error) {
 	for i, provider := range capture.Providers() {
-		if PublicOwner(provider.Owner) != target.Owner {
+		if PublicOwner(provider.Owner) != owner {
 			continue
 		}
 		accounts, err := capture.Accounts(provider.Owner)
 		if err != nil {
 			return AccountsState{}, ErrOwner
 		}
-		state := AccountsState{Target: target, Status: snapshot.Providers[i], Accounts: []AccountSummary{}}
+		state := AccountsState{Target: Target{WorkspaceID: snapshot.WorkspaceID, Owner: owner, Generation: snapshot.Generation}, Status: snapshot.Providers[i], Accounts: []AccountSummary{}}
 		for _, account := range accounts {
 			state.Accounts = append(state.Accounts, AccountSummary{ID: account.ID, DisplayName: account.DisplayName, Active: account.Active, CredentialState: account.CredentialState, Refreshable: account.Refreshable})
 		}
 		if err := state.Validate(); err != nil {
 			return AccountsState{}, err
 		}
-		return state, ctx.Err()
+		return state, nil
 	}
 	return AccountsState{}, ErrOwner
 }
