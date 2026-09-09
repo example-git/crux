@@ -72,6 +72,9 @@ func (snapshot RuntimeSnapshot) clientProviderDefinitionRaw(id string) (RemotePr
 	if !ok {
 		return zero, noOwner, errors.New("selected client provider has no active exact owner")
 	}
+	if err := snapshot.validateResolvedConfigurationCredentials(provider); err != nil {
+		return zero, noOwner, err
+	}
 	definition := RemoteProviderDefinition{Config: cloneProviderConfig(provider)}
 	if owner.Construction == providerregistry.ConstructionGeminiAntigravity {
 		project := snapshot.Getenv("GEMINI_PROJECT_ID")
@@ -92,6 +95,7 @@ func (snapshot RuntimeSnapshot) clientProviderDefinitionRaw(id string) (RemotePr
 	definition.Config.APIKey, definition.Config.APIKeyTemplate, definition.Config.OAuthToken = "", "", nil
 	definition.Config.resolvedAPIKey = nil
 	definition.Config.resolvedEndpoint = nil
+	definition.Config.resolvedCredentials = nil
 	return definition, owner, nil
 }
 
@@ -99,8 +103,13 @@ func (snapshot RuntimeSnapshot) clientProviderDefinitionRaw(id string) (RemotePr
 // candidate is not inserted into Config.Providers, so local readiness,
 // migration and authentication status retain their unconfigured behavior.
 func (c *Config) authenticationCollectionProvider(id string) (ProviderConfig, bool) {
-	if provider, ok := c.Providers.Get(id); ok {
-		return provider, true
+	if c == nil {
+		return ProviderConfig{}, false
+	}
+	if c.Providers != nil {
+		if provider, ok := c.Providers.Get(id); ok {
+			return provider, true
+		}
 	}
 	provider, ok := c.authenticationCandidates[id]
 	return cloneProviderConfig(provider), ok

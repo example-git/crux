@@ -77,9 +77,7 @@ func authenticationProviderTarget(before AuthenticationCapture, owner providerre
 		return ProviderConfig{}, providerregistry.Registration{}, false, errors.New("selected authentication owner does not support OAuth")
 	}
 	provider, configured := ProviderConfig{}, false
-	if before.runtime.config.Providers != nil {
-		provider, configured = before.runtime.config.Providers.Get(owner.ProviderID)
-	}
+	provider, configured = before.runtime.config.authenticationCollectionProvider(owner.ProviderID)
 	provider = cloneProviderConfig(provider)
 	if configured {
 		// Legacy accepted providers can have an implicit exact owner. Complete

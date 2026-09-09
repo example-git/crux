@@ -26,6 +26,11 @@ func registerOAuthTokenSecrets(token *oauth.Token) {
 
 func registerProviderSecrets(provider ProviderConfig, registration providerregistry.Registration, registered bool) {
 	redact.Register(provider.APIKey, provider.APIKeyTemplate)
+	for _, binding := range provider.resolvedCredentials {
+		if binding != nil {
+			redact.Register(binding.source, binding.literal)
+		}
+	}
 	registerOAuthTokenSecrets(provider.OAuthToken)
 	for name, value := range provider.ExtraHeaders {
 		if provider.Preset != nil || secretHeaderName(name) {
@@ -41,6 +46,11 @@ func registerProviderSecrets(provider ProviderConfig, registration providerregis
 		return
 	}
 	if registered && registration.Manifest != nil {
+		for _, credential := range registration.Manifest.Capabilities.Credentials {
+			if credential.ConfigProperty != "" {
+				redact.RegisterJSONValue(provider.Configuration[credential.ConfigProperty])
+			}
+		}
 		for field, display := range registration.Manifest.Configuration.Fields {
 			if display.Secret {
 				redact.RegisterJSONValue(provider.Configuration[field])

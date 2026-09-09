@@ -177,8 +177,9 @@ type ProviderConfig struct {
 	// The original API key template before resolution (for re-resolution on auth errors).
 	APIKeyTemplate string `json:"-"`
 	// Immutable host-private literal provenance; never serialized as configuration.
-	resolvedAPIKey   *resolvedProviderAPIKey
-	resolvedEndpoint *resolvedProviderEndpoint
+	resolvedAPIKey      *resolvedProviderAPIKey
+	resolvedEndpoint    *resolvedProviderEndpoint
+	resolvedCredentials map[string]*resolvedProviderConfigurationCredential
 	// OAuthToken for providers that use OAuth2 authentication.
 	OAuthToken *oauth.Token `json:"oauth,omitempty" jsonschema:"description=OAuth2 token for authentication with the provider"`
 	// Plugin records durable ownership so configuration and selections remain
@@ -822,6 +823,10 @@ type Config struct {
 // and are shared.
 func (c *Config) cloneForWrite() *Config {
 	nc := *c
+	nc.authenticationCandidates = make(map[string]ProviderConfig, len(c.authenticationCandidates))
+	for id, provider := range c.authenticationCandidates {
+		nc.authenticationCandidates[id] = cloneProviderConfig(provider)
+	}
 	nc.Images = cloneImageConfiguration(c.Images)
 	nc.Models = maps.Clone(c.Models)
 	nc.transportProviderOwners = maps.Clone(c.transportProviderOwners)
@@ -861,6 +866,7 @@ func cloneProviderConfig(provider ProviderConfig) ProviderConfig {
 	provider.ExtraBody = cloneProviderOptions(provider.ExtraBody)
 	provider.ProviderOptions = cloneProviderOptions(provider.ProviderOptions)
 	provider.Configuration = cloneProviderOptions(provider.Configuration)
+	provider.resolvedCredentials = maps.Clone(provider.resolvedCredentials)
 	provider.ExtraParams = maps.Clone(provider.ExtraParams)
 	provider.AutoDiscoverModels = clonePointer(provider.AutoDiscoverModels)
 	provider.Models = cloneProvider(catalog.Provider{Models: provider.Models}).Models
@@ -973,6 +979,7 @@ func (c *Config) RedactedForTransport() *Config {
 			provider.APIKeyTemplate = ""
 			provider.resolvedAPIKey = nil
 			provider.resolvedEndpoint = nil
+			provider.resolvedCredentials = nil
 			provider.OAuthToken = nil
 			provider.ExtraHeaders = nil
 			provider.Configuration = maps.Clone(provider.Configuration)
@@ -987,6 +994,11 @@ func (c *Config) RedactedForTransport() *Config {
 			} else if provider.Plugin != nil && (!registered || registration.Manifest == nil) {
 				provider.Configuration = nil
 			} else if registered && registration.Manifest != nil {
+				for _, credential := range registration.Manifest.Capabilities.Credentials {
+					if credential.ConfigProperty != "" {
+						delete(provider.Configuration, credential.ConfigProperty)
+					}
+				}
 				for field, display := range registration.Manifest.Configuration.Fields {
 					if display.Secret {
 						delete(provider.Configuration, field)
@@ -1055,6 +1067,18 @@ func providerPresetReferenceMatches(providerID string, configured *ProviderPrese
 }
 
 func providerRegistrationForProvider(registry *providerregistry.Registry, providerID string, provider ProviderConfig) (providerregistry.Registration, bool) {
+	registration, ok := providerDeclaredRegistrationForProvider(registry, providerID, provider)
+	if !ok {
+		return providerregistry.Registration{}, false
+	}
+	bound, err := providerregistry.BindRegistrationConfiguration(registration, provider.Configuration)
+	return bound, err == nil
+}
+
+// Declaration ownership does not depend on whether its credential values are
+// configured yet. Execution still uses providerRegistrationForProvider to bind
+// and validate the complete configuration before a capability is invoked.
+func providerDeclaredRegistrationForProvider(registry *providerregistry.Registry, providerID string, provider ProviderConfig) (providerregistry.Registration, bool) {
 	if registry == nil || providerID == "" || provider.ID != "" && provider.ID != providerID ||
 		provider.Owner == nil || provider.Owner.Type == "" || provider.Owner.Construction == "" || provider.Preset != nil {
 		return providerregistry.Registration{}, false
@@ -1083,13 +1107,6 @@ func providerRegistrationForProvider(registry *providerregistry.Registry, provid
 		}
 	default:
 		return providerregistry.Registration{}, false
-	}
-	if registration.Manifest != nil {
-		bound, err := providerregistry.BindRegistrationConfiguration(registration, provider.Configuration)
-		if err != nil {
-			return providerregistry.Registration{}, false
-		}
-		registration = bound
 	}
 	return registration, true
 }
@@ -1303,7 +1320,7 @@ func (c *Config) IsProviderIntegrationAvailable(provider string) bool {
 // rewrite the user's persisted provider and model selection.
 func (c *Config) IsProviderAvailable(provider string) bool {
 	providerConfig, ok := c.Providers.Get(provider)
-	return ok && !providerConfig.Disable && c.IsProviderIntegrationAvailable(provider)
+	return ok && !providerConfig.Disable && c.IsProviderIntegrationAvailable(provider) && !providerMissingConfigurationCredentials(RuntimeSnapshot{config: c, registry: c.providerCapabilities()}, providerConfig)
 }
 
 // IsModelAvailable returns true if the exact provider integration is available

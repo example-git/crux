@@ -23,11 +23,9 @@ func (resolvedReloadInputs) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private resolved reload inputs]"))
 }
 func configHasResolvedInputs(cfg *Config) bool {
-	if cfg != nil && cfg.Providers != nil {
-		for _, provider := range cfg.Providers.Seq2() {
-			if provider.resolvedAPIKey != nil || provider.resolvedEndpoint != nil {
-				return true
-			}
+	for _, provider := range resolvedInputProviders(cfg) {
+		if provider.resolvedAPIKey != nil || provider.resolvedEndpoint != nil || len(provider.resolvedCredentials) > 0 {
+			return true
 		}
 	}
 	return false

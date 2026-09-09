@@ -119,14 +119,19 @@ func (s *Service) observe(capture config.AuthenticationCapture) (Snapshot, error
 	}
 	snapshot := Snapshot{WorkspaceID: s.workspaceID, Generation: Generation{Epoch: s.epoch, Sequence: s.sequence}, Providers: []Status{}}
 	for _, provider := range capture.Providers() {
+		slots := []CredentialSlot{}
+		for _, slot := range capture.CredentialSlots(provider.Owner) {
+			slots = append(slots, CredentialSlot{ID: slot.ID, Kind: slot.Kind, Property: slot.Property, Configured: slot.Configured})
+		}
 		keyState := "absent"
 		if provider.APIKeyConfigured {
 			keyState = "configured"
 		}
 		snapshot.Providers = append(snapshot.Providers, Status{
 			Owner: PublicOwner(provider.Owner), Configured: provider.Configured, Disabled: provider.Disabled,
-			Credentials:  []CredentialStatus{{Kind: "api-key", State: keyState}, {Kind: "oauth", State: provider.OAuthState, Refreshable: provider.OAuthRefreshable}},
-			AccountState: provider.AccountState, ActiveAccountID: provider.ActiveAccountID,
+			Credentials:     []CredentialStatus{{Kind: "api-key", State: keyState}, {Kind: "oauth", State: provider.OAuthState, Refreshable: provider.OAuthRefreshable}},
+			CredentialSlots: slots,
+			AccountState:    provider.AccountState, ActiveAccountID: provider.ActiveAccountID,
 		})
 	}
 	if err := snapshot.Validate(); err != nil {

@@ -420,7 +420,27 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 	}
 
 	for id, provider := range c.Providers.Seq2() {
-		c.Providers.Set(id, c.completeProviderOwner(id, provider))
+		provider = c.completeProviderOwner(id, provider)
+		provider.ID = id
+		var err error
+		provider, err = resolveProviderConfigurationCredentials(snapshot, provider, func(source string) (string, error) {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			if contextual, ok := resolver.(contextVariableResolver); ok {
+				return contextual.ResolveValueContext(ctx, source)
+			}
+			return resolver.ResolveValue(source)
+		})
+		if err != nil {
+			return err
+		}
+		c.Providers.Set(id, provider)
+		if providerMissingConfigurationCredentials(snapshot, provider) {
+			if _, err := validateProviderCredentialSetup(snapshot, provider); err != nil {
+				return err
+			}
+		}
 	}
 
 	for _, p := range knownProviders {
@@ -430,7 +450,7 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 			if c.isUnavailableRegisteredProvider(string(p.ID)) {
 				continue
 			}
-			if err := c.ValidateProviderConfiguration(string(p.ID), config.Configuration); err != nil {
+			if err := c.ValidateProviderConfiguration(string(p.ID), config.Configuration); err != nil && !providerMissingConfigurationCredentials(snapshot, config) {
 				return err
 			}
 		}
@@ -542,16 +562,18 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 			c.Providers.Set(string(p.ID), prepared)
 			continue
 		}
+		if providerMissingConfigurationCredentials(snapshot, prepared) {
+			if configExists {
+				// Retain the explicit selection while setup is incomplete. It
+				// remains unavailable, and constructors use an error model.
+				c.Providers.Set(string(p.ID), prepared)
+			}
+			continue
+		}
 
 		anonymous := false
 		if registration, ok := c.ProviderRegistration(string(p.ID)); ok && registration.Manifest != nil && registration.OAuth == nil {
-			anonymous = true
-			for _, credential := range registration.Manifest.Capabilities.Credentials {
-				if credential.Kind != "none" {
-					anonymous = false
-					break
-				}
-			}
+			anonymous = !providerNeedsPrimaryCredential(registration)
 		}
 		if anonymous && !configExists {
 			if err := c.ValidateProviderConfiguration(string(p.ID), prepared.Configuration); err != nil {
@@ -1186,8 +1208,9 @@ func resolveSelectedModels(cfg *Config, knownProviders []catalog.Provider) (reso
 	var result resolvedModels
 	largeModelSelected, largeModelConfigured := cfg.Models[SelectedModelTypeLarge]
 	smallModelSelected, smallModelConfigured := cfg.Models[SelectedModelTypeSmall]
-	largeUnavailable := largeModelConfigured && cfg.isUnavailableRegisteredProvider(largeModelSelected.Provider)
-	smallUnavailable := smallModelConfigured && cfg.isUnavailableRegisteredProvider(smallModelSelected.Provider)
+	snapshot := RuntimeSnapshot{config: cfg, registry: cfg.providerCapabilities()}
+	largeUnavailable := largeModelConfigured && (cfg.isUnavailableRegisteredProvider(largeModelSelected.Provider) || snapshot.ProviderCredentialSetupPending(largeModelSelected.Provider) != nil)
+	smallUnavailable := smallModelConfigured && (cfg.isUnavailableRegisteredProvider(smallModelSelected.Provider) || snapshot.ProviderCredentialSetupPending(smallModelSelected.Provider) != nil)
 
 	defaultLarge, _, err := cfg.defaultModelSelection(knownProviders)
 	if err != nil {

@@ -62,7 +62,7 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion      = 1
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v21"
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v22"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -70,8 +70,8 @@ const (
 
 // RemoteRuntimeProposal is private admission/update input. It must never be
 // embedded in Workspace discovery, public events, logs or acknowledgements.
-// Configurations contain resolved client values; only Credentials carries the
-// provider's API/OAuth account token. Bundles retain original bytes and digests.
+// Definitions, credential bindings, and image credentials can all contain
+// private resolved client inputs. Bundles retain original bytes and digests.
 type RemoteRuntimeProposal struct {
 	collectionSource            *runtimeCollectionSource
 	Version                     int                                 `json:"version"`
@@ -353,6 +353,15 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	scan := ProviderScan{presetReferences: map[string]ProviderPresetReference{}, pluginStatuses: map[string]providerplugin.Status{}, ownerModes: map[string]providerregistry.OwnerMode{}}
 	var registrations []providerregistry.Registration
 	usedBundles := map[string]bool{}
+	// An unavailable definition may retain incomplete credential properties
+	// for owner-side setup. Its full binding is validated below; the marker
+	// never permits construction or substitutes a receiver credential.
+	declaredUnavailable := map[string]bool{}
+	for _, binding := range proposal.Credentials {
+		if binding.Unavailable {
+			declaredUnavailable[binding.Owner.ProviderID] = true
+		}
+	}
 	for _, definition := range proposal.Providers {
 		provider := definition.Config
 		id := provider.ID
@@ -417,7 +426,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 						return nil, errors.New("client provider endpoint violates its declared destination policy")
 					}
 				}
-				if _, err := providerregistry.BindRegistrationConfiguration(registration, provider.Configuration); err != nil {
+				if _, err := providerregistry.BindRegistrationConfiguration(registration, provider.Configuration); err != nil && !declaredUnavailable[id] {
 					return nil, errors.New("client provider configuration bindings are invalid")
 				}
 				registrations = append(registrations, registration)
@@ -511,7 +520,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		if _, ok := providerOwnerForProvider(cfg, registry, id, provider); !ok {
 			return nil, errors.New("client provider owner cannot be activated")
 		}
-		if err := cfg.ValidateProviderConfiguration(id, provider.Configuration); err != nil {
+		if err := cfg.ValidateProviderConfiguration(id, provider.Configuration); err != nil && !declaredUnavailable[id] {
 			return nil, errors.New("client provider configuration violates its schema")
 		}
 	}
@@ -534,6 +543,9 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			return nil, errors.New("unavailable client credential cannot contain a secret")
 		}
 		unavailable[id] = binding.Unavailable
+		if !binding.Unavailable && providerMissingConfigurationCredentials(RuntimeSnapshot{config: cfg, registry: registry}, provider) {
+			return nil, errors.New("client provider requires its declared configuration credentials")
+		}
 		identity := RemoteAccountIdentity{ProviderID: id, Generation: binding.Generation}
 		if binding.Account != nil {
 			registration, ok := cfg.ProviderRegistration(id)

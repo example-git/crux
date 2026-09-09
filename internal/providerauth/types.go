@@ -58,11 +58,21 @@ type CredentialStatus struct {
 	Refreshable bool   `json:"refreshable"`
 }
 
+// CredentialSlot is an exact owner-declared input location. It contains no
+// credential value or expression; Configured describes captured presence only.
+type CredentialSlot struct {
+	ID         string `json:"id"`
+	Kind       string `json:"kind"`
+	Property   string `json:"property,omitempty"`
+	Configured bool   `json:"configured"`
+}
+
 type Status struct {
 	Owner           Owner              `json:"owner"`
 	Configured      bool               `json:"configured"`
 	Disabled        bool               `json:"disabled"`
 	Credentials     []CredentialStatus `json:"credentials"`
+	CredentialSlots []CredentialSlot   `json:"credential_slots,omitempty"`
 	AccountState    string             `json:"account_state"`
 	ActiveAccountID string             `json:"active_account_id,omitempty"`
 }
@@ -151,6 +161,33 @@ func (s Status) Validate() error {
 	}
 	if len(s.Credentials) != 2 {
 		return errors.New("incomplete provider credential status")
+	}
+	if len(s.CredentialSlots) > 129 {
+		return errors.New("too many provider credential slots")
+	}
+	slots := map[string]bool{}
+	for _, slot := range s.CredentialSlots {
+		if !validText(slot.ID, 128, true) || !validText(slot.Property, 128, false) || slots[slot.ID] {
+			return errors.New("invalid provider credential slot")
+		}
+		slots[slot.ID] = true
+		if slot.ID == "provider.api_key" {
+			if slot.Property != "" || slot.Kind != "api-key" {
+				return errors.New("invalid primary API key slot")
+			}
+		} else {
+			id := strings.TrimPrefix(slot.ID, "configuration.")
+			if id == slot.ID || id == "" || len(id) > 64 || slot.Property == "" || slot.Kind != "api-key" && slot.Kind != "bearer" && slot.Kind != "oauth2" {
+				return errors.New("invalid configuration credential slot")
+			}
+			for i, char := range id {
+				if char < 'a' || char > 'z' {
+					if i == 0 || char != '_' && char != '-' && (char < '0' || char > '9') {
+						return errors.New("invalid configuration credential slot identifier")
+					}
+				}
+			}
+		}
 	}
 	seen := map[string]bool{}
 	for _, c := range s.Credentials {

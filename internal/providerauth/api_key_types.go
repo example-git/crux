@@ -37,11 +37,13 @@ func (r APIKeyCheckRequest) Validate() error {
 // Probe describes that policy's evidence; it does not assert inference access.
 // A retained check is historical. Save must still verify its target and capture.
 type APIKeyCheckOutcome struct {
-	CheckID       string                       `json:"check_id"`
-	Previous      Target                       `json:"previous"`
-	CredentialID  string                       `json:"credential_id"`
-	Probe         config.ConnectionProbeResult `json:"probe"`
-	CheckedTarget *Target                      `json:"checked_target,omitempty"`
+	CheckID              string                       `json:"check_id"`
+	Previous             Target                       `json:"previous"`
+	CredentialID         string                       `json:"credential_id"`
+	Probe                config.ConnectionProbeResult `json:"probe"`
+	PendingConfiguration bool                         `json:"pending_configuration,omitempty"`
+	SchemaOnly           bool                         `json:"schema_only,omitempty"`
+	CheckedTarget        *Target                      `json:"checked_target,omitempty"`
 }
 
 func (o APIKeyCheckOutcome) Validate() error {
@@ -53,6 +55,12 @@ func (o APIKeyCheckOutcome) Validate() error {
 	}
 	if err := o.Probe.Validate(); err != nil {
 		return err
+	}
+	if (o.PendingConfiguration || o.SchemaOnly) && (!strings.HasPrefix(o.CredentialID, "configuration.") || o.Probe.Kind != config.ConnectionProbeNotProbed || o.Probe.Policy != config.ConnectionProbePolicyNone) {
+		return errors.New("pending credential setup cannot claim a connection probe")
+	}
+	if o.PendingConfiguration && !o.SchemaOnly {
+		return errors.New("pending credential setup requires schema-only evidence")
 	}
 	if o.CheckedTarget != nil {
 		current := *o.CheckedTarget

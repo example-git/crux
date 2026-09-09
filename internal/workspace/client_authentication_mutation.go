@@ -372,7 +372,7 @@ func (w *ClientWorkspace) clientAuthenticationAcknowledgedOutcome(ctx context.Co
 func clientAuthenticationOutcome(receipt *clientAuthenticationReceipt, cause error) (providerauth.MutationOutcome, error) {
 	data, err := json.Marshal(receipt.outcome)
 	if err != nil {
-		return providerauth.MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, LoginID: receipt.request.loginID, RemovedAccountID: receipt.request.removedAccountID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, providerauth.ErrReceiptUnverified
+		return providerauth.MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, CredentialID: receipt.outcome.CredentialID, LoginID: receipt.request.loginID, RemovedAccountID: receipt.request.removedAccountID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, providerauth.ErrReceiptUnverified
 	}
 	var outcome providerauth.MutationOutcome
 	decoder := json.NewDecoder(bytes.NewReader(data))

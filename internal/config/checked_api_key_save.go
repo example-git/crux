@@ -14,7 +14,7 @@ import (
 // The checked literal and endpoint are published in memory, with no account
 // mutation, source execution, connection probe, model selection or agent reset.
 func (s *ConfigStore) SaveCheckedAPIKey(ctx context.Context, scope Scope, prepared CheckedAPIKeyPreparation) (result AuthenticationMutationResult, err error) {
-	if !prepared.valid || prepared.before.runtime.publicationStore != s || !prepared.provider.resolvedAPIKey.matches(prepared.provider) || !prepared.provider.resolvedEndpoint.matches(prepared.provider) {
+	if !prepared.valid || prepared.before.runtime.publicationStore != s || !checkedProviderCredentialMatches(prepared.provider, prepared.slot) || !prepared.provider.resolvedEndpoint.matches(prepared.provider) {
 		return result, errors.New("valid checked API key preparation is required")
 	}
 	before, owner := prepared.before, prepared.owner
@@ -49,11 +49,11 @@ func (s *ConfigStore) SaveCheckedAPIKey(ctx context.Context, scope Scope, prepar
 			projected.values[file.path] = slices.Clone(file.data)
 		}
 	}
-	edit, err := projected.stageCheckedAPIKey(ctx, admitted.path, prepared.provider, admitted.topology.writtenPaths)
+	edit, err := projected.stageCheckedAPIKey(ctx, admitted.path, prepared.provider, admitted.topology.writtenPaths, prepared.slot)
 	if err != nil {
 		return result, err
 	}
-	if err := validateAuthenticationTopologyEffect(layers, edit, owner.ProviderID, &prepared.provider, admitted.topology.writtenPaths); err != nil {
+	if err := validateCheckedCredentialTopology(layers, edit, prepared.provider, admitted.topology.writtenPaths, prepared.slot); err != nil {
 		return result, err
 	}
 	next := before.runtime.config.cloneForWrite()
@@ -78,12 +78,18 @@ func (s *ConfigStore) SaveCheckedAPIKey(ctx context.Context, scope Scope, prepar
 			}
 			next.authenticationBasis.sources[written] = authenticationBasisSource{exists: file.info.exists, raw: slices.Clone(file.data), evaluated: slices.Clone(file.data)}
 		}
-		next.advanceAuthenticationBasisCheckedAPIKey(written, prepared.provider)
+		next.advanceAuthenticationBasisCheckedAPIKey(written, prepared.provider, prepared.slot)
 	}
 	if !next.authenticationBasis.valid {
 		return result, errAuthenticationBasisUnavailable
 	}
-	if err := before.finalizeRuntimeCheckedAPIKey(next, owner); err != nil {
+	finalize := func() error {
+		if prepared.slot.Property != "" {
+			return before.finalizeRuntimeConfigurationCredential(next, owner, prepared.slot)
+		}
+		return before.finalizeRuntimeCheckedAPIKey(next, owner)
+	}
+	if err := finalize(); err != nil {
 		return result, err
 	}
 	if err := lockAuthenticationMutex(ctx, s.configMu.TryLock, s.configMu.Unlock); err != nil {

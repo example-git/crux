@@ -1485,7 +1485,7 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 	var primary config.SelectedModel
 	if agent.PrimaryModelOverride != nil {
 		primary = *agent.PrimaryModelOverride
-		if !cfg.IsModelAvailable(primary.Provider, primary.Model) && snapshot.AuthenticationRevocation(primary.Provider) == nil && snapshot.AuthenticationConstructionDenial(primary.Provider) == nil {
+		if !cfg.IsModelAvailable(primary.Provider, primary.Model) && snapshot.AuthenticationRevocation(primary.Provider) == nil && snapshot.AuthenticationConstructionDenial(primary.Provider) == nil && snapshot.ProviderCredentialSetupPending(primary.Provider) == nil {
 			return Model{}, Model{}, fmt.Errorf("primary model %q for provider %q is not available", primary.Model, primary.Provider)
 		}
 	} else {
@@ -2015,6 +2015,9 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 	}
 	if unavailable := snapshot.ClientProviderUnavailable(selectedModel.Provider); unavailable != nil {
 		return unavailableClientProvider{id: selectedModel.Provider, err: unavailable}, nil
+	}
+	if pending := snapshot.ProviderCredentialSetupPending(selectedModel.Provider); pending != nil {
+		return unavailableClientProvider{id: selectedModel.Provider, err: pending}, nil
 	}
 	providerCfg, registration, registered, err := snapshot.ProviderForConstruction(selectedModel.Provider, providerCfg)
 	if err != nil {

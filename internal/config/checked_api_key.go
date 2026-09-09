@@ -17,13 +17,16 @@ import (
 // CheckedAPIKeyPreparation retains private Check evidence and its exact input
 // observation. It is neither a configuration nor a transferable credential.
 type CheckedAPIKeyPreparation struct {
-	before   AuthenticationCapture
-	owner    providerregistry.RegistrationOwner
-	provider ProviderConfig
-	settings checkedAPIKeySettings
-	layers   authenticationLayers
-	probe    ConnectionProbeResult
-	valid    bool
+	before     AuthenticationCapture
+	owner      providerregistry.RegistrationOwner
+	provider   ProviderConfig
+	slot       ProviderCredentialSlot
+	pending    bool
+	schemaOnly bool
+	settings   checkedAPIKeySettings
+	layers     authenticationLayers
+	probe      ConnectionProbeResult
+	valid      bool
 }
 
 func (CheckedAPIKeyPreparation) MarshalJSON() ([]byte, error) {
@@ -38,6 +41,9 @@ func (p CheckedAPIKeyPreparation) ProbeResult() ConnectionProbeResult {
 	}
 	return p.probe
 }
+
+func (p CheckedAPIKeyPreparation) PendingConfiguration() bool { return p.pending }
+func (p CheckedAPIKeyPreparation) SchemaOnly() bool           { return p.schemaOnly }
 
 type checkedAPIKeySettings struct {
 	base                                  env.Env
@@ -88,9 +94,6 @@ func (s *ConfigStore) PrepareCheckedAPIKey(ctx context.Context, before Authentic
 	if err := s.validateCheckedAPIKeyCapture(ctx, before, owner); err != nil {
 		return prepared, err
 	}
-	if credentialID != "provider.api_key" {
-		return prepared, errProviderAPIKeySlotUnsupported
-	}
 	if source == "" {
 		return prepared, errors.New("API key source is empty")
 	}
@@ -110,12 +113,19 @@ func (s *ConfigStore) PrepareCheckedAPIKey(ctx context.Context, before Authentic
 	if err != nil {
 		return prepared, err
 	}
+	slot, err := providerCredentialSlot(before.runtime, provider, credentialID)
+	if err != nil {
+		return prepared, err
+	}
 	// Select the exact declared native read operation before resolving input.
 	// A catalog type is not permission to invent a native endpoint or headers.
-	operation, err := checkedAPIKeyProbeOperation(before.runtime, provider)
-	if err != nil {
+	operation, operationErr := checkedAPIKeyProbeOperation(before.runtime, provider)
+	if operationErr != nil && slot.Property == "" {
 		prepared.probe = ConnectionProbeResult{Kind: ConnectionProbeUnsupported, Policy: ConnectionProbePolicyNone}
-		return prepared, err
+		return prepared, operationErr
+	}
+	if slot.Property != "" && operationErr != nil && !errors.Is(operationErr, errCheckedCatalogNotDeclared) {
+		return prepared, operationErr
 	}
 	resolver, ok := before.runtime.resolver.(contextVariableResolver)
 	if !ok {
@@ -138,9 +148,29 @@ func (s *ConfigStore) PrepareCheckedAPIKey(ctx context.Context, before Authentic
 	if literal == "" {
 		return prepared, errors.New("resolved API key is empty")
 	}
-	provider, err = bindResolvedProviderAPIKey(before.runtime, provider, owner, source, literal)
+	if slot.Property == "" {
+		provider, err = bindResolvedProviderAPIKey(before.runtime, provider, owner, source, literal)
+	} else {
+		provider, err = bindResolvedConfigurationCredential(before.runtime, provider, owner, slot, source, literal)
+	}
 	if err != nil {
 		return prepared, err
+	}
+	scratch := before.runtime.config.cloneForWrite()
+	if scratch.Providers == nil {
+		scratch.Providers = csync.NewMap[string, ProviderConfig]()
+	}
+	scratch.Providers.Set(owner.ProviderID, provider)
+	if slot.Property == "" {
+		if err := scratch.ValidateProviderConfiguration(owner.ProviderID, provider.Configuration); err != nil {
+			return prepared, errors.New("checked provider configuration is invalid")
+		}
+	} else {
+		prepared.pending, err = validateProviderCredentialSetup(before.runtime, provider)
+		if err != nil {
+			return prepared, err
+		}
+		prepared.schemaOnly = prepared.pending || operation == nil || !checkedCredentialCatalogAudience(before.runtime, provider, slot, operation)
 	}
 	endpointSource := provider.BaseURL
 	if provider.resolvedEndpoint != nil {
@@ -171,12 +201,14 @@ func (s *ConfigStore) PrepareCheckedAPIKey(ctx context.Context, before Authentic
 		}
 	}
 	validate := func() error { return s.validateCheckedAPIKeyCapture(ctx, before, owner) }
-	if operation == nil {
+	if prepared.schemaOnly {
+		prepared.probe = ConnectionProbeResult{Kind: ConnectionProbeNotProbed, Policy: ConnectionProbePolicyNone}
+	} else if operation == nil {
 		prepared.probe, err = provider.ProbeConnection(ctx, IdentityResolver(), validate)
 	} else {
 		prepared.probe, err = probeCheckedAPIKeyManifest(ctx, before.runtime, provider, operation, func(probeContext context.Context) error {
 			return s.validateCheckedAPIKeyCapture(probeContext, before, owner)
-		})
+		}, slot)
 	}
 	if err != nil {
 		if ctx.Err() != nil {
@@ -196,6 +228,7 @@ func (s *ConfigStore) PrepareCheckedAPIKey(ctx context.Context, before Authentic
 		return prepared, errors.New("checked provider settings changed")
 	}
 	prepared.before, prepared.owner, prepared.provider, prepared.layers, prepared.settings, prepared.valid = before, owner, provider, layers, settings, true
+	prepared.slot = slot
 	return prepared, nil
 }
 
@@ -204,9 +237,7 @@ func checkedAPIKeyProviderTarget(before AuthenticationCapture, owner providerreg
 		return ProviderConfig{}, false, err
 	}
 	provider, configured := ProviderConfig{}, false
-	if before.runtime.config.Providers != nil {
-		provider, configured = before.runtime.config.Providers.Get(owner.ProviderID)
-	}
+	provider, configured = before.runtime.config.authenticationCollectionProvider(owner.ProviderID)
 	provider = cloneProviderConfig(provider)
 	if configured {
 		var err error
@@ -224,16 +255,8 @@ func checkedAPIKeyProviderTarget(before AuthenticationCapture, owner providerreg
 		}
 	}
 	actual, active := before.runtime.ProviderOwnerFor(owner.ProviderID, provider)
-	if !active || actual != owner || !providerAPIKeySlotSupported(before.runtime, provider) {
+	if !active || actual != owner {
 		return ProviderConfig{}, false, errProviderAPIKeySlotUnsupported
-	}
-	scratch := before.runtime.config.cloneForWrite()
-	if scratch.Providers == nil {
-		scratch.Providers = csync.NewMap[string, ProviderConfig]()
-	}
-	scratch.Providers.Set(owner.ProviderID, provider)
-	if err := scratch.ValidateProviderConfiguration(owner.ProviderID, provider.Configuration); err != nil {
-		return ProviderConfig{}, false, errors.New("checked provider configuration is invalid")
 	}
 	return provider, configured, nil
 }

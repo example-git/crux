@@ -62,6 +62,7 @@ type Change struct {
 type MutationOutcome struct {
 	OperationID      string           `json:"operation_id"`
 	CheckID          string           `json:"check_id,omitempty"`
+	CredentialID     string           `json:"credential_id,omitempty"`
 	LoginID          string           `json:"login_id,omitempty"`
 	RemovedAccountID string           `json:"removed_account_id,omitempty"`
 	Previous         Target           `json:"previous"`
@@ -205,6 +206,9 @@ func (o MutationOutcome) Validate() error {
 	}
 	if o.CheckID != "" && !validOperationID(o.CheckID) {
 		return errors.New("invalid authentication outcome check")
+	}
+	if o.CredentialID != "" && (o.CheckID == "" || !validText(o.CredentialID, 128, true)) {
+		return errors.New("invalid checked credential identity")
 	}
 	if o.LoginID != "" && (!validOperationID(o.LoginID) || o.CheckID != "") {
 		return errors.New("invalid authentication outcome login")

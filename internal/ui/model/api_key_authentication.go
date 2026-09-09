@@ -371,6 +371,8 @@ func (m *UI) completeAPIKeyCheck(msg apiKeyCheckMsg) tea.Cmd {
 	}
 	if op.checked.PendingConfiguration {
 		op.message = "The entered credential is retained. Other declared credential fields are still required, so no connection probe was performed. Enter saves this field for continued setup. Escape cancels without saving."
+	} else if op.checked.SchemaOnly {
+		op.message = "The entered credential passed source and configuration-schema validation only. No connection probe applies to this declared field, and provider access has not been verified. Enter saves the retained field. Escape cancels without saving."
 	}
 	m.updateAPIKeyDialogs()
 	return nil
