@@ -2003,6 +2003,9 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 	}
 	validateOwner := func() error {
 		if snapshot.IsClientOwned() {
+			if unavailable := snapshot.ClientProviderUnavailable(owner.ProviderID); unavailable != nil {
+				return unavailable
+			}
 			// Credentials and request configuration remain captured. Admission
 			// still follows the current receiver authority so a retained model
 			// cannot start another request after its owner is removed or disabled.
