@@ -163,6 +163,26 @@ operation identity and inspect the reported account/configuration/publication
 progress. Retrying the original request, recovering its publication, and
 explicitly reviewing currently saved state are different actions.
 
+In a client-owned workspace, open **Review Saved Authentication** from the
+command palette (`review_saved_authentication`, also `saved_auth` or
+`reload_auth`). It can start a new saved-state review without an old operation
+receipt:
+
+- **Ctrl+R** reads current owner-local status.
+- **Ctrl+L** reloads the owning client's saved files, evaluates configured
+  sources and model discovery, and captures a new authentication generation.
+  It does not publish that state to the receiver.
+- **Ctrl+T** retrieves the result of the same reload request after an error.
+- **Enter** opens review of the selected saved account, logout, OAuth token or
+  credential field. **Ctrl+Y** in the review dialog applies its exact preview.
+
+Reload is an explicit action. Reading status does not silently reload files.
+Review verifies the chosen effect against current saved state; it does not
+switch accounts, clear a credential or repair a partially saved transaction.
+Apply publishes the retained preview once, and a retry checks for that exact
+receiver acknowledgement. An older operation's result remains historical even
+when a new saved-state action succeeds.
+
 The provider credential flow checks an exact owner and credential field, retains
 the checked input, and saves that same input without repeating resolution or a
 probe. Manifest-declared configuration credentials appear as separate fields
