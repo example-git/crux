@@ -151,6 +151,10 @@ var skipAutoStartCommands = map[string]bool{
 }
 
 func (s *Manager) startServer(name, filepath string, server *powernapconfig.ServerConfig) {
+	if s.cfg.RuntimeRevocation() != nil {
+		return
+	}
+
 	var (
 		isUserConfigured = s.isUserConfigured(name)
 		autoLSP          = s.cfg.Config().Options.AutoLSP
@@ -232,6 +236,8 @@ func (s *Manager) startServer(name, filepath string, server *powernapconfig.Serv
 	// server must persist beyond any single request.
 	initCtx, cancel := context.WithTimeout(context.Background(), time.Duration(cmp.Or(cfg.Timeout, 30))*time.Second)
 	defer cancel()
+	initCtx, releaseRuntime := s.cfg.BindRuntimeContext(initCtx)
+	defer releaseRuntime()
 
 	if _, err := client.Initialize(initCtx, s.cfg.WorkingDir()); err != nil {
 		slog.Error("LSP client initialization failed", "name", name, "error", err)

@@ -349,6 +349,11 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 	if !ok {
 		return
 	}
+	accepted, err := proto.ParseWorkspaceAttachment(r.Header)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// Subscribe to the event broker BEFORE attaching the client.
 	// AttachClient bumps the stream count that observers use to
 	// detect a live subscriber; subscribing first guarantees that
@@ -359,12 +364,15 @@ func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.R
 		c.handleError(w, r, err)
 		return
 	}
-	if err := c.backend.AttachClient(id, clientID); err != nil {
+	if err := c.backend.AttachClientWithAuthority(id, clientID, requestPrincipal(r), accepted); err != nil {
 		c.handleError(w, r, err)
 		return
 	}
 	defer c.backend.DetachClient(id, clientID)
 
+	if accepted != nil {
+		accepted.SetHeaders(w.Header())
+	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")

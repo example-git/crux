@@ -140,16 +140,22 @@ func (w *Workspace) drainRevokedPrincipal() {
 	w.invokeShutdown()
 }
 
+// Releasing the draining reservation is also the point at which the daemon
+// can become idle. A timer or control request must not exit during cleanup.
 func (b *Backend) releasePrincipalWorkspace(ws *Workspace) {
 	if ws.shutdownErr != nil {
 		return
 	}
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.drainingPaths[ws.resolvedPath] == ws {
 		delete(b.drainingPaths, ws.resolvedPath)
 	}
 	if lifetime := b.principals[ws.principal]; lifetime != nil && lifetime.workspaces[ws.ID] == ws {
 		delete(lifetime.workspaces, ws.ID)
+	}
+	shutdownNow := b.scheduleShutdownIfIdleLocked()
+	b.mu.Unlock()
+	if shutdownNow && b.shutdownFn != nil {
+		b.shutdownFn()
 	}
 }

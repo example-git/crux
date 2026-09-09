@@ -24,6 +24,9 @@ func (app *App) DrainCredentialWork(ctx context.Context) error {
 			result = errors.Join(result, drainer.DrainCredentialWork(ctx))
 		}
 	}
+	if app.BackgroundAgents != nil {
+		result = errors.Join(result, app.BackgroundAgents.Drain(ctx))
+	}
 	if app.BackgroundShells != nil {
 		result = errors.Join(result, app.BackgroundShells.Drain(ctx))
 	}

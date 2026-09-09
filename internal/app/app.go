@@ -100,7 +100,13 @@ type App struct {
 // per-workspace skill discovery results computed by the caller; the
 // caller is responsible for constructing it (typically via
 // skills.NewManager + skills.DiscoverFromConfig).
-func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr *skills.Manager) (*App, error) {
+func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr *skills.Manager) (result *App, err error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer func() {
+		if result == nil {
+			cancel()
+		}
+	}()
 	q := db.New(conn)
 	sessions := session.NewService(q, conn)
 	messages := message.NewService(q, message.WithCompactionStore(conn, sessions))
@@ -241,17 +247,28 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 			imageRuntime.Close()
 			return nil
 		},
-		func(context.Context) error { return db.Release(dataDir) },
+		func(context.Context) error { cancel(); return nil },
 		func(ctx context.Context) error { return mcp.For(app.config).Close(ctx) },
 	)
+
+	// Ownership of the caller's pooled DB reference transfers only after
+	// initialization succeeds. Failed construction leaves it for the caller.
+	finish := func() *App {
+		app.cleanupFuncs = append(app.cleanupFuncs, func(context.Context) error { return db.Release(dataDir) })
+		return app
+	}
 
 	// TODO: remove the concept of agent config, most likely.
 	if !cfg.CanInitializeAgent() {
 		slog.Warn("Selected models are unavailable; starting without an agent")
-		return app, nil
+		return finish(), nil
 	}
 	if err := app.InitCoderAgent(ctx); err != nil {
-		return nil, fmt.Errorf("failed to initialize coder agent: %w", err)
+		cancel()
+		store.RevokeRuntime()
+		drainErr := app.DrainCredentialWork(context.Background())
+		app.Shutdown()
+		return nil, errors.Join(fmt.Errorf("failed to initialize coder agent: %w", err), drainErr)
 	}
 
 	// Set up callback for LSP state updates.
@@ -268,7 +285,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	// installed when configured-but-not-yet-started LSPs are announced.
 	go app.LSPManager.TrackConfigured(ctx)
 
-	return app, nil
+	return finish(), nil
 }
 
 // Config returns the pure-data configuration.

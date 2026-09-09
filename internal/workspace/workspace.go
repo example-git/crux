@@ -71,6 +71,12 @@ const (
 // recovered transitions of the client-server link. Local (in-process)
 // workspaces never emit it.
 type ConnectionEvent struct {
+	// Recreated identifies a newly acknowledged workspace ID after loss. It
+	// does not claim that any session/history query has completed.
+	Recreated           bool
+	PreviousWorkspaceID string
+	WorkspaceID         string
+
 	State ConnectionState
 	// Err is the most recent failure, set when State is
 	// ConnectionDegraded.

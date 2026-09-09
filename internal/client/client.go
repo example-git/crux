@@ -12,6 +12,7 @@ import (
 	"net/url"
 	stdpath "path"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/example-git/crux/internal/config"
@@ -34,6 +35,8 @@ type Client struct {
 	clientID          string
 	localRuntimeStore *config.ConfigStore
 	secure            bool
+	attachmentMu      sync.RWMutex
+	attachments       map[string]proto.WorkspaceAttachment
 }
 
 // DefaultClient creates a new [Client] connected to the default server address.

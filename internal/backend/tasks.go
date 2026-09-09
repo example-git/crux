@@ -28,6 +28,12 @@ func (b *Backend) RestartTask(ctx context.Context, workspaceID, taskID string) (
 	if err != nil {
 		return managedtask.View{}, err
 	}
+	ctx, complete, err := ws.beginCredentialOperation(ctx)
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	defer complete()
+
 	return ws.RestartTask(ctx, taskID)
 }
 
@@ -44,6 +50,12 @@ func (b *Backend) ContinueTask(ctx context.Context, workspaceID, taskID, parentS
 	if err != nil {
 		return managedtask.View{}, err
 	}
+	ctx, complete, err := ws.beginCredentialOperation(ctx)
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	defer complete()
+
 	return ws.ContinueTask(ctx, taskID, parentSessionID, prompt)
 }
 

@@ -87,6 +87,7 @@ func (c *Client) ReplaceRemoteRuntime(ctx context.Context, id string, expected u
 	if ack.Mode != "client" || ack.Principal != capabilities.Principal || ack.Revision != proposal.Revision || ack.Digest != proposal.Digest {
 		return nil, errors.New("remote runtime acknowledgement does not match the submitted authority")
 	}
+	c.retainWorkspaceAttachment(id, &ack)
 	return &ack, nil
 }
 

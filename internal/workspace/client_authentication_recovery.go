@@ -248,6 +248,13 @@ func (a *clientAuthority) unacknowledgedClientAuthentication(id string) bool {
 // Callers hold a.mu. Generic runtime mutations cannot authorize recovery of
 // an earlier saved authentication operation or discard its intended removals.
 func (a *clientAuthority) requireAuthenticationPublication(id string) error {
+	if a.recoveryProposal != nil {
+		return errors.New("workspace recreation is awaiting acknowledgement; retry the same recovery before publishing client runtime changes")
+	}
+	return a.requireAuthenticationReceipt(id)
+}
+
+func (a *clientAuthority) requireAuthenticationReceipt(id string) error {
 	if a.unacknowledgedClientAuthentication(id) {
 		return errors.New("recover the saved authentication operation before publishing client runtime changes")
 	}
