@@ -62,22 +62,25 @@ func writeProviderAuthMutationResponse(w http.ResponseWriter, response proto.Pro
 			return
 		}
 	}
-	status := http.StatusOK
-	if response.Error != nil {
-		switch response.Error.Code {
-		case "stale", "owner", "account", "operation_conflict":
-			status = http.StatusConflict
-		case "canceled", "deadline":
-			status = http.StatusRequestTimeout
-		case "client_runtime_managed":
-			status = http.StatusBadRequest
-		case "mutation_failed":
-			status = http.StatusUnprocessableEntity
-		default:
-			status = http.StatusInternalServerError
-		}
-	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(providerAuthResponseStatus(response.Error))
 	_, _ = w.Write(body)
+}
+
+func providerAuthResponseStatus(failure *proto.ProviderAuthenticationError) int {
+	if failure == nil {
+		return http.StatusOK
+	}
+	switch failure.Code {
+	case "stale", "owner", "account", "operation_conflict", "check_unavailable":
+		return http.StatusConflict
+	case "canceled", "deadline":
+		return http.StatusRequestTimeout
+	case "client_runtime_managed":
+		return http.StatusBadRequest
+	case "mutation_failed", "check_failed":
+		return http.StatusUnprocessableEntity
+	default:
+		return http.StatusInternalServerError
+	}
 }
