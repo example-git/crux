@@ -154,13 +154,58 @@ func TestPrepareCodeManifestModesAndInvalidInput(t *testing.T) {
 	}
 }
 
-func TestPrepareCodeManifestRejectsRedirectReplacement(t *testing.T) {
-	server := httptest.NewTLSServer(http.NotFoundHandler())
+func TestPrepareCodeManifestRejectsProtocolReplacement(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
+	defer server.Close()
+	for _, field := range []string{"client_id", "state", "code_challenge", "code_challenge_method", "response_type", "redirect_uri"} {
+		t.Run(field, func(t *testing.T) {
+			executor, _ := examplePluginFlow(t, server)
+			executor.flow.AuthorizationParams = append(executor.flow.AuthorizationParams, manifest.QueryRule{Name: field, Value: manifest.Template{Kind: "literal", Value: "conflicting-value"}})
+			challenge, err := executor.PrepareCode(t.Context(), 12345)
+			require.ErrorContains(t, err, field)
+			require.Nil(t, challenge)
+			require.Zero(t, calls.Load())
+		})
+	}
+}
+
+func TestPrepareCodeManifestAllowsIdenticalProtocolAndOtherParameters(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = io.WriteString(w, `{"access_token":"synthetic-access","expires_in":120}`)
+	}))
 	defer server.Close()
 	executor, _ := examplePluginFlow(t, server)
-	executor.flow.AuthorizationParams = append(executor.flow.AuthorizationParams, manifest.QueryRule{Name: "redirect_uri", Value: manifest.Template{Kind: "literal", Value: "https://other.invalid/callback"}})
-	_, err := executor.PrepareCode(t.Context(), 12345)
-	require.ErrorContains(t, err, "replaced the captured callback")
+	for _, field := range []struct {
+		name  string
+		value manifest.Template
+	}{
+		{"client_id", manifest.Template{Kind: "literal", Value: "example-client"}},
+		{"state", manifest.Template{Kind: "context", Ref: "oauth.state"}},
+		{"code_challenge", manifest.Template{Kind: "context", Ref: "oauth.pkce_challenge"}},
+		{"code_challenge_method", manifest.Template{Kind: "literal", Value: "S256"}},
+		{"response_type", manifest.Template{Kind: "literal", Value: "code"}},
+		{"redirect_uri", manifest.Template{Kind: "context", Ref: "oauth.redirect_uri"}},
+		{"scope", manifest.Template{Kind: "literal", Value: "custom-declared-scope"}},
+		{"prompt", manifest.Template{Kind: "literal", Value: "consent"}},
+	} {
+		executor.flow.AuthorizationParams = append(executor.flow.AuthorizationParams, manifest.QueryRule{Name: field.name, Value: field.value})
+	}
+	challenge, err := executor.PrepareCode(t.Context(), 12345)
+	require.NoError(t, err)
+	defer challenge.Close()
+	require.Zero(t, calls.Load())
+	u, err := url.Parse(challenge.AuthorizationURL())
+	require.NoError(t, err)
+	require.Equal(t, "custom-declared-scope", u.Query().Get("scope"))
+	require.Equal(t, "consent", u.Query().Get("prompt"))
+	input := url.Values{"code": {"synthetic-code"}, "state": {u.Query().Get("state")}}.Encode()
+	token, err := challenge.Exchange(t.Context(), input)
+	require.NoError(t, err)
+	require.Equal(t, "synthetic-access", token.AccessToken)
+	require.EqualValues(t, 1, calls.Load())
 }
 
 func TestManifestChallengeCloseCancelsActualExchange(t *testing.T) {
