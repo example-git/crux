@@ -1215,10 +1215,14 @@ func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
 	if s.workingDir == "" {
 		return fmt.Errorf("cannot publish config fields without a working directory")
 	}
+	retained, err := resolvedInputRetentionForFields(s.Config(), kv)
+	if err != nil {
+		return err
+	}
 	if err := s.writeConfigFields(scope, kv); err != nil {
 		return err
 	}
-	if err := s.reloadFromDiskLocked(context.Background()); err != nil {
+	if err := s.reloadFromDiskLocked(context.Background(), retained); err != nil {
 		return fmt.Errorf("config file updated but failed to publish in-memory state: %w", err)
 	}
 	return nil
@@ -2599,7 +2603,7 @@ func (s *ConfigStore) revalidateReloadGeneration(
 // registration must not replace an explicit selected provider, model, or any
 // provider-specific model values. Keep resolution before SetupAgents and roll
 // back on real setup errors without normalizing unavailable selections.
-func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
+func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context, retained ...*Config) error {
 	baseEnvironment := s.baseEnvironment
 	if baseEnvironment == nil {
 		baseEnvironment = snapshotEnvironment()
@@ -2649,6 +2653,11 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	}
 	cfg.bindProviderScan(scan)
 	expectedOwners := captureReloadProviderOwners(cfg)
+	if len(retained) > 0 {
+		if err := cfg.retainResolvedProviderInputs(retained[0]); err != nil {
+			return err
+		}
+	}
 	providers := cloneProviderCatalog(scan.Providers)
 
 	var pendingOwners map[string]ProviderOwnerReference

@@ -110,6 +110,13 @@ func (s *ConfigStore) PrepareCheckedAPIKey(ctx context.Context, before Authentic
 	if err != nil {
 		return prepared, err
 	}
+	// A compatible catalog type is not a native operation probe policy.
+	// Custom/preset identities omit Construction in RegistrationOwner; the
+	// complete provider reference was just validated against that exact owner.
+	if provider.Owner.Construction != providerregistry.ConstructionOpenAICompat {
+		prepared.probe = ConnectionProbeResult{Kind: ConnectionProbeUnsupported, Policy: ConnectionProbePolicyNone}
+		return prepared, errors.New("checked API key connection policy is not implemented for this provider construction")
+	}
 	resolver, ok := before.runtime.resolver.(contextVariableResolver)
 	if !ok {
 		return prepared, errors.New("checked API key resolver does not support cancellation")
