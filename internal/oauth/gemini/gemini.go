@@ -270,30 +270,14 @@ func toToken(tr tokenResponse, clientID string) *oauth.Token {
 // readCode must return whatever the user pasted back, which may be the bare
 // code, a "code=..." fragment, or the full callback URL.
 func Authorize(ctx context.Context, open func(string) error, readCode func() (string, error)) (*oauth.Token, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := providertransport.ValidateContextOwner(ctx); err != nil {
-		return nil, err
-	}
-	clientID, clientSecret, err := oauthClientCredentials(ctx)
+	challenge, err := PrepareCode(ctx, 0)
 	if err != nil {
 		return nil, err
 	}
-	verifier, challenge, err := createPKCE()
-	if err != nil {
+	defer challenge.Close()
+	if err := providertransport.OpenURLWithContextOwnerValidator(ctx, open, challenge.AuthorizationURL()); err != nil {
 		return nil, err
 	}
-	state, err := randomString(32)
-	if err != nil {
-		return nil, err
-	}
-
-	authURL := buildAuthorizeURL(challenge, state, clientID)
-	if err := providertransport.OpenURLWithContextOwnerValidator(ctx, open, authURL); err != nil {
-		return nil, err
-	}
-
 	if readCode == nil {
 		return nil, errors.New("Gemini OAuth requires pasted callback input")
 	}
@@ -314,25 +298,7 @@ func Authorize(ctx context.Context, open func(string) error, readCode func() (st
 		return nil, ctx.Err()
 	}
 
-	code, gotState, err := parsePastedCode(pasted)
-	if err != nil {
-		return nil, err
-	}
-	if gotState != "" && gotState != state {
-		return nil, errors.New("OAuth state mismatch — possible CSRF, please try again")
-	}
-
-	token, err := exchangeCodeWithClientCredentials(ctx, code, verifier, clientID, clientSecret)
-	if err == nil {
-		err = providertransport.ValidateContextOwner(ctx)
-	}
-	if err == nil {
-		err = ctx.Err()
-	}
-	if err != nil {
-		return nil, err
-	}
-	return token, nil
+	return challenge.Exchange(ctx, pasted)
 }
 
 // parsePastedCode extracts the authorization code (and state, when present)
@@ -344,20 +310,28 @@ func parsePastedCode(in string) (code, state string, err error) {
 		return "", "", errors.New("no authorization code provided")
 	}
 
-	// Full callback URL or a bare query fragment.
-	if strings.Contains(in, "code=") {
-		raw := in
-		if i := strings.Index(raw, "?"); i >= 0 {
-			raw = raw[i+1:]
+	// Callback-shaped input must validate as a callback. Do not send malformed
+	// queries, duplicated state/code, or provider errors as a bare token code.
+	raw, callback := in, strings.Contains(in, "code=") || strings.Contains(in, "state=") || strings.Contains(in, "error=")
+	if parsed, parseErr := url.Parse(in); parseErr == nil && parsed.IsAbs() {
+		callback = true
+		raw = parsed.RawQuery
+		if raw == "" {
+			raw = parsed.Fragment
 		}
+	} else if i := strings.IndexByte(raw, '?'); i >= 0 {
+		raw, callback = raw[i+1:], true
+	}
+	if callback {
 		raw = strings.TrimPrefix(raw, "#")
 		q, parseErr := url.ParseQuery(raw)
-		if parseErr == nil && q.Get("code") != "" {
-			return q.Get("code"), q.Get("state"), nil
+		if parseErr != nil || len(q["code"]) != 1 || len(q["state"]) > 1 || len(q["error"]) > 0 || q.Get("code") == "" {
+			return "", "", errors.New("could not parse an authorization code from the pasted callback")
 		}
+		return q.Get("code"), q.Get("state"), nil
 	}
 
-	if strings.ContainsAny(in, " \t\n") {
+	if strings.ContainsAny(in, " \t\r\n") {
 		return "", "", errors.New("could not parse an authorization code from the pasted value")
 	}
 	return in, "", nil

@@ -139,7 +139,7 @@ func (r *Registry) Surfaces(providers []catalog.Provider, selectedModels map[str
 			}
 		}
 		if registration.OAuth != nil {
-			available := registration.OAuth.Authorize != nil || (registration.OAuth.RequestDeviceCode != nil && registration.OAuth.PollDeviceCode != nil)
+			available := registration.OAuth.Authorize != nil || registration.OAuth.PrepareCode != nil || (registration.OAuth.RequestDeviceCode != nil && registration.OAuth.PollDeviceCode != nil)
 			auth := Authentication{Kind: "oauth2", FlowID: registration.OAuth.FlowID, Adapter: registration.OAuth.Adapter, Available: available}
 			if !available {
 				auth.Diagnostic = "host OAuth interpreter unavailable"

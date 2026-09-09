@@ -155,6 +155,11 @@ func manifestOAuthCapability(value manifest.Manifest, flow manifest.OAuthFlow, b
 		Refresh: executor.Refresh,
 	}
 	if flow.Redirect.Mode != "device-code" {
+		callback, err := executor.CallbackRequirement()
+		if err != nil {
+			return nil, err
+		}
+		capability.Callback, capability.PrepareCode = &callback, executor.PrepareCode
 		return capability, nil
 	}
 	capability.Authorize = nil
@@ -163,7 +168,7 @@ func manifestOAuthCapability(value manifest.Manifest, flow manifest.OAuthFlow, b
 		if err != nil {
 			return nil, err
 		}
-		return &DeviceAuthorization{UserCode: authorization.UserCode, VerificationURL: authorization.VerificationURL, State: authorization}, nil
+		return &DeviceAuthorization{UserCode: authorization.UserCode, VerificationURL: authorization.VerificationURL, ExpiresAt: authorization.ExpiresAt(), State: authorization}, nil
 	}
 	capability.PollDeviceCode = func(ctx context.Context, authorization *DeviceAuthorization) (*oauth.Token, error) {
 		if authorization == nil {

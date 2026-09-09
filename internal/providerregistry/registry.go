@@ -12,6 +12,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/foundation/providers/anthropic"
@@ -76,6 +77,7 @@ type ReadCode func() (string, error)
 // DeviceAuthorization contains display-safe device-flow values plus opaque
 // host-owned polling state. Declarative plugins never provide State values.
 type DeviceAuthorization struct {
+	ExpiresAt       time.Time
 	UserCode        string
 	VerificationURL string
 	State           any
@@ -85,6 +87,8 @@ type DeviceAuthorization struct {
 // Manifest callbacks execute only finite host interpreters; compatibility or
 // core-owned providers may supply audited callbacks for unsupported flow kinds.
 type OAuthCapability struct {
+	Callback          *oauth.CallbackRequirement
+	PrepareCode       func(context.Context, uint16) (*oauth.CodeChallenge, error)
 	Adapter           LoginAdapter
 	FlowID            string
 	Authorize         func(context.Context, OpenURL, ReadCode) (*oauth.Token, error)
@@ -224,6 +228,10 @@ func (r Registration) Clone() Registration {
 	}
 	if r.OAuth != nil {
 		value := *r.OAuth
+		if value.Callback != nil {
+			callback := *value.Callback
+			value.Callback = &callback
+		}
 		r.OAuth = &value
 	}
 	if r.Usage != nil {
@@ -416,6 +424,7 @@ func Integrated() []Registration {
 			Reasoning: &ReasoningCapability{FallbackOnUnsupported: true, Options: geminiReasoningOptions, Disable: disableGeminiReasoning},
 			OAuth: &OAuthCapability{
 				Adapter: LoginHostedPaste, FlowID: "gemini-antigravity",
+				Callback: new(gemini.CallbackRequirement()), PrepareCode: gemini.PrepareCode,
 				Authorize: func(ctx context.Context, open OpenURL, read ReadCode) (*oauth.Token, error) {
 					if read == nil {
 						return nil, fmt.Errorf("provider %s requires pasted authorization input", gemini.ID)
@@ -441,6 +450,7 @@ func Integrated() []Registration {
 			Quota:     oauthusage.FetchCodex,
 			OAuth: &OAuthCapability{
 				Adapter: LoginBrowser, FlowID: "codex",
+				Callback: new(codex.CallbackRequirement()), PrepareCode: codex.PrepareCode,
 				Authorize: func(ctx context.Context, open OpenURL, _ ReadCode) (*oauth.Token, error) {
 					return codex.Authorize(ctx, open)
 				},
@@ -481,7 +491,7 @@ func Integrated() []Registration {
 					if err != nil {
 						return nil, err
 					}
-					return &DeviceAuthorization{UserCode: code.UserCode, VerificationURL: code.VerificationURI, State: code}, nil
+					return &DeviceAuthorization{UserCode: code.UserCode, VerificationURL: code.VerificationURI, ExpiresAt: code.ExpiresAt(), State: code}, nil
 				},
 				PollDeviceCode: func(ctx context.Context, authorization *DeviceAuthorization) (*oauth.Token, error) {
 					code, ok := authorization.State.(*copilot.DeviceCode)
@@ -739,6 +749,13 @@ func attachCompatibilityAdapter(registration *Registration, declaration manifest
 			if registration.OAuth == nil || adapter.OAuth == nil {
 				return fmt.Errorf("provider %q delegates OAuth without both a declaration and adapter", registration.ProviderID)
 			}
+			registration.OAuth.Adapter = adapter.OAuth.Adapter
+			registration.OAuth.Callback = nil
+			if adapter.OAuth.Callback != nil {
+				callback := *adapter.OAuth.Callback
+				registration.OAuth.Callback = &callback
+			}
+			registration.OAuth.PrepareCode = adapter.OAuth.PrepareCode
 			registration.OAuth.Authorize = adapter.OAuth.Authorize
 			registration.OAuth.Import = adapter.OAuth.Import
 			registration.OAuth.RequestDeviceCode = adapter.OAuth.RequestDeviceCode

@@ -235,32 +235,17 @@ func RefreshToken(ctx context.Context, refreshToken string) (*oauth.Token, error
 // It binds the fixed loopback port the Codex client registration requires
 // and blocks until the browser completes the callback or ctx is cancelled.
 func Authorize(ctx context.Context, open func(string) error) (*oauth.Token, error) {
-	ctx, cancel := context.WithTimeout(ctx, authorizeTimeout)
+	challenge, err := PrepareCode(ctx, redirectPort)
+	if err != nil {
+		return nil, err
+	}
+	defer challenge.Close()
+	ctx, cancel := context.WithDeadline(ctx, challenge.ExpiresAt())
 	defer cancel()
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err := providertransport.ValidateContextOwner(ctx); err != nil {
-		return nil, err
-	}
-	clientID, err := oauthClientID(ctx)
-	if err != nil {
-		return nil, err
-	}
-	verifier, challenge, err := createPKCE()
-	if err != nil {
-		return nil, err
-	}
-	state, err := randomString(32)
-	if err != nil {
-		return nil, err
-	}
-
 	listener, err := new(net.ListenConfig).Listen(ctx, "tcp", fmt.Sprintf("localhost:%d", redirectPort))
 	if err != nil {
 		return nil, fmt.Errorf("start OAuth callback server on port %d: %w", redirectPort, err)
 	}
-	redirectURI := fmt.Sprintf("http://localhost:%d%s", redirectPort, redirectPath)
 
 	type result struct {
 		token *oauth.Token
@@ -271,8 +256,11 @@ func Authorize(ctx context.Context, open func(string) error) (*oauth.Token, erro
 	finish := func(value result) { finishOnce.Do(func() { resultCh <- value }) }
 	var claimed atomic.Bool
 
-	mux := http.NewServeMux()
-	mux.HandleFunc(redirectPath, func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != redirectPath {
+			http.NotFound(w, r)
+			return
+		}
 		if !claimed.CompareAndSwap(false, true) {
 			http.Error(w, "OAuth callback already received.", http.StatusConflict)
 			return
@@ -282,23 +270,7 @@ func Authorize(ctx context.Context, open func(string) error) (*oauth.Token, erro
 			finish(result{err: err})
 			return
 		}
-		q := r.URL.Query()
-		if q.Get("state") != state || q.Get("code") == "" {
-			_ = callback.Serve(w, callback.Result{
-				Subject:          Name,
-				ErrorCode:        "invalid_request",
-				ErrorDescription: "Invalid OAuth callback.",
-			})
-			finish(result{err: errors.New("codex OAuth callback validation failed")})
-			return
-		}
-		token, err := exchangeCodeWithClientID(ctx, q.Get("code"), verifier, redirectURI, clientID)
-		if err == nil {
-			err = providertransport.ValidateContextOwner(ctx)
-		}
-		if err == nil {
-			err = ctx.Err()
-		}
+		token, err := challenge.Exchange(ctx, r.URL.RawQuery)
 		if err != nil {
 			_ = callback.Serve(w, callback.Result{
 				Subject:          Name,
@@ -312,7 +284,7 @@ func Authorize(ctx context.Context, open func(string) error) (*oauth.Token, erro
 		finish(result{token: token})
 	})
 
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 15 * time.Second}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 15 * time.Second}
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			finish(result{err: errors.New("OAuth callback server stopped")})
@@ -326,7 +298,7 @@ func Authorize(ctx context.Context, open func(string) error) (*oauth.Token, erro
 		_ = server.Close()
 	}()
 
-	authURL := buildAuthorizeURL(redirectURI, challenge, state, clientID)
+	authURL := challenge.AuthorizationURL()
 	if open != nil {
 		if err := providertransport.OpenURLWithContextOwnerValidator(ctx, open, authURL); err != nil {
 			return nil, fmt.Errorf("open authorization URL: %w", err)
