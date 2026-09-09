@@ -19,6 +19,7 @@ type AuthenticationHistoryRow struct {
 	Review, Recover, RetryRecovery, Repair, ApplyRepair bool
 	AbandonLocal, RetryAbandonLocal                     bool
 	AbandonPublication, RetryAbandonPublication         bool
+	AbandonReview, RetryAbandonReview                   bool
 }
 type ActionAuthenticationHistory struct {
 	Dialog     *AuthenticationHistory
@@ -173,6 +174,14 @@ func (d *AuthenticationHistory) HandleMsg(msg tea.Msg) Action {
 		if row.Repair {
 			return action("repair")
 		}
+	case "alt+d":
+		if row.AbandonReview {
+			return action("abandon-review")
+		}
+	case "alt+f":
+		if row.RetryAbandonReview {
+			return action("retry-abandon-review")
+		}
 	case "alt+b":
 		if row.AbandonPublication {
 			return action("abandon-publication")
@@ -215,6 +224,8 @@ func (d *AuthenticationHistory) actionChoices() []authenticationHistoryAction {
 	add(row.RetryRecovery, "alt+t", "Retry exact recovery", "retry-recovery")
 	add(row.Repair, "ctrl+p", "Review local repair", "repair")
 	add(row.ApplyRepair, "ctrl+y", "Apply reviewed repair", "apply-repair")
+	add(row.AbandonReview, "alt+d", "Abandon attempted review", "abandon-review")
+	add(row.RetryAbandonReview, "alt+f", "Retry review abandonment", "retry-abandon-review")
 	add(row.AbandonPublication, "alt+b", "Abandon publication recovery", "abandon-publication")
 	add(row.RetryAbandonPublication, "alt+n", "Retry publication abandonment", "retry-abandon-publication")
 	add(row.AbandonLocal, "alt+x", "Abandon local recovery", "abandon-local")
