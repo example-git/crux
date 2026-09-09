@@ -109,6 +109,9 @@ func (m *ProviderError) Unwrap() error {
 // condition (408, 409, 429, or any 5xx), or if the cause is a transient
 // HTTP/2 transport error.
 func (m *ProviderError) IsRetryable() bool {
+	if isNonRetryableError(m) {
+		return false
+	}
 	if m.TransientError {
 		return true
 	}
@@ -230,6 +233,9 @@ func IsConnectionLimitError(err error) bool {
 }
 
 func IsIndefinitelyRetryable(err error) bool {
+	if isNonRetryableError(err) {
+		return false
+	}
 	var providerErr *ProviderError
 	if !errors.As(err, &providerErr) {
 		return false
@@ -240,6 +246,14 @@ func IsIndefinitelyRetryable(err error) bool {
 	default:
 		return false
 	}
+}
+
+// isNonRetryableError recognizes an explicit local refusal without depending
+// on the application package that owns it. In particular, an HTTP client may
+// wrap a local admission error in a net.Error even though no network I/O ran.
+func isNonRetryableError(err error) bool {
+	var refusal interface{ NonRetryable() bool }
+	return errors.As(err, &refusal) && refusal.NonRetryable()
 }
 
 func NewServerOverloadError() *ProviderError {
