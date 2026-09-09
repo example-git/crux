@@ -595,6 +595,7 @@ func TestContinueStartupLoadsRequestedSessionBeforePrompt(t *testing.T) {
 	t.Parallel()
 
 	ui := newTestUI()
+	ui.com.Workspace = &testWorkspace{}
 	ui.state = uiLanding
 	ui.initialSessionID = "requested-session"
 	ui.initialPrompt = "pending"
@@ -610,6 +611,7 @@ func TestContinueStartupConsumesContinueLastOnce(t *testing.T) {
 	t.Parallel()
 
 	ui := newTestUI()
+	ui.com.Workspace = &testWorkspace{}
 	ui.state = uiLanding
 	ui.continueLastSession = true
 	ui.initialPrompt = "pending"
@@ -957,6 +959,8 @@ type testWorkspace struct {
 	initCoderCalls        int
 	initCoderError        error
 }
+
+func (w *testWorkspace) AuthenticationWorkspaceID() string { return "test-workspace" }
 
 func (w *testWorkspace) WorkingDir() string {
 	return "/workspace"

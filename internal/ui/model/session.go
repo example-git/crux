@@ -11,21 +11,30 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/internal/agent"
+	"github.com/example-git/crux/internal/agent/tools"
 	"github.com/example-git/crux/internal/diff"
 	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/history"
+	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/styles"
-	"github.com/example-git/crux/internal/ui/util"
+	"github.com/example-git/crux/internal/workspace"
 )
 
 // loadSessionMsg is a message indicating that a session and its files have
 // been loaded.
 type loadSessionMsg struct {
-	session   *session.Session
-	files     []SessionFile
-	readFiles []string
+	source      workspace.Workspace
+	workspaceID string
+	generation  uint64
+	messages    []message.Message
+	nested      map[string][]message.Message
+	err         error
+	session     *session.Session
+	files       []SessionFile
+	readFiles   []string
 }
 
 // lspFilePaths returns deduplicated file paths from both modified and read
@@ -64,36 +73,72 @@ type SessionFile struct {
 // loadSession loads the session along with its associated files and computes
 // the diff statistics (additions and deletions) for each file in the session.
 // It returns a tea.Cmd that, when executed, fetches the session data and
-// returns a sessionFilesLoadedMsg containing the processed session files.
+// returns a loadSessionMsg containing the session and its history.
 //
-// The returned batch also reports the new current-session selection to
-// the workspace so the server can update its per-client presence map.
-// That report is fire-and-forget: errors are logged at debug and the
-// UI never blocks on the call.
+// Presence is reported only after Update accepts this captured load. An old
+// completion cannot change presence or install history in another workspace.
 func (m *UI) loadSession(sessionID string) tea.Cmd {
-	load := func() tea.Msg {
-		session, err := m.com.Workspace.GetSession(context.Background(), sessionID)
-		if err != nil {
-			return util.ReportError(err)
-		}
+	ws := m.com.Workspace
+	id := ws.AuthenticationWorkspaceID()
+	m.sessionLoadGeneration++
+	generation := m.sessionLoadGeneration
+	return loadSessionCommand(ws, id, generation, sessionID)
+}
 
-		sessionFiles, err := m.loadSessionFiles(sessionID)
+func loadSessionCommand(ws workspace.Workspace, id string, generation uint64, sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		result := loadSessionMsg{source: ws, workspaceID: id, generation: generation}
+		ctx := workspace.ContextWithSessionWorkspace(context.Background(), id)
+		value, err := ws.GetSession(ctx, sessionID)
 		if err != nil {
-			return util.ReportError(err)
+			result.err = err
+			return result
 		}
-
-		readFiles, err := m.com.Workspace.FileTrackerListReadFiles(context.Background(), sessionID)
+		result.session = &value
+		result.files, err = loadSessionFiles(ctx, ws, sessionID)
+		if err != nil {
+			result.err = err
+			return result
+		}
+		result.readFiles, err = ws.FileTrackerListReadFiles(ctx, sessionID)
 		if err != nil {
 			slog.Error("Failed to load read files for session", "error", err)
 		}
+		result.messages, result.err = ws.ListMessages(ctx, sessionID)
+		if result.err != nil {
+			return result
+		}
+		result.nested = loadNestedSessionMessages(ctx, ws, result.messages)
+		return result
+	}
+}
 
-		return loadSessionMsg{
-			session:   &session,
-			files:     sessionFiles,
-			readFiles: readFiles,
+// Preload nested history under the same captured Workspace ID. Rendering only
+// consumes these returned messages; it performs no Workspace IO in Update.
+func loadNestedSessionMessages(ctx context.Context, ws workspace.Workspace, messages []message.Message) map[string][]message.Message {
+	result := map[string][]message.Message{}
+	queue := append([]message.Message(nil), messages...)
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, call := range current.ToolCalls() {
+			if call.Name != agent.AgentToolName && call.Name != tools.AgenticFetchToolName {
+				continue
+			}
+			id := ws.CreateAgentToolSessionID(current.ID, call.ID)
+			if _, seen := result[id]; seen {
+				continue
+			}
+			result[id] = nil
+			nested, err := ws.ListMessages(ctx, id)
+			if err != nil {
+				continue
+			}
+			result[id] = nested
+			queue = append(queue, nested...)
 		}
 	}
-	return tea.Batch(load, m.reportCurrentSession(sessionID))
+	return result
 }
 
 // reportCurrentSession returns a fire-and-forget tea.Cmd that
@@ -102,16 +147,19 @@ func (m *UI) loadSession(sessionID string) tea.Cmd {
 // for server-side presence tracking, not correctness-critical
 // state.
 func (m *UI) reportCurrentSession(sessionID string) tea.Cmd {
+	ws := m.com.Workspace
+	id := ws.AuthenticationWorkspaceID()
 	return func() tea.Msg {
-		if err := m.com.Workspace.SetCurrentSession(context.Background(), sessionID); err != nil {
+		ctx := workspace.ContextWithSessionWorkspace(context.Background(), id)
+		if err := ws.SetCurrentSession(ctx, sessionID); err != nil {
 			slog.Debug("Failed to report current session", "session_id", sessionID, "error", err)
 		}
 		return nil
 	}
 }
 
-func (m *UI) loadSessionFiles(sessionID string) ([]SessionFile, error) {
-	files, err := m.com.Workspace.ListSessionHistory(context.Background(), sessionID)
+func loadSessionFiles(ctx context.Context, ws workspace.Workspace, sessionID string) ([]SessionFile, error) {
+	files, err := ws.ListSessionHistory(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -170,13 +218,14 @@ func (m *UI) handleFileEvent(file history.File) tea.Cmd {
 	sessionID := m.session.ID
 	m.sessionFilesFetchGen++
 	generation := m.sessionFilesFetchGen
+	ws := m.com.Workspace
+	id := ws.AuthenticationWorkspaceID()
 	return func() tea.Msg {
-		sessionFiles, err := m.loadSessionFiles(sessionID)
-		if err != nil {
-			return util.NewErrorMsg(err)
-		}
-
+		ctx := workspace.ContextWithSessionWorkspace(context.Background(), id)
+		sessionFiles, err := loadSessionFiles(ctx, ws, sessionID)
 		return sessionFilesUpdatesMsg{
+			err:    err,
+			source: ws, workspaceID: id,
 			sessionID:    sessionID,
 			generation:   generation,
 			sessionFiles: sessionFiles,

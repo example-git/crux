@@ -15,6 +15,8 @@ type historyWorkspace struct {
 	messages []message.Message
 }
 
+func (historyWorkspace) AuthenticationWorkspaceID() string { return "history-workspace" }
+
 func (historyWorkspace) Config() *config.Config {
 	return &config.Config{}
 }

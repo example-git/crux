@@ -155,7 +155,12 @@ func (w *ClientWorkspace) CreateSession(ctx context.Context, title string) (sess
 }
 
 func (w *ClientWorkspace) GetSession(ctx context.Context, sessionID string) (session.Session, error) {
-	sess, err := w.client.GetSession(ctx, w.workspaceID(), sessionID)
+	ctx, id, done, err := w.sessionReadContext(ctx)
+	defer done()
+	if err != nil {
+		return session.Session{}, err
+	}
+	sess, err := w.client.GetSession(ctx, id, sessionID)
 	if err != nil {
 		return session.Session{}, err
 	}
@@ -163,7 +168,12 @@ func (w *ClientWorkspace) GetSession(ctx context.Context, sessionID string) (ses
 }
 
 func (w *ClientWorkspace) ListSessions(ctx context.Context) ([]session.Session, error) {
-	protoSessions, err := w.client.ListSessions(ctx, w.workspaceID())
+	ctx, id, done, err := w.sessionReadContext(ctx)
+	defer done()
+	if err != nil {
+		return nil, err
+	}
+	protoSessions, err := w.client.ListSessions(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -211,17 +221,29 @@ func (w *ClientWorkspace) ParseAgentToolSessionID(sessionID string) (string, str
 // are propagated to the caller; the TUI logs and ignores them since
 // the presence record is a hint, not correctness-critical state.
 func (w *ClientWorkspace) SetCurrentSession(ctx context.Context, sessionID string) error {
-	w.herdrClient.SetSessionID(sessionID)
+	ctx, done := providerAuthContext(ctx, w.subCtx)
+	defer done()
 	w.mu.Lock()
+	id := w.ws.ID
+	if err := checkSessionWorkspace(ctx, id); err != nil {
+		w.mu.Unlock()
+		return err
+	}
 	w.lastSession = sessionID
 	w.mu.Unlock()
-	return w.client.SetCurrentSession(ctx, w.workspaceID(), sessionID)
+	w.herdrClient.SetSessionID(sessionID)
+	return w.client.SetCurrentSession(ctx, id, sessionID)
 }
 
 // -- Messages --
 
 func (w *ClientWorkspace) ListMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
-	msgs, err := w.client.ListMessages(ctx, w.workspaceID(), sessionID)
+	ctx, id, done, err := w.sessionReadContext(ctx)
+	defer done()
+	if err != nil {
+		return nil, err
+	}
+	msgs, err := w.client.ListMessages(ctx, id, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +251,12 @@ func (w *ClientWorkspace) ListMessages(ctx context.Context, sessionID string) ([
 }
 
 func (w *ClientWorkspace) ListUserMessages(ctx context.Context, sessionID string) ([]message.Message, error) {
-	msgs, err := w.client.ListUserMessages(ctx, w.workspaceID(), sessionID)
+	ctx, id, done, err := w.sessionReadContext(ctx)
+	defer done()
+	if err != nil {
+		return nil, err
+	}
+	msgs, err := w.client.ListUserMessages(ctx, id, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +264,12 @@ func (w *ClientWorkspace) ListUserMessages(ctx context.Context, sessionID string
 }
 
 func (w *ClientWorkspace) ListAllUserMessages(ctx context.Context) ([]message.Message, error) {
-	msgs, err := w.client.ListAllUserMessages(ctx, w.workspaceID())
+	ctx, id, done, err := w.sessionReadContext(ctx)
+	defer done()
+	if err != nil {
+		return nil, err
+	}
+	msgs, err := w.client.ListAllUserMessages(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -552,13 +584,23 @@ func (w *ClientWorkspace) FileTrackerLastReadTime(ctx context.Context, sessionID
 }
 
 func (w *ClientWorkspace) FileTrackerListReadFiles(ctx context.Context, sessionID string) ([]string, error) {
-	return w.client.FileTrackerListReadFiles(ctx, w.workspaceID(), sessionID)
+	ctx, id, done, err := w.sessionReadContext(ctx)
+	defer done()
+	if err != nil {
+		return nil, err
+	}
+	return w.client.FileTrackerListReadFiles(ctx, id, sessionID)
 }
 
 // -- History --
 
 func (w *ClientWorkspace) ListSessionHistory(ctx context.Context, sessionID string) ([]history.File, error) {
-	files, err := w.client.ListSessionHistoryFiles(ctx, w.workspaceID(), sessionID)
+	ctx, id, done, err := w.sessionReadContext(ctx)
+	defer done()
+	if err != nil {
+		return nil, err
+	}
+	files, err := w.client.ListSessionHistoryFiles(ctx, id, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -1046,7 +1088,7 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 			return
 		}
 		degraded = true
-		send(ConnectionEvent{State: ConnectionDegraded, Err: err, Stuck: stuck})
+		send(ConnectionEvent{Source: w, WorkspaceID: w.workspaceID(), State: ConnectionDegraded, Err: err, Stuck: stuck})
 	}
 
 	for {
@@ -1202,7 +1244,7 @@ func (w *ClientWorkspace) afterReconnect(send func(tea.Msg), recreatedFrom ...st
 			slog.Warn("Failed to re-assert current session after reconnect", "error", err)
 		}
 	}
-	event := ConnectionEvent{State: ConnectionRecovered, WorkspaceID: w.workspaceID()}
+	event := ConnectionEvent{Source: w, State: ConnectionRecovered, WorkspaceID: w.workspaceID()}
 	if len(recreatedFrom) == 1 && recreatedFrom[0] != "" && recreatedFrom[0] != event.WorkspaceID {
 		event.Recreated, event.PreviousWorkspaceID = true, recreatedFrom[0]
 	}
