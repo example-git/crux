@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 
@@ -63,10 +64,15 @@ func TestRunNonInteractiveStopsBeforeSessionAfterAgentUpdateFailure(t *testing.T
 	requests := make(map[string]int)
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		key := request.Method + " " + request.URL.Path
+		if request.Method == http.MethodDelete && strings.HasPrefix(request.URL.Path, "/v1/clients/") {
+			key = "DELETE /v1/clients/fixture"
+		}
 		mu.Lock()
 		requests[key]++
 		mu.Unlock()
 		switch key {
+		case "POST /v1/workspaces/" + workspaceID + "/agent/init", "DELETE /v1/clients/fixture":
+			writer.WriteHeader(http.StatusOK)
 		case "GET /v1/workspaces/" + workspaceID + "/agent":
 			require.NoError(t, json.NewEncoder(writer).Encode(map[string]any{"is_ready": true}))
 		case "POST /v1/workspaces/" + workspaceID + "/agent/update":
@@ -87,6 +93,8 @@ func TestRunNonInteractiveStopsBeforeSessionAfterAgentUpdateFailure(t *testing.T
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, map[string]int{
+		"POST /v1/workspaces/" + workspaceID + "/agent/init":   1,
+		"DELETE /v1/clients/fixture":                           1,
 		"GET /v1/workspaces/" + workspaceID + "/agent":         1,
 		"POST /v1/workspaces/" + workspaceID + "/agent/update": 1,
 	}, requests)

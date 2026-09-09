@@ -652,9 +652,18 @@ func collectRemoteProviderState(ctx context.Context, cwd, dataDir string, debug 
 }
 
 func collectRemoteProviderStateForClient(ctx context.Context, c *client.Client, cwd, dataDir string, debug bool, revision uint64) (*config.RemoteRuntimeProposal, error) {
+	return collectRemoteProviderStatePrepared(ctx, c, cwd, dataDir, debug, revision, nil)
+}
+
+func collectRemoteProviderStatePrepared(ctx context.Context, c *client.Client, cwd, dataDir string, debug bool, revision uint64, prepare func(*config.ConfigStore) error) (*config.RemoteRuntimeProposal, error) {
 	store, err := config.Load(cwd, dataDir, debug)
 	if err != nil {
 		return nil, fmt.Errorf("load selected client runtime: %w", err)
+	}
+	if prepare != nil {
+		if err := prepare(store); err != nil {
+			return nil, fmt.Errorf("prepare selected client runtime: %w", err)
+		}
 	}
 	if c != nil {
 		c.SetLocalRuntimeStore(store)
@@ -730,7 +739,7 @@ func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func
 			return nil, nil, nil, err
 		}
 		wsReq.AuthorityMode = "client"
-		wsReq.Runtime, err = collectRemoteProviderStateForClient(cmd.Context(), c, localCwd, "", debug, 1)
+		wsReq.Runtime, err = collectRemoteProviderStatePrepared(cmd.Context(), c, localCwd, "", debug, 1, prepareRunModelOverrides(cmd))
 		if err != nil {
 			return nil, nil, nil, err
 		}

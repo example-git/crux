@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"charm.land/log/v2"
@@ -72,8 +73,14 @@ crux run --continue "Follow up on your last response"
 		)
 
 		// Cancel on SIGINT or SIGTERM.
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, os.Kill)
+		parentContext := cmd.Context()
+		ctx, cancel := signal.NotifyContext(parentContext, os.Interrupt, syscall.SIGTERM)
 		defer cancel()
+		cmd.SetContext(ctx)
+		defer cmd.SetContext(parentContext)
+		if err := validateRunModelFlags(cmd); err != nil {
+			return err
+		}
 
 		if permissionMode != string(proto.AgentPermissionDeny) && permissionMode != string(proto.AgentPermissionBypass) {
 			return fmt.Errorf("invalid compatibility permission mode %q", permissionMode)
@@ -92,16 +99,12 @@ crux run --continue "Follow up on your last response"
 		}
 
 		if useClientServer() {
-			c, ws, cleanup, err := connectToServer(cmd)
+			c, ws, _, err := connectToServer(cmd)
 			if err != nil {
 				return err
 			}
-			defer cleanup()
-
 			clientWs := workspace.NewClientWorkspace(c, *ws)
-			if err := clientWs.InitCoderAgentNonInteractive(ctx); err != nil {
-				return fmt.Errorf("failed to initialize agent: %w", err)
-			}
+			defer clientWs.Shutdown()
 
 			if sessionID != "" {
 				sess, err := resolveSessionByID(ctx, c, ws.ID, sessionID)
@@ -115,7 +118,12 @@ crux run --continue "Follow up on your last response"
 				slog.SetDefault(slog.New(log.New(os.Stderr)))
 			}
 
-			return runNonInteractive(ctx, c, ws, prompt, largeModel, smallModel, quiet || verbose, sessionID, useLast, proto.AgentPermissionMode(permissionMode))
+			// Authenticated connection setup already resolved and admitted the
+			// complete flag selection before collecting its provider dependencies.
+			// Re-resolving implicit defaults against that changed main model can
+			// choose a different auxiliary model.
+			modelsPrepared := c.LocalRuntimeStore() != nil && (largeModel != "" || smallModel != "")
+			return runNonInteractiveWithWorkspace(ctx, c, ws, clientWs, prompt, largeModel, smallModel, quiet || verbose, sessionID, useLast, proto.AgentPermissionMode(permissionMode), modelsPrepared)
 		}
 
 		ws, cleanup, err := setupLocalWorkspace(cmd)
@@ -166,15 +174,54 @@ func runNonInteractive(
 	useLast bool,
 	permissionMode proto.AgentPermissionMode,
 ) error {
+	retained := workspace.NewClientWorkspace(c, *ws)
+	defer retained.Shutdown()
+	return runNonInteractiveWithWorkspace(ctx, c, ws, retained, prompt, largeModel, smallModel, hideSpinner, continueSessionID, useLast, permissionMode, false)
+}
+
+func runNonInteractiveWithWorkspace(
+	ctx context.Context,
+	c *client.Client,
+	ws *proto.Workspace,
+	retained *workspace.ClientWorkspace,
+	prompt, largeModel, smallModel string,
+	hideSpinner bool,
+	continueSessionID string,
+	useLast bool,
+	permissionMode proto.AgentPermissionMode,
+	modelsPrepared bool,
+) error {
 	slog.Info("Running in non-interactive mode")
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	if largeModel != "" || smallModel != "" {
-		if err := overrideModels(ctx, c, ws, largeModel, smallModel); err != nil {
+	if !modelsPrepared && (largeModel != "" || smallModel != "") {
+		if err := overrideModels(ctx, retained, largeModel, smallModel); err != nil {
 			return fmt.Errorf("failed to override models: %w", err)
 		}
+	}
+
+	var sess *proto.Session
+	if continueSessionID != "" || useLast {
+		var err error
+		sess, err = resolveSession(ctx, c, ws.ID, continueSessionID, useLast)
+		if err != nil {
+			return fmt.Errorf("failed to resolve session: %w", err)
+		}
+		if largeModel == "" && smallModel == "" {
+			if _, err := restoreModelFromSession(ctx, c, ws.ID, retained, sess.ID); err != nil {
+				return fmt.Errorf("failed to restore model from session: %w", err)
+			}
+		}
+		slog.Info("Continuing session for non-interactive run", "session_id", sess.ID)
+	}
+
+	if retained.Config() == nil {
+		return fmt.Errorf("workspace configuration is missing")
+	}
+	if err := retained.InitCoderAgentNonInteractive(ctx); err != nil {
+		return fmt.Errorf("failed to initialize agent: %w", err)
 	}
 
 	var (
@@ -184,10 +231,11 @@ func runNonInteractive(
 	)
 
 	stderrTTY = term.IsTerminal(os.Stderr.Fd())
-	progress = ws.Config.Options.Progress == nil || *ws.Config.Options.Progress
+	cfg := retained.Config()
+	progress = cfg.Options == nil || cfg.Options.Progress == nil || *cfg.Options.Progress
 
 	if !hideSpinner && stderrTTY {
-		t := styles.ThemeForProvider(ws.Config.Models[config.SelectedModelTypeLarge].Provider)
+		t := styles.ThemeForProvider(cfg.Models[config.SelectedModelTypeLarge].Provider)
 
 		spinner = format.NewSpinner(ctx, cancel, anim.Settings{
 			Size:        10,
@@ -213,28 +261,19 @@ func runNonInteractive(
 	}
 
 	// Force-update agent models so MCP tools are loaded.
-	if err := c.UpdateAgent(ctx, ws.ID, ws.Config.AgentModelState()); err != nil {
+	if err := retained.UpdateAgentModel(ctx, retained.Config().AgentModelState()); err != nil {
 		stopSpinner()
 		return fmt.Errorf("failed to update agent: %w", err)
 	}
 
 	defer stopSpinner()
 
-	sess, err := resolveSession(ctx, c, ws.ID, continueSessionID, useLast)
-	if err != nil {
-		return fmt.Errorf("failed to resolve session: %w", err)
-	}
-	if continueSessionID != "" || useLast {
-		slog.Info("Continuing session for non-interactive run", "session_id", sess.ID)
-		// If no explicit model override was requested, restore the
-		// model/provider from the last assistant message in the
-		// session, provided it is still available.
-		if largeModel == "" && smallModel == "" {
-			if err := restoreModelFromSession(ctx, c, ws, sess.ID); err != nil {
-				slog.Warn("Failed to restore model from session", "error", err)
-			}
+	if sess == nil {
+		var err error
+		sess, err = resolveSession(ctx, c, ws.ID, "", false)
+		if err != nil {
+			return fmt.Errorf("failed to resolve session: %w", err)
 		}
-	} else {
 		slog.Info("Created session for non-interactive run", "session_id", sess.ID)
 	}
 
@@ -242,7 +281,6 @@ func runNonInteractive(
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to events: %w", err)
 	}
-	clientAuthority := workspace.NewClientWorkspace(c, *ws)
 
 	// Mint a per-call RunID so we can correlate the terminal
 	// RunComplete with *this* SendMessage even if the session was
@@ -282,9 +320,9 @@ func runNonInteractive(
 		case ev, ok := <-events:
 			if !ok {
 				stopSpinner()
-				return nil
+				return fmt.Errorf("event stream closed before the run completed")
 			}
-			if clientAuthority.HandleClientRefreshEvent(ctx, ev) {
+			if retained.HandleClientRefreshEvent(ctx, ev) {
 				continue
 			}
 
@@ -479,104 +517,73 @@ func modelOwnerFromSurfaces(surfaces []providerregistry.Surface, model config.Se
 	return *surface.Owner, nil
 }
 
-// overrideModels resolves model strings and updates the workspace
-// configuration via the server.
-func overrideModels(
-	ctx context.Context,
-	c *client.Client,
-	ws *proto.Workspace,
-	largeModel, smallModel string,
-) error {
-	cfg := ws.Config
+// overrideModels resolves against the owning workspace and applies one
+// transient selection. The caller rebuilds from the acknowledged config.
+func overrideModels(ctx context.Context, retained *workspace.ClientWorkspace, largeModel, smallModel string) error {
+	cfg := retained.Config()
 	if cfg == nil {
 		return fmt.Errorf("failed to get config: workspace configuration is missing")
 	}
-
-	largeMatches, smallMatches := findModelMatches(cfg, largeModel, smallModel)
-	var largeMatch, smallMatch modelMatch
-	var err error
-	if largeModel != "" {
-		largeMatch, err = validateModelMatches(largeMatches, largeModel, "large")
-		if err != nil {
-			return err
-		}
+	requested, err := resolveModelOverrides(cfg, retained.ProviderSurfaces(), largeModel, smallModel, func(providerID string) (config.SelectedModel, error) {
+		return retained.GetDefaultSmallModelContext(ctx, providerID)
+	})
+	if err != nil {
+		return err
 	}
-	if smallModel != "" {
-		smallMatch, err = validateModelMatches(smallMatches, smallModel, "small")
-		if err != nil {
-			return err
-		}
-	}
-
-	var (
-		largeSelection config.SelectedModel
-		largeOwner     providerregistry.RegistrationOwner
-		setLarge       bool
-		smallSelection config.SelectedModel
-		smallOwner     providerregistry.RegistrationOwner
-		setSmall       bool
-		state          config.AgentModelState
-	)
-	if largeModel != "" {
-		largeSelection = config.SelectedModel{Provider: largeMatch.provider, Model: largeMatch.modelID}
-		largeOwner, err = modelOwnerFromSurfaces(ws.ProviderSurfaces, largeSelection)
-		if err != nil {
-			return err
-		}
-		setLarge = true
-	}
-	if smallModel != "" {
-		smallSelection = config.SelectedModel{Provider: smallMatch.provider, Model: smallMatch.modelID}
-		smallOwner, err = modelOwnerFromSurfaces(ws.ProviderSurfaces, smallSelection)
-		if err != nil {
-			return err
-		}
-		setSmall = true
-	} else if largeModel != "" {
-		small, smallErr := c.GetDefaultSmallModel(ctx, ws.ID, largeMatch.provider)
-		if smallErr != nil {
-			slog.Warn("Failed to get default small model", "error", smallErr)
-		} else if small != nil {
-			smallSelection = *small
-			smallOwner, err = modelOwnerFromSurfaces(ws.ProviderSurfaces, smallSelection)
-			if err != nil {
-				return err
-			}
-			setSmall = true
-		}
-	}
-
-	if setLarge {
-		slog.Info("Overriding large model", "provider", largeSelection.Provider, "model", largeSelection.Model)
-		state, err = c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeLarge, largeSelection, largeOwner)
-		if err != nil {
-			return fmt.Errorf("failed to set large model: %w", err)
-		}
-	}
-	if setSmall {
-		if smallModel != "" {
-			slog.Info("Overriding small model", "provider", smallSelection.Provider, "model", smallSelection.Model)
-		}
-		state, err = c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeSmall, smallSelection, smallOwner)
-		if err != nil {
-			return fmt.Errorf("failed to set small model: %w", err)
-		}
-	}
-
-	return c.UpdateAgent(ctx, ws.ID, state)
+	_, err = retained.OverrideModels(ctx, requested)
+	return err
 }
 
-// restoreModelFromSession reads the last assistant message in the
-// session and, if it used a different provider/model than the current
-// config, updates the preferred model on the server provided the
-// provider/model is still available. This ensures that continuing a
-// session uses the same model that produced the last response.
-func restoreModelFromSession(ctx context.Context, c *client.Client, ws *proto.Workspace, sessionID string) error {
-	msgs, err := c.ListMessages(ctx, ws.ID, sessionID)
-	if err != nil {
-		return fmt.Errorf("failed to list messages: %w", err)
+func resolveModelOverrides(cfg *config.Config, surfaces []providerregistry.Surface, largeModel, smallModel string, defaultSmall func(string) (config.SelectedModel, error)) (config.AgentModelState, error) {
+	largeMatches, smallMatches := findModelMatches(cfg, largeModel, smallModel)
+	requested := config.AgentModelState{}
+	owned := func(selected config.SelectedModel) (*config.OwnedSelectedModel, error) {
+		owner, err := modelOwnerFromSurfaces(surfaces, selected)
+		if err != nil {
+			return nil, err
+		}
+		return &config.OwnedSelectedModel{Model: selected, Owner: owner}, nil
 	}
+	if largeModel != "" {
+		match, err := validateModelMatches(largeMatches, largeModel, "large")
+		if err != nil {
+			return config.AgentModelState{}, err
+		}
+		requested.Large, err = owned(config.SelectedModel{Provider: match.provider, Model: match.modelID})
+		if err != nil {
+			return config.AgentModelState{}, err
+		}
+	}
+	if smallModel != "" {
+		match, err := validateModelMatches(smallMatches, smallModel, "small")
+		if err != nil {
+			return config.AgentModelState{}, err
+		}
+		requested.Small, err = owned(config.SelectedModel{Provider: match.provider, Model: match.modelID})
+		if err != nil {
+			return config.AgentModelState{}, err
+		}
+	} else if requested.Large != nil {
+		selected, err := defaultSmall(requested.Large.Model.Provider)
+		if err != nil {
+			return config.AgentModelState{}, fmt.Errorf("resolve default small model: %w", err)
+		}
+		requested.Small, err = owned(selected)
+		if err != nil {
+			return config.AgentModelState{}, err
+		}
+	}
+	return requested, nil
+}
 
+// restoreModelFromSession uses the last assistant model only when no explicit
+// CLI model choice was supplied. Unavailable recorded choices fail visibly;
+// they cannot silently fall back to the currently selected provider.
+func restoreModelFromSession(ctx context.Context, c *client.Client, workspaceID string, retained *workspace.ClientWorkspace, sessionID string) (bool, error) {
+	msgs, err := c.ListMessages(ctx, workspaceID, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("failed to list messages: %w", err)
+	}
 	var lastAssistant *proto.Message
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == proto.Assistant && !msgs[i].IsSummaryMessage {
@@ -585,63 +592,41 @@ func restoreModelFromSession(ctx context.Context, c *client.Client, ws *proto.Wo
 		}
 	}
 	if lastAssistant == nil || lastAssistant.Provider == "" || lastAssistant.Model == "" {
-		return nil
+		return false, nil
 	}
-
-	cfg := ws.Config
+	cfg := retained.Config()
 	if cfg == nil {
-		return fmt.Errorf("failed to restore model: workspace configuration is missing")
+		return false, fmt.Errorf("workspace configuration is missing")
 	}
-	currentLarge := cfg.Models[config.SelectedModelTypeLarge]
-	if currentLarge.Provider == lastAssistant.Provider && currentLarge.Model == lastAssistant.Model {
-		return nil
+	current := cfg.Models[config.SelectedModelTypeLarge]
+	if current.Provider == lastAssistant.Provider && current.Model == lastAssistant.Model {
+		return false, nil
 	}
-
 	if !cfg.IsModelAvailable(lastAssistant.Provider, lastAssistant.Model) {
-		slog.Debug("Skipping model restoration: provider/model not available",
-			"provider", lastAssistant.Provider,
-			"model", lastAssistant.Model)
-		return nil
+		return false, fmt.Errorf("session model %s/%s is unavailable; choose an explicit --model", lastAssistant.Provider, lastAssistant.Model)
 	}
-
-	selectedModel := config.SelectedModel{
-		Provider: lastAssistant.Provider,
-		Model:    lastAssistant.Model,
-	}
-	owner, err := modelOwnerFromSurfaces(ws.ProviderSurfaces, selectedModel)
+	selected := config.SelectedModel{Provider: lastAssistant.Provider, Model: lastAssistant.Model}
+	surfaces := retained.ProviderSurfaces()
+	owner, err := modelOwnerFromSurfaces(surfaces, selected)
 	if err != nil {
-		return err
+		return false, err
 	}
-
-	var (
-		smallModel *config.SelectedModel
-		smallOwner providerregistry.RegistrationOwner
-	)
+	requested := config.AgentModelState{Large: &config.OwnedSelectedModel{Model: selected, Owner: owner}}
 	if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
-		smallModel, err = c.GetDefaultSmallModel(ctx, ws.ID, lastAssistant.Provider)
+		small, err := retained.GetDefaultSmallModelContext(ctx, selected.Provider)
 		if err != nil {
-			slog.Warn("Failed to get default small model", "error", err)
-			smallModel = nil
-		} else if smallModel != nil {
-			smallOwner, err = modelOwnerFromSurfaces(ws.ProviderSurfaces, *smallModel)
-			if err != nil {
-				return err
-			}
+			return false, fmt.Errorf("resolve restored default small model: %w", err)
 		}
-	}
-
-	state, err := c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeLarge, selectedModel, owner)
-	if err != nil {
-		return fmt.Errorf("failed to set large model: %w", err)
-	}
-	if smallModel != nil {
-		state, err = c.UpdatePreferredModel(ctx, ws.ID, config.ScopeWorkspace, config.SelectedModelTypeSmall, *smallModel, smallOwner)
+		owner, err := modelOwnerFromSurfaces(surfaces, small)
 		if err != nil {
-			return fmt.Errorf("failed to set small model during session restore: %w", err)
+			return false, err
 		}
+		requested.Small = &config.OwnedSelectedModel{Model: small, Owner: owner}
 	}
-
-	return c.UpdateAgent(ctx, ws.ID, state)
+	if _, err := retained.OverrideModels(ctx, requested); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 type modelMatch struct {
