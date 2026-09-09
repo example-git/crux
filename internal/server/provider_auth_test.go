@@ -68,10 +68,21 @@ func TestProviderAuthDetachedReceiverRejectsReadsBeforeIO(t *testing.T) {
 	target := providerauth.Target{WorkspaceID: harness.workspace.ID, Owner: providerauth.PublicOwner(owner), Generation: providerauth.Generation{Epoch: strings.Repeat("a", 32), Sequence: 1}}
 	encoded, err := json.Marshal(target)
 	require.NoError(t, err)
-	for _, operation := range []string{"status", "accounts"} {
+	for _, operation := range []string{"status", "accounts", "switch", "logout"} {
 		body, method := "", http.MethodGet
 		if operation == "accounts" {
 			body, method = string(encoded), http.MethodPost
+		}
+		if operation == "switch" {
+			selected := target
+			selected.Owner.HasOAuth = true
+			data, err := json.Marshal(providerauth.SwitchRequest{OperationID: strings.Repeat("b", 32), Target: selected, AccountID: "selected"})
+			require.NoError(t, err)
+			body, method = string(data), http.MethodPost
+		} else if operation == "logout" {
+			data, err := json.Marshal(providerauth.LogoutRequest{OperationID: strings.Repeat("c", 32), Target: target})
+			require.NoError(t, err)
+			body, method = string(data), http.MethodPost
 		}
 		r := httptest.NewRequest(method, "/", strings.NewReader(body))
 		r.SetPathValue("id", harness.workspace.ID)
@@ -79,6 +90,10 @@ func TestProviderAuthDetachedReceiverRejectsReadsBeforeIO(t *testing.T) {
 		controller := &controllerV1{backend: harness.backend}
 		if operation == "status" {
 			controller.handleGetWorkspaceProviderAuthentication(response, r)
+		} else if operation == "switch" {
+			controller.handlePostWorkspaceProviderSwitch(response, r)
+		} else if operation == "logout" {
+			controller.handlePostWorkspaceProviderLogout(response, r)
 		} else {
 			controller.handlePostWorkspaceProviderAccounts(response, r)
 		}
