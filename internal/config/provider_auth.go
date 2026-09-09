@@ -322,7 +322,19 @@ func (c AuthenticationCapture) ValidateAcceptedAuthentication(accepted RemoteRun
 		if !ok {
 			return pending
 		}
-		if binding.Unavailable { // Acknowledged logout/disable has no executable credential.
+		if binding.Unavailable { // Acknowledged logout/disable/setup has no executable credential.
+			if providerMissingConfigurationCredentials(c.runtime, provider) {
+				if source == nil {
+					return pending
+				}
+				collected, known := source.runtime.config.authenticationCollectionProvider(owner.ProviderID)
+				if !known || collected.APIKey != provider.APIKey || collected.APIKeyTemplate != provider.APIKeyTemplate || !reflect.DeepEqual(collected.OAuthToken, provider.OAuthToken) {
+					return pending
+				}
+				// The exact literal definition and source publication matched
+				// above. Incomplete setup can retain other owned credentials.
+				continue
+			}
 			if candidate {
 				if source == nil || provider.OAuthToken != nil || c.accounts.ActiveID(owner.AccountNamespace) != "" {
 					return pending

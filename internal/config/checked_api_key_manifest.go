@@ -21,11 +21,13 @@ import (
 // No native endpoint is inferred from a protocol or provider ID. The closed
 // manifest must declare one unambiguous catalog operation; inference calls are
 // never used as a connection probe.
+var errCheckedCatalogNotDeclared = errors.New("checked API key connection policy is not implemented without a declared model-catalog operation")
+
 func checkedAPIKeyProbeOperation(snapshot RuntimeSnapshot, provider ProviderConfig) (*providertransport.Operation, error) {
 	if provider.Owner.Construction == providerregistry.ConstructionOpenAICompat {
 		return nil, nil
 	}
-	registration, ok := snapshot.ProviderRegistrationFor(provider.ID, provider)
+	registration, ok := providerDeclaredRegistrationForProvider(snapshot.registry, provider.ID, provider)
 	if !ok || registration.Manifest == nil {
 		return nil, errors.New("checked API key connection policy is not implemented for this provider construction")
 	}
@@ -40,12 +42,25 @@ func checkedAPIKeyProbeOperation(snapshot RuntimeSnapshot, provider ProviderConf
 		selected = operation
 	}
 	if selected == nil {
-		return nil, errors.New("checked API key connection policy is not implemented without a declared model-catalog operation")
+		return nil, errCheckedCatalogNotDeclared
 	}
 	if err := providerregistry.ValidateModelCatalogOperation(selected); err != nil {
 		return nil, err
 	}
 	return selected.Clone(), nil
+}
+
+func checkedCredentialCatalogAudience(snapshot RuntimeSnapshot, provider ProviderConfig, slot ProviderCredentialSlot, operation *providertransport.Operation) bool {
+	registration, ok := providerDeclaredRegistrationForProvider(snapshot.registry, provider.ID, provider)
+	if !ok || registration.Manifest == nil || operation == nil {
+		return false
+	}
+	for _, credential := range registration.Manifest.Capabilities.Credentials {
+		if "configuration."+credential.ID == slot.ID && credential.ConfigProperty == slot.Property {
+			return slices.Contains(credential.Audience, operation.Endpoint.ID)
+		}
+	}
+	return false
 }
 
 func checkedAPIKeyManifestValues(snapshot RuntimeSnapshot, provider ProviderConfig, operation *providertransport.Operation) (providertransport.TemplateValues, error) {
@@ -91,7 +106,7 @@ func checkedAPIKeyManifestValues(snapshot RuntimeSnapshot, provider ProviderConf
 	return values, nil
 }
 
-func probeCheckedAPIKeyManifest(ctx context.Context, snapshot RuntimeSnapshot, provider ProviderConfig, operation *providertransport.Operation, validateOwner func(context.Context) error) (result ConnectionProbeResult, err error) {
+func probeCheckedAPIKeyManifest(ctx context.Context, snapshot RuntimeSnapshot, provider ProviderConfig, operation *providertransport.Operation, validateOwner func(context.Context) error, slots ...ProviderCredentialSlot) (result ConnectionProbeResult, err error) {
 	result = ConnectionProbeResult{Kind: ConnectionProbeNotProbed, Policy: ConnectionProbePolicyManifestHTTP200}
 	// The check budget includes identity resolution, transforms and the body.
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -165,7 +180,7 @@ func probeCheckedAPIKeyManifest(ctx context.Context, snapshot RuntimeSnapshot, p
 			headers["Content-Type"] = "application/json"
 		}
 	}
-	headers, entered, overridden, err := checkedAPIKeyCatalogHeaders(operation, headers, values, snapshot, provider)
+	headers, entered, overridden, err := checkedAPIKeyCatalogHeaders(operation, headers, values, snapshot, provider, slots...)
 	if err != nil {
 		return result, err
 	}
@@ -266,14 +281,18 @@ func (t *catalogProbeTransport) RoundTrip(request *http.Request) (*http.Response
 // Evaluate each header template once, while tracking whether the final
 // Authorization header came from the entered slot. Equal bytes from an
 // unrelated configured value do not establish that provenance.
-func checkedAPIKeyCatalogHeaders(operation *providertransport.Operation, headers map[string]string, values providertransport.TemplateValues, snapshot RuntimeSnapshot, provider ProviderConfig) (map[string]string, bool, bool, error) {
+func checkedAPIKeyCatalogHeaders(operation *providertransport.Operation, headers map[string]string, values providertransport.TemplateValues, snapshot RuntimeSnapshot, provider ProviderConfig, slots ...ProviderCredentialSlot) (map[string]string, bool, bool, error) {
 	registration, ok := snapshot.ProviderRegistrationFor(provider.ID, provider)
 	if !ok || registration.Manifest == nil {
 		return nil, false, false, errors.New("checked provider manifest is unavailable")
 	}
 	enteredCredentials := map[string]bool{}
+	slot := ProviderCredentialSlot{ID: "provider.api_key"}
+	if len(slots) > 0 {
+		slot = slots[0]
+	}
 	for _, credential := range registration.Manifest.Capabilities.Credentials {
-		if credential.ConfigProperty == "" && credential.Kind != "none" && values.Credentials[credential.ID] != "" {
+		if credential.ConfigProperty == slot.Property && credential.Kind != "none" && values.Credentials[credential.ID] != "" {
 			enteredCredentials[credential.ID] = true
 		}
 	}
@@ -283,7 +302,10 @@ func checkedAPIKeyCatalogHeaders(operation *providertransport.Operation, headers
 			return enteredCredentials[value.Ref]
 		}
 		if value.Kind == "context" {
-			return value.Ref == "oauth.access_token" && values.Context[value.Ref] != ""
+			return slot.Property == "" && value.Ref == "oauth.access_token" && values.Context[value.Ref] != ""
+		}
+		if value.Kind == "config" {
+			return slot.Property != "" && value.Ref == slot.Property
 		}
 		return value.Kind == "concat" && slices.ContainsFunc(value.Parts, usesInput)
 	}

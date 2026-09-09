@@ -764,7 +764,7 @@ func providerOwnerForProvider(cfg *Config, registry *providerregistry.Registry, 
 	}
 	switch provider.Owner.Type {
 	case ProviderOwnerPlugin, ProviderOwnerCore:
-		registration, ok := providerRegistrationForProvider(registry, providerID, provider)
+		registration, ok := providerDeclaredRegistrationForProvider(registry, providerID, provider)
 		if !ok {
 			return providerregistry.RegistrationOwner{}, false
 		}

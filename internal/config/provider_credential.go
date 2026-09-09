@@ -63,7 +63,7 @@ func providerAPIKeySlotSupported(snapshot RuntimeSnapshot, provider ProviderConf
 	if provider.Owner.Type == ProviderOwnerCustom || provider.Owner.Type == ProviderOwnerPreset {
 		return provider.Type == "" || provider.Type == catalog.TypeOpenAICompat || discover.IsKnownCustomProvider(string(provider.Type))
 	}
-	registration, active := snapshot.ProviderRegistrationFor(provider.ID, provider)
+	registration, active := providerDeclaredRegistrationForProvider(snapshot.registry, provider.ID, provider)
 	return active && registrationAPIKeySlotSupported(registration)
 }
 
@@ -121,6 +121,9 @@ func ResolveProviderAPIKey(provider ProviderConfig, resolve func(string) (string
 }
 
 func (s RuntimeSnapshot) validateResolvedProviderAPIKeyOwner(provider ProviderConfig) error {
+	if err := s.validateResolvedConfigurationCredentials(provider); err != nil {
+		return err
+	}
 	if provider.resolvedAPIKey == nil {
 		return nil
 	}

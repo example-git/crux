@@ -68,7 +68,7 @@ func (s *Service) saveAPIKey(ctx context.Context, request APIKeySaveRequest, acc
 	// preparation, never caller input or a newly resolved replacement value.
 	transaction, err := s.apiKeys.SaveCheckedAPIKey(ctx, config.ScopeGlobal, check.preparation)
 	receipt := mutationReceipt{request: mutation, originalOwner: check.owner, outcome: MutationOutcome{
-		OperationID: request.OperationID, CheckID: request.CheckID, Previous: request.Target, Progress: MutationProgress{
+		OperationID: request.OperationID, CheckID: request.CheckID, CredentialID: check.outcome.CredentialID, Previous: request.Target, Progress: MutationProgress{
 			AccountRefreshed: transaction.AccountRefreshed, AccountsSaved: transaction.AccountsSaved,
 			ConfigSaved: transaction.ConfigSaved, RuntimePublished: transaction.RuntimePublished,
 		}}}
@@ -118,6 +118,17 @@ func validateAPIKeySaveEffect(outcome MutationOutcome) error {
 	status := outcome.Change.Current.Status
 	if !status.Configured {
 		return errors.New("checked API key save did not configure its provider")
+	}
+	if outcome.CredentialID == "" {
+		return errors.New("checked credential save has no selected slot")
+	}
+	if outcome.CredentialID != "provider.api_key" {
+		for _, slot := range status.CredentialSlots {
+			if slot.ID == outcome.CredentialID && slot.Property != "" && slot.Configured {
+				return nil
+			}
+		}
+		return errors.New("checked configuration credential save did not install its selected slot")
 	}
 	for _, credential := range status.Credentials {
 		if credential.Kind == "api-key" && credential.State != "configured" ||

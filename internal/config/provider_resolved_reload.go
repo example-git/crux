@@ -13,12 +13,12 @@ import (
 // Only generic field updates opt into retaining unchanged resolved inputs.
 // Explicit reload remains an instruction to resolve authored sources afresh.
 func resolvedInputRetentionForFields(previous *Config, fields map[string]any) (*Config, error) {
-	if previous == nil || previous.Providers == nil {
+	if previous == nil {
 		return nil, nil
 	}
 	retained := previous.cloneForWrite()
-	for id, provider := range retained.Providers.Seq2() {
-		if provider.resolvedAPIKey == nil && provider.resolvedEndpoint == nil {
+	for id, provider := range resolvedInputProviders(retained) {
+		if provider.resolvedAPIKey == nil && provider.resolvedEndpoint == nil && len(provider.resolvedCredentials) == 0 {
 			continue
 		}
 		unchanged, err := resolvedInputFieldsUntouched(id, fields)
@@ -31,9 +31,48 @@ func resolvedInputRetentionForFields(previous *Config, fields map[string]any) (*
 		if !unchanged["base_url"] || !unchanged["owner"] || !unchanged["plugin"] || !unchanged["preset"] || !unchanged["id"] {
 			provider.resolvedEndpoint = nil
 		}
-		retained.Providers.Set(id, provider)
+		if !unchanged["owner"] || !unchanged["plugin"] || !unchanged["preset"] || !unchanged["id"] {
+			provider.resolvedCredentials = nil
+		} else {
+			untouched, err := resolvedConfigurationFieldsUntouched(id, provider, fields)
+			if err != nil {
+				return nil, err
+			}
+			for slot := range provider.resolvedCredentials {
+				if !untouched[slot] {
+					delete(provider.resolvedCredentials, slot)
+				}
+			}
+		}
+		public := false
+		if retained.Providers != nil {
+			_, public = retained.Providers.Get(id)
+		}
+		if public {
+			retained.Providers.Set(id, provider)
+		} else {
+			retained.authenticationCandidates[id] = provider
+		}
 	}
 	return retained, nil
+}
+
+// Logged-out OAuth candidates retain the same captured credential and endpoint
+// proofs as configured providers, without becoming public/available entries.
+func resolvedInputProviders(cfg *Config) map[string]ProviderConfig {
+	if cfg == nil {
+		return nil
+	}
+	providers := make(map[string]ProviderConfig, len(cfg.authenticationCandidates))
+	for id, provider := range cfg.authenticationCandidates {
+		providers[id] = provider
+	}
+	if cfg.Providers != nil {
+		for id, provider := range cfg.Providers.Seq2() {
+			providers[id] = provider
+		}
+	}
+	return providers
 }
 
 // Apply the existing generic setter's exact JSONPath semantics to markers.
@@ -77,12 +116,12 @@ func resolvedInputFieldsUntouched(id string, fields map[string]any) (map[string]
 // outside this setter fail visibly; only explicit replacement or reload may
 // authorize new source evaluation.
 func (next *Config) retainResolvedProviderInputs(previous *Config) error {
-	if previous == nil || previous.Providers == nil {
+	if previous == nil {
 		return nil
 	}
 	snapshot := RuntimeSnapshot{config: next, registry: next.providerCapabilities()}
-	for id, old := range previous.Providers.Seq2() {
-		if old.resolvedAPIKey == nil && old.resolvedEndpoint == nil {
+	for id, old := range resolvedInputProviders(previous) {
+		if old.resolvedAPIKey == nil && old.resolvedEndpoint == nil && len(old.resolvedCredentials) == 0 {
 			continue
 		}
 		provider, exists := ProviderConfig{}, false
@@ -109,6 +148,20 @@ func (next *Config) retainResolvedProviderInputs(previous *Config) error {
 			}
 			provider.APIKey, provider.APIKeyTemplate, provider.resolvedAPIKey = old.APIKey, old.APIKeyTemplate, old.resolvedAPIKey
 		}
+		for id, binding := range old.resolvedCredentials {
+			if binding == nil {
+				return errResolvedConfigurationCredential
+			}
+			source, present := provider.Configuration[binding.property].(string)
+			if !binding.matches(old) || binding.owner != owner || !providerOwnershipReferencesMatch(old, provider) || !present || source != binding.source {
+				return errResolvedConfigurationCredential
+			}
+			if provider.resolvedCredentials == nil {
+				provider.resolvedCredentials = make(map[string]*resolvedProviderConfigurationCredential)
+			}
+			provider.Configuration[binding.property] = binding.literal
+			provider.resolvedCredentials[id] = binding
+		}
 		endpointSource := provider.BaseURL
 		if endpointSource == "" && next.providerScan != nil && (next.Options == nil || !next.Options.DisableDefaultProviders) {
 			for _, catalogue := range next.providerScan.Providers {
@@ -127,4 +180,36 @@ func (next *Config) retainResolvedProviderInputs(previous *Config) error {
 		next.Providers.Set(id, provider)
 	}
 	return nil
+}
+
+func resolvedConfigurationFieldsUntouched(id string, provider ProviderConfig, fields map[string]any) (map[string]bool, error) {
+	untouched := map[string]bool{}
+	for slot := range provider.resolvedCredentials {
+		untouched[slot] = true
+	}
+	for _, sentinel := range []string{"private-config-credential-one", "private-config-credential-two"} {
+		properties := map[string]string{}
+		for _, binding := range provider.resolvedCredentials {
+			if binding == nil {
+				return nil, errResolvedConfigurationCredential
+			}
+			properties[binding.property] = sentinel
+		}
+		data, err := json.Marshal(map[string]any{"providers": map[string]any{id: map[string]any{"configuration": properties}}})
+		if err != nil {
+			return nil, errResolvedConfigurationCredential
+		}
+		for _, key := range slices.Sorted(maps.Keys(fields)) {
+			data, err = sjson.SetBytes(data, key, fields[key])
+			if err != nil {
+				return nil, errResolvedConfigurationCredential
+			}
+		}
+		actual := gjson.ParseBytes(data).Get("providers").Map()[id].Get("configuration").Map()
+		for slot, binding := range provider.resolvedCredentials {
+			value := actual[binding.property]
+			untouched[slot] = untouched[slot] && value.Type == gjson.String && value.String() == sentinel
+		}
+	}
+	return untouched, nil
 }

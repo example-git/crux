@@ -99,6 +99,8 @@ func (s *Service) checkAPIKey(ctx context.Context, request APIKeyCheckRequest, a
 	receipt := apiKeyCheckReceipt{request: request, outcome: initial, before: before, owner: owner}
 	receipt.preparation, err = s.apiKeys.PrepareCheckedAPIKey(ctx, before, owner, request.CredentialID, request.Source)
 	receipt.outcome.Probe = receipt.preparation.ProbeResult()
+	receipt.outcome.PendingConfiguration = receipt.preparation.PendingConfiguration()
+	receipt.outcome.SchemaOnly = receipt.preparation.SchemaOnly()
 	if err == nil {
 		// Reobserve only to validate the initiating capture. A different
 		// observation is a conflict, never replacement check authority.
