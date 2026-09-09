@@ -44,7 +44,9 @@ func executeOAuthJournalValidationCLI(t *testing.T, args ...string) (string, err
 	previousOut, previousErr := rootCmd.OutOrStdout(), rootCmd.ErrOrStderr()
 	defer func() {
 		for _, s := range saved {
-			_ = s.flag.Value.Set(s.value)
+			if s.flag.Value.String() != s.value {
+				_ = s.flag.Value.Set(s.value)
+			}
 			s.flag.Changed = s.changed
 		}
 		rootCmd.SetArgs(nil)
