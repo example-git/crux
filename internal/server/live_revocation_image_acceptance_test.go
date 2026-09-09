@@ -28,12 +28,16 @@ import (
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/redact"
 	"github.com/example-git/crux/internal/server"
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/stretchr/testify/require"
 )
 
 func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
+	// A credential from another workspace can match JSON punctuation. The
+	// real task-output response must retain a decodable embedded JobResult.
+	redact.Register(":true")
 	root := t.TempDir()
 	for _, name := range []string{"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CRUX_GLOBAL_DATA", "CRUX_GLOBAL_CONFIG", "CRUX_CACHE_DIR", "AI_CLI_DIR"} {
 		path := filepath.Join(root, name)

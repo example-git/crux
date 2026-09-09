@@ -226,7 +226,31 @@ func JSON(value []byte) ([]byte, error) {
 func redactJSONValue(value any) any {
 	switch typed := value.(type) {
 	case string:
-		return String(typed)
+		redacted := String(typed)
+		if redacted == Replacement {
+			return redacted
+		}
+		// Task results and tool outputs can carry a JSON document inside a
+		// JSON string. Apply the same value-aware redaction to that document:
+		// matching punctuation must not corrupt its structure. A complete
+		// registered secret remains opaque even when it happens to be JSON.
+		trimmed := strings.TrimSpace(typed)
+		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') && json.Valid([]byte(trimmed)) {
+			decoder := json.NewDecoder(strings.NewReader(trimmed))
+			decoder.UseNumber()
+			var document any
+			if decoder.Decode(&document) == nil {
+				before, beforeErr := json.Marshal(document)
+				after, afterErr := json.Marshal(redactJSONValue(document))
+				if beforeErr == nil && afterErr == nil {
+					if bytes.Equal(before, after) {
+						return typed
+					}
+					return string(after)
+				}
+			}
+		}
+		return redacted
 	case map[string]any:
 		for key, item := range typed {
 			typed[key] = redactJSONValue(item)
