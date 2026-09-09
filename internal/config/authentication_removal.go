@@ -66,6 +66,11 @@ func (before AuthenticationCapture) RemovalSelection(owner providerregistry.Regi
 // runtime. The successful result retains the unchanged publication and the
 // exact new account observation, including on completion after caller cancel.
 func (s *ConfigStore) removeInactiveAuthenticationAccount(ctx context.Context, before AuthenticationCapture, owner providerregistry.RegistrationOwner, accountID string) (result AuthenticationMutationResult, err error) {
+	ctx, releaseOperation, err := s.acquireLocalAuthenticationOperation(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer releaseOperation()
 	if err := s.lockAuthenticationWrite(ctx); err != nil {
 		return result, err
 	}
