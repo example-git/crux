@@ -300,7 +300,7 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	// Preserve unresolved attempted publications when the bounded ledger fills.
 	if len(a.authenticationReviewIDs) >= clientAuthenticationReceiptLimit {
 		oldest := a.authenticationReviews[a.authenticationReviewIDs[0]]
-		if oldest != nil && oldest.apply != nil && oldest.apply.put && !oldest.apply.outcome.Adopted && oldest.savedStateSupersededBy == "" {
+		if oldest != nil && !oldest.journalCompleted && oldest.originalAbandonedBy == "" && oldest.apply != nil && oldest.apply.put && !oldest.apply.outcome.Adopted && oldest.savedStateSupersededBy == "" {
 			return initial, errors.New("an unresolved reviewed publication must be reconciled before another review")
 		}
 	}
