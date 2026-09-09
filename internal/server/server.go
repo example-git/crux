@@ -315,6 +315,7 @@ func (s *Server) installHandler() {
 	route("POST /v1/workspaces/{id}/config/set", c.handlePostWorkspaceConfigSet)
 	route("POST /v1/workspaces/{id}/config/remove", c.handlePostWorkspaceConfigRemove)
 	route("POST /v1/workspaces/{id}/config/model", c.handlePostWorkspaceConfigModel)
+	route("POST /v1/workspaces/{id}/config/model-overrides", c.handlePostWorkspaceModelOverrides)
 	route("POST /v1/workspaces/{id}/config/compact", c.handlePostWorkspaceConfigCompact)
 	route("POST /v1/workspaces/{id}/config/provider-key", c.handlePostWorkspaceConfigProviderKey)
 	route("POST /v1/workspaces/{id}/config/import-copilot", c.handlePostWorkspaceConfigImportCopilot)

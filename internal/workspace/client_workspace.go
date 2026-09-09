@@ -378,6 +378,13 @@ func (w *ClientWorkspace) InitCoderAgentNonInteractive(ctx context.Context) erro
 }
 
 func (w *ClientWorkspace) GetDefaultSmallModel(providerID string) (config.SelectedModel, error) {
+	return w.GetDefaultSmallModelContext(context.Background(), providerID)
+}
+
+func (w *ClientWorkspace) GetDefaultSmallModelContext(ctx context.Context, providerID string) (config.SelectedModel, error) {
+	if err := ctx.Err(); err != nil {
+		return config.SelectedModel{}, err
+	}
 	if w.clientOwned() {
 		if w.authority == nil {
 			return config.SelectedModel{}, errors.New("owning client catalog is unavailable")
@@ -386,9 +393,12 @@ func (w *ClientWorkspace) GetDefaultSmallModel(providerID string) (config.Select
 		known, _ := config.Providers(cfg)
 		return config.DefaultSmallModel(cfg, providerID, known)
 	}
-	model, err := w.client.GetDefaultSmallModel(context.Background(), w.workspaceID(), providerID)
+	model, err := w.client.GetDefaultSmallModel(ctx, w.workspaceID(), providerID)
 	if err != nil {
 		return config.SelectedModel{}, err
+	}
+	if model == nil || model.Provider == "" || model.Model == "" {
+		return config.SelectedModel{}, errors.New("server returned no default small model")
 	}
 	return *model, nil
 }
