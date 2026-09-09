@@ -40,6 +40,7 @@ type clientAuthenticationFixture struct {
 	puts                             atomic.Int32
 	getMode, putMode                 atomic.Int32 // PUT:1 reject,2 lose committed response; GET:1 reject,2 wrong workspace.
 	afterPut                         atomic.Pointer[func()]
+	afterGet                         atomic.Pointer[func()]
 	mu                               sync.Mutex
 	credentials                      []string
 }
@@ -107,6 +108,17 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 				}
 				response.ID = "different-workspace"
 				_ = json.NewEncoder(w).Encode(response)
+				return
+			}
+			if change := f.afterGet.Load(); change != nil {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, r)
+				(*change)()
+				for key, values := range recorder.Header() {
+					w.Header()[key] = values
+				}
+				w.WriteHeader(recorder.Code)
+				_, _ = w.Write(recorder.Body.Bytes())
 				return
 			}
 		}
@@ -473,6 +485,49 @@ func TestClientAuthenticationMutationRejectsChangedAuthorityAfterPut(t *testing.
 			if mode == "lifetime" {
 				require.ErrorIs(t, err, context.Canceled)
 			}
+		})
+	}
+}
+
+func TestClientAuthenticationMutationGenericReconcileRejectsChangedCache(t *testing.T) {
+	for _, mode := range []string{"workspace", "principal", "authority"} {
+		t.Run(mode, func(t *testing.T) {
+			f := newClientAuthenticationFixture(t, false)
+			request := providerauth.LogoutRequest{OperationID: strings.Repeat("c", 32), Target: f.target(t)}
+			before := f.w.Config()
+			f.putMode.Store(2)
+			f.getMode.Store(1)
+			_, err := f.w.logoutClientAuthentication(t.Context(), request)
+			require.Error(t, err)
+			receipt := f.w.authority.authenticationReceipts[request.OperationID]
+			require.False(t, receipt.acknowledged)
+			pending := f.w.authority.pending
+			change := func() {
+				f.w.mu.Lock()
+				defer f.w.mu.Unlock()
+				if mode == "workspace" {
+					f.w.ws.ID = "different-workspace"
+					return
+				}
+				copy := *f.w.ws.Authority
+				if mode == "principal" {
+					copy.Principal = "different-principal"
+				} else {
+					copy.Revision += 10
+					copy.Digest = "different-digest"
+				}
+				f.w.ws.Authority = &copy
+			}
+			f.afterGet.Store(&change)
+			f.getMode.Store(0)
+			_, err = f.w.ProviderAuthentication(t.Context())
+			require.Error(t, err)
+			require.Same(t, before, f.w.Config())
+			require.EqualValues(t, 1, f.w.authority.accepted.Revision)
+			require.Same(t, pending, f.w.authority.pending)
+			require.False(t, receipt.acknowledged)
+			require.False(t, f.w.authority.removed[f.owner])
+			require.EqualValues(t, 1, f.puts.Load())
 		})
 	}
 }

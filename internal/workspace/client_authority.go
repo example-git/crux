@@ -100,21 +100,32 @@ func (w *ClientWorkspace) reconcileClientAuthority(ctx context.Context, a *clien
 	if err != nil {
 		return fmt.Errorf("cannot reconcile pending client runtime: %w", err)
 	}
-	if remote.ID != id || w.workspaceID() != id {
+	if remote.Config != nil {
+		remote.Config.SetupAgents()
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if remote.ID != id || w.ws.ID != id {
 		return errors.New("pending client runtime response belongs to a different workspace")
 	}
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if !matchesAuthority(w.ws.Authority, a.principal, a.accepted) && !matchesAuthority(w.ws.Authority, a.principal, *a.pending) {
+		return errors.New("cached client authority changed during pending runtime reconciliation")
 	}
 	if matchesAuthority(remote.Authority, a.principal, *a.pending) {
 		a.accepted = *a.pending
 		a.view.Store(a.pendingView)
 		w.noteClientAuthenticationAcknowledgementLocked(a, remote.ID, a.accepted)
 		a.pending, a.pendingView = nil, nil
-		w.adoptRuntimeResponse(*remote)
+		w.ws, w.appliedRefresh = *remote, w.refreshSequence.Add(1)
 		return nil
 	}
 	if matchesAuthority(remote.Authority, a.principal, a.accepted) {
+		if !matchesAuthority(w.ws.Authority, a.principal, a.accepted) {
+			return errors.New("pending runtime response predates the cached acknowledgement")
+		}
 		a.pending, a.pendingView = nil, nil
 		return nil
 	}
