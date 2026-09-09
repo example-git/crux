@@ -115,6 +115,15 @@ rotation behavior. Connected client runtimes transport config-only OAuth through
 an exclusive private token binding; compiler v20 negotiation is required before
 that private runtime is sent to an execution host.
 
+Config-only refresh records its exchange lineage in a private, bounded sidecar
+beside the captured configuration file. A recorded successor can be recovered
+by another store or a restarted client only when its owner, provider definition,
+environment, original token, and configuration inputs still match. An exchange
+record without an observed successor has an unknown outcome and requires
+reauthentication or recollection; a different token found on disk is never
+silently treated as the result of that exchange. Unresolved records are retained
+instead of being evicted to permit another exchange.
+
 Integrated, compatibility-backed, and plugin-native implementations must use the same logical provider ID. One immutable registry generation has exactly one owner for that ID. Bundle presence and discovery order never select ownership.
 
 `provider.aliases`, `provider.login_order`, `provider.account_order`, and both brand gradient colors are explicit presentation/account declarations. `legacy_account_aliases` declares migration aliases only. It does not create additional credential stores. `default_large_model` and `default_small_model` must reference entries in the same manifest; no first-model fallback is applied.
