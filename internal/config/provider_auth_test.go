@@ -149,7 +149,7 @@ func TestCaptureAuthenticationUsesCapturedPathsWithoutLiveFallback(t *testing.T)
 		t.Run(variable, func(t *testing.T) {
 			root, live := t.TempDir(), t.TempDir()
 			captured := env.NewFromMap(map[string]string{variable: root})
-			store := NewTestStoreWithRegistrations(&Config{})
+			store := NewTestStoreWithRegistrations(&Config{}, ownerTestRegistration("capture-provider", "capture.plugin"))
 			store.effectiveEnvironment = captured
 			for _, key := range []string{"AI_CLI_DIR", "HOME", "USERPROFILE"} {
 				t.Setenv(key, live)
@@ -169,7 +169,7 @@ func TestCaptureAuthenticationUsesCapturedPathsWithoutLiveFallback(t *testing.T)
 	}
 	t.Run("disagreeing captured homes", func(t *testing.T) {
 		home, other := t.TempDir(), t.TempDir()
-		store := NewTestStoreWithRegistrations(&Config{})
+		store := NewTestStoreWithRegistrations(&Config{}, ownerTestRegistration("capture-provider", "capture.plugin"))
 		store.effectiveEnvironment = env.NewFromMap(map[string]string{homeVariable: home, otherHomeVariable: other})
 		_, err := store.CaptureAuthentication(t.Context())
 		require.NoError(t, err)
@@ -184,13 +184,37 @@ func TestCaptureAuthenticationUsesCapturedPathsWithoutLiveFallback(t *testing.T)
 		t.Setenv("AI_CLI_DIR", live)
 		t.Setenv("HOME", live)
 		t.Setenv("USERPROFILE", live)
-		store := NewTestStoreWithRegistrations(&Config{})
+		store := NewTestStoreWithRegistrations(&Config{}, ownerTestRegistration("capture-provider", "capture.plugin"))
 		store.effectiveEnvironment = env.NewFromMap(captured)
 		_, err := store.CaptureAuthentication(t.Context())
-		require.ErrorContains(t, err, "captured account")
+		require.EqualError(t, err, "authentication account store cannot be read")
 		entries, err := os.ReadDir(live)
 		require.NoError(t, err)
 		require.Empty(t, entries)
+	}
+}
+
+func TestCaptureAuthenticationEmptyCatalogueDoesNotResolveAccountPaths(t *testing.T) {
+	for _, captured := range []map[string]string{{}, {"AI_CLI_DIR": "relative"}, {"HOME": "relative", "USERPROFILE": "relative"}} {
+		live := t.TempDir()
+		for _, key := range []string{"AI_CLI_DIR", "HOME", "USERPROFILE"} {
+			t.Setenv(key, live)
+		}
+		store := NewTestStoreWithRegistrations(&Config{})
+		store.effectiveEnvironment = env.NewFromMap(captured)
+		capture, err := store.CaptureAuthentication(t.Context())
+		require.NoError(t, err)
+		require.Empty(t, capture.Providers())
+		again, err := store.CaptureAuthentication(t.Context())
+		require.NoError(t, err)
+		require.True(t, capture.SameObservation(again))
+		entries, err := os.ReadDir(live)
+		require.NoError(t, err)
+		require.Empty(t, entries, "empty account authority must not resolve or lock ambient storage")
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		_, err = store.CaptureAuthentication(ctx)
+		require.ErrorIs(t, err, context.Canceled)
 	}
 }
 
