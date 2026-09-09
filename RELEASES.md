@@ -1,5 +1,9 @@
 # Crux Release Policy
 
+## Unreleased patch notes
+
+- [Remote workspace providers and pairing — September 9, 2026](docs/releases/2026-09-09-remote-workspaces-and-pairing.md)
+
 ## Channels
 
 Crux uses GitHub releases as its only publication channel.
