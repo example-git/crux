@@ -212,6 +212,11 @@ match, and runs no new OAuth exchange. The normal completion transaction still
 has to save and publish the result. An exchange with no retained token response
 stays unknown; it cannot be resumed by repeating that exchange.
 
+The same picker offers explicit abandonment of a tokenless preparation or an
+exchange with an unknown result. This waits for any active exchange and recorded
+result, then preserves the original state while releasing its reservation. A
+recorded token remains a recovery choice in this picker.
+
 Account commands use the selected workspace's authority:
 
 ```sh
@@ -244,8 +249,22 @@ receiver workspace incarnation are marked as historical; their targets cannot
 publish into a newly created workspace. JSON output contains the public metadata
 projection, without retained proposals or credentials.
 
+To retire recovery of an exact original publication or attempted review, use
+the journal revision shown by history and choose a distinct action ID. Reuse
+the identical arguments to retry that action:
+
+```sh
+crux --connection NAME --cwd /srv/projects/PROJECT accounts abandon-publication ORIGINAL_WORKSPACE_ID OPERATION_ID --revision REVIEWED_REVISION --abandon-id ACTION_ID
+crux --connection NAME --cwd /srv/projects/PROJECT accounts abandon-publication ORIGINAL_WORKSPACE_ID REVIEW_ID --review --revision REVIEWED_REVISION --abandon-id ACTION_ID
+```
+
+This records retirement separately from the original outcome. A prior PUT may
+already have been accepted. Retirement does not undo it or publish another
+runtime. Old workspace IDs remain attached to their original records.
+
 In the UI, open **Authentication History** (`auth_history`) and select an
-operation or retained review. **Alt+R** starts an explicit original-publication
+operation or retained review. **Ctrl+A** opens a scrollable action menu,
+including retirement and exact retry actions. **Alt+R** starts an explicit original-publication
 recovery, **Alt+T** retries its retained request, and **Enter** opens a retained
 review. **Ctrl+P** reads local repair progress and **Ctrl+Y** applies that exact
 reviewed disk repair. **Ctrl+L** opens Saved Authentication for a separate reload
@@ -273,6 +292,31 @@ exchange outcome; it neither repairs saved files nor publishes a runtime. A
 finished attempt that never started a refresh or staged a write releases its
 reservation automatically and is reported as having no effects. Any subsequent
 login, disk reload or saved-state publication is an explicit new action.
+
+If a provider was removed or its configuration no longer loads, inspect and
+retire its OAuth journal records on the owning machine using the original local
+path scope. These commands read the journal directly, without evaluating
+configuration expressions, initializing providers, or connecting to a receiver:
+
+```sh
+crux --cwd ORIGINAL_LOCAL_DIRECTORY accounts pending-oauth --global-config-data ORIGINAL_GLOBAL_CONFIG_PATH --workspace-config ORIGINAL_WORKSPACE_CONFIG_PATH
+crux --cwd ORIGINAL_LOCAL_DIRECTORY accounts retire-oauth ORIGINAL_WORKSPACE_ID OPERATION_ID --global-config-data ORIGINAL_GLOBAL_CONFIG_PATH --workspace-config ORIGINAL_WORKSPACE_CONFIG_PATH
+```
+
+Both configuration paths must be explicitly supplied and absolute. Use
+`--workspace-config ''` only if the original captured workspace path was empty.
+Remote connection/host selectors and `--data-dir` are rejected for these local
+commands. An operation with a recorded token requires the additional explicit
+`--discard-recorded-token` choice. That retires future recovery of its known
+result; it does not revoke the provider token or cancel an already-authorized
+session. Its recorded outcome remains known, and the retained evidence becomes
+eligible for pruning.
+
+Each private authentication journal holds at most 128 records within a 256 MiB
+budget, including reserved space. Completed and explicitly retired records are
+pruned oldest first when space is needed. Unresolved operations are retained;
+capacity refusal requires explicit recovery or retirement rather than another
+token exchange.
 
 Automatic OAuth refresh runs on the owning client. The receiver requests refresh
 for an exact principal, runtime, provider definition, account and credential

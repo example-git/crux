@@ -70,6 +70,7 @@ var authenticationHistoryCmd = &cobra.Command{
 				originalTarget = review.Request.SavedTarget
 			}
 			cmd.Printf("  Original workspace %q; journal revision=%d; publication recovery abandoned=%t.\n", originalTarget.WorkspaceID, review.JournalRevision, review.Abandoned)
+			cmd.Printf("  Apply attempted=%t.\n", review.ApplyAttempted)
 			if review.AbandonRequest != nil {
 				cmd.Printf("  Retained review abandonment action %q from revision %d; original apply outcome unchanged.\n", review.AbandonRequest.AbandonID, review.AbandonRequest.Revision)
 			}
