@@ -19,6 +19,7 @@ import (
 
 var supportedFeatures = map[string]struct{}{
 	"continuation.previous-response":    {},
+	"operation.model-catalog-http":      {},
 	"transport.anthropic-messages-http": {},
 	"transport.gemini-generate-content": {},
 	"transport.openai-responses-http":   {},

@@ -110,12 +110,12 @@ func (s *ConfigStore) PrepareCheckedAPIKey(ctx context.Context, before Authentic
 	if err != nil {
 		return prepared, err
 	}
-	// A compatible catalog type is not a native operation probe policy.
-	// Custom/preset identities omit Construction in RegistrationOwner; the
-	// complete provider reference was just validated against that exact owner.
-	if provider.Owner.Construction != providerregistry.ConstructionOpenAICompat {
+	// Select the exact declared native read operation before resolving input.
+	// A catalog type is not permission to invent a native endpoint or headers.
+	operation, err := checkedAPIKeyProbeOperation(before.runtime, provider)
+	if err != nil {
 		prepared.probe = ConnectionProbeResult{Kind: ConnectionProbeUnsupported, Policy: ConnectionProbePolicyNone}
-		return prepared, errors.New("checked API key connection policy is not implemented for this provider construction")
+		return prepared, err
 	}
 	resolver, ok := before.runtime.resolver.(contextVariableResolver)
 	if !ok {
@@ -171,7 +171,13 @@ func (s *ConfigStore) PrepareCheckedAPIKey(ctx context.Context, before Authentic
 		}
 	}
 	validate := func() error { return s.validateCheckedAPIKeyCapture(ctx, before, owner) }
-	prepared.probe, err = provider.ProbeConnection(ctx, IdentityResolver(), validate)
+	if operation == nil {
+		prepared.probe, err = provider.ProbeConnection(ctx, IdentityResolver(), validate)
+	} else {
+		prepared.probe, err = probeCheckedAPIKeyManifest(ctx, before.runtime, provider, operation, func(probeContext context.Context) error {
+			return s.validateCheckedAPIKeyCapture(probeContext, before, owner)
+		})
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return prepared, ctx.Err()

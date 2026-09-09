@@ -40,7 +40,7 @@ func TestClientRefreshCompletionAcknowledgementStatus(t *testing.T) {
 }
 
 func TestClientRuntimeNegotiatesBeforePrivatePost(t *testing.T) {
-	for _, kind := range []string{"missing", "old-version", "wrong-compiler", "small-limit", "compatible"} {
+	for _, kind := range []string{"missing", "old-version", "wrong-compiler", "pre-catalog-compiler", "small-limit", "compatible"} {
 		t.Run(kind, func(t *testing.T) {
 			var gets, posts atomic.Int32
 			secret := "synthetic-private-client-key"
@@ -55,6 +55,9 @@ func TestClientRuntimeNegotiatesBeforePrivatePost(t *testing.T) {
 					value := proto.RemoteRuntimeCapabilities{Protocol: proto.RemoteRuntimeProtocol, RuntimeVersion: config.RemoteRuntimeVersion, Compiler: config.RemoteRuntimeCompiler, Principal: strings.Repeat("a", 64), MaxRequestBytes: config.MaxRemoteRuntimeBytes, MaxBundles: 64, MaxProviders: 64, WorkspaceSharing: "exclusive-certificate"}
 					if kind == "old-version" {
 						value.RuntimeVersion = 0
+					}
+					if kind == "pre-catalog-compiler" {
+						value.Compiler = "crux-declarative-runtime-v17"
 					}
 					if kind == "wrong-compiler" {
 						value.Compiler = "unsupported"

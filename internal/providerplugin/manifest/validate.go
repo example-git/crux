@@ -1641,8 +1641,8 @@ func validateOperation(i int, operation Operation, endpoints, operations, client
 	requireRef(prefix+".endpoint", operation.Endpoint, endpoints, add)
 	if operation.ClientIdentity != "" {
 		requireRef(prefix+".client_identity", operation.ClientIdentity, clientIdentities, add)
-		if _, ok := usageOperations[operation.ID]; !ok {
-			add("%s.client_identity is only supported for operation-sourced usage", prefix)
+		if _, ok := usageOperations[operation.ID]; !ok && operation.Kind != "model-catalog" {
+			add("%s.client_identity is only supported for operation-sourced usage or model catalogs", prefix)
 		}
 	}
 	validateHeaderRules(prefix+".headers", operation.Headers, collectCredentialRefs(c), configProperties, add)

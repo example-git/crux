@@ -12,6 +12,7 @@ func TestCompatibilityDiagnosticsAdvertisesOnlyImplementedTransports(t *testing.
 
 	implemented := []string{
 		"continuation.previous-response",
+		"operation.model-catalog-http",
 		"transport.anthropic-messages-http",
 		"transport.gemini-generate-content",
 		"transport.openai-responses-http",

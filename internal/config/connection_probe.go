@@ -27,10 +27,11 @@ const (
 type ConnectionProbePolicy string
 
 const (
-	ConnectionProbePolicyNone     ConnectionProbePolicy = "none"
-	ConnectionProbePolicySKPrefix ConnectionProbePolicy = "sk-prefix"
-	ConnectionProbePolicyHTTP200  ConnectionProbePolicy = "http-200"
-	ConnectionProbePolicyNon401   ConnectionProbePolicy = "non-401"
+	ConnectionProbePolicyNone            ConnectionProbePolicy = "none"
+	ConnectionProbePolicySKPrefix        ConnectionProbePolicy = "sk-prefix"
+	ConnectionProbePolicyHTTP200         ConnectionProbePolicy = "http-200"
+	ConnectionProbePolicyNon401          ConnectionProbePolicy = "non-401"
+	ConnectionProbePolicyManifestHTTP200 ConnectionProbePolicy = "manifest-http-200"
 )
 
 // ConnectionProbeResult reports the evidence from the existing connection
@@ -54,7 +55,7 @@ type ConnectionProbeResult struct {
 // its policy. A response with a failing HTTP status remains valid evidence.
 func (r ConnectionProbeResult) Validate() error {
 	invalid := errors.New("invalid connection probe result")
-	httpPolicy := r.Policy == ConnectionProbePolicyHTTP200 || r.Policy == ConnectionProbePolicyNon401
+	httpPolicy := r.Policy == ConnectionProbePolicyHTTP200 || r.Policy == ConnectionProbePolicyNon401 || r.Policy == ConnectionProbePolicyManifestHTTP200
 	if r.EnteredKeyInAuthorization && r.AuthorizationOverridden {
 		return invalid
 	}
@@ -95,8 +96,9 @@ func (r ConnectionProbeResult) Validate() error {
 }
 
 // ProbeConnection uses the complete supplied provider configuration and the
-// same exact-owner and HTTP policies as TestConnection. Native or manifest
-// protocol probes are not replaced with generic OpenAI-compatible requests.
+// same exact-owner and legacy type-based HTTP policies as TestConnection.
+// The fixed checked-key entry point separately selects native manifest probes;
+// callers must not infer native protocol support from this legacy type check.
 // Context-aware resolvers receive ctx during expansion; legacy resolvers are
 // checked for cancellation before and after their synchronous call.
 func (c *ProviderConfig) ProbeConnection(ctx context.Context, resolver VariableResolver, validate providertransport.OwnerValidator) (ConnectionProbeResult, error) {
