@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/pressly/goose/v3"
+
+	"github.com/example-git/crux/internal/fsext"
 )
 
 var (
@@ -90,19 +92,26 @@ func Connect(ctx context.Context, dataDir string, opts ...ConnectOption) (*sql.D
 		opt(&cfg)
 	}
 
-	dbPath := filepath.Join(dataDir, "crux.db")
-
-	// Resolve to an absolute path so that different relative paths to
-	// the same file share a single connection.
-	absPath, err := filepath.Abs(dbPath)
+	canonicalDataDir, err := fsext.CanonicalPath(dataDir)
 	if err != nil {
-		absPath = dbPath
+		return nil, fmt.Errorf("resolve database directory: %w", err)
 	}
+	dataDir = canonicalDataDir
+	dbPath := filepath.Join(dataDir, "crux.db")
+	absPath := dbPath
 
 	poolMu.Lock()
 	defer poolMu.Unlock()
 
 	if entry, ok := pool[absPath]; ok {
+		// A caller requiring a lock cannot silently inherit an earlier
+		// unlocked local connection to the same canonical database.
+		if cfg.lockDataDir && !skipDataDirLock() && entry.lock == nil {
+			entry.lock, err = acquireDataDirLock(dataDir)
+			if err != nil {
+				return nil, err
+			}
+		}
 		entry.refCount++
 		return entry.db, nil
 	}
@@ -175,11 +184,11 @@ func Connect(ctx context.Context, dataDir string, opts ...ConnectOption) (*sql.D
 // data directory. When the count reaches zero the underlying connection
 // is closed and removed from the pool.
 func Release(dataDir string) error {
-	dbPath := filepath.Join(dataDir, "crux.db")
-	absPath, err := filepath.Abs(dbPath)
+	canonicalDataDir, err := fsext.CanonicalPath(dataDir)
 	if err != nil {
-		absPath = dbPath
+		return fmt.Errorf("resolve database directory for release: %w", err)
 	}
+	absPath := filepath.Join(canonicalDataDir, "crux.db")
 
 	poolMu.Lock()
 	defer poolMu.Unlock()

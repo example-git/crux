@@ -78,6 +78,11 @@ func (b *Backend) LSPStart(ctx context.Context, workspaceID, path string) error 
 		return err
 	}
 
+	ctx, complete, err := ws.beginCredentialOperation(ctx)
+	if err != nil {
+		return err
+	}
+	defer complete()
 	ws.LSPManager.Start(ctx, path)
 	return nil
 }

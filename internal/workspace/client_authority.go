@@ -37,6 +37,7 @@ type clientAuthority struct {
 	accepted                  config.RemoteRuntimeProposal
 	principal                 string
 	creation                  proto.Workspace
+	recoveryProposal          *config.RemoteRuntimeProposal
 	pending                   *config.RemoteRuntimeProposal
 	pendingView               *config.Config
 	removed                   map[providerregistry.RegistrationOwner]bool
@@ -96,6 +97,9 @@ func matchesAuthority(ack *config.RemoteAuthority, principal string, proposal co
 // reconcileClientAuthority handles an ambiguous previous PUT before another
 // mutation. It never overwrites a different client's accepted revision.
 func (w *ClientWorkspace) reconcileClientAuthority(ctx context.Context, a *clientAuthority) error {
+	if a.recoveryProposal != nil {
+		return errors.New("workspace recreation is awaiting acknowledgement; retry the same recovery before changing client authority")
+	}
 	if a.pendingAuthenticationReview(w.workspaceID()) {
 		return errors.New("acknowledge the reviewed authentication publication before publishing client runtime changes")
 	}
@@ -267,34 +271,55 @@ func (w *ClientWorkspace) recreateClientWorkspace(ctx context.Context) (*proto.W
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
+	if err := a.requireAuthenticationReceipt(w.workspaceID()); err != nil {
 		return nil, err
 	}
-	if _, err := w.client.NegotiateRemoteRuntime(ctx); err != nil {
-		return nil, err
-	}
-	proposal, err := a.store.CollectRemoteRuntimeWithUnavailable(ctx, a.accepted.Revision, a.removed)
-	if err != nil {
-		return nil, fmt.Errorf("recollect client runtime for recovery: %w", err)
-	}
-	if proposal.Digest != a.accepted.Digest {
-		if a.accepted.Revision == ^uint64(0) {
-			return nil, errors.New("client runtime revision exhausted")
-		}
-		proposal, err = a.store.CollectRemoteRuntimeWithUnavailable(ctx, a.accepted.Revision+1, a.removed)
-		if err != nil {
+	proposal := a.recoveryProposal
+	if proposal == nil {
+		if _, err := w.client.NegotiateRemoteRuntime(ctx); err != nil {
 			return nil, err
 		}
+		collected, err := a.store.CollectRemoteRuntimeWithUnavailable(ctx, a.accepted.Revision, a.removed)
+		if err != nil {
+			return nil, fmt.Errorf("recollect client runtime for recovery: %w", err)
+		}
+		if collected.Digest != a.accepted.Digest {
+			if a.accepted.Revision == ^uint64(0) {
+				return nil, errors.New("client runtime revision exhausted")
+			}
+			collected, err = a.store.CollectRemoteRuntimeWithUnavailable(ctx, a.accepted.Revision+1, a.removed)
+			if err != nil {
+				return nil, err
+			}
+		}
+		// A POST can commit and lose its reply. Retain its exact authority
+		// until acknowledgement instead of recollecting another candidate at
+		// the same revision. CreateWorkspace negotiates before every replay.
+		proposal = &collected
+		a.recoveryProposal = proposal
 	}
 	request := a.creation
-	request.AuthorityMode, request.Runtime = "client", &proposal
+	request.AuthorityMode, request.Runtime = "client", proposal
 	created, err := w.client.CreateWorkspace(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	a.accepted = proposal
-	a.view.Store(clientCollectionConfig(proposal, a.store))
+	a.accepted = *proposal
+	a.recoveryProposal = nil
+	a.view.Store(clientCollectionConfig(*proposal, a.store))
 	a.pending, a.pendingView = nil, nil
 	w.installRecoveredWorkspace(*created)
 	return created, nil
+}
+
+// Serialize a reconnect with local runtime publication. The acknowledgement
+// retained by this owning client, not a newer public snapshot, grants a claim.
+func (w *ClientWorkspace) subscribeAcceptedEvents() (<-chan any, error) {
+	if a := w.authority; a != nil {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		accepted := config.RemoteAuthority{Mode: "client", Principal: a.principal, Revision: a.accepted.Revision, Digest: a.accepted.Digest}
+		return w.client.SubscribeEvents(w.subCtx, w.workspaceID(), accepted)
+	}
+	return w.client.SubscribeEvents(w.subCtx, w.workspaceID())
 }

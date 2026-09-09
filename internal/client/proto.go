@@ -132,6 +132,7 @@ func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*prot
 		}
 	}
 	created.AuthorityMode = mode
+	c.retainWorkspaceAttachment(created.ID, created.Authority)
 	return &created, nil
 }
 
@@ -222,15 +223,23 @@ func (c *Client) SetCurrentSession(ctx context.Context, workspaceID, sessionID s
 }
 
 // SubscribeEvents subscribes to server-sent events for a workspace.
-func (c *Client) SubscribeEvents(ctx context.Context, id string) (<-chan any, error) {
+func (c *Client) SubscribeEvents(ctx context.Context, id string, authority ...config.RemoteAuthority) (<-chan any, error) {
+	accepted, err := c.workspaceAttachment(id, authority)
+	if err != nil {
+		return nil, err
+	}
+	headers := http.Header{
+		"Accept":        {"text/event-stream"},
+		"Cache-Control": {"no-cache"},
+		"Connection":    {"keep-alive"},
+	}
+	if accepted != nil {
+		accepted.SetHeaders(headers)
+	}
 	events := make(chan any, 100)
 	q := url.Values{"client_id": []string{c.clientID}}
 	//nolint:bodyclose
-	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/events", id), q, http.Header{
-		"Accept":        []string{"text/event-stream"},
-		"Cache-Control": []string{"no-cache"},
-		"Connection":    []string{"keep-alive"},
-	})
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/events", id), q, headers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to subscribe to events: %w", err)
 	}
@@ -238,6 +247,14 @@ func (c *Client) SubscribeEvents(ctx context.Context, id string) (<-chan any, er
 	if err := checkStatus(rsp); err != nil {
 		rsp.Body.Close()
 		return nil, fmt.Errorf("failed to subscribe to events: %w", err)
+	}
+
+	if accepted != nil {
+		ack, err := proto.ParseWorkspaceAttachment(rsp.Header)
+		if err != nil || ack == nil || *ack != *accepted {
+			rsp.Body.Close()
+			return nil, errors.New("event stream did not acknowledge the accepted workspace authority; upgrade or reconnect explicitly")
+		}
 	}
 
 	go func() {

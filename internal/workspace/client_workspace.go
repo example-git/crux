@@ -1030,6 +1030,17 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 	backoff := sseReconnectInitialBackoff
 	degraded := false
 	recoveryFailures := 0
+	recreatedFrom := ""
+	recoverLostWorkspace := func() bool {
+		previous := w.workspaceID()
+		if w.recoverWorkspace() != nil {
+			return false
+		}
+		if previous != w.workspaceID() && recreatedFrom == "" {
+			recreatedFrom = previous
+		}
+		return true
+	}
 	markDegraded := func(err error, stuck bool) {
 		if degraded && !stuck {
 			return
@@ -1043,7 +1054,7 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 			return
 		}
 
-		evc, err := w.client.SubscribeEvents(w.subCtx, w.workspaceID())
+		evc, err := w.subscribeAcceptedEvents()
 		if err != nil {
 			if w.subCtx.Err() != nil {
 				return
@@ -1052,7 +1063,7 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 			if !errors.Is(err, client.ErrNotFound) {
 				slog.Error("Failed to subscribe to workspace events; retrying",
 					"error", err, "retry_in", backoff)
-			} else if w.recoverWorkspace() == nil {
+			} else if recoverLostWorkspace() {
 				// Re-registered: resubscribe immediately under the fresh
 				// workspace ID.
 				backoff = sseReconnectInitialBackoff
@@ -1073,7 +1084,8 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 		if degraded {
 			degraded = false
 			recoveryFailures = 0
-			w.afterReconnect(send)
+			w.afterReconnect(send, recreatedFrom)
+			recreatedFrom = ""
 		}
 		backoff = sseReconnectInitialBackoff
 		w.consumeEvents(evc, send)
@@ -1181,7 +1193,7 @@ func (w *ClientWorkspace) recreateArgs() proto.Workspace {
 // were away, and tells the UI to resync state published while detached. The
 // SSE handler attaches the client before writing its 200, so the presence
 // call cannot be rejected as not-attached here.
-func (w *ClientWorkspace) afterReconnect(send func(tea.Msg)) {
+func (w *ClientWorkspace) afterReconnect(send func(tea.Msg), recreatedFrom ...string) {
 	w.mu.RLock()
 	sid := w.lastSession
 	w.mu.RUnlock()
@@ -1190,7 +1202,11 @@ func (w *ClientWorkspace) afterReconnect(send func(tea.Msg)) {
 			slog.Warn("Failed to re-assert current session after reconnect", "error", err)
 		}
 	}
-	send(ConnectionEvent{State: ConnectionRecovered})
+	event := ConnectionEvent{State: ConnectionRecovered, WorkspaceID: w.workspaceID()}
+	if len(recreatedFrom) == 1 && recreatedFrom[0] != "" && recreatedFrom[0] != event.WorkspaceID {
+		event.Recreated, event.PreviousWorkspaceID = true, recreatedFrom[0]
+	}
+	send(event)
 }
 
 // sleepOrDone waits for d or until the subscription context is

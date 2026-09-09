@@ -115,3 +115,17 @@ func remoteWorkspaceDataDir(path, requested, principal string) string {
 	sum := sha256.Sum256([]byte(path))
 	return filepath.Join(requested, "remote", principal, hex.EncodeToString(sum[:]))
 }
+
+// Called with b.mu held. The accepted runtime check and new/rearmed claim are
+// indivisible with respect to receiver publication, on every creation reuse.
+func (b *Backend) registerReusedClient(ws *Workspace, args proto.Workspace, clientID string) error {
+	admit := func() error { b.registerClient(ws, clientID); return nil }
+	if args.AuthorityMode != "client" {
+		return admit()
+	}
+	err := ws.Cfg.WithRemoteAuthorityAdmission(config.RemoteAuthority{Mode: "client", Principal: args.AuthenticatedPrincipal, Revision: args.Runtime.Revision, Digest: args.Runtime.Digest}, admit)
+	if errors.Is(err, config.ErrRemoteRuntimeRevision) {
+		return ErrRuntimeConflict
+	}
+	return err
+}

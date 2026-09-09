@@ -368,6 +368,11 @@ func (b *Backend) RunShellCommand(ctx context.Context, workspaceID string, req p
 	if err != nil {
 		return proto.ShellCommandResponse{}, err
 	}
+	ctx, complete, err := ws.beginCredentialOperation(ctx)
+	if err != nil {
+		return proto.ShellCommandResponse{}, err
+	}
+	defer complete()
 
 	var persist shell.PersistFunc
 	if req.SessionID != "" {

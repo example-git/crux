@@ -153,6 +153,9 @@ func (w *ClientWorkspace) prepareClientProviderAuth(ctx context.Context, id stri
 		return fmt.Errorf("provider authentication workspace changed")
 	}
 	a := w.authority
+	if a.recoveryProposal != nil {
+		return fmt.Errorf("workspace recreation is awaiting acknowledgement; retry the same recovery before changing authentication")
+	}
 	if a.pending != nil {
 		if w.client == nil {
 			return fmt.Errorf("pending client authentication state cannot be reconciled")
