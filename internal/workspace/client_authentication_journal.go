@@ -305,7 +305,7 @@ func (a *clientAuthority) storeAuthenticationJournal(ctx context.Context, key co
 	if err != nil {
 		stored, found, readErr := a.authenticationJournal.Load(ctx, key)
 		if readErr != nil || !found || !bytes.Equal(stored.Payload(), data) || stored.Completed() != completed || stored.ReservedBytes() != reserved {
-			return revision, errors.New("authentication history write is not durably acknowledged")
+			return revision, errors.Join(errors.New("authentication history write is not durably acknowledged"), ctx.Err())
 		}
 		entry = stored
 	}
