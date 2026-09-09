@@ -241,10 +241,13 @@ func TestCopilotImportThroughTLS(t *testing.T) {
 				require.NoError(t, err)
 				require.EqualValues(t, 1, remoteState.Authority.Revision)
 				if mode == "disk-change" {
-					require.ErrorContains(t, importErr, "imported account saved; provider config was not updated")
+					require.ErrorContains(t, importErr, "authentication configuration inputs changed")
 					data, err := os.ReadFile(filepath.Join(clientData, "crux.json"))
 					require.NoError(t, err)
 					require.Contains(t, string(data), "synthetic-manual-config")
+					entry, err := accounts.Active(t.Context(), owner.AccountNamespace)
+					require.NoError(t, err)
+					require.Nil(t, entry, "config preflight failure must precede the account save")
 				}
 				if mode == "empty-logout" {
 					entries, err := accounts.List(t.Context(), owner.AccountNamespace)
@@ -256,7 +259,7 @@ func TestCopilotImportThroughTLS(t *testing.T) {
 					require.NoError(t, err)
 					require.Equal(t, "synthetic-manual-account", entry.AccessToken)
 				}
-				if mode == "disk-change" || mode == "rejected-ack" {
+				if mode == "rejected-ack" {
 					entry, err := accounts.Active(t.Context(), owner.AccountNamespace)
 					require.NoError(t, err)
 					require.NotNil(t, entry)

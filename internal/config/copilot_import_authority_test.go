@@ -73,7 +73,7 @@ func TestCopilotImportCanceledConfigLockDoesNotSaveAccount(t *testing.T) {
 		return selectedRefreshToken(), true, nil
 	})
 	previous := store.Config()
-	before, err := captureCopilotImportAccounts(t.Context(), store.RuntimeSnapshot(), owner.AccountNamespace)
+	before, err := captureRuntimeAccounts(t.Context(), store.RuntimeSnapshot(), []string{owner.AccountNamespace})
 	require.NoError(t, err)
 	disk, err := os.ReadFile(store.globalDataPath)
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestCopilotImportCanceledConfigLockDoesNotSaveAccount(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("canceled config lock wait did not finish")
 	}
-	after, err := captureCopilotImportAccounts(t.Context(), store.RuntimeSnapshot(), owner.AccountNamespace)
+	after, err := captureRuntimeAccounts(t.Context(), store.RuntimeSnapshot(), []string{owner.AccountNamespace})
 	require.NoError(t, err)
 	require.True(t, before.SameObservation(after))
 	require.Same(t, previous, store.Config())

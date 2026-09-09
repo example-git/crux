@@ -36,13 +36,27 @@ func (s *ConfigStore) CollectRemoteRuntime(ctx context.Context, revision uint64)
 // CollectRemoteRuntimeWithUnavailable records intentional client logout without
 // keeping the receiver's old secret or choosing a different provider.
 func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, revision uint64, removed map[providerregistry.RegistrationOwner]bool) (RemoteRuntimeProposal, error) {
-	s.writeMu.RLock()
+	if err := lockAuthenticationMutex(ctx, s.writeMu.TryRLock, s.writeMu.RUnlock); err != nil {
+		return RemoteRuntimeProposal{}, err
+	}
 	defer s.writeMu.RUnlock()
-	s.configMu.Lock()
+	if err := lockAuthenticationMutex(ctx, s.configMu.TryLock, s.configMu.Unlock); err != nil {
+		return RemoteRuntimeProposal{}, err
+	}
 	snapshot := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
 	s.configMu.Unlock()
 	return collectRemoteRuntime(ctx, snapshot, revision, removed, snapshot.Resolve, func(ctx context.Context, owner providerregistry.RegistrationOwner) (*accounts.Entry, error) {
-		return accounts.Active(ctx, owner.AccountNamespace)
+		state, err := captureRuntimeAccounts(ctx, snapshot, []string{owner.AccountNamespace})
+		if err != nil {
+			return nil, err
+		}
+		active := state.ActiveID(owner.AccountNamespace)
+		for _, entry := range state.Entries(owner.AccountNamespace) {
+			if entry.ID == active {
+				return &entry, nil
+			}
+		}
+		return nil, nil
 	})
 }
 

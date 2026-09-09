@@ -99,7 +99,7 @@ func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerr
 	if err := validate(); err != nil {
 		return nil, false, err
 	}
-	accountBefore, err := captureCopilotImportAccounts(ctx, snapshot, registration.AccountNamespace)
+	accountBefore, err := captureRuntimeAccounts(ctx, snapshot, []string{registration.AccountNamespace})
 	if err != nil {
 		return nil, false, err
 	}
@@ -238,7 +238,7 @@ func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerr
 	return token, true, nil
 }
 
-func captureCopilotImportAccounts(ctx context.Context, snapshot RuntimeSnapshot, namespace string) (accounts.Snapshot, error) {
+func captureRuntimeAccounts(ctx context.Context, snapshot RuntimeSnapshot, namespaces []string) (accounts.Snapshot, error) {
 	root := snapshot.Getenv("AI_CLI_DIR")
 	if root == "" {
 		home := snapshot.Getenv(authenticationHomeVariable())
@@ -250,5 +250,5 @@ func captureCopilotImportAccounts(ctx context.Context, snapshot RuntimeSnapshot,
 	if !filepath.IsAbs(root) {
 		return accounts.Snapshot{}, errors.New("captured account directory is not absolute")
 	}
-	return accounts.CaptureStateAt(ctx, filepath.Join(root, "accounts.json"), []string{namespace})
+	return accounts.CaptureStateAt(ctx, filepath.Join(root, "accounts.json"), namespaces)
 }
