@@ -197,13 +197,35 @@ func Release(dataDir string) error {
 	if !ok {
 		return nil
 	}
+	return releaseEntryLocked(absPath, entry)
+}
 
+// ReleaseConnection releases the exact pooled connection returned by Connect.
+// Production owners retain this reference instead of resolving their original
+// directory again: a symlink may have changed while the workspace was running.
+// A connection no longer in the pool cannot release a newer connection at the
+// same path. External, non-pooled connections remain their caller's property.
+func ReleaseConnection(conn *sql.DB) error {
+	if conn == nil {
+		return nil
+	}
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	for path, entry := range pool {
+		if entry.db == conn {
+			return releaseEntryLocked(path, entry)
+		}
+	}
+	return nil
+}
+
+func releaseEntryLocked(path string, entry *connEntry) error {
 	entry.refCount--
 	if entry.refCount > 0 {
 		return nil
 	}
 
-	delete(pool, absPath)
+	delete(pool, path)
 	closeErr := entry.db.Close()
 	if entry.lock != nil {
 		entry.lock.release()

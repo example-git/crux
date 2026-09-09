@@ -238,9 +238,6 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		Messages:          app.Messages,
 	})
 
-	// Release the shared database connection on shutdown. The pool
-	// closes the underlying *sql.DB when the last reference is released.
-	dataDir := cfg.Options.DataDirectory
 	app.cleanupFuncs = append(
 		app.cleanupFuncs,
 		func(context.Context) error {
@@ -253,8 +250,9 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 
 	// Ownership of the caller's pooled DB reference transfers only after
 	// initialization succeeds. Failed construction leaves it for the caller.
+	// Shutdown releases that exact reference, without re-resolving its path.
 	finish := func() *App {
-		app.cleanupFuncs = append(app.cleanupFuncs, func(context.Context) error { return db.Release(dataDir) })
+		app.cleanupFuncs = append(app.cleanupFuncs, func(context.Context) error { return db.ReleaseConnection(conn) })
 		return app
 	}
 

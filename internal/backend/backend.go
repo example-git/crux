@@ -740,7 +740,7 @@ initializeWorkspace:
 
 	traceCtx, closeTraffic, err := cruxlog.SetupTraffic(lifetimeCtx, cfg.Config().Options.DataDirectory, cfg.Config().Options.NetworkTracing)
 	if err != nil {
-		_ = db.Release(cfg.Config().Options.DataDirectory)
+		_ = db.ReleaseConnection(conn)
 		return nil, proto.Workspace{}, fmt.Errorf("initialize network tracing: %w", err)
 	}
 	wsCtx, wsCancel := context.WithCancel(traceCtx)
@@ -753,7 +753,7 @@ initializeWorkspace:
 	if err != nil {
 		wsCancel()
 		closeTraffic()
-		_ = db.Release(cfg.Config().Options.DataDirectory)
+		_ = db.ReleaseConnection(conn)
 		return nil, proto.Workspace{}, fmt.Errorf("failed to create app workspace: %w", err)
 	}
 	context.AfterFunc(wsCtx, closeTraffic)
