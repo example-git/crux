@@ -213,3 +213,29 @@ func TestCopilotImportSelectionBranches(t *testing.T) {
 		})
 	}
 }
+
+func TestCopilotImportRetainsWorkspaceAndSelectionValues(t *testing.T) {
+	ui, original, action, configured := newImportTestUI(t)
+	original.importToken = func(context.Context, providerregistry.RegistrationOwner) (bool, error) {
+		original.cfg = configured()
+		return true, nil
+	}
+	temperature := 0.2
+	action.Model.Temperature = &temperature
+	action.Model.ProviderOptions = map[string]any{"nested": map[string]any{"value": "original"}}
+	command := ui.handleSelectModel(action)
+	temperature = 0.8
+	action.Model.ProviderOptions["nested"].(map[string]any)["value"] = "replacement"
+	completed, ok := command().(copilotImportDoneMsg)
+	require.True(t, ok)
+	require.NoError(t, completed.err)
+	require.Same(t, original, completed.workspace)
+	require.Equal(t, 0.2, *completed.selection.Model.Temperature)
+	require.Equal(t, "original", completed.selection.Model.ProviderOptions["nested"].(map[string]any)["value"])
+	replacement := &importingTestWorkspace{testWorkspace: &testWorkspace{cfg: configured()}}
+	ui.com.Workspace = replacement
+	_, _ = ui.Update(completed)
+	require.Empty(t, ui.modelSelectionLanes)
+	require.Zero(t, replacement.preferredModelCalls)
+	require.Zero(t, original.preferredModelCalls)
+}

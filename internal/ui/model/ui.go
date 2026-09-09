@@ -853,7 +853,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dialog.LoginDoneMsg, dialog.AccountSwitchedMsg, dialog.LogoutDoneMsg:
 		cmds = append(cmds, m.handleDialogAction(msg))
 	case copilotImportDoneMsg:
-		if msg.generation != m.modelSelectionGen {
+		if msg.workspace != m.com.Workspace || msg.generation != m.modelSelectionGen {
 			break
 		}
 		m.cancelCopilotImport = nil
