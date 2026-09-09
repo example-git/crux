@@ -67,8 +67,20 @@ func (*pendingAccountChange) MarshalJSON() ([]byte, error) {
 // CommitResult is host-private. Written records a successful account-file
 // rename even when post-write capture fails; Snapshot is valid only on success.
 type CommitResult struct {
-	Snapshot Snapshot
-	Written  bool
+	Snapshot           Snapshot
+	Written            bool
+	completionDeadline time.Time
+}
+
+// CompletionDeadline is the original bounded completion deadline established
+// after the account rename. Callers continuing a durable multi-file operation
+// must inherit this deadline rather than start another completion window. It is
+// zero when Commit did not write, and remains available on post-write errors.
+func (result CommitResult) CompletionDeadline() time.Time {
+	if !result.Written {
+		return time.Time{}
+	}
+	return result.completionDeadline
 }
 
 func (PendingChange) String() string   { return "accounts.PendingChange(private)" }
@@ -235,6 +247,7 @@ func (change *PendingChange) Commit(ctx context.Context) (CommitResult, error) {
 	result := CommitResult{Written: true}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountCommitCompletionTimeout)
 	defer cancel()
+	result.completionDeadline, _ = finishCtx.Deadline()
 	if err := finishCtx.Err(); err != nil {
 		return result, err
 	}
