@@ -59,6 +59,7 @@ func TestConnectionProbeNonNetworkClassifications(t *testing.T) {
 			}
 			result, err := provider.ProbeConnection(t.Context(), IdentityResolver(), func() error { return nil })
 			require.Equal(t, ConnectionProbeResult{Kind: test.kind, Policy: test.policy}, result)
+			require.NoError(t, result.Validate())
 			if test.errorText == "" {
 				require.NoError(t, err)
 			} else {
@@ -89,6 +90,7 @@ func TestConnectionProbeHTTPSPolicyAndHeaderEvidence(t *testing.T) {
 		{name: "opencode go models200", preset: catalog.ProviderOpenCodeGo, status: 200},
 		{name: "zai non401", preset: catalog.ProviderZAI, status: 403},
 		{name: "zai server error remains observation", preset: catalog.ProviderZAI, status: 500},
+		{name: "zai nonstandard observed code", preset: catalog.ProviderZAI, status: 777},
 		{name: "zai unauthorized", preset: catalog.ProviderZAI, status: 401, wantError: true},
 		{name: "overriding authorization", status: 200, overrideSet: true, override: "Bearer synthetic-configured"},
 		{name: "empty authorization override", status: 200, overrideSet: true},
@@ -132,6 +134,7 @@ func TestConnectionProbeHTTPSPolicyAndHeaderEvidence(t *testing.T) {
 				policy = ConnectionProbePolicyNon401
 			}
 			require.Equal(t, ConnectionProbeResult{Kind: ConnectionProbeHTTPResponse, Policy: policy, HTTPStatus: test.status, EnteredKeyInAuthorization: !test.overrideSet, AuthorizationOverridden: test.overrideSet}, result)
+			require.NoError(t, result.Validate())
 			authorization := "Bearer synthetic-entered"
 			if test.overrideSet {
 				authorization = test.override
@@ -221,6 +224,11 @@ func TestConnectionProbeHTTPSOwnerAndCancellation(t *testing.T) {
 			case <-time.After(10 * time.Second):
 				t.Fatal("probe did not finish")
 			}
+			require.NoError(t, completed.result.Validate())
+			if mode == "cancel during request" {
+				require.Equal(t, ConnectionProbeHTTPAttempt, completed.result.Kind)
+				require.Zero(t, completed.result.HTTPStatus)
+			}
 			if strings.HasPrefix(mode, "cancel") {
 				require.ErrorIs(t, completed.err, context.Canceled)
 			} else {
@@ -296,5 +304,61 @@ func TestConnectionProbeCancellationReachesCapturedResolver(t *testing.T) {
 				require.Empty(t, entered)
 			}
 		})
+	}
+}
+
+func TestConnectionProbeAttemptWithoutResponse(t *testing.T) {
+	host := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("closed server received a request") }))
+	previous := http.DefaultClient
+	http.DefaultClient = host.Client()
+	defer func() { http.DefaultClient = previous }()
+	provider := connectionProbeProvider()
+	provider.BaseURL = host.URL
+	host.Close()
+	result, err := provider.ProbeConnection(t.Context(), IdentityResolver(), func() error { return nil })
+	require.Error(t, err)
+	require.Equal(t, ConnectionProbeResult{Kind: ConnectionProbeHTTPAttempt, Policy: ConnectionProbePolicyHTTP200, EnteredKeyInAuthorization: true}, result)
+	require.NoError(t, result.Validate())
+	provider.BaseURL = ""
+	result, err = provider.ProbeConnection(t.Context(), IdentityResolver(), func() error { return nil })
+	require.ErrorContains(t, err, "missing an API endpoint")
+	require.Equal(t, ConnectionProbeResult{Kind: ConnectionProbeNotProbed, Policy: ConnectionProbePolicyHTTP200}, result)
+	require.NoError(t, result.Validate())
+}
+
+func TestConnectionProbeResultValidation(t *testing.T) {
+	for _, result := range []ConnectionProbeResult{
+		{Kind: ConnectionProbeNotProbed, Policy: ConnectionProbePolicyNone},
+		{Kind: ConnectionProbeNotProbed, Policy: ConnectionProbePolicyHTTP200},
+		{Kind: ConnectionProbeNotProbed, Policy: ConnectionProbePolicyNon401},
+		{Kind: ConnectionProbeFormatOnly, Policy: ConnectionProbePolicySKPrefix},
+		{Kind: ConnectionProbeUnsupported, Policy: ConnectionProbePolicyNone},
+		{Kind: ConnectionProbeHTTPAttempt, Policy: ConnectionProbePolicyHTTP200},
+		{Kind: ConnectionProbeHTTPAttempt, Policy: ConnectionProbePolicyNon401, AuthorizationOverridden: true},
+		{Kind: ConnectionProbeHTTPResponse, Policy: ConnectionProbePolicyHTTP200, HTTPStatus: 100},
+		{Kind: ConnectionProbeHTTPResponse, Policy: ConnectionProbePolicyHTTP200, HTTPStatus: 401, EnteredKeyInAuthorization: true},
+		{Kind: ConnectionProbeHTTPResponse, Policy: ConnectionProbePolicyNon401, HTTPStatus: 999, AuthorizationOverridden: true},
+	} {
+		require.NoError(t, result.Validate(), "%+v", result)
+	}
+	for name, result := range map[string]ConnectionProbeResult{
+		"empty":                     {},
+		"unknown kind":              {Kind: "verified", Policy: ConnectionProbePolicyNone},
+		"unknown policy":            {Kind: ConnectionProbeNotProbed, Policy: "inference-authorized"},
+		"unperformed format":        {Kind: ConnectionProbeNotProbed, Policy: ConnectionProbePolicySKPrefix},
+		"format HTTP policy":        {Kind: ConnectionProbeFormatOnly, Policy: ConnectionProbePolicyHTTP200},
+		"unsupported HTTP policy":   {Kind: ConnectionProbeUnsupported, Policy: ConnectionProbePolicyHTTP200},
+		"unattempted headers":       {Kind: ConnectionProbeNotProbed, Policy: ConnectionProbePolicyNone, EnteredKeyInAuthorization: true},
+		"format headers":            {Kind: ConnectionProbeFormatOnly, Policy: ConnectionProbePolicySKPrefix, AuthorizationOverridden: true},
+		"unsupported status":        {Kind: ConnectionProbeUnsupported, Policy: ConnectionProbePolicyNone, HTTPStatus: 200},
+		"attempted format":          {Kind: ConnectionProbeHTTPAttempt, Policy: ConnectionProbePolicySKPrefix},
+		"attempt with response":     {Kind: ConnectionProbeHTTPAttempt, Policy: ConnectionProbePolicyHTTP200, HTTPStatus: 200},
+		"response without status":   {Kind: ConnectionProbeHTTPResponse, Policy: ConnectionProbePolicyHTTP200},
+		"response status too small": {Kind: ConnectionProbeHTTPResponse, Policy: ConnectionProbePolicyHTTP200, HTTPStatus: 99},
+		"response status too large": {Kind: ConnectionProbeHTTPResponse, Policy: ConnectionProbePolicyHTTP200, HTTPStatus: 1000},
+		"response without policy":   {Kind: ConnectionProbeHTTPResponse, Policy: ConnectionProbePolicyNone, HTTPStatus: 200},
+		"contradictory headers":     {Kind: ConnectionProbeHTTPResponse, Policy: ConnectionProbePolicyHTTP200, HTTPStatus: 200, EnteredKeyInAuthorization: true, AuthorizationOverridden: true},
+	} {
+		t.Run(name, func(t *testing.T) { require.Error(t, result.Validate()) })
 	}
 }

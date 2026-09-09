@@ -3,6 +3,7 @@ package config
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -18,6 +19,7 @@ type ConnectionProbeKind string
 const (
 	ConnectionProbeNotProbed    ConnectionProbeKind = "not-probed"
 	ConnectionProbeFormatOnly   ConnectionProbeKind = "format-only"
+	ConnectionProbeHTTPAttempt  ConnectionProbeKind = "http-attempt"
 	ConnectionProbeHTTPResponse ConnectionProbeKind = "http-response"
 	ConnectionProbeUnsupported  ConnectionProbeKind = "unsupported"
 )
@@ -46,6 +48,50 @@ type ConnectionProbeResult struct {
 	// reported conservatively even if its bytes happen to equal the entered key.
 	EnteredKeyInAuthorization bool `json:"entered_key_in_authorization"`
 	AuthorizationOverridden   bool `json:"authorization_overridden"`
+}
+
+// Validate checks the result's transport-safe shape, not whether a probe passed
+// its policy. A response with a failing HTTP status remains valid evidence.
+func (r ConnectionProbeResult) Validate() error {
+	invalid := errors.New("invalid connection probe result")
+	httpPolicy := r.Policy == ConnectionProbePolicyHTTP200 || r.Policy == ConnectionProbePolicyNon401
+	if r.EnteredKeyInAuthorization && r.AuthorizationOverridden {
+		return invalid
+	}
+	switch r.Kind {
+	case ConnectionProbeNotProbed:
+		// A supported HTTP policy may have been selected before endpoint
+		// preparation failed, without attempting a client request.
+		if r.Policy != ConnectionProbePolicyNone && !httpPolicy {
+			return invalid
+		}
+	case ConnectionProbeFormatOnly:
+		if r.Policy != ConnectionProbePolicySKPrefix {
+			return invalid
+		}
+	case ConnectionProbeUnsupported:
+		if r.Policy != ConnectionProbePolicyNone {
+			return invalid
+		}
+	case ConnectionProbeHTTPAttempt:
+		if !httpPolicy || r.HTTPStatus != 0 {
+			return invalid
+		}
+		return nil
+	case ConnectionProbeHTTPResponse:
+		// net/http accepts parsed three-digit response codes from 100 to 999,
+		// including nonstandard codes. This does not certify a standard status.
+		if !httpPolicy || r.HTTPStatus < 100 || r.HTTPStatus > 999 {
+			return invalid
+		}
+		return nil
+	default:
+		return invalid
+	}
+	if r.HTTPStatus != 0 || r.EnteredKeyInAuthorization || r.AuthorizationOverridden {
+		return invalid
+	}
+	return nil
 }
 
 // ProbeConnection uses the complete supplied provider configuration and the
@@ -149,6 +195,9 @@ func (c *ProviderConfig) ProbeConnection(ctx context.Context, resolver VariableR
 			result.EnteredKeyInAuthorization = false
 		}
 	}
+	// An HTTP client attempt is distinct from no probe, even when a local
+	// transport gate, cancellation or connection failure prevents delivery.
+	result.Kind = ConnectionProbeHTTPAttempt
 	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
 	if resp != nil {
 		result.Kind, result.HTTPStatus = ConnectionProbeHTTPResponse, resp.StatusCode
