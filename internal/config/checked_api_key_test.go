@@ -14,9 +14,11 @@ import (
 
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 type checkedAPIKeyFixture struct {
@@ -264,4 +266,123 @@ func TestCheckedAPIKeyLatePublicationKeepsProgressWithoutAfter(t *testing.T) {
 	_, ok := result.RuntimeSnapshot()
 	require.False(t, ok)
 	require.False(t, result.AccountsSaved)
+}
+
+func TestCheckedAPIKeyPreservesUnselectedAndDisabledProviders(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(disabled), func(t *testing.T) {
+			host := checkedAPIKeyHTTP(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{}`)) })
+			f := newCheckedAPIKeyFixture(t, host.URL, ScopeGlobal)
+			other, ok := f.store.RuntimeSnapshot().ProviderOwner("unrelated")
+			require.True(t, ok)
+			model := &OwnedSelectedModel{Owner: other, Model: SelectedModel{Provider: "unrelated", Model: "other"}}
+			_, err := f.store.OverrideModelsForOwners(AgentModelState{Large: model, Small: model})
+			require.NoError(t, err)
+			if disabled {
+				require.NoError(t, f.store.SetProviderDisabled(ScopeGlobal, f.owner, true))
+			}
+			before := f.capture(t)
+			prepared, err := f.store.PrepareCheckedAPIKey(t.Context(), before, f.owner, "provider.api_key", "synthetic-new")
+			require.NoError(t, err)
+			result, err := f.store.SaveCheckedAPIKey(t.Context(), ScopeGlobal, prepared)
+			require.NoError(t, err)
+			require.Equal(t, before.runtime.config.Models, result.After.runtime.config.Models)
+			require.Equal(t, before.runtime.config.Agents, result.After.runtime.config.Agents)
+			provider, _ := result.After.runtime.config.Providers.Get("checked")
+			require.Equal(t, disabled, provider.Disable)
+			if disabled {
+				require.ErrorIs(t, result.After.runtime.AuthenticationConstructionDenial("checked"), ErrAuthenticationProviderDisabled)
+			}
+			proposal, err := f.store.CollectRemoteRuntimeForAuthentication(t.Context(), result.After, 1, nil)
+			require.NoError(t, err)
+			require.Len(t, proposal.Providers, 1)
+			require.Equal(t, "unrelated", proposal.Providers[0].Config.ID)
+		})
+	}
+}
+
+func TestCheckedAPIKeyReusesAcceptedShellConfiguration(t *testing.T) {
+	host := checkedAPIKeyHTTP(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{}`)) })
+	f := newCheckedAPIKeyFixture(t, host.URL, ScopeGlobal)
+	marker := filepath.Join(f.root, "shell-count")
+	require.NoError(t, os.WriteFile(filepath.Join(f.root, ".cruxrc"), []byte(fmt.Sprintf("printf x >> '%s'\noption notifications bell\n", marker)), 0600))
+	require.NoError(t, f.store.ReloadFromDisk(t.Context()))
+	initial, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	before := f.capture(t)
+	preparation, err := f.store.PrepareCheckedAPIKey(t.Context(), before, f.owner, "provider.api_key", "synthetic-new")
+	require.NoError(t, err)
+	_, err = f.store.SaveCheckedAPIKey(t.Context(), ScopeGlobal, preparation)
+	require.NoError(t, err)
+	after, err := os.ReadFile(marker)
+	require.NoError(t, err)
+	require.Equal(t, initial, after)
+}
+
+func TestCheckedAPIKeyPreparesAcceptedUnconfiguredPreset(t *testing.T) {
+	var requests atomic.Int32
+	host := checkedAPIKeyHTTP(t, func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		require.Equal(t, "Bearer synthetic-entered", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{}`))
+	})
+	f := newCheckedAPIKeyFixture(t, host.URL, ScopeGlobal)
+	installTrustedProviderBundle(t, filepath.Join(f.root, "data"), filepath.Join(f.root, "cache"), "../../plugins/provider-presets/deepseek.plugin")
+	data, err := os.ReadFile(f.path)
+	require.NoError(t, err)
+	data, err = sjson.SetBytes(data, "providers.deepseek", map[string]any{"base_url": host.URL, "preset": map[string]string{"id": "crux.catwalk.deepseek"}})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(f.path, data, 0600))
+	require.NoError(t, f.store.ReloadFromDisk(t.Context()))
+	_, configured := f.store.Config().Providers.Get("deepseek")
+	require.False(t, configured)
+	before := f.capture(t)
+	owner, ok := before.runtime.ProviderOwner("deepseek")
+	require.True(t, ok)
+	require.True(t, owner.HasPreset)
+	preparation, err := f.store.PrepareCheckedAPIKey(t.Context(), before, owner, "provider.api_key", "synthetic-entered")
+	require.NoError(t, err)
+	result, err := f.store.SaveCheckedAPIKey(t.Context(), ScopeGlobal, preparation)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, requests.Load())
+	provider, configured := result.After.runtime.config.Providers.Get("deepseek")
+	require.True(t, configured)
+	require.Equal(t, owner.PresetDigest, provider.Preset.Digest)
+	require.Equal(t, before.runtime.config.Models, result.After.runtime.config.Models)
+}
+
+func TestCheckedAPIKeyNativeProbeUnsupportedBeforeExpressions(t *testing.T) {
+	var requests atomic.Int32
+	host := checkedAPIKeyHTTP(t, func(w http.ResponseWriter, r *http.Request) { requests.Add(1) })
+	root := t.TempDir()
+	bundle := filepath.Join(root, "native.plugin")
+	require.NoError(t, os.CopyFS(bundle, os.DirFS("../../docs/provider-plugins/examples/responses-oauth.plugin")))
+	data, err := os.ReadFile(filepath.Join(bundle, "manifest.json"))
+	require.NoError(t, err)
+	var declaration manifest.Manifest
+	require.NoError(t, json.Unmarshal(data, &declaration))
+	declaration.Capabilities.Credentials = append(declaration.Capabilities.Credentials, manifest.Credential{ID: "key", Kind: "api-key", Audience: []string{"api"}})
+	data, err = json.Marshal(declaration)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0600))
+	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginNative), "CRUX_PROVIDER_PLUGINS": "example-responses"}
+	installTrustedProviderBundle(t, values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"], bundle)
+	marker := filepath.Join(root, "must-not-evaluate")
+	endpoint := fmt.Sprintf("$(printf x >> '%s'; printf '%%s' '%s')", marker, host.URL)
+	document := fmt.Sprintf(`{"providers":{"example-responses":{"plugin":{"id":"example.responses-oauth"},"api_key":"synthetic-old","base_url":%q,"configuration":{"oauth_client_id":"synthetic-client"}},"other":{"type":"openai-compat","api_key":"synthetic-other","base_url":"https://example.invalid","models":[{"id":"main"}]}},"models":{"large":{"provider":"other","model":"main"},"small":{"provider":"other","model":"main"}}}`, endpoint)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "crux.json"), []byte(document), 0600))
+	store, err := LoadIsolated(root, filepath.Join(root, "workspace"), false, env.NewFromMap(values))
+	require.NoError(t, err)
+	_ = os.Remove(marker)
+	before, err := store.CaptureAuthentication(t.Context())
+	require.NoError(t, err)
+	owner, ok := before.runtime.ProviderOwner("example-responses")
+	require.True(t, ok)
+	require.Equal(t, providerregistry.ConstructionOpenAIResponses, owner.Construction)
+	preparation, err := store.PrepareCheckedAPIKey(t.Context(), before, owner, "provider.api_key", fmt.Sprintf("$(printf x >> '%s'; printf synthetic)", marker))
+	require.ErrorContains(t, err, "policy is not implemented")
+	require.Equal(t, ConnectionProbeResult{Kind: ConnectionProbeUnsupported, Policy: ConnectionProbePolicyNone}, preparation.ProbeResult())
+	require.NoError(t, preparation.ProbeResult().Validate())
+	require.NoFileExists(t, marker)
+	require.Zero(t, requests.Load())
 }
