@@ -32,12 +32,15 @@ import (
 
 type clientAuthenticationFixture struct {
 	w                                *ClientWorkspace
+	connection                       connection.Connection
 	s                                *server.Server
 	store                            *config.ConfigStore
 	owner                            providerregistry.RegistrationOwner
 	first, second                    accounts.Entry
 	root, path, accountsPath, marker string
 	puts                             atomic.Int32
+	removes                          atomic.Int32
+	removeMode                       atomic.Int32
 	requests                         atomic.Int32
 	getMode, putMode                 atomic.Int32 // PUT:1 reject,2 lose committed response; GET:1 reject,2 wrong workspace.
 	afterPut                         atomic.Pointer[func()]
@@ -68,6 +71,18 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 	handler := f.s.Handler()
 	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.requests.Add(1)
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/auth/remove") {
+			f.removes.Add(1)
+			if f.removeMode.Load() == 1 {
+				recorder := httptest.NewRecorder()
+				handler.ServeHTTP(recorder, r)
+				if recorder.Code != http.StatusOK {
+					t.Errorf("committed removal failed: %d %s", recorder.Code, recorder.Body.String())
+				}
+				http.Error(w, "synthetic lost removal response", http.StatusBadGateway)
+				return
+			}
+		}
 		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
 			f.puts.Add(1)
 			switch f.putMode.Load() {
@@ -176,7 +191,8 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 	require.True(t, ok)
 	proposal, err := f.store.CollectRemoteRuntime(t.Context(), 1)
 	require.NoError(t, err)
-	c, err := client.NewAuthenticatedClient(t.TempDir(), connection.Connection{Address: "tcp://" + strings.TrimPrefix(remote.URL, "https://"), ServerCertificate: serverCode, Client: identity})
+	f.connection = connection.Connection{Address: "tcp://" + strings.TrimPrefix(remote.URL, "https://"), ServerCertificate: serverCode, Client: identity}
+	c, err := client.NewAuthenticatedClient(t.TempDir(), f.connection)
 	require.NoError(t, err)
 	c.SetLocalRuntimeStore(f.store)
 	created, err := c.CreateWorkspace(t.Context(), proto.Workspace{Path: t.TempDir(), DataDir: t.TempDir(), AuthorityMode: "client", Runtime: &proposal})

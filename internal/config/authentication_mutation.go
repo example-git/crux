@@ -25,6 +25,7 @@ import (
 type AuthenticationMutationResult struct {
 	After                                                          AuthenticationCapture
 	AccountRefreshed, AccountsSaved, ConfigSaved, RuntimePublished bool
+	accountOnly                                                    bool
 }
 
 func (AuthenticationMutationResult) MarshalJSON() ([]byte, error) {
@@ -34,7 +35,7 @@ func (AuthenticationMutationResult) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private authentication mutation result]"))
 }
 func (r AuthenticationMutationResult) RuntimeSnapshot() (RuntimeSnapshot, bool) {
-	return r.After.runtime, r.RuntimePublished && r.After.inputs.valid && r.After.runtime.publicationStore != nil
+	return r.After.runtime, (r.RuntimePublished || r.accountOnly && r.AccountsSaved) && r.After.inputs.valid && r.After.runtime.publicationStore != nil
 }
 
 type authenticationAdmission struct {
@@ -167,6 +168,10 @@ func (s *ConfigStore) validateAuthenticationAdmissionLocked(ctx context.Context,
 }
 
 func (s *ConfigStore) mutateAuthentication(ctx context.Context, scope Scope, before AuthenticationCapture, owner providerregistry.RegistrationOwner, accountID string) (result AuthenticationMutationResult, err error) {
+	return s.mutateAuthenticationChange(ctx, scope, before, owner, accountID, "")
+}
+
+func (s *ConfigStore) mutateAuthenticationChange(ctx context.Context, scope Scope, before AuthenticationCapture, owner providerregistry.RegistrationOwner, accountID, removeID string) (result AuthenticationMutationResult, err error) {
 	if err := s.lockAuthenticationWrite(ctx); err != nil {
 		return result, err
 	}
@@ -325,6 +330,8 @@ func (s *ConfigStore) mutateAuthentication(ctx context.Context, scope Scope, bef
 	}
 	var pending *accounts.PendingChange
 	switch {
+	case removeID != "":
+		pending, err = before.accounts.BeginRemove(ctx, owner.AccountNamespace, removeID)
 	case selected != nil:
 		pending, err = before.accounts.BeginSwitch(ctx, owner.AccountNamespace, accountID)
 	case owner.AccountNamespace != "":

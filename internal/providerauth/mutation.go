@@ -24,12 +24,13 @@ type authenticationMutator interface {
 }
 
 type mutationRequest struct {
-	operationID string
-	target      Target
-	accountID   string
-	logout      bool
-	checkID     string
-	loginID     string
+	operationID      string
+	target           Target
+	accountID        string
+	removedAccountID string
+	logout           bool
+	checkID          string
+	loginID          string
 }
 
 type mutationReceipt struct {
@@ -38,6 +39,7 @@ type mutationReceipt struct {
 	after         config.AuthenticationCapture
 	runtime       config.RuntimeSnapshot
 	originalOwner providerregistry.RegistrationOwner
+	removal       *removalIntent
 	err           error
 }
 
@@ -88,7 +90,7 @@ func (s *Service) logout(ctx context.Context, request LogoutRequest, accepted *c
 func (s *Service) mutate(ctx context.Context, request mutationRequest, accepted *config.RemoteRuntimeProposal, view *config.Config) (MutationResult, error) {
 	ctx, done := s.operationContext(ctx)
 	defer done()
-	initial := MutationResult{Outcome: MutationOutcome{OperationID: request.operationID, Previous: request.target}}
+	initial := MutationResult{Outcome: MutationOutcome{OperationID: request.operationID, RemovedAccountID: request.removedAccountID, Previous: request.target}}
 	if request.target.WorkspaceID != s.workspaceID || request.target.Generation.Epoch != s.epoch {
 		return initial, ErrStale
 	}
@@ -150,13 +152,26 @@ func (s *Service) mutate(ctx context.Context, request mutationRequest, accepted 
 	// Capture provenance at admission, before the transaction can change files
 	// or fail without a coherent After. Never derive this from a later capture.
 	receipt := mutationReceipt{request: request, originalOwner: owner}
+	if request.removedAccountID != "" {
+		active, successor, selectErr := before.RemovalSelection(owner, request.removedAccountID)
+		if selectErr != nil {
+			return initial, safeMutationError(selectErr)
+		}
+		receipt.removal = &removalIntent{successor: successor, active: active == request.removedAccountID}
+	}
 	var transaction config.AuthenticationMutationResult
-	if request.logout {
+	if request.removedAccountID != "" {
+		remover, ok := s.mutations.(authenticationRemover)
+		if !ok {
+			return initial, errors.New("authentication removal service is unavailable")
+		}
+		transaction, err = remover.RemoveAuthenticationAccount(ctx, config.ScopeGlobal, before, owner, request.removedAccountID)
+	} else if request.logout {
 		transaction, err = s.mutations.LogoutAuthentication(ctx, config.ScopeGlobal, before, owner)
 	} else {
 		transaction, err = s.mutations.SwitchAuthenticationAccount(ctx, config.ScopeGlobal, before, owner, request.accountID)
 	}
-	receipt.outcome = MutationOutcome{OperationID: request.operationID, Previous: request.target, Progress: MutationProgress{
+	receipt.outcome = MutationOutcome{OperationID: request.operationID, RemovedAccountID: request.removedAccountID, Previous: request.target, Progress: MutationProgress{
 		AccountRefreshed: transaction.AccountRefreshed, AccountsSaved: transaction.AccountsSaved,
 		ConfigSaved: transaction.ConfigSaved, RuntimePublished: transaction.RuntimePublished,
 	}}
@@ -180,6 +195,9 @@ func (s *Service) mutate(ctx context.Context, request mutationRequest, accepted 
 		if observeErr == nil {
 			receipt.outcome.Change = &Change{OperationID: request.operationID, Previous: request.target, Current: current, Models: publicModels(runtime)}
 			observeErr = validateMutationEffect(request, receipt.outcome)
+			if observeErr == nil && request.removedAccountID != "" {
+				observeErr = validateCapturedRemoval(before, owner, receipt.outcome)
+			}
 		}
 	}
 	if observeErr != nil {
@@ -210,9 +228,9 @@ func (s *Service) retain(receipt mutationReceipt) {
 func (s *Service) replay(ctx context.Context, receipt mutationReceipt) (MutationResult, error) {
 	outcome, err := cloneMutationOutcome(receipt.outcome)
 	if err != nil {
-		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, LoginID: receipt.request.loginID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner}, safeMutationError(err)
+		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, LoginID: receipt.request.loginID, RemovedAccountID: receipt.request.removedAccountID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner, removal: receipt.removal}, safeMutationError(err)
 	}
-	result := MutationResult{Outcome: outcome, originalOwner: receipt.originalOwner}
+	result := MutationResult{Outcome: outcome, originalOwner: receipt.originalOwner, removal: receipt.removal}
 	if receipt.err != nil {
 		return result, receipt.err
 	}
@@ -262,7 +280,7 @@ func validateMutationEffect(request mutationRequest, outcome MutationOutcome) er
 	if err := outcome.Validate(); err != nil {
 		return err
 	}
-	if outcome.Change == nil || outcome.Change.OperationID != request.operationID || outcome.Change.Previous != request.target || outcome.CheckID != request.checkID || outcome.LoginID != request.loginID {
+	if outcome.Change == nil || outcome.Change.OperationID != request.operationID || outcome.Change.Previous != request.target || outcome.CheckID != request.checkID || outcome.LoginID != request.loginID || outcome.RemovedAccountID != request.removedAccountID {
 		return errors.New("authentication transaction has no matching change receipt")
 	}
 	current := outcome.Change.Current
@@ -271,6 +289,9 @@ func validateMutationEffect(request mutationRequest, outcome MutationOutcome) er
 	}
 	if request.loginID != "" {
 		return validateOAuthLoginEffect(outcome)
+	}
+	if request.removedAccountID != "" {
+		return validateRemovalEffect(outcome)
 	}
 	if request.logout {
 		if current.Status.ActiveAccountID != "" || current.Status.AccountState != "none" || len(current.Accounts) != 0 {

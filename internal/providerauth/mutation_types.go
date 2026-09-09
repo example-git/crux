@@ -60,13 +60,14 @@ type Change struct {
 // superseded Change is historical evidence and cannot authorize runtime/cache
 // adoption. Owning clients still require their separate remote acknowledgement.
 type MutationOutcome struct {
-	OperationID string           `json:"operation_id"`
-	CheckID     string           `json:"check_id,omitempty"`
-	LoginID     string           `json:"login_id,omitempty"`
-	Previous    Target           `json:"previous"`
-	Progress    MutationProgress `json:"progress"`
-	Change      *Change          `json:"change,omitempty"`
-	Superseded  bool             `json:"superseded"`
+	OperationID      string           `json:"operation_id"`
+	CheckID          string           `json:"check_id,omitempty"`
+	LoginID          string           `json:"login_id,omitempty"`
+	RemovedAccountID string           `json:"removed_account_id,omitempty"`
+	Previous         Target           `json:"previous"`
+	Progress         MutationProgress `json:"progress"`
+	Change           *Change          `json:"change,omitempty"`
+	Superseded       bool             `json:"superseded"`
 }
 
 // MutationResult retains private runtime authority. Serialize Outcome explicitly
@@ -77,6 +78,7 @@ type MutationResult struct {
 	after         config.AuthenticationCapture
 	current       bool
 	originalOwner providerregistry.RegistrationOwner
+	removal       *removalIntent
 }
 
 func (MutationResult) MarshalJSON() ([]byte, error) {
@@ -118,7 +120,7 @@ func (r MutationResult) AuthenticationCapture() (config.AuthenticationCapture, b
 }
 
 func (r MutationResult) hasCurrentReceipt() bool {
-	return r.current && r.Outcome.Change != nil && r.Outcome.Progress.RuntimePublished && !r.Outcome.Superseded
+	return r.current && r.Outcome.Change != nil && (r.Outcome.Progress.RuntimePublished || r.Outcome.RemovedAccountID != "" && r.Outcome.Progress.AccountsSaved) && !r.Outcome.Superseded
 }
 
 var (
@@ -198,6 +200,9 @@ func (o MutationOutcome) Validate() error {
 	if o.LoginID != "" && (!validOperationID(o.LoginID) || o.CheckID != "") {
 		return errors.New("invalid authentication outcome login")
 	}
+	if o.RemovedAccountID != "" && (!validText(o.RemovedAccountID, 4096, true) || o.CheckID != "" || o.LoginID != "") {
+		return errors.New("invalid authentication outcome removal")
+	}
 	if err := o.Previous.Validate(); err != nil {
 		return err
 	}
@@ -207,7 +212,7 @@ func (o MutationOutcome) Validate() error {
 		}
 		return nil // Partial publication may have no coherent post-observation.
 	}
-	if !o.Progress.RuntimePublished {
+	if !o.Progress.RuntimePublished && !(o.RemovedAccountID != "" && o.Progress.AccountsSaved && !o.Progress.AccountRefreshed && !o.Progress.ConfigSaved) {
 		return errors.New("authentication change has no completed local publication")
 	}
 	if o.Change.OperationID != o.OperationID || o.Change.Previous != o.Previous {
@@ -234,7 +239,7 @@ func (o MutationOutcome) validateRequest(request mutationRequest) error {
 	if err := o.Validate(); err != nil {
 		return err
 	}
-	if o.OperationID != request.operationID || o.Previous != request.target || o.CheckID != request.checkID || o.LoginID != request.loginID {
+	if o.OperationID != request.operationID || o.Previous != request.target || o.CheckID != request.checkID || o.LoginID != request.loginID || o.RemovedAccountID != request.removedAccountID {
 		return errors.New("authentication outcome does not match the requested operation")
 	}
 	if o.Change == nil {
