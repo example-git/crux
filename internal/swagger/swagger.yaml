@@ -94,12 +94,71 @@ definitions:
       small:
         $ref: '#/definitions/config.OwnedSelectedModel'
     type: object
+  config.ClientRefreshCompletion:
+    properties:
+      credential_id:
+        type: string
+      digest:
+        type: string
+      failed:
+        type: boolean
+      request_id:
+        type: string
+      revision:
+        type: integer
+    type: object
   config.Completions:
     properties:
       max_depth:
         type: integer
       max_items:
         type: integer
+    type: object
+  config.ConnectionProbeKind:
+    enum:
+    - not-probed
+    - format-only
+    - http-attempt
+    - http-response
+    - unsupported
+    type: string
+    x-enum-varnames:
+    - ConnectionProbeNotProbed
+    - ConnectionProbeFormatOnly
+    - ConnectionProbeHTTPAttempt
+    - ConnectionProbeHTTPResponse
+    - ConnectionProbeUnsupported
+  config.ConnectionProbePolicy:
+    enum:
+    - none
+    - sk-prefix
+    - http-200
+    - non-401
+    - manifest-http-200
+    type: string
+    x-enum-varnames:
+    - ConnectionProbePolicyNone
+    - ConnectionProbePolicySKPrefix
+    - ConnectionProbePolicyHTTP200
+    - ConnectionProbePolicyNon401
+    - ConnectionProbePolicyManifestHTTP200
+  config.ConnectionProbeResult:
+    properties:
+      authorization_overridden:
+        type: boolean
+      entered_key_in_authorization:
+        description: |-
+          Entered key means the resolved APIKey from the supplied ProviderConfig.
+          These fields describe the initial request's construction, not delivery or
+          headers on a redirected request. Any explicit Authorization override is
+          reported conservatively even if its bytes happen to equal the entered key.
+        type: boolean
+      http_status:
+        type: integer
+      kind:
+        $ref: '#/definitions/config.ConnectionProbeKind'
+      policy:
+        $ref: '#/definitions/config.ConnectionProbePolicy'
     type: object
   config.ForwardedAccount:
     properties:
@@ -186,6 +245,75 @@ definitions:
   config.LSPs:
     additionalProperties:
       $ref: '#/definitions/config.LSPConfig'
+    type: object
+  config.LocalAuthenticationProgress:
+    properties:
+      account_refreshed:
+        type: boolean
+      accounts_saved:
+        type: boolean
+      config_saved:
+        type: boolean
+      runtime_published:
+        type: boolean
+    type: object
+  config.LocalAuthenticationRepairResult:
+    properties:
+      abandoned:
+        type: boolean
+      accounts_matched:
+        type: boolean
+      accounts_written:
+        type: boolean
+      config_matched:
+        type: boolean
+      config_written:
+        type: boolean
+      needs_reload:
+        type: boolean
+      summary:
+        $ref: '#/definitions/config.LocalAuthenticationSummary'
+    type: object
+  config.LocalAuthenticationSummary:
+    properties:
+      abandoned:
+        type: boolean
+      account_id:
+        type: string
+      action:
+        type: string
+      coherent:
+        type: boolean
+      finished:
+        type: boolean
+      needs_reload:
+        type: boolean
+      no_effects:
+        type: boolean
+      operation_id:
+        type: string
+      original:
+        $ref: '#/definitions/config.LocalAuthenticationProgress'
+      provider_id:
+        type: string
+      refresh_observed:
+        type: boolean
+      refresh_started:
+        type: boolean
+      removed_account_id:
+        type: string
+      repair_accounts_written:
+        type: boolean
+      repair_config_written:
+        type: boolean
+      repair_ready:
+        type: boolean
+      repair_started:
+        type: boolean
+      revision:
+        type: integer
+      workspace_id:
+        type: string
     type: object
   config.MCPConfig:
     properties:
@@ -274,6 +402,15 @@ definitions:
   config.MCPs:
     additionalProperties:
       $ref: '#/definitions/config.MCPConfig'
+    type: object
+  config.NativeIdentity:
+    properties:
+      originator:
+        type: string
+      user_agent:
+        type: string
+      version:
+        type: string
     type: object
   config.OwnedSelectedModel:
     properties:
@@ -421,6 +558,240 @@ definitions:
       version:
         type: string
     type: object
+  config.ProviderUsageRequest:
+    properties:
+      digest:
+        type: string
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
+      revision:
+        type: integer
+    type: object
+  config.ProviderUsageResult:
+    properties:
+      digest:
+        type: string
+      revision:
+        type: integer
+      usage:
+        $ref: '#/definitions/usage.Usage'
+    type: object
+  config.RemoteAccountIdentity:
+    properties:
+      account_id:
+        type: string
+      generation:
+        type: integer
+      provider_id:
+        type: string
+    type: object
+  config.RemoteAuthority:
+    properties:
+      accounts:
+        items:
+          $ref: '#/definitions/config.RemoteAccountIdentity'
+        type: array
+      digest:
+        type: string
+      mode:
+        type: string
+      principal:
+        type: string
+      revision:
+        type: integer
+    type: object
+  config.RemoteCredentialBinding:
+    properties:
+      account:
+        $ref: '#/definitions/accounts.Entry'
+      api_key:
+        type: string
+      generation:
+        type: integer
+      oauth_token:
+        $ref: '#/definitions/oauth.Token'
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
+      unavailable:
+        type: boolean
+    type: object
+  config.RemoteImageBrowserCredential:
+    properties:
+      cookies:
+        items:
+          $ref: '#/definitions/cookieutil.BrowserCookie'
+        type: array
+      credential_id:
+        type: string
+      owner:
+        $ref: '#/definitions/providerplugin.ImageOwner'
+      profile_id:
+        type: string
+    type: object
+  config.RemoteImageClientIdentity:
+    properties:
+      arch:
+        type: string
+      name:
+        type: string
+      os:
+        type: string
+      owner:
+        $ref: '#/definitions/providerplugin.ImageOwner'
+      user_agent:
+        type: string
+      version:
+        type: string
+    type: object
+  config.RemoteProviderDefinition:
+    properties:
+      bundle_digest:
+        type: string
+      config:
+        $ref: '#/definitions/config.ProviderConfig'
+      gemini_project_id:
+        type: string
+      native_identity:
+        $ref: '#/definitions/config.NativeIdentity'
+    type: object
+  config.RemoteRuntimeControls:
+    properties:
+      analysis_effort:
+        type: string
+      codex_compaction_v2:
+        type: boolean
+      disable_auto_summarize:
+        type: boolean
+      disabled_instruction_sections:
+        items:
+          type: string
+        type: array
+      instruction_mode:
+        type: string
+      response_verbosity:
+        type: string
+      summarization_context_cap:
+        type: integer
+      summarization_fast_mode:
+        type: boolean
+      summarization_max_tokens:
+        type: integer
+    type: object
+  config.RemoteRuntimeProposal:
+    properties:
+      bundles:
+        items:
+          $ref: '#/definitions/providerplugin.TransportBundle'
+        type: array
+      controls:
+        $ref: '#/definitions/config.RemoteRuntimeControls'
+      credential_environment:
+        additionalProperties:
+          type: string
+        type: object
+      credentials:
+        items:
+          $ref: '#/definitions/config.RemoteCredentialBinding'
+        type: array
+      digest:
+        type: string
+      image_browser_credentials:
+        items:
+          $ref: '#/definitions/config.RemoteImageBrowserCredential'
+        type: array
+      image_client_identities:
+        items:
+          $ref: '#/definitions/config.RemoteImageClientIdentity'
+        type: array
+      images:
+        $ref: '#/definitions/config.ImageConfiguration'
+      models:
+        additionalProperties:
+          $ref: '#/definitions/config.SelectedModel'
+        type: object
+      provider_context_instructions:
+        additionalProperties:
+          type: string
+        type: object
+      providers:
+        items:
+          $ref: '#/definitions/config.RemoteProviderDefinition'
+        type: array
+      revision:
+        type: integer
+      version:
+        type: integer
+    type: object
+  config.RuntimeControlOverride:
+    properties:
+      config_key:
+        type: string
+      option:
+        $ref: '#/definitions/providerregistry.HostRuntimeControl'
+      value:
+        items:
+          type: integer
+        type: array
+    type: object
+  config.RuntimeControlSelection:
+    properties:
+      model_id:
+        type: string
+      model_type:
+        $ref: '#/definitions/config.SelectedModelType'
+    type: object
+  config.RuntimeControlSource:
+    properties:
+      key:
+        type: string
+      kind:
+        type: string
+      scope:
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
+    type: object
+  config.RuntimeControlState:
+    properties:
+      binding:
+        $ref: '#/definitions/providerregistry.RuntimeControlBinding'
+      effective:
+        $ref: '#/definitions/config.RuntimeControlValue'
+      global_override:
+        $ref: '#/definitions/config.RuntimeControlOverride'
+      models:
+        $ref: '#/definitions/config.AgentModelState'
+      runtime_dependent:
+        type: boolean
+      scope:
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
+      scoped:
+        $ref: '#/definitions/config.RuntimeControlValue'
+      scoped_known:
+        type: boolean
+      source:
+        $ref: '#/definitions/config.RuntimeControlSource'
+      target:
+        $ref: '#/definitions/config.RuntimeControlTarget'
+    type: object
+  config.RuntimeControlTarget:
+    properties:
+      control_id:
+        type: string
+      descriptor_digest:
+        type: string
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
+      selection:
+        $ref: '#/definitions/config.RuntimeControlSelection'
+    type: object
+  config.RuntimeControlValue:
+    properties:
+      present:
+        type: boolean
+      value:
+        items:
+          type: integer
+        type: array
+    type: object
   config.SelectedModel:
     properties:
       frequency_penalty:
@@ -473,6 +844,8 @@ definitions:
         type: boolean
       completions:
         $ref: '#/definitions/config.Completions'
+      delivery_mode:
+        type: string
       diff_mode:
         type: string
       scrollbar:
@@ -521,6 +894,34 @@ definitions:
         $ref: '#/definitions/config.ToolLs'
       search:
         $ref: '#/definitions/config.ToolSearch'
+    type: object
+  connection.AuthorizationProof:
+    properties:
+      principal:
+        type: string
+      server_fingerprint:
+        type: string
+      version:
+        type: integer
+    type: object
+  cookieutil.BrowserCookie:
+    properties:
+      domain:
+        type: string
+      expires:
+        type: integer
+      host:
+        type: string
+      http_only:
+        type: boolean
+      name:
+        type: string
+      path:
+        type: string
+      secure:
+        type: boolean
+      value:
+        type: string
     type: object
   csync.Map-string-config_ProviderConfig:
     type: object
@@ -574,6 +975,8 @@ definitions:
         type: string
       auto_lsp:
         type: boolean
+      codex_compaction_v2:
+        type: boolean
       context_paths:
         items:
           type: string
@@ -623,6 +1026,8 @@ definitions:
             "native"  - tooling without project context
           Dynamic runtime, memory, MCP, and provider context remain independent.
         type: string
+      network_tracing:
+        type: boolean
       notifications:
         type: string
       progress:
@@ -633,6 +1038,12 @@ definitions:
         items:
           type: string
         type: array
+      summarization_context_cap:
+        type: integer
+      summarization_fast_mode:
+        type: boolean
+      summarization_max_tokens:
+        type: integer
       tui:
         $ref: '#/definitions/config.TUIOptions'
     type: object
@@ -768,6 +1179,8 @@ definitions:
         items:
           $ref: '#/definitions/proto.Attachment'
         type: array
+      delivery_mode:
+        type: string
       permission_mode:
         $ref: '#/definitions/proto.AgentPermissionMode'
       prompt:
@@ -823,6 +1236,8 @@ definitions:
         items:
           $ref: '#/definitions/proto.Todo'
         type: array
+      unseen_local_tokens:
+        type: integer
       updated_at:
         type: integer
     type: object
@@ -843,6 +1258,69 @@ definitions:
         type: string
       mime_type:
         type: string
+    type: object
+  proto.AuthenticationProviderSurface:
+    properties:
+      authentication:
+        items:
+          $ref: '#/definitions/providerregistry.Authentication'
+        type: array
+      availability:
+        type: string
+      available:
+        type: boolean
+      brand:
+        $ref: '#/definitions/providerregistry.Brand'
+      configuration_fields:
+        additionalProperties:
+          $ref: '#/definitions/manifest.FieldDisplay'
+        type: object
+      configuration_schema:
+        additionalProperties: {}
+        type: object
+      default_large_model:
+        type: string
+      default_small_model:
+        type: string
+      description:
+        type: string
+      diagnostic:
+        type: string
+      flat_rate:
+        type: boolean
+      id:
+        type: string
+      images:
+        $ref: '#/definitions/manifest.ImagePolicy'
+      instructions:
+        $ref: '#/definitions/providerregistry.InstructionSurface'
+      models:
+        items:
+          $ref: '#/definitions/catalog.Model'
+        type: array
+      name:
+        type: string
+      order:
+        type: integer
+      owner:
+        $ref: '#/definitions/providerauth.Owner'
+      runtime_controls:
+        items:
+          $ref: '#/definitions/providerregistry.RuntimeControlSurface'
+        type: array
+      usage_available:
+        type: boolean
+    type: object
+  proto.AuthenticationWorkspaceView:
+    properties:
+      config:
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Config'
+      id:
+        type: string
+      provider_surfaces:
+        items:
+          $ref: '#/definitions/proto.AuthenticationProviderSurface'
+        type: array
     type: object
   proto.ConfigCompactRequest:
     properties:
@@ -901,6 +1379,69 @@ definitions:
         $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
       value: {}
     type: object
+  proto.CreateWorkspaceRequest:
+    properties:
+      authority:
+        $ref: '#/definitions/config.RemoteAuthority'
+      authority_mode:
+        type: string
+      channels:
+        description: |-
+          Channels lists the MCP servers opted in as channels for this workspace
+          (from the --channels flag).
+        items:
+          type: string
+        type: array
+      client_id:
+        type: string
+      config:
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Config'
+      connected_clients:
+        type: integer
+      data_dir:
+        type: string
+      debug:
+        type: boolean
+      env:
+        items:
+          type: string
+        type: array
+      forwarded_accounts:
+        additionalProperties:
+          $ref: '#/definitions/config.ForwardedAccount'
+        type: object
+      forwarded_providers:
+        additionalProperties:
+          $ref: '#/definitions/config.ProviderConfig'
+        type: object
+      id:
+        type: string
+      path:
+        type: string
+      provider_surfaces:
+        description: |-
+          ProviderSurfaces is the execution host's redacted registry-generated
+          provider presentation metadata.
+        items:
+          $ref: '#/definitions/proto.ProviderSurface'
+        type: array
+      requested_data_dir:
+        type: string
+      runtime:
+        $ref: '#/definitions/config.RemoteRuntimeProposal'
+      skills:
+        description: |-
+          Skills carries the snapshot of skill discovery state at workspace
+          creation time. Subsequent updates flow through the SSE event
+          stream.
+        items:
+          $ref: '#/definitions/proto.SkillState'
+        type: array
+      version:
+        type: string
+      yolo:
+        type: boolean
+    type: object
   proto.CurrentSession:
     properties:
       session_id:
@@ -937,11 +1478,15 @@ definitions:
       session_id:
         type: string
     type: object
+  proto.ImportCopilotRequest:
+    properties:
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
+    type: object
   proto.ImportCopilotResponse:
     properties:
       success:
         type: boolean
-      token: {}
     type: object
   proto.LSPClientInfo:
     properties:
@@ -1095,6 +1640,11 @@ definitions:
     - User
     - System
     - Tool
+  proto.ModelOverridesRequest:
+    properties:
+      state:
+        $ref: '#/definitions/config.AgentModelState'
+    type: object
   proto.PermissionAction:
     enum:
     - allow
@@ -1213,6 +1763,221 @@ definitions:
       needs_init:
         type: boolean
     type: object
+  proto.ProviderAPIKeyCheckRequest:
+    properties:
+      check_id:
+        type: string
+      credential_id:
+        type: string
+      source:
+        type: string
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  proto.ProviderAPIKeyCheckResponse:
+    properties:
+      error:
+        $ref: '#/definitions/proto.ProviderAuthenticationError'
+      outcome:
+        $ref: '#/definitions/providerauth.APIKeyCheckOutcome'
+    type: object
+  proto.ProviderAPIKeySaveRequest:
+    properties:
+      check_id:
+        type: string
+      operation_id:
+        type: string
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  proto.ProviderAccountRemoveRequest:
+    properties:
+      account_id:
+        type: string
+      operation_id:
+        type: string
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  proto.ProviderAccountSwitchRequest:
+    properties:
+      account_id:
+        type: string
+      operation_id:
+        type: string
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  proto.ProviderAccountsState:
+    properties:
+      accounts:
+        items:
+          $ref: '#/definitions/providerauth.AccountSummary'
+        type: array
+      status:
+        $ref: '#/definitions/providerauth.Status'
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  proto.ProviderAuthenticationError:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  proto.ProviderAuthenticationMutationResponse:
+    properties:
+      error:
+        $ref: '#/definitions/proto.ProviderAuthenticationError'
+      outcome:
+        $ref: '#/definitions/providerauth.MutationOutcome'
+      workspace:
+        $ref: '#/definitions/proto.AuthenticationWorkspaceView'
+    type: object
+  proto.ProviderAuthenticationSnapshot:
+    properties:
+      generation:
+        $ref: '#/definitions/providerauth.Generation'
+      providers:
+        items:
+          $ref: '#/definitions/providerauth.Status'
+        type: array
+      workspace_id:
+        type: string
+    type: object
+  proto.ProviderAuthenticationTarget:
+    properties:
+      generation:
+        $ref: '#/definitions/providerauth.Generation'
+      owner:
+        $ref: '#/definitions/providerauth.Owner'
+      workspace_id:
+        type: string
+    type: object
+  proto.ProviderLocalRepairError:
+    properties:
+      code:
+        type: string
+      message:
+        type: string
+    type: object
+  proto.ProviderLocalRepairRequest:
+    properties:
+      abandon:
+        type: boolean
+      apply:
+        type: boolean
+      operation_id:
+        type: string
+      operation_workspace_id:
+        type: string
+      revision:
+        type: integer
+      workspace_id:
+        type: string
+    type: object
+  proto.ProviderLocalRepairResponse:
+    properties:
+      error:
+        $ref: '#/definitions/proto.ProviderLocalRepairError'
+      request:
+        $ref: '#/definitions/providerauth.LocalRepairRequest'
+      result:
+        $ref: '#/definitions/config.LocalAuthenticationRepairResult'
+    type: object
+  proto.ProviderLogoutRequest:
+    properties:
+      operation_id:
+        type: string
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  proto.ProviderOAuthLoginAbandonRequest:
+    properties:
+      original_operation_id:
+        type: string
+      original_workspace_id:
+        type: string
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  proto.ProviderOAuthLoginAbandonResponse:
+    properties:
+      error:
+        $ref: '#/definitions/proto.ProviderAuthenticationError'
+      outcome:
+        $ref: '#/definitions/providerauth.OAuthLoginAbandonOutcome'
+    type: object
+  proto.ProviderOAuthLoginBindRequest:
+    properties:
+      binding_id:
+        type: string
+      login:
+        $ref: '#/definitions/providerauth.OAuthLoginRef'
+      port:
+        type: integer
+    type: object
+  proto.ProviderOAuthLoginCodeRequest:
+    properties:
+      input:
+        type: string
+      login:
+        $ref: '#/definitions/providerauth.OAuthLoginRef'
+      submission_id:
+        type: string
+    type: object
+  proto.ProviderOAuthLoginRecoveryListResponse:
+    properties:
+      error:
+        $ref: '#/definitions/proto.ProviderAuthenticationError'
+      list:
+        $ref: '#/definitions/providerauth.OAuthLoginRecoveryList'
+    type: object
+  proto.ProviderOAuthLoginRecoveryRequest:
+    properties:
+      login:
+        $ref: '#/definitions/providerauth.OAuthLoginRequest'
+      original_operation_id:
+        type: string
+      original_workspace_id:
+        type: string
+    type: object
+  proto.ProviderOAuthLoginRequest:
+    properties:
+      login_id:
+        type: string
+      operation_id:
+        type: string
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  proto.ProviderOAuthLoginResponse:
+    properties:
+      binding_id:
+        type: string
+      error:
+        $ref: '#/definitions/proto.ProviderAuthenticationError'
+      login:
+        $ref: '#/definitions/providerauth.OAuthLoginRef'
+      port:
+        type: integer
+      recovery_operation_id:
+        type: string
+      recovery_workspace_id:
+        type: string
+      state:
+        $ref: '#/definitions/providerauth.OAuthLoginState'
+      submission_id:
+        type: string
+    type: object
+  proto.ProviderOAuthLoginWaitRequest:
+    properties:
+      after:
+        type: integer
+      login:
+        $ref: '#/definitions/providerauth.OAuthLoginRef'
+    type: object
   proto.ProviderSurface:
     properties:
       authentication:
@@ -1265,6 +2030,24 @@ definitions:
       usage_available:
         type: boolean
     type: object
+  proto.ProviderToolingRequest:
+    properties:
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
+      profile:
+        type: string
+      scope:
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
+    type: object
+  proto.ProviderToolingState:
+    properties:
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
+      profile:
+        type: string
+      scope:
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
+    type: object
   proto.QuestionAnswer:
     properties:
       batch_request_id:
@@ -1298,6 +2081,8 @@ definitions:
     type: object
   proto.QueuedPrompt:
     properties:
+      delivery_mode:
+        type: string
       prompt:
         type: string
       submission_id:
@@ -1316,6 +2101,43 @@ definitions:
         type: array
       result:
         $ref: '#/definitions/proto.SkillReadResult'
+    type: object
+  proto.RemoteRuntimeCapabilities:
+    properties:
+      compiler:
+        type: string
+      disconnect_grace_millis:
+        type: integer
+      host_version:
+        type: string
+      max_bundles:
+        type: integer
+      max_providers:
+        type: integer
+      max_request_bytes:
+        type: integer
+      principal:
+        type: string
+      protocol:
+        type: string
+      runtime_version:
+        type: integer
+      workspace_sharing:
+        type: string
+    type: object
+  proto.RemoveProviderToolingRequest:
+    properties:
+      owner:
+        $ref: '#/definitions/providerregistry.RegistrationOwner'
+      scope:
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
+    type: object
+  proto.RuntimeControlRequest:
+    properties:
+      scope:
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
+      target:
+        $ref: '#/definitions/config.RuntimeControlTarget'
     type: object
   proto.ServerControl:
     properties:
@@ -1356,8 +2178,21 @@ definitions:
         items:
           $ref: '#/definitions/proto.Todo'
         type: array
+      unseen_local_tokens:
+        type: integer
       updated_at:
         type: integer
+    type: object
+  proto.SetRuntimeControlRequest:
+    properties:
+      scope:
+        $ref: '#/definitions/github_com_example-git_crux_internal_config.Scope'
+      target:
+        $ref: '#/definitions/config.RuntimeControlTarget'
+      value:
+        items:
+          type: integer
+        type: array
     type: object
   proto.ShellCommandRequest:
     properties:
@@ -1429,6 +2264,13 @@ definitions:
       status:
         type: string
     type: object
+  proto.UpdateRemoteRuntimeRequest:
+    properties:
+      expected_revision:
+        type: integer
+      runtime:
+        $ref: '#/definitions/config.RemoteRuntimeProposal'
+    type: object
   proto.VersionInfo:
     properties:
       build_id:
@@ -1444,6 +2286,8 @@ definitions:
     type: object
   proto.Workspace:
     properties:
+      authority:
+        $ref: '#/definitions/config.RemoteAuthority'
       channels:
         description: |-
           Channels lists the MCP servers opted in as channels for this workspace
@@ -1484,6 +2328,8 @@ definitions:
         items:
           $ref: '#/definitions/proto.ProviderSurface'
         type: array
+      requested_data_dir:
+        type: string
       skills:
         description: |-
           Skills carries the snapshot of skill discovery state at workspace
@@ -1497,6 +2343,328 @@ definitions:
       yolo:
         type: boolean
     type: object
+  providerauth.APIKeyCheckOutcome:
+    properties:
+      check_id:
+        type: string
+      checked_target:
+        $ref: '#/definitions/providerauth.Target'
+      credential_id:
+        type: string
+      pending_configuration:
+        type: boolean
+      previous:
+        $ref: '#/definitions/providerauth.Target'
+      probe:
+        $ref: '#/definitions/config.ConnectionProbeResult'
+      schema_only:
+        type: boolean
+    type: object
+  providerauth.AccountSummary:
+    properties:
+      active:
+        type: boolean
+      credential_state:
+        type: string
+      display_name:
+        type: string
+      expires_at:
+        description: Unix milliseconds; nonpositive means no recorded expiry.
+        type: integer
+      id:
+        type: string
+      refreshable:
+        type: boolean
+    type: object
+  providerauth.AccountsState:
+    properties:
+      accounts:
+        items:
+          $ref: '#/definitions/providerauth.AccountSummary'
+        type: array
+      status:
+        $ref: '#/definitions/providerauth.Status'
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  providerauth.Change:
+    properties:
+      current:
+        $ref: '#/definitions/providerauth.AccountsState'
+      models:
+        $ref: '#/definitions/providerauth.ModelState'
+      operation_id:
+        type: string
+      previous:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  providerauth.CredentialSlot:
+    properties:
+      configured:
+        type: boolean
+      id:
+        type: string
+      kind:
+        type: string
+      property:
+        type: string
+    type: object
+  providerauth.CredentialStatus:
+    properties:
+      kind:
+        type: string
+      refreshable:
+        type: boolean
+      state:
+        type: string
+    type: object
+  providerauth.Generation:
+    properties:
+      epoch:
+        type: string
+      sequence:
+        type: integer
+    type: object
+  providerauth.LocalRepairRequest:
+    properties:
+      abandon:
+        type: boolean
+      apply:
+        type: boolean
+      operation_id:
+        type: string
+      operation_workspace_id:
+        type: string
+      revision:
+        type: integer
+      workspace_id:
+        type: string
+    type: object
+  providerauth.ModelState:
+    properties:
+      large:
+        $ref: '#/definitions/providerauth.OwnedModelState'
+      small:
+        $ref: '#/definitions/providerauth.OwnedModelState'
+    type: object
+  providerauth.MutationOutcome:
+    properties:
+      change:
+        $ref: '#/definitions/providerauth.Change'
+      check_id:
+        type: string
+      credential_id:
+        type: string
+      login_id:
+        type: string
+      operation_id:
+        type: string
+      previous:
+        $ref: '#/definitions/providerauth.Target'
+      progress:
+        $ref: '#/definitions/providerauth.MutationProgress'
+      removed_account_id:
+        type: string
+      superseded:
+        type: boolean
+    type: object
+  providerauth.MutationProgress:
+    properties:
+      account_refreshed:
+        type: boolean
+      accounts_saved:
+        type: boolean
+      config_saved:
+        type: boolean
+      runtime_published:
+        type: boolean
+    type: object
+  providerauth.OAuthLoginAbandonOutcome:
+    properties:
+      abandoned:
+        type: boolean
+      exchange_outcome:
+        type: string
+      request:
+        $ref: '#/definitions/providerauth.OAuthLoginAbandonRequest'
+    type: object
+  providerauth.OAuthLoginAbandonRequest:
+    properties:
+      original_operation_id:
+        type: string
+      original_workspace_id:
+        type: string
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  providerauth.OAuthLoginCallback:
+    properties:
+      mode:
+        type: string
+      path:
+        type: string
+      port:
+        type: integer
+    type: object
+  providerauth.OAuthLoginPhase:
+    enum:
+    - preparing
+    - waiting-for-loopback
+    - waiting-for-browser
+    - waiting-for-code
+    - waiting-for-device
+    - authorizing
+    - authorized
+    - committing
+    - complete
+    - canceled
+    - expired
+    - failed
+    type: string
+    x-enum-varnames:
+    - OAuthLoginPreparing
+    - OAuthLoginWaitingLoopback
+    - OAuthLoginWaitingBrowser
+    - OAuthLoginWaitingCode
+    - OAuthLoginWaitingDevice
+    - OAuthLoginAuthorizing
+    - OAuthLoginAuthorized
+    - OAuthLoginCommitting
+    - OAuthLoginComplete
+    - OAuthLoginCanceled
+    - OAuthLoginExpired
+    - OAuthLoginFailed
+  providerauth.OAuthLoginRecordedResult:
+    properties:
+      abandoned:
+        type: boolean
+      operation_id:
+        type: string
+      original_workspace_id:
+        type: string
+      state:
+        type: string
+    type: object
+  providerauth.OAuthLoginRecovery:
+    properties:
+      original_operation_id:
+        type: string
+      original_workspace_id:
+        type: string
+    type: object
+  providerauth.OAuthLoginRecoveryList:
+    properties:
+      results:
+        items:
+          $ref: '#/definitions/providerauth.OAuthLoginRecordedResult'
+        type: array
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  providerauth.OAuthLoginRef:
+    properties:
+      login_id:
+        type: string
+      operation_id:
+        type: string
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  providerauth.OAuthLoginRequest:
+    properties:
+      login_id:
+        type: string
+      operation_id:
+        type: string
+      target:
+        $ref: '#/definitions/providerauth.Target'
+    type: object
+  providerauth.OAuthLoginState:
+    properties:
+      authorization_url:
+        type: string
+      callback:
+        $ref: '#/definitions/providerauth.OAuthLoginCallback'
+      expires_at:
+        description: Unix milliseconds; zero means no declared deadline.
+        type: integer
+      login:
+        $ref: '#/definitions/providerauth.OAuthLoginRef'
+      phase:
+        $ref: '#/definitions/providerauth.OAuthLoginPhase'
+      recovery:
+        $ref: '#/definitions/providerauth.OAuthLoginRecovery'
+      sequence:
+        type: integer
+      user_code:
+        type: string
+    type: object
+  providerauth.OwnedModelState:
+    properties:
+      model:
+        $ref: '#/definitions/config.SelectedModel'
+      owner:
+        $ref: '#/definitions/providerauth.Owner'
+    type: object
+  providerauth.Owner:
+    properties:
+      compatibility_adapter:
+        $ref: '#/definitions/providerregistry.Construction'
+      construction:
+        $ref: '#/definitions/providerregistry.Construction'
+      has_manifest:
+        type: boolean
+      has_oauth:
+        type: boolean
+      has_preset:
+        type: boolean
+      manifest_id:
+        type: string
+      manifest_version:
+        type: string
+      oauth_adapter:
+        $ref: '#/definitions/providerregistry.LoginAdapter'
+      oauth_flow_id:
+        type: string
+      preset_digest:
+        type: string
+      preset_id:
+        type: string
+      preset_version:
+        type: string
+      provider_id:
+        type: string
+    type: object
+  providerauth.Status:
+    properties:
+      account_state:
+        type: string
+      active_account_id:
+        type: string
+      configured:
+        type: boolean
+      credential_slots:
+        items:
+          $ref: '#/definitions/providerauth.CredentialSlot'
+        type: array
+      credentials:
+        items:
+          $ref: '#/definitions/providerauth.CredentialStatus'
+        type: array
+      disabled:
+        type: boolean
+      owner:
+        $ref: '#/definitions/providerauth.Owner'
+    type: object
+  providerauth.Target:
+    properties:
+      generation:
+        $ref: '#/definitions/providerauth.Generation'
+      owner:
+        $ref: '#/definitions/providerauth.Owner'
+      workspace_id:
+        type: string
+    type: object
   providerplugin.ImageOwner:
     properties:
       backend:
@@ -1506,6 +2674,24 @@ definitions:
       plugin_id:
         type: string
       version:
+        type: string
+    type: object
+  providerplugin.TransportBundle:
+    properties:
+      digest:
+        type: string
+      files:
+        items:
+          $ref: '#/definitions/providerplugin.TransportFile'
+        type: array
+    type: object
+  providerplugin.TransportFile:
+    properties:
+      data:
+        items:
+          type: integer
+        type: array
+      path:
         type: string
     type: object
   providerregistry.Authentication:
@@ -1556,6 +2742,14 @@ definitions:
     - ConstructionGeminiInteraction
     - ConstructionGenericJSON
     - ConstructionOpenAICompat
+  providerregistry.HostRuntimeControl:
+    enum:
+    - response-verbosity
+    - analysis-effort
+    type: string
+    x-enum-varnames:
+    - HostResponseVerbosity
+    - HostAnalysisEffort
   providerregistry.InstructionSurface:
     properties:
       default:
@@ -1612,12 +2806,43 @@ definitions:
       provider_id:
         type: string
     type: object
+  providerregistry.RuntimeControlBinding:
+    properties:
+      fallback_mode:
+        type: string
+      global_override:
+        $ref: '#/definitions/providerregistry.HostRuntimeControl'
+      host_option:
+        $ref: '#/definitions/providerregistry.HostRuntimeControl'
+      kind:
+        $ref: '#/definitions/providerregistry.RuntimeControlBindingKind'
+    type: object
+  providerregistry.RuntimeControlBindingKind:
+    enum:
+    - host-option
+    - model-option
+    - provider-option
+    type: string
+    x-enum-varnames:
+    - RuntimeControlHostOption
+    - RuntimeControlModelOption
+    - RuntimeControlProviderOption
   providerregistry.RuntimeControlSurface:
     properties:
       available:
         type: boolean
+      available_models:
+        items:
+          type: string
+        type: array
+      binding:
+        $ref: '#/definitions/providerregistry.RuntimeControlBinding'
       default: {}
       description:
+        type: string
+      descriptor_digest:
+        type: string
+      diagnostic:
         type: string
       id:
         type: string
@@ -1655,19 +2880,63 @@ definitions:
     - Second
     - Minute
     - Hour
+  usage.Usage:
+    properties:
+      fetched_at:
+        type: string
+      plan:
+        type: string
+      provider_id:
+        type: string
+      windows:
+        items:
+          $ref: '#/definitions/usage.Window'
+        type: array
+    type: object
+  usage.Window:
+    properties:
+      name:
+        description: Name is a short display label, e.g. "5h", "wk", "pro".
+        type: string
+      percent:
+        description: Percent is utilization 0-100.
+        type: integer
+      resets_at:
+        description: ResetsAt is when the window resets; zero when unknown.
+        type: string
+    type: object
 info:
   contact:
     name: Crux
     url: https://github.com/example-git/crux
-  description: Crux is a terminal-based AI coding assistant. This API is served over
-    a Unix socket (or Windows named pipe) and provides programmatic access to workspaces,
-    sessions, agents, LSP, MCP, and more.
+  description: Crux is a terminal-based AI coding assistant. This API is served locally
+    over a Unix socket or Windows named pipe, or remotely over TLS 1.3 with mutual
+    certificate authentication. Authenticated remote workspace routes bind IDs to
+    the verified client principal. Client-owned runtimes negotiate capabilities before
+    private admission; public discovery never supplies private credentials for restoration.
+    Enrollment and authorization administration are separate local operations.
   license:
     name: FSL-1.1-MIT
     url: https://github.com/example-git/crux/blob/main/LICENSE.md
   title: Crux API
   version: "1.0"
 paths:
+  /authorization:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/connection.AuthorizationProof'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Current mutually authenticated client identity
+      tags:
+      - connection
   /clients/{client_id}:
     delete:
       parameters:
@@ -1747,6 +3016,39 @@ paths:
       summary: Get provider plugins
       tags:
       - system
+  /runtime-capabilities:
+    get:
+      description: Authenticate with the selected client certificate before sending
+        private state. Returns the exact compiler, principal, limits, sharing policy
+        and disconnect grace.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.RemoteRuntimeCapabilities'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request canceled
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Negotiate client runtime support
+      tags:
+      - runtime
   /version:
     get:
       produces:
@@ -1776,13 +3078,24 @@ paths:
     post:
       consumes:
       - application/json
+      description: Client mode requires authenticated capability negotiation and a
+        complete private runtime. Server mode is explicit for authenticated remote
+        callers. Public workspace discovery is not reusable private authority.
       parameters:
-      - description: Workspace creation params
+      - description: Workspace creation and private authority
         in: body
         name: request
         required: true
         schema:
-          $ref: '#/definitions/proto.Workspace'
+          $ref: '#/definitions/proto.CreateWorkspaceRequest'
+      - description: 'Required for client mode: negotiated runtime protocol'
+        in: header
+        name: Crux-Runtime-Protocol
+        type: string
+      - description: 'Required for client mode: nonempty private-state marker'
+        in: header
+        name: X-Crux-Ephemeral-State
+        type: string
       produces:
       - application/json
       responses:
@@ -2304,6 +3617,973 @@ paths:
       summary: Update agent
       tags:
       - agent
+  /workspaces/{id}/auth:
+    get:
+      description: Returns redacted provider owners, credential choices and authority
+        generation. Status is not proof of a completed login or publication. No request
+        body is accepted.
+      parameters:
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationSnapshot'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request canceled
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Get workspace authentication status
+      tags:
+      - providers
+  /workspaces/{id}/auth/accounts:
+    post:
+      consumes:
+      - application/json
+      description: The target includes workspace, accepted authority and provider
+        owner. Client-owned account enumeration is handled on the owning client; this
+        remote service does not substitute server accounts.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderAuthenticationTarget'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderAccountsState'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request canceled
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: List accounts for an exact authentication target
+      tags:
+      - providers
+  /workspaces/{id}/auth/api-key/check:
+    post:
+      consumes:
+      - application/json
+      description: Retains the exact owner, credential slot and submitted value under
+        a check identity. Checking does not save a credential or change selected models.
+        The response reports the check evidence.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderAPIKeyCheckRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderAPIKeyCheckResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAPIKeyCheckResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderAPIKeyCheckResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAPIKeyCheckResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Check a selected credential field
+      tags:
+      - providers
+  /workspaces/{id}/auth/api-key/save:
+    post:
+      consumes:
+      - application/json
+      description: Consumes the retained check for the requested target and operation.
+        Save does not repeat the check probe. Client-owned persistence and runtime
+        replacement occur on the owning client.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderAPIKeySaveRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Save the exact checked credential
+      tags:
+      - providers
+  /workspaces/{id}/auth/local-repair:
+    post:
+      consumes:
+      - application/json
+      description: Review returns historical progress without applying changes. Apply
+        requires the exact reviewed journal revision and finishes only fixed disk
+        postimages. Abandon requires the exact reviewed revision and retires only
+        recovery intent, preserving original and unknown progress. Original progress
+        remains separate; a fresh reload and saved-state review are required before
+        a new runtime publication.
+      parameters:
+      - description: Current workspace authorized for this principal
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Historical operation and reviewed revision
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderLocalRepairRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderLocalRepairResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/proto.ProviderLocalRepairResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Review, repair, or abandon an original authentication disk operation
+      tags:
+      - providers
+  /workspaces/{id}/auth/logout:
+    post:
+      consumes:
+      - application/json
+      description: Server-owned transaction endpoint. An operation retry retains the
+        original target and operation identity; it cannot log out a replacement selection.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderLogoutRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Log out the exact provider selection
+      tags:
+      - providers
+  /workspaces/{id}/auth/oauth/abandon:
+    post:
+      consumes:
+      - application/json
+      description: Explicitly abandons the exact original workspace and operation
+        within the current owner and captured scope. An operation lease prevents racing
+        an active exchange or result write. Recorded tokens cannot be abandoned here.
+        The original outcome remains not-started or unknown; no login success, local
+        credential save or runtime acknowledgement is implied. Retained evidence becomes
+        eligible for bounded history pruning.
+      parameters:
+      - description: Current target and exact original tokenless operation
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderOAuthLoginAbandonRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginAbandonResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request Timeout
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginAbandonResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginAbandonResponse'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginAbandonResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Abandon a tokenless OAuth operation
+      tags:
+      - providers
+  /workspaces/{id}/auth/oauth/begin:
+    post:
+      consumes:
+      - application/json
+      description: Prepares one exact provider-owned interaction. Beginning an interaction
+        does not prove authorization, local persistence or runtime publication.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderOAuthLoginRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Prepare an OAuth login
+      tags:
+      - providers
+  /workspaces/{id}/auth/oauth/bind:
+    post:
+      consumes:
+      - application/json
+      description: Binds the retained login to the exact callback binding and port
+        before authorization starts.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderOAuthLoginBindRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Bind an OAuth login callback
+      tags:
+      - providers
+  /workspaces/{id}/auth/oauth/cancel:
+    post:
+      consumes:
+      - application/json
+      description: Cancellation applies to the retained login and preserves any known
+        outcome; it does not silently replace the selected account.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderOAuthLoginRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Cancel the retained OAuth interaction
+      tags:
+      - providers
+  /workspaces/{id}/auth/oauth/code:
+    post:
+      consumes:
+      - application/json
+      description: Input is private and is never echoed in the response. The submission
+        identity binds duplicate delivery to the same interaction.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderOAuthLoginCodeRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Submit input to the retained OAuth login
+      tags:
+      - providers
+  /workspaces/{id}/auth/oauth/complete:
+    post:
+      consumes:
+      - application/json
+      description: Persists the observed login result and returns exact account/configuration/publication
+        progress. Retry the original operation or explicitly review saved state; do
+        not infer success from interaction completion alone.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderOAuthLoginRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Complete the OAuth persistence transaction
+      tags:
+      - providers
+  /workspaces/{id}/auth/oauth/recover:
+    post:
+      consumes:
+      - application/json
+      description: Explicitly links a fresh login and operation identity to one original
+        workspace and recorded token operation. Recovery never repeats an OAuth exchange
+        and does not claim original persistence or publication. The returned session
+        uses the normal Complete transaction.
+      parameters:
+      - description: Fresh login identity and exact original workspace and recorded
+          operation
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderOAuthLoginRecoveryRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request Timeout
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Recover an observed OAuth login result
+      tags:
+      - providers
+  /workspaces/{id}/auth/oauth/results:
+    post:
+      consumes:
+      - application/json
+      description: Lists pending recorded results from this captured configuration
+        scope, including prior workspace incarnations, for the exact current provider
+        owner and target. No token, callback or account namespace is returned. Unknown
+        exchanges remain unknown and cannot be resumed as a new exchange.
+      parameters:
+      - description: Exact current authentication target
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderAuthenticationTarget'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginRecoveryListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request Timeout
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginRecoveryListResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginRecoveryListResponse'
+        "422":
+          description: Unprocessable Entity
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginRecoveryListResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: List recorded OAuth operation results
+      tags:
+      - providers
+  /workspaces/{id}/auth/oauth/wait:
+    post:
+      consumes:
+      - application/json
+      description: Returns progress after the requested sequence for the exact retained
+        login. An authorized interaction still requires the completion transaction.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderOAuthLoginWaitRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderOAuthLoginResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Wait for OAuth interaction progress
+      tags:
+      - providers
+  /workspaces/{id}/auth/remove:
+    post:
+      consumes:
+      - application/json
+      description: Removing an inactive account requires account persistence only.
+        Removing the active account also requires configuration persistence and runtime
+        publication. Client-owned changes execute on the owning client.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderAccountRemoveRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Remove an exact saved provider account
+      tags:
+      - providers
+  /workspaces/{id}/auth/switch:
+    post:
+      consumes:
+      - application/json
+      description: Server-owned transaction endpoint. Client-owned workspaces use
+        the owning client transaction and publish an explicit runtime replacement.
+        Request-bound outcomes distinguish account/configuration saves from runtime
+        publication.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderAccountSwitchRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Canceled or deadline exceeded; inspect retained progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "409":
+          description: Target changed or retained operation is unavailable
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "422":
+          description: Operation failed; inspect exact saved/publication progress
+          schema:
+            $ref: '#/definitions/proto.ProviderAuthenticationMutationResponse'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Switch the selected provider account
+      tags:
+      - providers
   /workspaces/{id}/config:
     get:
       parameters:
@@ -2366,7 +4646,15 @@ paths:
       - config
   /workspaces/{id}/config/import-copilot:
     post:
+      consumes:
+      - application/json
       parameters:
+      - description: Initiating provider owner
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ImportCopilotRequest'
       - description: Workspace ID
         in: path
         name: id
@@ -2379,12 +4667,16 @@ paths:
           description: OK
           schema:
             $ref: '#/definitions/proto.ImportCopilotResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
         "404":
           description: Not Found
           schema:
             $ref: '#/definitions/proto.Error'
-        "500":
-          description: Internal Server Error
+        "502":
+          description: Bad Gateway
           schema:
             $ref: '#/definitions/proto.Error'
       summary: Import Copilot credentials
@@ -2426,6 +4718,52 @@ paths:
       summary: Set the preferred model
       tags:
       - config
+  /workspaces/{id}/config/model-overrides:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Transient selections with exact owners
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ModelOverridesRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/config.AgentModelState'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request Timeout
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Override workspace models temporarily
+      tags:
+      - config
   /workspaces/{id}/config/provider-key:
     post:
       consumes:
@@ -2460,6 +4798,106 @@ paths:
       summary: Set provider API key
       tags:
       - config
+  /workspaces/{id}/config/provider-tooling:
+    delete:
+      consumes:
+      - application/json
+      description: Removes only the selected provider tooling override; the resulting
+        state reports its effective source.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.RemoveProviderToolingRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderToolingState'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request canceled
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Remove a provider tooling override
+      tags:
+      - providers
+    put:
+      consumes:
+      - application/json
+      description: Selects the explicit crux or native instruction profile for the
+        exact provider owner and scope. Client-owned mutations persist on the owning
+        client.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.ProviderToolingRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/proto.ProviderToolingState'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request canceled
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Set provider tooling instructions
+      tags:
+      - providers
   /workspaces/{id}/config/refresh-oauth:
     post:
       consumes:
@@ -2528,6 +4966,156 @@ paths:
       summary: Remove a config field
       tags:
       - config
+  /workspaces/{id}/config/runtime-control:
+    delete:
+      consumes:
+      - application/json
+      description: Removes the exact selected override, preserving unrelated provider
+        configuration.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.RuntimeControlRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/config.RuntimeControlState'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request canceled
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Remove a declared runtime control override
+      tags:
+      - providers
+    put:
+      consumes:
+      - application/json
+      description: Requires an explicit primitive value and matching owner/control.
+        Client-owned mutations run on the owning client and publish a complete runtime
+        replacement.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.SetRuntimeControlRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/config.RuntimeControlState'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request canceled
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Set a declared runtime control
+      tags:
+      - providers
+  /workspaces/{id}/config/runtime-control/resolve:
+    post:
+      consumes:
+      - application/json
+      description: Resolves the exact owner/control and scope, without accepting an
+        arbitrary configuration path.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.RuntimeControlRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/config.RuntimeControlState'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "408":
+          description: Request canceled
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Resolve a declared runtime control
+      tags:
+      - providers
   /workspaces/{id}/config/set:
     post:
       consumes:
@@ -2601,19 +5189,54 @@ paths:
       - workspaces
   /workspaces/{id}/events:
     get:
+      description: The event stream claim must match accepted workspace authority.
+        Client-owned attachment requires the exact mode/revision/digest from a retained
+        creation or replacement acknowledgement. The response echoes the accepted
+        tuple before events. A client UUID or public discovery result alone does not
+        authorize attachment.
       parameters:
       - description: Workspace ID
         in: path
         name: id
         required: true
         type: string
+      - description: 'Accepted mode: client or server; required for client-owned attachment'
+        in: header
+        name: Crux-Workspace-Authority-Mode
+        type: string
+      - description: Exact accepted decimal revision; required with authority mode
+        in: header
+        name: Crux-Workspace-Authority-Revision
+        type: string
+      - description: Exact accepted runtime digest; required with authority mode
+        in: header
+        name: Crux-Workspace-Authority-Digest
+        type: string
       produces:
       - text/event-stream
       responses:
         "200":
           description: OK
+          headers:
+            Crux-Workspace-Authority-Digest:
+              description: Accepted runtime digest
+              type: string
+            Crux-Workspace-Authority-Mode:
+              description: Accepted workspace mode
+              type: string
+            Crux-Workspace-Authority-Revision:
+              description: Accepted decimal revision
+              type: string
+        "403":
+          description: Client principal does not own the workspace or claim
+          schema:
+            $ref: '#/definitions/proto.Error'
         "404":
           description: Not Found
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "409":
+          description: Attachment authority differs from the accepted runtime
           schema:
             $ref: '#/definitions/proto.Error'
         "500":
@@ -3403,6 +6026,48 @@ paths:
       summary: Get workspace providers
       tags:
       - workspaces
+  /workspaces/{id}/providers/usage:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Workspace ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Selected owner and accepted runtime
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/config.ProviderUsageRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/config.ProviderUsageResult'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Fetch provider quota usage
+      tags:
+      - providers
   /workspaces/{id}/questions/answer:
     post:
       consumes:
@@ -3467,6 +6132,136 @@ paths:
       summary: Cancel question batch
       tags:
       - questions
+  /workspaces/{id}/runtime:
+    put:
+      consumes:
+      - application/json
+      description: Stages the complete private proposal and atomically publishes only
+        against expected_revision. Rejected proposals preserve accepted authority.
+        The reply contains no credentials or bundle content.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/proto.UpdateRemoteRuntimeRequest'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Negotiated protocol: crux-client-runtime-v1'
+        in: header
+        name: Crux-Runtime-Protocol
+        required: true
+        type: string
+      - description: Nonempty marker suppressing private request bodies from traffic
+          logs
+        in: header
+        name: X-Crux-Ephemeral-State
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/config.RemoteAuthority'
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "409":
+          description: Accepted revision or exact refresh identity changed
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "428":
+          description: Runtime protocol negotiation is required
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Replace the accepted client runtime
+      tags:
+      - runtime
+  /workspaces/{id}/runtime/refresh-completion:
+    post:
+      consumes:
+      - application/json
+      description: Completes the exact retained refresh request after the owning client
+        persists and publishes its result. Replaying that completion never starts
+        another token exchange.
+      parameters:
+      - description: Exact request and operation identity
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/config.ClientRefreshCompletion'
+      - description: Workspace ID bound to the authenticated principal
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Negotiated protocol: crux-client-runtime-v1'
+        in: header
+        name: Crux-Runtime-Protocol
+        required: true
+        type: string
+      - description: Nonempty marker suppressing private request bodies from traffic
+          logs
+        in: header
+        name: X-Crux-Ephemeral-State
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: Exact completion acknowledged
+        "400":
+          description: Invalid request; authentication operations may instead return
+            their request-bound response with an error
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "403":
+          description: Principal is unauthorized or does not own this workspace
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "404":
+          description: Workspace is unavailable
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "409":
+          description: Accepted revision or exact refresh identity changed
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "428":
+          description: Runtime protocol negotiation is required
+          schema:
+            $ref: '#/definitions/proto.Error'
+        "500":
+          description: Response unavailable; do not infer whether persistence or publication
+            occurred
+          schema:
+            $ref: '#/definitions/proto.Error'
+      summary: Acknowledge a client credential refresh
+      tags:
+      - runtime
   /workspaces/{id}/sessions:
     get:
       parameters:

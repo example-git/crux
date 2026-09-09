@@ -22,6 +22,31 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
+        "/authorization": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "connection"
+                ],
+                "summary": "Current mutually authenticated client identity",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/connection.AuthorizationProof"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/clients/{client_id}": {
             "delete": {
                 "tags": [
@@ -146,6 +171,50 @@ const docTemplate = `{
                 }
             }
         },
+        "/runtime-capabilities": {
+            "get": {
+                "description": "Authenticate with the selected client certificate before sending private state. Returns the exact compiler, principal, limits, sharing policy and disconnect grace.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runtime"
+                ],
+                "summary": "Negotiate client runtime support",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.RemoteRuntimeCapabilities"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request canceled",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/version": {
             "get": {
                 "produces": [
@@ -187,6 +256,7 @@ const docTemplate = `{
                 }
             },
             "post": {
+                "description": "Client mode requires authenticated capability negotiation and a complete private runtime. Server mode is explicit for authenticated remote callers. Public workspace discovery is not reusable private authority.",
                 "consumes": [
                     "application/json"
                 ],
@@ -199,13 +269,25 @@ const docTemplate = `{
                 "summary": "Create workspace",
                 "parameters": [
                     {
-                        "description": "Workspace creation params",
+                        "description": "Workspace creation and private authority",
                         "name": "request",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/proto.Workspace"
+                            "$ref": "#/definitions/proto.CreateWorkspaceRequest"
                         }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for client mode: negotiated runtime protocol",
+                        "name": "Crux-Runtime-Protocol",
+                        "in": "header"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Required for client mode: nonempty private-state marker",
+                        "name": "X-Crux-Ephemeral-State",
+                        "in": "header"
                     }
                 ],
                 "responses": {
@@ -989,6 +1071,1369 @@ const docTemplate = `{
                 }
             }
         },
+        "/workspaces/{id}/auth": {
+            "get": {
+                "description": "Returns redacted provider owners, credential choices and authority generation. Status is not proof of a completed login or publication. No request body is accepted.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Get workspace authentication status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationSnapshot"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request canceled",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/accounts": {
+            "post": {
+                "description": "The target includes workspace, accepted authority and provider owner. Client-owned account enumeration is handled on the owning client; this remote service does not substitute server accounts.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "List accounts for an exact authentication target",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationTarget"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAccountsState"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request canceled",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/api-key/check": {
+            "post": {
+                "description": "Retains the exact owner, credential slot and submitted value under a check identity. Checking does not save a credential or change selected models. The response reports the check evidence.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Check a selected credential field",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAPIKeyCheckRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAPIKeyCheckResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAPIKeyCheckResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAPIKeyCheckResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAPIKeyCheckResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/api-key/save": {
+            "post": {
+                "description": "Consumes the retained check for the requested target and operation. Save does not repeat the check probe. Client-owned persistence and runtime replacement occur on the owning client.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Save the exact checked credential",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAPIKeySaveRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/local-repair": {
+            "post": {
+                "description": "Review returns historical progress without applying changes. Apply requires the exact reviewed journal revision and finishes only fixed disk postimages. Abandon requires the exact reviewed revision and retires only recovery intent, preserving original and unknown progress. Original progress remains separate; a fresh reload and saved-state review are required before a new runtime publication.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Review, repair, or abandon an original authentication disk operation",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Current workspace authorized for this principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Historical operation and reviewed revision",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderLocalRepairRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderLocalRepairResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderLocalRepairResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/logout": {
+            "post": {
+                "description": "Server-owned transaction endpoint. An operation retry retains the original target and operation identity; it cannot log out a replacement selection.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Log out the exact provider selection",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderLogoutRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/oauth/abandon": {
+            "post": {
+                "description": "Explicitly abandons the exact original workspace and operation within the current owner and captured scope. An operation lease prevents racing an active exchange or result write. Recorded tokens cannot be abandoned here. The original outcome remains not-started or unknown; no login success, local credential save or runtime acknowledgement is implied. Retained evidence becomes eligible for bounded history pruning.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Abandon a tokenless OAuth operation",
+                "parameters": [
+                    {
+                        "description": "Current target and exact original tokenless operation",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginAbandonRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginAbandonResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request Timeout",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginAbandonResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginAbandonResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginAbandonResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/oauth/begin": {
+            "post": {
+                "description": "Prepares one exact provider-owned interaction. Beginning an interaction does not prove authorization, local persistence or runtime publication.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Prepare an OAuth login",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/oauth/bind": {
+            "post": {
+                "description": "Binds the retained login to the exact callback binding and port before authorization starts.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Bind an OAuth login callback",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginBindRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/oauth/cancel": {
+            "post": {
+                "description": "Cancellation applies to the retained login and preserves any known outcome; it does not silently replace the selected account.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Cancel the retained OAuth interaction",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/oauth/code": {
+            "post": {
+                "description": "Input is private and is never echoed in the response. The submission identity binds duplicate delivery to the same interaction.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Submit input to the retained OAuth login",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginCodeRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/oauth/complete": {
+            "post": {
+                "description": "Persists the observed login result and returns exact account/configuration/publication progress. Retry the original operation or explicitly review saved state; do not infer success from interaction completion alone.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Complete the OAuth persistence transaction",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/oauth/recover": {
+            "post": {
+                "description": "Explicitly links a fresh login and operation identity to one original workspace and recorded token operation. Recovery never repeats an OAuth exchange and does not claim original persistence or publication. The returned session uses the normal Complete transaction.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Recover an observed OAuth login result",
+                "parameters": [
+                    {
+                        "description": "Fresh login identity and exact original workspace and recorded operation",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginRecoveryRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request Timeout",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/oauth/results": {
+            "post": {
+                "description": "Lists pending recorded results from this captured configuration scope, including prior workspace incarnations, for the exact current provider owner and target. No token, callback or account namespace is returned. Unknown exchanges remain unknown and cannot be resumed as a new exchange.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "List recorded OAuth operation results",
+                "parameters": [
+                    {
+                        "description": "Exact current authentication target",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationTarget"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginRecoveryListResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request Timeout",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginRecoveryListResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginRecoveryListResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginRecoveryListResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/oauth/wait": {
+            "post": {
+                "description": "Returns progress after the requested sequence for the exact retained login. An authorized interaction still requires the completion transaction.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Wait for OAuth interaction progress",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginWaitRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderOAuthLoginResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/remove": {
+            "post": {
+                "description": "Removing an inactive account requires account persistence only. Removing the active account also requires configuration persistence and runtime publication. Client-owned changes execute on the owning client.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Remove an exact saved provider account",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAccountRemoveRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/auth/switch": {
+            "post": {
+                "description": "Server-owned transaction endpoint. Client-owned workspaces use the owning client transaction and publish an explicit runtime replacement. Request-bound outcomes distinguish account/configuration saves from runtime publication.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Switch the selected provider account",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAccountSwitchRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Canceled or deadline exceeded; inspect retained progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Target changed or retained operation is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Operation failed; inspect exact saved/publication progress",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderAuthenticationMutationResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/workspaces/{id}/config": {
             "get": {
                 "produces": [
@@ -1083,6 +2528,9 @@ const docTemplate = `{
         },
         "/workspaces/{id}/config/import-copilot": {
             "post": {
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
@@ -1091,6 +2539,15 @@ const docTemplate = `{
                 ],
                 "summary": "Import Copilot credentials",
                 "parameters": [
+                    {
+                        "description": "Initiating provider owner",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ImportCopilotRequest"
+                        }
+                    },
                     {
                         "type": "string",
                         "description": "Workspace ID",
@@ -1106,14 +2563,20 @@ const docTemplate = `{
                             "$ref": "#/definitions/proto.ImportCopilotResponse"
                         }
                     },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
                     "404": {
                         "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/proto.Error"
                         }
                     },
-                    "500": {
-                        "description": "Internal Server Error",
+                    "502": {
+                        "description": "Bad Gateway",
                         "schema": {
                             "$ref": "#/definitions/proto.Error"
                         }
@@ -1176,6 +2639,76 @@ const docTemplate = `{
                 }
             }
         },
+        "/workspaces/{id}/config/model-overrides": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "config"
+                ],
+                "summary": "Override workspace models temporarily",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Transient selections with exact owners",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ModelOverridesRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/config.AgentModelState"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request Timeout",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/workspaces/{id}/config/provider-key": {
             "post": {
                 "consumes": [
@@ -1221,6 +2754,146 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/config/provider-tooling": {
+            "put": {
+                "description": "Selects the explicit crux or native instruction profile for the exact provider owner and scope. Client-owned mutations persist on the owning client.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Set provider tooling instructions",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderToolingRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderToolingState"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request canceled",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Removes only the selected provider tooling override; the resulting state reports its effective source.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Remove a provider tooling override",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.RemoveProviderToolingRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/proto.ProviderToolingState"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request canceled",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
                         "schema": {
                             "$ref": "#/definitions/proto.Error"
                         }
@@ -1325,6 +2998,217 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/config/runtime-control": {
+            "put": {
+                "description": "Requires an explicit primitive value and matching owner/control. Client-owned mutations run on the owning client and publish a complete runtime replacement.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Set a declared runtime control",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.SetRuntimeControlRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/config.RuntimeControlState"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request canceled",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "description": "Removes the exact selected override, preserving unrelated provider configuration.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Remove a declared runtime control override",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.RuntimeControlRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/config.RuntimeControlState"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request canceled",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/config/runtime-control/resolve": {
+            "post": {
+                "description": "Resolves the exact owner/control and scope, without accepting an arbitrary configuration path.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Resolve a declared runtime control",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.RuntimeControlRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/config.RuntimeControlState"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "408": {
+                        "description": "Request canceled",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
                         "schema": {
                             "$ref": "#/definitions/proto.Error"
                         }
@@ -1442,6 +3326,7 @@ const docTemplate = `{
         },
         "/workspaces/{id}/events": {
             "get": {
+                "description": "The event stream claim must match accepted workspace authority. Client-owned attachment requires the exact mode/revision/digest from a retained creation or replacement acknowledgement. The response echoes the accepted tuple before events. A client UUID or public discovery result alone does not authorize attachment.",
                 "produces": [
                     "text/event-stream"
                 ],
@@ -1456,14 +3341,58 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Accepted mode: client or server; required for client-owned attachment",
+                        "name": "Crux-Workspace-Authority-Mode",
+                        "in": "header"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact accepted decimal revision; required with authority mode",
+                        "name": "Crux-Workspace-Authority-Revision",
+                        "in": "header"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Exact accepted runtime digest; required with authority mode",
+                        "name": "Crux-Workspace-Authority-Digest",
+                        "in": "header"
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "OK"
+                        "description": "OK",
+                        "headers": {
+                            "Crux-Workspace-Authority-Digest": {
+                                "type": "string",
+                                "description": "Accepted runtime digest"
+                            },
+                            "Crux-Workspace-Authority-Mode": {
+                                "type": "string",
+                                "description": "Accepted workspace mode"
+                            },
+                            "Crux-Workspace-Authority-Revision": {
+                                "type": "string",
+                                "description": "Accepted decimal revision"
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Client principal does not own the workspace or claim",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "409": {
+                        "description": "Attachment authority differs from the accepted runtime",
                         "schema": {
                             "$ref": "#/definitions/proto.Error"
                         }
@@ -2671,6 +4600,70 @@ const docTemplate = `{
                 }
             }
         },
+        "/workspaces/{id}/providers/usage": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "providers"
+                ],
+                "summary": "Fetch provider quota usage",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Workspace ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Selected owner and accepted runtime",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/config.ProviderUsageRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/config.ProviderUsageResult"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
         "/workspaces/{id}/questions/answer": {
             "post": {
                 "consumes": [
@@ -2762,6 +4755,185 @@ const docTemplate = `{
                     },
                     "500": {
                         "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/runtime": {
+            "put": {
+                "description": "Stages the complete private proposal and atomically publishes only against expected_revision. Rejected proposals preserve accepted authority. The reply contains no credentials or bundle content.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runtime"
+                ],
+                "summary": "Replace the accepted client runtime",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/proto.UpdateRemoteRuntimeRequest"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Negotiated protocol: crux-client-runtime-v1",
+                        "name": "Crux-Runtime-Protocol",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Nonempty marker suppressing private request bodies from traffic logs",
+                        "name": "X-Crux-Ephemeral-State",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/config.RemoteAuthority"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "409": {
+                        "description": "Accepted revision or exact refresh identity changed",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "428": {
+                        "description": "Runtime protocol negotiation is required",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    }
+                }
+            }
+        },
+        "/workspaces/{id}/runtime/refresh-completion": {
+            "post": {
+                "description": "Completes the exact retained refresh request after the owning client persists and publishes its result. Replaying that completion never starts another token exchange.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "runtime"
+                ],
+                "summary": "Acknowledge a client credential refresh",
+                "parameters": [
+                    {
+                        "description": "Exact request and operation identity",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/config.ClientRefreshCompletion"
+                        }
+                    },
+                    {
+                        "type": "string",
+                        "description": "Workspace ID bound to the authenticated principal",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Negotiated protocol: crux-client-runtime-v1",
+                        "name": "Crux-Runtime-Protocol",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Nonempty marker suppressing private request bodies from traffic logs",
+                        "name": "X-Crux-Ephemeral-State",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "Exact completion acknowledged"
+                    },
+                    "400": {
+                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "403": {
+                        "description": "Principal is unauthorized or does not own this workspace",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "404": {
+                        "description": "Workspace is unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "409": {
+                        "description": "Accepted revision or exact refresh identity changed",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "428": {
+                        "description": "Runtime protocol negotiation is required",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
+                        }
+                    },
+                    "500": {
+                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
                         "schema": {
                             "$ref": "#/definitions/proto.Error"
                         }
@@ -3566,6 +5738,26 @@ const docTemplate = `{
                 }
             }
         },
+        "config.ClientRefreshCompletion": {
+            "type": "object",
+            "properties": {
+                "credential_id": {
+                    "type": "string"
+                },
+                "digest": {
+                    "type": "string"
+                },
+                "failed": {
+                    "type": "boolean"
+                },
+                "request_id": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                }
+            }
+        },
         "config.Completions": {
             "type": "object",
             "properties": {
@@ -3574,6 +5766,61 @@ const docTemplate = `{
                 },
                 "max_items": {
                     "type": "integer"
+                }
+            }
+        },
+        "config.ConnectionProbeKind": {
+            "type": "string",
+            "enum": [
+                "not-probed",
+                "format-only",
+                "http-attempt",
+                "http-response",
+                "unsupported"
+            ],
+            "x-enum-varnames": [
+                "ConnectionProbeNotProbed",
+                "ConnectionProbeFormatOnly",
+                "ConnectionProbeHTTPAttempt",
+                "ConnectionProbeHTTPResponse",
+                "ConnectionProbeUnsupported"
+            ]
+        },
+        "config.ConnectionProbePolicy": {
+            "type": "string",
+            "enum": [
+                "none",
+                "sk-prefix",
+                "http-200",
+                "non-401",
+                "manifest-http-200"
+            ],
+            "x-enum-varnames": [
+                "ConnectionProbePolicyNone",
+                "ConnectionProbePolicySKPrefix",
+                "ConnectionProbePolicyHTTP200",
+                "ConnectionProbePolicyNon401",
+                "ConnectionProbePolicyManifestHTTP200"
+            ]
+        },
+        "config.ConnectionProbeResult": {
+            "type": "object",
+            "properties": {
+                "authorization_overridden": {
+                    "type": "boolean"
+                },
+                "entered_key_in_authorization": {
+                    "description": "Entered key means the resolved APIKey from the supplied ProviderConfig.\nThese fields describe the initial request's construction, not delivery or\nheaders on a redirected request. Any explicit Authorization override is\nreported conservatively even if its bytes happen to equal the entered key.",
+                    "type": "boolean"
+                },
+                "http_status": {
+                    "type": "integer"
+                },
+                "kind": {
+                    "$ref": "#/definitions/config.ConnectionProbeKind"
+                },
+                "policy": {
+                    "$ref": "#/definitions/config.ConnectionProbePolicy"
                 }
             }
         },
@@ -3702,6 +5949,111 @@ const docTemplate = `{
                 "$ref": "#/definitions/config.LSPConfig"
             }
         },
+        "config.LocalAuthenticationProgress": {
+            "type": "object",
+            "properties": {
+                "account_refreshed": {
+                    "type": "boolean"
+                },
+                "accounts_saved": {
+                    "type": "boolean"
+                },
+                "config_saved": {
+                    "type": "boolean"
+                },
+                "runtime_published": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "config.LocalAuthenticationRepairResult": {
+            "type": "object",
+            "properties": {
+                "abandoned": {
+                    "type": "boolean"
+                },
+                "accounts_matched": {
+                    "type": "boolean"
+                },
+                "accounts_written": {
+                    "type": "boolean"
+                },
+                "config_matched": {
+                    "type": "boolean"
+                },
+                "config_written": {
+                    "type": "boolean"
+                },
+                "needs_reload": {
+                    "type": "boolean"
+                },
+                "summary": {
+                    "$ref": "#/definitions/config.LocalAuthenticationSummary"
+                }
+            }
+        },
+        "config.LocalAuthenticationSummary": {
+            "type": "object",
+            "properties": {
+                "abandoned": {
+                    "type": "boolean"
+                },
+                "account_id": {
+                    "type": "string"
+                },
+                "action": {
+                    "type": "string"
+                },
+                "coherent": {
+                    "type": "boolean"
+                },
+                "finished": {
+                    "type": "boolean"
+                },
+                "needs_reload": {
+                    "type": "boolean"
+                },
+                "no_effects": {
+                    "type": "boolean"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "original": {
+                    "$ref": "#/definitions/config.LocalAuthenticationProgress"
+                },
+                "provider_id": {
+                    "type": "string"
+                },
+                "refresh_observed": {
+                    "type": "boolean"
+                },
+                "refresh_started": {
+                    "type": "boolean"
+                },
+                "removed_account_id": {
+                    "type": "string"
+                },
+                "repair_accounts_written": {
+                    "type": "boolean"
+                },
+                "repair_config_written": {
+                    "type": "boolean"
+                },
+                "repair_ready": {
+                    "type": "boolean"
+                },
+                "repair_started": {
+                    "type": "boolean"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "workspace_id": {
+                    "type": "string"
+                }
+            }
+        },
         "config.MCPConfig": {
             "type": "object",
             "properties": {
@@ -3794,6 +6146,20 @@ const docTemplate = `{
             "type": "object",
             "additionalProperties": {
                 "$ref": "#/definitions/config.MCPConfig"
+            }
+        },
+        "config.NativeIdentity": {
+            "type": "object",
+            "properties": {
+                "originator": {
+                    "type": "string"
+                },
+                "user_agent": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
             }
         },
         "config.OwnedSelectedModel": {
@@ -3971,6 +6337,365 @@ const docTemplate = `{
                 }
             }
         },
+        "config.ProviderUsageRequest": {
+            "type": "object",
+            "properties": {
+                "digest": {
+                    "type": "string"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                },
+                "revision": {
+                    "type": "integer"
+                }
+            }
+        },
+        "config.ProviderUsageResult": {
+            "type": "object",
+            "properties": {
+                "digest": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "usage": {
+                    "$ref": "#/definitions/usage.Usage"
+                }
+            }
+        },
+        "config.RemoteAccountIdentity": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "string"
+                },
+                "generation": {
+                    "type": "integer"
+                },
+                "provider_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "config.RemoteAuthority": {
+            "type": "object",
+            "properties": {
+                "accounts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/config.RemoteAccountIdentity"
+                    }
+                },
+                "digest": {
+                    "type": "string"
+                },
+                "mode": {
+                    "type": "string"
+                },
+                "principal": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                }
+            }
+        },
+        "config.RemoteCredentialBinding": {
+            "type": "object",
+            "properties": {
+                "account": {
+                    "$ref": "#/definitions/accounts.Entry"
+                },
+                "api_key": {
+                    "type": "string"
+                },
+                "generation": {
+                    "type": "integer"
+                },
+                "oauth_token": {
+                    "$ref": "#/definitions/oauth.Token"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                },
+                "unavailable": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "config.RemoteImageBrowserCredential": {
+            "type": "object",
+            "properties": {
+                "cookies": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/cookieutil.BrowserCookie"
+                    }
+                },
+                "credential_id": {
+                    "type": "string"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerplugin.ImageOwner"
+                },
+                "profile_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "config.RemoteImageClientIdentity": {
+            "type": "object",
+            "properties": {
+                "arch": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "os": {
+                    "type": "string"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerplugin.ImageOwner"
+                },
+                "user_agent": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "config.RemoteProviderDefinition": {
+            "type": "object",
+            "properties": {
+                "bundle_digest": {
+                    "type": "string"
+                },
+                "config": {
+                    "$ref": "#/definitions/config.ProviderConfig"
+                },
+                "gemini_project_id": {
+                    "type": "string"
+                },
+                "native_identity": {
+                    "$ref": "#/definitions/config.NativeIdentity"
+                }
+            }
+        },
+        "config.RemoteRuntimeControls": {
+            "type": "object",
+            "properties": {
+                "analysis_effort": {
+                    "type": "string"
+                },
+                "codex_compaction_v2": {
+                    "type": "boolean"
+                },
+                "disable_auto_summarize": {
+                    "type": "boolean"
+                },
+                "disabled_instruction_sections": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "instruction_mode": {
+                    "type": "string"
+                },
+                "response_verbosity": {
+                    "type": "string"
+                },
+                "summarization_context_cap": {
+                    "type": "integer"
+                },
+                "summarization_fast_mode": {
+                    "type": "boolean"
+                },
+                "summarization_max_tokens": {
+                    "type": "integer"
+                }
+            }
+        },
+        "config.RemoteRuntimeProposal": {
+            "type": "object",
+            "properties": {
+                "bundles": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerplugin.TransportBundle"
+                    }
+                },
+                "controls": {
+                    "$ref": "#/definitions/config.RemoteRuntimeControls"
+                },
+                "credential_environment": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "credentials": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/config.RemoteCredentialBinding"
+                    }
+                },
+                "digest": {
+                    "type": "string"
+                },
+                "image_browser_credentials": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/config.RemoteImageBrowserCredential"
+                    }
+                },
+                "image_client_identities": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/config.RemoteImageClientIdentity"
+                    }
+                },
+                "images": {
+                    "$ref": "#/definitions/config.ImageConfiguration"
+                },
+                "models": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/config.SelectedModel"
+                    }
+                },
+                "provider_context_instructions": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "string"
+                    }
+                },
+                "providers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/config.RemoteProviderDefinition"
+                    }
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "version": {
+                    "type": "integer"
+                }
+            }
+        },
+        "config.RuntimeControlOverride": {
+            "type": "object",
+            "properties": {
+                "config_key": {
+                    "type": "string"
+                },
+                "option": {
+                    "$ref": "#/definitions/providerregistry.HostRuntimeControl"
+                },
+                "value": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
+        "config.RuntimeControlSelection": {
+            "type": "object",
+            "properties": {
+                "model_id": {
+                    "type": "string"
+                },
+                "model_type": {
+                    "$ref": "#/definitions/config.SelectedModelType"
+                }
+            }
+        },
+        "config.RuntimeControlSource": {
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "scope": {
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
+                }
+            }
+        },
+        "config.RuntimeControlState": {
+            "type": "object",
+            "properties": {
+                "binding": {
+                    "$ref": "#/definitions/providerregistry.RuntimeControlBinding"
+                },
+                "effective": {
+                    "$ref": "#/definitions/config.RuntimeControlValue"
+                },
+                "global_override": {
+                    "$ref": "#/definitions/config.RuntimeControlOverride"
+                },
+                "models": {
+                    "$ref": "#/definitions/config.AgentModelState"
+                },
+                "runtime_dependent": {
+                    "type": "boolean"
+                },
+                "scope": {
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
+                },
+                "scoped": {
+                    "$ref": "#/definitions/config.RuntimeControlValue"
+                },
+                "scoped_known": {
+                    "type": "boolean"
+                },
+                "source": {
+                    "$ref": "#/definitions/config.RuntimeControlSource"
+                },
+                "target": {
+                    "$ref": "#/definitions/config.RuntimeControlTarget"
+                }
+            }
+        },
+        "config.RuntimeControlTarget": {
+            "type": "object",
+            "properties": {
+                "control_id": {
+                    "type": "string"
+                },
+                "descriptor_digest": {
+                    "type": "string"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                },
+                "selection": {
+                    "$ref": "#/definitions/config.RuntimeControlSelection"
+                }
+            }
+        },
+        "config.RuntimeControlValue": {
+            "type": "object",
+            "properties": {
+                "present": {
+                    "type": "boolean"
+                },
+                "value": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                }
+            }
+        },
         "config.SelectedModel": {
             "type": "object",
             "properties": {
@@ -4035,6 +6760,9 @@ const docTemplate = `{
                 },
                 "completions": {
                     "$ref": "#/definitions/config.Completions"
+                },
+                "delivery_mode": {
+                    "type": "string"
                 },
                 "diff_mode": {
                     "type": "string"
@@ -4109,6 +6837,49 @@ const docTemplate = `{
                 },
                 "search": {
                     "$ref": "#/definitions/config.ToolSearch"
+                }
+            }
+        },
+        "connection.AuthorizationProof": {
+            "type": "object",
+            "properties": {
+                "principal": {
+                    "type": "string"
+                },
+                "server_fingerprint": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "integer"
+                }
+            }
+        },
+        "cookieutil.BrowserCookie": {
+            "type": "object",
+            "properties": {
+                "domain": {
+                    "type": "string"
+                },
+                "expires": {
+                    "type": "integer"
+                },
+                "host": {
+                    "type": "string"
+                },
+                "http_only": {
+                    "type": "boolean"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "secure": {
+                    "type": "boolean"
+                },
+                "value": {
+                    "type": "string"
                 }
             }
         },
@@ -4191,6 +6962,9 @@ const docTemplate = `{
                 "auto_lsp": {
                     "type": "boolean"
                 },
+                "codex_compaction_v2": {
+                    "type": "boolean"
+                },
                 "context_paths": {
                     "type": "array",
                     "items": {
@@ -4245,6 +7019,9 @@ const docTemplate = `{
                     "description": "InstructionMode controls which optional instruction sources are active:\n  \"all\"     - tooling and project context (default)\n  \"project\" - project context without tooling\n  \"native\"  - tooling without project context\nDynamic runtime, memory, MCP, and provider context remain independent.",
                     "type": "string"
                 },
+                "network_tracing": {
+                    "type": "boolean"
+                },
                 "notifications": {
                     "type": "string"
                 },
@@ -4259,6 +7036,15 @@ const docTemplate = `{
                     "items": {
                         "type": "string"
                     }
+                },
+                "summarization_context_cap": {
+                    "type": "integer"
+                },
+                "summarization_fast_mode": {
+                    "type": "boolean"
+                },
+                "summarization_max_tokens": {
+                    "type": "integer"
                 },
                 "tui": {
                     "$ref": "#/definitions/config.TUIOptions"
@@ -4458,6 +7244,9 @@ const docTemplate = `{
                         "$ref": "#/definitions/proto.Attachment"
                     }
                 },
+                "delivery_mode": {
+                    "type": "string"
+                },
                 "permission_mode": {
                     "$ref": "#/definitions/proto.AgentPermissionMode"
                 },
@@ -4539,6 +7328,9 @@ const docTemplate = `{
                         "$ref": "#/definitions/proto.Todo"
                     }
                 },
+                "unseen_local_tokens": {
+                    "type": "integer"
+                },
                 "updated_at": {
                     "type": "integer"
                 }
@@ -4569,6 +7361,101 @@ const docTemplate = `{
                 },
                 "mime_type": {
                     "type": "string"
+                }
+            }
+        },
+        "proto.AuthenticationProviderSurface": {
+            "type": "object",
+            "properties": {
+                "authentication": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerregistry.Authentication"
+                    }
+                },
+                "availability": {
+                    "type": "string"
+                },
+                "available": {
+                    "type": "boolean"
+                },
+                "brand": {
+                    "$ref": "#/definitions/providerregistry.Brand"
+                },
+                "configuration_fields": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/manifest.FieldDisplay"
+                    }
+                },
+                "configuration_schema": {
+                    "type": "object",
+                    "additionalProperties": {}
+                },
+                "default_large_model": {
+                    "type": "string"
+                },
+                "default_small_model": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "diagnostic": {
+                    "type": "string"
+                },
+                "flat_rate": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "images": {
+                    "$ref": "#/definitions/manifest.ImagePolicy"
+                },
+                "instructions": {
+                    "$ref": "#/definitions/providerregistry.InstructionSurface"
+                },
+                "models": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/catalog.Model"
+                    }
+                },
+                "name": {
+                    "type": "string"
+                },
+                "order": {
+                    "type": "integer"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerauth.Owner"
+                },
+                "runtime_controls": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerregistry.RuntimeControlSurface"
+                    }
+                },
+                "usage_available": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "proto.AuthenticationWorkspaceView": {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Config"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "provider_surfaces": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/proto.AuthenticationProviderSurface"
+                    }
                 }
             }
         },
@@ -4660,6 +7547,89 @@ const docTemplate = `{
                 "value": {}
             }
         },
+        "proto.CreateWorkspaceRequest": {
+            "type": "object",
+            "properties": {
+                "authority": {
+                    "$ref": "#/definitions/config.RemoteAuthority"
+                },
+                "authority_mode": {
+                    "type": "string"
+                },
+                "channels": {
+                    "description": "Channels lists the MCP servers opted in as channels for this workspace\n(from the --channels flag).",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "client_id": {
+                    "type": "string"
+                },
+                "config": {
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Config"
+                },
+                "connected_clients": {
+                    "type": "integer"
+                },
+                "data_dir": {
+                    "type": "string"
+                },
+                "debug": {
+                    "type": "boolean"
+                },
+                "env": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "forwarded_accounts": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/config.ForwardedAccount"
+                    }
+                },
+                "forwarded_providers": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/config.ProviderConfig"
+                    }
+                },
+                "id": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "provider_surfaces": {
+                    "description": "ProviderSurfaces is the execution host's redacted registry-generated\nprovider presentation metadata.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/proto.ProviderSurface"
+                    }
+                },
+                "requested_data_dir": {
+                    "type": "string"
+                },
+                "runtime": {
+                    "$ref": "#/definitions/config.RemoteRuntimeProposal"
+                },
+                "skills": {
+                    "description": "Skills carries the snapshot of skill discovery state at workspace\ncreation time. Subsequent updates flow through the SSE event\nstream.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/proto.SkillState"
+                    }
+                },
+                "version": {
+                    "type": "string"
+                },
+                "yolo": {
+                    "type": "boolean"
+                }
+            }
+        },
         "proto.CurrentSession": {
             "type": "object",
             "properties": {
@@ -4716,13 +7686,20 @@ const docTemplate = `{
                 }
             }
         },
+        "proto.ImportCopilotRequest": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                }
+            }
+        },
         "proto.ImportCopilotResponse": {
             "type": "object",
             "properties": {
                 "success": {
                     "type": "boolean"
-                },
-                "token": {}
+                }
             }
         },
         "proto.LSPClientInfo": {
@@ -4947,6 +7924,14 @@ const docTemplate = `{
                 "Tool"
             ]
         },
+        "proto.ModelOverridesRequest": {
+            "type": "object",
+            "properties": {
+                "state": {
+                    "$ref": "#/definitions/config.AgentModelState"
+                }
+            }
+        },
         "proto.PermissionAction": {
             "type": "string",
             "enum": [
@@ -5126,6 +8111,340 @@ const docTemplate = `{
                 }
             }
         },
+        "proto.ProviderAPIKeyCheckRequest": {
+            "type": "object",
+            "properties": {
+                "check_id": {
+                    "type": "string"
+                },
+                "credential_id": {
+                    "type": "string"
+                },
+                "source": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "proto.ProviderAPIKeyCheckResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/proto.ProviderAuthenticationError"
+                },
+                "outcome": {
+                    "$ref": "#/definitions/providerauth.APIKeyCheckOutcome"
+                }
+            }
+        },
+        "proto.ProviderAPIKeySaveRequest": {
+            "type": "object",
+            "properties": {
+                "check_id": {
+                    "type": "string"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "proto.ProviderAccountRemoveRequest": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "string"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "proto.ProviderAccountSwitchRequest": {
+            "type": "object",
+            "properties": {
+                "account_id": {
+                    "type": "string"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "proto.ProviderAccountsState": {
+            "type": "object",
+            "properties": {
+                "accounts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerauth.AccountSummary"
+                    }
+                },
+                "status": {
+                    "$ref": "#/definitions/providerauth.Status"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "proto.ProviderAuthenticationError": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.ProviderAuthenticationMutationResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/proto.ProviderAuthenticationError"
+                },
+                "outcome": {
+                    "$ref": "#/definitions/providerauth.MutationOutcome"
+                },
+                "workspace": {
+                    "$ref": "#/definitions/proto.AuthenticationWorkspaceView"
+                }
+            }
+        },
+        "proto.ProviderAuthenticationSnapshot": {
+            "type": "object",
+            "properties": {
+                "generation": {
+                    "$ref": "#/definitions/providerauth.Generation"
+                },
+                "providers": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerauth.Status"
+                    }
+                },
+                "workspace_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.ProviderAuthenticationTarget": {
+            "type": "object",
+            "properties": {
+                "generation": {
+                    "$ref": "#/definitions/providerauth.Generation"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerauth.Owner"
+                },
+                "workspace_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.ProviderLocalRepairError": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.ProviderLocalRepairRequest": {
+            "type": "object",
+            "properties": {
+                "abandon": {
+                    "type": "boolean"
+                },
+                "apply": {
+                    "type": "boolean"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "operation_workspace_id": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "workspace_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.ProviderLocalRepairResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/proto.ProviderLocalRepairError"
+                },
+                "request": {
+                    "$ref": "#/definitions/providerauth.LocalRepairRequest"
+                },
+                "result": {
+                    "$ref": "#/definitions/config.LocalAuthenticationRepairResult"
+                }
+            }
+        },
+        "proto.ProviderLogoutRequest": {
+            "type": "object",
+            "properties": {
+                "operation_id": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "proto.ProviderOAuthLoginAbandonRequest": {
+            "type": "object",
+            "properties": {
+                "original_operation_id": {
+                    "type": "string"
+                },
+                "original_workspace_id": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "proto.ProviderOAuthLoginAbandonResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/proto.ProviderAuthenticationError"
+                },
+                "outcome": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginAbandonOutcome"
+                }
+            }
+        },
+        "proto.ProviderOAuthLoginBindRequest": {
+            "type": "object",
+            "properties": {
+                "binding_id": {
+                    "type": "string"
+                },
+                "login": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginRef"
+                },
+                "port": {
+                    "type": "integer"
+                }
+            }
+        },
+        "proto.ProviderOAuthLoginCodeRequest": {
+            "type": "object",
+            "properties": {
+                "input": {
+                    "type": "string"
+                },
+                "login": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginRef"
+                },
+                "submission_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.ProviderOAuthLoginRecoveryListResponse": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "$ref": "#/definitions/proto.ProviderAuthenticationError"
+                },
+                "list": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginRecoveryList"
+                }
+            }
+        },
+        "proto.ProviderOAuthLoginRecoveryRequest": {
+            "type": "object",
+            "properties": {
+                "login": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginRequest"
+                },
+                "original_operation_id": {
+                    "type": "string"
+                },
+                "original_workspace_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.ProviderOAuthLoginRequest": {
+            "type": "object",
+            "properties": {
+                "login_id": {
+                    "type": "string"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "proto.ProviderOAuthLoginResponse": {
+            "type": "object",
+            "properties": {
+                "binding_id": {
+                    "type": "string"
+                },
+                "error": {
+                    "$ref": "#/definitions/proto.ProviderAuthenticationError"
+                },
+                "login": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginRef"
+                },
+                "port": {
+                    "type": "integer"
+                },
+                "recovery_operation_id": {
+                    "type": "string"
+                },
+                "recovery_workspace_id": {
+                    "type": "string"
+                },
+                "state": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginState"
+                },
+                "submission_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.ProviderOAuthLoginWaitRequest": {
+            "type": "object",
+            "properties": {
+                "after": {
+                    "type": "integer"
+                },
+                "login": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginRef"
+                }
+            }
+        },
         "proto.ProviderSurface": {
             "type": "object",
             "properties": {
@@ -5204,6 +8523,34 @@ const docTemplate = `{
                 }
             }
         },
+        "proto.ProviderToolingRequest": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                },
+                "profile": {
+                    "type": "string"
+                },
+                "scope": {
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
+                }
+            }
+        },
+        "proto.ProviderToolingState": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                },
+                "profile": {
+                    "type": "string"
+                },
+                "scope": {
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
+                }
+            }
+        },
         "proto.QuestionAnswer": {
             "type": "object",
             "properties": {
@@ -5255,6 +8602,9 @@ const docTemplate = `{
         "proto.QueuedPrompt": {
             "type": "object",
             "properties": {
+                "delivery_mode": {
+                    "type": "string"
+                },
                 "prompt": {
                     "type": "string"
                 },
@@ -5282,6 +8632,63 @@ const docTemplate = `{
                 },
                 "result": {
                     "$ref": "#/definitions/proto.SkillReadResult"
+                }
+            }
+        },
+        "proto.RemoteRuntimeCapabilities": {
+            "type": "object",
+            "properties": {
+                "compiler": {
+                    "type": "string"
+                },
+                "disconnect_grace_millis": {
+                    "type": "integer"
+                },
+                "host_version": {
+                    "type": "string"
+                },
+                "max_bundles": {
+                    "type": "integer"
+                },
+                "max_providers": {
+                    "type": "integer"
+                },
+                "max_request_bytes": {
+                    "type": "integer"
+                },
+                "principal": {
+                    "type": "string"
+                },
+                "protocol": {
+                    "type": "string"
+                },
+                "runtime_version": {
+                    "type": "integer"
+                },
+                "workspace_sharing": {
+                    "type": "string"
+                }
+            }
+        },
+        "proto.RemoveProviderToolingRequest": {
+            "type": "object",
+            "properties": {
+                "owner": {
+                    "$ref": "#/definitions/providerregistry.RegistrationOwner"
+                },
+                "scope": {
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
+                }
+            }
+        },
+        "proto.RuntimeControlRequest": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
+                },
+                "target": {
+                    "$ref": "#/definitions/config.RuntimeControlTarget"
                 }
             }
         },
@@ -5344,8 +8751,28 @@ const docTemplate = `{
                         "$ref": "#/definitions/proto.Todo"
                     }
                 },
+                "unseen_local_tokens": {
+                    "type": "integer"
+                },
                 "updated_at": {
                     "type": "integer"
+                }
+            }
+        },
+        "proto.SetRuntimeControlRequest": {
+            "type": "object",
+            "properties": {
+                "scope": {
+                    "$ref": "#/definitions/github_com_example-git_crux_internal_config.Scope"
+                },
+                "target": {
+                    "$ref": "#/definitions/config.RuntimeControlTarget"
+                },
+                "value": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
                 }
             }
         },
@@ -5456,6 +8883,17 @@ const docTemplate = `{
                 }
             }
         },
+        "proto.UpdateRemoteRuntimeRequest": {
+            "type": "object",
+            "properties": {
+                "expected_revision": {
+                    "type": "integer"
+                },
+                "runtime": {
+                    "$ref": "#/definitions/config.RemoteRuntimeProposal"
+                }
+            }
+        },
         "proto.VersionInfo": {
             "type": "object",
             "properties": {
@@ -5479,6 +8917,9 @@ const docTemplate = `{
         "proto.Workspace": {
             "type": "object",
             "properties": {
+                "authority": {
+                    "$ref": "#/definitions/config.RemoteAuthority"
+                },
                 "channels": {
                     "description": "Channels lists the MCP servers opted in as channels for this workspace\n(from the --channels flag).",
                     "type": "array",
@@ -5532,6 +8973,9 @@ const docTemplate = `{
                         "$ref": "#/definitions/proto.ProviderSurface"
                     }
                 },
+                "requested_data_dir": {
+                    "type": "string"
+                },
                 "skills": {
                     "description": "Skills carries the snapshot of skill discovery state at workspace\ncreation time. Subsequent updates flow through the SSE event\nstream.",
                     "type": "array",
@@ -5544,6 +8988,489 @@ const docTemplate = `{
                 },
                 "yolo": {
                     "type": "boolean"
+                }
+            }
+        },
+        "providerauth.APIKeyCheckOutcome": {
+            "type": "object",
+            "properties": {
+                "check_id": {
+                    "type": "string"
+                },
+                "checked_target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                },
+                "credential_id": {
+                    "type": "string"
+                },
+                "pending_configuration": {
+                    "type": "boolean"
+                },
+                "previous": {
+                    "$ref": "#/definitions/providerauth.Target"
+                },
+                "probe": {
+                    "$ref": "#/definitions/config.ConnectionProbeResult"
+                },
+                "schema_only": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "providerauth.AccountSummary": {
+            "type": "object",
+            "properties": {
+                "active": {
+                    "type": "boolean"
+                },
+                "credential_state": {
+                    "type": "string"
+                },
+                "display_name": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "description": "Unix milliseconds; nonpositive means no recorded expiry.",
+                    "type": "integer"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "refreshable": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "providerauth.AccountsState": {
+            "type": "object",
+            "properties": {
+                "accounts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerauth.AccountSummary"
+                    }
+                },
+                "status": {
+                    "$ref": "#/definitions/providerauth.Status"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "providerauth.Change": {
+            "type": "object",
+            "properties": {
+                "current": {
+                    "$ref": "#/definitions/providerauth.AccountsState"
+                },
+                "models": {
+                    "$ref": "#/definitions/providerauth.ModelState"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "previous": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "providerauth.CredentialSlot": {
+            "type": "object",
+            "properties": {
+                "configured": {
+                    "type": "boolean"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "kind": {
+                    "type": "string"
+                },
+                "property": {
+                    "type": "string"
+                }
+            }
+        },
+        "providerauth.CredentialStatus": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string"
+                },
+                "refreshable": {
+                    "type": "boolean"
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
+        "providerauth.Generation": {
+            "type": "object",
+            "properties": {
+                "epoch": {
+                    "type": "string"
+                },
+                "sequence": {
+                    "type": "integer"
+                }
+            }
+        },
+        "providerauth.LocalRepairRequest": {
+            "type": "object",
+            "properties": {
+                "abandon": {
+                    "type": "boolean"
+                },
+                "apply": {
+                    "type": "boolean"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "operation_workspace_id": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "workspace_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "providerauth.ModelState": {
+            "type": "object",
+            "properties": {
+                "large": {
+                    "$ref": "#/definitions/providerauth.OwnedModelState"
+                },
+                "small": {
+                    "$ref": "#/definitions/providerauth.OwnedModelState"
+                }
+            }
+        },
+        "providerauth.MutationOutcome": {
+            "type": "object",
+            "properties": {
+                "change": {
+                    "$ref": "#/definitions/providerauth.Change"
+                },
+                "check_id": {
+                    "type": "string"
+                },
+                "credential_id": {
+                    "type": "string"
+                },
+                "login_id": {
+                    "type": "string"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "previous": {
+                    "$ref": "#/definitions/providerauth.Target"
+                },
+                "progress": {
+                    "$ref": "#/definitions/providerauth.MutationProgress"
+                },
+                "removed_account_id": {
+                    "type": "string"
+                },
+                "superseded": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "providerauth.MutationProgress": {
+            "type": "object",
+            "properties": {
+                "account_refreshed": {
+                    "type": "boolean"
+                },
+                "accounts_saved": {
+                    "type": "boolean"
+                },
+                "config_saved": {
+                    "type": "boolean"
+                },
+                "runtime_published": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "providerauth.OAuthLoginAbandonOutcome": {
+            "type": "object",
+            "properties": {
+                "abandoned": {
+                    "type": "boolean"
+                },
+                "exchange_outcome": {
+                    "type": "string"
+                },
+                "request": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginAbandonRequest"
+                }
+            }
+        },
+        "providerauth.OAuthLoginAbandonRequest": {
+            "type": "object",
+            "properties": {
+                "original_operation_id": {
+                    "type": "string"
+                },
+                "original_workspace_id": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "providerauth.OAuthLoginCallback": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string"
+                },
+                "path": {
+                    "type": "string"
+                },
+                "port": {
+                    "type": "integer"
+                }
+            }
+        },
+        "providerauth.OAuthLoginPhase": {
+            "type": "string",
+            "enum": [
+                "preparing",
+                "waiting-for-loopback",
+                "waiting-for-browser",
+                "waiting-for-code",
+                "waiting-for-device",
+                "authorizing",
+                "authorized",
+                "committing",
+                "complete",
+                "canceled",
+                "expired",
+                "failed"
+            ],
+            "x-enum-varnames": [
+                "OAuthLoginPreparing",
+                "OAuthLoginWaitingLoopback",
+                "OAuthLoginWaitingBrowser",
+                "OAuthLoginWaitingCode",
+                "OAuthLoginWaitingDevice",
+                "OAuthLoginAuthorizing",
+                "OAuthLoginAuthorized",
+                "OAuthLoginCommitting",
+                "OAuthLoginComplete",
+                "OAuthLoginCanceled",
+                "OAuthLoginExpired",
+                "OAuthLoginFailed"
+            ]
+        },
+        "providerauth.OAuthLoginRecordedResult": {
+            "type": "object",
+            "properties": {
+                "abandoned": {
+                    "type": "boolean"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "original_workspace_id": {
+                    "type": "string"
+                },
+                "state": {
+                    "type": "string"
+                }
+            }
+        },
+        "providerauth.OAuthLoginRecovery": {
+            "type": "object",
+            "properties": {
+                "original_operation_id": {
+                    "type": "string"
+                },
+                "original_workspace_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "providerauth.OAuthLoginRecoveryList": {
+            "type": "object",
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerauth.OAuthLoginRecordedResult"
+                    }
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "providerauth.OAuthLoginRef": {
+            "type": "object",
+            "properties": {
+                "login_id": {
+                    "type": "string"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "providerauth.OAuthLoginRequest": {
+            "type": "object",
+            "properties": {
+                "login_id": {
+                    "type": "string"
+                },
+                "operation_id": {
+                    "type": "string"
+                },
+                "target": {
+                    "$ref": "#/definitions/providerauth.Target"
+                }
+            }
+        },
+        "providerauth.OAuthLoginState": {
+            "type": "object",
+            "properties": {
+                "authorization_url": {
+                    "type": "string"
+                },
+                "callback": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginCallback"
+                },
+                "expires_at": {
+                    "description": "Unix milliseconds; zero means no declared deadline.",
+                    "type": "integer"
+                },
+                "login": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginRef"
+                },
+                "phase": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginPhase"
+                },
+                "recovery": {
+                    "$ref": "#/definitions/providerauth.OAuthLoginRecovery"
+                },
+                "sequence": {
+                    "type": "integer"
+                },
+                "user_code": {
+                    "type": "string"
+                }
+            }
+        },
+        "providerauth.OwnedModelState": {
+            "type": "object",
+            "properties": {
+                "model": {
+                    "$ref": "#/definitions/config.SelectedModel"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerauth.Owner"
+                }
+            }
+        },
+        "providerauth.Owner": {
+            "type": "object",
+            "properties": {
+                "compatibility_adapter": {
+                    "$ref": "#/definitions/providerregistry.Construction"
+                },
+                "construction": {
+                    "$ref": "#/definitions/providerregistry.Construction"
+                },
+                "has_manifest": {
+                    "type": "boolean"
+                },
+                "has_oauth": {
+                    "type": "boolean"
+                },
+                "has_preset": {
+                    "type": "boolean"
+                },
+                "manifest_id": {
+                    "type": "string"
+                },
+                "manifest_version": {
+                    "type": "string"
+                },
+                "oauth_adapter": {
+                    "$ref": "#/definitions/providerregistry.LoginAdapter"
+                },
+                "oauth_flow_id": {
+                    "type": "string"
+                },
+                "preset_digest": {
+                    "type": "string"
+                },
+                "preset_id": {
+                    "type": "string"
+                },
+                "preset_version": {
+                    "type": "string"
+                },
+                "provider_id": {
+                    "type": "string"
+                }
+            }
+        },
+        "providerauth.Status": {
+            "type": "object",
+            "properties": {
+                "account_state": {
+                    "type": "string"
+                },
+                "active_account_id": {
+                    "type": "string"
+                },
+                "configured": {
+                    "type": "boolean"
+                },
+                "credential_slots": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerauth.CredentialSlot"
+                    }
+                },
+                "credentials": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerauth.CredentialStatus"
+                    }
+                },
+                "disabled": {
+                    "type": "boolean"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerauth.Owner"
+                }
+            }
+        },
+        "providerauth.Target": {
+            "type": "object",
+            "properties": {
+                "generation": {
+                    "$ref": "#/definitions/providerauth.Generation"
+                },
+                "owner": {
+                    "$ref": "#/definitions/providerauth.Owner"
+                },
+                "workspace_id": {
+                    "type": "string"
                 }
             }
         },
@@ -5560,6 +9487,34 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "providerplugin.TransportBundle": {
+            "type": "object",
+            "properties": {
+                "digest": {
+                    "type": "string"
+                },
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/providerplugin.TransportFile"
+                    }
+                }
+            }
+        },
+        "providerplugin.TransportFile": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer"
+                    }
+                },
+                "path": {
                     "type": "string"
                 }
             }
@@ -5627,6 +9582,17 @@ const docTemplate = `{
                 "ConstructionGeminiInteraction",
                 "ConstructionGenericJSON",
                 "ConstructionOpenAICompat"
+            ]
+        },
+        "providerregistry.HostRuntimeControl": {
+            "type": "string",
+            "enum": [
+                "response-verbosity",
+                "analysis-effort"
+            ],
+            "x-enum-varnames": [
+                "HostResponseVerbosity",
+                "HostAnalysisEffort"
             ]
         },
         "providerregistry.InstructionSurface": {
@@ -5712,14 +9678,59 @@ const docTemplate = `{
                 }
             }
         },
+        "providerregistry.RuntimeControlBinding": {
+            "type": "object",
+            "properties": {
+                "fallback_mode": {
+                    "type": "string"
+                },
+                "global_override": {
+                    "$ref": "#/definitions/providerregistry.HostRuntimeControl"
+                },
+                "host_option": {
+                    "$ref": "#/definitions/providerregistry.HostRuntimeControl"
+                },
+                "kind": {
+                    "$ref": "#/definitions/providerregistry.RuntimeControlBindingKind"
+                }
+            }
+        },
+        "providerregistry.RuntimeControlBindingKind": {
+            "type": "string",
+            "enum": [
+                "host-option",
+                "model-option",
+                "provider-option"
+            ],
+            "x-enum-varnames": [
+                "RuntimeControlHostOption",
+                "RuntimeControlModelOption",
+                "RuntimeControlProviderOption"
+            ]
+        },
         "providerregistry.RuntimeControlSurface": {
             "type": "object",
             "properties": {
                 "available": {
                     "type": "boolean"
                 },
+                "available_models": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "binding": {
+                    "$ref": "#/definitions/providerregistry.RuntimeControlBinding"
+                },
                 "default": {},
                 "description": {
+                    "type": "string"
+                },
+                "descriptor_digest": {
+                    "type": "string"
+                },
+                "diagnostic": {
                     "type": "string"
                 },
                 "id": {
@@ -5768,6 +9779,43 @@ const docTemplate = `{
                 "Minute",
                 "Hour"
             ]
+        },
+        "usage.Usage": {
+            "type": "object",
+            "properties": {
+                "fetched_at": {
+                    "type": "string"
+                },
+                "plan": {
+                    "type": "string"
+                },
+                "provider_id": {
+                    "type": "string"
+                },
+                "windows": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/usage.Window"
+                    }
+                }
+            }
+        },
+        "usage.Window": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "description": "Name is a short display label, e.g. \"5h\", \"wk\", \"pro\".",
+                    "type": "string"
+                },
+                "percent": {
+                    "description": "Percent is utilization 0-100.",
+                    "type": "integer"
+                },
+                "resets_at": {
+                    "description": "ResetsAt is when the window resets; zero when unknown.",
+                    "type": "string"
+                }
+            }
         }
     }
 }`
@@ -5779,7 +9827,7 @@ var SwaggerInfo = &swag.Spec{
 	BasePath:         "/v1",
 	Schemes:          []string{},
 	Title:            "Crux API",
-	Description:      "Crux is a terminal-based AI coding assistant. This API is served over a Unix socket (or Windows named pipe) and provides programmatic access to workspaces, sessions, agents, LSP, MCP, and more.",
+	Description:      "Crux is a terminal-based AI coding assistant. This API is served locally over a Unix socket or Windows named pipe, or remotely over TLS 1.3 with mutual certificate authentication. Authenticated remote workspace routes bind IDs to the verified client principal. Client-owned runtimes negotiate capabilities before private admission; public discovery never supplies private credentials for restoration. Enrollment and authorization administration are separate local operations.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",
