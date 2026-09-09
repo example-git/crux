@@ -29,6 +29,13 @@ type deviceState struct {
 	expiresAt  time.Time
 }
 
+func (a *DeviceAuthorization) ExpiresAt() time.Time {
+	if a == nil {
+		return time.Time{}
+	}
+	return a.state.expiresAt
+}
+
 func (e *Executor) RequestDeviceCode(ctx context.Context) (*DeviceAuthorization, error) {
 	declaration := e.flow.DeviceCode
 	if e.flow.Redirect.Mode != "device-code" || declaration == nil {
@@ -69,6 +76,8 @@ func (e *Executor) PollDeviceCode(ctx context.Context, authorization *DeviceAuth
 	if declaration == nil || authorization == nil || authorization.state.deviceCode == "" {
 		return nil, errors.New("OAuth device authorization state is invalid")
 	}
+	ctx, cancel := context.WithDeadline(ctx, authorization.state.expiresAt)
+	defer cancel()
 	interval := authorization.state.interval
 	for {
 		remaining := time.Until(authorization.state.expiresAt)

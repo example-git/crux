@@ -28,6 +28,7 @@ const (
 var ErrNotAvailable = errors.New("github copilot not available")
 
 type DeviceCode struct {
+	expiresAt       time.Time
 	DeviceCode      string `json:"device_code"`
 	UserCode        string `json:"user_code"`
 	VerificationURI string `json:"verification_uri"`
@@ -69,13 +70,30 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&dc); err != nil {
 		return nil, err
 	}
+	dc.expiresAt = time.Now().Add(time.Duration(dc.ExpiresIn) * time.Second)
 	return &dc, nil
+}
+
+// ExpiresAt is the exact deadline captured from the device-code response.
+// Manually constructed legacy DeviceCode values have no captured deadline.
+func (dc *DeviceCode) ExpiresAt() time.Time {
+	if dc == nil {
+		return time.Time{}
+	}
+	return dc.expiresAt
 }
 
 // PollForToken polls GitHub for the access token after user authorization.
 func PollForToken(ctx context.Context, dc *DeviceCode) (*oauth.Token, error) {
 	interval := max(dc.Interval, 5)
-	deadline := time.Now().Add(time.Duration(dc.ExpiresIn) * time.Second)
+	deadline := dc.expiresAt
+	if deadline.IsZero() {
+		// Compatibility for callers that construct DeviceCode directly. Actual
+		// RequestDeviceCode results always retain their original deadline.
+		deadline = time.Now().Add(time.Duration(dc.ExpiresIn) * time.Second)
+	}
+	ctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 	ticker := time.NewTicker(time.Duration(interval) * time.Second)
 	defer ticker.Stop()
 

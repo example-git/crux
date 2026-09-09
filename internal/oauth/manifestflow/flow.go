@@ -105,22 +105,17 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 	if err := providertransport.ValidateContextOwner(ctx); err != nil {
 		return nil, err
 	}
-	verifier, challenge, err := createPKCE(e.flow.PKCE)
+	requirement, err := e.CallbackRequirement()
 	if err != nil {
 		return nil, err
 	}
-	state := ""
-	if e.flow.Redirect.StateRequired {
-		state, err = randomString(32)
+	if requirement.Mode == "hosted-paste" {
+		challenge, err := e.PrepareCode(ctx, 0)
 		if err != nil {
 			return nil, err
 		}
-	}
-	if e.flow.Redirect.Mode == "hosted-paste" {
-		return e.authorizeHostedPaste(ctx, open, readCode, verifier, challenge, state)
-	}
-	if e.flow.Redirect.Mode != "loopback-dynamic" && e.flow.Redirect.Mode != "loopback-fixed" {
-		return nil, fmt.Errorf("OAuth redirect mode %q requires another host adapter", e.flow.Redirect.Mode)
+		defer challenge.Close()
+		return e.authorizeHostedPaste(ctx, open, readCode, challenge)
 	}
 	network := "tcp4"
 	address := net.JoinHostPort("127.0.0.1", "0")
@@ -133,16 +128,14 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 		return nil, fmt.Errorf("start OAuth callback server: %w", err)
 	}
 	defer listener.Close()
-	path := e.flow.Redirect.CallbackPath
-	if path == "" {
-		path = "/callback"
-	}
+	path := requirement.Path
 	port := listener.Addr().(*net.TCPAddr).Port
-	redirectURI := fmt.Sprintf("http://%s%s", net.JoinHostPort("localhost", strconv.Itoa(port)), path)
-	authorizationURL, err := e.authorizationURL(redirectURI, challenge, state)
+	challenge, err := e.PrepareCode(ctx, uint16(port))
 	if err != nil {
 		return nil, err
 	}
+	defer challenge.Close()
+	authorizationURL := challenge.AuthorizationURL()
 
 	type result struct {
 		token *oauth.Token
@@ -152,8 +145,11 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 	var once sync.Once
 	finish := func(value result) { once.Do(func() { results <- value }) }
 	var claimed atomic.Bool
-	mux := http.NewServeMux()
-	mux.HandleFunc(path, func(w http.ResponseWriter, request *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.EscapedPath() != path {
+			http.NotFound(w, request)
+			return
+		}
 		if !claimed.CompareAndSwap(false, true) {
 			http.Error(w, "OAuth callback already received.", http.StatusConflict)
 			return
@@ -163,28 +159,7 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 			finish(result{err: err})
 			return
 		}
-		query := request.URL.Query()
-		if providerError := query.Get("error"); providerError != "" {
-			detail := query.Get("error_description")
-			_ = callback.Serve(w, callback.Result{Subject: e.providerName, ErrorCode: providerError, ErrorDescription: detail})
-			finish(result{err: fmt.Errorf("OAuth authorization failed: %s", providerError)})
-			return
-		}
-		if (e.flow.Redirect.StateRequired && query.Get("state") != state) || query.Get("code") == "" {
-			_ = callback.Serve(w, callback.Result{Subject: e.providerName, ErrorCode: "invalid_request", ErrorDescription: "Invalid OAuth callback."})
-			finish(result{err: errors.New("OAuth callback validation failed")})
-			return
-		}
-		token, exchangeErr := e.exchange(ctx, e.flow.TokenRequest.Code, map[string]string{
-			"oauth.code": query.Get("code"), "oauth.redirect_uri": redirectURI,
-			"oauth.pkce_verifier": verifier, "oauth.state": state,
-		}, "")
-		if exchangeErr == nil {
-			exchangeErr = providertransport.ValidateContextOwner(ctx)
-		}
-		if exchangeErr == nil {
-			exchangeErr = ctx.Err()
-		}
+		token, exchangeErr := challenge.Exchange(ctx, request.URL.RawQuery)
 		if exchangeErr != nil {
 			_ = callback.Serve(w, callback.Result{Subject: e.providerName, ErrorCode: "token_exchange_failed", ErrorDescription: "Authorization could not be completed."})
 			finish(result{err: exchangeErr})
@@ -193,7 +168,7 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 		_ = callback.Serve(w, callback.Result{Subject: e.providerName})
 		finish(result{token: token})
 	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 15 * time.Second}
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 15 * time.Second}
 	go func() {
 		if serveErr := server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 			finish(result{err: fmt.Errorf("OAuth callback server: %w", serveErr)})
@@ -222,22 +197,14 @@ func (e *Executor) Authorize(ctx context.Context, open func(string) error, readC
 	}
 }
 
-func (e *Executor) authorizeHostedPaste(ctx context.Context, open func(string) error, readCode func() (string, error), verifier, challenge, state string) (*oauth.Token, error) {
+func (e *Executor) authorizeHostedPaste(ctx context.Context, open func(string) error, readCode func() (string, error), challenge *oauth.CodeChallenge) (*oauth.Token, error) {
 	if open == nil {
 		return nil, errors.New("hosted OAuth flow requires an authorization URL opener")
 	}
 	if readCode == nil {
 		return nil, errors.New("hosted OAuth flow requires pasted callback input")
 	}
-	redirectURI := e.flow.Redirect.URI
-	if redirectURI == "" {
-		return nil, errors.New("hosted OAuth flow has no redirect URI")
-	}
-	authorizationURL, err := e.authorizationURL(redirectURI, challenge, state)
-	if err != nil {
-		return nil, err
-	}
-	if err := providertransport.OpenURLWithContextOwnerValidator(ctx, open, authorizationURL); err != nil {
+	if err := providertransport.OpenURLWithContextOwnerValidator(ctx, open, challenge.AuthorizationURL()); err != nil {
 		return nil, fmt.Errorf("open authorization URL: %w", err)
 	}
 	type pastedResult struct {
@@ -245,45 +212,16 @@ func (e *Executor) authorizeHostedPaste(ctx context.Context, open func(string) e
 		err   error
 	}
 	pasted := make(chan pastedResult, 1)
-	go func() {
-		value, readErr := readCode()
-		pasted <- pastedResult{value: value, err: readErr}
-	}()
-	timeout := time.Duration(e.flow.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = 5 * time.Minute
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	var input string
+	go func() { value, err := readCode(); pasted <- pastedResult{value, err} }()
 	select {
 	case result := <-pasted:
 		if result.err != nil {
 			return nil, result.err
 		}
-		input = result.value
+		return challenge.Exchange(ctx, result.value)
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-timer.C:
-		return nil, errors.New("OAuth authorization timed out")
 	}
-	code, returnedState, providerError, err := parseHostedCallback(input)
-	if err != nil {
-		return nil, err
-	}
-	if providerError != "" {
-		return nil, fmt.Errorf("OAuth authorization failed: %s", providerError)
-	}
-	// Hosted providers commonly display only the authorization code. Validate
-	// state whenever the pasted value carries it; a mismatched value always
-	// fails, while a bare code retains compatibility with those providers.
-	if returnedState != "" && returnedState != state {
-		return nil, errors.New("OAuth state mismatch — possible CSRF, please try again")
-	}
-	return e.exchange(ctx, e.flow.TokenRequest.Code, map[string]string{
-		"oauth.code": code, "oauth.redirect_uri": redirectURI,
-		"oauth.pkce_verifier": verifier, "oauth.state": state,
-	}, "")
 }
 
 func parseHostedCallback(input string) (code, state, providerError string, err error) {
@@ -293,13 +231,17 @@ func parseHostedCallback(input string) (code, state, providerError string, err e
 	}
 	var values url.Values
 	if parsed, parseErr := url.Parse(input); parseErr == nil && parsed.IsAbs() {
-		values = parsed.Query()
-		if len(values) == 0 && parsed.Fragment != "" {
-			values, _ = url.ParseQuery(parsed.Fragment)
+		raw := parsed.RawQuery
+		if raw == "" {
+			raw = parsed.Fragment
 		}
+		values, err = url.ParseQuery(raw)
 	} else if strings.Contains(input, "=") {
 		raw := strings.TrimPrefix(strings.TrimPrefix(input, "?"), "#")
-		values, _ = url.ParseQuery(raw)
+		values, err = url.ParseQuery(raw)
+	}
+	if err != nil || len(values["code"]) > 1 || len(values["state"]) > 1 || len(values["error"]) > 1 {
+		return "", "", "", errors.New("pasted OAuth callback is malformed or contains duplicate parameters")
 	}
 	if values != nil {
 		if providerError := values.Get("error"); providerError != "" {
