@@ -31,8 +31,11 @@ func stripV1Suffix(baseURL string) string {
 // shared client. It resolves variable references in the base URL, API
 // key, and extra headers via the provided Resolver. Proven OAuth keys are
 // literal. The path is joined to the base URL with proper slash handling.
-func doRequest(ctx context.Context, method, baseURL, path, apiKey string, apiKeyLiteral bool, extraHeaders map[string]string, resolver Resolver, body any) (*http.Response, error) {
-	resolvedBase, _ := resolver.ResolveValue(baseURL)
+func doRequest(ctx context.Context, method, baseURL, path, apiKey string, apiKeyLiteral, baseURLLiteral bool, extraHeaders map[string]string, resolver Resolver, body any) (*http.Response, error) {
+	resolvedBase := baseURL
+	if !baseURLLiteral {
+		resolvedBase, _ = resolver.ResolveValue(baseURL)
+	}
 	resolvedKey := apiKey
 	if !apiKeyLiteral {
 		resolvedKey, _ = resolver.ResolveValue(apiKey)
@@ -84,7 +87,9 @@ type Config struct {
 	APIKey  string
 	// APIKeyLiteral is set only for a proven resolved key or matching OAuth access token.
 	APIKeyLiteral bool
-	ExtraHeaders  map[string]string
+	// BaseURLLiteral preserves a checked resolved endpoint.
+	BaseURLLiteral bool
+	ExtraHeaders   map[string]string
 	// Existing models from config — IDs present in this list are skipped
 	// during discovery (user-specified models win).
 	ExistingModels []catalog.Model
@@ -110,7 +115,7 @@ type modelsResponse struct {
 // Models whose IDs already appear in cfg.ExistingModels are skipped —
 // user-specified models take precedence.
 func DiscoverModels(ctx context.Context, cfg Config, resolver Resolver) ([]catalog.Model, error) {
-	resp, err := doRequest(ctx, http.MethodGet, cfg.BaseURL, "/models", cfg.APIKey, cfg.APIKeyLiteral, cfg.ExtraHeaders, resolver, nil)
+	resp, err := doRequest(ctx, http.MethodGet, cfg.BaseURL, "/models", cfg.APIKey, cfg.APIKeyLiteral, cfg.BaseURLLiteral, cfg.ExtraHeaders, resolver, nil)
 	if err != nil {
 		return nil, fmt.Errorf("discover models for provider %s: %w", cfg.ID, err)
 	}

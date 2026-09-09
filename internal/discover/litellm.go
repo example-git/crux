@@ -41,7 +41,7 @@ func init() {
 type litellmEnricher struct{}
 
 func (e *litellmEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catalog.Model) ([]catalog.Model, error) {
-	resp, err := doRequest(ctx, http.MethodGet, stripV1Suffix(cfg.BaseURL), "/model/info", cfg.APIKey, cfg.APIKeyLiteral, cfg.ExtraHeaders, resolver, nil)
+	resp, err := doRequest(ctx, http.MethodGet, stripV1Suffix(cfg.BaseURL), "/model/info", cfg.APIKey, cfg.APIKeyLiteral, cfg.BaseURLLiteral, cfg.ExtraHeaders, resolver, nil)
 	if err != nil {
 		return models, nil
 	}

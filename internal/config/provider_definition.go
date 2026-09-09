@@ -17,11 +17,19 @@ import (
 // without reading accounts or reopening bundle files. Refresh preconditions and
 // whole-runtime collection must use the same representation.
 func (snapshot RuntimeSnapshot) ClientProviderDefinition(id string) (RemoteProviderDefinition, providerregistry.RegistrationOwner, error) {
+	return snapshot.clientProviderDefinition(id, snapshot.Resolve)
+}
+
+func (snapshot RuntimeSnapshot) clientProviderDefinition(id string, resolve func(string) (string, error)) (RemoteProviderDefinition, providerregistry.RegistrationOwner, error) {
 	definition, owner, err := snapshot.clientProviderDefinitionRaw(id)
 	if err != nil {
 		return definition, owner, err
 	}
-	definition.Config.BaseURL, err = snapshot.Resolve(definition.Config.BaseURL)
+	provider, _ := snapshot.config.Providers.Get(id)
+	if err := snapshot.validateResolvedProviderEndpointOwner(provider); err != nil {
+		return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, err
+	}
+	definition.Config.BaseURL, err = ResolveProviderEndpoint(provider, resolve)
 	if err != nil {
 		return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, errors.New("selected client endpoint cannot be resolved")
 	}
@@ -75,6 +83,7 @@ func (snapshot RuntimeSnapshot) clientProviderDefinitionRaw(id string) (RemotePr
 	}
 	definition.Config.APIKey, definition.Config.APIKeyTemplate, definition.Config.OAuthToken = "", "", nil
 	definition.Config.resolvedAPIKey = nil
+	definition.Config.resolvedEndpoint = nil
 	return definition, owner, nil
 }
 

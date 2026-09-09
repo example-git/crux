@@ -94,7 +94,7 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 		if !ok {
 			return proposal, fmt.Errorf("selected client provider %q is unavailable", id)
 		}
-		definition, owner, err := snapshot.ClientProviderDefinition(id)
+		definition, owner, err := snapshot.clientProviderDefinition(id, resolve)
 		if err != nil {
 			return proposal, err
 		}

@@ -2038,7 +2038,7 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 	if err != nil {
 		return nil, fmt.Errorf("resolve provider %s credential: %w", providerCfg.ID, err)
 	}
-	baseURL, err := snapshot.Resolve(providerCfg.BaseURL)
+	baseURL, err := snapshot.ResolveProviderEndpoint(providerCfg)
 	if err != nil {
 		return nil, fmt.Errorf("resolve provider %s endpoint: %w", providerCfg.ID, err)
 	}

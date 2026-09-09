@@ -144,7 +144,10 @@ func authenticationUnconfiguredProvider(before AuthenticationCapture, owner prov
 	}
 	provider, exists := original.Providers[owner.ProviderID]
 	provider = cloneProviderConfig(provider)
-	if !exists {
+	if !exists && owner.HasPreset {
+		provider.Owner = &ProviderOwnerReference{Type: ProviderOwnerPreset, Construction: providerregistry.ConstructionOpenAICompat}
+		provider.Preset = &ProviderPresetReference{ID: owner.PresetID, Version: owner.PresetVersion, Digest: owner.PresetDigest}
+	} else if !exists && registration.ProviderID != "" {
 		provider.Owner = providerOwnerReferenceForRegistration(registration)
 		if registration.Manifest != nil {
 			provider.Plugin = &ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
