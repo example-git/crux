@@ -32,6 +32,7 @@ func TransactCredentials(ctx context.Context, w Workspace, mutate func(Credentia
 
 type clientAuthority struct {
 	authenticationConnection  string
+	authenticationScope       string
 	authenticationJournal     *config.AuthenticationJournal
 	mu                        sync.Mutex
 	store                     *config.ConfigStore

@@ -21,10 +21,10 @@ import (
 // history below projects IDs and progress only; proposals, hashes and namespaces
 // never travel through authentication status, UI messages, or logs.
 type clientAuthenticationJournalRecord struct {
-	Version               int
-	Connection, Principal string
-	Original              *clientAuthenticationOriginalRecord `json:",omitempty"`
-	Review                *clientAuthenticationReviewRecord   `json:",omitempty"`
+	Version                      int
+	Connection, Principal, Scope string
+	Original                     *clientAuthenticationOriginalRecord `json:",omitempty"`
+	Review                       *clientAuthenticationReviewRecord   `json:",omitempty"`
 }
 type clientAuthenticationOriginalRecord struct {
 	Request                                             clientAuthenticationStoredRequest
@@ -125,7 +125,7 @@ func journalOwnerMap(values []providerregistry.RegistrationOwner) map[providerre
 	return result
 }
 func (a *clientAuthority) authenticationJournalKey(workspace, kind, id string) config.AuthenticationJournalKey {
-	data, _ := json.Marshal([]string{a.authenticationConnection, a.principal, kind, id})
+	data, _ := json.Marshal([]string{a.authenticationConnection, a.principal, a.authenticationScope, kind, id})
 	digest := sha256.Sum256(data)
 	return config.AuthenticationJournalKey{Kind: config.AuthenticationJournalClient, WorkspaceID: workspace, OperationID: hex.EncodeToString(digest[:])}
 }
@@ -143,6 +143,7 @@ func (a *clientAuthority) loadAuthenticationJournal(ctx context.Context, workspa
 			return err
 		}
 		a.authenticationJournal = &journal
+		a.authenticationScope = journal.ScopeID()
 	}
 	keys, err := a.authenticationJournal.Keys(ctx, config.AuthenticationJournalClient, workspace)
 	if err != nil {
@@ -167,7 +168,7 @@ func (a *clientAuthority) loadAuthenticationJournal(ctx context.Context, workspa
 		if encodeErr != nil || !bytes.Equal(canonical, entry.Payload()) {
 			return errors.New("recorded authentication data has ambiguous or noncanonical fields")
 		}
-		if record.Connection != a.authenticationConnection || record.Principal != a.principal {
+		if record.Connection != a.authenticationConnection || record.Principal != a.principal || record.Scope != a.authenticationScope {
 			continue
 		}
 		if o := record.Original; o != nil {
@@ -175,10 +176,12 @@ func (a *clientAuthority) loadAuthenticationJournal(ctx context.Context, workspa
 				return errors.New("recorded authentication intent is invalid")
 			}
 			if existing := a.authenticationReceipts[o.Request.OperationID]; existing != nil {
-				if existing.journalRevision != entry.Revision() {
-					return errors.New("authentication operation changed in another client; reopen its history before continuing")
+				if existing.request != o.Request.original() || existing.owner != o.Owner || existing.journalRevision > entry.Revision() {
+					return errors.New("recorded authentication operation identity changed")
 				}
-				continue
+				if existing.journalRevision == entry.Revision() {
+					continue
+				}
 			}
 			if err := validateJournalProposal(o.Base); err != nil {
 				return err
@@ -209,10 +212,12 @@ func (a *clientAuthority) loadAuthenticationJournal(ctx context.Context, workspa
 				return errors.New("recorded authentication review is invalid")
 			}
 			if existing := a.authenticationReviews[r.Request.ReviewID]; existing != nil {
-				if existing.journalRevision != entry.Revision() {
-					return errors.New("authentication review changed in another client; reopen history")
+				if existing.request != r.Request || existing.owner != r.Owner || existing.journalRevision > entry.Revision() {
+					return errors.New("recorded authentication review identity changed")
 				}
-				continue
+				if existing.journalRevision == entry.Revision() {
+					continue
+				}
 			}
 			if r.Proposal != nil {
 				if err := validateJournalProposal(*r.Proposal); err != nil {
@@ -296,7 +301,7 @@ func (a *clientAuthority) persistAuthenticationReceipt(ctx context.Context, r *c
 	if !completed && r.proposal == nil {
 		reserved = config.MaxRemoteRuntimeBytes
 	}
-	revision, err := a.storeAuthenticationJournal(ctx, a.authenticationJournalKey(r.request.target.WorkspaceID, "original", r.request.operationID), r.journalRevision, clientAuthenticationJournalRecord{Version: 1, Connection: a.authenticationConnection, Principal: a.principal, Original: o}, completed, reserved)
+	revision, err := a.storeAuthenticationJournal(ctx, a.authenticationJournalKey(r.request.target.WorkspaceID, "original", r.request.operationID), r.journalRevision, clientAuthenticationJournalRecord{Version: 1, Connection: a.authenticationConnection, Principal: a.principal, Scope: a.authenticationScope, Original: o}, completed, reserved)
 	if err == nil {
 		r.journalRevision, r.journalCompleted = revision, completed
 	}
@@ -317,8 +322,8 @@ func (a *clientAuthority) persistAuthenticationReview(ctx context.Context, r *cl
 	if p := r.apply; p != nil {
 		value.Apply = &clientAuthenticationStoredApply{Request: p.request, Outcome: p.outcome, Failed: p.err != nil, Put: p.put}
 	}
-	completed := r.savedStateSupersededBy != "" || r.apply != nil && r.apply.outcome.Adopted
-	revision, err := a.storeAuthenticationJournal(ctx, a.authenticationJournalKey(r.request.target().WorkspaceID, "review", r.request.ReviewID), r.journalRevision, clientAuthenticationJournalRecord{Version: 1, Connection: a.authenticationConnection, Principal: a.principal, Review: value}, completed, 0)
+	completed := r.savedStateSupersededBy != "" || r.apply != nil && r.apply.outcome.Adopted || r.err != nil && r.apply == nil || r.apply != nil && r.apply.err != nil && !r.apply.put
+	revision, err := a.storeAuthenticationJournal(ctx, a.authenticationJournalKey(r.request.target().WorkspaceID, "review", r.request.ReviewID), r.journalRevision, clientAuthenticationJournalRecord{Version: 1, Connection: a.authenticationConnection, Principal: a.principal, Scope: a.authenticationScope, Review: value}, completed, 0)
 	if err == nil {
 		r.journalRevision, r.journalCompleted = revision, completed
 	}

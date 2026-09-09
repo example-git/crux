@@ -175,8 +175,11 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	receipt.removalSuccessor, receipt.removalActive, receipt.removalAdmitted = local.OriginalRemovalSelection()
 	receipt.oauthTokenID, _ = local.OriginalOAuthTokenCredentialID()
 	receipt.credentialEffectID, _ = local.OriginalConfiguredCredentialEffectID()
-	var admitted bool
-	receipt.owner, admitted = local.OriginalOwner()
+	admittedOwner, admitted := local.OriginalOwner()
+	if admitted && admittedOwner != receipt.owner {
+		receipt.err = providerauth.ErrOwner
+		return clientAuthenticationOutcome(receipt, receipt.err)
+	}
 	if request.loginID != "" && err != nil && !admitted {
 		// Authorization may still be preparing or awaiting user interaction.
 		// A refused Complete is not an admitted fixed commit and must not
@@ -281,6 +284,10 @@ func clientAuthenticationChanged(progress providerauth.MutationProgress) bool {
 }
 
 func (a *clientAuthority) retainClientAuthentication(receipt *clientAuthenticationReceipt) {
+	if a.authenticationReceipts[receipt.request.operationID] != nil {
+		a.authenticationReceipts[receipt.request.operationID] = receipt
+		return
+	}
 	if a.authenticationReceipts == nil {
 		a.authenticationReceipts = map[string]*clientAuthenticationReceipt{}
 	}

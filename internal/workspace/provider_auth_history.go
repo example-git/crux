@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/providerauth"
 )
 
@@ -15,6 +16,8 @@ type ProviderAuthenticationHistory struct {
 	Reviews    []ProviderAuthenticationHistoryReview
 }
 type ProviderAuthenticationHistoryOperation struct {
+	HistoricalWorkspace                        bool
+	RecoveryRequest                            *ProviderAuthenticationRecoveryRequest
 	OperationID                                string
 	Target                                     providerauth.Target
 	Outcome                                    providerauth.MutationOutcome
@@ -23,6 +26,7 @@ type ProviderAuthenticationHistoryOperation struct {
 	ReconciledBy, SavedStateSupersededBy       string
 }
 type ProviderAuthenticationHistoryReview struct {
+	HistoricalWorkspace    bool
 	Request                ProviderAuthenticationReviewRequest
 	Summary                ProviderAuthenticationReviewSummary
 	ApplyRequest           *ProviderAuthenticationApplyRequest
@@ -51,6 +55,54 @@ func (w *ClientWorkspace) ProviderAuthenticationHistory(ctx context.Context) (Pr
 	if err := a.loadAuthenticationJournal(ctx, id); err != nil {
 		return ProviderAuthenticationHistory{}, err
 	}
+	result, err := authenticationHistoryProjection(a, id, false)
+	if err != nil {
+		return ProviderAuthenticationHistory{}, err
+	}
+	if a.authenticationJournal != nil {
+		keys, err := a.authenticationJournal.AllKeys(ctx, config.AuthenticationJournalClient)
+		if err != nil {
+			return ProviderAuthenticationHistory{}, err
+		}
+		seen := map[string]bool{id: true}
+		for _, key := range keys {
+			if seen[key.WorkspaceID] {
+				continue
+			}
+			seen[key.WorkspaceID] = true
+			// Old records never enter the active authority's receipt maps and
+			// therefore cannot install barriers or publish to a replacement ID.
+			history := &clientAuthority{store: a.store, principal: a.principal, authenticationConnection: a.authenticationConnection, authenticationScope: a.authenticationScope, authenticationJournal: a.authenticationJournal}
+			if err := history.loadAuthenticationJournal(ctx, key.WorkspaceID); err != nil {
+				return ProviderAuthenticationHistory{}, err
+			}
+			older, err := authenticationHistoryProjection(history, key.WorkspaceID, true)
+			if err != nil {
+				return ProviderAuthenticationHistory{}, err
+			}
+			result.Operations = append(result.Operations, older.Operations...)
+			result.Reviews = append(result.Reviews, older.Reviews...)
+		}
+	}
+	sort.Slice(result.Operations, func(i, j int) bool {
+		left, right := result.Operations[i], result.Operations[j]
+		if left.Target.WorkspaceID != right.Target.WorkspaceID {
+			return left.Target.WorkspaceID < right.Target.WorkspaceID
+		}
+		return left.OperationID < right.OperationID
+	})
+	sort.Slice(result.Reviews, func(i, j int) bool {
+		left, right := result.Reviews[i], result.Reviews[j]
+		lt, rt := clientAuthenticationReviewRequest(left.Request).target(), clientAuthenticationReviewRequest(right.Request).target()
+		if lt.WorkspaceID != rt.WorkspaceID {
+			return lt.WorkspaceID < rt.WorkspaceID
+		}
+		return left.Request.ReviewID < right.Request.ReviewID
+	})
+	return result, ctx.Err()
+}
+
+func authenticationHistoryProjection(a *clientAuthority, id string, historical bool) (ProviderAuthenticationHistory, error) {
 	result := ProviderAuthenticationHistory{Operations: []ProviderAuthenticationHistoryOperation{}, Reviews: []ProviderAuthenticationHistoryReview{}}
 	for _, receipt := range a.authenticationReceipts {
 		if receipt.principal != a.principal || receipt.request.target.WorkspaceID != id {
@@ -60,13 +112,21 @@ func (w *ClientWorkspace) ProviderAuthenticationHistory(ctx context.Context) (Pr
 		if err != nil {
 			return ProviderAuthenticationHistory{}, err
 		}
-		result.Operations = append(result.Operations, ProviderAuthenticationHistoryOperation{OperationID: receipt.request.operationID, Target: receipt.request.target, Outcome: outcome, LocalFinished: receipt.localFinished, RemoteAcknowledged: receipt.acknowledged, Adopted: receipt.adopted, RecoverySequence: receipt.recoverySequence, ReviewSequence: receipt.reviewSequence, ReconciledBy: receipt.reconciledBy, SavedStateSupersededBy: receipt.savedStateSupersededBy})
+		entry := ProviderAuthenticationHistoryOperation{HistoricalWorkspace: historical, OperationID: receipt.request.operationID, Target: receipt.request.target, Outcome: outcome, LocalFinished: receipt.localFinished, RemoteAcknowledged: receipt.acknowledged, Adopted: receipt.adopted, RecoverySequence: receipt.recoverySequence, ReviewSequence: receipt.reviewSequence, ReconciledBy: receipt.reconciledBy, SavedStateSupersededBy: receipt.savedStateSupersededBy}
+		for _, recovery := range a.authenticationRecoveries {
+			if recovery.request.OperationID == receipt.request.operationID && recovery.request.RecoverySequence == receipt.recoverySequence {
+				request := ProviderAuthenticationRecoveryRequest(recovery.request)
+				entry.RecoveryRequest = &request
+				break
+			}
+		}
+		result.Operations = append(result.Operations, entry)
 	}
 	for _, review := range a.authenticationReviews {
 		if review.request.target().WorkspaceID != id {
 			continue
 		}
-		entry := ProviderAuthenticationHistoryReview{Request: ProviderAuthenticationReviewRequest(review.request), Summary: cloneAuthenticationReviewSummary(review.summary), SavedStateSupersededBy: review.savedStateSupersededBy}
+		entry := ProviderAuthenticationHistoryReview{HistoricalWorkspace: historical, Request: ProviderAuthenticationReviewRequest(review.request), Summary: cloneAuthenticationReviewSummary(review.summary), SavedStateSupersededBy: review.savedStateSupersededBy}
 		if review.apply != nil {
 			request := ProviderAuthenticationApplyRequest(review.apply.request)
 			outcome := review.apply.outcome
@@ -76,5 +136,5 @@ func (w *ClientWorkspace) ProviderAuthenticationHistory(ctx context.Context) (Pr
 	}
 	sort.Slice(result.Operations, func(i, j int) bool { return result.Operations[i].OperationID < result.Operations[j].OperationID })
 	sort.Slice(result.Reviews, func(i, j int) bool { return result.Reviews[i].Request.ReviewID < result.Reviews[j].Request.ReviewID })
-	return result, ctx.Err()
+	return result, nil
 }
