@@ -38,7 +38,7 @@ func ErrorMappingRetryable(mappings []manifest.ErrorMapping, err error) bool {
 }
 
 func RetryOperationError(policy manifest.RetryPolicy, mappings []manifest.ErrorMapping, err error, emitted bool) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrAttemptBudgetExhausted) || IsOwnerValidationError(err) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrAttemptBudgetExhausted) || IsOwnerValidationError(err) || isEndpointRedirectError(err) {
 		return false
 	}
 	if policy.ReplayRequirement == "never" || policy.ReplayRequirement == "before-first-event" && emitted {

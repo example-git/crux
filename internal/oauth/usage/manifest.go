@@ -97,9 +97,7 @@ func compileManifestUsageOperation(operation *providertransport.Operation) (*man
 		return nil, fmt.Errorf("usage endpoint violates its allowlist")
 	}
 	client := &http.Client{Transport: usageConnectTransport{base: http.DefaultTransport, timeout: operation.ConnectTimeout}}
-	if !operation.Endpoint.FollowRedirects {
-		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	}
+	client = providertransport.EndpointHTTPClient(client, operation.Endpoint)
 	return &manifestUsageOperation{operation: operation, target: target, client: client}, nil
 }
 

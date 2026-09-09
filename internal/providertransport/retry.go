@@ -73,7 +73,7 @@ func executeWithRetry(request *http.Request, policy manifest.RetryPolicy, errorM
 }
 
 func retryDecision(response *http.Response, err error, policy manifest.RetryPolicy, errorMappings []manifest.ErrorMapping) (bool, time.Duration) {
-	if IsOwnerValidationError(err) {
+	if IsOwnerValidationError(err) || isEndpointRedirectError(err) {
 		return false, 0
 	}
 	if err != nil {
