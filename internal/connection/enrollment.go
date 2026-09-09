@@ -466,28 +466,30 @@ func Pair(ctx context.Context, name, setupCode string) (Connection, error) {
 		return Connection{}, err
 	}
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return Connection{}, errors.New("connection name cannot be empty")
+	if !validPairingName(name) {
+		return Connection{}, errors.New("connection name must be 1-128 bytes without control characters")
 	}
-	if _, exists, err := Get(ctx, name); err != nil {
-		return Connection{}, err
-	} else if exists {
-		return Connection{}, fmt.Errorf("connection already exists: %s", name)
-	}
-	clientIdentity, err := NewClientIdentity(name)
+	path, err := filepath.Abs(storePath())
 	if err != nil {
 		return Connection{}, err
 	}
-	var pinnedCertificate string
+	if err := pairingNameAvailable(ctx, path, name); err != nil {
+		return Connection{}, err
+	}
+	ctx, cancel := context.WithDeadline(ctx, time.Unix(setup.ExpiresAt, 0))
+	defer cancel()
+	address, err := url.Parse(setup.Address)
+	if err != nil {
+		return Connection{}, err
+	}
 	tlsConfig := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: true, // The setup code supplies the exact certificate pin.
 		VerifyConnection: func(state tls.ConnectionState) error {
 			if len(state.PeerCertificates) != 1 {
 				return errors.New("enrollment server presented an unexpected certificate chain")
 			}
-			certificate := state.PeerCertificates[0]
-			code := base64.RawURLEncoding.EncodeToString(certificate.Raw)
+			code := base64.RawURLEncoding.EncodeToString(state.PeerCertificates[0].Raw)
 			validated, err := parseCertificate(code, x509.ExtKeyUsageServerAuth)
 			if err != nil {
 				return fmt.Errorf("validate enrollment server certificate: %w", err)
@@ -497,51 +499,84 @@ func Pair(ctx context.Context, name, setupCode string) (Connection, error) {
 			if subtle.ConstantTimeCompare(actual, expected) != 1 {
 				return errors.New("enrollment server certificate fingerprint does not match the setup code")
 			}
-			pinnedCertificate = code
 			return nil
 		},
 	}
-	address, err := url.Parse(setup.Address)
+	// Pin the full certificate without sending the setup token or an enrollment
+	// request. Persistence must finish before the authorization-bearing POST.
+	dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second}, Config: tlsConfig}
+	preflight, err := dialer.DialContext(ctx, "tcp", address.Host)
+	if err != nil {
+		return Connection{}, fmt.Errorf("verify enrollment server: %w", err)
+	}
+	state := preflight.(*tls.Conn).ConnectionState()
+	_ = preflight.Close()
+	if len(state.PeerCertificates) != 1 {
+		return Connection{}, errors.New("enrollment server certificate was not captured")
+	}
+	identity, err := NewClientIdentity(name)
 	if err != nil {
 		return Connection{}, err
 	}
-	body, err := json.Marshal(enrollmentRequest{Name: name, Certificate: clientIdentity.Certificate})
+	created := Connection{Name: name, Address: setup.Address, ServerCertificate: base64.RawURLEncoding.EncodeToString(state.PeerCertificates[0].Raw), Client: identity}
+	entry, err := stagePendingPairing(ctx, path, created)
 	if err != nil {
 		return Connection{}, err
+	}
+	pending := func(err error) (Connection, error) {
+		return Connection{}, &PairingPendingError{OperationID: entry.OperationID, Cause: err}
+	}
+	body, err := json.Marshal(enrollmentRequest{Name: name, Certificate: identity.Certificate})
+	if err != nil {
+		return pending(err)
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://"+address.Host+enrollmentPath, bytes.NewReader(body))
 	if err != nil {
-		return Connection{}, err
+		return pending(err)
 	}
 	request.Header.Set("Authorization", "Crux-Enrollment "+setup.Token)
 	request.Header.Set("Content-Type", "application/json")
-	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	transport := &http.Transport{TLSClientConfig: tlsConfig, TLSHandshakeTimeout: 10 * time.Second, DialContext: (&net.Dialer{Timeout: 10 * time.Second}).DialContext}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 20 * time.Second}
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	response, err := client.Do(request)
 	if err != nil {
-		return Connection{}, fmt.Errorf("enroll client: %w", err)
+		return pending(fmt.Errorf("enroll client: %w", err))
 	}
 	defer response.Body.Close()
-	responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 16<<10))
-	if readErr != nil {
-		return Connection{}, fmt.Errorf("read enrollment response: %w", readErr)
+	responseBody, err := io.ReadAll(io.LimitReader(response.Body, (16<<10)+1))
+	if err != nil || len(responseBody) > 16<<10 {
+		return pending(errors.New("could not read bounded enrollment response"))
 	}
 	if response.StatusCode != http.StatusCreated {
-		message := strings.TrimSpace(string(responseBody))
-		if message == "" {
-			message = response.Status
-		}
-		return Connection{}, fmt.Errorf("enrollment failed: %s", message)
+		return pending(fmt.Errorf("enrollment did not confirm authorization (HTTP %d)", response.StatusCode))
 	}
-	if pinnedCertificate == "" {
-		return Connection{}, errors.New("enrollment server certificate was not captured")
+	if !validEnrollmentReply(responseBody) {
+		return pending(errors.New("enrollment returned an invalid authorization receipt"))
 	}
-	created := Connection{Name: name, Address: setup.Address, ServerCertificate: pinnedCertificate, Client: clientIdentity}
-	if err := SaveConnection(ctx, created); err != nil {
-		return Connection{}, err
+	return promotePendingPairing(ctx, path, entry, "")
+}
+
+func validEnrollmentReply(body []byte) bool {
+	d := json.NewDecoder(bytes.NewReader(body))
+	t, err := d.Token()
+	if err != nil || t != json.Delim('{') {
+		return false
 	}
-	return created, nil
+	t, err = d.Token()
+	if err != nil || t != "status" {
+		return false
+	}
+	t, err = d.Token()
+	if err != nil || t != "authorized" {
+		return false
+	}
+	t, err = d.Token()
+	if err != nil || t != json.Delim('}') {
+		return false
+	}
+	_, err = d.Token()
+	return errors.Is(err, io.EOF)
 }
 
 func DecodeEnrollmentSetup(setupCode string) (EnrollmentSetup, error) {

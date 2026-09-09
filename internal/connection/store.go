@@ -29,7 +29,7 @@ import (
 
 const storeVersion = 1
 
-var renameStoreFile = os.Rename
+var renameStoreFile = replaceConnectionFile
 
 type Identity struct {
 	Certificate string `json:"certificate"`
@@ -143,13 +143,26 @@ func SaveConnection(ctx context.Context, created Connection) error {
 	if _, _, err := parseIdentity(created.Client, x509.ExtKeyUsageClientAuth); err != nil {
 		return fmt.Errorf("invalid client identity: %w", err)
 	}
-	return update(ctx, func(data *store) error {
+	path, err := filepath.Abs(storePath())
+	if err != nil {
+		return err
+	}
+	return updateStoreAt(ctx, path, func(data *store) error {
 		if _, exists := data.Connections[created.Name]; exists {
 			return fmt.Errorf("connection already exists: %s", created.Name)
 		}
+		pending, _, err := readPendingPairings(path)
+		if err != nil {
+			return err
+		}
+		for _, entry := range pending.Entries {
+			if pendingReservesName(entry, created.Name) {
+				return &PairingPendingError{OperationID: entry.OperationID, Cause: errors.New("connection name is reserved by a pending identity")}
+			}
+		}
 		data.Connections[created.Name] = created
 		return nil
-	})
+	}, nil)
 }
 
 func Add(ctx context.Context, name, address, serverCertificate string) (Connection, string, error) {
@@ -428,35 +441,9 @@ func writeStoreAt(path string, data *store, commit authorizationCommit) error {
 }
 
 func replaceStoreFile(temporaryPath, destination string) error {
-	if err := renameStoreFile(temporaryPath, destination); err == nil {
-		return nil
-	}
-	if _, err := os.Lstat(destination); err != nil {
-		return err
-	}
-	backup, err := os.CreateTemp(filepath.Dir(destination), ".connections-backup-*.json")
-	if err != nil {
-		return err
-	}
-	backupPath := backup.Name()
-	if err := backup.Close(); err != nil {
-		os.Remove(backupPath)
-		return err
-	}
-	if err := os.Remove(backupPath); err != nil {
-		return err
-	}
-	if err := renameStoreFile(destination, backupPath); err != nil {
-		return err
-	}
-	if err := renameStoreFile(temporaryPath, destination); err != nil {
-		if restoreErr := renameStoreFile(backupPath, destination); restoreErr != nil {
-			return errors.Join(err, fmt.Errorf("restore previous connection store: %w", restoreErr))
-		}
-		return err
-	}
-	_ = os.Remove(backupPath)
-	return nil
+	// One replacement operation preserves the original file on failure. Never
+	// move it aside first: a process exit in that gap loses the live store.
+	return renameStoreFile(temporaryPath, destination)
 }
 
 func generateIdentity(commonName string, usage x509.ExtKeyUsage) (Identity, error) {
