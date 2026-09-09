@@ -223,6 +223,16 @@ func TestEnrollmentFailureBudgetsAreSeparateAndPreserveAuthorizationStore(t *tes
 			}
 			_, err = e.Wait(t.Context())
 			require.ErrorIs(t, err, terminal)
+			select {
+			case <-e.closed:
+			case <-time.After(2 * time.Second):
+				t.Fatal("exhausted enrollment did not close its listener")
+			}
+			conn, dialErr := net.DialTimeout("tcp", strings.TrimPrefix(e.Address(), "tcp://"), time.Second)
+			if conn != nil {
+				_ = conn.Close()
+			}
+			require.Error(t, dialErr, "budget exhaustion must close the actual listener")
 			after, err := os.ReadFile(storePath())
 			require.NoError(t, err)
 			require.Equal(t, before, after)
