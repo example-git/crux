@@ -700,6 +700,9 @@ func (m *JobManager) executeRequest(ctx context.Context, request JobRequest) (*R
 		}
 		return runtime.Execute(ctx, *request.Owner, request, images)
 	}
+	if m.pluginRuntime != nil && m.pluginRuntime.Capture != nil {
+		return nil, errors.New("client-owned image job requires its captured exact image owner")
+	}
 	client := m.clientFactory()
 	if client == nil {
 		return nil, errors.New("image client is unavailable")

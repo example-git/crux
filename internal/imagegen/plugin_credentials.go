@@ -55,34 +55,40 @@ func resolvePluginCredentialsSnapshot(ctx context.Context, store *config.ConfigS
 			}
 			result.Values[declaration.ID] = value
 		case "provider":
+			credentialSnapshot := snapshot
 			owner, ok := bindings.Providers[declaration.ID]
 			if !ok || owner.ProviderID != declaration.Provider {
 				return PluginCredentials{}, errors.New("image provider credential requires an explicit exact owner binding")
 			}
-			if err := validateImageCredentialOwner(store, snapshot, owner); err != nil {
+			if err := validateImageCredentialOwner(store, credentialSnapshot, owner); err != nil {
 				return PluginCredentials{}, err
 			}
-			provider, ok := snapshot.Config().Providers.Get(owner.ProviderID)
+			provider, ok := credentialSnapshot.Config().Providers.Get(owner.ProviderID)
 			if !ok {
 				return PluginCredentials{}, errors.New("bound image credential provider is unavailable")
 			}
 			if provider.OAuthToken != nil && provider.OAuthToken.IsExpired() {
-				if snapshot.IsClientOwned() {
-					return PluginCredentials{}, errors.New("client image account needs refresh on its owning client")
+				if credentialSnapshot.IsClientOwned() {
+					refreshed, err := store.RequestClientRefresh(ctx, credentialSnapshot, owner)
+					if err != nil {
+						return PluginCredentials{}, err
+					}
+					credentialSnapshot = refreshed
+				} else {
+					if _, err := store.RefreshOAuthTokenForOwner(ctx, config.ScopeGlobal, owner); err != nil {
+						return PluginCredentials{}, err
+					}
+					credentialSnapshot = store.RuntimeSnapshot()
 				}
-				if _, err := store.RefreshOAuthTokenForOwner(ctx, config.ScopeGlobal, owner); err != nil {
-					return PluginCredentials{}, err
-				}
-				snapshot = store.RuntimeSnapshot()
 			}
-			values, err := imageProviderCredential(ctx, snapshot, owner)
+			values, err := imageProviderCredential(ctx, credentialSnapshot, owner)
 			if err != nil {
 				return PluginCredentials{}, err
 			}
 			result.Values[declaration.ID] = values
 			identities[declaration.ID] = owner
 			validators = append(validators, func() error {
-				if snapshot.IsClientOwned() {
+				if credentialSnapshot.IsClientOwned() {
 					return ctx.Err()
 				}
 				if err := store.ValidateActiveProviderOwner(owner); err != nil {
@@ -171,6 +177,9 @@ func imageProviderCredential(ctx context.Context, snapshot config.RuntimeSnapsho
 			if err != nil {
 				return nil, errors.New("image provider account lookup failed")
 			}
+		}
+		if snapshot.IsClientOwned() && access != "" && (entry == nil || entry.AccessToken != access) {
+			return nil, errors.New("captured image OAuth account metadata is missing or mismatched")
 		}
 		if entry != nil && (entry.AccessToken == access || entry.AccessToken == key) && len(entry.Raw) > 0 {
 			if len(entry.Raw) > 1<<20 {

@@ -46,6 +46,9 @@ func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, r
 		if err := snapshot.prepareNativeIdentities(ctx); err != nil {
 			return RemoteRuntimeProposal{}, err
 		}
+		if err := snapshot.prepareImageBrowserCredentials(ctx); err != nil {
+			return RemoteRuntimeProposal{}, err
+		}
 		if err := lockAuthenticationMutex(ctx, s.writeMu.TryRLock, s.writeMu.RUnlock); err != nil {
 			return RemoteRuntimeProposal{}, err
 		}
@@ -103,6 +106,11 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 	if err != nil {
 		return proposal, err
 	}
+	proposal.ImageBrowserCredentials, err = snapshot.collectedImageBrowserCredentials()
+	if err != nil {
+		return proposal, err
+	}
+	proposal.ImageClientIdentities = snapshot.collectedImageClientIdentities()
 	selected := make(map[string]bool)
 	for _, model := range proposal.Models {
 		selected[model.Provider] = true

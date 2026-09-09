@@ -24,6 +24,9 @@ func (s *ConfigStore) CollectRemoteRuntimeForAuthentication(ctx context.Context,
 	if err := before.runtime.prepareNativeIdentities(ctx); err != nil {
 		return RemoteRuntimeProposal{}, err
 	}
+	if err := before.runtime.prepareImageBrowserCredentials(ctx); err != nil {
+		return RemoteRuntimeProposal{}, err
+	}
 	if err := lockAuthenticationMutex(ctx, s.writeMu.TryRLock, s.writeMu.RUnlock); err != nil {
 		return RemoteRuntimeProposal{}, err
 	}
