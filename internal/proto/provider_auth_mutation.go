@@ -105,6 +105,10 @@ func providerAuthenticationErrorCause(code string) error {
 		return providerauth.ErrAPIKeyCheck
 	case "check_unavailable":
 		return providerauth.ErrAPIKeyCheckUnavailable
+	case "oauth_login_failed":
+		return providerauth.ErrOAuthLogin
+	case "oauth_login_unavailable":
+		return providerauth.ErrOAuthLoginUnavailable
 	case "mutation_failed":
 		return providerauth.ErrMutation
 	case "receipt_unverified":
@@ -120,7 +124,7 @@ func providerAuthenticationErrorCause(code string) error {
 
 func NewProviderAuthenticationError(err error) *ProviderAuthenticationError {
 	// Prefer the public service classification over its private wrapped cause.
-	for _, code := range []string{"receipt_unverified", "check_failed", "check_unavailable", "mutation_failed", "operation_conflict", "stale", "owner", "account", "client_runtime_managed", "deadline", "canceled"} {
+	for _, code := range []string{"receipt_unverified", "check_failed", "check_unavailable", "oauth_login_failed", "oauth_login_unavailable", "mutation_failed", "operation_conflict", "stale", "owner", "account", "client_runtime_managed", "deadline", "canceled"} {
 		if errors.Is(err, providerAuthenticationErrorCause(code)) {
 			return &ProviderAuthenticationError{Code: code, Message: providerAuthenticationErrorCause(code).Error()}
 		}

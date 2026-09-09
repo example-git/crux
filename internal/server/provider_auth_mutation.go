@@ -72,13 +72,13 @@ func providerAuthResponseStatus(failure *proto.ProviderAuthenticationError) int 
 		return http.StatusOK
 	}
 	switch failure.Code {
-	case "stale", "owner", "account", "operation_conflict", "check_unavailable":
+	case "stale", "owner", "account", "operation_conflict", "check_unavailable", "oauth_login_unavailable":
 		return http.StatusConflict
 	case "canceled", "deadline":
 		return http.StatusRequestTimeout
 	case "client_runtime_managed":
 		return http.StatusBadRequest
-	case "mutation_failed", "check_failed":
+	case "mutation_failed", "check_failed", "oauth_login_failed":
 		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusInternalServerError
