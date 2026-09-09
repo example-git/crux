@@ -360,6 +360,11 @@ saved sessions available, but path reuse is not proof that history was loaded or
 that a prior job resumed. Credentials are not restored from history, and
 credential-bearing background work is not automatically resumed after restart.
 
+Project and user memory for a client-owned workspace also live under that scoped
+data directory. Prompt loading, relevant-memory retrieval and memory tools use
+those same roots; they do not inherit the daemon user's global memory topics.
+Explicit server-owned workspaces retain their local memory configuration.
+
 ## Inspect and revoke authorization
 
 Run authorization administration on the server:
