@@ -45,6 +45,7 @@ type authenticationHistoryEntry struct {
 	localAbandon        *providerauth.LocalRepairRequest
 	localAbandonPending bool
 	publicationAbandon  *workspace.ProviderAuthenticationAbandonRequest
+	reviewAbandon       *workspace.ProviderAuthenticationReviewAbandonRequest
 	preparing, pending  bool
 	attempt             uint64
 	cancel              context.CancelFunc
@@ -204,6 +205,10 @@ func (m *UI) completeAuthenticationHistory(msg authenticationHistoryLoadedMsg) t
 			copy.Summary.Models = slices.Clone(review.Summary.Models)
 			copy.Summary.ChangedCategories = slices.Clone(review.Summary.ChangedCategories)
 			entry.review = &copy
+			if review.AbandonRequest != nil {
+				request := *review.AbandonRequest
+				entry.reviewAbandon = &request
+			}
 		}
 		order = append(order, key)
 		seen[key] = true
@@ -267,6 +272,14 @@ func validateAuthenticationHistory(history workspace.ProviderAuthenticationHisto
 			return providerauth.ErrReceiptUnverified
 		}
 		seen[key] = true
+		if entry.Abandoned != (entry.AbandonRequest != nil) || entry.ApplyAttempted && entry.ApplyRequest == nil {
+			return providerauth.ErrReceiptUnverified
+		}
+		if request := entry.AbandonRequest; request != nil {
+			if request.Validate() != nil || request.Review != r || request.Revision >= entry.JournalRevision || entry.ApplyRequest == nil || request.PreviewID != entry.ApplyRequest.PreviewID {
+				return providerauth.ErrReceiptUnverified
+			}
+		}
 		if entry.Summary.PreviewID != "" {
 			if err := entry.Summary.Validate(r); err != nil {
 				return err
@@ -314,7 +327,7 @@ func (e *authenticationHistoryEntry) historical(sourceID string) bool {
 	return e.target().WorkspaceID != sourceID || e.operation != nil && e.operation.HistoricalWorkspace || e.review != nil && e.review.HistoricalWorkspace
 }
 func (e *authenticationHistoryEntry) superseded() bool {
-	return e.operation != nil && (e.operation.Abandoned || e.operation.ReconciledBy != "" || e.operation.SavedStateSupersededBy != "") || e.review != nil && (e.review.SavedStateSupersededBy != "" || e.review.SupersededByReview != "" || e.review.OriginalAbandonedBy != "")
+	return e.operation != nil && (e.operation.Abandoned || e.operation.ReconciledBy != "" || e.operation.SavedStateSupersededBy != "") || e.review != nil && (e.review.Abandoned || e.review.SavedStateSupersededBy != "" || e.review.SupersededByReview != "" || e.review.OriginalAbandonedBy != "")
 }
 func (s *authenticationHistoryUI) retired(e *authenticationHistoryEntry) bool {
 	if e.superseded() {
@@ -375,14 +388,17 @@ func (m *UI) showAuthenticationHistory(s *authenticationHistoryUI) {
 		} else if r := e.review; r != nil {
 			label = e.target().Owner.ProviderID + " · retained review · " + r.Request.ReviewID
 			details = fmt.Sprintf("Workspace: %s\nReview: %s\nOriginal operation: %s\nFresh saved intent: %t\nReview sequence: %d", e.target().WorkspaceID, r.Request.ReviewID, r.Request.OperationID, r.Request.FreshSaved, r.Request.ReviewSequence)
+			details += fmt.Sprintf("\nJournal revision=%d; publication attempted=%t; review recovery abandoned=%t", r.JournalRevision, r.ApplyAttempted, r.Abandoned)
 			if r.Summary.PreviewID != "" {
 				details += "\n" + authenticationReviewSummaryText(r.Summary)
 			}
 			if r.ApplyRequest != nil {
 				details += "\nApply request: " + r.ApplyRequest.ApplyID
 			}
-			if r.ApplyOutcome != nil {
-				details += fmt.Sprintf("\nApply acknowledged=%t; adopted=%t", r.ApplyOutcome.RemoteAcknowledged, r.ApplyOutcome.Adopted)
+			if r.ApplyOutcome != nil && r.ApplyOutcome.ApplyID != "" {
+				details += fmt.Sprintf("\nRecorded apply acknowledgement=%t; adoption=%t", r.ApplyOutcome.RemoteAcknowledged, r.ApplyOutcome.Adopted)
+			} else if r.ApplyRequest != nil {
+				details += "\nApply result was not recorded; receiver acknowledgement is unknown."
 			}
 			if r.SupersededByReview != "" {
 				details += "\nSuperseded by retained review: " + r.SupersededByReview
@@ -420,7 +436,7 @@ func (m *UI) showAuthenticationHistory(s *authenticationHistoryUI) {
 			repairable = !summary.Abandoned && !summary.NoEffects && (summary.Coherent || summary.NeedsReload || summary.RepairReady && (!summary.RefreshStarted || summary.RefreshObserved))
 			abandonable = !summary.Abandoned && !summary.NoEffects && !summary.Coherent && !summary.NeedsReload
 		}
-		rows = append(rows, dialog.AuthenticationHistoryRow{Key: key, Label: label, Details: details, Review: !old && !s.retired(e) && !(e.operation != nil && e.operation.Adopted) && !busy, Recover: recover && !busy, RetryRecovery: recover && e.recovery != nil && !busy, Repair: e.operationID() != "" && !busy, ApplyRepair: e.repair != nil && repairable && !busy, AbandonLocal: abandonable && !busy, RetryAbandonLocal: e.localAbandon != nil && e.localAbandon.WorkspaceID == s.sourceID && !busy, AbandonPublication: e.operation != nil && !e.operation.Adopted && !e.superseded() && e.operation.JournalRevision != 0 && !busy, RetryAbandonPublication: e.publicationAbandon != nil && e.publicationAbandon.WorkspaceID == s.sourceID && !busy})
+		rows = append(rows, dialog.AuthenticationHistoryRow{Key: key, Label: label, Details: details, Review: !old && !s.retired(e) && !(e.operation != nil && e.operation.Adopted) && !busy, Recover: recover && !busy, RetryRecovery: recover && e.recovery != nil && !busy, Repair: e.operationID() != "" && !busy, ApplyRepair: e.repair != nil && repairable && !busy, AbandonLocal: abandonable && !busy, RetryAbandonLocal: e.localAbandon != nil && e.localAbandon.WorkspaceID == s.sourceID && !busy, AbandonPublication: e.operation != nil && !e.operation.Adopted && !e.superseded() && e.operation.JournalRevision != 0 && !busy, RetryAbandonPublication: e.publicationAbandon != nil && e.publicationAbandon.WorkspaceID == s.sourceID && !busy, AbandonReview: e.review != nil && e.review.ApplyAttempted && e.review.ApplyRequest != nil && e.review.JournalRevision != 0 && !(e.review.ApplyOutcome != nil && e.review.ApplyOutcome.Adopted) && !s.retired(e) && !busy, RetryAbandonReview: e.reviewAbandon != nil && e.reviewAbandon.WorkspaceID == s.sourceID && !busy})
 		if key == s.dialog.SelectedKey() {
 			selectedBusy = busy
 		}
@@ -478,6 +494,12 @@ func (m *UI) handleAuthenticationHistory(action dialog.ActionAuthenticationHisto
 		}
 	case "repair":
 		return m.dispatchHistoricalAuthenticationRepair(s, e, false)
+	case "abandon-review":
+		return m.prepareHistoricalReviewAbandon(s, e)
+	case "retry-abandon-review":
+		if e.reviewAbandon != nil {
+			return m.dispatchHistoricalReviewAbandon(s, e, *e.reviewAbandon)
+		}
 	case "abandon-publication":
 		return m.prepareHistoricalPublicationAbandon(s, e)
 	case "retry-abandon-publication":
@@ -514,6 +536,14 @@ func (m *UI) openHistoricalAuthenticationReview(s *authenticationHistoryUI, e *a
 		m.authenticationReconciliations = map[*authenticationOperation]*authenticationReconciliation{}
 	}
 	state := e.reconciliation
+	if state != nil && state.historyRetired && e.operation != nil && !s.retired(e) {
+		// The old review remains in its own history row. Opening the original
+		// operation is a separate choice to prepare another preview, preserving
+		// sequence ordering and never replaying its account mutation.
+		state = &authenticationReconciliation{operation: e.coordinator, capability: capability, historySourceID: s.sourceID, sequence: state.sequence, message: "The previous review was retired. Choose an explicit effect and press Enter for a separate new preview; the original operation is unchanged."}
+		e.reconciliation = state
+		m.authenticationReconciliations[e.coordinator] = state
+	}
 	if state == nil {
 		state = &authenticationReconciliation{operation: e.coordinator, capability: capability, historySourceID: s.sourceID, message: "Original history restored. Review and Apply are explicit; no original account change is repeated."}
 		if e.operation != nil {
