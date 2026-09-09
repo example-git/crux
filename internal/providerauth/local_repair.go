@@ -10,13 +10,15 @@ import (
 )
 
 // LocalRepairRequest names historical disk work independently of the current
-// workspace incarnation. Review never applies; Apply requires its exact revision.
+// workspace incarnation. Review has no effects. Repair and abandonment are
+// mutually exclusive explicit actions requiring the exact reviewed revision.
 type LocalRepairRequest struct {
 	WorkspaceID          string `json:"workspace_id"`
 	OperationWorkspaceID string `json:"operation_workspace_id"`
 	OperationID          string `json:"operation_id"`
 	Revision             uint64 `json:"revision"`
 	Apply                bool   `json:"apply"`
+	Abandon              bool   `json:"abandon"`
 }
 
 func (r LocalRepairRequest) Validate() error {
@@ -25,8 +27,8 @@ func (r LocalRepairRequest) Validate() error {
 			return errors.New("invalid local authentication repair identity")
 		}
 	}
-	if r.Apply && r.Revision == 0 || !r.Apply && r.Revision != 0 {
-		return errors.New("review has no revision; apply requires its reviewed revision")
+	if r.Apply && r.Abandon || (r.Apply || r.Abandon) && r.Revision == 0 || !r.Apply && !r.Abandon && r.Revision != 0 {
+		return errors.New("review has no revision; choose either repair or abandonment with its exact reviewed revision")
 	}
 	return nil
 }
@@ -60,6 +62,9 @@ func (s *Service) RepairLocalAuthentication(ctx context.Context, request LocalRe
 	result := config.LocalAuthenticationRepairResult{Summary: capture.Summary()}
 	if err := result.Summary.Validate(); err != nil {
 		return config.LocalAuthenticationRepairResult{}, err
+	}
+	if request.Abandon {
+		return s.store.AbandonAuthenticationLocalChange(ctx, capture, request.Revision)
 	}
 	if !request.Apply {
 		return result, ctx.Err()

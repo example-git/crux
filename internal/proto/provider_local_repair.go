@@ -88,6 +88,9 @@ func (r ProviderLocalRepairResponse) Validate(request providerauth.LocalRepairRe
 	if !request.Apply && (r.Result.AccountsWritten || r.Result.ConfigWritten || r.Result.AccountsMatched || r.Result.ConfigMatched || r.Result.NeedsReload) {
 		return errors.New("local repair review claims effects")
 	}
+	if r.Result.Abandoned && (!request.Abandon || !s.Abandoned || r.Result.AccountsWritten || r.Result.ConfigWritten || r.Result.AccountsMatched || r.Result.ConfigMatched || r.Result.NeedsReload) || request.Abandon && r.Error == nil && !r.Result.Abandoned {
+		return errors.New("local authentication abandonment outcome is inconsistent")
+	}
 	if r.Result.NeedsReload && (!request.Apply || !s.NeedsReload) {
 		return errors.New("local repair completion is inconsistent")
 	}

@@ -11,8 +11,8 @@ import (
 // handlePostWorkspaceLocalRepair reviews or applies one exact historical local
 // authentication disk operation. It never publishes a runtime or returns secrets.
 //
-// @Summary Review or repair an original authentication disk operation
-// @Description Review returns historical progress without applying changes. Apply requires the exact reviewed journal revision and finishes only fixed disk postimages. Original progress remains separate; a fresh reload and saved-state review are required before a new runtime publication.
+// @Summary Review, repair, or abandon an original authentication disk operation
+// @Description Review returns historical progress without applying changes. Apply requires the exact reviewed journal revision and finishes only fixed disk postimages. Abandon requires the exact reviewed revision and retires only recovery intent, preserving original and unknown progress. Original progress remains separate; a fresh reload and saved-state review are required before a new runtime publication.
 // @Tags providers
 // @Accept json
 // @Produce json

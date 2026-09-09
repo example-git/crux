@@ -40,6 +40,11 @@ func (s *ConfigStore) CommitOAuthLogin(ctx context.Context, scope Scope, authori
 }
 
 func (s *ConfigStore) commitOAuthLogin(ctx context.Context, scope Scope, authorized *authorizedOAuthPreparation) (result AuthenticationMutationResult, err error) {
+	ctx, releaseOperation, err := s.acquireLocalAuthenticationOperation(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer releaseOperation()
 	p := authorized.preparation
 	before, owner := p.before, p.owner
 	if err := s.validateOAuthLogin(ctx, p); err != nil {

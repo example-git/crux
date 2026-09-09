@@ -26,6 +26,11 @@ func (s *ConfigStore) RepairAuthenticationLocalChange(ctx context.Context, captu
 	}
 	ctx, cancel := s.BindRuntimeContext(ctx)
 	defer cancel()
+	releaseOperation, err := capture.journal.AcquireOperation(ctx, capture.disk.Key)
+	if err != nil {
+		return result, err
+	}
+	defer releaseOperation()
 	if err := s.lockAuthenticationWrite(ctx); err != nil {
 		return result, err
 	}
@@ -43,6 +48,10 @@ func (s *ConfigStore) RepairAuthenticationLocalChange(ctx context.Context, captu
 	}
 	if current.revision != expected && d.RepairBase != expected {
 		return result, errors.New("local authentication repair revision changed; review it again")
+	}
+	if d.Abandoned || d.NoEffects {
+		result.Summary = current.Summary()
+		return result, errors.New("this original local operation has been retired; reload and review saved authentication explicitly")
 	}
 	if d.Coherent {
 		// The original successful journal entry is immutable. Observing that

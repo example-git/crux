@@ -14,6 +14,11 @@ import (
 // The checked literal and endpoint are published in memory, with no account
 // mutation, source execution, connection probe, model selection or agent reset.
 func (s *ConfigStore) SaveCheckedAPIKey(ctx context.Context, scope Scope, prepared CheckedAPIKeyPreparation) (result AuthenticationMutationResult, err error) {
+	ctx, releaseOperation, err := s.acquireLocalAuthenticationOperation(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer releaseOperation()
 	if !prepared.valid || prepared.before.runtime.publicationStore != s || !checkedProviderCredentialMatches(prepared.provider, prepared.slot) || !prepared.provider.resolvedEndpoint.matches(prepared.provider) {
 		return result, errors.New("valid checked API key preparation is required")
 	}

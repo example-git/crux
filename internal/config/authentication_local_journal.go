@@ -33,20 +33,25 @@ type LocalAuthenticationProgress struct {
 	RuntimePublished bool `json:"runtime_published"`
 }
 type LocalAuthenticationSummary struct {
-	WorkspaceID      string                      `json:"workspace_id"`
-	OperationID      string                      `json:"operation_id"`
-	Revision         uint64                      `json:"revision"`
-	Action           string                      `json:"action"`
-	ProviderID       string                      `json:"provider_id"`
-	AccountID        string                      `json:"account_id,omitempty"`
-	RemovedAccountID string                      `json:"removed_account_id,omitempty"`
-	Original         LocalAuthenticationProgress `json:"original"`
-	RefreshStarted   bool                        `json:"refresh_started"`
-	RefreshObserved  bool                        `json:"refresh_observed"`
-	Finished         bool                        `json:"finished"`
-	Coherent         bool                        `json:"coherent"`
-	RepairReady      bool                        `json:"repair_ready"`
-	NeedsReload      bool                        `json:"needs_reload"`
+	WorkspaceID           string                      `json:"workspace_id"`
+	OperationID           string                      `json:"operation_id"`
+	Revision              uint64                      `json:"revision"`
+	Action                string                      `json:"action"`
+	ProviderID            string                      `json:"provider_id"`
+	AccountID             string                      `json:"account_id,omitempty"`
+	RemovedAccountID      string                      `json:"removed_account_id,omitempty"`
+	Original              LocalAuthenticationProgress `json:"original"`
+	RefreshStarted        bool                        `json:"refresh_started"`
+	RefreshObserved       bool                        `json:"refresh_observed"`
+	Finished              bool                        `json:"finished"`
+	Coherent              bool                        `json:"coherent"`
+	RepairReady           bool                        `json:"repair_ready"`
+	NeedsReload           bool                        `json:"needs_reload"`
+	Abandoned             bool                        `json:"abandoned"`
+	NoEffects             bool                        `json:"no_effects"`
+	RepairStarted         bool                        `json:"repair_started"`
+	RepairAccountsWritten bool                        `json:"repair_accounts_written"`
+	RepairConfigWritten   bool                        `json:"repair_config_written"`
 }
 type LocalAuthenticationRepairResult struct {
 	Summary         LocalAuthenticationSummary `json:"summary"`
@@ -55,6 +60,7 @@ type LocalAuthenticationRepairResult struct {
 	ConfigWritten   bool                       `json:"config_written"`
 	ConfigMatched   bool                       `json:"config_matched"`
 	NeedsReload     bool                       `json:"needs_reload"`
+	Abandoned       bool                       `json:"abandoned"`
 }
 
 type localAuthenticationFile struct {
@@ -99,6 +105,9 @@ type localAuthenticationDisk struct {
 	Original           LocalAuthenticationProgress        `json:"original"`
 	Finished           bool                               `json:"finished"`
 	Coherent           bool                               `json:"coherent"`
+	Abandoned          bool                               `json:"abandoned"`
+	AbandonBase        uint64                             `json:"abandon_base"`
+	NoEffects          bool                               `json:"no_effects"`
 	RepairBase         uint64                             `json:"repair_base"`
 	RepairStarted      bool                               `json:"repair_started"`
 	Repair             LocalAuthenticationRepairResult    `json:"repair"`
@@ -120,7 +129,7 @@ func (d localAuthenticationDisk) Format(s fmt.State, _ rune) {
 }
 func (c LocalAuthenticationChange) Summary() LocalAuthenticationSummary {
 	d := c.disk
-	return LocalAuthenticationSummary{WorkspaceID: d.Key.WorkspaceID, OperationID: d.Key.OperationID, Revision: c.revision, Action: d.Action, ProviderID: d.Owner.ProviderID, AccountID: d.AccountID, RemovedAccountID: d.RemoveID, Original: d.Original, RefreshStarted: d.RefreshStarted, RefreshObserved: d.RefreshToken != nil, Finished: d.Finished, Coherent: d.Coherent, RepairReady: len(d.Accounts) > 0 || len(d.RefreshAccounts) > 0 || d.RefreshToken != nil, NeedsReload: d.Coherent || d.Repair.NeedsReload}
+	return LocalAuthenticationSummary{WorkspaceID: d.Key.WorkspaceID, OperationID: d.Key.OperationID, Revision: c.revision, Action: d.Action, ProviderID: d.Owner.ProviderID, AccountID: d.AccountID, RemovedAccountID: d.RemoveID, Original: d.Original, RefreshStarted: d.RefreshStarted, RefreshObserved: d.RefreshToken != nil, Finished: d.Finished, Coherent: d.Coherent, RepairReady: !d.Abandoned && !d.NoEffects && (len(d.Accounts) > 0 || len(d.RefreshAccounts) > 0 || d.RefreshToken != nil), NeedsReload: d.Coherent || d.Repair.NeedsReload, Abandoned: d.Abandoned, NoEffects: d.NoEffects, RepairStarted: d.RepairStarted, RepairAccountsWritten: d.Repair.AccountsWritten, RepairConfigWritten: d.Repair.ConfigWritten}
 }
 func (s *ConfigStore) LoadAuthenticationLocalChange(ctx context.Context, key AuthenticationJournalKey) (LocalAuthenticationChange, bool, error) {
 	journal, err := s.CaptureAuthenticationJournal(ctx)
@@ -195,6 +204,9 @@ func loadAuthenticationLocalChange(ctx context.Context, journal AuthenticationJo
 	if d.Original.RuntimePublished && !d.Original.ConfigSaved || d.Coherent && (!d.Finished || !d.Original.RuntimePublished && !(d.Action == "remove" && d.Original.AccountsSaved)) || d.Repair.NeedsReload && (!d.RepairStarted || d.RepairBase == 0) {
 		return LocalAuthenticationChange{}, false, errors.New("local authentication progress is inconsistent")
 	}
+	if d.Abandoned != (d.AbandonBase != 0) || d.Abandoned && d.AbandonBase >= entry.Revision() || d.Abandoned && (d.Coherent || d.Repair.NeedsReload || d.NoEffects) || d.NoEffects && (!d.Finished || !d.noLocalEffect()) || d.Repair.Abandoned || entry.Completed() != d.completed() {
+		return LocalAuthenticationChange{}, false, errors.New("local authentication terminal state is inconsistent")
+	}
 	if d.CredentialEffectID != "" && (d.Action != "api-key" || len(d.CredentialEffectID) != 64 || strings.Trim(d.CredentialEffectID, "0123456789abcdef") != "") {
 		return LocalAuthenticationChange{}, false, errors.New("local authentication effect identity is invalid")
 	}
@@ -219,6 +231,41 @@ func registerLocalAuthenticationConfigSecrets(raw []byte) {
 	}
 }
 
+func (d localAuthenticationDisk) noLocalEffect() bool {
+	return !d.RefreshStarted && d.RefreshToken == nil && len(d.Accounts) == 0 && len(d.RefreshAccounts) == 0 && len(d.ConfigAfter) == 0 && d.Original == (LocalAuthenticationProgress{}) && !d.RepairStarted
+}
+func (d localAuthenticationDisk) completed() bool {
+	return d.Coherent || d.Repair.NeedsReload || d.Abandoned || d.NoEffects
+}
+
+type localAuthenticationLeaseContextKey struct{}
+type localAuthenticationLease struct {
+	journal AuthenticationJournal
+	key     AuthenticationJournalKey
+}
+
+// Acquire before writeMu: a running producer may need that lock again before
+// retaining its result. The captured journal path must still match at admission.
+func (s *ConfigStore) acquireLocalAuthenticationOperation(ctx context.Context) (context.Context, func(), error) {
+	key, present := AuthenticationOperationFromContext(ctx)
+	if !present {
+		return ctx, func() {}, nil
+	}
+	if err := key.Validate(); err != nil {
+		return ctx, nil, err
+	}
+	key.Kind = AuthenticationJournalLocal
+	journal, err := s.CaptureAuthenticationJournal(ctx)
+	if err != nil {
+		return ctx, nil, err
+	}
+	release, err := journal.AcquireOperation(ctx, key)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return context.WithValue(ctx, localAuthenticationLeaseContextKey{}, localAuthenticationLease{journal, key}), release, nil
+}
+
 type localAuthenticationWriter struct{ capture LocalAuthenticationChange }
 
 func (s *ConfigStore) beginLocalAuthenticationChangeLocked(ctx context.Context, before AuthenticationCapture, admitted authenticationAdmission, owner providerregistry.RegistrationOwner, action, accountID, removeID string) (context.Context, *localAuthenticationWriter, error) {
@@ -234,6 +281,10 @@ func (s *ConfigStore) beginLocalAuthenticationChangeLocked(ctx context.Context, 
 	journal, err := s.captureAuthenticationJournalLocked()
 	if err != nil {
 		return ctx, nil, err
+	}
+	lease, held := ctx.Value(localAuthenticationLeaseContextKey{}).(localAuthenticationLease)
+	if !held || lease.key != key || lease.journal != journal {
+		return ctx, nil, errors.New("local authentication operation lease no longer matches its captured path")
 	}
 	if _, found, err := journal.Load(ctx, key); err != nil {
 		return ctx, nil, err
@@ -267,7 +318,7 @@ func (w *localAuthenticationWriter) save(ctx context.Context) error {
 	if err != nil {
 		return errors.New("local authentication record cannot be encoded")
 	}
-	completed := w.capture.disk.Coherent || w.capture.disk.Repair.NeedsReload
+	completed := w.capture.disk.completed()
 	reserved := 2 << 20
 	if completed {
 		reserved = 0
@@ -356,6 +407,8 @@ func (w *localAuthenticationWriter) finish(ctx context.Context, result Authentic
 	d.Finished = true
 	_, coherent := result.RuntimeSnapshot()
 	d.Coherent = *failure == nil && coherent
+	// No stage or exchange was admitted: no external effect remains to repair.
+	d.NoEffects = !d.Coherent && d.noLocalEffect()
 	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), authenticationCompletionTimeout)
 	defer cancel()
 	*failure = errors.Join(*failure, w.save(finish))
@@ -427,6 +480,12 @@ func (s LocalAuthenticationSummary) Validate() error {
 		if len(value) > 4096 || !utf8.ValidString(value) || strings.IndexFunc(value, func(r rune) bool { return r < 32 || r == 127 }) >= 0 {
 			return errors.New("local authentication summary field is invalid")
 		}
+	}
+	if s.Abandoned && (s.Coherent || s.NoEffects || s.NeedsReload || s.RepairReady) || s.NoEffects && (!s.Finished || s.RepairStarted || s.Coherent || s.NeedsReload || s.RepairReady || s.RefreshStarted || s.Original != (LocalAuthenticationProgress{})) {
+		return errors.New("local authentication summary terminal state is invalid")
+	}
+	if (s.RepairAccountsWritten || s.RepairConfigWritten) && !s.RepairStarted {
+		return errors.New("local authentication prior repair progress is inconsistent")
 	}
 	if s.ProviderID == "" || s.RefreshObserved && !s.RefreshStarted || s.Original.RuntimePublished && !s.Original.ConfigSaved {
 		return errors.New("local authentication summary progress is invalid")

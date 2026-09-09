@@ -172,6 +172,11 @@ func (s *ConfigStore) mutateAuthentication(ctx context.Context, scope Scope, bef
 }
 
 func (s *ConfigStore) mutateAuthenticationChange(ctx context.Context, scope Scope, before AuthenticationCapture, owner providerregistry.RegistrationOwner, accountID, removeID string) (result AuthenticationMutationResult, err error) {
+	ctx, releaseOperation, err := s.acquireLocalAuthenticationOperation(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer releaseOperation()
 	if err := s.lockAuthenticationWrite(ctx); err != nil {
 		return result, err
 	}
