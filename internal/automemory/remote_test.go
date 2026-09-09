@@ -1,6 +1,7 @@
 package automemory
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,10 +30,12 @@ func TestClientOwnedMemoryUsesScopedPromptAndToolStorage(t *testing.T) {
 		require.NoError(t, err)
 		stores = append(stores, store)
 	}
+	for _, directory := range []string{os.Getenv("CRUX_AUTO_MEMORY_DIR"), UserDirectory()} {
+		require.NoError(t, os.MkdirAll(directory, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "host-decision.md"), []byte("---\nname: Decision\ndescription: Host decision\ntype: feedback\n---\n\nserver-memory-only-marker"), 0o600))
+	}
 	for _, scope := range []Scope{ScopeProject, ScopeUser} {
-		_, err := NewService(root).Upsert(t.Context(), scope, Entry{File: "host-decision", Name: "Decision", Description: "Host decision", Type: "feedback", Content: "server-memory-only-marker"})
-		require.NoError(t, err)
-		_, err = NewServiceForStore(stores[0]).Upsert(t.Context(), scope, Entry{File: "decision", Name: "Decision", Description: "Saved by first owner", Type: "feedback", Content: "first-client-only"})
+		_, err := NewServiceForStore(stores[0]).Upsert(t.Context(), scope, Entry{File: "decision", Name: "Decision", Description: "Saved by first owner", Type: "feedback", Content: "first-client-only"})
 		require.NoError(t, err)
 		entries, err := NewServiceForStore(stores[1]).List(t.Context(), scope)
 		require.NoError(t, err)
