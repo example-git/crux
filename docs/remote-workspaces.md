@@ -71,6 +71,10 @@ expires. A lost response, canceled wait or local save error can follow a
 successful server authorization, so do not start over with another key merely
 because the initial command failed.
 
+Retained entries remain inspectable after their certificates expire, and can
+still be explicitly forgotten. Expiration continues to block authentication and
+recovery promotion; reading a historical identity does not renew its authority.
+
 To deliberately abandon the retained key:
 
 ```sh
