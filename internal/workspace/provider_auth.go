@@ -168,7 +168,13 @@ func (w *ClientWorkspace) prepareClientProviderAuth(ctx context.Context, id stri
 		return err
 	}
 	if a.providerAuth == nil || a.providerAuthWorkspaceID != id {
-		a.providerAuth, a.providerAuthWorkspaceID = providerauth.New(a.store, id), id
+		if w.subCtx == nil {
+			return fmt.Errorf("provider authentication workspace lifetime is unavailable")
+		}
+		if a.providerAuth != nil {
+			a.providerAuth.Close()
+		}
+		a.providerAuth, a.providerAuthWorkspaceID = providerauth.NewWithContext(w.subCtx, a.store, id), id
 	}
 	return nil
 }

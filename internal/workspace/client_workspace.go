@@ -1242,6 +1242,14 @@ func (w *ClientWorkspace) Shutdown() {
 	if w.subCancel != nil {
 		w.subCancel()
 	}
+	if a := w.authority; a != nil {
+		a.mu.Lock()
+		authentication := a.providerAuth
+		a.mu.Unlock()
+		if authentication != nil {
+			authentication.Close()
+		}
+	}
 	w.awaitSubscription()
 	w.herdrClient.Close()
 

@@ -43,6 +43,8 @@ func (s *Service) CheckAPIKeyForAccepted(ctx context.Context, request APIKeyChec
 }
 
 func (s *Service) checkAPIKey(ctx context.Context, request APIKeyCheckRequest, accepted *config.RemoteRuntimeProposal, view *config.Config) (APIKeyCheckOutcome, error) {
+	ctx, done := s.operationContext(ctx)
+	defer done()
 	initial := APIKeyCheckOutcome{CheckID: request.CheckID, Previous: request.Target, CredentialID: request.CredentialID,
 		Probe: config.ConnectionProbeResult{Kind: config.ConnectionProbeNotProbed, Policy: config.ConnectionProbePolicyNone}}
 	if err := request.Validate(); err != nil {

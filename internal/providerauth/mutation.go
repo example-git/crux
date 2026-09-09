@@ -29,6 +29,7 @@ type mutationRequest struct {
 	accountID   string
 	logout      bool
 	checkID     string
+	loginID     string
 }
 
 type mutationReceipt struct {
@@ -85,6 +86,8 @@ func (s *Service) logout(ctx context.Context, request LogoutRequest, accepted *c
 }
 
 func (s *Service) mutate(ctx context.Context, request mutationRequest, accepted *config.RemoteRuntimeProposal, view *config.Config) (MutationResult, error) {
+	ctx, done := s.operationContext(ctx)
+	defer done()
 	initial := MutationResult{Outcome: MutationOutcome{OperationID: request.operationID, Previous: request.target}}
 	if request.target.WorkspaceID != s.workspaceID || request.target.Generation.Epoch != s.epoch {
 		return initial, ErrStale
@@ -101,6 +104,9 @@ func (s *Service) mutate(ctx context.Context, request mutationRequest, accepted 
 			return initial, ErrOperationConflict
 		}
 		return s.replay(ctx, receipt)
+	}
+	if s.oauthOperationReserved(request.operationID) {
+		return initial, ErrOperationConflict
 	}
 	snapshot, before, err := s.capture(ctx, accepted, view)
 	if err != nil {
@@ -204,7 +210,7 @@ func (s *Service) retain(receipt mutationReceipt) {
 func (s *Service) replay(ctx context.Context, receipt mutationReceipt) (MutationResult, error) {
 	outcome, err := cloneMutationOutcome(receipt.outcome)
 	if err != nil {
-		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner}, safeMutationError(err)
+		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, LoginID: receipt.request.loginID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner}, safeMutationError(err)
 	}
 	result := MutationResult{Outcome: outcome, originalOwner: receipt.originalOwner}
 	if receipt.err != nil {
@@ -256,12 +262,15 @@ func validateMutationEffect(request mutationRequest, outcome MutationOutcome) er
 	if err := outcome.Validate(); err != nil {
 		return err
 	}
-	if outcome.Change == nil || outcome.Change.OperationID != request.operationID || outcome.Change.Previous != request.target || outcome.CheckID != request.checkID {
+	if outcome.Change == nil || outcome.Change.OperationID != request.operationID || outcome.Change.Previous != request.target || outcome.CheckID != request.checkID || outcome.LoginID != request.loginID {
 		return errors.New("authentication transaction has no matching change receipt")
 	}
 	current := outcome.Change.Current
 	if request.checkID != "" {
 		return validateAPIKeySaveEffect(outcome)
+	}
+	if request.loginID != "" {
+		return validateOAuthLoginEffect(outcome)
 	}
 	if request.logout {
 		if current.Status.ActiveAccountID != "" || current.Status.AccountState != "none" || len(current.Accounts) != 0 {

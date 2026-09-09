@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"math"
+	"sync"
 
 	"github.com/example-git/crux/internal/config"
 )
@@ -25,14 +26,27 @@ type Service struct {
 	apiKeys     checkedAPIKeyStore
 	keyChecks   map[string]apiKeyCheckReceipt
 	keyCheckIDs []string
+	lifetime    context.Context
+	cancel      context.CancelFunc
+	closeOnce   sync.Once
+	workers     sync.WaitGroup
+	logins      map[string]*oauthLoginSession
+	loginIDs    []string
 }
 
 func New(store *config.ConfigStore, workspaceID string) *Service {
+	return NewWithContext(context.Background(), store, workspaceID)
+}
+
+func NewWithContext(lifetime context.Context, store *config.ConfigStore, workspaceID string) *Service {
 	var epoch [16]byte
 	// crypto/rand.Read either fills the buffer or terminates the process on a
 	// broken OS entropy source. No predictable authentication incarnation fallback.
 	_, _ = rand.Read(epoch[:])
-	return &Service{store: store, workspaceID: workspaceID, epoch: hex.EncodeToString(epoch[:]), gate: make(chan struct{}, 1), mutations: store, receipts: map[string]mutationReceipt{}, apiKeys: store, keyChecks: map[string]apiKeyCheckReceipt{}}
+	ctx, cancel := context.WithCancel(lifetime)
+	service := &Service{store: store, workspaceID: workspaceID, epoch: hex.EncodeToString(epoch[:]), gate: make(chan struct{}, 1), mutations: store, receipts: map[string]mutationReceipt{}, apiKeys: store, keyChecks: map[string]apiKeyCheckReceipt{}, lifetime: ctx, cancel: cancel, logins: map[string]*oauthLoginSession{}}
+	context.AfterFunc(ctx, service.Close)
+	return service
 }
 
 func (s *Service) Status(ctx context.Context) (Snapshot, error) {
@@ -56,9 +70,19 @@ func (s *Service) acquire(ctx context.Context) error {
 		return err
 	}
 	select {
+	case <-s.lifetime.Done():
+		return s.lifetime.Err()
 	case <-ctx.Done():
 		return ctx.Err()
 	case s.gate <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			<-s.gate
+			return err
+		}
+		if err := s.lifetime.Err(); err != nil {
+			<-s.gate
+			return err
+		}
 		return nil
 	}
 }
@@ -112,6 +136,8 @@ func (s *Service) observe(capture config.AuthenticationCapture) (Snapshot, error
 }
 
 func (s *Service) status(ctx context.Context, accepted *config.RemoteRuntimeProposal, view *config.Config) (Snapshot, error) {
+	ctx, done := s.operationContext(ctx)
+	defer done()
 	if err := s.acquire(ctx); err != nil {
 		return Snapshot{}, err
 	}
@@ -121,6 +147,8 @@ func (s *Service) status(ctx context.Context, accepted *config.RemoteRuntimeProp
 }
 
 func (s *Service) accounts(ctx context.Context, target Target, accepted *config.RemoteRuntimeProposal, view *config.Config) (AccountsState, error) {
+	ctx, done := s.operationContext(ctx)
+	defer done()
 	if err := target.Validate(); err != nil {
 		return AccountsState{}, err
 	}

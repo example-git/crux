@@ -294,6 +294,12 @@ func (w *Workspace) shutdown() {
 			coordinator.CancelAll()
 		}
 	}
+	// Prevent a request admitted just before closing from initializing a new
+	// authentication incarnation, then join any existing login/exchange/save.
+	w.providerAuthOnce.Do(func() {})
+	if w.providerAuth != nil {
+		w.providerAuth.Close()
+	}
 	runsDone := make(chan struct{})
 	go func() {
 		w.runWG.Wait()
