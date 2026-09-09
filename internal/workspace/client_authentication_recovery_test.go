@@ -23,6 +23,7 @@ func clientAuthenticationRecoveryAction(operation string, target providerauth.Ta
 
 func TestClientAuthenticationRecoveryRejectedLogoutThroughTLS(t *testing.T) {
 	f := newClientAuthenticationFixture(t, false)
+	require.True(t, f.w.CanRecoverProviderAuthentication())
 	require.NoError(t, f.w.InitCoderAgentNonInteractive(t.Context()))
 	receiver, err := f.s.Backend().GetWorkspace(f.w.workspaceID())
 	require.NoError(t, err)
@@ -33,7 +34,7 @@ func TestClientAuthenticationRecoveryRejectedLogoutThroughTLS(t *testing.T) {
 	require.NoError(t, err)
 	request := providerauth.LogoutRequest{OperationID: strings.Repeat("d", 32), Target: f.target(t)}
 	f.putMode.Store(1)
-	original, err := f.w.logoutClientAuthentication(t.Context(), request)
+	original, err := f.w.LogoutProvider(t.Context(), request)
 	require.Error(t, err)
 	paths := []string{f.path, f.accountsPath}
 	infos, bodies := clientAuthenticationFiles(t, paths...)
@@ -43,8 +44,8 @@ func TestClientAuthenticationRecoveryRejectedLogoutThroughTLS(t *testing.T) {
 	require.ErrorContains(t, err, "recover the saved authentication operation")
 	require.Equal(t, networkBefore, f.requests.Load(), "automatic recreation cannot negotiate or recollect the unacknowledged logout")
 	f.putMode.Store(0)
-	recovery := clientAuthenticationRecoveryAction(request.OperationID, request.Target, 1)
-	recovered, err := f.w.recoverClientAuthentication(t.Context(), recovery)
+	recovery := ProviderAuthenticationRecoveryRequest(clientAuthenticationRecoveryAction(request.OperationID, request.Target, 1))
+	recovered, err := f.w.RecoverProviderAuthentication(t.Context(), recovery)
 	require.NoError(t, err)
 	require.Equal(t, original, recovered)
 	require.True(t, f.w.authority.removed[f.owner])
@@ -55,10 +56,10 @@ func TestClientAuthenticationRecoveryRejectedLogoutThroughTLS(t *testing.T) {
 		require.Error(t, err)
 	}
 	require.Equal(t, []string{"Bearer " + f.first.AccessToken}, f.observed())
-	again, err := f.w.recoverClientAuthentication(t.Context(), recovery)
+	again, err := f.w.RecoverProviderAuthentication(t.Context(), recovery)
 	require.NoError(t, err)
 	require.Equal(t, recovered, again)
-	_, err = f.w.logoutClientAuthentication(t.Context(), request)
+	_, err = f.w.LogoutProvider(t.Context(), request)
 	require.NoError(t, err, "ordinary original retry may return the proven recovery acknowledgement")
 	require.EqualValues(t, 2, f.puts.Load())
 	requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)

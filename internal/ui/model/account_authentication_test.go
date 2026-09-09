@@ -68,6 +68,9 @@ func (w *authenticationUIWorkspace) LSPGetStates() map[string]workspace.LSPClien
 	return nil
 }
 func (w *authenticationUIWorkspace) result(id string, target providerauth.Target, accountID string, logout bool) (providerauth.MutationOutcome, error) {
+	if w.mode == "prewrite" {
+		return providerauth.MutationOutcome{OperationID: id, Previous: target}, providerauth.ErrStale
+	}
 	outcome := providerauth.MutationOutcome{OperationID: id, Previous: target, Progress: providerauth.MutationProgress{AccountsSaved: true, ConfigSaved: true, RuntimePublished: true}}
 	if w.mode == "lost" {
 		return providerauth.MutationOutcome{}, errors.New("transport interrupted")
@@ -250,7 +253,7 @@ func TestAuthenticationUIRejectsUncertainHistoricalAndForeignCompletion(t *testi
 			text := authenticationInfo(runAuthenticationCmd(ws, cmd))
 			switch mode {
 			case "historical":
-				require.Contains(t, text, "later authentication state is active")
+				require.Contains(t, text, "receipt no longer describes the current authentication state")
 				require.False(t, completed.operation.retry)
 			case "workspace changed":
 				require.Contains(t, text, "Previous workspace")

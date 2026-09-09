@@ -189,3 +189,21 @@ func TestAuthenticationRecoveryHintsRemainVisible(t *testing.T) {
 	require.Contains(t, output, "reload")
 	require.Contains(t, output, "result could not")
 }
+
+func TestAuthenticationPublicationRecoveryKeysAndHints(t *testing.T) {
+	theme := styles.ThemeForProvider("")
+	d := NewAccountSwitcher(&common.Common{Styles: &theme}).AuthenticationState()
+	d.CompleteRead(d.Generation(), nil, nil)
+	d.SetOperation("Authentication result could not be confirmed. "+strings.Repeat("Saved progress details. ", 20), false, true)
+	d.SetRecovery(true, true)
+	require.Equal(t, ActionAuthenticationRecover{Dialog: d}, d.HandleMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModAlt}))
+	require.Equal(t, ActionAuthenticationRecover{Dialog: d, Retry: true}, d.HandleMsg(tea.KeyPressMsg{Code: 't', Mod: tea.ModAlt}))
+	screen := uv.NewScreenBuffer(80, 24)
+	d.Draw(screen, uv.Rect(0, 0, 80, 24))
+	output := ansi.Strip(screen.String())
+	require.Contains(t, output, "Alt+R attempt recovery")
+	require.Contains(t, output, "Alt+T retry recovery")
+	d.SetOperation("Waiting for recovery…", true, true)
+	require.NotEqual(t, ActionAuthenticationRecover{Dialog: d}, d.HandleMsg(tea.KeyPressMsg{Code: 'r', Mod: tea.ModAlt}))
+	require.NotEqual(t, ActionAuthenticationRecover{Dialog: d, Retry: true}, d.HandleMsg(tea.KeyPressMsg{Code: 't', Mod: tea.ModAlt}))
+}
