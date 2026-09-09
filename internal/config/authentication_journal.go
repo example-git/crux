@@ -69,6 +69,7 @@ func (key AuthenticationJournalKey) id() string {
 type AuthenticationJournal struct {
 	store *ConfigStore
 	path  string
+	scope string
 }
 
 func (AuthenticationJournal) MarshalJSON() ([]byte, error) {
@@ -142,7 +143,8 @@ func (s *ConfigStore) captureAuthenticationJournalLocked() (AuthenticationJourna
 	if !filepath.IsAbs(s.globalDataPath) {
 		return AuthenticationJournal{}, errors.New("authentication journal requires its captured owning configuration path")
 	}
-	return AuthenticationJournal{store: s, path: filepath.Clean(s.globalDataPath) + ".authentication-journal.json"}, nil
+	scope, _ := json.Marshal([]string{s.globalDataPath, s.workspacePath, s.workingDir})
+	return AuthenticationJournal{store: s, path: filepath.Clean(s.globalDataPath) + ".authentication-journal.json", scope: selectedTokenBytesID(scope)}, nil
 }
 
 func (journal AuthenticationJournal) locked(ctx context.Context) (context.Context, func(), error) {
@@ -191,10 +193,27 @@ func (journal AuthenticationJournal) Load(ctx context.Context, key Authenticatio
 	return AuthenticationJournalEntry{key: key, revision: record.Revision, completed: record.Completed, reserved: record.Reserved, payload: bytes.Clone(record.Payload)}, true, nil
 }
 
+// ScopeID binds captured owning configuration paths without exporting them.
+func (journal AuthenticationJournal) ScopeID() string { return journal.scope }
+
+// AllKeys lists private identities across workspace incarnations. Typed callers
+// must still match connection, principal and captured path scope before exposing
+// even redacted history. It grants no publication or mutation authority.
+func (journal AuthenticationJournal) AllKeys(ctx context.Context, kind string) ([]AuthenticationJournalKey, error) {
+	return journal.keys(ctx, kind, "", true)
+}
+
 // Keys returns identities only. Typed recovery callers must load and validate
 // each private record; this listing alone establishes no operation outcome.
 func (journal AuthenticationJournal) Keys(ctx context.Context, kind, workspaceID string) ([]AuthenticationJournalKey, error) {
-	if err := (AuthenticationJournalKey{Kind: kind, WorkspaceID: workspaceID, OperationID: "listing"}).validate(); err != nil {
+	return journal.keys(ctx, kind, workspaceID, false)
+}
+func (journal AuthenticationJournal) keys(ctx context.Context, kind, workspaceID string, all bool) ([]AuthenticationJournalKey, error) {
+	validationWorkspace := workspaceID
+	if all {
+		validationWorkspace = "history"
+	}
+	if err := (AuthenticationJournalKey{Kind: kind, WorkspaceID: validationWorkspace, OperationID: "listing"}).validate(); err != nil {
 		return nil, err
 	}
 	ctx, release, err := journal.locked(ctx)
@@ -208,7 +227,7 @@ func (journal AuthenticationJournal) Keys(ctx context.Context, kind, workspaceID
 	}
 	var keys []AuthenticationJournalKey
 	for _, record := range data.Records {
-		if record.Key.Kind == kind && record.Key.WorkspaceID == workspaceID {
+		if record.Key.Kind == kind && (all || record.Key.WorkspaceID == workspaceID) {
 			keys = append(keys, record.Key)
 		}
 	}

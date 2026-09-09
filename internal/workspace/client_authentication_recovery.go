@@ -238,6 +238,10 @@ func (w *ClientWorkspace) acknowledgeClientAuthenticationRecoveryLocked(ctx cont
 }
 
 func (a *clientAuthority) retainClientAuthenticationRecovery(receipt *clientAuthenticationRecoveryReceipt) {
+	if a.authenticationRecoveries[receipt.request.RecoveryID] != nil {
+		a.authenticationRecoveries[receipt.request.RecoveryID] = receipt
+		return
+	}
 	if a.authenticationRecoveries == nil {
 		a.authenticationRecoveries = map[string]*clientAuthenticationRecoveryReceipt{}
 	}

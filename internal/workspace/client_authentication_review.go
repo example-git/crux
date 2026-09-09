@@ -469,6 +469,10 @@ func authenticationReviewChangedCategories(before, after config.RemoteRuntimePro
 }
 
 func (a *clientAuthority) retainAuthenticationReview(review *clientAuthenticationReviewReceipt) {
+	if a.authenticationReviews[review.request.ReviewID] != nil {
+		a.authenticationReviews[review.request.ReviewID] = review
+		return
+	}
 	if a.authenticationReviews == nil {
 		a.authenticationReviews = map[string]*clientAuthenticationReviewReceipt{}
 	}
