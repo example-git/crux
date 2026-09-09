@@ -19,6 +19,7 @@ import (
 
 type authenticationReconciliation struct {
 	fresh             bool
+	historyRetired    bool
 	historySourceID   string // Set only for a controller restored from retained history.
 	operation         *authenticationOperation
 	oauthLogin        *oauthLoginOperation
@@ -159,6 +160,7 @@ func (m *UI) showAuthenticationReconciliation(s *authenticationReconciliation) {
 	}
 	adopted := s.resolved
 	s.dialog.SetFinished(adopted)
+	s.dialog.SetRetired(s.historyRetired)
 	s.dialog.SetState(s.message, preview, s.preparing != nil || s.pending != "", matching && !adopted, matching && s.summary != nil && s.apply == nil && !adopted, matching && s.apply != nil && !adopted)
 	if s.oauthLogin != nil {
 		m.showOAuthLogin(s.oauthLogin)
@@ -238,7 +240,7 @@ func (m *UI) handleAuthenticationReconciliation(action dialog.ActionAuthenticati
 		m.showAuthenticationReconciliation(s)
 		return nil
 	}
-	if s.resolved {
+	if s.resolved || s.historyRetired {
 		return nil
 	}
 	if action.Choice != s.dialog.Choice() {
@@ -328,7 +330,7 @@ func (m *UI) completeAuthenticationReconciliationPreparation(msg authenticationR
 	return m.dispatchAuthenticationReviewedApply(s, request, false)
 }
 func (m *UI) dispatchAuthenticationReview(s *authenticationReconciliation, request workspace.ProviderAuthenticationReviewRequest, retry bool) tea.Cmd {
-	if !m.authenticationReconciliationCurrent(s) {
+	if !m.authenticationReconciliationCurrent(s) || s.historyRetired {
 		return util.ReportError(providerauth.ErrStale)
 	}
 	s.pending, s.delivered = "review", false
@@ -349,7 +351,7 @@ func (m *UI) dispatchAuthenticationReview(s *authenticationReconciliation, reque
 	}
 }
 func (m *UI) dispatchAuthenticationReviewedApply(s *authenticationReconciliation, request workspace.ProviderAuthenticationApplyRequest, retry bool) tea.Cmd {
-	if !m.authenticationReconciliationCurrent(s) {
+	if !m.authenticationReconciliationCurrent(s) || s.historyRetired {
 		return util.ReportError(providerauth.ErrStale)
 	}
 	s.pending, s.delivered = "apply", false
