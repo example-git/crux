@@ -79,6 +79,12 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 	if original.request.target != request.Target || original.principal != a.principal {
 		return initial, providerauth.ErrOperationConflict
 	}
+	if original.reconciledBy != "" {
+		return clientAuthenticationOutcome(original, errors.New("saved authentication was published by a separate reviewed action; the original mutation result is unchanged"))
+	}
+	if a.pendingAuthenticationReview(request.Target.WorkspaceID) {
+		return clientAuthenticationOutcome(original, errors.New("acknowledge the reviewed authentication publication through its apply action"))
+	}
 	if recovery := a.authenticationRecoveries[request.RecoveryID]; recovery != nil {
 		if recovery.request != request {
 			return clientAuthenticationOutcome(original, providerauth.ErrOperationConflict)
@@ -221,8 +227,14 @@ func (a *clientAuthority) retainClientAuthenticationRecovery(receipt *clientAuth
 }
 
 func (a *clientAuthority) unacknowledgedClientAuthentication(id string) bool {
+	// A separately reviewed publication can follow an admitted operation that
+	// made no local changes. Its attempted proposal still needs exact adoption
+	// before generic paths may publish or change the retained capture.
+	if a.pendingAuthenticationReview(id) {
+		return true
+	}
 	for _, receipt := range a.authenticationReceipts {
-		if receipt.request.target.WorkspaceID == id && (!receipt.acknowledged || !receipt.adopted) && clientAuthenticationChanged(receipt.outcome.Progress) {
+		if receipt.request.target.WorkspaceID == id && receipt.reconciledBy == "" && (!receipt.acknowledged || !receipt.adopted) && clientAuthenticationChanged(receipt.outcome.Progress) {
 			return true
 		}
 	}
