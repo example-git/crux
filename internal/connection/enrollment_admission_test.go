@@ -21,7 +21,7 @@ func budgetEnrollment(t *testing.T) *EnrollmentListener {
 	setConnectionRoot(t, t.TempDir())
 	_, err := EnsureServerIdentity(t.Context())
 	require.NoError(t, err)
-	e, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+	e, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = e.Close() })
 	return e
