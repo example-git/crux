@@ -1170,6 +1170,9 @@ func TestPathDedupe_RetiredLeaderDoesNotVetoLiveWaiter(t *testing.T) {
 	realInit := b.initConfig
 	initStarted := make(chan struct{})
 	releaseInit := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseInit) }) }
+	t.Cleanup(release)
 	var initCount atomic.Int32
 	b.initConfig = func(path, dataDir string, debug bool) (*config.ConfigStore, error) {
 		if initCount.Add(1) == 1 {
@@ -1203,8 +1206,26 @@ func TestPathDedupe_RetiredLeaderDoesNotVetoLiveWaiter(t *testing.T) {
 		defer b.mu.Unlock()
 		return b.pending == 2
 	}, 5*time.Second, time.Millisecond)
-	require.NoError(t, b.RetireClient(leaderID))
-	close(releaseInit)
+	retired := make(chan error, 1)
+	go func() { retired <- b.RetireClient(leaderID) }()
+	require.Eventually(t, func() bool {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		_, closed := b.retired[leaderID]
+		return closed
+	}, 5*time.Second, time.Millisecond)
+	select {
+	case err := <-retired:
+		t.Fatalf("retirement returned before the admitted creation ended: %v", err)
+	default:
+	}
+	release()
+	select {
+	case err := <-retired:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("retirement did not join the released creation")
+	}
 
 	require.ErrorIs(t, <-leaderResult, ErrClientRetired)
 	waiter := <-waiterResult
