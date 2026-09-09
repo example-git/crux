@@ -106,6 +106,7 @@ var connectionsAuthorizedCmd = &cobra.Command{
 			cmd.Println("No authorization records are available.")
 			return nil
 		}
+		cmd.Println("Last-use is historical stored data. Live use covers responding running daemons only; observations are not persisted and are lost when a daemon exits.")
 		for _, authorized := range clients {
 			state := "not authorized"
 			if authorized.Authorized {
@@ -113,7 +114,7 @@ var connectionsAuthorizedCmd = &cobra.Command{
 			} else if authorized.RevokedAt != nil {
 				state = "revoked"
 			}
-			cmd.Printf("%s\t%s\t%s\tcreated=%s\tapproved=%s\tlast-use=%s\trevoked=%s\n", authorized.Name, authorized.Fingerprint, state, authorizationRecordTime(authorized.CreatedAt), authorizationRecordTime(authorized.ApprovedAt), authorizationRecordTime(authorized.LastUsedAt), authorizationRecordTime(authorized.RevokedAt))
+			cmd.Printf("%s\t%s\t%s\tcreated=%s\tapproved=%s\tlast-use=%s\tlive-last-use=%s\tlive-use=%s\trevoked=%s\n", authorized.Name, authorized.Fingerprint, state, authorizationRecordTime(authorized.CreatedAt), authorizationRecordTime(authorized.ApprovedAt), authorizationRecordTime(authorized.LastUsedAt), authorizationRecordTime(authorized.LiveLastUsedAt), authorized.LiveUseState, authorizationRecordTime(authorized.RevokedAt))
 		}
 		return nil
 	},

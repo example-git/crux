@@ -25,6 +25,10 @@ type AuthorizationRecord struct {
 	ApprovedAt  *time.Time `json:"approved_at,omitempty"`
 	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
+	// Live observations are read-only, daemon-local metadata. They are lost
+	// on daemon exit and must never be serialized into the authorization store.
+	LiveLastUsedAt *time.Time `json:"-"`
+	LiveUseState   string     `json:"-"`
 }
 
 type RevocationRecord struct {
@@ -64,9 +68,32 @@ func recordAuthorization(ctx context.Context, data *store, name, principal strin
 }
 
 func ListAuthorizationRecords(ctx context.Context) ([]AuthorizationRecord, error) {
-	data, err := load(ctx)
+	path, err := filepath.Abs(storePath())
 	if err != nil {
 		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// The atomic writer makes a complete file snapshot available without
+	// creating a lock file or any directory merely to list authorizations.
+	data, err := readStoreAt(path)
+	if err != nil {
+		return nil, err
+	}
+	uses := collectAuthorizationUses(ctx, path, data)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	// A grant may change while the control requests are in flight. Merge
+	// only into this final current store snapshot, never a replaced grant.
+	data, err = readStoreAt(path)
+	if err != nil {
+		return nil, err
+	}
+	if authorizationUseServerFingerprint(data) != uses.server {
+		uses.observations = nil
+		uses.state = "unavailable"
 	}
 	records := make(map[string]AuthorizationRecord, len(data.AuthorizationRecords))
 	for principal, record := range data.AuthorizationRecords {
@@ -85,6 +112,21 @@ func ListAuthorizationRecords(ctx context.Context) ([]AuthorizationRecord, error
 	}
 	result := make([]AuthorizationRecord, 0, len(records))
 	for _, record := range records {
+		record.LiveUseState = "not-authorized"
+		if record.Authorized {
+			record.LiveUseState = uses.state
+			grant, sameCapture := uses.grants[record.Fingerprint]
+			if !sameCapture || grant != record.GrantID {
+				record.LiveUseState = "unavailable"
+			}
+			if use, ok := uses.observations[record.Fingerprint]; ok && sameCapture && grant == record.GrantID && use.GrantID == record.GrantID {
+				at := use.LastUsedAt
+				record.LiveLastUsedAt = &at
+				if record.LiveUseState == "not-observed" {
+					record.LiveUseState = "observed"
+				}
+			}
+		}
 		result = append(result, record)
 	}
 	sort.Slice(result, func(i, j int) bool {
