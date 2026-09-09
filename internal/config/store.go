@@ -1282,14 +1282,21 @@ func (s *ConfigStore) updateLocked(scope Scope, mutate func(*Config) map[string]
 	nc := s.Config().cloneForWrite()
 	fields := mutate(nc)
 	if len(fields) > 0 {
+		path, _ := s.configPath(scope)
+		written, err := s.prepareAuthenticationCOW(context.Background(), nc, path, fields, nil)
+		if err != nil {
+			return err
+		}
 		if err := s.persistConfigFields(scope, fields); err != nil {
 			return err
+		}
+		if err := s.verifyAuthenticationCOW(context.Background(), nc, written); err != nil {
+			return fmt.Errorf("config file updated but failed to publish in-memory state: %w", err)
 		}
 		// Refresh the staleness snapshot so the file watcher does not treat
 		// our own write as an external change. Safe to touch the snapshot map
 		// here because we hold writeMu.
-		if path, err := s.configPath(scope); err == nil {
-			nc.advanceAuthenticationBasis(path, fields, nil)
+		if path != "" {
 			s.captureStalenessSnapshot(append(slices.Clone(s.loadedPaths), path))
 		}
 	}
@@ -1743,6 +1750,14 @@ func (s *ConfigStore) RemoveProviderCredentials(scope Scope, expected providerre
 			fmt.Sprintf("providers.%s.api_key", expected.ProviderID),
 			fmt.Sprintf("providers.%s.oauth", expected.ProviderID),
 		}
+		path, err := s.configPath(scope)
+		if err != nil {
+			return err
+		}
+		written, err := s.prepareAuthenticationCOW(context.Background(), next, path, nil, keys)
+		if err != nil {
+			return err
+		}
 		if err := s.atomicWrite(scope, func(data []byte) ([]byte, error) {
 			value := string(data)
 			for _, key := range keys {
@@ -1755,10 +1770,10 @@ func (s *ConfigStore) RemoveProviderCredentials(scope Scope, expected providerre
 		}); err != nil {
 			return err
 		}
-		if path, err := s.configPath(scope); err == nil {
-			next.advanceAuthenticationBasis(path, nil, keys)
-			s.captureStalenessSnapshot(append(slices.Clone(s.loadedPaths), path))
+		if err := s.verifyAuthenticationCOW(context.Background(), next, written); err != nil {
+			return fmt.Errorf("credentials removed from config file but failed to publish in-memory state: %w", err)
 		}
+		s.captureStalenessSnapshot(append(slices.Clone(s.loadedPaths), path))
 		s.setConfig(next)
 		return nil
 	})
@@ -2722,7 +2737,7 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 		); err != nil {
 			return fmt.Errorf("revalidate reloaded configuration generation: %w", err)
 		}
-		if err := verifyAuthenticationLoadTopology(ctx, basis, authoredPaths, s.workingDir, workspacePath, baseEnvironment); err != nil {
+		if err := verifyAuthenticationWriteTopology(ctx, basis, authoredPaths, s.workingDir, workspacePath, baseEnvironment); err != nil {
 			return fmt.Errorf("revalidate reloaded configuration generation: %w", err)
 		}
 		if s.publishProcessState {

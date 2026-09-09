@@ -279,7 +279,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		return nil, errors.Join(fmt.Errorf("inspect provider ownership migration: %w", err), migrationRollbackErr, rollbackErr)
 	}
 	publish := func(published ProviderScan) error {
-		if err := verifyAuthenticationLoadTopology(context.Background(), basis, authoredPaths, workingDir, store.workspacePath, baseEnvironment); err != nil {
+		if err := verifyAuthenticationWriteTopology(context.Background(), basis, authoredPaths, workingDir, store.workspacePath, baseEnvironment); err != nil {
 			return err
 		}
 		if publishProcessState {

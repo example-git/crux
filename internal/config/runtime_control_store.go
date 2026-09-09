@@ -119,7 +119,7 @@ func (s *ConfigStore) mutateRuntimeControl(ctx context.Context, scope Scope, tar
 	if current.Options != nil {
 		dataDir = current.Options.DataDirectory
 	}
-	preview, _, _, err := s.loadReloadConfigInputs(ctx, lookupConfigsFromEnvironment(s.workingDir, base), map[string][]byte{path: after}, base, dataDir, s.ephemeralProviderSnapshot(), cloneRuntimeOverrides(s.overrides), true)
+	preview, err := s.previewScopedConfigWrite(ctx, path, before, existed, after, base, dataDir)
 	if err != nil {
 		return RuntimeControlState{}, fmt.Errorf("stage runtime control config: %w", err)
 	}

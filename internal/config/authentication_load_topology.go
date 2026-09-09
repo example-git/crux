@@ -12,7 +12,7 @@ import (
 	"github.com/example-git/crux/internal/fsext"
 )
 
-type authenticationLoadWrite struct {
+type authenticationConfigWrite struct {
 	path    string
 	fields  map[string]any
 	removed []string
@@ -22,9 +22,9 @@ type authenticationLoadWrite struct {
 // All bytes come from retained reads plus exact field receipts, never a later
 // file observation. The returned basis is complete before runtime preparation.
 func prepareAuthenticationLoadTopology(ctx context.Context, original *authenticationLoadBasis, notification notificationMigrationPlan, modelFields, migrationFields map[string]any, globalPath, workingDir, workspacePath string, base env.Env) (*authenticationLoadBasis, []string, error) {
-	writes := []authenticationLoadWrite{}
+	writes := []authenticationConfigWrite{}
 	for _, path := range slices.Sorted(maps.Keys(notification.overrides)) {
-		write := authenticationLoadWrite{path: path, fields: map[string]any{}}
+		write := authenticationConfigWrite{path: path, fields: map[string]any{}}
 		if notification.setNotifications && path == notification.dataConfig {
 			write.fields["options.notifications"] = notification.value
 		}
@@ -34,11 +34,18 @@ func prepareAuthenticationLoadTopology(ctx context.Context, original *authentica
 		writes = append(writes, write)
 	}
 	if len(modelFields) > 0 {
-		writes = append(writes, authenticationLoadWrite{path: globalPath, fields: modelFields})
+		writes = append(writes, authenticationConfigWrite{path: globalPath, fields: modelFields})
 	}
 	if len(migrationFields) > 0 {
-		writes = append(writes, authenticationLoadWrite{path: globalPath, fields: migrationFields})
+		writes = append(writes, authenticationConfigWrite{path: globalPath, fields: migrationFields})
 	}
+	return projectAuthenticationBasisWrites(ctx, original, writes, workingDir, workspacePath, base)
+}
+
+// projectAuthenticationBasisWrites serves startup and ordinary typed writes.
+// Its result belongs only to an unpublished candidate until the actual writes
+// have been verified; no later observation can advance these retained sources.
+func projectAuthenticationBasisWrites(ctx context.Context, original *authenticationLoadBasis, writes []authenticationConfigWrite, workingDir, workspacePath string, base env.Env) (*authenticationLoadBasis, []string, error) {
 	if original == nil || len(writes) == 0 {
 		return original, nil, nil
 	}
@@ -113,9 +120,9 @@ func prepareAuthenticationLoadTopology(ctx context.Context, original *authentica
 	return next, writtenPaths, ctx.Err()
 }
 
-// verifyAuthenticationLoadTopology checks the predicted order and authored
+// verifyAuthenticationWriteTopology checks the predicted order and authored
 // source postimages. It never advances the prepared basis or evaluates shell.
-func verifyAuthenticationLoadTopology(ctx context.Context, basis *authenticationLoadBasis, writtenPaths []string, workingDir, workspacePath string, base env.Env) error {
+func verifyAuthenticationWriteTopology(ctx context.Context, basis *authenticationLoadBasis, writtenPaths []string, workingDir, workspacePath string, base env.Env) error {
 	if len(writtenPaths) == 0 {
 		return nil
 	}
