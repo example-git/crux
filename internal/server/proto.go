@@ -979,6 +979,7 @@ func (c *controllerV1) handlePostWorkspaceAgentUpdate(w http.ResponseWriter, r *
 	id := r.PathValue("id")
 	var req proto.AgentUpdateRequest
 	decoder := json.NewDecoder(r.Body)
+	decoder.UseNumber()
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
 		c.server.logError(r, "Failed to decode agent update request", "error", err)

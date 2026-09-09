@@ -23,6 +23,8 @@ type Branding struct {
 	Brand
 }
 
+var brandingSchemaValidationMu sync.Mutex
+
 var compiledBrandingSchema = sync.OnceValues(func() (*validator.Schema, error) {
 	data, err := BrandingSchemaJSON()
 	if err != nil {
@@ -52,7 +54,10 @@ func DecodeBrandingStrict(data []byte) (Brand, error) {
 	if err != nil {
 		return Brand{}, err
 	}
-	if paths := schemaIssuePaths(schema.ValidateJSON(data)); len(paths) != 0 {
+	brandingSchemaValidationMu.Lock()
+	paths := schemaIssuePaths(schema.ValidateJSON(data))
+	brandingSchemaValidationMu.Unlock()
+	if len(paths) != 0 {
 		return Brand{}, fmt.Errorf("branding.json does not conform to its schema at %s", strings.Join(paths, ", "))
 	}
 	var value Branding

@@ -3,12 +3,11 @@ package dialog
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -23,12 +22,12 @@ import (
 	"github.com/example-git/crux/internal/agent/prompt"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/home"
+	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/example-git/crux/internal/ui/util"
 	"github.com/example-git/crux/internal/workspace"
-	"github.com/tidwall/gjson"
 )
 
 // InstructionsID is the identifier for the instructions dialog.
@@ -53,14 +52,17 @@ type ActionPreviewInstructionSectionToggled struct {
 }
 
 type instrItem struct {
-	id          string
-	label       string
-	value       string
-	disabled    bool
-	unavailable bool
-	replaced    bool
-	kind        instrItemKind
-	control     *providerregistry.RuntimeControlSurface
+	id             string
+	label          string
+	value          string
+	disabled       bool
+	unavailable    bool
+	replaced       bool
+	kind           instrItemKind
+	control        *providerregistry.RuntimeControlSurface
+	controlState   *config.RuntimeControlState
+	controlLoading bool
+	controlError   string
 }
 
 type instrItemKind int
@@ -91,6 +93,7 @@ type Instructions struct {
 	providerOwnerSet    bool
 	operationGeneration uint64
 	operationPending    bool
+	controlsGeneration  uint64
 	metadataInput       textinput.Model
 	editingMetadata     bool
 	viewport            viewport.Model
@@ -102,6 +105,7 @@ type instrKeyMap struct {
 	Down   key.Binding
 	Toggle key.Binding
 	Edit   key.Binding
+	Reset  key.Binding
 	Close  key.Binding
 }
 
@@ -197,12 +201,12 @@ func NewInstructions(com *common.Common) *Instructions {
 			label += " (" + strings.Join(control.Values, "/") + ")"
 		}
 		items = append(items, instrItem{
-			kind:        instrMetadataValue,
-			id:          control.ID,
-			label:       label,
-			value:       runtimeControlValue(cfg, control.ID),
-			unavailable: !control.Available,
-			control:     &control,
+			kind:         instrMetadataValue,
+			id:           control.ID,
+			label:        label,
+			controlError: control.Diagnostic,
+			unavailable:  !control.Available,
+			control:      &control,
 		})
 	}
 
@@ -255,6 +259,7 @@ func NewInstructions(com *common.Common) *Instructions {
 			Down:   key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
 			Toggle: key.NewBinding(key.WithKeys("enter", " "), key.WithHelp("space/enter", "toggle")),
 			Edit:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit file")),
+			Reset:  key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "reset control")),
 			Close:  CloseKey,
 		},
 	}
@@ -285,6 +290,8 @@ func (d *Instructions) HandleMsg(msg tea.Msg) Action {
 				return nil
 			case msg.Code == tea.KeyEnter:
 				return d.saveMetadataValue()
+			case key.Matches(msg, d.keyMap.Reset):
+				return d.removeMetadataValue()
 			default:
 				var cmd tea.Cmd
 				d.metadataInput, cmd = d.metadataInput.Update(msg)
@@ -305,6 +312,10 @@ func (d *Instructions) HandleMsg(msg tea.Msg) Action {
 			return d.editProjectFile()
 		case key.Matches(msg, d.keyMap.Toggle):
 			return d.toggle()
+		case key.Matches(msg, d.keyMap.Reset):
+			if d.items[d.cursor].kind == instrMetadataValue {
+				return d.removeMetadataValue()
+			}
 		}
 	case common.CoalescedWheelMsg:
 		d.followCursor = false
@@ -362,13 +373,26 @@ func (d *Instructions) toggle() Action {
 		return d.editProviderContextFile()
 
 	case instrMetadataValue:
-		if item.unavailable {
-			return nil
+		if err := d.checkControlItem(item); err != nil {
+			return ActionCmd{Cmd: util.ReportError(err)}
 		}
-		d.metadataInput.SetValue(item.value)
+		value := item.controlState.Effective
+		d.metadataInput.Placeholder = "Effective value; saved scope unknown"
+		if item.controlState.ScopedKnown {
+			value = item.controlState.Scoped
+			d.metadataInput.Placeholder = "Inherited: " + runtimeControlDisplayValue(item.controlState.Effective)
+		}
+		if item.controlState.RuntimeDependent {
+			d.metadataInput.Placeholder = "Configured fallback; saved scope unknown"
+			if item.controlState.ScopedKnown {
+				d.metadataInput.Placeholder = "Configured fallback: " + runtimeControlDisplayValue(item.controlState.Effective)
+			}
+		}
+		d.metadataInput.SetValue(runtimeControlInputValue(value))
 		d.metadataInput.CursorEnd()
 		d.metadataInput.Focus()
 		d.editingMetadata = true
+		d.followCursor = true
 		return nil
 
 	case instrPreview:
@@ -377,26 +401,6 @@ func (d *Instructions) toggle() Action {
 		return d.editProjectFile()
 	}
 	return nil
-}
-
-func (d *Instructions) saveMetadataValue() Action {
-	item := &d.items[d.cursor]
-	// Manifest control identifiers are not arbitrary configuration paths.
-	switch item.id {
-	case "options.response_verbosity", "options.analysis_effort":
-	default:
-		return ActionCmd{Cmd: util.ReportError(fmt.Errorf("provider runtime control %q does not support editing here", item.id))}
-	}
-	value := strings.TrimSpace(d.metadataInput.Value())
-	var parsed any
-	if value != "" {
-		var ok bool
-		parsed, ok = parseRuntimeControlValue(item.control, value)
-		if !ok {
-			return ActionCmd{Cmd: util.ReportError(fmt.Errorf("invalid %s value %q", item.label, value))}
-		}
-	}
-	return d.mutate(instructionMutation{kind: instrMetadataValue, id: item.id, value: parsed, display: value, remove: value == ""})
 }
 
 func (d *Instructions) updateReplacedSections() {
@@ -439,13 +443,14 @@ type instructionMutation struct {
 	kind             instrItemKind
 	id               string
 	value            any
-	display          string
+	controlTarget    config.RuntimeControlTarget
 	disabled, remove bool
 }
 
 type ActionInstructionMutationCompleted struct {
-	Operation InstructionOperation
-	Err       error
+	Operation    InstructionOperation
+	ControlState *config.RuntimeControlState
+	Err          error
 }
 
 type ActionInstructionEditorPrepared struct {
@@ -470,6 +475,9 @@ func (op InstructionOperation) validateSelection(ws workspace.Workspace) error {
 		(surface.Owner != nil) != op.ownerSet || (surface.Owner != nil && *surface.Owner != op.owner) {
 		return fmt.Errorf("instruction provider selection changed; reopen the instructions dialog")
 	}
+	if op.mutation.kind == instrMetadataValue {
+		return validateRuntimeControlTarget(ws, op.mutation.controlTarget)
+	}
 	return nil
 }
 
@@ -492,6 +500,9 @@ func (d *Instructions) beginOperation(mutation instructionMutation) (Instruction
 		return InstructionOperation{}, err
 	}
 	d.operationGeneration, d.operationPending = op.generation, true
+	if mutation.kind == instrMetadataValue {
+		d.controlsGeneration++ // An older read cannot replace this mutation's acknowledgement.
+	}
 	return op, nil
 }
 
@@ -503,6 +514,7 @@ func (d *Instructions) mutate(mutation instructionMutation) Action {
 	ws := d.com.Workspace
 	return ActionCmd{Cmd: func() tea.Msg {
 		err := op.validateSelection(ws)
+		var controlState *config.RuntimeControlState
 		if err == nil {
 			switch mutation.kind {
 			case instrNativeToggle:
@@ -516,14 +528,16 @@ func (d *Instructions) mutate(mutation instructionMutation) Action {
 			case instrSection:
 				err = ws.SetConfigField(config.ScopeGlobal, "options.disabled_instruction_sections", mutation.value)
 			case instrMetadataValue:
+				var state config.RuntimeControlState
 				if mutation.remove {
-					err = ws.RemoveConfigField(config.ScopeGlobal, mutation.id)
+					state, err = ws.RemoveRuntimeControl(context.Background(), config.ScopeGlobal, mutation.controlTarget)
 				} else {
-					err = ws.SetConfigField(config.ScopeGlobal, mutation.id, mutation.value)
+					state, err = ws.SetRuntimeControl(context.Background(), config.ScopeGlobal, mutation.controlTarget, mutation.value.(json.RawMessage))
 				}
+				controlState = &state
 			}
 		}
-		return ActionInstructionMutationCompleted{Operation: op, Err: err}
+		return ActionInstructionMutationCompleted{Operation: op, ControlState: controlState, Err: err}
 	}}
 }
 
@@ -534,9 +548,20 @@ func (d *Instructions) FinishOperation(msg ActionInstructionMutationCompleted) e
 		if msg.Operation.generation == d.operationGeneration {
 			d.operationPending = false
 		}
-		return err
+		return errors.Join(err, msg.Err)
 	}
 	d.operationPending = false
+	if msg.Err == nil && msg.Operation.mutation.kind == instrMetadataValue {
+		mutation := msg.Operation.mutation
+		if msg.ControlState == nil {
+			return fmt.Errorf("runtime control acknowledgement is missing")
+		}
+		var value json.RawMessage
+		if !mutation.remove {
+			value = mutation.value.(json.RawMessage)
+		}
+		return proto.ValidateRuntimeControlAcknowledgement(*msg.ControlState, config.ScopeGlobal, mutation.controlTarget, value, true, !mutation.remove)
+	}
 	return msg.Err
 }
 
@@ -564,7 +589,9 @@ func (d *Instructions) CompleteOperation(msg ActionInstructionMutationCompleted)
 			item.disabled = item.id != mutation.id
 		} else if item.id == mutation.id {
 			if mutation.kind == instrMetadataValue {
-				item.value = mutation.display
+				item.controlState = msg.ControlState
+				item.value = runtimeControlDisplayValue(msg.ControlState.Effective)
+				item.controlLoading, item.controlError = false, ""
 			} else {
 				item.disabled = mutation.disabled
 			}
@@ -703,9 +730,14 @@ func (d *Instructions) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	innerWidth := max(dialogWidth-frameStyle.GetHorizontalFrameSize(), 1)
 
 	rowCount := 0
-	for _, item := range d.items {
+	for index, item := range d.items {
 		if item.kind == instrHeader {
 			rowCount += 2
+		} else if item.kind == instrMetadataValue {
+			rowCount += 2
+			if d.editingMetadata && index == d.cursor {
+				rowCount++
+			}
 		} else {
 			rowCount++
 		}
@@ -760,21 +792,18 @@ func (d *Instructions) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 				rows = append(rows, d.styledRow(t, index, label))
 			}
 		case instrMetadataValue:
-			itemRows[index] = len(rows)
-			value := item.value
-			if value == "" {
-				value = "unset"
-			}
-			label := fmt.Sprintf("  ▸ %s: %s", item.label, value)
-			if d.editingMetadata && index == d.cursor {
-				label = "  ▸ " + item.label + ": " + d.metadataInput.View()
-			}
-			label = ansi.Truncate(label, viewportWidth, "…")
+			label := ansi.Truncate("  ▸ "+item.label, viewportWidth, "…")
+			value := ansi.Truncate("    "+runtimeControlRowValue(item), viewportWidth, "…")
 			if item.unavailable {
-				rows = append(rows, t.Dialog.SecondaryText.Render(label))
+				rows = append(rows, t.Dialog.SecondaryText.Render(label), t.Dialog.SecondaryText.Render(value))
 			} else {
-				rows = append(rows, d.styledRow(t, index, label))
+				rows = append(rows, d.styledRow(t, index, label), d.styledRow(t, index, value))
 			}
+			if d.editingMetadata && index == d.cursor {
+				input := ansi.Truncate("    "+d.metadataInput.View(), viewportWidth, "…")
+				rows = append(rows, d.styledRow(t, index, input))
+			}
+			itemRows[index] = len(rows) - 1
 		case instrProviderContextEdit, instrPreview, instrAction:
 			itemRows[index] = len(rows)
 			label := ansi.Truncate("  ▸ "+item.label, viewportWidth, "…")
@@ -814,7 +843,14 @@ func (d *Instructions) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		parts = append(parts, body)
 	}
 	if showHint {
-		hint := ansi.Truncate("  space: select · e: edit file · esc: close", innerWidth, "…")
+		hintText := "  space: select · e: edit file · esc: close"
+		if d.items[d.cursor].kind == instrMetadataValue {
+			hintText = "  enter: edit · ctrl+r: reset saved value · esc: close"
+			if d.editingMetadata {
+				hintText = "  enter: save · ctrl+r: reset · esc: cancel"
+			}
+		}
+		hint := ansi.Truncate(hintText, innerWidth, "…")
 		parts = append(parts, "", t.Dialog.SecondaryText.Render(hint))
 	}
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
@@ -846,41 +882,6 @@ func providerNativeInstructions(surfaces []providerregistry.Surface, providerID 
 
 func validProviderInstructionsID(provider string) bool {
 	return provider != "" && provider != "." && provider != ".." && !strings.ContainsAny(provider, `/\\`)
-}
-
-func runtimeControlValue(cfg *config.Config, path string) string {
-	encoded, err := json.Marshal(cfg)
-	if err != nil {
-		return ""
-	}
-	value := gjson.GetBytes(encoded, path)
-	if !value.Exists() {
-		return ""
-	}
-	return value.String()
-}
-
-func parseRuntimeControlValue(control *providerregistry.RuntimeControlSurface, value string) (any, bool) {
-	if control == nil || !control.Available {
-		return nil, false
-	}
-	switch control.Type {
-	case "enum":
-		return value, slices.Contains(control.Values, value)
-	case "string":
-		return value, true
-	case "boolean":
-		parsed, err := strconv.ParseBool(value)
-		return parsed, err == nil
-	case "integer":
-		parsed, err := strconv.ParseInt(value, 10, 64)
-		return parsed, err == nil
-	case "number":
-		parsed, err := strconv.ParseFloat(value, 64)
-		return parsed, err == nil
-	default:
-		return nil, false
-	}
 }
 
 func sectionDisplayName(id string) string {

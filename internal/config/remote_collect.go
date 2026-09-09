@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -139,7 +140,9 @@ func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, r
 		return proposal, errors.New("client runtime cannot be encoded")
 	}
 	var result RemoteRuntimeProposal
-	if err := json.Unmarshal(data, &result); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&result); err != nil {
 		return result, errors.New("client runtime cannot be copied")
 	}
 	result.Digest, err = RemoteRuntimeDigest(result)

@@ -51,6 +51,9 @@ func DecodeStrict(data []byte) (Manifest, error) {
 	if err := validateProviderSchema(data); err != nil {
 		return Manifest{}, err
 	}
+	if err := decodeRuntimeControlDefaults(data, &value); err != nil {
+		return Manifest{}, err
+	}
 	if err := Validate(value); err != nil {
 		return Manifest{}, err
 	}
@@ -1037,13 +1040,14 @@ func runtimeDefaultMatches(kind string, value any) bool {
 		case float64:
 			return !math.IsInf(value, 0) && !math.IsNaN(value) && math.Trunc(value) == value
 		case json.Number:
-			_, err := value.Int64()
-			return err == nil
+			return runtimeNumericDefaultMatches(value, true)
 		}
 	case "number":
 		switch value.(type) {
-		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64, json.Number:
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 			return true
+		case json.Number:
+			return runtimeNumericDefaultMatches(value.(json.Number), false)
 		}
 	}
 	return false

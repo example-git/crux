@@ -6,6 +6,7 @@ package workspace
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -234,6 +235,9 @@ type Workspace interface {
 	SetProviderToolingInstructions(scope config.Scope, owner providerregistry.RegistrationOwner, profile string) error
 	RemoveProviderToolingInstructions(scope config.Scope, owner providerregistry.RegistrationOwner) error
 	ReloadProviderContextInstructions(ctx context.Context, owner providerregistry.RegistrationOwner) error
+	RuntimeControlState(ctx context.Context, scope config.Scope, target config.RuntimeControlTarget) (config.RuntimeControlState, error)
+	SetRuntimeControl(ctx context.Context, scope config.Scope, target config.RuntimeControlTarget, value json.RawMessage) (config.RuntimeControlState, error)
+	RemoveRuntimeControl(ctx context.Context, scope config.Scope, target config.RuntimeControlTarget) (config.RuntimeControlState, error)
 	SetCompactMode(scope config.Scope, enabled bool) error
 	SetProviderAPIKey(scope config.Scope, providerID string, apiKey any) error
 	RemoveProviderCredentials(scope config.Scope, owner providerregistry.RegistrationOwner) error

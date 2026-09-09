@@ -61,15 +61,23 @@ func TestSurfacesProjectDeclarativeMetadataWithoutPluginBehavior(t *testing.T) {
 
 func TestSurfacesMarkHostOwnedRuntimeControlsAvailable(t *testing.T) {
 	registry, err := New(Registration{
-		ProviderID: "integrated",
-		Name:       "Integrated",
-		RuntimeControls: []manifest.RuntimeControl{{
-			ID: "verbosity", Type: "enum", Values: []string{"low", "high"},
-		}},
-		Runtime: &RuntimeCapability{Available: func(modelID string) bool { return modelID == "supported" }},
+		ProviderID:      "integrated",
+		Name:            "Integrated",
+		Construction:    ConstructionCodex,
+		RuntimeControls: codexRuntimeControls(),
+		Runtime:         &RuntimeCapability{Available: func(modelID string) bool { return modelID == "supported" }},
 	})
 	require.NoError(t, err)
 
 	surface := registry.Surfaces(nil, map[string]string{"integrated": "supported"})[0]
 	require.True(t, surface.RuntimeControls[0].Available)
+	require.NotNil(t, surface.RuntimeControls[0].Binding)
+	require.NotEmpty(t, surface.RuntimeControls[0].DescriptorDigest)
+	require.Equal(t, []string{"supported"}, surface.RuntimeControls[0].AvailableModels)
+	unsupported := registry.Surfaces(nil, map[string]string{"integrated": "unsupported"})[0]
+	require.False(t, unsupported.RuntimeControls[0].Available)
+	require.Empty(t, unsupported.RuntimeControls[0].AvailableModels)
+	auxiliary := registry.Surfaces([]catalog.Provider{{ID: "integrated", Models: []catalog.Model{{ID: "unsupported"}, {ID: "supported"}}}}, map[string]string{"integrated": "unsupported"})[0]
+	require.False(t, auxiliary.RuntimeControls[0].Available)
+	require.Equal(t, []string{"supported"}, auxiliary.RuntimeControls[0].AvailableModels)
 }

@@ -2,6 +2,7 @@ package dialog
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -31,16 +32,24 @@ import (
 
 type instructionsTestWorkspace struct {
 	workspace.Workspace
-	cfg          *config.Config
-	workingDir   string
-	fields       map[string]any
-	surfaces     []providerregistry.Surface
-	snapshot     agent.InstructionSnapshot
-	snapshotErr  error
-	mutationErr  error
-	toolingOwner providerregistry.RegistrationOwner
-	toolingCalls int
-	reloadCalls  int
+	cfg                    *config.Config
+	workingDir             string
+	fields                 map[string]any
+	surfaces               []providerregistry.Surface
+	snapshot               agent.InstructionSnapshot
+	snapshotErr            error
+	mutationErr            error
+	toolingOwner           providerregistry.RegistrationOwner
+	toolingCalls           int
+	reloadCalls            int
+	controlStates          map[string]config.RuntimeControlState
+	controlResolveErr      error
+	controlResolveCalls    int
+	controlMutationCalls   int
+	controlTarget          config.RuntimeControlTarget
+	controlValue           json.RawMessage
+	controlRemove          bool
+	controlAcknowledgement *config.RuntimeControlState
 }
 
 func (w *instructionsTestWorkspace) Config() *config.Config {
@@ -88,6 +97,89 @@ func (w *instructionsTestWorkspace) ReloadProviderContextInstructions(context.Co
 	return w.mutationErr
 }
 
+func (w *instructionsTestWorkspace) RuntimeControlState(_ context.Context, scope config.Scope, target config.RuntimeControlTarget) (config.RuntimeControlState, error) {
+	w.controlResolveCalls++
+	if w.controlResolveErr != nil {
+		return config.RuntimeControlState{}, w.controlResolveErr
+	}
+	if state, ok := w.controlStates[target.ControlID]; ok {
+		return state, nil
+	}
+	surface, _ := providerregistry.LookupSurface(w.ProviderSurfaces(), target.Owner.ProviderID)
+	for _, control := range surface.RuntimeControls {
+		if control.ID == target.ControlID && control.Binding != nil {
+			target.DescriptorDigest = control.DescriptorDigest
+			return config.RuntimeControlState{Scope: scope, Target: target, Binding: *control.Binding,
+				ScopedKnown: true, Source: config.RuntimeControlSource{Kind: "absent"}, Models: w.cfg.AgentModelState()}, nil
+		}
+	}
+	return config.RuntimeControlState{}, errors.New("synthetic unresolved control")
+}
+
+func (w *instructionsTestWorkspace) SetRuntimeControl(ctx context.Context, scope config.Scope, target config.RuntimeControlTarget, value json.RawMessage) (config.RuntimeControlState, error) {
+	w.controlMutationCalls++
+	w.controlTarget, w.controlValue, w.controlRemove = target, value, false
+	if w.mutationErr != nil {
+		return config.RuntimeControlState{}, w.mutationErr
+	}
+	if w.controlAcknowledgement != nil {
+		return *w.controlAcknowledgement, nil
+	}
+	state, err := w.RuntimeControlState(ctx, scope, target)
+	if err != nil {
+		return state, err
+	}
+	state.ScopedKnown = true
+	state.RuntimeDependent = false
+	state.Scoped = config.RuntimeControlValue{Present: true, Value: value}
+	state.Effective, state.Source = state.Scoped, config.RuntimeControlSource{Kind: "model", Key: target.ControlID}
+	if w.controlStates == nil {
+		w.controlStates = make(map[string]config.RuntimeControlState)
+	}
+	w.controlStates[target.ControlID] = state
+	var decoded any
+	if err := json.Unmarshal(value, &decoded); err != nil {
+		return state, err
+	}
+	w.fields[target.ControlID] = decoded
+	return state, nil
+}
+
+func (w *instructionsTestWorkspace) RemoveRuntimeControl(ctx context.Context, scope config.Scope, target config.RuntimeControlTarget) (config.RuntimeControlState, error) {
+	w.controlMutationCalls++
+	w.controlTarget, w.controlRemove = target, true
+	if w.mutationErr != nil {
+		return config.RuntimeControlState{}, w.mutationErr
+	}
+	if w.controlAcknowledgement != nil {
+		return *w.controlAcknowledgement, nil
+	}
+	state, err := w.RuntimeControlState(ctx, scope, target)
+	if err != nil {
+		return state, err
+	}
+	state.ScopedKnown = true
+	state.Scoped, state.Effective = config.RuntimeControlValue{}, config.RuntimeControlValue{}
+	state.Source = config.RuntimeControlSource{Kind: "absent"}
+	if w.controlStates == nil {
+		w.controlStates = make(map[string]config.RuntimeControlState)
+	}
+	w.controlStates[target.ControlID] = state
+	w.fields[target.ControlID] = nil
+	return state, nil
+}
+
+func loadInstructionsControls(t *testing.T, d *Instructions) {
+	t.Helper()
+	command := d.LoadRuntimeControls()
+	if command == nil {
+		t.Fatal("expected control loading command")
+	}
+	if err := d.CompleteRuntimeControls(command().(ActionInstructionControlsLoaded), true); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func completeInstructionAction(t *testing.T, d *Instructions, action Action) {
 	t.Helper()
 	command, ok := action.(ActionCmd)
@@ -118,6 +210,7 @@ func newInstructionsTestDialogForModel(t *testing.T, providerID, modelID, profil
 		cfg: &config.Config{
 			Models: map[config.SelectedModelType]config.SelectedModel{
 				config.SelectedModelTypeLarge: {Provider: providerID, Model: modelID},
+				config.SelectedModelTypeSmall: {Provider: providerID, Model: modelID},
 			},
 			Providers: csync.NewMapFrom(map[string]config.ProviderConfig{
 				providerID: {ID: providerID, ToolingInstructions: profile},
@@ -136,6 +229,9 @@ func newInstructionsTestDialogForModel(t *testing.T, providerID, modelID, profil
 			[]catalog.Provider{codex.CatalogProvider()},
 			map[string]string{providerID: modelID},
 		)
+		if err := ws.cfg.BindProviderSurfaceOwners(ws.surfaces); err != nil {
+			t.Fatal(err)
+		}
 	}
 	theme := styles.ThemeForProvider(providerID)
 	return NewInstructions(&common.Common{Workspace: ws, Styles: &theme}), ws
@@ -194,12 +290,13 @@ func TestInstructionsMetadataControlsOnlyAvailableForGPT56(t *testing.T) {
 
 func TestInstructionsMetadataValuePersistsAndCanBeUnset(t *testing.T) {
 	dialog, ws := newInstructionsTestDialogForModel(t, codex.ID, "gpt-5.6-sol", config.ToolingInstructionsCrux)
+	loadInstructionsControls(t, dialog)
 	index := instructionItemIndex(dialog.items, instrMetadataValue, "options.analysis_effort")
 	dialog.cursor = index
 	dialog.metadataInput.SetValue("max")
 	dialog.editingMetadata = true
 	action := dialog.saveMetadataValue()
-	if len(ws.fields) != 0 || dialog.items[index].value != "" {
+	if len(ws.fields) != 0 || dialog.items[index].value != "unset" {
 		t.Fatal("metadata save changed state before command")
 	}
 	completeInstructionAction(t, dialog, action)
@@ -217,6 +314,7 @@ func TestInstructionsMetadataValuePersistsAndCanBeUnset(t *testing.T) {
 
 func TestInstructionsRejectsInvalidMetadataValue(t *testing.T) {
 	dialog, ws := newInstructionsTestDialogForModel(t, codex.ID, "gpt-5.6-sol", config.ToolingInstructionsCrux)
+	loadInstructionsControls(t, dialog)
 	dialog.cursor = instructionItemIndex(dialog.items, instrMetadataValue, "options.analysis_effort")
 	dialog.metadataInput.SetValue("unlimited")
 	dialog.editingMetadata = true
@@ -732,6 +830,7 @@ func TestInstructionsMutationFailuresPreserveState(t *testing.T) {
 	for _, kind := range []instrItemKind{instrMode, instrNativeToggle, instrSection, instrMetadataValue} {
 		t.Run(fmt.Sprint(kind), func(t *testing.T) {
 			d, ws := newInstructionsTestDialogForModel(t, codex.ID, "gpt-5.6-sol", config.ToolingInstructionsCrux)
+			loadInstructionsControls(t, d)
 			ws.mutationErr = errors.New("synthetic acknowledgement rejection")
 			id := ""
 			switch kind {
