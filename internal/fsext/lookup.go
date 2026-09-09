@@ -129,7 +129,7 @@ func LookupBounded(dir, stopDir string, targets ...string) ([]string, error) {
 	return found, err
 }
 
-func lookupBounded(ctx context.Context, dir, stopDir string, replacement *createdFile, targets ...string) ([]string, []string, error) {
+func lookupBounded(ctx context.Context, dir, stopDir string, replacements []createdFile, targets ...string) ([]string, []string, error) {
 	if len(targets) == 0 {
 		return nil, nil, ctx.Err()
 	}
@@ -150,15 +150,18 @@ func lookupBounded(ctx context.Context, dir, stopDir string, replacement *create
 			if present {
 				found = append(found, fpath)
 			}
-			if replacement != nil {
-				matches, err := replacement.readThrough(ctx, fpath)
-				if err != nil {
-					return err
-				}
-				if matches {
-					// A same-directory temporary renamed into place belongs to
-					// the writing process, including when replacing another owner.
-					present = owner == -1 || owner == os.Geteuid()
+			if replacements != nil {
+				for _, replacement := range replacements {
+					matches, err := replacement.readThrough(ctx, fpath)
+					if err != nil {
+						return err
+					}
+					if matches {
+						// A same-directory temporary renamed into place belongs to
+						// the writing process, including when replacing another owner.
+						present = owner == -1 || owner == os.Geteuid()
+						break
+					}
 				}
 				if present {
 					projected = append(projected, fpath)

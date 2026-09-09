@@ -2648,13 +2648,17 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 	// Finalize the intended receipts on the unpublished configuration. Runtime
 	// preparation may retain this exact pointer and immediately start readers;
 	// neither the configuration nor its accepted basis may change afterward.
-	basis = basis.startupCorrections(notificationMigration, nil, globalDataPath)
-	migrationSource := basis.sources[filepath.Clean(globalDataPath)]
+	correctedBasis := basis.startupCorrections(notificationMigration, nil, globalDataPath)
+	migrationSource := correctedBasis.sources[filepath.Clean(globalDataPath)]
 	expectedMigrationFields, _ := selectProviderReferenceMigrationFields(migrationSource.raw, pendingOwners, pendingPlugins, pendingPresets)
-	if len(expectedMigrationFields) > 0 {
-		basis = basis.authored(globalDataPath, expectedMigrationFields, nil)
+	basis, authoredPaths, err := prepareAuthenticationLoadTopology(ctx, basis, notificationMigration, nil, expectedMigrationFields, globalDataPath, s.workingDir, workspacePath, baseEnvironment)
+	if err != nil {
+		return fmt.Errorf("prepare reload authentication input topology: %w", err)
 	}
 	cfg.authenticationBasis = basis
+	if len(authoredPaths) > 0 {
+		configPaths = slices.Clone(basis.order[:len(basis.order)-1])
+	}
 
 	s.configMu.Lock()
 	candidateSnapshot := s.runtimeSnapshotLocked(cfg, resolver, scan.Registry, candidateEnv)
@@ -2716,6 +2720,9 @@ func (s *ConfigStore) reloadFromDiskLocked(ctx context.Context) error {
 			expectedOwners,
 			scan,
 		); err != nil {
+			return fmt.Errorf("revalidate reloaded configuration generation: %w", err)
+		}
+		if err := verifyAuthenticationLoadTopology(ctx, basis, authoredPaths, s.workingDir, workspacePath, baseEnvironment); err != nil {
 			return fmt.Errorf("revalidate reloaded configuration generation: %w", err)
 		}
 		if s.publishProcessState {
