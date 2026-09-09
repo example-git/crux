@@ -133,7 +133,7 @@ func ValidateBrowserSnapshot(cookies []BrowserCookie, domains []string) error {
 		if !strings.HasPrefix(c.Path, "/") || strings.ContainsAny(c.Path, "\r\n\x00") {
 			return errors.New("browser snapshot has an invalid cookie path")
 		}
-		cookie := http.Cookie{Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path, Secure: c.Secure, HTTPOnly: c.HTTPOnly}
+		cookie := http.Cookie{Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path, Secure: c.Secure, HttpOnly: c.HTTPOnly}
 		if err := cookie.Valid(); err != nil {
 			return errors.New("browser snapshot contains an invalid cookie")
 		}
@@ -159,7 +159,7 @@ func BrowserSnapshotJar(cookies []BrowserCookie, domains []string) (http.CookieJ
 		if c.Expires != 0 {
 			expires = time.Unix(c.Expires, 0)
 		}
-		jar.SetCookies(&url.URL{Scheme: "https", Host: c.Host, Path: c.Path}, []*http.Cookie{{Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path, Secure: c.Secure, HTTPOnly: c.HTTPOnly, Expires: expires}})
+		jar.SetCookies(&url.URL{Scheme: "https", Host: c.Host, Path: c.Path}, []*http.Cookie{{Name: c.Name, Value: c.Value, Domain: c.Domain, Path: c.Path, Secure: c.Secure, HttpOnly: c.HTTPOnly, Expires: expires}})
 		redact.Register(c.Value)
 	}
 	return jar, nil
