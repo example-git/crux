@@ -258,7 +258,21 @@ conflicting newer saved state. It preserves the original progress separately,
 does not repeat a token exchange, and does not publish a receiver runtime.
 Afterward, explicitly reload and review the saved choice. An already completed
 local transaction is reported without repeating writes. A refresh that started
-without a retained token response requires a new explicit login.
+without a retained token response cannot be repeated by repair.
+
+To stop retaining recovery for an original local operation, first inspect it,
+then explicitly abandon the exact reviewed revision:
+
+```sh
+crux --connection NAME --cwd /srv/projects/PROJECT accounts repair-local ORIGINAL_WORKSPACE_ID OPERATION_ID --abandon-revision REVIEWED_REVISION
+```
+
+Abandonment waits for any active producer, checks the original record again,
+and records a separate retirement. It preserves observed writes and an unknown
+exchange outcome; it neither repairs saved files nor publishes a runtime. A
+finished attempt that never started a refresh or staged a write releases its
+reservation automatically and is reported as having no effects. Any subsequent
+login, disk reload or saved-state publication is an explicit new action.
 
 Automatic OAuth refresh runs on the owning client. The receiver requests refresh
 for an exact principal, runtime, provider definition, account and credential
