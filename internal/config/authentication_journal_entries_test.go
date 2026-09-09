@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/sjson"
@@ -79,6 +80,10 @@ func TestAuthenticationJournalEntriesRejectInvalidScopeCancellationAndForeignCor
 	cancel()
 	_, err = journal.Entries(ctx, key.Kind, key.WorkspaceID)
 	require.ErrorIs(t, err, context.Canceled)
+	expired, stop := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer stop()
+	_, err = journal.Entries(expired, key.Kind, key.WorkspaceID)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 	before, err := os.ReadFile(journal.path)
 	require.NoError(t, err)
 	invalid, err := sjson.SetBytes(before, "records."+foreign.id()+".revision", 0)

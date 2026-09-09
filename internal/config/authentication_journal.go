@@ -402,6 +402,9 @@ func readAuthenticationJournal(ctx context.Context, path string) (authentication
 		return before, data, errors.New("authentication journal has invalid size or permissions")
 	}
 	before.data, err = io.ReadAll(io.LimitReader(authenticationInputReader{ctx: ctx, reader: file}, maxAuthenticationJournalBytes+1))
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return before, data, authenticationInputError(err)
+	}
 	if err != nil || len(before.data) > maxAuthenticationJournalBytes {
 		return before, data, errors.New("authentication journal cannot be read within its limit")
 	}
