@@ -68,7 +68,7 @@ func TestClientCodexContinuationBelongsToAcceptedGeneration(t *testing.T) {
 	require.True(t, ok)
 	selected := config.SelectedModel{Provider: "codex", Model: "fixture"}
 	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
-		Providers:   []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: "codex", Type: catalog.TypeOpenAICompat, BaseURL: "wss://fixture.invalid/responses", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionCodex}, Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}}}}},
+		Providers:   []config.RemoteProviderDefinition{{NativeIdentity: &config.NativeIdentity{UserAgent: "captured_codex/1.0.0 (client-os client-version; client-arch) client-terminal", Version: "1.0.0", Originator: "captured_codex"}, Config: config.ProviderConfig{ID: "codex", Type: catalog.TypeOpenAICompat, BaseURL: "wss://fixture.invalid/responses", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionCodex}, Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}}}}},
 		Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: selected, config.SelectedModelTypeSmall: selected},
 		Credentials: []config.RemoteCredentialBinding{{Owner: registration.Owner(), Generation: 1, Account: &accounts.Entry{ID: "same-account", AccessToken: "synthetic-access", RefreshToken: "synthetic-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Raw: json.RawMessage(`{"account_id":"synthetic-account-id"}`)}}},
 	}

@@ -37,6 +37,9 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 	registerConfigSecrets(snapshot.Config())
 	redact.RegisterJSONValue(snapshot.clientRuntime.proposal.CredentialEnvironment)
 	for _, definition := range snapshot.clientRuntime.proposal.Providers {
+		if definition.NativeIdentity != nil {
+			redact.Register(definition.NativeIdentity.UserAgent, definition.NativeIdentity.Version, definition.NativeIdentity.Originator)
+		}
 		if definition.GeminiProjectID != nil {
 			redact.RegisterJSONValue(*definition.GeminiProjectID)
 		}
@@ -53,7 +56,7 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion      = 1
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v18"
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v19"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -79,9 +82,10 @@ type RemoteRuntimeProposal struct {
 }
 
 type RemoteProviderDefinition struct {
-	Config          ProviderConfig `json:"config"`
-	BundleDigest    string         `json:"bundle_digest,omitempty"`
-	GeminiProjectID *string        `json:"gemini_project_id,omitempty"`
+	Config          ProviderConfig  `json:"config"`
+	BundleDigest    string          `json:"bundle_digest,omitempty"`
+	GeminiProjectID *string         `json:"gemini_project_id,omitempty"`
+	NativeIdentity  *NativeIdentity `json:"native_identity,omitempty"`
 }
 
 type RemoteCredentialBinding struct {
@@ -225,6 +229,14 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 	}
 	registerConfigSecrets(next)
 	redact.RegisterJSONValue(candidate.clientRuntime.proposal.CredentialEnvironment)
+	for _, definition := range candidate.clientRuntime.proposal.Providers {
+		if definition.NativeIdentity != nil {
+			redact.Register(definition.NativeIdentity.UserAgent, definition.NativeIdentity.Version, definition.NativeIdentity.Originator)
+		}
+		if definition.GeminiProjectID != nil {
+			redact.RegisterJSONValue(*definition.GeminiProjectID)
+		}
+	}
 	for _, account := range candidate.ephemeralAccounts {
 		registerAccountSecrets(account.Entry)
 	}
@@ -334,6 +346,9 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		}
 		if err := validateCompleteProviderOwner(id, provider); err != nil {
 			return nil, errors.New("client provider owner reference is invalid")
+		}
+		if err := validateNativeIdentity(provider.Owner.Construction, definition.NativeIdentity); err != nil {
+			return nil, err
 		}
 		if provider.Owner.Construction == providerregistry.ConstructionGeminiAntigravity {
 			if definition.GeminiProjectID == nil {

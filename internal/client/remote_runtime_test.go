@@ -40,7 +40,7 @@ func TestClientRefreshCompletionAcknowledgementStatus(t *testing.T) {
 }
 
 func TestClientRuntimeNegotiatesBeforePrivatePost(t *testing.T) {
-	for _, kind := range []string{"missing", "old-version", "wrong-compiler", "pre-catalog-compiler", "small-limit", "compatible"} {
+	for _, kind := range []string{"missing", "old-version", "wrong-compiler", "pre-catalog-compiler", "pre-native-identity-compiler", "small-limit", "compatible"} {
 		t.Run(kind, func(t *testing.T) {
 			var gets, posts atomic.Int32
 			secret := "synthetic-private-client-key"
@@ -58,6 +58,9 @@ func TestClientRuntimeNegotiatesBeforePrivatePost(t *testing.T) {
 					}
 					if kind == "pre-catalog-compiler" {
 						value.Compiler = "crux-declarative-runtime-v17"
+					}
+					if kind == "pre-native-identity-compiler" {
+						value.Compiler = "crux-declarative-runtime-v18"
 					}
 					if kind == "wrong-compiler" {
 						value.Compiler = "unsupported"

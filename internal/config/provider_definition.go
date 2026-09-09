@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,13 +18,20 @@ import (
 // without reading accounts or reopening bundle files. Refresh preconditions and
 // whole-runtime collection must use the same representation.
 func (snapshot RuntimeSnapshot) ClientProviderDefinition(id string) (RemoteProviderDefinition, providerregistry.RegistrationOwner, error) {
-	return snapshot.clientProviderDefinition(id, snapshot.Resolve)
+	return snapshot.clientProviderDefinition(context.Background(), id, snapshot.Resolve)
 }
 
-func (snapshot RuntimeSnapshot) clientProviderDefinition(id string, resolve func(string) (string, error)) (RemoteProviderDefinition, providerregistry.RegistrationOwner, error) {
+func (snapshot RuntimeSnapshot) clientProviderDefinition(ctx context.Context, id string, resolve func(string) (string, error)) (RemoteProviderDefinition, providerregistry.RegistrationOwner, error) {
 	definition, owner, err := snapshot.clientProviderDefinitionRaw(id)
 	if err != nil {
 		return definition, owner, err
+	}
+	if nativeConstruction(owner.Construction) {
+		identity, identityErr := snapshot.nativeIdentities.resolve(ctx, owner.Construction)
+		if identityErr != nil {
+			return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, identityErr
+		}
+		definition.NativeIdentity = &identity
 	}
 	provider, _ := snapshot.config.Providers.Get(id)
 	if err := snapshot.validateResolvedProviderEndpointOwner(provider); err != nil {

@@ -136,6 +136,10 @@ type codexWindow struct {
 }
 
 func FetchCodex(ctx context.Context, token string) (*Usage, error) {
+	userAgent, err := useragent.CodexRequestUserAgent(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var payload struct {
 		PlanType  string `json:"plan_type"`
 		RateLimit *struct {
@@ -143,10 +147,10 @@ func FetchCodex(ctx context.Context, token string) (*Usage, error) {
 			Secondary *codexWindow `json:"secondary_window"`
 		} `json:"rate_limit"`
 	}
-	err := getJSON(ctx, http.MethodGet, codexUsageURL, token, nil, map[string]string{
+	err = getJSON(ctx, http.MethodGet, codexUsageURL, token, nil, map[string]string{
 		"Origin":     "https://chatgpt.com",
 		"Referer":    "https://chatgpt.com/",
-		"User-Agent": useragent.Codex(),
+		"User-Agent": userAgent,
 	}, &payload)
 	if err != nil {
 		return nil, err

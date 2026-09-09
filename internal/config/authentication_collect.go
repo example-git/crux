@@ -21,6 +21,9 @@ func (s *ConfigStore) CollectRemoteRuntimeForAuthentication(ctx context.Context,
 	if before.runtime.publicationStore != s || !before.inputs.valid || revision == 0 {
 		return RemoteRuntimeProposal{}, errors.New("authentication collection requires its exact owning store capture")
 	}
+	if err := before.runtime.prepareNativeIdentities(ctx); err != nil {
+		return RemoteRuntimeProposal{}, err
+	}
 	if err := lockAuthenticationMutex(ctx, s.writeMu.TryRLock, s.writeMu.RUnlock); err != nil {
 		return RemoteRuntimeProposal{}, err
 	}
