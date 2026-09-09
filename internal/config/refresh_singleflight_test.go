@@ -68,12 +68,15 @@ func newRefreshTestStore(t *testing.T, configPath string, exchange func(ctx cont
 
 	registry, err := providerregistry.New(providerregistry.Integrated()...)
 	require.NoError(t, err)
+	capturedEnvironment := snapshotEnvironment()
 	return &ConfigStore{
-		config:           &Config{Providers: providers},
-		globalDataPath:   configPath,
-		workingDir:       filepath.Dir(configPath),
-		exchangeToken:    exchange,
-		providerRegistry: registry,
+		baseEnvironment:      cloneEnvironment(capturedEnvironment),
+		effectiveEnvironment: cloneEnvironment(capturedEnvironment),
+		config:               &Config{Providers: providers},
+		globalDataPath:       configPath,
+		workingDir:           filepath.Dir(configPath),
+		exchangeToken:        exchange,
+		providerRegistry:     registry,
 	}
 }
 

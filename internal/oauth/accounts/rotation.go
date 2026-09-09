@@ -111,6 +111,10 @@ func rotationDescends(s *store, provider, id, before, after string) bool {
 }
 
 func refreshAccount(ctx context.Context, provider string, expected *Entry, refresher Refresher, validate Validator, selected, force bool, authority refreshAuthority) (*Entry, error) {
+	return refreshAccountWithStorage(ctx, provider, expected, refresher, validate, selected, force, authority, selectedAccountStorage{})
+}
+
+func refreshAccountWithStorage(ctx context.Context, provider string, expected *Entry, refresher Refresher, validate Validator, selected, force bool, authority refreshAuthority, storage selectedAccountStorage) (*Entry, error) {
 	if expected == nil || expected.ID == "" || provider == "" {
 		return nil, errors.New("refresh requires an exact account")
 	}
@@ -122,7 +126,7 @@ func refreshAccount(ctx context.Context, provider string, expected *Entry, refre
 			return nil, err
 		}
 	}
-	root, err := dir()
+	root, err := storage.root()
 	if err != nil {
 		return nil, err
 	}
@@ -141,8 +145,8 @@ func refreshAccount(ctx context.Context, provider string, expected *Entry, refre
 	var current Entry
 	var adopted bool
 	var mutation, selection uint64
-	err = withLock(ctx, func() error {
-		s, err := readStore()
+	err = storage.withLock(ctx, func() error {
+		s, err := storage.read(ctx, provider, expected.ID)
 		if err != nil {
 			return err
 		}
@@ -214,7 +218,7 @@ func refreshAccount(ctx context.Context, provider string, expected *Entry, refre
 			return nil, err
 		}
 	}
-	err = mutateStore(commitCtx, validate, func(s *store) error {
+	written, err := storage.saveRefresh(commitCtx, validate, provider, current.ID, fresh, func(s *store) error {
 		entry := find(s.Accounts[provider], current.ID)
 		if entry == nil || CredentialID(*entry) != expectedID || s.Mutations[provider][current.ID] != mutation || selected && (s.Active[provider] != current.ID || s.Selections[provider] != selection) {
 			return ErrCredentialChanged
@@ -236,6 +240,9 @@ func refreshAccount(ctx context.Context, provider string, expected *Entry, refre
 		return nil
 	})
 	if err != nil {
+		if written {
+			return &fresh, err
+		}
 		return nil, err
 	}
 	return &fresh, nil

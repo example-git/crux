@@ -75,6 +75,10 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 	if err := validateDefinition(currentRuntime); err != nil {
 		return nil, err
 	}
+	accountState, err := captureRuntimeAccounts(ctx, admitted, []string{owner.AccountNamespace})
+	if err != nil {
+		return nil, err
+	}
 	cfg := admitted.Config()
 	before, _ := cfg.Providers.Get(owner.ProviderID)
 	registration, ok := cfg.ProviderBehaviorRegistration(owner.ProviderID)
@@ -131,8 +135,11 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 		}
 		return registration.OAuth.Refresh(exchangeCtx, token)
 	}
-	fresh, err := accounts.RefreshSelectedForOwner(ctx, owner.AccountNamespace, &expected, refresh, validate, force)
+	fresh, err := accountState.RefreshSelectedForOwner(ctx, owner.AccountNamespace, &expected, refresh, validate, force)
 	if err != nil {
+		if fresh != nil {
+			return fresh, fmt.Errorf("account token saved; provider config was not updated: %w", err)
+		}
 		return nil, err
 	}
 	// The exchange may already have consumed the old refresh token. Complete
@@ -182,7 +189,7 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 		if err != nil {
 			return err
 		}
-		return accounts.WithSelectedForOwner(commitCtx, owner.AccountNamespace, *fresh, validate, func() error {
+		return accountState.WithSelectedForOwner(commitCtx, owner.AccountNamespace, *fresh, validate, func() error {
 			if err := s.atomicWrite(scope, func(data []byte) ([]byte, error) {
 				if !gjson.ValidBytes(data) || !reflect.DeepEqual(gjson.GetBytes(data, field).Value(), diskBefore.Value()) {
 					return nil, accounts.ErrCredentialChanged
