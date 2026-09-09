@@ -25,6 +25,7 @@ import (
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/server"
@@ -359,6 +360,26 @@ func TestOAuthUIThroughWorkspaceTLSAndActualCallback(t *testing.T) {
 						}
 						_, cmd := ui.Update(message)
 						dispatch(cmd)
+						if status, ok := message.(apiKeyStatusMsg); ok {
+							require.NoError(t, status.err)
+							require.NoError(t, status.snapshot.Validate())
+							require.Same(t, ws, status.session.workspace)
+							require.True(t, status.session.ready)
+							require.Equal(t, providerauth.PublicOwner(owner), status.session.target.Owner)
+							require.Equal(t, []providerauth.CredentialSlot{{ID: "provider.api_key", Kind: "api-key"}}, status.session.slots)
+							require.Empty(t, status.session.credentialID)
+							require.Nil(t, ui.oauthLogins[ws], "dual credential owners wait for an explicit choice")
+							require.Same(t, status.session.dialog, ui.dialog.DialogLast())
+							// The bundle declares both api_key and OAuth. Choose OAuth
+							// through the real overlay after its 425 ms input grace.
+							time.Sleep(450 * time.Millisecond)
+							_, cmd = ui.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+							dispatch(cmd)
+							_, cmd = ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+							dispatch(cmd)
+							require.False(t, ui.dialog.ContainsDialog(dialog.APIKeyInputID))
+							require.IsType(t, &dialog.OAuthLogin{}, ui.dialog.DialogLast())
+						}
 						if result, ok := message.(oauthLoginResultMsg); ok && result.err != nil && result.operation != nil && !result.operation.busy && retryActions < int(lostReplies.Load()) {
 							action := result.operation.dialog.HandleMsg(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
 							require.IsType(t, dialog.ActionOAuthLoginRetry{}, action)
