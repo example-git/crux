@@ -10,6 +10,7 @@ import (
 
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
@@ -494,6 +495,7 @@ func TestImportCopilotUsesCapturedOwnerCapability(t *testing.T) {
 		},
 	})}, registration)
 	store.Config().bindProviderScan(ProviderScan{Registry: store.providerRegistry})
+	store.effectiveEnvironment = env.NewFromMap(map[string]string{"AI_CLI_DIR": os.Getenv("AI_CLI_DIR")})
 
 	token, ok, importErr := store.ImportCopilotForOwner(t.Context(), registration.Owner())
 	require.NoError(t, importErr)
@@ -546,6 +548,7 @@ func TestImportCopilotRejectsGenerationReplacementAfterExternalRefresh(t *testin
 		},
 	})}, initiating)
 	store.Config().bindProviderScan(ProviderScan{Registry: store.providerRegistry})
+	store.effectiveEnvironment = env.NewFromMap(map[string]string{"AI_CLI_DIR": os.Getenv("AI_CLI_DIR")})
 	beforeDisk, err := os.ReadFile(path)
 	require.NoError(t, err)
 

@@ -33,6 +33,7 @@ const (
 	accountSwitch
 	accountLogout
 	accountRefresh
+	accountImport
 )
 
 // PendingChange holds the process mutex and captured-path account file lock.
@@ -162,7 +163,7 @@ func (before Snapshot) beginChange(ctx context.Context, kind accountChangeKind, 
 	return change, nil
 }
 
-// SelectedEntry returns an independent credential copy for the staged switch.
+// SelectedEntry returns an independent credential copy for a staged switch or import.
 // Check/logout leases and closed leases have no selected entry.
 func (change *PendingChange) SelectedEntry() (Entry, bool) {
 	if change == nil || change.state == nil {

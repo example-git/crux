@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
+	"maps"
+	"path/filepath"
 	"reflect"
 	"slices"
 
@@ -42,10 +43,11 @@ func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerr
 	if err != nil {
 		return nil, false, err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
+	preimage, err := readAuthenticationInput(ctx, path)
+	if err != nil {
 		return nil, false, err
 	}
+	data := preimage.data
 	if len(data) == 0 {
 		data = []byte("{}")
 	}
@@ -88,7 +90,7 @@ func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerr
 	if err := validate(); err != nil {
 		return nil, false, err
 	}
-	accountBefore, err := accounts.CaptureSaveState(ctx, registration.AccountNamespace, "default")
+	accountBefore, err := captureCopilotImportAccounts(ctx, snapshot, registration.AccountNamespace)
 	if err != nil {
 		return nil, false, err
 	}
@@ -114,16 +116,16 @@ func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerr
 		return nil, false, errors.New("Copilot import returned incomplete credentials")
 	}
 	entry := accounts.FromToken("default", registration.ProviderID, token, nil)
-	if err := accountBefore.SaveForOwner(ctx, entry, validate); err != nil {
-		return nil, false, fmt.Errorf("account changed during import: %w", err)
-	}
+	var accountWritten, configWritten bool
 	err = func() error {
 		release, err := lock.File(ctx, s.refreshLockPath(owner.ProviderID))
 		if err != nil {
 			return err
 		}
 		defer release()
-		s.writeMu.Lock()
+		if err := s.lockAuthenticationWrite(ctx); err != nil {
+			return err
+		}
 		defer s.writeMu.Unlock()
 		if err := validate(); err != nil {
 			return err
@@ -135,6 +137,18 @@ func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerr
 		applyOAuthTokenToProvider(&provider, token, registration)
 		next := s.Config().cloneForWrite()
 		next.Providers.Set(owner.ProviderID, provider)
+		pending, err := accountBefore.BeginImport(ctx, owner.AccountNamespace, entry, validate)
+		if err != nil {
+			return err
+		}
+		defer pending.Close()
+		selected, ok := pending.SelectedEntry()
+		if !ok {
+			return errors.New("imported account selection is unavailable")
+		}
+		if err := next.advanceRuntimeAuthenticationAccount(owner, &selected); err != nil {
+			return err
+		}
 		fields := map[string]any{"api_key": token.AccessToken, "oauth": token, "owner": provider.Owner}
 		if provider.Plugin != nil {
 			fields["plugin"] = provider.Plugin
@@ -147,32 +161,85 @@ func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerr
 		if err != nil {
 			return err
 		}
-		return accounts.WithSelectedForOwner(ctx, registration.AccountNamespace, entry, validate, func() error {
-			if err := s.atomicWrite(ScopeGlobal, func(data []byte) ([]byte, error) {
-				if !gjson.ValidBytes(data) || !reflect.DeepEqual(gjson.GetBytes(data, field).Value(), diskBefore.Value()) {
-					return nil, errors.New("provider configuration changed on disk during import")
-				}
-				for key, value := range fields {
-					var err error
-					data, err = sjson.SetBytes(data, field+"."+key, value)
-					if err != nil {
-						return nil, err
-					}
-				}
-				return data, nil
-			}); err != nil {
+		// Acquire every persistence lock and stage the exact file before the
+		// first account write. Completion then inherits one absolute deadline.
+		if err := lockAuthenticationMutex(ctx, s.mu.TryLock, s.mu.Unlock); err != nil {
+			return err
+		}
+		defer s.mu.Unlock()
+		releaseScopes, err := lockAuthenticationScopes(ctx, authenticationAdmission{globalPath: path, workspacePath: s.workspacePath})
+		if err != nil {
+			return err
+		}
+		defer releaseScopes()
+		stagedData := slices.Clone(data)
+		for _, key := range slices.Sorted(maps.Keys(fields)) {
+			stagedData, err = sjson.SetBytes(stagedData, field+"."+key, fields[key])
+			if err != nil {
 				return err
 			}
-			if err := s.verifyAuthenticationCOW(ctx, next, written); err != nil {
-				return fmt.Errorf("provider config saved but failed to publish in-memory state: %w", err)
-			}
-			s.captureStalenessSnapshot(append(slices.Clone(s.loadedPaths), path))
-			s.setConfig(next)
-			return nil
-		})
+		}
+		staged, err := stageAuthenticationScopeWrite(ctx, preimage, authenticationCredentialEdit{path: path, data: stagedData})
+		if err != nil {
+			return err
+		}
+		defer staged.Close()
+		if err := validate(); err != nil {
+			return err
+		}
+		committed, err := pending.Commit(ctx)
+		accountWritten = committed.Written
+		if err != nil {
+			return err
+		}
+		completion, cancel := context.WithDeadline(context.WithoutCancel(ctx), committed.CompletionDeadline())
+		defer cancel()
+		if err := validate(); err != nil {
+			return err
+		}
+		_, configWritten, err = staged.commit(completion, committed.CompletionDeadline())
+		if err != nil {
+			return err
+		}
+		if err := s.verifyAuthenticationCOW(completion, next, written); err != nil {
+			return err
+		}
+		if _, err := pending.VerifyCommitted(completion); err != nil {
+			return err
+		}
+		if err := validate(); err != nil {
+			return err
+		}
+		if err := completion.Err(); err != nil {
+			return err
+		}
+		s.captureStalenessSnapshot(append(slices.Clone(s.loadedPaths), path))
+		s.setConfig(next)
+		return nil
 	}()
 	if err != nil {
-		return token, false, fmt.Errorf("imported account saved; provider config was not updated: %w", err)
+		if configWritten {
+			return token, false, fmt.Errorf("imported account and provider config saved; runtime publication was not completed: %w", err)
+		}
+		if accountWritten {
+			return token, false, fmt.Errorf("imported account saved; provider config was not updated: %w", err)
+		}
+		return nil, false, err
 	}
 	return token, true, nil
+}
+
+func captureCopilotImportAccounts(ctx context.Context, snapshot RuntimeSnapshot, namespace string) (accounts.Snapshot, error) {
+	root := snapshot.Getenv("AI_CLI_DIR")
+	if root == "" {
+		home := snapshot.Getenv(authenticationHomeVariable())
+		if !filepath.IsAbs(home) {
+			return accounts.Snapshot{}, errors.New("captured account home is unavailable or not absolute")
+		}
+		root = filepath.Join(home, ".ai-cli")
+	}
+	if !filepath.IsAbs(root) {
+		return accounts.Snapshot{}, errors.New("captured account directory is not absolute")
+	}
+	return accounts.CaptureStateAt(ctx, filepath.Join(root, "accounts.json"), []string{namespace})
 }
