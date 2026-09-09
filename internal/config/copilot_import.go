@@ -136,13 +136,14 @@ func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerr
 		next := s.Config().cloneForWrite()
 		next.Providers.Set(owner.ProviderID, provider)
 		return accounts.WithSelectedForOwner(ctx, registration.AccountNamespace, entry, validate, func() error {
+			fields := map[string]any{"api_key": token.AccessToken, "oauth": token, "owner": provider.Owner}
+			if provider.Plugin != nil {
+				fields["plugin"] = provider.Plugin
+			}
+
 			if err := s.atomicWrite(ScopeGlobal, func(data []byte) ([]byte, error) {
 				if !gjson.ValidBytes(data) || !reflect.DeepEqual(gjson.GetBytes(data, field).Value(), diskBefore.Value()) {
 					return nil, errors.New("provider configuration changed on disk during import")
-				}
-				fields := map[string]any{"api_key": token.AccessToken, "oauth": token, "owner": provider.Owner}
-				if provider.Plugin != nil {
-					fields["plugin"] = provider.Plugin
 				}
 				for key, value := range fields {
 					var err error
@@ -155,6 +156,11 @@ func (s *ConfigStore) ImportCopilotForOwner(ctx context.Context, owner providerr
 			}); err != nil {
 				return err
 			}
+			authored := make(map[string]any, len(fields))
+			for key, value := range fields {
+				authored[field+"."+key] = value
+			}
+			next.advanceAuthenticationBasis(path, authored, nil)
 			s.captureStalenessSnapshot(append(slices.Clone(s.loadedPaths), path))
 			s.setConfig(next)
 			return nil
