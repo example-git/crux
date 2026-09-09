@@ -24,6 +24,15 @@ const (
 	maxAuthenticationJournalRecords     = 128
 	maxAuthenticationJournalBytes       = 256 << 20
 	maxAuthenticationJournalRecordBytes = 2*MaxRemoteRuntimeBytes + 1<<20
+
+	// Unresolved records retain room for an explicit terminal marker even when
+	// their caller has consumed its reservation. The largest current marker is
+	// a review-abandon request: one bounded public owner/target (<11 KiB), a
+	// <=4 KiB account choice, fixed-size action IDs and envelope fields. Even
+	// sixfold JSON string escaping fits below 128 KiB. OAuth/local retirement
+	// adds only fixed flags/revisions. This allowance is internal accounting,
+	// not part of ReservedBytes(), and is released only by a terminal record.
+	authenticationJournalTransitionBytes = 128 << 10
 )
 
 // AuthenticationJournalKey names a private owner-side operation record. Its
@@ -109,6 +118,13 @@ type authenticationJournalRecord struct {
 	Completed bool                     `json:"completed,omitempty"`
 	Reserved  int                      `json:"reserved_bytes,omitempty"`
 	Payload   json.RawMessage          `json:"payload"`
+}
+
+func authenticationJournalReservation(completed bool, reserved int) int {
+	if !completed {
+		return reserved + authenticationJournalTransitionBytes
+	}
+	return reserved
 }
 
 func (authenticationJournalDisk) Format(state fmt.State, _ rune) {
@@ -251,7 +267,7 @@ func (journal AuthenticationJournal) Store(ctx context.Context, key Authenticati
 	if err := key.validate(); err != nil {
 		return AuthenticationJournalEntry{}, err
 	}
-	if len(payload)+reserved > maxAuthenticationJournalRecordBytes || !authenticationLayerObject(payload) {
+	if len(payload)+authenticationJournalReservation(completed, reserved) > maxAuthenticationJournalRecordBytes || !authenticationLayerObject(payload) {
 		return AuthenticationJournalEntry{}, errors.New("authentication journal payload is invalid or exceeds its limit")
 	}
 	ctx, release, err := journal.locked(ctx)
@@ -285,7 +301,7 @@ func (journal AuthenticationJournal) Store(ctx context.Context, key Authenticati
 	}
 	capacity := len(encoded)
 	for _, record := range data.Records {
-		capacity += record.Reserved
+		capacity += authenticationJournalReservation(record.Completed, record.Reserved)
 	}
 	pruned := false
 	for len(data.Records) > maxAuthenticationJournalRecords || capacity > maxAuthenticationJournalBytes {
@@ -307,7 +323,7 @@ func (journal AuthenticationJournal) Store(ctx context.Context, key Authenticati
 		if err != nil {
 			return AuthenticationJournalEntry{}, errors.New("authentication journal record cannot be encoded")
 		}
-		capacity -= len(member) - 1 + removed.Reserved
+		capacity -= len(member) - 1 + authenticationJournalReservation(removed.Completed, removed.Reserved)
 		delete(data.Records, oldest)
 		pruned = true
 	}
@@ -315,7 +331,7 @@ func (journal AuthenticationJournal) Store(ctx context.Context, key Authenticati
 		encoded, err = json.Marshal(data)
 		capacity = len(encoded)
 		for _, record := range data.Records {
-			capacity += record.Reserved
+			capacity += authenticationJournalReservation(record.Completed, record.Reserved)
 		}
 	}
 	if err != nil || capacity > maxAuthenticationJournalBytes {
@@ -362,12 +378,15 @@ func readAuthenticationJournal(ctx context.Context, path string) (authentication
 	if decoder.Decode(&data) != nil || decoder.Decode(new(any)) != io.EOF || data.Version != 1 || data.Records == nil || len(data.Records) > maxAuthenticationJournalRecords {
 		return before, data, errors.New("authentication journal is malformed or unsupported")
 	}
+	// Admission and reads enforce the same implicit transition room. Reject
+	// oversubscribed files visibly; do not rewrite them or evict unresolved
+	// operations to manufacture capacity during a read.
 	capacity := len(before.data)
 	for id, record := range data.Records {
-		if record.Key.validate() != nil || id != record.Key.id() || record.Revision == 0 || record.Revision > data.Sequence || record.Reserved < 0 || record.Reserved > maxAuthenticationJournalRecordBytes || record.Completed && record.Reserved != 0 || len(record.Payload)+record.Reserved > maxAuthenticationJournalRecordBytes || !authenticationLayerObject(record.Payload) {
+		if record.Key.validate() != nil || id != record.Key.id() || record.Revision == 0 || record.Revision > data.Sequence || record.Reserved < 0 || record.Reserved > maxAuthenticationJournalRecordBytes || record.Completed && record.Reserved != 0 || len(record.Payload)+authenticationJournalReservation(record.Completed, record.Reserved) > maxAuthenticationJournalRecordBytes || !authenticationLayerObject(record.Payload) {
 			return before, data, errors.New("authentication journal record is invalid")
 		}
-		capacity += record.Reserved
+		capacity += authenticationJournalReservation(record.Completed, record.Reserved)
 		if capacity > maxAuthenticationJournalBytes {
 			return before, data, errors.New("authentication journal capacity is oversubscribed")
 		}
