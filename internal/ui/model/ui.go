@@ -842,6 +842,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.completeAuthenticationPreparation(msg))
 	case authenticationCompletedMsg:
 		cmds = append(cmds, m.completeAuthenticationOperation(msg))
+	case authenticationRecoveryPreparedMsg:
+		cmds = append(cmds, m.completeAuthenticationRecoveryPreparation(msg))
 	case authenticationUsageMsg:
 		if msg.workspace == m.com.Workspace && msg.generation == m.usageFetchGen {
 			m.providerUsage = msg.usage
@@ -2392,6 +2394,8 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		cmds = append(cmds, m.loadAuthenticationAccounts(msg.Dialog))
 	case dialog.ActionAuthenticationRetry:
 		cmds = append(cmds, m.retryAuthenticationOperation(msg))
+	case dialog.ActionAuthenticationRecover:
+		cmds = append(cmds, m.beginAuthenticationRecovery(msg))
 	case dialog.AccountSwitchedMsg:
 		if msg.Err != nil {
 			cmds = append(cmds, util.ReportError(msg.Err))

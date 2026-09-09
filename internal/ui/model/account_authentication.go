@@ -40,6 +40,10 @@ type authenticationOperation struct {
 	attempt                              uint64
 	preparing, pending, delivered, retry bool
 	message                              string
+	recoverer                            workspace.ProviderAuthenticationRecoverer
+	blockNew                             bool
+	recovery                             *workspace.ProviderAuthenticationRecoveryRequest
+	recoveryPreparing                    *authenticationRecoveryPreparation
 }
 type authenticationPreparedMsg struct {
 	operation *authenticationOperation
@@ -51,6 +55,7 @@ type authenticationCompletedMsg struct {
 	attempt   uint64
 	outcome   providerauth.MutationOutcome
 	err       error
+	recovery  *workspace.ProviderAuthenticationRecoveryRequest
 }
 type authenticationUsageMsg struct {
 	workspace  workspace.Workspace
@@ -80,6 +85,11 @@ func (m *UI) pruneAuthenticationReads() {
 		}
 	}
 	for ws, operation := range m.authenticationOperations {
+		if preparation := operation.recoveryPreparing; preparation != nil && (ws != m.com.Workspace || !m.authenticationDialogOpen(preparation.dialog)) {
+			operation.recoveryPreparing = nil
+			operation.message = "Recovery preparation cancelled; the original authentication receipt remains available."
+			m.updateAuthenticationDialogs()
+		}
 		if operation.preparing && (ws != m.com.Workspace || !m.authenticationDialogOpen(operation.dialog)) {
 			// No mutation has launched, so closing during random-ID preparation is
 			// cancellation. A command already dispatched has a separate lifetime.
@@ -107,7 +117,11 @@ func (m *UI) openAuthenticationAccounts(logout bool) tea.Cmd {
 }
 func (m *UI) showAuthenticationOperation(d *dialog.AccountAuthentication) {
 	if operation := m.authenticationOperations[m.com.Workspace]; operation != nil {
-		d.SetOperation(operation.message, operation.pending || operation.preparing, operation.retry)
+		d.SetOperation(operation.message, operation.pending || operation.preparing || operation.recoveryPreparing != nil, operation.retry)
+		d.SetRecovery(operation.retry && operation.blockNew && operation.recoverer != nil, operation.retry && operation.recovery != nil)
+	} else {
+		d.SetOperation("", false, false)
+		d.SetRecovery(false, false)
 	}
 }
 func (m *UI) loadAuthenticationAccounts(d *dialog.AccountAuthentication) tea.Cmd {
@@ -151,8 +165,13 @@ func (m *UI) beginAuthenticationOperation(action dialog.ActionAuthenticationSele
 	if read == nil || !read.completed || read.workspace != m.com.Workspace || read.generation != action.Generation {
 		return util.ReportError(errors.New("authentication workspace changed; reload status before selecting an account"))
 	}
-	if current := m.authenticationOperations[m.com.Workspace]; current != nil && (current.pending || current.preparing) {
-		return nil
+	if current := m.authenticationOperations[m.com.Workspace]; current != nil {
+		if current.pending || current.preparing || current.recoveryPreparing != nil {
+			return nil
+		}
+		if current.blockNew {
+			return util.ReportError(errors.New("Resolve the original " + current.description() + " before selecting another account. Ctrl+T retries its original receipt; Alt+R attempts recovery using that receipt."))
+		}
 	}
 	if err := action.Row.Target.Validate(); err != nil {
 		return util.ReportError(err)
@@ -161,6 +180,9 @@ func (m *UI) beginAuthenticationOperation(action dialog.ActionAuthenticationSele
 		m.authenticationOperations = make(map[workspace.Workspace]*authenticationOperation)
 	}
 	operation := &authenticationOperation{workspace: m.com.Workspace, dialog: action.Dialog, generation: action.Generation, row: action.Row, logout: action.Dialog.ID() == dialog.LogoutID, preparing: true, message: "Preparing authentication operation…"}
+	if recoverer, ok := operation.workspace.(workspace.ProviderAuthenticationRecoverer); ok && recoverer.CanRecoverProviderAuthentication() {
+		operation.recoverer = recoverer
+	}
 	m.authenticationOperations[operation.workspace] = operation
 	m.updateAuthenticationDialogs()
 	return prepareAuthenticationOperation(operation)
@@ -196,7 +218,7 @@ func (m *UI) retryAuthenticationOperation(action dialog.ActionAuthenticationRetr
 		return nil
 	}
 	operation := m.authenticationOperations[m.com.Workspace]
-	if operation == nil || !operation.retry || operation.pending || operation.preparing {
+	if operation == nil || !operation.retry || operation.pending || operation.preparing || operation.recoveryPreparing != nil {
 		return nil
 	}
 	return m.dispatchAuthenticationOperation(operation)
@@ -245,6 +267,9 @@ func (m *UI) completeAuthenticationOperation(msg authenticationCompletedMsg) tea
 	if operation == nil || m.authenticationOperations[operation.workspace] != operation || operation.attempt != msg.attempt || operation.delivered {
 		return nil
 	}
+	if msg.recovery != nil && (operation.recovery == nil || *operation.recovery != *msg.recovery) {
+		return nil
+	}
 	operation.pending, operation.delivered = false, true
 	validationErr := msg.outcome.ValidateSwitch(providerauth.SwitchRequest{OperationID: operation.id, Target: operation.row.Target, AccountID: operation.row.AccountID})
 	if operation.logout {
@@ -253,6 +278,12 @@ func (m *UI) completeAuthenticationOperation(msg authenticationCompletedMsg) tea
 	accepted := validationErr == nil && msg.err == nil && msg.outcome.Change != nil && !msg.outcome.Superseded
 	historical := validationErr == nil && msg.err == nil && msg.outcome.Superseded
 	operation.retry = !accepted && !historical
+	if accepted || historical {
+		operation.blockNew = false
+	} else if operation.recoverer != nil {
+		progress := msg.outcome.Progress
+		operation.blockNew = operation.blockNew || validationErr != nil || progress.AccountRefreshed || progress.AccountsSaved || progress.ConfigSaved || progress.RuntimePublished
+	}
 	switch {
 	case accepted:
 		operation.message = "Switched account to " + operation.row.Label + "."
@@ -260,7 +291,7 @@ func (m *UI) completeAuthenticationOperation(msg authenticationCompletedMsg) tea
 			operation.message = "Logged out of " + operation.row.Label + "."
 		}
 	case historical:
-		operation.message = "The original operation (" + operation.description() + ") completed; later authentication state is active. Reload status to see it."
+		operation.message = "The original operation (" + operation.description() + ") completed; its receipt no longer describes the current authentication state. Reload status to inspect it."
 	default:
 		operation.message = "Authentication result could not be confirmed for " + operation.description() + "."
 		if msg.err != nil {
@@ -273,6 +304,12 @@ func (m *UI) completeAuthenticationOperation(msg authenticationCompletedMsg) tea
 			operation.message += authenticationProgressText(msg.outcome.Progress)
 		}
 		operation.message += " Ctrl+T retries the original operation; Ctrl+R reloads status only. Receipts are limited to this workspace's recent operations."
+		if operation.blockNew && operation.recoverer != nil {
+			operation.message += " Alt+R attempts recovery from the original receipt; partial local changes may require saved-state reconciliation."
+			if operation.recovery != nil {
+				operation.message += " Alt+T retries the last recovery receipt without another publication attempt."
+			}
+		}
 	}
 	sameWorkspace := operation.workspace == m.com.Workspace
 	message := operation.message

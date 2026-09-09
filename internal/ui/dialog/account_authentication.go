@@ -29,12 +29,14 @@ type AuthenticationRow struct {
 // The main UI owns reads and mutation lifetimes.
 type AccountAuthentication struct {
 	accountsPicker
-	id                          string
-	generation                  uint64
-	rows                        map[string]AuthenticationRow
-	loading, pending, retry     bool
-	readNotice, operationNotice string
-	reloadKey, retryKey         key.Binding
+	id                           string
+	generation                   uint64
+	rows                         map[string]AuthenticationRow
+	loading, pending, retry      bool
+	readNotice, operationNotice  string
+	reloadKey, retryKey          key.Binding
+	recoverKey, retryRecoveryKey key.Binding
+	recover, retryRecovery       bool
 }
 
 type AccountSwitcher struct{ *AccountAuthentication }
@@ -50,6 +52,8 @@ func newAccountAuthentication(com *common.Common, id string) *AccountAuthenticat
 	d := &AccountAuthentication{accountsPicker: newAccountsPicker(com), id: id, loading: true, readNotice: "Loading authentication status…"}
 	d.reloadKey = key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "reload"))
 	d.retryKey = key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "retry original"))
+	d.recoverKey = key.NewBinding(key.WithKeys("alt+r"), key.WithHelp("alt+r", "attempt recovery"))
+	d.retryRecoveryKey = key.NewBinding(key.WithKeys("alt+t"), key.WithHelp("alt+t", "retry recovery"))
 	d.updateNotice()
 	return d
 }
@@ -97,10 +101,23 @@ func (d *AccountAuthentication) SetOperation(message string, pending, retry bool
 	d.operationNotice, d.pending, d.retry = message, pending, retry
 	d.updateNotice()
 }
+func (d *AccountAuthentication) SetRecovery(available, retry bool) {
+	d.recover, d.retryRecovery = available, retry
+	d.updateNotice()
+}
 func (d *AccountAuthentication) updateNotice() {
 	d.notice = strings.TrimSpace(d.operationNotice + "\n" + d.readNotice)
+	if d.recover && !d.pending {
+		hint := "Alt+R attempt recovery"
+		if d.retryRecovery {
+			hint += " · Alt+T retry recovery"
+		}
+		d.notice = hint + "\n" + d.notice
+	}
 	d.retryKey.SetEnabled(d.retry && !d.pending)
 	d.reloadKey.SetEnabled(!d.pending)
+	d.recoverKey.SetEnabled(d.recover && !d.pending)
+	d.retryRecoveryKey.SetEnabled(d.retryRecovery && !d.pending)
 }
 
 type ActionAuthenticationSelect struct {
@@ -110,6 +127,10 @@ type ActionAuthenticationSelect struct {
 }
 type ActionAuthenticationReload struct{ Dialog *AccountAuthentication }
 type ActionAuthenticationRetry struct{ Dialog *AccountAuthentication }
+type ActionAuthenticationRecover struct {
+	Dialog *AccountAuthentication
+	Retry  bool
+}
 
 func (d *AccountAuthentication) HandleMsg(msg tea.Msg) Action {
 	kp, ok := msg.(tea.KeyPressMsg)
@@ -124,6 +145,12 @@ func (d *AccountAuthentication) HandleMsg(msg tea.Msg) Action {
 	}
 	if key.Matches(kp, d.retryKey) {
 		return ActionAuthenticationRetry{d}
+	}
+	if key.Matches(kp, d.recoverKey) {
+		return ActionAuthenticationRecover{Dialog: d}
+	}
+	if key.Matches(kp, d.retryRecoveryKey) {
+		return ActionAuthenticationRecover{Dialog: d, Retry: true}
 	}
 	if key.Matches(kp, d.keyMap.Select) {
 		if d.loading || d.pending {
@@ -153,7 +180,14 @@ func (d *AccountAuthentication) ShortHelp() []key.Binding {
 		return []key.Binding{d.keyMap.Close}
 	}
 	if d.retry {
-		return []key.Binding{d.retryKey, d.reloadKey, d.keyMap.Close}
+		keys := []key.Binding{d.retryKey}
+		if d.recover {
+			keys = append(keys, d.recoverKey)
+		}
+		if d.retryRecovery {
+			keys = append(keys, d.retryRecoveryKey)
+		}
+		return append(keys, d.reloadKey, d.keyMap.Close)
 	}
 	return []key.Binding{d.keyMap.Select, d.reloadKey, d.keyMap.Close}
 }
