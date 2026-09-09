@@ -67,7 +67,7 @@ func (o APIKeyCheckOutcome) Validate() error {
 			return errors.New("API key check has no successful probe policy result")
 		}
 		if o.Probe.Kind == config.ConnectionProbeNotProbed && o.Probe.Policy != config.ConnectionProbePolicyNone ||
-			o.Probe.Kind == config.ConnectionProbeHTTPResponse && (o.Probe.Policy == config.ConnectionProbePolicyHTTP200 && o.Probe.HTTPStatus != 200 ||
+			o.Probe.Kind == config.ConnectionProbeHTTPResponse && ((o.Probe.Policy == config.ConnectionProbePolicyHTTP200 || o.Probe.Policy == config.ConnectionProbePolicyManifestHTTP200) && o.Probe.HTTPStatus != 200 ||
 				o.Probe.Policy == config.ConnectionProbePolicyNon401 && o.Probe.HTTPStatus == 401) {
 			return errors.New("API key check did not satisfy its reported probe policy")
 		}

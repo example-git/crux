@@ -192,3 +192,20 @@ func TestAPIKeyServiceAdmissionDoesNotResolveInput(t *testing.T) {
 	require.Empty(t, f.service.keyChecks)
 	require.Equal(t, request.Target.Generation.Sequence, f.service.sequence)
 }
+
+func TestAPIKeyManifestProbeOutcomeRequiresHTTP200(t *testing.T) {
+	f := newMutationFixture(t)
+	previous := f.request.Target
+	current := previous
+	current.Generation.Sequence++
+	for _, status := range []int{200, 401, 503} {
+		outcome := APIKeyCheckOutcome{CheckID: strings.Repeat("a", 32), Previous: previous, CredentialID: "provider.api_key", Probe: config.ConnectionProbeResult{Kind: config.ConnectionProbeHTTPResponse, Policy: config.ConnectionProbePolicyManifestHTTP200, HTTPStatus: status}, CheckedTarget: &current}
+		if status == 200 {
+			require.NoError(t, outcome.Validate())
+		} else {
+			require.Error(t, outcome.Validate())
+			outcome.CheckedTarget = nil
+			require.NoError(t, outcome.Validate(), "failed HTTP evidence remains transport-safe")
+		}
+	}
+}

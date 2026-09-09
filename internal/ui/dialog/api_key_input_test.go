@@ -24,12 +24,17 @@ func TestAPIKeyProbeDescriptionsAreEvidenceOnly(t *testing.T) {
 		{config.ConnectionProbeResult{Kind: config.ConnectionProbeHTTPAttempt, Policy: config.ConnectionProbePolicyHTTP200}, "no response"},
 		{config.ConnectionProbeResult{Kind: config.ConnectionProbeHTTPResponse, Policy: config.ConnectionProbePolicyNon401, HTTPStatus: 503, AuthorizationOverridden: true}, "HTTP 503 observed under"},
 		{config.ConnectionProbeResult{Kind: config.ConnectionProbeUnsupported, Policy: config.ConnectionProbePolicyNone}, "unsupported"},
+		{config.ConnectionProbeResult{Kind: config.ConnectionProbeNotProbed, Policy: config.ConnectionProbePolicyManifestHTTP200}, "No declared model-catalog request"},
+		{config.ConnectionProbeResult{Kind: config.ConnectionProbeHTTPResponse, Policy: config.ConnectionProbePolicyManifestHTTP200, HTTPStatus: 200, EnteredKeyInAuthorization: true}, "declared model-catalog operation"},
+		{config.ConnectionProbeResult{Kind: config.ConnectionProbeHTTPResponse, Policy: config.ConnectionProbePolicyManifestHTTP200, HTTPStatus: 503, AuthorizationOverridden: true}, "HTTP 503 observed from the declared"},
 	} {
 		text := APIKeyProbeDescription(tt.p)
 		require.Contains(t, text, tt.want)
 		require.NotContains(t, strings.ToLower(text), "validated")
 		require.Contains(t, text, "does not establish permission")
-		if tt.p.AuthorizationOverridden {
+		if tt.p.AuthorizationOverridden && tt.p.Policy == config.ConnectionProbePolicyManifestHTTP200 {
+			require.Contains(t, text, "was not established in that header")
+		} else if tt.p.AuthorizationOverridden {
 			require.Contains(t, text, "replaced the entered key")
 		}
 	}

@@ -269,13 +269,18 @@ func APIKeyProbeDescription(p config.ConnectionProbeResult) string {
 	switch p.Kind {
 	case config.ConnectionProbeNotProbed:
 		text = "No network probe was performed."
+		if p.Policy == config.ConnectionProbePolicyManifestHTTP200 {
+			text = "No declared model-catalog request was attempted."
+		}
 	case config.ConnectionProbeFormatOnly:
 		text = "Format check only (sk- prefix); no network probe was performed."
 	case config.ConnectionProbeHTTPAttempt:
 		text = "HTTP request attempted; no response was observed."
 	case config.ConnectionProbeHTTPResponse:
 		text = fmt.Sprintf("HTTP %d observed", p.HTTPStatus)
-		if p.Policy == config.ConnectionProbePolicyNon401 {
+		if p.Policy == config.ConnectionProbePolicyManifestHTTP200 {
+			text += " from the declared model-catalog operation; its policy requires HTTP 200 and successful JSON processing."
+		} else if p.Policy == config.ConnectionProbePolicyNon401 {
 			text += " under the provider's non-401 policy."
 		} else {
 			text += " from the models probe (HTTP 200 policy)."
@@ -286,7 +291,11 @@ func APIKeyProbeDescription(p config.ConnectionProbeResult) string {
 		return ""
 	}
 	if p.AuthorizationOverridden {
-		text += " The configured Authorization header replaced the entered key."
+		if p.Policy == config.ConnectionProbePolicyManifestHTTP200 {
+			text += " Another value or a removal rule controlled Authorization; the entered key was not established in that header."
+		} else {
+			text += " The configured Authorization header replaced the entered key."
+		}
 	} else if p.EnteredKeyInAuthorization {
 		text += " The initial request used the entered key in Authorization."
 	}

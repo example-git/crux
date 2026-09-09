@@ -249,6 +249,16 @@ func validateManifestOperationBindings(registration Registration) error {
 		}
 	}
 	for index, operation := range declarations {
+		if operation.Kind == "model-catalog" {
+			compiled, err := providertransport.Compile(*registration.Manifest, operation)
+			if err != nil {
+				return err
+			}
+			if err := ValidateModelCatalogOperation(compiled); err != nil {
+				return err
+			}
+			referenced[operation.ID] = struct{}{}
+		}
 		if _, ok := referenced[operation.ID]; !ok {
 			return fmt.Errorf("operation %q at index %d has no host executor", operation.ID, index)
 		}
