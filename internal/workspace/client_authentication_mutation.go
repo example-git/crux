@@ -20,6 +20,7 @@ type clientAuthenticationRequest struct {
 	target      providerauth.Target
 	accountID   string
 	logout      bool
+	checkID     string
 }
 
 // A local receipt is not an acknowledgement. Keep the exact collected proposal
@@ -66,7 +67,7 @@ func (w *ClientWorkspace) logoutClientAuthentication(ctx context.Context, reques
 }
 
 func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, request clientAuthenticationRequest) (providerauth.MutationOutcome, error) {
-	initial := providerauth.MutationOutcome{OperationID: request.operationID, Previous: request.target}
+	initial := providerauth.MutationOutcome{OperationID: request.operationID, CheckID: request.checkID, Previous: request.target}
 	ctx, done := providerAuthContext(ctx, w.subCtx)
 	defer done()
 	if err := ctx.Err(); err != nil {
@@ -109,7 +110,9 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	receipt := &clientAuthenticationReceipt{request: request, principal: a.principal, base: a.accepted}
 	var local providerauth.MutationResult
 	var err error
-	if request.logout {
+	if request.checkID != "" {
+		local, err = a.providerAuth.SaveAPIKeyForAccepted(ctx, providerauth.APIKeySaveRequest{OperationID: request.operationID, Target: request.target, CheckID: request.checkID}, a.accepted, a.configView())
+	} else if request.logout {
 		local, err = a.providerAuth.LogoutForAccepted(ctx, providerauth.LogoutRequest{OperationID: request.operationID, Target: request.target}, a.accepted, a.configView())
 	} else {
 		local, err = a.providerAuth.SwitchForAccepted(ctx, providerauth.SwitchRequest{OperationID: request.operationID, Target: request.target, AccountID: request.accountID}, a.accepted, a.configView())
@@ -326,7 +329,7 @@ func (w *ClientWorkspace) clientAuthenticationAcknowledgedOutcome(ctx context.Co
 func clientAuthenticationOutcome(receipt *clientAuthenticationReceipt, cause error) (providerauth.MutationOutcome, error) {
 	data, err := json.Marshal(receipt.outcome)
 	if err != nil {
-		return providerauth.MutationOutcome{OperationID: receipt.request.operationID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, providerauth.ErrReceiptUnverified
+		return providerauth.MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, providerauth.ErrReceiptUnverified
 	}
 	var outcome providerauth.MutationOutcome
 	decoder := json.NewDecoder(bytes.NewReader(data))
