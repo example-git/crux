@@ -17,6 +17,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/oauth"
@@ -121,10 +122,11 @@ func (a *accountPickItem) Render(width int) string {
 
 // accountsPicker is the shared list+filter scaffolding.
 type accountsPicker struct {
-	com   *common.Common
-	help  help.Model
-	list  *list.FilterableList
-	input textinput.Model
+	com    *common.Common
+	help   help.Model
+	list   *list.FilterableList
+	input  textinput.Model
+	notice string
 
 	keyMap struct {
 		Select   key.Binding
@@ -215,12 +217,20 @@ func (p *accountsPicker) draw(scr uv.Screen, area uv.Rectangle, title string, ke
 		t.Dialog.HelpView.GetVerticalFrameSize() +
 		t.Dialog.View.GetVerticalFrameSize()
 
+	notice := ""
+	if noticeHeight := min(5, height-heightOffset); p.notice != "" && noticeHeight > 0 {
+		notice = t.Dialog.InputPrompt.Width(max(0, innerWidth)).MaxHeight(noticeHeight).Render(p.notice)
+		heightOffset += lipgloss.Height(notice)
+	}
 	p.input.SetWidth(dialogInputTextWidth(t, p.input, innerWidth))
 	p.list.SetSize(innerWidth, max(0, height-heightOffset))
 
 	rc := NewRenderContext(t, width)
 	rc.Title = title
 	rc.AddPart(t.Dialog.InputPrompt.Render(p.input.View()))
+	if notice != "" {
+		rc.AddPart(notice)
+	}
 
 	if p.list.Height() >= len(p.list.FilteredItems()) {
 		p.list.ScrollToTop()
@@ -244,120 +254,8 @@ func (p *accountsPicker) fullHelp() [][]key.Binding {
 	return [][]key.Binding{{p.keyMap.Select, p.keyMap.Next, p.keyMap.Previous, p.keyMap.Close}}
 }
 
-// ---------------------------------------------------------------------------
-// Account switcher
-// ---------------------------------------------------------------------------
-
-// AccountSwitcher lists every stored OAuth account across providers and
-// activates the selected one.
-type AccountSwitcher struct {
-	accountsPicker
-}
-
-var _ Dialog = (*AccountSwitcher)(nil)
-
-// NewAccountSwitcher creates the account switcher dialog.
-func NewAccountSwitcher(com *common.Common) *AccountSwitcher {
-	s := &AccountSwitcher{accountsPicker: newAccountsPicker(com)}
-	s.setItems()
-	return s
-}
-
-// ID implements Dialog.
-func (s *AccountSwitcher) ID() string { return AccountSwitcherID }
-
-func (s *AccountSwitcher) setItems() {
-	ctx := context.Background()
-	var items []list.FilterableItem
-	cfg := s.com.Config()
-	providers, err := accounts.ProvidersFor(ctx, cfg.ProviderAccountNamespaces())
-	if err != nil {
-		return
-	}
-	providers = activeAccountProviders(providers, func(provider string) bool {
-		_, ok := cfg.ProviderRegistrationForAccount(provider)
-		return ok
-	})
-	for _, provider := range providers {
-		entries, err := accounts.List(ctx, provider)
-		if err != nil {
-			continue
-		}
-		active, _ := accounts.Active(ctx, provider)
-		for _, entry := range entries {
-			info := provider
-			if active != nil && entry.ID == active.ID {
-				info = provider + " · active"
-			}
-			items = append(items, newAccountPickItem(
-				s.com.Styles,
-				provider+"\x00"+entry.ID,
-				entry.DisplayName,
-				info,
-			))
-		}
-	}
-	s.list.SetItems(items...)
-	s.list.SetSelected(0)
-}
-
-func activeAccountProviders(stored []string, active func(string) bool) []string {
-	result := make([]string, 0, len(stored))
-	for _, provider := range stored {
-		if active(provider) {
-			result = append(result, provider)
-		}
-	}
-	return result
-}
-
-// HandleMsg implements Dialog.
-func (s *AccountSwitcher) HandleMsg(msg tea.Msg) Action {
-	if kp, ok := msg.(tea.KeyPressMsg); ok {
-		if action, handled := s.handleNav(kp); handled {
-			return action
-		}
-		if key.Matches(kp, s.keyMap.Select) {
-			pick := s.selected()
-			if pick == nil {
-				return nil
-			}
-			provider, id, ok := strings.Cut(pick.id, "\x00")
-			if !ok {
-				return nil
-			}
-			return ActionSwitchAccount{Provider: provider, AccountID: id, DisplayName: pick.label}
-		}
-		return s.handleFilter(kp)
-	}
-	return nil
-}
-
-// Cursor implements Dialog.
-func (s *AccountSwitcher) Cursor() *tea.Cursor {
-	return InputCursor(s.com.Styles, s.input.Cursor())
-}
-
-// Draw implements Dialog.
-func (s *AccountSwitcher) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
-	return s.draw(scr, area, "Switch Account", s)
-}
-
-// ShortHelp implements help.KeyMap.
-func (s *AccountSwitcher) ShortHelp() []key.Binding { return s.shortHelp() }
-
-// FullHelp implements help.KeyMap.
-func (s *AccountSwitcher) FullHelp() [][]key.Binding { return s.fullHelp() }
-
-// ActionSwitchAccount is emitted when the user picks an account.
-type ActionSwitchAccount struct {
-	Provider    string // accounts store key
-	AccountID   string
-	DisplayName string
-}
-
-// SwitchAccount activates the account and pushes its (fresh) credential into
-// the provider config. Returned as a tea.Cmd result message.
+// Legacy login completion messages also carry model-selection continuations.
+// Account maintenance uses the distinct typed messages in account_authentication.go.
 type AccountSwitchedMsg struct {
 	CruxProviderID string
 	DisplayName    string
@@ -365,179 +263,9 @@ type AccountSwitchedMsg struct {
 	Err            error
 }
 
-// SwitchAccountCmd performs the switch in the background.
-func SwitchAccountCmd(com *common.Common, action ActionSwitchAccount) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		registration, ok := com.Config().ProviderRegistrationForAccount(action.Provider)
-		if !ok {
-			return AccountSwitchedMsg{DisplayName: action.DisplayName, Err: fmt.Errorf("provider account owner %s is not active", action.Provider)}
-		}
-		cruxID := registration.ProviderID
-		accountNamespace := registration.AccountNamespace
-		owner := registration.Owner()
-
-		entries, err := accounts.List(ctx, accountNamespace)
-		if err != nil {
-			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
-		}
-		var entry *accounts.Entry
-		for index := range entries {
-			if entries[index].ID == action.AccountID {
-				entry = &entries[index]
-				break
-			}
-		}
-		if entry == nil {
-			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: fmt.Errorf("account %q not found for provider %q", action.AccountID, accountNamespace)}
-		}
-		validate := func() error {
-			current, ok := com.Config().ProviderOwner(cruxID)
-			if !ok || current != owner {
-				return fmt.Errorf("provider account owner changed for %s", action.Provider)
-			}
-			return nil
-		}
-		if err := validate(); err != nil {
-			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
-		}
-		var refresher accounts.Refresher
-		if registration.OAuth != nil {
-			refresher = registration.OAuth.Refresh
-		}
-		fresh, err := accounts.EnsureFreshForOwner(ctx, accountNamespace, entry, refresher, validate)
-		if err != nil {
-			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
-		}
-		if err := validate(); err != nil {
-			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
-		}
-		err = workspace.TransactCredentials(ctx, com.Workspace, func(editor workspace.CredentialEditor) error {
-			if err := validate(); err != nil {
-				return err
-			}
-			credential := config.ProviderOAuthCredential{Owner: owner, Token: fresh.Token()}
-			if err := editor.SetProviderAPIKey(config.ScopeGlobal, cruxID, credential); err != nil {
-				return err
-			}
-			return accounts.SetActiveForOwner(ctx, accountNamespace, action.AccountID, validate)
-		})
-		if err != nil {
-			return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName, Err: err}
-		}
-		return AccountSwitchedMsg{CruxProviderID: cruxID, DisplayName: action.DisplayName}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Logout dialog
-// ---------------------------------------------------------------------------
-
-// Logout lists logged-in OAuth providers; selecting one removes its
-// credentials.
-type Logout struct {
-	accountsPicker
-}
-
-var _ Dialog = (*Logout)(nil)
-
-// NewLogout creates the logout dialog.
-func NewLogout(com *common.Common) *Logout {
-	l := &Logout{accountsPicker: newAccountsPicker(com)}
-	l.setItems()
-	return l
-}
-
-// ID implements Dialog.
-func (l *Logout) ID() string { return LogoutID }
-
-func (l *Logout) setItems() {
-	cfg := l.com.Config()
-	var items []list.FilterableItem
-	for _, choice := range oauthProviderChoices(cfg) {
-		if cfg == nil {
-			continue
-		}
-		if pc, ok := cfg.Providers.Get(choice.cruxID); ok && (pc.OAuthToken != nil || pc.APIKey != "") {
-			items = append(items, newAccountPickItem(l.com.Styles, choice.cruxID, choice.label, "logged in"))
-		}
-	}
-	l.list.SetItems(items...)
-	l.list.SetSelected(0)
-}
-
-// HandleMsg implements Dialog.
-func (l *Logout) HandleMsg(msg tea.Msg) Action {
-	if kp, ok := msg.(tea.KeyPressMsg); ok {
-		if action, handled := l.handleNav(kp); handled {
-			return action
-		}
-		if key.Matches(kp, l.keyMap.Select) {
-			pick := l.selected()
-			if pick == nil {
-				return nil
-			}
-			registration, ok := l.com.Config().ProviderRegistration(pick.id)
-			if !ok || registration.OAuth == nil {
-				return nil
-			}
-			return ActionLogout{Owner: registration.Owner(), AccountNamespace: registration.AccountNamespace, Label: pick.label}
-		}
-		return l.handleFilter(kp)
-	}
-	return nil
-}
-
-// Cursor implements Dialog.
-func (l *Logout) Cursor() *tea.Cursor {
-	return InputCursor(l.com.Styles, l.input.Cursor())
-}
-
-// Draw implements Dialog.
-func (l *Logout) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
-	return l.draw(scr, area, "Log Out", l)
-}
-
-// ShortHelp implements help.KeyMap.
-func (l *Logout) ShortHelp() []key.Binding { return l.shortHelp() }
-
-// FullHelp implements help.KeyMap.
-func (l *Logout) FullHelp() [][]key.Binding { return l.fullHelp() }
-
-// ActionLogout is emitted when the user picks a provider to log out from.
-type ActionLogout struct {
-	Owner            providerregistry.RegistrationOwner
-	AccountNamespace string
-	Label            string
-}
-
-// LogoutDoneMsg reports the result of a logout.
 type LogoutDoneMsg struct {
 	Label string
 	Err   error
-}
-
-// LogoutCmd removes the stored credentials for a provider.
-func LogoutCmd(com *common.Common, action ActionLogout) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		err := workspace.TransactCredentials(ctx, com.Workspace, func(editor workspace.CredentialEditor) error {
-			validate := func() error { return validateAccountOwner(com, action.Owner) }
-			if err := validate(); err != nil {
-				return err
-			}
-			if err := editor.RemoveProviderCredentials(config.ScopeGlobal, action.Owner); err != nil {
-				return err
-			}
-			if action.AccountNamespace != "" {
-				return accounts.RemoveProviderForOwner(ctx, action.AccountNamespace, validate)
-			}
-			return nil
-		})
-		return LogoutDoneMsg{Label: action.Label, Err: err}
-	}
 }
 
 // ---------------------------------------------------------------------------

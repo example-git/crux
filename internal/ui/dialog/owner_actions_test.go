@@ -153,7 +153,7 @@ func TestModelDialogRetainsOwnerAndRejectsSameIDReplacement(t *testing.T) {
 	require.ErrorContains(t, action.ValidateProviderOwner(nil), "configuration not found")
 }
 
-func TestOAuthMenusRejectSameIDOwnerReplacement(t *testing.T) {
+func TestLoginMenuRejectsSameIDOwnerReplacement(t *testing.T) {
 	const providerID = "same-id-provider"
 	ownerA := ownerActionRegistration(providerID, "plugin.oauth-owner-a", true)
 	ownerB := ownerActionRegistration(providerID, "plugin.oauth-owner-b", true)
@@ -162,15 +162,11 @@ func TestOAuthMenusRejectSameIDOwnerReplacement(t *testing.T) {
 	workspace := &ownerActionWorkspace{cfg: ownerActionConfig(ownerB), fields: make(map[string]any)}
 	common := &common.Common{Workspace: workspace, Styles: &theme}
 	login, _ := NewLogin(common)
-	logout := NewLogout(common)
 	require.Len(t, login.list.FilteredItems(), 1)
-	require.Len(t, logout.list.FilteredItems(), 1)
 
 	workspace.cfg = ownerActionConfigFor(ownerA, ownerB)
 	login, _ = NewLogin(common)
-	logout = NewLogout(common)
 	require.Empty(t, login.list.FilteredItems())
-	require.Empty(t, logout.list.FilteredItems())
 }
 
 func TestModelAuthenticationContinuationsRetainExactOwner(t *testing.T) {

@@ -10,21 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestActiveAccountProvidersOmitStoredInactiveIntegrations(t *testing.T) {
-	registry, err := providerregistry.New(providerregistry.Registration{
-		ProviderID:       "active",
-		AccountNamespace: "active-account",
-		AccountAliases:   []string{"active-account-legacy"},
-	})
-	require.NoError(t, err)
-
-	providers := activeAccountProviders(
-		[]string{"codex", "active-account", "gemini", "active-account-legacy"},
-		registry.HasAccountNamespace,
-	)
-	require.Equal(t, []string{"active-account", "active-account-legacy"}, providers)
-}
-
 func TestProviderEntriesOmitInactiveIntegrations(t *testing.T) {
 	cfg := &config.Config{
 		Providers: csync.NewMapFrom(map[string]config.ProviderConfig{

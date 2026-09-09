@@ -455,10 +455,12 @@ type UI struct {
 	// providerUsage is the latest quota usage snapshot for the current
 	// provider (Claude, Codex, or Gemini/Antigravity OAuth). It is nil
 	// when unknown or unsupported.
-	providerUsage       *oauthusage.Usage
-	usageFetchGen       uint64
-	modelSelectionGen   uint64
-	cancelCopilotImport context.CancelFunc
+	providerUsage            *oauthusage.Usage
+	usageFetchGen            uint64
+	modelSelectionGen        uint64
+	cancelCopilotImport      context.CancelFunc
+	authenticationReads      map[*dialog.AccountAuthentication]*authenticationRead
+	authenticationOperations map[workspace.Workspace]*authenticationOperation
 
 	// brand is the provider wordmark branding for the current large
 	// model provider; nil renders the default Crux branding.
@@ -814,6 +816,7 @@ func (m *UI) loadMCPrompts() tea.Msg {
 // Update handles updates to the UI model.
 func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+	m.pruneAuthenticationReads()
 	// Update terminal capabilities
 	m.caps.Update(msg)
 	if reply, ok := msg.(taskPanelReplyMsg); ok {
@@ -833,6 +836,19 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch msg := msg.(type) {
+	case authenticationLoadedMsg:
+		m.completeAuthenticationRead(msg)
+	case authenticationPreparedMsg:
+		cmds = append(cmds, m.completeAuthenticationPreparation(msg))
+	case authenticationCompletedMsg:
+		cmds = append(cmds, m.completeAuthenticationOperation(msg))
+	case authenticationUsageMsg:
+		if msg.workspace == m.com.Workspace && msg.generation == m.usageFetchGen {
+			m.providerUsage = msg.usage
+			m.updateSidebarScrollState()
+		}
+	case dialog.LoginDoneMsg, dialog.AccountSwitchedMsg, dialog.LogoutDoneMsg:
+		cmds = append(cmds, m.handleDialogAction(msg))
 	case copilotImportDoneMsg:
 		if msg.generation != m.modelSelectionGen {
 			break
@@ -2218,6 +2234,7 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		}
 
 		m.dialog.CloseFrontDialog()
+		m.pruneAuthenticationReads()
 
 		if isOnboarding && !msg.Dismiss {
 			if cmd := m.openModelsDialog(); cmd != nil {
@@ -2369,9 +2386,12 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 	case dialog.ActionCancelPlanMode:
 		cmds = append(cmds, m.cancelPlanMode())
 		m.dialog.CloseDialog(dialog.CommandsID)
-	case dialog.ActionSwitchAccount:
-		m.dialog.CloseDialog(dialog.AccountSwitcherID)
-		cmds = append(cmds, dialog.SwitchAccountCmd(m.com, msg))
+	case dialog.ActionAuthenticationSelect:
+		cmds = append(cmds, m.beginAuthenticationOperation(msg))
+	case dialog.ActionAuthenticationReload:
+		cmds = append(cmds, m.loadAuthenticationAccounts(msg.Dialog))
+	case dialog.ActionAuthenticationRetry:
+		cmds = append(cmds, m.retryAuthenticationOperation(msg))
 	case dialog.AccountSwitchedMsg:
 		if msg.Err != nil {
 			cmds = append(cmds, util.ReportError(msg.Err))
@@ -2382,9 +2402,6 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		} else {
 			cmds = append(cmds, util.CmdHandler(util.NewInfoMsg("Switched "+msg.CruxProviderID+" account to "+msg.DisplayName)))
 		}
-	case dialog.ActionLogout:
-		m.dialog.CloseDialog(dialog.LogoutID)
-		cmds = append(cmds, dialog.LogoutCmd(m.com, msg))
 	case dialog.LogoutDoneMsg:
 		if msg.Err != nil {
 			cmds = append(cmds, util.ReportError(msg.Err))
@@ -5502,11 +5519,9 @@ func (m *UI) openDialog(id string) tea.Cmd {
 			cmds = append(cmds, cmd)
 		}
 	case dialog.LogoutID:
-		m.dialog.CloseDialog(dialog.LogoutID)
-		m.dialog.OpenDialog(dialog.NewLogout(m.com))
+		cmds = append(cmds, m.openAuthenticationAccounts(true))
 	case dialog.AccountSwitcherID:
-		m.dialog.CloseDialog(dialog.AccountSwitcherID)
-		m.dialog.OpenDialog(dialog.NewAccountSwitcher(m.com))
+		cmds = append(cmds, m.openAuthenticationAccounts(false))
 	default:
 		break
 	}
