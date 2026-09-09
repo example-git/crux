@@ -38,6 +38,7 @@ type clientAuthenticationFixture struct {
 	first, second                    accounts.Entry
 	root, path, accountsPath, marker string
 	puts                             atomic.Int32
+	requests                         atomic.Int32
 	getMode, putMode                 atomic.Int32 // PUT:1 reject,2 lose committed response; GET:1 reject,2 wrong workspace.
 	afterPut                         atomic.Pointer[func()]
 	afterGet                         atomic.Pointer[func()]
@@ -66,6 +67,7 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 	require.NoError(t, f.s.EnableNetworkAuth(t.Context()))
 	handler := f.s.Handler()
 	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.requests.Add(1)
 		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
 			f.puts.Add(1)
 			switch f.putMode.Load() {
@@ -77,6 +79,9 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 				handler.ServeHTTP(recorder, r)
 				if recorder.Code != http.StatusOK {
 					t.Errorf("committed PUT failed: %d %s", recorder.Code, recorder.Body.String())
+				}
+				if change := f.afterPut.Load(); change != nil {
+					(*change)()
 				}
 				http.Error(w, "synthetic lost response", http.StatusBadGateway)
 				return
@@ -449,9 +454,9 @@ func TestClientAuthenticationMutationRejectedLogoutRetainsExplicitRecoveryIntent
 	require.ErrorContains(t, err, "explicit recovery")
 	require.EqualValues(t, 1, f.puts.Load())
 	requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)
-	// This bounded adapter exposes no reconnect/recovery action. A future
-	// explicit action must carry this receipt's exact unavailable proposal and
-	// owner intent; a fresh operation ID is not that recovery action.
+	// An ordinary retry carries no new publication authorization. The separate
+	// explicit recovery action uses this exact unavailable proposal and owner
+	// intent; a fresh Switch/Logout operation ID is not that recovery action.
 }
 
 func TestClientAuthenticationMutationRejectsChangedAuthorityAfterPut(t *testing.T) {

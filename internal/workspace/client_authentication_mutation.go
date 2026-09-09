@@ -27,16 +27,18 @@ type clientAuthenticationRequest struct {
 // Retention matches the local service's bounded receipt window; it is not a
 // restart-persistent operation-ID ledger.
 type clientAuthenticationReceipt struct {
-	request      clientAuthenticationRequest
-	principal    string
-	base         config.RemoteRuntimeProposal
-	outcome      providerauth.MutationOutcome
-	after        config.AuthenticationCapture
-	owner        providerregistry.RegistrationOwner
-	removed      map[providerregistry.RegistrationOwner]bool
-	proposal     *config.RemoteRuntimeProposal
-	acknowledged bool
-	err          error
+	request          clientAuthenticationRequest
+	principal        string
+	base             config.RemoteRuntimeProposal
+	outcome          providerauth.MutationOutcome
+	after            config.AuthenticationCapture
+	owner            providerregistry.RegistrationOwner
+	removed          map[providerregistry.RegistrationOwner]bool
+	proposal         *config.RemoteRuntimeProposal
+	acknowledged     bool
+	adopted          bool
+	recoverySequence uint64
+	err              error
 }
 
 func (clientAuthenticationReceipt) MarshalJSON() ([]byte, error) {
@@ -95,10 +97,8 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	}
 	// An unfinished local change requires explicit recovery. A new ID/target
 	// cannot silently adopt it or perform a second local transaction.
-	for _, receipt := range a.authenticationReceipts {
-		if receipt.request.target.WorkspaceID == request.target.WorkspaceID && !receipt.acknowledged && clientAuthenticationChanged(receipt.outcome.Progress) {
-			return initial, errors.New("a saved client authentication change is not acknowledged; explicit recovery of its original operation is required")
-		}
+	if a.unacknowledgedClientAuthentication(request.target.WorkspaceID) {
+		return initial, errors.New("a saved client authentication change is not acknowledged; explicit recovery of its original operation is required")
 	}
 	if a.accepted.Revision == ^uint64(0) {
 		return initial, errors.New("client runtime revision exhausted")
@@ -159,18 +159,25 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	a.pending, a.pendingView = receipt.proposal, proposal.CollectionConfig()
 	ack, err := w.client.ReplaceRemoteRuntime(ctx, request.target.WorkspaceID, receipt.base.Revision, proposal)
 	if err == nil && matchesAuthority(ack, receipt.principal, proposal) {
-		receipt.acknowledged = true
-		if err := ctx.Err(); err != nil {
-			return clientAuthenticationOutcome(receipt, err)
-		}
-		if err := w.adoptClientAuthenticationLocked(ctx, a, receipt, ack); err != nil {
-			return clientAuthenticationOutcome(receipt, err)
-		}
-		return w.clientAuthenticationAcknowledgedOutcome(ctx, a, receipt)
+		return w.completeClientAuthenticationPutLocked(ctx, a, receipt, ack)
 	}
 	// Exactly one PUT is attempted for this operation. Even a visibly rejected
 	// PUT is retained; retries can prove a missed acknowledgement only by GET.
 	return w.reconcileClientAuthenticationLocked(ctx, a, receipt)
+}
+
+func (w *ClientWorkspace) completeClientAuthenticationPutLocked(ctx context.Context, a *clientAuthority, receipt *clientAuthenticationReceipt, ack *config.RemoteAuthority) (providerauth.MutationOutcome, error) {
+	if receipt.proposal == nil || !matchesAuthority(ack, receipt.principal, *receipt.proposal) {
+		return clientAuthenticationOutcome(receipt, providerauth.ErrReceiptUnverified)
+	}
+	// Preserve genuine remote proof even when cancellation or a changed cache
+	// prevents local adoption. The separate adopted flag keeps generic paths
+	// from publishing until the accepted view and removal intent are installed.
+	receipt.acknowledged = true
+	if err := w.adoptClientAuthenticationLocked(ctx, a, receipt, ack); err != nil {
+		return clientAuthenticationOutcome(receipt, err)
+	}
+	return w.clientAuthenticationAcknowledgedOutcome(ctx, a, receipt)
 }
 
 func clientAuthenticationChanged(progress providerauth.MutationProgress) bool {
@@ -276,6 +283,7 @@ func (w *ClientWorkspace) noteClientAuthenticationAcknowledgementLocked(a *clien
 			continue
 		}
 		receipt.acknowledged = true
+		receipt.adopted = true
 		if a.removed == nil {
 			a.removed = map[providerregistry.RegistrationOwner]bool{}
 		}

@@ -31,21 +31,23 @@ func TransactCredentials(ctx context.Context, w Workspace, mutate func(Credentia
 }
 
 type clientAuthority struct {
-	mu                       sync.Mutex
-	store                    *config.ConfigStore
-	view                     atomic.Pointer[config.Config]
-	accepted                 config.RemoteRuntimeProposal
-	principal                string
-	creation                 proto.Workspace
-	pending                  *config.RemoteRuntimeProposal
-	pendingView              *config.Config
-	removed                  map[providerregistry.RegistrationOwner]bool
-	refreshEvents            sync.Map
-	providerAuth             *providerauth.Service
-	providerAuthWorkspaceID  string
-	authenticationReceipts   map[string]*clientAuthenticationReceipt
-	authenticationReceiptIDs []string
-	authenticationRetired    providerauth.Generation
+	mu                        sync.Mutex
+	store                     *config.ConfigStore
+	view                      atomic.Pointer[config.Config]
+	accepted                  config.RemoteRuntimeProposal
+	principal                 string
+	creation                  proto.Workspace
+	pending                   *config.RemoteRuntimeProposal
+	pendingView               *config.Config
+	removed                   map[providerregistry.RegistrationOwner]bool
+	refreshEvents             sync.Map
+	providerAuth              *providerauth.Service
+	providerAuthWorkspaceID   string
+	authenticationReceipts    map[string]*clientAuthenticationReceipt
+	authenticationReceiptIDs  []string
+	authenticationRetired     providerauth.Generation
+	authenticationRecoveries  map[string]*clientAuthenticationRecoveryReceipt
+	authenticationRecoveryIDs []string
 }
 
 func newClientAuthority(c *client.Client, ws proto.Workspace) *clientAuthority {
@@ -154,6 +156,9 @@ func (w *ClientWorkspace) mutateClientAuthority(ctx context.Context, mutate func
 	if err := w.reconcileClientAuthority(ctx, a); err != nil {
 		return err
 	}
+	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
+		return err
+	}
 	if err := mutate(a.store); err != nil {
 		return err
 	}
@@ -167,6 +172,9 @@ func (w *ClientWorkspace) mutateClientPresentation(mutate func(*config.ConfigSto
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
+		return err
+	}
 	if err := mutate(a.store); err != nil {
 		return err
 	}
@@ -179,6 +187,9 @@ func (w *ClientWorkspace) mutateClientPresentation(mutate func(*config.ConfigSto
 }
 
 func (w *ClientWorkspace) publishClientAuthorityLocked(ctx context.Context, a *clientAuthority) error {
+	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
+		return err
+	}
 	proposal, err := a.store.CollectRemoteRuntimeWithUnavailable(ctx, a.accepted.Revision+1, a.removed)
 	if err != nil {
 		return fmt.Errorf("client state saved; remote runtime was not updated: %w", err)
@@ -201,10 +212,10 @@ func (w *ClientWorkspace) publishClientAuthorityLocked(ctx context.Context, a *c
 	}
 	a.accepted = proposal
 	a.view.Store(a.pendingView)
-	w.noteClientAuthenticationAcknowledgementLocked(a, w.workspaceID(), proposal)
 	a.pending, a.pendingView = nil, nil
 	w.mu.Lock()
 	w.ws.Authority = ack
+	w.noteClientAuthenticationAcknowledgementLocked(a, w.ws.ID, proposal)
 	w.appliedRefresh = w.refreshSequence.Add(1)
 	w.mu.Unlock()
 	return nil
@@ -251,6 +262,9 @@ func (w *ClientWorkspace) recreateClientWorkspace(ctx context.Context) (*proto.W
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
+		return nil, err
+	}
 	if _, err := w.client.NegotiateRemoteRuntime(ctx); err != nil {
 		return nil, err
 	}
