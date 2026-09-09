@@ -310,6 +310,8 @@ assertNoChange:
 	}
 	beforeRefresh := puts.Load()
 	beforeRevision := oauthReceiver.Cfg.RemoteAuthority().Revision
+	beforeRefreshAuthority := oauthWorkspace.AcceptedAuthority()
+	require.NotNil(t, beforeRefreshAuthority)
 	loseAck.Store(true)
 	require.NoError(t, oauthWorkspace.RefreshOAuthToken(t.Context(), config.ScopeGlobal, registration.Owner()))
 	require.EqualValues(t, 1, exchanges.Load())
@@ -343,7 +345,12 @@ assertNoChange:
 		refreshResults <- refreshResult{snapshot, err}
 	}()
 	require.Eventually(t, func() bool { return len(oauthReceiver.Cfg.PendingClientRefreshes()) == 1 }, time.Second, 10*time.Millisecond)
-	refreshEvents, err := oauthClient.SubscribeEvents(refreshCtx, oauthCreated.ID)
+	_, err = oauthClient.SubscribeEvents(refreshCtx, oauthCreated.ID, *beforeRefreshAuthority)
+	require.ErrorContains(t, err, "different accepted runtime", "a lost reply cannot make the previous attachment current")
+	refreshAuthority := oauthWorkspace.AcceptedAuthority()
+	require.NotNil(t, refreshAuthority)
+	require.Equal(t, beforeRevision+1, refreshAuthority.Revision)
+	refreshEvents, err := oauthClient.SubscribeEvents(refreshCtx, oauthCreated.ID, *refreshAuthority)
 	require.NoError(t, err)
 	loseCompletion.Store(true)
 	for {
