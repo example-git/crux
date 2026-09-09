@@ -25,24 +25,26 @@ import (
 
 const selectedTokenRotationLimit = 64
 
-// A receipt proves only this process's exchange and exact local write. It is
-// deliberately not a disk-token freshness heuristic. After restart or a peer
-// write, the client must recollect/reconcile its authority before refreshing.
+// A receipt retains the process-local publication state around a private durable
+// exchange lineage. Cross-store recovery requires that exact lineage and its
+// captured input proof; an arbitrary newer disk token is never a successor.
 // writeMu protects the receipt's configuration state; freshMu protects only
 // the immutable successor and is never held while waiting for writeMu or I/O.
 // The provider refresh lock serializes exchange and commit callers.
 type selectedTokenRotation struct {
-	freshMu     *sync.RWMutex
-	providerID  string
-	originalID  string
-	environment []string
-	before      *Config
-	preimage    authenticationInputFile
-	fresh       *oauth.Token
-	next        *Config
-	postimage   authenticationInputFile
-	written     bool
-	committed   bool
+	freshMu         *sync.RWMutex
+	providerID      string
+	originalID      string
+	environment     []string
+	before          *Config
+	preimage        authenticationInputFile
+	fresh           *oauth.Token
+	next            *Config
+	postimage       authenticationInputFile
+	written         bool
+	committed       bool
+	exchangeStarted bool
+	lineage         *selectedTokenLineage
 }
 
 func (r *selectedTokenRotation) token() *oauth.Token {
@@ -68,7 +70,7 @@ func (selectedTokenRotation) MarshalJSON() ([]byte, error) {
 // accepted token, then persists its successor without touching account storage.
 // A returned token with an error is a retained successor, not acknowledgement
 // that configuration or the remote runtime was published. Repeating the same
-// admitted credential reuses only this process's proven rotation receipt.
+// admitted credential reuses only a proven in-memory or durable rotation receipt.
 func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, scope Scope, owner providerregistry.RegistrationOwner, expected *oauth.Token, admitted RuntimeSnapshot) (*oauth.Token, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -78,6 +80,9 @@ func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, s
 	}
 	if owner.ProviderID == "" || owner.AccountNamespace != "" || !owner.HasOAuth || expected == nil || expected.AccessToken == "" || expected.RefreshToken == "" {
 		return nil, errors.New("refresh requires an exact namespace-free OAuth token and owner")
+	}
+	if err := validateRemoteOAuthToken(expected); err != nil {
+		return nil, err
 	}
 	expected = cloneOAuthToken(expected)
 	registerOAuthTokenSecrets(expected)
@@ -118,6 +123,14 @@ func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, s
 		return nil, authenticationInputError(err)
 	}
 	defer release()
+	// The captured config path, not a store's global data directory, is the
+	// shared identity for this journal. Different stores may point their
+	// workspace scope at the same file while using different global roots.
+	releaseLineage, err := lock.File(lockCtx, selectedTokenLineagePath(path, owner.ProviderID)+".lock")
+	if err != nil {
+		return nil, authenticationInputError(err)
+	}
+	defer releaseLineage()
 	currentRuntime, err := s.captureRemoteCollectionRuntime(ctx)
 	if err != nil {
 		return nil, err
@@ -129,25 +142,36 @@ func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, s
 		return nil, err
 	}
 	receipt := s.selectedTokenRotations[key]
+	if receipt != nil && receipt.exchangeStarted && receipt.token() == nil {
+		s.writeMu.Unlock()
+		return nil, errors.New("OAuth token exchange outcome is unknown; reauthenticate or recollect the owning client")
+	}
+	if receipt != nil && receipt.token() != nil && receipt.lineage != nil {
+		_, journal, readErr := readSelectedTokenLineage(ctx, receipt.lineage.path)
+		if readErr != nil {
+			s.writeMu.Unlock()
+			return cloneOAuthToken(receipt.token()), fmt.Errorf("OAuth token rotated and retained; durable lineage cannot be read: %w", readErr)
+		}
+		if recorded, found := journal.Records[key]; found && recorded.Successor != nil {
+			if !reflect.DeepEqual(recorded.Successor, receipt.token()) {
+				s.writeMu.Unlock()
+				return cloneOAuthToken(receipt.token()), errors.New("OAuth token rotated and retained; durable successor conflicts with the observed exchange")
+			}
+			restored, restoreErr := s.prepareSelectedTokenLineage(ctx, currentRuntime, path, key, definitionID, owner, expected)
+			if restoreErr != nil {
+				s.writeMu.Unlock()
+				return cloneOAuthToken(receipt.token()), fmt.Errorf("OAuth token rotated and retained; durable lineage cannot be adopted: %w", restoreErr)
+			}
+			receipt = restored
+			s.selectedTokenRotations[key] = receipt
+		}
+	}
 	if receipt == nil {
 		for _, previous := range s.selectedTokenRotations {
 			if previous.providerID == owner.ProviderID && previous.originalID == OAuthTokenCredentialID(expected) && previous.token() != nil {
 				s.writeMu.Unlock()
 				return nil, errors.New("this OAuth credential already has a retained rotation; reconcile its original provider definition before reuse")
 			}
-		}
-		provider, _ := currentRuntime.Config().Providers.Get(owner.ProviderID)
-		if s.Config() != currentRuntime.Config() || !reflect.DeepEqual(provider.OAuthToken, expected) || provider.APIKey != expected.AccessToken || provider.resolvedAPIKey != nil {
-			s.writeMu.Unlock()
-			return nil, errors.New("selected OAuth credential changed; recollect the owning client runtime")
-		}
-		preimage, err := readAuthenticationInput(ctx, path)
-		if err == nil {
-			err = selectedTokenDiskCredential(preimage, owner.ProviderID, provider, expected)
-		}
-		if err != nil {
-			s.writeMu.Unlock()
-			return nil, authenticationInputError(err)
 		}
 		for id, previous := range s.selectedTokenRotations {
 			if previous.committed && previous.next != currentRuntime.Config() {
@@ -158,10 +182,14 @@ func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, s
 			s.writeMu.Unlock()
 			return nil, errors.New("too many retained OAuth rotations; reconcile pending credentials before refreshing")
 		}
+		receipt, err = s.prepareSelectedTokenLineage(ctx, currentRuntime, path, key, definitionID, owner, expected)
+		if err != nil {
+			s.writeMu.Unlock()
+			return nil, err
+		}
 		if s.selectedTokenRotations == nil {
 			s.selectedTokenRotations = make(map[string]*selectedTokenRotation)
 		}
-		receipt = &selectedTokenRotation{freshMu: new(sync.RWMutex), providerID: owner.ProviderID, originalID: OAuthTokenCredentialID(expected), environment: slices.Clone(environment), before: currentRuntime.Config(), preimage: preimage}
 		s.selectedTokenRotations[key] = receipt
 	}
 	s.writeMu.Unlock()
@@ -201,8 +229,15 @@ func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, s
 			s.forgetUnexchangedSelectedToken(ctx, key, receipt)
 			return nil, authenticationInputError(err)
 		}
+		if err := receipt.lineage.persist(ctx, nil); err != nil {
+			return nil, err
+		}
 		exchangeCtx := providertransport.ContextWithOwnerValidator(oauth.ContextWithEnvironment(finish, environment), validateOwner)
 		var fresh *oauth.Token
+		// Cleanup may fail to acquire writeMu after a deadline. Retaining an
+		// unacknowledged exchange must never allow this token to be sent again.
+		// The provider and captured-path locks serialize this flag's callers.
+		receipt.exchangeStarted = true
 		if s.exchangeToken != nil {
 			fresh, err = s.exchangeToken(exchangeCtx, owner.ProviderID, expected.RefreshToken)
 		} else {
@@ -225,8 +260,19 @@ func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, s
 		registerOAuthTokenSecrets(fresh)
 		receipt.retain(fresh)
 	}
+	if durable, recorded := receipt.lineage.journal.Records[receipt.lineage.key]; !recorded || !reflect.DeepEqual(durable.Successor, receipt.token()) {
+		if err := receipt.lineage.persist(finish, receipt.token()); err != nil {
+			return cloneOAuthToken(receipt.token()), fmt.Errorf("OAuth token rotated and retained in memory; durable lineage is not acknowledged: %w", err)
+		}
+	}
 	if err := s.commitSelectedTokenRotation(finish, scope, owner, registration, receipt, validateRuntime); err != nil {
 		return cloneOAuthToken(receipt.token()), fmt.Errorf("OAuth token rotated and retained; provider configuration is not acknowledged: %w", err)
+	}
+	if durable := receipt.lineage.journal.Records[receipt.lineage.key]; !durable.Committed {
+		receipt.lineage.record.Committed = true
+		if err := receipt.lineage.persist(finish, receipt.token()); err != nil {
+			return cloneOAuthToken(receipt.token()), fmt.Errorf("OAuth configuration saved; durable lineage completion is not acknowledged: %w", err)
+		}
 	}
 	return cloneOAuthToken(receipt.token()), nil
 }
