@@ -24,6 +24,7 @@ import (
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/projects"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/skills"
 	"github.com/example-git/crux/internal/ui/util"
@@ -206,6 +207,8 @@ type Workspace struct {
 	principal        string
 	authorityMode    string
 	requestedDataDir string
+	providerAuthOnce sync.Once
+	providerAuth     *providerauth.Service
 
 	// resolvedPath is the path used as the dedup key in
 	// Backend.pathIndex. It is filepath.EvalSymlinks(filepath.Abs(Path))

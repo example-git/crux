@@ -103,6 +103,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 
 	store := &ConfigStore{
 		config:              cfg,
+		publicationSequence: 1,
 		workingDir:          workingDir,
 		baseEnvironment:     baseEnvironment,
 		publishProcessState: publishProcessState,
@@ -128,7 +129,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 			if err := cfg.setDefaultsFromEnvironment(workingDir, dataDir, baseEnvironment); err != nil {
 				return nil, fmt.Errorf("apply workspace configuration defaults: %w", err)
 			}
-			store.config = cfg
+			store.setConfig(cfg)
 			store.loadedPaths = append(store.loadedPaths, store.workspacePath)
 		}
 	}
@@ -263,7 +264,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		} else {
 			store.providerRegistry = published.Registry.Clone()
 		}
-		store.config = cfg
+		store.setConfig(cfg)
 		return nil
 	}
 	var publishErr error

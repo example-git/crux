@@ -122,8 +122,13 @@ func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*prot
 		if err != nil {
 			return nil, errors.New("cannot retain accepted client runtime")
 		}
-		if err := json.Unmarshal(data, &created.Runtime); err != nil {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		if err := decoder.Decode(&created.Runtime); err != nil {
 			return nil, err
+		}
+		if err := created.Runtime.RetainCollectionSource(*ws.Runtime); err != nil {
+			return nil, fmt.Errorf("cannot retain accepted client runtime source: %w", err)
 		}
 	}
 	created.AuthorityMode = mode

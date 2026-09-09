@@ -293,15 +293,24 @@ func lockPath() (string, error) {
 	return filepath.Join(d, "accounts.json.lock"), nil
 }
 
-var mu sync.Mutex
+var mu = accountMutex{held: make(chan struct{}, 1)}
 
 // withLock runs fn holding both the in-process mutex and the cross-process
 // file lock.
 func withLock(ctx context.Context, fn func() error) error {
-	mu.Lock()
+	return withResolvedLock(ctx, lockPath, fn)
+}
+
+func withResolvedLock(ctx context.Context, resolvePath func() (string, error), fn func() error) error {
+	if err := mu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer mu.Unlock()
-	lp, err := lockPath()
+	lp, err := resolvePath()
 	if err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(lp), 0o700); err != nil {
@@ -314,6 +323,9 @@ func withLock(ctx context.Context, fn func() error) error {
 		return fmt.Errorf("acquire accounts lock: %w", err)
 	}
 	defer release()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return fn()
 }
 

@@ -38,7 +38,9 @@ func (s *ConfigStore) CollectRemoteRuntime(ctx context.Context, revision uint64)
 func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, revision uint64, removed map[providerregistry.RegistrationOwner]bool) (RemoteRuntimeProposal, error) {
 	s.writeMu.RLock()
 	defer s.writeMu.RUnlock()
+	s.configMu.Lock()
 	snapshot := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
+	s.configMu.Unlock()
 	if snapshot.IsClientOwned() {
 		return RemoteRuntimeProposal{}, errors.New("collect runtime on its owning client")
 	}
@@ -146,5 +148,9 @@ func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, r
 		return result, errors.New("client runtime cannot be copied")
 	}
 	result.Digest, err = RemoteRuntimeDigest(result)
-	return result, err
+	if err != nil {
+		return result, err
+	}
+	result.collectionSource = &runtimeCollectionSource{runtime: snapshot, digest: result.Digest}
+	return result, nil
 }
