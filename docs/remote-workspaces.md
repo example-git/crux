@@ -147,6 +147,15 @@ rejects malformed or unsupported bundles,
 bad digests, unsafe paths, oversized input and mismatched credential owners or
 destinations before publication.
 
+Destination checks also apply when requests are sent. Provider bundles retain
+their declared destination and redirect policies. Native and custom provider
+requests keep credential-bearing redirects within the selected endpoint's
+scheme, host and port. MCP resource requests, including SSE message POSTs, stay
+on the configured MCP origin. OAuth discovery may select separate registration
+and token servers; each uses its own selected origin. Public metadata hostname
+repairs do not permit moving credentials or token request bodies to another
+origin.
+
 The complete process environment is not forwarded. Required resolved values and
 explicitly declared credential environment inputs may be included in the
 private snapshot. Client-owned image plugins can carry cookies from the exact

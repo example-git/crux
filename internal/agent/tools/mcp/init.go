@@ -719,8 +719,8 @@ func (runtime *Manager) getOrRenewClient(ctx context.Context, cfg *config.Config
 		// If an OAuth MCP fails to reconnect because the token is no
 		// longer valid, clear the stale token and prompt the user to
 		// re-authenticate instead of leaving it in an error state.
-		if m.OAuth && m.Type == config.MCPHttp {
-			if m.OAuthToken != nil && isOAuthInitErr(err) {
+		if m.OAuth && m.Type == config.MCPHttp && isOAuthInitErr(err) {
+			if m.OAuthToken != nil {
 				clearOAuthToken(cfg, name)
 			}
 			runtime.updateState(name, StateNeedsAuth, nil, nil, Counts{})
@@ -1302,6 +1302,11 @@ func hasUsableToken(tok *oauth.Token) bool {
 //   - "no token available": the handler had no cached token to use
 //   - interactive authorization was required but withheld during startup
 func isOAuthInitErr(err error) bool {
+	// A refused destination says nothing about token validity. In particular,
+	// URL text inside a wrapped transport error is not an OAuth error code.
+	if nonRetryableMCPHTTPError(err) {
+		return false
+	}
 	if errors.Is(err, mcpoauth.ErrInteractiveAuthRequired) {
 		return true
 	}
