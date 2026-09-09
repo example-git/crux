@@ -152,17 +152,24 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 		if err := next.advanceRuntimeAuthenticationAccount(owner, fresh); err != nil {
 			return err
 		}
+		fields := map[string]any{"api_key": fresh.AccessToken, "oauth": fresh.Token()}
+		if provider.Owner != nil {
+			fields["owner"] = provider.Owner
+		}
+		if provider.Plugin != nil {
+			fields["plugin"] = provider.Plugin
+		} else if provider.Preset != nil {
+			fields["preset"] = provider.Preset
+		}
+		authored := make(map[string]any, len(fields))
+		for key, value := range fields {
+			authored[field+"."+key] = value
+		}
+		written, err := s.prepareAuthenticationCOW(commitCtx, next, path, authored, nil)
+		if err != nil {
+			return err
+		}
 		return accounts.WithSelectedForOwner(commitCtx, owner.AccountNamespace, *fresh, validate, func() error {
-			fields := map[string]any{"api_key": fresh.AccessToken, "oauth": fresh.Token()}
-			if provider.Owner != nil {
-				fields["owner"] = provider.Owner
-			}
-			if provider.Plugin != nil {
-				fields["plugin"] = provider.Plugin
-			} else if provider.Preset != nil {
-				fields["preset"] = provider.Preset
-			}
-
 			if err := s.atomicWrite(scope, func(data []byte) ([]byte, error) {
 				if !gjson.ValidBytes(data) || !reflect.DeepEqual(gjson.GetBytes(data, field).Value(), diskBefore.Value()) {
 					return nil, accounts.ErrCredentialChanged
@@ -178,11 +185,9 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 			}); err != nil {
 				return err
 			}
-			authored := make(map[string]any, len(fields))
-			for key, value := range fields {
-				authored[field+"."+key] = value
+			if err := s.verifyAuthenticationCOW(commitCtx, next, written); err != nil {
+				return fmt.Errorf("provider config saved but failed to publish in-memory state: %w", err)
 			}
-			next.advanceAuthenticationBasis(path, authored, nil)
 			s.captureStalenessSnapshot(append(slices.Clone(s.loadedPaths), path))
 			s.setConfig(next)
 			return nil

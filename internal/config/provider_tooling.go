@@ -110,6 +110,7 @@ func (s *ConfigStore) mutateProviderToolingInstructions(ctx context.Context, sco
 		return errors.New("cannot update provider tooling instructions without a working directory")
 	}
 	before, err := os.ReadFile(path)
+	existed := err == nil
 	if errors.Is(err, os.ErrNotExist) {
 		before = []byte("{}")
 	} else if err != nil {
@@ -127,7 +128,7 @@ func (s *ConfigStore) mutateProviderToolingInstructions(ctx context.Context, sco
 	if current.Options != nil {
 		dataDir = current.Options.DataDirectory
 	}
-	preview, _, _, err := s.loadReloadConfigInputs(ctx, lookupConfigsFromEnvironment(s.workingDir, base), map[string][]byte{path: after}, base, dataDir, s.ephemeralProviderSnapshot(), cloneRuntimeOverrides(s.overrides), true)
+	preview, err := s.previewScopedConfigWrite(ctx, path, before, existed, after, base, dataDir)
 	if err != nil {
 		return fmt.Errorf("stage tooling instruction config: %w", err)
 	}
