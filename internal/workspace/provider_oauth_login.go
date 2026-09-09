@@ -81,6 +81,15 @@ func (w *AppWorkspace) CompleteProviderOAuthLogin(ctx context.Context, ref provi
 }
 
 func (w *ClientWorkspace) BeginProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRequest) (providerauth.OAuthLoginState, error) {
+	return w.beginProviderOAuthLogin(ctx, request, "")
+}
+func (w *ClientWorkspace) RecoverProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRecoveryRequest) (providerauth.OAuthLoginState, error) {
+	if err := request.Validate(); err != nil {
+		return providerauth.OAuthLoginState{}, err
+	}
+	return w.beginProviderOAuthLogin(ctx, request.Login, request.OriginalOperationID)
+}
+func (w *ClientWorkspace) beginProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRequest, originalOperationID string) (providerauth.OAuthLoginState, error) {
 	if err := request.Validate(); err != nil {
 		return providerauth.OAuthLoginState{}, err
 	}
@@ -91,6 +100,9 @@ func (w *ClientWorkspace) BeginProviderOAuthLogin(ctx context.Context, request p
 	}
 	if !w.clientOwned() {
 		return w.remoteOAuthSession(ctx, request, func(ctx context.Context, id string) (proto.ProviderOAuthLoginResponse, error) {
+			if originalOperationID != "" {
+				return w.client.RecoverProviderOAuthLogin(ctx, id, providerauth.OAuthLoginRecoveryRequest{Login: request, OriginalOperationID: originalOperationID})
+			}
 			return w.client.BeginProviderOAuthLogin(ctx, id, request)
 		})
 	}
@@ -115,6 +127,9 @@ func (w *ClientWorkspace) BeginProviderOAuthLogin(ctx context.Context, request p
 		service := a.providerAuth
 		state, err := service.WaitOAuthLogin(ctx, request, 0)
 		if !errors.Is(err, providerauth.ErrOAuthLoginUnavailable) {
+			if state.Login.LoginID != "" && !state.MatchesOAuthLoginRecovery(originalOperationID) {
+				return providerauth.OAuthLoginState{}, providerauth.ErrOperationConflict
+			}
 			if check := w.verifyClientOAuthSession(id, a, service); check != nil {
 				return providerauth.OAuthLoginState{}, check
 			}
@@ -128,7 +143,13 @@ func (w *ClientWorkspace) BeginProviderOAuthLogin(ctx context.Context, request p
 		return providerauth.OAuthLoginState{}, errors.New("a saved client authentication change requires explicit recovery before another login")
 	}
 	service := a.providerAuth
-	state, err := service.BeginOAuthLoginForAccepted(ctx, request, a.accepted, a.configView())
+	var state providerauth.OAuthLoginState
+	var err error
+	if originalOperationID != "" {
+		state, err = service.RecoverOAuthLoginForAccepted(ctx, providerauth.OAuthLoginRecoveryRequest{Login: request, OriginalOperationID: originalOperationID}, a.accepted, a.configView())
+	} else {
+		state, err = service.BeginOAuthLoginForAccepted(ctx, request, a.accepted, a.configView())
+	}
 	if check := w.verifyClientOAuthSession(id, a, service); check != nil {
 		return providerauth.OAuthLoginState{}, check
 	}
@@ -268,4 +289,82 @@ func (w *ClientWorkspace) CompleteProviderOAuthLogin(ctx context.Context, ref pr
 	return w.mutateServerAuthentication(ctx, initial, func(id string) (proto.ProviderAuthenticationMutationResponse, error) {
 		return w.client.CompleteProviderOAuthLogin(ctx, id, ref)
 	})
+}
+
+// ProviderOAuthRecovery is implemented by each production workspace. Records
+// belong to its credential owner, never a client-owned runtime's receiver.
+type ProviderOAuthRecovery interface {
+	ListProviderOAuthLoginResults(context.Context, providerauth.Target) (providerauth.OAuthLoginRecoveryList, error)
+	RecoverProviderOAuthLogin(context.Context, providerauth.OAuthLoginRecoveryRequest) (providerauth.OAuthLoginState, error)
+}
+
+func (w *AppWorkspace) RecoverProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRecoveryRequest) (providerauth.OAuthLoginState, error) {
+	if err := request.Validate(); err != nil {
+		return providerauth.OAuthLoginState{}, err
+	}
+	return w.localOAuthSession(ctx, request.Login, func(ctx context.Context, service *providerauth.Service) (providerauth.OAuthLoginState, error) {
+		return service.RecoverOAuthLogin(ctx, request)
+	})
+}
+func (w *AppWorkspace) ListProviderOAuthLoginResults(ctx context.Context, target providerauth.Target) (providerauth.OAuthLoginRecoveryList, error) {
+	ctx, done := providerAuthContext(ctx, w.providerAuthCtx)
+	defer done()
+	if err := ctx.Err(); err != nil {
+		return providerauth.OAuthLoginRecoveryList{}, err
+	}
+	if w.providerAuth == nil {
+		return providerauth.OAuthLoginRecoveryList{}, errors.New("local provider authentication service is unavailable")
+	}
+	return w.providerAuth.ListOAuthLoginResults(ctx, target)
+}
+func (w *ClientWorkspace) ListProviderOAuthLoginResults(ctx context.Context, target providerauth.Target) (providerauth.OAuthLoginRecoveryList, error) {
+	if err := target.Validate(); err != nil {
+		return providerauth.OAuthLoginRecoveryList{}, err
+	}
+	ctx, done := providerAuthContext(ctx, w.subCtx)
+	defer done()
+	if err := ctx.Err(); err != nil {
+		return providerauth.OAuthLoginRecoveryList{}, err
+	}
+	id := w.workspaceID()
+	if id == "" || id != target.WorkspaceID {
+		return providerauth.OAuthLoginRecoveryList{}, providerauth.ErrStale
+	}
+	if !w.clientOwned() {
+		before := w.cached()
+		if w.client == nil || before.ID != id || before.Authority != nil && before.Authority.Mode != "server" {
+			return providerauth.OAuthLoginRecoveryList{}, providerauth.ErrStale
+		}
+		response, err := w.client.ListProviderOAuthLoginResults(ctx, id, target)
+		if err != nil {
+			return providerauth.OAuthLoginRecoveryList{}, err
+		}
+		w.mu.RLock()
+		valid := w.ws.ID == id && reflect.DeepEqual(w.ws.Authority, before.Authority) && w.authority == nil
+		w.mu.RUnlock()
+		if !valid {
+			return providerauth.OAuthLoginRecoveryList{}, providerauth.ErrStale
+		}
+		return response.List, ctx.Err()
+	}
+	a := w.authority
+	if a == nil || a.store == nil {
+		return providerauth.OAuthLoginRecoveryList{}, providerauth.ErrStale
+	}
+	if err := lockProviderAuthAuthority(ctx, a); err != nil {
+		return providerauth.OAuthLoginRecoveryList{}, err
+	}
+	defer a.mu.Unlock()
+	if w.authority != a || !w.clientOwned() || w.workspaceID() != id {
+		return providerauth.OAuthLoginRecoveryList{}, providerauth.ErrStale
+	}
+	if err := w.prepareClientProviderAuth(ctx, id); err != nil {
+		return providerauth.OAuthLoginRecoveryList{}, err
+	}
+	service := a.providerAuth
+	result, err := service.ListOAuthLoginResultsForAccepted(ctx, target, a.accepted, a.configView())
+	if check := w.verifyClientOAuthSession(id, a, service); check != nil {
+		return providerauth.OAuthLoginRecoveryList{}, check
+	}
+	return result, err
 }

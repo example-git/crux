@@ -842,6 +842,8 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 		}
 	}
 	switch msg := msg.(type) {
+	case oauthLoginRecordedMsg:
+		cmds = append(cmds, m.completeOAuthLoginRecorded(msg))
 	case oauthLoginStatusMsg:
 		cmds = append(cmds, m.completeOAuthLoginStatus(msg))
 	case oauthLoginIDsMsg:
@@ -2294,6 +2296,8 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		if m.focus == uiFocusEditor {
 			cmds = append(cmds, m.textarea.Focus())
 		}
+	case dialog.ActionOAuthLoginResult:
+		cmds = append(cmds, m.chooseOAuthLoginRecorded(msg))
 	case dialog.ActionOAuthLoginSelect:
 		cmds = append(cmds, m.beginOAuthLogin(msg.Dialog, msg.Owner))
 	case dialog.ActionOAuthLoginSubmit:
