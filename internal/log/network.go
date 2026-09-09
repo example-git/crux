@@ -722,6 +722,9 @@ func QueryTraffic(ctx context.Context, database *sql.DB, query TrafficQuery) ([]
 // Admission and replacement bodies are private even when the caller omitted
 // the required marker. Rejection must never turn malformed private input into a log.
 func isPrivateRuntimeRequest(request *http.Request) bool {
+	if isPrivateAPIKeyCheck(request) {
+		return true
+	}
 	if request.Header.Get(EphemeralStateHeader) != "" {
 		return true
 	}
@@ -729,6 +732,13 @@ func isPrivateRuntimeRequest(request *http.Request) bool {
 		return true
 	}
 	return request.Method == http.MethodPut && strings.HasPrefix(request.URL.Path, "/v1/workspaces/") && strings.HasSuffix(request.URL.Path, "/runtime")
+}
+
+// A checked-key route accepts arbitrary secret source text, which generic JSON
+// field redaction cannot safely recognize. Suppress both payload directions,
+// including malformed requests and rejected responses that might echo input.
+func isPrivateAPIKeyCheck(request *http.Request) bool {
+	return strings.HasPrefix(request.URL.Path, "/v1/workspaces/") && strings.HasSuffix(request.URL.Path, "/auth/api-key/check")
 }
 
 const EphemeralStateHeader = "X-Crux-Ephemeral-State"
@@ -784,7 +794,7 @@ func (t *networkRoundTripper) RoundTrip(request *http.Request) (*http.Response, 
 		return response, err
 	}
 	event := TrafficEvent{TraceID: traceID, Protocol: "http", Direction: "inbound", Phase: "response", Method: request.Method, URL: sanitizeURL(request.URL), StatusCode: response.StatusCode, Headers: formatHeaders(response.Header), ContentLength: response.ContentLength, DurationMS: duration}
-	if response.Body == nil || response.Body == http.NoBody {
+	if response.Body == nil || response.Body == http.NoBody || isPrivateAPIKeyCheck(request) {
 		trace.record(event)
 	} else {
 		response.Body = &networkTraceBody{ReadCloser: response.Body, trace: trace, event: event}
@@ -883,6 +893,9 @@ func TraceHTTPHandler(next http.Handler) http.Handler {
 			_ = request.Body.Close()
 		}
 		responseBody, responseEncoding := wrapped.body.Encode(wrapped.Header().Get("Content-Type"))
+		if isPrivateAPIKeyCheck(request) {
+			responseBody, responseEncoding = "", ""
+		}
 		trace.record(TrafficEvent{TraceID: traceID, Protocol: "http", Direction: "outbound", Phase: "response", Method: request.Method, URL: sanitizeURL(request.URL), StatusCode: wrapped.statusCode, Headers: formatHeaders(wrapped.Header()), Body: responseBody, BodyEncoding: responseEncoding, ContentLength: wrapped.body.total, DurationMS: time.Since(started).Milliseconds()})
 	})
 }

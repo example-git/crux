@@ -68,7 +68,7 @@ func TestProviderAuthDetachedReceiverRejectsReadsBeforeIO(t *testing.T) {
 	target := providerauth.Target{WorkspaceID: harness.workspace.ID, Owner: providerauth.PublicOwner(owner), Generation: providerauth.Generation{Epoch: strings.Repeat("a", 32), Sequence: 1}}
 	encoded, err := json.Marshal(target)
 	require.NoError(t, err)
-	for _, operation := range []string{"status", "accounts", "switch", "logout"} {
+	for _, operation := range []string{"status", "accounts", "switch", "logout", "key-check", "key-save"} {
 		body, method := "", http.MethodGet
 		if operation == "accounts" {
 			body, method = string(encoded), http.MethodPost
@@ -84,6 +84,15 @@ func TestProviderAuthDetachedReceiverRejectsReadsBeforeIO(t *testing.T) {
 			require.NoError(t, err)
 			body, method = string(data), http.MethodPost
 		}
+		if operation == "key-check" {
+			data, err := json.Marshal(providerauth.APIKeyCheckRequest{CheckID: strings.Repeat("d", 32), Target: target, CredentialID: "provider.api_key", Source: "$(touch '" + filepath.Join(root, "must-not-resolve") + "')"})
+			require.NoError(t, err)
+			body, method = string(data), http.MethodPost
+		} else if operation == "key-save" {
+			data, err := json.Marshal(providerauth.APIKeySaveRequest{OperationID: strings.Repeat("e", 32), CheckID: strings.Repeat("d", 32), Target: target})
+			require.NoError(t, err)
+			body, method = string(data), http.MethodPost
+		}
 		r := httptest.NewRequest(method, "/", strings.NewReader(body))
 		r.SetPathValue("id", harness.workspace.ID)
 		response := httptest.NewRecorder()
@@ -92,6 +101,10 @@ func TestProviderAuthDetachedReceiverRejectsReadsBeforeIO(t *testing.T) {
 			controller.handleGetWorkspaceProviderAuthentication(response, r)
 		} else if operation == "switch" {
 			controller.handlePostWorkspaceProviderSwitch(response, r)
+		} else if operation == "key-check" {
+			controller.handlePostWorkspaceAPIKeyCheck(response, r)
+		} else if operation == "key-save" {
+			controller.handlePostWorkspaceAPIKeySave(response, r)
 		} else if operation == "logout" {
 			controller.handlePostWorkspaceProviderLogout(response, r)
 		} else {
