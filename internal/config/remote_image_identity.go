@@ -172,6 +172,9 @@ func validateRemoteImageIdentities(proposal RemoteRuntimeProposal, bundles map[s
 }
 
 func (s RuntimeSnapshot) ClientImageIdentities(owner providerplugin.ImageOwner) (map[string]any, error) {
+	if err := s.RuntimeRevocation(); err != nil {
+		return nil, err
+	}
 	bundle, handled, err := s.ClientImageBundle(owner)
 	if err != nil {
 		return nil, err

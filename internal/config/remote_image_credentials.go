@@ -252,6 +252,9 @@ func validateRemoteImageBrowsers(proposal RemoteRuntimeProposal, bundles map[str
 }
 
 func (s RuntimeSnapshot) ClientImageBrowserCredential(owner providerplugin.ImageOwner, id string) (http.CookieJar, string, error) {
+	if err := s.RuntimeRevocation(); err != nil {
+		return nil, "", err
+	}
 	if !s.IsClientOwned() {
 		return nil, "", errors.New("client image browser authority is unavailable")
 	}
