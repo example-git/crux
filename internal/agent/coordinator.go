@@ -2012,19 +2012,7 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 			if c.cfg == nil {
 				return fmt.Errorf("current client runtime authority is unavailable")
 			}
-			currentSnapshot := c.cfg.RuntimeSnapshot()
-			admittedAuthority, currentAuthority := snapshot.RemoteAuthority(), currentSnapshot.RemoteAuthority()
-			if currentAuthority == nil || currentAuthority.Mode != "client" ||
-				currentAuthority.Principal != admittedAuthority.Principal ||
-				currentAuthority.Revision < admittedAuthority.Revision ||
-				currentAuthority.Revision == admittedAuthority.Revision && currentAuthority.Digest != admittedAuthority.Digest {
-				return fmt.Errorf("current client runtime authority changed")
-			}
-			current, ok := currentSnapshot.ProviderOwner(owner.ProviderID)
-			if !ok || current != owner {
-				return fmt.Errorf("current client provider owner is unavailable or changed")
-			}
-			return currentSnapshot.ClientProviderUnavailable(owner.ProviderID)
+			return c.cfg.RuntimeSnapshot().ValidateClientProviderAdmission(snapshot, owner)
 		}
 		if revoked := c.cfg.RuntimeSnapshot().AuthenticationRevocation(owner.ProviderID); revoked != nil {
 			return revoked

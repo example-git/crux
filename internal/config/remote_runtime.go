@@ -112,6 +112,8 @@ type clientRuntimeState struct {
 	authority RemoteAuthority
 	proposal  RemoteRuntimeProposal
 	bundles   map[string]providerplugin.DetachedBundle
+	// Immutable receiver-local history; intentionally absent from proposal/wire data.
+	withdrawnAt map[providerregistry.RegistrationOwner]uint64
 }
 
 // RemoteRuntimeDigest binds the entire private proposal, including exact
@@ -204,6 +206,10 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 	next.captureExplicitModels()
 	next.SetupAgents()
 	candidate.setConfig(next)
+	s.configMu.Lock()
+	previous := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
+	s.configMu.Unlock()
+	candidate.clientRuntime.withdrawnAt = clientProviderWithdrawals(previous, candidate.RuntimeSnapshot())
 	runtimeCandidate, err := s.prepareRuntimeGeneration(ctx, candidate.RuntimeSnapshot())
 	if err != nil {
 		return nil, fmt.Errorf("prepare client runtime replacement: %w", err)
