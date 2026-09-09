@@ -47,11 +47,19 @@ func TestMCPResourceCredentialRedirectsThroughManagerHTTPS(t *testing.T) {
 					t.Run(fmt.Sprintf("%s/oauth=%t/%d/external=%t", kind, useOAuth, status, external), func(t *testing.T) {
 						ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 						defer cancel()
-						var foreign, observedCredential, observedPost atomic.Int32
+						var foreign, observedCredential, observedPost, active atomic.Int32
 						failures := make(chan string, 32)
 						sink := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { foreign.Add(1); w.WriteHeader(http.StatusNoContent) }))
 						defer sink.Close()
-						server := workspaceMCPServer(t, "captured-resource")
+						// This fixture has a fixed tool set. Do not advertise change
+						// subscriptions: the SDK's modern subscriptions/listen method
+						// does not terminate with its legacy SSE GET on server shutdown.
+						server := sdk.NewServer(&sdk.Implementation{Name: "captured-resource"}, &sdk.ServerOptions{
+							Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{}},
+						})
+						sdk.AddTool(server, &sdk.Tool{Name: "identify"}, func(context.Context, *sdk.CallToolRequest, struct{}) (*sdk.CallToolResult, any, error) {
+							return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "captured-resource"}}}, nil, nil
+						})
 						var handler http.Handler
 						if kind == "http" {
 							handler = sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, nil)
@@ -60,6 +68,8 @@ func TestMCPResourceCredentialRedirectsThroughManagerHTTPS(t *testing.T) {
 						}
 						var endpointURL string
 						endpoint := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+							active.Add(1)
+							defer active.Add(-1)
 							correct := r.Header.Get("X-Credential") == "captured-resource-secret"
 							if useOAuth {
 								correct = r.Header.Get("Authorization") == "Bearer captured-oauth-secret"
@@ -125,6 +135,8 @@ func TestMCPResourceCredentialRedirectsThroughManagerHTTPS(t *testing.T) {
 							t.Fatal(failure)
 						default:
 						}
+						closeMCPDestinationManager(t, manager)
+						require.Eventually(t, func() bool { return active.Load() == 0 }, 3*time.Second, time.Millisecond, "manager close must drain the real HTTP/SSE requests")
 					})
 				}
 			}
