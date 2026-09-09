@@ -302,31 +302,46 @@ func withLock(ctx context.Context, fn func() error) error {
 }
 
 func withResolvedLock(ctx context.Context, resolvePath func() (string, error), fn func() error) error {
-	if err := mu.LockContext(ctx); err != nil {
-		return err
-	}
-	defer mu.Unlock()
-	lp, err := resolvePath()
+	release, err := acquireResolvedLock(ctx, resolvePath)
 	if err != nil {
 		return err
 	}
+	defer release()
+	return fn()
+}
+
+func acquireResolvedLock(ctx context.Context, resolvePath func() (string, error)) (func(), error) {
+	if err := mu.LockContext(ctx); err != nil {
+		return nil, err
+	}
+	admitted := false
+	defer func() {
+		if !admitted {
+			mu.Unlock()
+		}
+	}()
+	lp, err := resolvePath()
+	if err != nil {
+		return nil, err
+	}
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if err := os.MkdirAll(filepath.Dir(lp), 0o700); err != nil {
-		return err
+		return nil, err
 	}
 	lockCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	release, err := lock.File(lockCtx, lp)
 	if err != nil {
-		return fmt.Errorf("acquire accounts lock: %w", err)
+		return nil, fmt.Errorf("acquire accounts lock: %w", err)
 	}
-	defer release()
 	if err := ctx.Err(); err != nil {
-		return err
+		release()
+		return nil, err
 	}
-	return fn()
+	admitted = true
+	return func() { release(); mu.Unlock() }, nil
 }
 
 func readStore() (*store, error) {

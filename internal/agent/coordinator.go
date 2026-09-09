@@ -1473,7 +1473,7 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 	var primary config.SelectedModel
 	if agent.PrimaryModelOverride != nil {
 		primary = *agent.PrimaryModelOverride
-		if !cfg.IsModelAvailable(primary.Provider, primary.Model) {
+		if !cfg.IsModelAvailable(primary.Provider, primary.Model) && snapshot.AuthenticationRevocation(primary.Provider) == nil {
 			return Model{}, Model{}, fmt.Errorf("primary model %q for provider %q is not available", primary.Model, primary.Provider)
 		}
 	} else {
@@ -1969,6 +1969,9 @@ func (c *coordinator) buildProvider(snapshot config.RuntimeSnapshot, providerCfg
 }
 
 func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, providerCfg config.ProviderConfig, selectedModel config.SelectedModel, isSubAgent bool, options *config.Options) (fantasy.Provider, error) {
+	if revoked := snapshot.AuthenticationRevocation(selectedModel.Provider); revoked != nil {
+		return unavailableClientProvider{id: selectedModel.Provider, err: revoked}, nil
+	}
 	if unavailable := snapshot.ClientProviderUnavailable(selectedModel.Provider); unavailable != nil {
 		return unavailableClientProvider{id: selectedModel.Provider, err: unavailable}, nil
 	}
@@ -1987,6 +1990,9 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 				return fmt.Errorf("captured client provider owner is unavailable")
 			}
 			return snapshot.ClientProviderUnavailable(owner.ProviderID)
+		}
+		if revoked := c.cfg.RuntimeSnapshot().AuthenticationRevocation(owner.ProviderID); revoked != nil {
+			return revoked
 		}
 		return c.cfg.ValidateActiveProviderOwner(owner)
 	}
@@ -2327,7 +2333,9 @@ func (c *coordinator) buildRuntimeGeneration(ctx context.Context, runtimeSnapsho
 }
 
 func (c *coordinator) prepareRuntimeGeneration(ctx context.Context, runtimeSnapshot config.RuntimeSnapshot) (config.RuntimeGenerationCandidate, error) {
-	c.updateMu.Lock()
+	if err := c.lockRuntimeGeneration(ctx); err != nil {
+		return config.RuntimeGenerationCandidate{}, err
+	}
 	release := true
 	defer func() {
 		if release {
@@ -2364,6 +2372,31 @@ func (c *coordinator) prepareRuntimeGeneration(ctx context.Context, runtimeSnaps
 		Commit: func() { finish(true) },
 		Abort:  func() { finish(false) },
 	}, nil
+}
+
+func (c *coordinator) lockRuntimeGeneration(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.updateMu.TryLock() {
+		return nil
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if c.updateMu.TryLock() {
+				if err := ctx.Err(); err != nil {
+					c.updateMu.Unlock()
+					return err
+				}
+				return nil
+			}
+		}
+	}
 }
 
 func (c *coordinator) QueuedPrompts(sessionID string) int {
