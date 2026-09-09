@@ -964,7 +964,11 @@ func (w *testWorkspace) Config() *config.Config {
 }
 
 func (w *testWorkspace) ProviderSurfaces() []providerregistry.Surface {
-	return nil
+	return config.ProviderSurfaces(w.cfg)
+}
+
+func (w *testWorkspace) PrepareProviderUsage(owner providerregistry.RegistrationOwner) oauthusage.Request {
+	return config.PrepareProviderUsage(w.Config, owner)
 }
 
 func (w *testWorkspace) UpdatePreferredModel(_ config.Scope, modelType config.SelectedModelType, model config.SelectedModel, owner providerregistry.RegistrationOwner) (config.AgentModelState, error) {

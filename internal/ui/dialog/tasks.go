@@ -80,6 +80,7 @@ type taskNotificationReadMsg struct {
 }
 
 type Tasks struct {
+	now                       func() time.Time
 	panel                     bool
 	listLoading               bool
 	ctx                       context.Context
@@ -866,7 +867,7 @@ func (d *Tasks) drawDetail(width, height int) string {
 		"Status: " + string(task.State.Status),
 		"Owner: " + owner,
 		"Description: " + task.Description,
-		"Runtime: " + taskRuntime(task).Round(time.Second).String(),
+		"Runtime: " + d.taskRuntime(task).Round(time.Second).String(),
 		"Output: " + task.OutputRef,
 	}
 	if task.AgentType != "" {
@@ -890,7 +891,7 @@ func (d *Tasks) drawImageDetail(width, _ int, task managedtask.View) string {
 	status := d.taskStatusStyle(task.State.Status).Render(string(task.State.Status))
 	lines := []string{
 		"Status: " + status,
-		"Runtime: " + taskRuntime(task).Round(time.Second).String(),
+		"Runtime: " + d.taskRuntime(task).Round(time.Second).String(),
 		"Description: " + task.Description,
 	}
 	switch task.State.Status {
@@ -910,12 +911,15 @@ func (d *Tasks) drawImageDetail(width, _ int, task managedtask.View) string {
 	return d.com.Styles.Dialog.ContentPanel.Width(width).Render(strings.Join(lines, "\n"))
 }
 
-func taskRuntime(task managedtask.View) time.Duration {
+func (d *Tasks) taskRuntime(task managedtask.View) time.Duration {
 	if task.State.StartedAt.IsZero() {
 		return 0
 	}
 	if !task.State.EndedAt.IsZero() {
 		return task.State.EndedAt.Sub(task.State.StartedAt)
+	}
+	if d.now != nil {
+		return d.now().Sub(task.State.StartedAt)
 	}
 	return time.Since(task.State.StartedAt)
 }
@@ -928,7 +932,7 @@ func (d *Tasks) drawShellDetail(width, height int, task managedtask.View) string
 	status := d.taskStatusStyle(task.State.Status).Render(string(task.State.Status))
 	metadata := []string{
 		"Status: " + status,
-		"Runtime: " + taskRuntime(task).Round(time.Second).String(),
+		"Runtime: " + d.taskRuntime(task).Round(time.Second).String(),
 	}
 	commandPanel := d.com.Styles.Dialog.CommandPanel.Width(width).Render("Command: " + command)
 	outcome := make([]string, 0, 2)

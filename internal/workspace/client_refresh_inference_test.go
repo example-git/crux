@@ -485,6 +485,14 @@ func installRefreshFixture(t *testing.T, endpoint, dataDir, cacheDir, mode strin
 	if mode == "replacement" {
 		value.Capabilities.Headers[1].Value.Value = "changed-responses"
 	}
+	if mode == "quota" {
+		value.Capabilities.Operations = append(value.Capabilities.Operations, manifest.Operation{
+			ID: "quota", Kind: "usage", Protocol: "generic-json", Transport: "http-json", Endpoint: "api", Method: http.MethodGet, Path: "/quota",
+		})
+		value.Capabilities.Usage = &manifest.UsagePolicy{Source: "operation", Operation: "quota", Fallback: "unavailable",
+			PlanPointers: []string{"/plan"}, Windows: []manifest.WindowMap{{ID: "weekly", RemainingFractionPointer: "/remaining"}},
+		}
+	}
 	if mode == "runtime-controls" || strings.HasPrefix(mode, "controls-during-") {
 		value.Capabilities.RuntimeControls = append(value.Capabilities.RuntimeControls, manifest.RuntimeControl{
 			ID: "response_verbosity", Label: "Response verbosity", Type: "enum", Values: []string{"low", "medium", "high"},

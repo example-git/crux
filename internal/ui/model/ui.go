@@ -2619,62 +2619,23 @@ func (m *UI) fetchProviderUsage() tea.Cmd {
 	return m.fetchProviderUsageFor(providerID)
 }
 
-func providerUsageToken(provider config.ProviderConfig, credential providerregistry.QuotaCredential) (string, bool) {
-	if provider.OAuthToken == nil {
-		return "", false
-	}
-	switch credential {
-	case "", providerregistry.QuotaCredentialAccessToken:
-		return provider.OAuthToken.AccessToken, true
-	case providerregistry.QuotaCredentialRefreshToken:
-		return provider.OAuthToken.RefreshToken, true
-	default:
-		return "", false
-	}
-}
-
 func (m *UI) fetchProviderUsageFor(providerID string) tea.Cmd {
 	m.usageFetchGen++
 	gen := m.usageFetchGen
-	cfg := m.com.Config()
-	if cfg == nil || providerID == "" {
+	surface, ok := providerregistry.LookupSurface(m.com.Workspace.ProviderSurfaces(), providerID)
+	if !ok || !surface.Available || !surface.UsageAvailable || surface.Owner == nil {
 		return func() tea.Msg { return usageUpdatedMsg{gen: gen} }
 	}
-	registration, registered := cfg.ProviderRegistration(providerID)
-	provider, configured := cfg.Providers.Get(providerID)
-	if !registered || registration.Quota == nil || !configured {
-		return func() tea.Msg { return usageUpdatedMsg{gen: gen} }
-	}
-	token, tokenAvailable := providerUsageToken(provider, registration.QuotaCredential)
-	if !tokenAvailable || token == "" {
-		return func() tea.Msg { return usageUpdatedMsg{gen: gen} }
-	}
-	owner := registration.Owner()
+	fetch := m.com.Workspace.PrepareProviderUsage(*surface.Owner)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		validate := func() error {
-			currentConfig := m.com.Config()
-			if currentConfig == nil {
-				return fmt.Errorf("provider account owner %s changed", providerID)
-			}
-			currentRegistration, active := currentConfig.ProviderRegistration(providerID)
-			if !active || currentRegistration.Owner() != owner || currentRegistration.QuotaCredential != registration.QuotaCredential {
-				return fmt.Errorf("provider account owner %s changed", providerID)
-			}
-			currentProvider, configured := currentConfig.Providers.Get(providerID)
-			currentToken, tokenAvailable := providerUsageToken(currentProvider, currentRegistration.QuotaCredential)
-			if !configured || !tokenAvailable || currentToken != token {
-				return fmt.Errorf("provider account credential %s changed", providerID)
-			}
-			return nil
-		}
-		u, err := oauthusage.FetchWithTokenForOwner(ctx, providerID, token, registration.Quota, validate)
+		u, err := fetch(ctx)
 		if err != nil {
 			slog.Warn("Failed to fetch provider usage", "provider", providerID, "error", err)
 			return usageUpdatedMsg{gen: gen}
 		}
-		return usageUpdatedMsg{gen: gen, usage: u}
+		return usageUpdatedMsg{usage: u, gen: gen}
 	}
 }
 
