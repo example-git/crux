@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -33,4 +34,23 @@ func LookupEnvironment(ctx context.Context, name string) (string, bool) {
 		return value, ok
 	}
 	return os.LookupEnv(name)
+}
+
+// EnvironmentFromContext returns a private copy only when an owner environment
+// was explicitly bound. The boolean distinguishes captured absence from the
+// legacy process environment; callers must not fill missing entries from it.
+func EnvironmentFromContext(ctx context.Context) ([]string, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	values, bound := ctx.Value(environmentContextKey{}).(*capturedEnvironment)
+	if !bound {
+		return nil, false
+	}
+	entries := make([]string, 0, len(values.values))
+	for name, value := range values.values {
+		entries = append(entries, name+"="+value)
+	}
+	sort.Strings(entries)
+	return entries, true
 }

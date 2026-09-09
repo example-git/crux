@@ -205,19 +205,35 @@ func resolveForContext(ctx context.Context, key, fallback string, detect func(co
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := providertransport.ValidateContextOwner(ctx); err != nil {
 		return "", err
 	}
 	if value := detect(ctx); fullVersionRe.MatchString(value) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		if err := providertransport.ValidateContextOwner(ctx); err != nil {
 			return "", err
 		}
 		return value, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := providertransport.ValidateContextOwner(ctx); err != nil {
 		return "", err
 	}
-	if value := persisted(key); value != "" {
+	value := persistedForContext(ctx, key)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if value != "" {
 		return value, nil
 	}
 	return fallback, nil
@@ -241,7 +257,7 @@ func runToolVersion(tool string) string {
 func runToolVersionForContext(ctx context.Context, tool string) string {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, tool, "--version").Output()
+	out, err := commandOutputForContext(ctx, tool, "--version")
 	if err != nil {
 		return ""
 	}
@@ -399,17 +415,20 @@ func Copilot() CopilotIdentity {
 }
 
 func CopilotForContext(ctx context.Context) (CopilotIdentity, error) {
-	if CopilotAdvertisementMode() == CopilotModeVSCode {
+	if err := ctx.Err(); err != nil {
+		return CopilotIdentity{}, err
+	}
+	if copilotAdvertisementModeForContext(ctx) == CopilotModeVSCode {
 		extension, err := CopilotExtensionVersionForContext(ctx)
 		if err != nil {
 			return CopilotIdentity{}, err
 		}
 		return CopilotIdentity{
 			Mode:                CopilotModeVSCode,
-			IntegrationID:       envOr("COPILOT_VSCODE_INTEGRATION_ID", "vscode-chat"),
+			IntegrationID:       environmentOrForContext(ctx, "COPILOT_VSCODE_INTEGRATION_ID", "vscode-chat"),
 			UserAgent:           "GitHubCopilotChat/" + extension,
-			EditorVersion:       envOr("COPILOT_VSCODE_EDITOR_VERSION", copilotVSCodeEditorVersion),
-			EditorPluginVersion: envOr("COPILOT_VSCODE_EDITOR_PLUGIN_VERSION", "copilot-chat/"+extension),
+			EditorVersion:       environmentOrForContext(ctx, "COPILOT_VSCODE_EDITOR_VERSION", copilotVSCodeEditorVersion),
+			EditorPluginVersion: environmentOrForContext(ctx, "COPILOT_VSCODE_EDITOR_PLUGIN_VERSION", "copilot-chat/"+extension),
 		}, nil
 	}
 	version, err := CopilotCLIVersionForContext(ctx)
@@ -420,9 +439,9 @@ func CopilotForContext(ctx context.Context) (CopilotIdentity, error) {
 	if err != nil {
 		return CopilotIdentity{}, err
 	}
-	terminal := os.Getenv("TERM_PROGRAM")
+	terminal := environmentOrForContext(ctx, "TERM_PROGRAM", "")
 	if terminal == "" {
-		terminal = os.Getenv("TERM")
+		terminal = environmentOrForContext(ctx, "TERM", "")
 	}
 	if terminal == "" {
 		terminal = "terminal"
@@ -463,17 +482,20 @@ func CopilotCLIVersion() string {
 }
 
 func CopilotCLIVersionForContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := providertransport.ValidateContextOwner(ctx); err != nil {
 		return "", err
 	}
-	if value := os.Getenv("COPILOT_CLI_VERSION"); value != "" {
+	if value := environmentOrForContext(ctx, "COPILOT_CLI_VERSION", ""); value != "" {
 		return value, nil
 	}
 	return resolveForContext(ctx, "copilot-cli", staticCopilotCLIVersion, func(ctx context.Context) string {
 		if value := fetchCopilotCLILatestForContext(ctx); value != "" {
 			return value
 		}
-		if value := readCopilotVersionsJSON(); value != "" {
+		if value := readCopilotVersionsJSONForContext(ctx); value != "" {
 			return value
 		}
 		for _, tool := range []string{"github-copilot-cli", "copilot"} {
@@ -505,17 +527,20 @@ func CopilotExtensionVersion() string {
 }
 
 func CopilotExtensionVersionForContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := providertransport.ValidateContextOwner(ctx); err != nil {
 		return "", err
 	}
-	if value := os.Getenv("COPILOT_VSCODE_EXTENSION_VERSION"); value != "" {
+	if value := environmentOrForContext(ctx, "COPILOT_VSCODE_EXTENSION_VERSION", ""); value != "" {
 		return value, nil
 	}
 	return resolveForContext(ctx, "copilot-extension", staticCopilotExtensionVersion, func(ctx context.Context) string {
 		if value := fetchCopilotChatMarketplaceVersionForContext(ctx); value != "" {
 			return value
 		}
-		return readCopilotVersionsJSON()
+		return readCopilotVersionsJSONForContext(ctx)
 	})
 }
 
@@ -607,7 +632,11 @@ func fetchCopilotChatMarketplaceVersionForContext(ctx context.Context) string {
 // readCopilotVersionsJSON reads the version advertised by the GitHub Copilot
 // config at ~/.config/github-copilot/versions.json. Returns "" on failure.
 func readCopilotVersionsJSON() string {
-	home, err := os.UserHomeDir()
+	return readCopilotVersionsJSONForContext(context.Background())
+}
+
+func readCopilotVersionsJSONForContext(ctx context.Context) string {
+	home, err := userHomeForContext(ctx)
 	if err != nil {
 		return ""
 	}
@@ -645,13 +674,19 @@ func osVersion() string {
 }
 
 func osVersionForContext(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := providertransport.ValidateContextOwner(ctx); err != nil {
 		return "", err
 	}
 	if runtime.GOOS != "darwin" {
 		return "14.0", nil
 	}
-	output, err := exec.CommandContext(ctx, "sw_vers", "-productVersion").Output()
+	output, err := commandOutputForContext(ctx, "sw_vers", "-productVersion")
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if err := providertransport.ValidateContextOwner(ctx); err != nil {
 		return "", err
 	}
