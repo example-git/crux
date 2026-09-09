@@ -229,6 +229,8 @@ type Workspace interface {
 	ProviderSurfaces() []providerregistry.Surface
 	ProviderAuthentication(context.Context) (providerauth.Snapshot, error)
 	ProviderAccounts(context.Context, providerauth.Target) (providerauth.AccountsState, error)
+	SwitchProviderAccount(context.Context, providerauth.SwitchRequest) (providerauth.MutationOutcome, error)
+	LogoutProvider(context.Context, providerauth.LogoutRequest) (providerauth.MutationOutcome, error)
 	WorkingDir() string
 	Resolver() config.VariableResolver
 
