@@ -324,6 +324,9 @@ func collectCommandMessages(command tea.Cmd) []tea.Msg {
 func requireCommandError(t *testing.T, messages []tea.Msg, expected string) {
 	t.Helper()
 	for _, message := range messages {
+		if result, ok := message.(modelSelectionCompletedMsg); ok && result.err != nil && strings.Contains(result.err.Error(), expected) {
+			return
+		}
 		if info, ok := message.(util.InfoMsg); ok && info.Type == util.InfoTypeError && strings.Contains(info.Msg, expected) {
 			return
 		}
@@ -350,11 +353,11 @@ func TestHandleSelectModelStopsOnboardingAfterFailedRequiredStage(t *testing.T) 
 			expectedError:  "large write failed",
 		},
 		{
-			name: "required small model write",
+			name: "atomic selection and implicit small model failure",
 			configure: func(workspace *testWorkspace) {
-				workspace.preferredModelErrors = []error{nil, errors.New("small write failed")}
+				workspace.preferredModelErrors = []error{errors.New("small write failed")}
 			},
-			expectedWrites: []config.SelectedModelType{config.SelectedModelTypeLarge, config.SelectedModelTypeSmall},
+			expectedWrites: []config.SelectedModelType{config.SelectedModelTypeLarge},
 			expectedError:  "small write failed",
 		},
 		{
@@ -391,7 +394,7 @@ func TestHandleSelectModelWhileBusy(t *testing.T) {
 	require.True(t, ui.isAgentBusy())
 	messages := collectCommandMessages(ui.handleSelectModel(action))
 	require.Len(t, messages, 1)
-	_, applied := messages[0].(modelSelectionAppliedMsg)
+	_, applied := messages[0].(modelSelectionCompletedMsg)
 	require.True(t, applied)
 	require.Equal(t, 1, workspace.updateAgentCalls)
 	require.Equal(t, expectedState, workspace.updateAgentState)
@@ -410,8 +413,8 @@ func TestHandleSelectModelPublishesUsageOnlyAfterRuntimeUpdate(t *testing.T) {
 		require.Equal(t, expectedState, workspace.updateAgentState)
 		require.Zero(t, ui.usageFetchGen)
 		for _, message := range messages {
-			_, applied := message.(modelSelectionAppliedMsg)
-			require.False(t, applied)
+			result, applied := message.(modelSelectionCompletedMsg)
+			require.True(t, !applied || result.err != nil)
 		}
 	})
 
@@ -419,7 +422,7 @@ func TestHandleSelectModelPublishesUsageOnlyAfterRuntimeUpdate(t *testing.T) {
 		ui, workspace, action, expectedState := modelSelectionTestUI(t, true)
 		messages := collectCommandMessages(ui.handleSelectModel(action))
 		require.Len(t, messages, 1)
-		applied, ok := messages[0].(modelSelectionAppliedMsg)
+		applied, ok := messages[0].(modelSelectionCompletedMsg)
 		require.True(t, ok)
 		require.Equal(t, 1, workspace.updateAgentCalls)
 		require.Equal(t, expectedState, workspace.updateAgentState)
