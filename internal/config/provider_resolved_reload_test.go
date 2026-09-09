@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -93,4 +94,92 @@ func TestCheckedAPIKeyGenericSettingRejectsPeerCredentialBeforeExecution(t *test
 	// An explicit reload is the user's separate source-resolution action.
 	require.NoError(t, f.store.ReloadFromDisk(t.Context()))
 	require.FileExists(t, marker)
+}
+
+func TestCheckedAPIKeyGenericSettingRejectsPreparerSourceChanges(t *testing.T) {
+	for _, change := range []string{"key", "endpoint", "key-removal", "provider-removal", "unchanged"} {
+		t.Run(change, func(t *testing.T) {
+			host := checkedAPIKeyHTTP(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{}`)) })
+			f := newCheckedAPIKeyFixture(t, host.URL, ScopeGlobal)
+			preparation, err := f.store.PrepareCheckedAPIKey(t.Context(), f.capture(t), f.owner, "provider.api_key", "synthetic-checked")
+			require.NoError(t, err)
+			_, err = f.store.SaveCheckedAPIKey(t.Context(), ScopeGlobal, preparation)
+			require.NoError(t, err)
+			original := f.store.Config()
+			var commits, aborts int
+			var peer []byte
+			path := f.path
+			if change == "endpoint" {
+				path = filepath.Join(f.root, "config", "crux.json")
+			}
+			marker := filepath.Join(f.root, "peer-source-must-not-execute")
+			f.store.SetRuntimeGenerationPreparer(func(context.Context, RuntimeSnapshot) (RuntimeGenerationCandidate, error) {
+				data, err := os.ReadFile(path)
+				require.NoError(t, err)
+				switch change {
+				case "key":
+					data, err = sjson.SetBytes(data, "providers.checked.api_key", fmt.Sprintf("$(printf x > '%s'; printf peer-key)", marker))
+				case "endpoint":
+					data, err = sjson.SetBytes(data, "providers.checked.base_url", fmt.Sprintf("$(printf x > '%s'; printf https://peer.invalid)", marker))
+				case "key-removal":
+					data, err = sjson.DeleteBytes(data, "providers.checked.api_key")
+				case "provider-removal":
+					data, err = sjson.DeleteBytes(data, "providers.checked")
+				}
+				require.NoError(t, err)
+				if change != "unchanged" {
+					require.NoError(t, os.WriteFile(path, data, 0600))
+					peer = data
+				}
+				return RuntimeGenerationCandidate{Commit: func() { commits++ }, Abort: func() {
+					if commits == 0 {
+						aborts++
+					}
+				}}, nil
+			})
+			err = f.store.SetConfigField(ScopeGlobal, "options.disable_auto_summarize", true)
+			if change == "unchanged" {
+				require.NoError(t, err)
+				require.Equal(t, 1, commits)
+				require.Zero(t, aborts)
+			} else {
+				require.ErrorIs(t, err, errAuthenticationInputsChanged)
+				require.Zero(t, commits)
+				require.Equal(t, 1, aborts)
+				require.Same(t, original, f.store.Config())
+				current, readErr := os.ReadFile(path)
+				require.NoError(t, readErr)
+				require.Equal(t, peer, current)
+			}
+			require.NoFileExists(t, marker)
+		})
+	}
+}
+
+func TestCheckedAPIKeyGenericSettingAllowsOwnStartupReceipts(t *testing.T) {
+	for _, change := range []string{"notifications", "new-owner"} {
+		t.Run(change, func(t *testing.T) {
+			host := checkedAPIKeyHTTP(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{}`)) })
+			f := newCheckedAPIKeyFixture(t, host.URL, ScopeGlobal)
+			preparation, err := f.store.PrepareCheckedAPIKey(t.Context(), f.capture(t), f.owner, "provider.api_key", "synthetic-checked")
+			require.NoError(t, err)
+			_, err = f.store.SaveCheckedAPIKey(t.Context(), ScopeGlobal, preparation)
+			require.NoError(t, err)
+			fields := map[string]any{"options.disable_notifications": true}
+			if change == "new-owner" {
+				fields = map[string]any{"providers.added": map[string]any{"type": "openai-compat", "base_url": "https://example.invalid", "api_key": "synthetic-added", "models": []map[string]string{{"id": "added"}}}}
+			}
+			require.NoError(t, f.store.SetConfigFields(ScopeGlobal, fields))
+			provider, _ := f.store.Config().Providers.Get("checked")
+			require.NotNil(t, provider.resolvedAPIKey)
+			require.NotNil(t, provider.resolvedEndpoint)
+			if change == "notifications" {
+				require.Equal(t, "disabled", f.store.Config().Options.Notifications)
+			} else {
+				added, ok := f.store.Config().Providers.Get("added")
+				require.True(t, ok)
+				require.NotNil(t, added.Owner)
+			}
+		})
+	}
 }
