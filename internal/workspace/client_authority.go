@@ -31,18 +31,21 @@ func TransactCredentials(ctx context.Context, w Workspace, mutate func(Credentia
 }
 
 type clientAuthority struct {
-	mu                      sync.Mutex
-	store                   *config.ConfigStore
-	view                    atomic.Pointer[config.Config]
-	accepted                config.RemoteRuntimeProposal
-	principal               string
-	creation                proto.Workspace
-	pending                 *config.RemoteRuntimeProposal
-	pendingView             *config.Config
-	removed                 map[providerregistry.RegistrationOwner]bool
-	refreshEvents           sync.Map
-	providerAuth            *providerauth.Service
-	providerAuthWorkspaceID string
+	mu                       sync.Mutex
+	store                    *config.ConfigStore
+	view                     atomic.Pointer[config.Config]
+	accepted                 config.RemoteRuntimeProposal
+	principal                string
+	creation                 proto.Workspace
+	pending                  *config.RemoteRuntimeProposal
+	pendingView              *config.Config
+	removed                  map[providerregistry.RegistrationOwner]bool
+	refreshEvents            sync.Map
+	providerAuth             *providerauth.Service
+	providerAuthWorkspaceID  string
+	authenticationReceipts   map[string]*clientAuthenticationReceipt
+	authenticationReceiptIDs []string
+	authenticationRetired    providerauth.Generation
 }
 
 func newClientAuthority(c *client.Client, ws proto.Workspace) *clientAuthority {
@@ -92,13 +95,21 @@ func (w *ClientWorkspace) reconcileClientAuthority(ctx context.Context, a *clien
 	if a.pending == nil {
 		return nil
 	}
-	remote, err := w.client.GetWorkspace(ctx, w.workspaceID())
+	id := w.workspaceID()
+	remote, err := w.client.GetWorkspace(ctx, id)
 	if err != nil {
 		return fmt.Errorf("cannot reconcile pending client runtime: %w", err)
+	}
+	if remote.ID != id || w.workspaceID() != id {
+		return errors.New("pending client runtime response belongs to a different workspace")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if matchesAuthority(remote.Authority, a.principal, *a.pending) {
 		a.accepted = *a.pending
 		a.view.Store(a.pendingView)
+		w.noteClientAuthenticationAcknowledgementLocked(a, remote.ID, a.accepted)
 		a.pending, a.pendingView = nil, nil
 		w.adoptRuntimeResponse(*remote)
 		return nil
@@ -179,6 +190,7 @@ func (w *ClientWorkspace) publishClientAuthorityLocked(ctx context.Context, a *c
 	}
 	a.accepted = proposal
 	a.view.Store(a.pendingView)
+	w.noteClientAuthenticationAcknowledgementLocked(a, w.workspaceID(), proposal)
 	a.pending, a.pendingView = nil, nil
 	w.mu.Lock()
 	w.ws.Authority = ack
