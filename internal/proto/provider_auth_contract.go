@@ -15,3 +15,4 @@ type ProviderAPIKeySaveRequest = providerauth.APIKeySaveRequest
 type ProviderOAuthLoginRequest = providerauth.OAuthLoginRequest
 type ProviderOAuthLoginBindRequest = providerauth.OAuthLoginBindRequest
 type ProviderOAuthLoginCodeRequest = providerauth.OAuthLoginCodeRequest
+type ProviderLocalRepairRequest = providerauth.LocalRepairRequest
