@@ -50,6 +50,7 @@ type AuthenticationProvider struct {
 }
 
 type AuthenticationAccount struct {
+	ExpiresAt       int64 // Unix milliseconds; nonpositive means no recorded expiry.
 	ID, DisplayName string
 	Active          bool
 	CredentialState string
@@ -216,7 +217,7 @@ func (c AuthenticationCapture) Accounts(owner providerregistry.RegistrationOwner
 	}
 	active := c.accounts.ActiveID(owner.AccountNamespace)
 	for _, entry := range c.accounts.Entries(owner.AccountNamespace) {
-		result = append(result, AuthenticationAccount{ID: entry.ID, DisplayName: entry.DisplayName, Active: entry.ID == active, CredentialState: authenticationCredentialState(entry.AccessToken, entry.RefreshToken), Refreshable: entry.RefreshToken != ""})
+		result = append(result, AuthenticationAccount{ID: entry.ID, DisplayName: entry.DisplayName, Active: entry.ID == active, CredentialState: authenticationCredentialState(entry.AccessToken, entry.RefreshToken), Refreshable: entry.RefreshToken != "", ExpiresAt: entry.ExpiresAt})
 	}
 	slices.SortFunc(result, func(a, b AuthenticationAccount) int {
 		if a.ID < b.ID {

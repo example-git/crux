@@ -135,20 +135,29 @@ func runWorkspaceLogin(ctx context.Context, ws workspace.Workspace, args []strin
 			return err
 		}
 	}
+	console, closeInput, err := newAuthenticationConsole(ctx, input, output, openURL, copyCode)
+	if err != nil {
+		return err
+	}
+	defer closeInput()
+	return console.login(ctx, ws, selection, name)
+}
+
+func newAuthenticationConsole(ctx context.Context, input io.Reader, output io.Writer, openURL func(string) error, copyCode func(string)) (*oauthLoginConsole, func(), error) {
 	reader, err := cancelreader.NewReader(input)
 	if err != nil {
-		return fmt.Errorf("prepare login input: %w", err)
+		return nil, nil, fmt.Errorf("prepare authentication input: %w", err)
 	}
-	defer reader.Close()
 	stopped := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() { reader.Cancel(); close(stopped) })
-	defer func() {
+	closeInput := func() {
 		if !stop() {
 			<-stopped
 		}
-	}()
-	console := oauthLoginConsole{input: bufio.NewReaderSize(reader, providerauth.OAuthLoginInputLimit+2), output: output, openURL: openURL, copyCode: copyCode}
-	return console.login(ctx, ws, selection, name)
+		_ = reader.Close()
+	}
+	console := &oauthLoginConsole{input: bufio.NewReaderSize(reader, providerauth.OAuthLoginInputLimit+2), output: output, openURL: openURL, copyCode: copyCode}
+	return console, closeInput, nil
 }
 
 func (c *oauthLoginConsole) readLine(ctx context.Context) (string, error) {
@@ -320,6 +329,11 @@ func (c *oauthLoginConsole) login(ctx context.Context, ws workspace.Workspace, s
 }
 
 func (c *oauthLoginConsole) complete(ctx context.Context, ws workspace.Workspace, ref providerauth.OAuthLoginRef) (providerauth.MutationOutcome, error) {
+	return c.mutateAuthentication(ctx, ws, ref.OperationID, ref.Target, "Login", func() (providerauth.MutationOutcome, error) { return ws.CompleteProviderOAuthLogin(ctx, ref) }, func(outcome providerauth.MutationOutcome) error { return outcome.ValidateOAuthLogin(ref) })
+}
+
+func (c *oauthLoginConsole) mutateAuthentication(ctx context.Context, ws workspace.Workspace, operationID string, target providerauth.Target, label string, perform func() (providerauth.MutationOutcome, error), validate func(providerauth.MutationOutcome) error) (providerauth.MutationOutcome, error) {
+
 	var recovery *workspace.ProviderAuthenticationRecoveryRequest
 	var sequence uint64
 	for {
@@ -330,19 +344,19 @@ func (c *oauthLoginConsole) complete(ctx context.Context, ws workspace.Workspace
 		if recovery != nil {
 			outcome, err = recoverer.RecoverProviderAuthentication(ctx, *recovery)
 		} else {
-			outcome, err = ws.CompleteProviderOAuthLogin(ctx, ref)
+			outcome, err = perform()
 		}
-		valid := outcome.ValidateOAuthLogin(ref)
+		valid := validate(outcome)
 		if err == nil {
 			err = valid
 		}
 		if err == nil && (outcome.Change == nil || outcome.Superseded || !outcome.Progress.ConfigSaved || !outcome.Progress.RuntimePublished) {
-			err = errors.New("OAuth login has no current completed authentication receipt")
+			err = errors.New("authentication change has no current completed receipt")
 		}
 		if err == nil {
 			return outcome, nil
 		}
-		fmt.Fprintf(c.output, "Login completion failed: %v\n", err)
+		fmt.Fprintf(c.output, "%s completion failed: %v\n", label, err)
 		if valid == nil && (outcome.Progress.AccountsSaved || outcome.Progress.ConfigSaved || outcome.Progress.RuntimePublished) {
 			fmt.Fprintf(c.output, "Retained save progress: accounts=%t, configuration=%t, local runtime=%t. Remote acknowledgement is not confirmed.\n", outcome.Progress.AccountsSaved, outcome.Progress.ConfigSaved, outcome.Progress.RuntimePublished)
 		}
@@ -351,7 +365,7 @@ func (c *oauthLoginConsole) complete(ctx context.Context, ws workspace.Workspace
 		}
 		offerRecovery := canRecover && valid == nil && outcome.Change != nil && !outcome.Superseded && outcome.Progress.ConfigSaved && outcome.Progress.RuntimePublished
 		if offerRecovery {
-			fmt.Fprint(c.output, "Enter r to retry the same request, p to publish the saved login, or c to stop: ")
+			fmt.Fprint(c.output, "Enter r to retry the same request, p to publish the saved change, or c to stop: ")
 		} else {
 			fmt.Fprint(c.output, "Enter r to retry the same request, or c to stop: ")
 		}
@@ -366,7 +380,7 @@ func (c *oauthLoginConsole) complete(ctx context.Context, ws workspace.Workspace
 				return outcome, err
 			}
 			sequence++
-			recovery = &workspace.ProviderAuthenticationRecoveryRequest{OperationID: ref.OperationID, Target: ref.Target, RecoveryID: oauthActionID(), RecoverySequence: sequence}
+			recovery = &workspace.ProviderAuthenticationRecoveryRequest{OperationID: operationID, Target: target, RecoveryID: oauthActionID(), RecoverySequence: sequence}
 		default:
 			return outcome, err
 		}

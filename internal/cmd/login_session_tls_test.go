@@ -21,6 +21,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/connection"
 	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerplugin"
@@ -28,16 +29,20 @@ import (
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Lose the command-facing reply after the actual Workspace transaction. This
 // exercises retry identity for local ownership and the mTLS SDK route alike.
 type lostCLIReplyWorkspace struct {
 	workspace.Workspace
-	drop                    bool
-	begin, submit, complete int
-	ref                     providerauth.OAuthLoginRef
-	submission              providerauth.OAuthLoginCodeRequest
+	drop                     bool
+	begin, submit, complete  int
+	ref                      providerauth.OAuthLoginRef
+	submission               providerauth.OAuthLoginCodeRequest
+	switchCalls, logoutCalls int
+	switchRequest            providerauth.SwitchRequest
+	logoutRequest            providerauth.LogoutRequest
 }
 
 func (w *lostCLIReplyWorkspace) BeginProviderOAuthLogin(ctx context.Context, r providerauth.OAuthLoginRequest) (providerauth.OAuthLoginState, error) {
@@ -83,23 +88,58 @@ func (w *lostCLIReplyWorkspace) RecoverProviderAuthentication(ctx context.Contex
 	return w.Workspace.(workspace.ProviderAuthenticationRecoverer).RecoverProviderAuthentication(ctx, r)
 }
 
-func TestCLIOAuthSessionThroughTLS(t *testing.T) {
-	for _, test := range []struct {
+func (w *lostCLIReplyWorkspace) SwitchProviderAccount(ctx context.Context, r providerauth.SwitchRequest) (providerauth.MutationOutcome, error) {
+	if w.switchCalls > 0 && r != w.switchRequest {
+		return providerauth.MutationOutcome{}, fmt.Errorf("account switch changed its original request")
+	}
+	w.switchRequest = r
+	w.switchCalls++
+	outcome, err := w.Workspace.SwitchProviderAccount(ctx, r)
+	if err == nil && w.drop && w.switchCalls == 1 {
+		return providerauth.MutationOutcome{}, io.ErrUnexpectedEOF
+	}
+	return outcome, err
+}
+func (w *lostCLIReplyWorkspace) LogoutProvider(ctx context.Context, r providerauth.LogoutRequest) (providerauth.MutationOutcome, error) {
+	if w.logoutCalls > 0 && r != w.logoutRequest {
+		return providerauth.MutationOutcome{}, fmt.Errorf("logout changed its original request")
+	}
+	w.logoutRequest = r
+	w.logoutCalls++
+	outcome, err := w.Workspace.LogoutProvider(ctx, r)
+	if err == nil && w.drop && w.logoutCalls == 1 {
+		return providerauth.MutationOutcome{}, io.ErrUnexpectedEOF
+	}
+	return outcome, err
+}
+
+func TestCLIOAuthSessionThroughTLS(t *testing.T)    { testCLIWorkspaceSession(t, false) }
+func TestCLIAccountCommandsThroughTLS(t *testing.T) { testCLIWorkspaceSession(t, true) }
+func testCLIWorkspaceSession(t *testing.T, accountCommands bool) {
+	type scenario struct {
 		flow, authority           string
 		drop, reject, cancelInput bool
-	}{
+	}
+	scenarios := []scenario{
 		{"loopback-dynamic", "client", false, false, false},
 		{"hosted-paste", "client", true, false, false},
 		{"device-code", "client", false, false, false},
 		{"hosted-paste", "server", true, false, false},
 		{"hosted-paste", "client", false, true, false},
 		{"hosted-paste", "client", false, false, true},
-	} {
+	}
+	if accountCommands {
+		scenarios = []scenario{{"hosted-paste", "client", true, false, false}, {"hosted-paste", "server", true, false, false}, {"hosted-paste", "client", false, true, false}}
+	}
+	for _, test := range scenarios {
 		t.Run(fmt.Sprintf("%s/%s/drop=%t/recovery=%t/cancel=%t", test.flow, test.authority, test.drop, test.reject, test.cancelInput), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 			defer cancel()
 			var exchanges, inferences, puts atomic.Int32
 			literal := "cli-$(literal)-$TOKEN"
+			var expectedCredential atomic.Value
+			expectedCredential.Store(literal)
+			var rejectNextPublication atomic.Bool
 			provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/device":
@@ -117,7 +157,7 @@ func TestCLIOAuthSessionThroughTLS(t *testing.T) {
 					require.NoError(t, json.NewEncoder(w).Encode(map[string]any{"access_token": literal, "refresh_token": "cli-refresh", "expires_in": 3600}))
 				case "/v1/responses":
 					inferences.Add(1)
-					require.Equal(t, "Bearer "+literal, r.Header.Get("Authorization"))
+					require.Equal(t, "Bearer "+expectedCredential.Load().(string), r.Header.Get("Authorization"))
 					w.Header().Set("Content-Type", "application/json")
 					fmt.Fprint(w, `{"id":"cli-json","status":"completed","output":[{"id":"message","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"cli accepted","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
 				default:
@@ -160,7 +200,7 @@ func TestCLIOAuthSessionThroughTLS(t *testing.T) {
 			handler := ownerServer.Handler()
 			rpc := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
-					if puts.Add(1) == 1 && test.reject {
+					if puts.Add(1) == 1 && test.reject || rejectNextPublication.Swap(false) {
 						http.Error(w, "fixture rejected publication", http.StatusConflict)
 						return
 					}
@@ -270,6 +310,83 @@ func TestCLIOAuthSessionThroughTLS(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, "cli accepted", response.Content[0].(fantasy.TextContent).Text)
 			require.EqualValues(t, 1, inferences.Load())
+
+			if accountCommands {
+				owner, ok := store.RuntimeSnapshot().ProviderOwner("example-responses")
+				require.True(t, ok)
+				previousAccounts := os.Getenv("AI_CLI_DIR")
+				t.Setenv("AI_CLI_DIR", values["AI_CLI_DIR"])
+				second := accounts.Entry{ID: "cli-second", DisplayName: "Second CLI Account", AccessToken: literal + "-second", RefreshToken: "second-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
+				require.NoError(t, accounts.SaveWithoutActivating(ctx, owner.AccountNamespace, second))
+				require.NoError(t, accounts.Save(ctx, "foreign-fixture", accounts.Entry{ID: "foreign", AccessToken: "must-not-use-foreign"}))
+				t.Setenv("AI_CLI_DIR", previousAccounts)
+				accountPath := filepath.Join(values["AI_CLI_DIR"], "accounts.json")
+				before, err := os.ReadFile(accountPath)
+				require.NoError(t, err)
+				foreign := gjson.GetBytes(before, "accounts.foreign-fixture").Raw
+				require.NotEmpty(t, foreign)
+				var listing bytes.Buffer
+				beforePuts := puts.Load()
+				require.NoError(t, listWorkspaceAccounts(ctx, wrapped, &listing))
+				require.Contains(t, listing.String(), "Second CLI Account (cli-second)")
+				require.Contains(t, listing.String(), "expires ")
+				require.NotContains(t, listing.String(), literal)
+				after, err := os.ReadFile(accountPath)
+				require.NoError(t, err)
+				require.Equal(t, before, after)
+				require.Equal(t, beforePuts, puts.Load())
+				require.EqualValues(t, 1, exchanges.Load())
+				var rejectedOutput bytes.Buffer
+				require.ErrorIs(t, switchWorkspaceAccount(ctx, wrapped, "example-responses", "missing-account", strings.NewReader(""), &rejectedOutput), providerauth.ErrAccount)
+				require.Zero(t, wrapped.switchCalls)
+				require.Equal(t, beforePuts, puts.Load())
+				require.Empty(t, rejectedOutput.String())
+				retry := strings.NewReader("r\n")
+				if test.reject {
+					rejectNextPublication.Store(true)
+					retry = strings.NewReader("p\n")
+				}
+				var accountOutput bytes.Buffer
+				require.NoError(t, switchWorkspaceAccount(ctx, wrapped, "example-responses", second.ID, retry, &accountOutput), accountOutput.String())
+				require.Contains(t, accountOutput.String(), "Active example-responses account is now cli-second")
+				expectedCredential.Store(second.AccessToken)
+				selectedModel := remote.App.CurrentAgentCoordinator().Model().Model
+				_, err = selectedModel.Generate(ctx, fantasy.Call{Headers: map[string]string{"x-session-id": "cli-account-switch"}, Prompt: fantasy.Prompt{fantasy.NewUserMessage("Use the selected account")}})
+				require.NoError(t, err)
+				require.EqualValues(t, 2, inferences.Load())
+				require.EqualValues(t, 1, exchanges.Load())
+				after, err = os.ReadFile(accountPath)
+				require.NoError(t, err)
+				require.Equal(t, foreign, gjson.GetBytes(after, "accounts.foreign-fixture").Raw)
+				snapshot, err := retained.ProviderAuthentication(ctx)
+				require.NoError(t, err)
+				target, err := selectAccountTarget(retained, snapshot, "example-responses")
+				require.NoError(t, err)
+				listed, err := retained.ProviderAccounts(ctx, target)
+				require.NoError(t, err)
+				require.Equal(t, second.ID, listed.Status.ActiveAccountID)
+				beforePuts = puts.Load()
+				require.NoError(t, logoutWorkspaceProvider(ctx, wrapped, "example-responses", strings.NewReader("r\n"), &accountOutput), accountOutput.String())
+				require.Contains(t, accountOutput.String(), "Logged out of example-responses")
+				if test.authority == "client" {
+					require.Equal(t, beforePuts+1, puts.Load())
+				} else {
+					require.Equal(t, beforePuts, puts.Load())
+				}
+				_, err = selectedModel.Generate(ctx, fantasy.Call{Headers: map[string]string{"x-session-id": "cli-account-logout"}, Prompt: fantasy.Prompt{fantasy.NewUserMessage("Must not reuse the withdrawn credential")}})
+				require.Error(t, err)
+				require.EqualValues(t, 2, inferences.Load())
+				listing.Reset()
+				require.NoError(t, listWorkspaceAccounts(ctx, wrapped, &listing))
+				require.Contains(t, listing.String(), "No stored accounts")
+				after, err = os.ReadFile(accountPath)
+				require.NoError(t, err)
+				require.Equal(t, foreign, gjson.GetBytes(after, "accounts.foreign-fixture").Raw)
+				if test.drop {
+					require.Equal(t, 2, wrapped.switchCalls)
+					require.Equal(t, 2, wrapped.logoutCalls)
+				}
+			}
 			if callbackURL != "" {
 				_, err := (&http.Client{Transport: oldTransport, Timeout: time.Second}).Get(callbackURL)
 				require.Error(t, err, "command must close its callback listener")
