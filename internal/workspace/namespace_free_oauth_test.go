@@ -84,6 +84,7 @@ func TestNamespaceFreeWorkspaceOAuthThroughTLS(t *testing.T) {
 			require.NoError(t, err)
 			f.ref.Target.Generation = state.Generation
 			serverInfos, serverFiles := clientAuthenticationFiles(t, f.transport.path, f.transport.accountsPath)
+			originalAuthority := *f.w.ws.Authority
 			authorizeWorkspaceOAuth(t, f, "hosted-paste")
 			if mode == "lost-login-response" {
 				f.transport.putMode.Store(2)
@@ -109,7 +110,14 @@ func TestNamespaceFreeWorkspaceOAuthThroughTLS(t *testing.T) {
 			require.Empty(t, binding.APIKey)
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
-			events, err := f.w.client.SubscribeEvents(ctx, f.w.workspaceID())
+			if mode == "lost-login-response" {
+				_, err := f.w.client.SubscribeEvents(ctx, f.w.workspaceID(), originalAuthority)
+				require.ErrorContains(t, err, "different accepted runtime", "a lost response must not make the original attachment current")
+				require.Greater(t, f.w.ws.Authority.Revision, originalAuthority.Revision)
+			}
+			// Use the same accepted-authority attachment path as runSubscription.
+			// Discovery intentionally does not update Client's creation cache.
+			events, err := f.w.subscribeAcceptedEvents()
 			require.NoError(t, err)
 			done := make(chan struct{})
 			go func() {
@@ -118,7 +126,15 @@ func TestNamespaceFreeWorkspaceOAuthThroughTLS(t *testing.T) {
 					f.w.HandleClientRefreshEvent(ctx, event)
 				}
 			}()
-			defer func() { cancel(); <-done }()
+			defer func() {
+				cancel()
+				f.w.subCancel()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Error("namespace-free accepted event stream did not stop")
+				}
+			}()
 			require.NoError(t, f.w.InitCoderAgentNonInteractive(ctx))
 			if mode == "manual" {
 				require.NoError(t, f.w.RefreshOAuthToken(ctx, config.ScopeGlobal, binding.Owner))
