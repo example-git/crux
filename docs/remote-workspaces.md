@@ -219,9 +219,18 @@ For an interrupted local account/configuration transaction, inspect its retained
 operation before applying repair:
 
 ```sh
+crux --connection NAME --cwd /srv/projects/PROJECT accounts history
+crux --connection NAME --cwd /srv/projects/PROJECT accounts history --json
 crux --connection NAME --cwd /srv/projects/PROJECT accounts repair-local ORIGINAL_WORKSPACE_ID OPERATION_ID
 crux --connection NAME --cwd /srv/projects/PROJECT accounts repair-local ORIGINAL_WORKSPACE_ID OPERATION_ID --apply-revision REVIEWED_REVISION
 ```
+
+History belongs to the captured saved TLS connection, principal and local
+configuration scope. It separates original local progress, receiver
+acknowledgement, local adoption, and reviewed publication. Records from an older
+receiver workspace incarnation are marked as historical; their targets cannot
+publish into a newly created workspace. JSON output contains the public metadata
+projection, without retained proposals or credentials.
 
 Repair finishes only the recorded account/configuration postimages and refuses
 conflicting newer saved state. It preserves the original progress separately,
