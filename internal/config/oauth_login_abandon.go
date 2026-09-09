@@ -58,20 +58,34 @@ func (s *ConfigStore) AbandonOAuthLoginResult(ctx context.Context, before Authen
 	if record.Scope == "" || record.Scope != journal.ScopeID() || record.Owner != owner {
 		return "", errors.New("OAuth abandonment owner or captured scope differs")
 	}
+	return abandonOAuthLoginJournalRecord(ctx, journal, key, entry, record, false)
+}
+
+// The caller holds the operation lease and has checked exact scope and private
+// owner provenance. The optional token branch is used only by explicit local
+// journal retirement; ordinary UI/service abandonment remains tokenless.
+func abandonOAuthLoginJournalRecord(ctx context.Context, journal AuthenticationJournal, key AuthenticationJournalKey, entry AuthenticationJournalEntry, record oauthLoginJournalRecord, discardRecordedToken bool) (string, error) {
 	disposition := "not-started"
 	if record.Started {
 		disposition = "unknown"
 	}
+	if record.Token != nil {
+		disposition = "token-result-recorded"
+		if !discardRecordedToken {
+			return "", errors.New("recorded OAuth token recovery requires explicit token-discard retirement")
+		}
+	}
 	if record.Abandoned {
 		return disposition, nil
 	}
-	if entry.Completed() || record.Token != nil {
-		return "", errors.New("only an OAuth preparation or unknown exchange without a recorded token can be abandoned")
+	if entry.Completed() {
+		return "", errors.New("original OAuth operation already completed; retirement is not applicable")
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	record.Abandoned = true
+	record.TokenRecoveryAbandoned = record.Token != nil
 	handle := oauthLoginJournal{journal: journal, key: key, revision: entry.Revision(), record: record, completed: true}
 	if err := handle.persist(ctx); err != nil {
 		return "", err
