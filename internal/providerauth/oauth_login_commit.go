@@ -71,12 +71,28 @@ func (s *Service) completeOAuthLogin(ctx context.Context, ref OAuthLoginRef, acc
 	if s.sequence == math.MaxUint64 {
 		return initial, errors.New("authentication generation exhausted; reopen the workspace")
 	}
-	initial.originalOwner = owner
 	login.mu.Lock()
 	if login.ctx.Err() != nil {
 		login.mu.Unlock()
 		return initial, login.ctx.Err()
 	}
+	login.mu.Unlock()
+	releaseAdmission, err := admitOAuthCompletion(ctx)
+	if err != nil {
+		return initial, err
+	}
+	workerOwnsAdmission := false
+	defer func() {
+		if !workerOwnsAdmission && releaseAdmission != nil {
+			releaseAdmission()
+		}
+	}()
+	login.mu.Lock()
+	if login.ctx.Err() != nil {
+		login.mu.Unlock()
+		return initial, login.ctx.Err()
+	}
+	initial.originalOwner = owner
 	login.publishLocked(OAuthLoginCommitting, nil, "", "")
 	login.mu.Unlock()
 	finished := make(chan struct{})
@@ -84,7 +100,11 @@ func (s *Service) completeOAuthLogin(ctx context.Context, ref OAuthLoginRef, acc
 	// Transfer the held gate to the worker. No status/mutation can interleave
 	// between completion admission and retaining its exact transaction result.
 	ownedGate = false
+	workerOwnsAdmission = true
 	go func() {
+		if releaseAdmission != nil {
+			defer releaseAdmission()
+		}
 		defer s.workers.Done()
 		defer close(finished)
 		defer func() { <-s.gate }()
@@ -136,9 +156,17 @@ func (s *Service) completeOAuthLogin(ctx context.Context, ref OAuthLoginRef, acc
 	}()
 	select {
 	case <-ctx.Done():
+		initial.localCommitPending = true
 		return initial, ctx.Err()
 	case <-finished:
 	}
 	// Re-enter through the exact receipt branch. No second commit is possible.
-	return s.completeOAuthLogin(ctx, ref, accepted, view)
+	result, err := s.completeOAuthLogin(ctx, ref, accepted, view)
+	if _, admitted := result.OriginalOwner(); !admitted {
+		// The worker completed, but cancellation may have prevented reading its
+		// receipt. Preserve the unknown result instead of asserting no writes.
+		initial.localCommitPending = true
+		return initial, err
+	}
+	return result, err
 }

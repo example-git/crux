@@ -76,17 +76,28 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 	if err := a.loadAuthenticationJournal(ctx, request.Target.WorkspaceID); err != nil {
 		return initial, err
 	}
+	release, err := a.acquireAuthenticationPublication(ctx, request.Target.WorkspaceID)
+	if err != nil {
+		return initial, err
+	}
 	defer func() {
 		if err := a.finishAuthenticationJournal(ctx); err != nil {
 			failure = errors.Join(failure, err)
 		}
+		release()
 	}()
+	if err := a.loadAuthenticationJournal(ctx, request.Target.WorkspaceID); err != nil {
+		return initial, err
+	}
 	original := a.authenticationReceipts[request.OperationID]
 	if original == nil {
 		return initial, providerauth.ErrStale
 	}
 	if original.request.target != request.Target || original.principal != a.principal {
 		return initial, providerauth.ErrOperationConflict
+	}
+	if original.abandon != nil {
+		return clientAuthenticationOutcome(original, errors.New("original publication was explicitly abandoned; use a separate saved-state action"))
 	}
 	if original.savedStateSupersededBy != "" {
 		return clientAuthenticationOutcome(original, errors.New("a separate fresh saved-state action superseded this publication; the original result is unchanged"))
@@ -261,7 +272,7 @@ func (a *clientAuthority) unacknowledgedClientAuthentication(id string) bool {
 		return true
 	}
 	for _, receipt := range a.authenticationReceipts {
-		if receipt.request.target.WorkspaceID == id && receipt.reconciledBy == "" && receipt.savedStateSupersededBy == "" && (!receipt.acknowledged || !receipt.adopted) && (!receipt.localFinished || clientAuthenticationChanged(receipt.outcome.Progress)) {
+		if receipt.request.target.WorkspaceID == id && receipt.abandon == nil && receipt.reconciledBy == "" && receipt.savedStateSupersededBy == "" && (!receipt.acknowledged || !receipt.adopted) && (!receipt.localFinished || clientAuthenticationChanged(receipt.outcome.Progress)) {
 			return true
 		}
 	}

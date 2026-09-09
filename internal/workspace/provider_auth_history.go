@@ -16,6 +16,9 @@ type ProviderAuthenticationHistory struct {
 	Reviews    []ProviderAuthenticationHistoryReview
 }
 type ProviderAuthenticationHistoryOperation struct {
+	JournalRevision                            uint64
+	Abandoned                                  bool
+	AbandonRequest                             *ProviderAuthenticationAbandonRequest
 	HistoricalWorkspace                        bool
 	RecoveryRequest                            *ProviderAuthenticationRecoveryRequest
 	OperationID                                string
@@ -26,6 +29,8 @@ type ProviderAuthenticationHistoryOperation struct {
 	ReconciledBy, SavedStateSupersededBy       string
 }
 type ProviderAuthenticationHistoryReview struct {
+	SupersededByReview     string
+	OriginalAbandonedBy    string
 	HistoricalWorkspace    bool
 	Request                ProviderAuthenticationReviewRequest
 	Summary                ProviderAuthenticationReviewSummary
@@ -112,7 +117,11 @@ func authenticationHistoryProjection(a *clientAuthority, id string, historical b
 		if err != nil {
 			return ProviderAuthenticationHistory{}, err
 		}
-		entry := ProviderAuthenticationHistoryOperation{HistoricalWorkspace: historical, OperationID: receipt.request.operationID, Target: receipt.request.target, Outcome: outcome, LocalFinished: receipt.localFinished, RemoteAcknowledged: receipt.acknowledged, Adopted: receipt.adopted, RecoverySequence: receipt.recoverySequence, ReviewSequence: receipt.reviewSequence, ReconciledBy: receipt.reconciledBy, SavedStateSupersededBy: receipt.savedStateSupersededBy}
+		entry := ProviderAuthenticationHistoryOperation{JournalRevision: receipt.journalRevision, Abandoned: receipt.abandon != nil, HistoricalWorkspace: historical, OperationID: receipt.request.operationID, Target: receipt.request.target, Outcome: outcome, LocalFinished: receipt.localFinished, RemoteAcknowledged: receipt.acknowledged, Adopted: receipt.adopted, RecoverySequence: receipt.recoverySequence, ReviewSequence: receipt.reviewSequence, ReconciledBy: receipt.reconciledBy, SavedStateSupersededBy: receipt.savedStateSupersededBy}
+		if receipt.abandon != nil {
+			request := *receipt.abandon
+			entry.AbandonRequest = &request
+		}
 		for _, recovery := range a.authenticationRecoveries {
 			if recovery.request.OperationID == receipt.request.operationID && recovery.request.RecoverySequence == receipt.recoverySequence {
 				request := ProviderAuthenticationRecoveryRequest(recovery.request)
@@ -126,7 +135,7 @@ func authenticationHistoryProjection(a *clientAuthority, id string, historical b
 		if review.request.target().WorkspaceID != id {
 			continue
 		}
-		entry := ProviderAuthenticationHistoryReview{HistoricalWorkspace: historical, Request: ProviderAuthenticationReviewRequest(review.request), Summary: cloneAuthenticationReviewSummary(review.summary), SavedStateSupersededBy: review.savedStateSupersededBy}
+		entry := ProviderAuthenticationHistoryReview{OriginalAbandonedBy: review.originalAbandonedBy, SupersededByReview: review.supersededByReview, HistoricalWorkspace: historical, Request: ProviderAuthenticationReviewRequest(review.request), Summary: cloneAuthenticationReviewSummary(review.summary), SavedStateSupersededBy: review.savedStateSupersededBy}
 		if review.apply != nil {
 			request := ProviderAuthenticationApplyRequest(review.apply.request)
 			outcome := review.apply.outcome

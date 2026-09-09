@@ -30,6 +30,7 @@ type clientAuthenticationRequest struct {
 // Saved TLS connections also retain this receipt in the captured private journal.
 // A restored receipt is historical until exact receiver/capture evidence agrees.
 type clientAuthenticationReceipt struct {
+	abandon                                   *ProviderAuthenticationAbandonRequest
 	journalRevision                           uint64
 	journalCompleted, restored, localFinished bool
 	observation, credentialEffectID           string
@@ -100,12 +101,28 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	if err := a.loadAuthenticationJournal(ctx, request.target.WorkspaceID); err != nil {
 		return initial, err
 	}
+	var releaseOperation func()
 	defer func() {
+		if releaseOperation == nil {
+			return
+		}
 		if err := a.finishAuthenticationJournal(ctx); err != nil {
 			failure = errors.Join(failure, err)
 		}
+		if releaseOperation != nil {
+			releaseOperation()
+		}
 	}()
 	if receipt := a.authenticationReceipts[request.operationID]; receipt != nil {
+		var err error
+		releaseOperation, err = a.acquireAuthenticationPublication(ctx, request.target.WorkspaceID)
+		if err != nil {
+			return initial, err
+		}
+		if err = a.loadAuthenticationJournal(ctx, request.target.WorkspaceID); err != nil {
+			return initial, err
+		}
+		receipt = a.authenticationReceipts[request.operationID]
 		if receipt.request != request {
 			return initial, providerauth.ErrOperationConflict
 		}
@@ -149,18 +166,40 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		return initial, providerauth.ErrOwner
 	}
 	receipt := &clientAuthenticationReceipt{request: request, principal: a.principal, base: a.accepted, outcome: initial, owner: intentOwner}
-	if err := a.persistAuthenticationReceipt(ctx, receipt); err != nil {
-		return initial, err
+	if request.loginID == "" {
+		releaseOperation, err = a.acquireAuthenticationPublication(ctx, request.target.WorkspaceID)
+		if err != nil {
+			return initial, err
+		}
+		if err := a.persistAuthenticationReceipt(ctx, receipt); err != nil {
+			return initial, err
+		}
+		a.retainClientAuthentication(receipt)
 	}
-	a.retainClientAuthentication(receipt)
 	var local providerauth.MutationResult
+	admittedIntent := request.loginID == ""
 	if request.loginID != "" {
-		// Admission above belongs to the caller. Once admitted, keep the local
-		// fixed commit joined until its workspace-owned result is known. The
+		// Service preflight remains retryable until its admission hook records
+		// the intent. Then keep the fixed commit's lease until its result is known. The
 		// caller still controls collection/publication below; cancellation there
 		// retains the completed capture for explicit recovery instead of losing
 		// an in-progress local result and allowing an unrelated publication.
-		local, err = a.providerAuth.CompleteOAuthLoginForAccepted(w.subCtx, providerauth.OAuthLoginRef{LoginID: request.loginID, OperationID: request.operationID, Target: request.target}, a.accepted, a.configView())
+		admissionCtx := providerauth.WithOAuthCompletionAdmission(w.subCtx, func(admission context.Context) (func(), error) {
+			lease, err := a.acquireAuthenticationPublication(admission, request.target.WorkspaceID)
+			if err != nil {
+				return nil, err
+			}
+			if err := a.persistAuthenticationReceipt(admission, receipt); err != nil {
+				lease()
+				return nil, err
+			}
+			a.retainClientAuthentication(receipt)
+			admittedIntent = true
+			outer, worker := shareAuthenticationLease(lease)
+			releaseOperation = outer
+			return worker, nil
+		})
+		local, err = a.providerAuth.CompleteOAuthLoginForAccepted(admissionCtx, providerauth.OAuthLoginRef{LoginID: request.loginID, OperationID: request.operationID, Target: request.target}, a.accepted, a.configView())
 	} else if request.checkID != "" {
 		local, err = a.providerAuth.SaveAPIKeyForAccepted(ctx, providerauth.APIKeySaveRequest{OperationID: request.operationID, Target: request.target, CheckID: request.checkID}, a.accepted, a.configView())
 	} else if request.removedAccountID != "" {
@@ -170,8 +209,14 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	} else {
 		local, err = a.providerAuth.SwitchForAccepted(ctx, providerauth.SwitchRequest{OperationID: request.operationID, Target: request.target, AccountID: request.accountID}, a.accepted, a.configView())
 	}
+	if !admittedIntent {
+		return local.Outcome, err
+	}
 	receipt.outcome, receipt.err = local.Outcome, err
-	receipt.localFinished = true
+	receipt.localFinished = !local.LocalCommitPending()
+	if local.LocalCommitPending() {
+		return clientAuthenticationOutcome(receipt, err)
+	}
 	receipt.removalSuccessor, receipt.removalActive, receipt.removalAdmitted = local.OriginalRemovalSelection()
 	receipt.oauthTokenID, _ = local.OriginalOAuthTokenCredentialID()
 	receipt.credentialEffectID, _ = local.OriginalConfiguredCredentialEffectID()
@@ -179,12 +224,6 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	if admitted && admittedOwner != receipt.owner {
 		receipt.err = providerauth.ErrOwner
 		return clientAuthenticationOutcome(receipt, receipt.err)
-	}
-	if request.loginID != "" && err != nil && !admitted {
-		// Authorization may still be preparing or awaiting user interaction.
-		// A refused Complete is not an admitted fixed commit and must not
-		// permanently shadow the later authorized result for this login.
-		return clientAuthenticationOutcome(receipt, err)
 	}
 	if err != nil {
 		return clientAuthenticationOutcome(receipt, err)
@@ -313,6 +352,9 @@ func (w *ClientWorkspace) replayClientAuthenticationLocked(ctx context.Context, 
 	if receipt.principal != a.principal || receipt.request.target.WorkspaceID != w.workspaceID() {
 		return clientAuthenticationOutcome(receipt, providerauth.ErrStale)
 	}
+	if receipt.abandon != nil {
+		return clientAuthenticationOutcome(receipt, errors.New("original authentication publication was explicitly abandoned; its outcome is unchanged"))
+	}
 	if receipt.savedStateSupersededBy != "" {
 		return clientAuthenticationOutcome(receipt, errors.New("a separate fresh saved-state action superseded this publication; the original result is unchanged"))
 	}
@@ -394,6 +436,9 @@ func (w *ClientWorkspace) adoptClientAuthenticationLocked(ctx context.Context, a
 // at that point, before later publications discard the pending proposal.
 func (w *ClientWorkspace) noteClientAuthenticationAcknowledgementLocked(a *clientAuthority, id string, proposal config.RemoteRuntimeProposal) {
 	for _, receipt := range a.authenticationReceipts {
+		if receipt.abandon != nil {
+			continue
+		}
 		if receipt.proposal == nil || receipt.principal != a.principal || receipt.request.target.WorkspaceID != id || receipt.proposal.Revision != proposal.Revision || receipt.proposal.Digest != proposal.Digest {
 			continue
 		}
