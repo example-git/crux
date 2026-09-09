@@ -412,7 +412,9 @@ func TestClientAuthenticationReviewCollectionFencesAndSingleEvaluation(t *testin
 			for {
 				select {
 				case <-ticker.C:
-					if _, err := os.Stat(entered); err == nil {
+					// Redirection creates the file before printf writes its byte.
+					// Cancel only after the configured evaluation has recorded entry.
+					if data, err := os.ReadFile(entered); err == nil && string(data) == "x" {
 						break waiting
 					}
 				case value := <-done:
