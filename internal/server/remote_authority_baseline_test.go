@@ -46,7 +46,17 @@ func newRemoteAuthorityTLSHarness(t *testing.T, configure ...func(*tls.Config)) 
 		clients[name] = &http.Client{Transport: transport, Timeout: 5 * time.Second}
 	}
 	srv := NewServer(nil, "tcp", "127.0.0.1:0")
-	t.Cleanup(srv.backend.Shutdown)
+	t.Cleanup(func() {
+		// Backend.Shutdown initiates HTTP shutdown; it does not drain the
+		// workspaces created by this fixture. Join their application work
+		// before restoring the environment and removing temporary state.
+		for _, listed := range srv.backend.ListWorkspaces() {
+			workspace, err := srv.backend.GetWorkspace(listed.ID)
+			require.NoError(t, err)
+			workspace.Shutdown()
+		}
+		srv.backend.Shutdown()
+	})
 	require.NoError(t, srv.SetWorkspaceRoots([]string{root}))
 	require.NoError(t, srv.EnableNetworkAuth(t.Context()))
 	for _, apply := range configure {

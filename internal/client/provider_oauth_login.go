@@ -24,7 +24,7 @@ func (c *Client) providerOAuthInteraction(ctx context.Context, id string, ref pr
 	if err := ctx.Err(); err != nil {
 		return proto.ProviderOAuthLoginResponse{}, err
 	}
-	if id == "" || strings.TrimSpace(id) != id || strings.ContainsAny(id, "/\\") || ref.Target.WorkspaceID != id {
+	if err := validateOAuthWorkspaceID(id, ref); err != nil {
 		return proto.ProviderOAuthLoginResponse{}, errors.New("OAuth login target does not match workspace")
 	}
 	body, err := json.Marshal(request)
@@ -92,7 +92,17 @@ func (c *Client) CompleteProviderOAuthLogin(ctx context.Context, id string, ref 
 	if err := ref.Validate(); err != nil {
 		return proto.ProviderAuthenticationMutationResponse{}, err
 	}
+	if err := validateOAuthWorkspaceID(id, ref); err != nil {
+		return proto.ProviderAuthenticationMutationResponse{}, err
+	}
 	return c.fixedAPIKeyRouteClient().providerAuthMutation(ctx, id, ref.Target, "oauth/complete", ref, func(body []byte) (proto.ProviderAuthenticationMutationResponse, error) {
 		return proto.DecodeProviderOAuthLoginCompleteResponse(body, ref)
 	})
+}
+
+func validateOAuthWorkspaceID(id string, ref providerauth.OAuthLoginRef) error {
+	if id == "" || id == "." || id == ".." || strings.TrimSpace(id) != id || strings.ContainsAny(id, "/\\") || ref.Target.WorkspaceID != id {
+		return errors.New("OAuth login target does not match workspace")
+	}
+	return nil
 }
