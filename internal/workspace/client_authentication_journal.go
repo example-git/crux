@@ -87,8 +87,14 @@ func (r clientAuthenticationStoredRequest) original() clientAuthenticationReques
 	return clientAuthenticationRequest{operationID: r.OperationID, target: r.Target, accountID: r.AccountID, removedAccountID: r.RemovedAccountID, checkID: r.CheckID, loginID: r.LoginID, logout: r.Logout}
 }
 func (r clientAuthenticationStoredRequest) validate() error {
+	// Removal retains its account in both fields, matching the original
+	// mutation request. Equal IDs describe one removal, not a second switch.
+	// Preserve that v1 representation and reject any conflicting selection.
+	if r.RemovedAccountID != "" && r.AccountID != "" && r.AccountID != r.RemovedAccountID {
+		return errors.New("invalid recorded authentication action")
+	}
 	n := 0
-	for _, selected := range []bool{r.AccountID != "", r.RemovedAccountID != "", r.CheckID != "", r.LoginID != "", r.Logout} {
+	for _, selected := range []bool{r.AccountID != "" && r.RemovedAccountID == "", r.RemovedAccountID != "", r.CheckID != "", r.LoginID != "", r.Logout} {
 		if selected {
 			n++
 		}
