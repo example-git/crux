@@ -801,6 +801,7 @@ type Config struct {
 	transportProviderOwners   map[string]providerregistry.RegistrationOwner
 	authenticationRevocations map[string]providerregistry.RegistrationOwner
 	authenticationBasis       *authenticationLoadBasis
+	authenticationAccounts    *authenticationRuntimeAccounts
 	explicitModels            map[SelectedModelType]bool
 }
 
@@ -949,6 +950,7 @@ func (c *Config) RedactedForTransport() *Config {
 		return nil
 	}
 	result := *c
+	result.authenticationAccounts = nil
 	result.Images = cloneImageConfiguration(c.Images)
 	if result.Images != nil {
 		for backend, provider := range result.Images.Providers {
@@ -1478,7 +1480,10 @@ func (c *ProviderConfig) TestConnection(ctx context.Context, resolver VariableRe
 	}
 
 	providerID := catalog.ProviderID(c.ID)
-	apiKey, _ := resolver.ResolveValue(c.APIKey)
+	apiKey, err := ResolveProviderAPIKey(*c, resolver.ResolveValue)
+	if err != nil {
+		return fmt.Errorf("resolve provider %s credential: %w", c.ID, err)
+	}
 	exactPreset := c.Owner.Type == ProviderOwnerPreset
 	if exactPreset && (c.Preset.ID == "" || c.Preset.Version == "" || c.Preset.Digest == "") {
 		return fmt.Errorf("provider preset for provider %s has an incomplete owner reference", c.ID)

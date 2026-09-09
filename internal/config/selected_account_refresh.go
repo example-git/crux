@@ -149,6 +149,9 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 		applyOAuthTokenToProvider(&provider, fresh.Token(), registration)
 		next := current.cloneForWrite()
 		next.Providers.Set(owner.ProviderID, provider)
+		if err := next.advanceRuntimeAuthenticationAccount(owner, fresh); err != nil {
+			return err
+		}
 		return accounts.WithSelectedForOwner(commitCtx, owner.AccountNamespace, *fresh, validate, func() error {
 			fields := map[string]any{"api_key": fresh.AccessToken, "oauth": fresh.Token()}
 			if provider.Owner != nil {

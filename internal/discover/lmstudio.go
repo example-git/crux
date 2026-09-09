@@ -52,7 +52,7 @@ type lmstudioInstanceConfig struct {
 type lmstudioEnricher struct{}
 
 func (e *lmstudioEnricher) EnrichModels(ctx context.Context, cfg Config, resolver Resolver, models []catalog.Model) ([]catalog.Model, error) {
-	resp, err := doRequest(ctx, http.MethodGet, stripV1Suffix(cfg.BaseURL), "/api/v1/models", cfg.APIKey, cfg.ExtraHeaders, resolver, nil)
+	resp, err := doRequest(ctx, http.MethodGet, stripV1Suffix(cfg.BaseURL), "/api/v1/models", cfg.APIKey, cfg.APIKeyLiteral, cfg.ExtraHeaders, resolver, nil)
 	if err != nil {
 		return models, nil
 	}

@@ -1473,7 +1473,7 @@ func (c *coordinator) buildAgentModelsWithSnapshot(ctx context.Context, agent co
 	var primary config.SelectedModel
 	if agent.PrimaryModelOverride != nil {
 		primary = *agent.PrimaryModelOverride
-		if !cfg.IsModelAvailable(primary.Provider, primary.Model) && snapshot.AuthenticationRevocation(primary.Provider) == nil {
+		if !cfg.IsModelAvailable(primary.Provider, primary.Model) && snapshot.AuthenticationRevocation(primary.Provider) == nil && snapshot.AuthenticationConstructionDenial(primary.Provider) == nil {
 			return Model{}, Model{}, fmt.Errorf("primary model %q for provider %q is not available", primary.Model, primary.Provider)
 		}
 	} else {
@@ -1678,9 +1678,16 @@ func nativeResponsesContinuationOwner(snapshot config.RuntimeSnapshot, registrat
 		account = "credential:" + hashContinuationIdentity(apiKey)
 	}
 	if owner.AccountNamespace != "" {
-		entry, ok := snapshot.EphemeralAccount(owner)
-		if !ok && !snapshot.IsClientOwned() {
-			entry, _ = accounts.Active(context.Background(), owner.AccountNamespace)
+		entry, captured, err := snapshot.CapturedConstructionAccount(owner)
+		if err != nil {
+			return ""
+		}
+		if !captured {
+			var forwarded bool
+			entry, forwarded = snapshot.EphemeralAccount(owner)
+			if !forwarded && !snapshot.IsClientOwned() {
+				entry, _ = accounts.Active(context.Background(), owner.AccountNamespace)
+			}
 		}
 		if snapshot.IsClientOwned() && (entry == nil || entry.ID == "" || entry.AccessToken != apiKey) {
 			return ""
@@ -1787,16 +1794,24 @@ func (c *coordinator) buildOpenaiCompatProvider(debug bool, baseURL, apiKey stri
 // WebSocket adapter for the ChatGPT Codex endpoint, authenticating with an
 // OAuth Bearer token and presenting the Codex CLI identity.
 func (c *coordinator) buildCodexProvider(snapshot config.RuntimeSnapshot, registration providerregistry.Registration, baseURL, apiKey string, headers map[string]string, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
+	capturedEntry, captured, err := snapshot.CapturedConstructionAccount(registration.Owner())
+	if err != nil {
+		return nil, err
+	}
 	accountID := func() string {
 		if registration.AccountNamespace == "" {
 			return ""
 		}
-		entry, ok := snapshot.EphemeralAccount(registration.Owner())
-		if !ok && !snapshot.IsClientOwned() {
-			var err error
-			entry, err = accounts.Active(context.Background(), registration.AccountNamespace)
-			if err != nil {
-				return ""
+		entry := capturedEntry
+		if !captured {
+			var forwarded bool
+			entry, forwarded = snapshot.EphemeralAccount(registration.Owner())
+			if !forwarded && !snapshot.IsClientOwned() {
+				var err error
+				entry, err = accounts.Active(context.Background(), registration.AccountNamespace)
+				if err != nil {
+					return ""
+				}
 			}
 		}
 		if entry == nil || entry.AccessToken != apiKey {
@@ -1972,6 +1987,9 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 	if revoked := snapshot.AuthenticationRevocation(selectedModel.Provider); revoked != nil {
 		return unavailableClientProvider{id: selectedModel.Provider, err: revoked}, nil
 	}
+	if denied := snapshot.AuthenticationConstructionDenial(selectedModel.Provider); denied != nil {
+		return unavailableClientProvider{id: selectedModel.Provider, err: denied}, nil
+	}
 	if unavailable := snapshot.ClientProviderUnavailable(selectedModel.Provider); unavailable != nil {
 		return unavailableClientProvider{id: selectedModel.Provider, err: unavailable}, nil
 	}
@@ -2007,7 +2025,7 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 		return nil, fmt.Errorf("OAuth provider %s is unavailable because its registered integration is not active; install, trust, enable, or select the required provider plugin", providerCfg.ID)
 	}
 
-	apiKey, err := snapshot.Resolve(providerCfg.APIKey)
+	apiKey, err := config.ResolveProviderAPIKey(providerCfg, snapshot.Resolve)
 	if err != nil {
 		return nil, fmt.Errorf("resolve provider %s credential: %w", providerCfg.ID, err)
 	}

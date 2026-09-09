@@ -910,6 +910,7 @@ func exactOAuthRegistrationFor(cfg *Config, registry *providerregistry.Registry,
 func applyOAuthTokenToProvider(providerConfig *ProviderConfig, token *oauth.Token, registration providerregistry.Registration) {
 	providerConfig.OAuthToken = token
 	providerConfig.APIKey = token.AccessToken
+	providerConfig.APIKeyTemplate = ""
 	if registration.Construction == providerregistry.ConstructionCopilot {
 		if providerConfig.ExtraHeaders == nil {
 			providerConfig.ExtraHeaders = make(map[string]string)

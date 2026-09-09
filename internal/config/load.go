@@ -479,7 +479,7 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 		prepared.Name = p.Name
 		prepared.BaseURL = p.APIEndpoint
 		prepared.APIKey = p.APIKey
-		prepared.APIKeyTemplate = p.APIKey // Store original template for re-resolution
+		prepared.APIKeyTemplate = p.APIKey // Store ordinary key expressions for re-resolution.
 		prepared.Type = p.Type
 		prepared.Models = p.Models
 		prepared.ExtraHeaders = headers
@@ -503,6 +503,10 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 			if ok && registration.Construction == providerregistry.ConstructionCopilot {
 				prepared.SetupGitHubCopilot()
 			}
+		}
+
+		if providerHasLiteralOAuthCredential(prepared) {
+			prepared.APIKeyTemplate = ""
 		}
 
 		// When a provider is explicitly disabled, skip credential
@@ -531,7 +535,7 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 
 		// If the provider API key is missing, skip it. Copilot OAuth setup
 		// above replaces the catalog template before this check.
-		v, err := resolver.ResolveValue(p.APIKey)
+		v, err := ResolveProviderAPIKey(prepared, resolver.ResolveValue)
 		if v == "" && !anonymous || err != nil {
 			if configExists {
 				slog.Warn("Skipping provider due to missing API key", "provider", p.ID)
@@ -593,6 +597,7 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 			ID:             providerID,
 			BaseURL:        pc.BaseURL,
 			APIKey:         pc.APIKey,
+			APIKeyLiteral:  providerHasLiteralOAuthCredential(pc),
 			ExtraHeaders:   pc.ExtraHeaders,
 			ExistingModels: pc.Models,
 		}
@@ -672,7 +677,10 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 			continue
 		}
 
-		apiKey, err := resolver.ResolveValue(providerConfig.APIKey)
+		if providerHasLiteralOAuthCredential(providerConfig) {
+			providerConfig.APIKeyTemplate = ""
+		}
+		apiKey, err := ResolveProviderAPIKey(providerConfig, resolver.ResolveValue)
 		if apiKey == "" || err != nil {
 			slog.Warn("Provider is missing API key, this might be OK for local providers", "provider", id)
 		}

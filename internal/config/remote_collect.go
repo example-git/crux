@@ -80,7 +80,7 @@ func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, r
 			wantedBundles[definition.BundleDigest] = true
 		}
 		credential := RemoteCredentialBinding{Owner: owner, Generation: revision, Unavailable: removed[owner] || provider.Disable}
-		key, err := snapshot.Resolve(provider.APIKey)
+		key, err := ResolveProviderAPIKey(provider, snapshot.Resolve)
 		if err != nil {
 			return proposal, errors.New("selected client API credential cannot be resolved")
 		}
