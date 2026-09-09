@@ -598,6 +598,16 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, r
 			defer principal.creations.Done()
 		}
 		b.mu.Lock()
+		// Cancellation can make config/database initialization return before
+		// the publication check. Preserve the terminal admission decision for
+		// that failed creation before releasing its retirement/flight waiters.
+		// An unrelated initialization failure or successful publication keeps
+		// its original result while admission is still open.
+		if err != nil && creationCtx.Err() != nil {
+			if admissionErr := b.admitLocked(clientID); admissionErr != nil {
+				err = admissionErr
+			}
+		}
 		delete(b.clientCreations[clientID], creation)
 		if len(b.clientCreations[clientID]) == 0 {
 			delete(b.clientCreations, clientID)

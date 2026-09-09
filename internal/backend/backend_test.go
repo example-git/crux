@@ -34,11 +34,12 @@ func newTestBackend(t *testing.T) (*Backend, *atomic.Int32) {
 	t.Helper()
 	var shutdownCount atomic.Int32
 	b := &Backend{
-		workspaces:  csync.NewMap[string, *Workspace](),
-		pathIndex:   make(map[string]string),
-		ctx:         context.Background(),
-		createGrace: 50 * time.Millisecond,
-		shutdownFn:  func() { shutdownCount.Add(1) },
+		workspaces:       csync.NewMap[string, *Workspace](),
+		pathIndex:        make(map[string]string),
+		pendingResponses: make(map[string]int),
+		ctx:              context.Background(),
+		createGrace:      50 * time.Millisecond,
+		shutdownFn:       func() { shutdownCount.Add(1) },
 	}
 	return b, &shutdownCount
 }
@@ -2110,16 +2111,38 @@ func TestCreateWorkspace_PendingBalancedAndReapsOnFailure(t *testing.T) {
 
 	b, shutdownCount := newTestBackend(t)
 
-	// A data dir whose parent is a regular file makes the workspace's
-	// data-directory creation fail deterministically, after the pending
-	// counter has been incremented.
+	var initCalls atomic.Int32
+	initFailure := errors.New("synthetic post-reservation initialization failure")
+	b.initConfig = func(string, string, bool) (*config.ConfigStore, error) {
+		initCalls.Add(1)
+		b.mu.Lock()
+		pending := b.pending
+		b.mu.Unlock()
+		require.Equal(t, 1, pending, "initialization must hold its creation reservation")
+		return nil, initFailure
+	}
+
+	// Canonicalization rejects a regular-file parent before initialization
+	// or reservation. This invalid request must not trigger idle shutdown.
 	tmp := t.TempDir()
 	fileAsParent := filepath.Join(tmp, "notadir")
 	require.NoError(t, os.WriteFile(fileAsParent, []byte("x"), 0o600))
 	badDataDir := filepath.Join(fileAsParent, "data")
 
 	_, _, err := b.CreateWorkspace(protoWS(tmp, badDataDir, uuid.New().String()))
-	require.Error(t, err, "create must fail when the data dir cannot be created")
+	require.Error(t, err, "create must reject a non-directory parent before initialization")
+	require.Zero(t, initCalls.Load())
+	b.mu.Lock()
+	prevalidationPending := b.pending
+	b.mu.Unlock()
+	require.Zero(t, prevalidationPending)
+	require.Zero(t, shutdownCount.Load(), "prevalidation failure must not reap the server")
+
+	// A valid path reaches the actual post-reservation initializer, whose
+	// failure must retain its cause, balance pending and reap the idle server.
+	_, _, err = b.CreateWorkspace(protoWS(tmp, t.TempDir(), uuid.New().String()))
+	require.ErrorIs(t, err, initFailure)
+	require.EqualValues(t, 1, initCalls.Load())
 
 	b.mu.Lock()
 	pending := b.pending
@@ -2388,6 +2411,16 @@ func TestRetireClient_DuringPendingCreate(t *testing.T) {
 
 	b := New(context.Background(), nil, func() {})
 	t.Cleanup(func() { drainBackend(t, b) })
+	realInit := b.initConfig
+	initStarted, releaseInit := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseInit) }) }
+	t.Cleanup(release)
+	b.initConfig = func(path, dataDir string, debug bool) (*config.ConfigStore, error) {
+		close(initStarted)
+		<-releaseInit
+		return realInit(path, dataDir, debug)
+	}
 
 	cid := newClientID(t)
 	cwd, dataDir := t.TempDir(), t.TempDir()
@@ -2398,18 +2431,33 @@ func TestRetireClient_DuringPendingCreate(t *testing.T) {
 		createErr <- err
 	}()
 
-	// pending is bumped under b.mu before the create releases the lock for
-	// its slow init (config, db, app), and dropped only after the workspace
-	// is registered. Observing pending == 1 therefore means the create is
-	// genuinely mid-flight with b.mu free — the exact window retirement has
-	// to cover. Nothing here fakes the race; the create really is running.
+	// The real initializer is admitted but cannot publish before retirement.
+	// This keeps the ordering stable even when database initialization is fast.
+	<-initStarted
+	b.mu.Lock()
+	pending := b.pending
+	b.mu.Unlock()
+	require.Equal(t, 1, pending)
+	retired := make(chan error, 1)
+	go func() { retired <- b.RetireClient(cid) }()
 	require.Eventually(t, func() bool {
 		b.mu.Lock()
 		defer b.mu.Unlock()
-		return b.pending == 1
-	}, 30*time.Second, time.Millisecond, "create must reach its slow path")
-
-	require.NoError(t, b.RetireClient(cid))
+		_, closed := b.retired[cid]
+		return closed
+	}, 5*time.Second, time.Millisecond, "retirement must close the creator's admission")
+	select {
+	case err := <-retired:
+		t.Fatalf("retirement returned before its admitted initializer ended: %v", err)
+	default:
+	}
+	release()
+	select {
+	case err := <-retired:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("retirement did not join the released initializer")
+	}
 
 	require.ErrorIs(t, <-createErr, ErrClientRetired,
 		"a create that commits after retirement must be refused")
