@@ -188,29 +188,29 @@ func TestModelAuthenticationContinuationsRetainExactOwner(t *testing.T) {
 	require.ErrorContains(t, err, "owner changed")
 }
 
-func TestAPIKeyContinuationRetainsExactOwnerAndRejectsReplacement(t *testing.T) {
+func TestAPIKeyDialogNeverPersistsOrContinuesDirectly(t *testing.T) {
 	const providerID = "same-id-provider"
 	ownerA := ownerActionRegistration(providerID, "plugin.key-owner-a", false)
 	ownerB := ownerActionRegistration(providerID, "plugin.key-owner-b", false)
 	workspace := &ownerActionWorkspace{cfg: ownerActionConfig(ownerA), fields: make(map[string]any)}
 	theme := styles.ThemeForProvider(providerID)
 	selection := ownerActionSelection(t, workspace.cfg, providerID)
-	input, _ := NewAPIKeyInput(&common.Common{Workspace: workspace, Styles: &theme}, false, selection)
+	input, cmd := NewAPIKeyInput(&common.Common{Workspace: workspace, Styles: &theme}, false, selection)
+	require.Nil(t, cmd)
+	input.SetPresentation(APIKeyPresentation{Editable: true})
 	input.input.SetValue("synthetic-key")
-
-	action, ok := input.saveKeyAndContinue().(ActionSelectModel)
+	action, ok := input.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter}).(ActionAPIKeyCheck)
 	require.True(t, ok)
-	require.Equal(t, selection.ProviderOwner, action.ProviderOwner)
-	require.True(t, action.ProviderOwnerSet)
-	require.Len(t, workspace.apiKeyCredentials, 1)
-	require.Equal(t, selection.ProviderOwner, workspace.apiKeyCredentials[0].Owner)
-
-	workspace.apiKeyCredentials = nil
+	require.Same(t, input, action.Dialog)
+	require.Equal(t, "synthetic-key", input.TakeSource())
+	require.Empty(t, input.input.Value())
+	input.HandleMsg(tea.PasteMsg{Content: "replacement-key"})
+	require.Empty(t, input.input.Value())
 	workspace.cfg = ownerActionConfig(ownerB)
-	stale, ok := input.saveKeyAndContinue().(ActionCmd)
+	input.SetPresentation(APIKeyPresentation{Save: true})
+	_, ok = input.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter}).(ActionAPIKeySave)
 	require.True(t, ok)
+	_, ok = input.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEscape}).(ActionClose)
+	require.True(t, ok, "Escape must never save or continue")
 	require.Empty(t, workspace.apiKeyCredentials)
-	message, ok := stale.Cmd().(util.InfoMsg)
-	require.True(t, ok)
-	require.Contains(t, message.Msg, "provider owner changed")
 }

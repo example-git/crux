@@ -164,13 +164,6 @@ type (
 	}
 )
 
-// Messages for API key input dialog.
-type (
-	ActionChangeAPIKeyState struct {
-		State APIKeyInputState
-	}
-)
-
 // ActionCmd represents an action that carries a [tea.Cmd] to be passed to the
 // Bubble Tea program loop.
 type ActionCmd struct {

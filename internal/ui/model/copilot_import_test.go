@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/ui/styles"
@@ -18,8 +20,31 @@ import (
 )
 
 type importingTestWorkspace struct {
+	authenticationReads int
 	*testWorkspace
 	importToken func(context.Context, providerregistry.RegistrationOwner) (bool, error)
+}
+
+func (w *importingTestWorkspace) ProviderAuthentication(ctx context.Context) (providerauth.Snapshot, error) {
+	w.authenticationReads++
+	owner, ok := w.cfg.ProviderOwner("copilot")
+	if !ok {
+		return providerauth.Snapshot{}, providerauth.ErrOwner
+	}
+	_, configured := w.cfg.Providers.Get("copilot")
+	return providerauth.Snapshot{WorkspaceID: "copilot-ui", Generation: providerauth.Generation{Epoch: strings.Repeat("a", 32), Sequence: 1}, Providers: []providerauth.Status{{Owner: providerauth.PublicOwner(owner), Configured: configured, AccountState: "none", Credentials: []providerauth.CredentialStatus{{Kind: "api-key", State: "absent"}, {Kind: "oauth", State: "absent"}}}}}, ctx.Err()
+}
+func deliverImportAuthenticationStatus(t *testing.T, ui *UI, cmd tea.Cmd) {
+	t.Helper()
+	found := false
+	for _, msg := range collectCommandMessages(cmd) {
+		if status, ok := msg.(apiKeyStatusMsg); ok {
+			require.NoError(t, status.err)
+			ui.Update(status)
+			found = true
+		}
+	}
+	require.True(t, found, "interactive login must first read workspace authentication status")
 }
 
 func (w *importingTestWorkspace) ImportCopilot(ctx context.Context, owner providerregistry.RegistrationOwner) (bool, error) {
@@ -185,6 +210,8 @@ func TestCopilotImportSelectionBranches(t *testing.T) {
 				return
 			}
 			if mode == "reauthenticate" {
+				require.Zero(t, w.authenticationReads, "Update must not read authentication status")
+				deliverImportAuthenticationStatus(t, ui, command)
 				require.Zero(t, calls)
 				require.Nil(t, ui.cancelCopilotImport)
 				require.True(t, ui.dialog.ContainsDialog(dialog.LoginID))
@@ -207,6 +234,8 @@ func TestCopilotImportSelectionBranches(t *testing.T) {
 				requireCommandError(t, collectCommandMessages(result), "provider owner changed")
 				require.False(t, ui.dialog.ContainsDialog(dialog.LoginID))
 			} else {
+				require.Zero(t, w.authenticationReads, "Update must not read authentication status")
+				deliverImportAuthenticationStatus(t, ui, result)
 				require.True(t, ui.dialog.ContainsDialog(dialog.LoginID), "no source must continue to interactive login")
 				require.False(t, ui.dialog.ContainsDialog(dialog.APIKeyInputID))
 			}

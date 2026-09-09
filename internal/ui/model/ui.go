@@ -456,6 +456,8 @@ type UI struct {
 	authenticationReads           map[*dialog.AccountAuthentication]*authenticationRead
 	authenticationOperations      map[workspace.Workspace]*authenticationOperation
 	authenticationReconciliations map[*authenticationOperation]*authenticationReconciliation
+	apiKeySessions                map[*dialog.APIKeyInput]*apiKeySession
+	apiKeyOperations              map[workspace.Workspace]*apiKeyOperation
 
 	// brand is the provider wordmark branding for the current large
 	// model provider; nil renders the default Crux branding.
@@ -812,6 +814,7 @@ func (m *UI) loadMCPrompts() tea.Msg {
 func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	m.pruneAuthenticationReads()
+	m.pruneAPIKeySessions()
 	// Update terminal capabilities
 	m.caps.Update(msg)
 	if reply, ok := msg.(taskPanelReplyMsg); ok {
@@ -831,6 +834,14 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch msg := msg.(type) {
+	case apiKeyStatusMsg:
+		cmds = append(cmds, m.completeAPIKeyStatus(msg))
+	case apiKeyIDsMsg:
+		cmds = append(cmds, m.completeAPIKeyIDs(msg))
+	case apiKeyCheckMsg:
+		cmds = append(cmds, m.completeAPIKeyCheck(msg))
+	case apiKeySaveMsg:
+		cmds = append(cmds, m.completeAPIKeySave(msg))
 	case authenticationLoadedMsg:
 		m.completeAuthenticationRead(msg)
 	case authenticationPreparedMsg:
@@ -2231,6 +2242,7 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 
 		m.dialog.CloseFrontDialog()
 		m.pruneAuthenticationReads()
+		m.pruneAPIKeySessions()
 
 		if isOnboarding && !msg.Dismiss {
 			if cmd := m.openModelsDialog(); cmd != nil {
@@ -2241,6 +2253,16 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		if m.focus == uiFocusEditor {
 			cmds = append(cmds, m.textarea.Focus())
 		}
+	case dialog.ActionAPIKeyCheck:
+		cmds = append(cmds, m.beginAPIKeyCheck(msg.Dialog))
+	case dialog.ActionAPIKeySave:
+		cmds = append(cmds, m.beginAPIKeySave(msg.Dialog))
+	case dialog.ActionAPIKeyRetry:
+		cmds = append(cmds, m.retryAPIKeyOperation(msg.Dialog))
+	case dialog.ActionAPIKeyReload:
+		cmds = append(cmds, m.reloadAPIKeyInput(msg.Dialog))
+	case dialog.ActionAPIKeyRecover:
+		cmds = append(cmds, m.recoverAPIKeyOperation(msg))
 	case dialog.ActionCmd:
 		if msg.Cmd != nil {
 			cmds = append(cmds, msg.Cmd)
@@ -2530,6 +2552,7 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		})
 		m.dialog.CloseDialog(dialog.CommandsID)
 	case dialog.ActionQuit:
+		m.cancelAPIKeyReads()
 		m.modelSelectionGen++
 		if m.cancelCopilotImport != nil {
 			m.cancelCopilotImport()
@@ -2795,30 +2818,7 @@ func (m *UI) handleSelectModelAfterImport(msg dialog.ActionSelectModel, allowImp
 }
 
 func (m *UI) openAuthenticationDialog(selection dialog.ActionSelectModel) tea.Cmd {
-	var (
-		dlg dialog.Dialog
-		cmd tea.Cmd
-
-		isOnboarding = m.state == uiOnboarding
-	)
-
-	if registration, ok := m.com.Config().ProviderRegistration(string(selection.Provider.ID)); ok && registration.OAuth != nil {
-		login, loginCmd, err := dialog.NewLoginForModel(m.com, selection)
-		if err != nil {
-			return util.ReportError(err)
-		}
-		dlg, cmd = login, loginCmd
-	} else {
-		dlg, cmd = dialog.NewAPIKeyInput(m.com, isOnboarding, selection)
-	}
-
-	if m.dialog.ContainsDialog(dlg.ID()) {
-		m.dialog.BringToFront(dlg.ID())
-		return nil
-	}
-
-	m.dialog.OpenDialogWithGrace(dlg)
-	return cmd
+	return m.openAPIKeyAuthentication(selection)
 }
 
 func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
