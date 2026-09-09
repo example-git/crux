@@ -250,8 +250,10 @@ publish into a newly created workspace. JSON output contains the public metadata
 projection, without retained proposals or credentials.
 
 To retire recovery of an exact original publication or attempted review, use
-the journal revision shown by history and choose a distinct action ID. Reuse
-the identical arguments to retry that action:
+the journal revision shown by history and choose a distinct action ID containing
+exactly 32 lowercase hexadecimal characters. Generate one with `openssl rand
+-hex 16`, retain it, and substitute it for `ACTION_ID` below. Reuse the identical
+arguments to retry that action; generating another ID starts a different action:
 
 ```sh
 crux --connection NAME --cwd /srv/projects/PROJECT accounts abandon-publication ORIGINAL_WORKSPACE_ID OPERATION_ID --revision REVIEWED_REVISION --abandon-id ACTION_ID
