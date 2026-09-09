@@ -1,366 +1,294 @@
 package dialog
 
 import (
-	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/charmbracelet/x/exp/charmtone"
-	"github.com/example-git/crux/foundation/catalog"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/example-git/crux/internal/config"
-	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/ui/common"
-	"github.com/example-git/crux/internal/ui/styles"
-	"github.com/example-git/crux/internal/ui/util"
 )
 
-type APIKeyInputState int
-
-const (
-	APIKeyInputStateInitial APIKeyInputState = iota
-	APIKeyInputStateVerifying
-	APIKeyInputStateVerified
-	APIKeyInputStateError
-)
-
-// APIKeyInputID is the identifier for the model selection dialog.
 const APIKeyInputID = "api_key_input"
 
-// APIKeyInput represents a model selection dialog.
-type APIKeyInput struct {
-	com          *common.Common
-	isOnboarding bool
-
-	provider  catalog.Provider
-	model     config.SelectedModel
-	modelType config.SelectedModelType
-
-	width    int
-	state    APIKeyInputState
-	owner    providerregistry.RegistrationOwner
-	ownerSet bool
-
-	keyMap struct {
-		Submit key.Binding
-		Close  key.Binding
-	}
-	input   textinput.Model
-	spinner spinner.Model
-	help    help.Model
+type ActionAPIKeyCheck struct{ Dialog *APIKeyInput }
+type ActionAPIKeySave struct{ Dialog *APIKeyInput }
+type ActionAPIKeyRetry struct{ Dialog *APIKeyInput }
+type ActionAPIKeyReload struct{ Dialog *APIKeyInput }
+type ActionAPIKeyRecover struct {
+	Dialog *APIKeyInput
+	Retry  bool
 }
 
-var _ Dialog = (*APIKeyInput)(nil)
+// APIKeyPresentation is supplied only by the main Update loop. Source text is
+// never copied into a status, completion or transport acknowledgement.
+type APIKeyPresentation struct {
+	SaveDispatched                                        bool
+	Message, Evidence                                     string
+	Editable, Save, Retry, Reload, Recover, RetryRecovery bool
+}
 
-// NewAPIKeyInput creates a new Models dialog.
-func NewAPIKeyInput(
-	com *common.Common,
-	isOnboarding bool,
-	selection ActionSelectModel,
-) (*APIKeyInput, tea.Cmd) {
-	t := com.Styles
+// APIKeyInput owns editing and rendering. The workspace owner performs all
+// status reads, expression resolution, probes and saves outside Update.
+type APIKeyInput struct {
+	details                                              viewport.Model
+	scroll                                               key.Binding
+	com                                                  *common.Common
+	isOnboarding                                         bool
+	providerName                                         string
+	width                                                int
+	input                                                textinput.Model
+	help                                                 help.Model
+	presentation                                         APIKeyPresentation
+	submit, close, retry, reload, recover, retryRecovery key.Binding
+}
 
-	m := APIKeyInput{}
-	m.com = com
-	m.isOnboarding = isOnboarding
-	m.provider = selection.Provider
-	m.model = selection.Model
-	m.modelType = selection.ModelType
-	m.owner = selection.ProviderOwner
-	m.ownerSet = selection.ProviderOwnerSet
-	m.width = 0 // Set dynamically in Draw().
-
+func NewAPIKeyInput(com *common.Common, isOnboarding bool, selection ActionSelectModel) (*APIKeyInput, tea.Cmd) {
+	m := &APIKeyInput{com: com, isOnboarding: isOnboarding, providerName: selection.Provider.Name}
+	if m.providerName == "" {
+		m.providerName = selection.Model.Provider
+	}
 	m.input = textinput.New()
 	m.input.SetVirtualCursor(false)
-	m.input.Placeholder = "Enter your API key..."
+	m.input.Placeholder = "Enter API key or expression…"
 	m.input.SetStyles(com.Styles.TextInput)
-	m.input.Focus()
-
-	m.spinner = spinner.New(
-		spinner.WithSpinner(spinner.Dot),
-		spinner.WithStyle(t.Dialog.APIKey.Spinner),
-	)
-
+	m.input.EchoMode = textinput.EchoPassword
+	m.input.EchoCharacter = '•'
+	m.details = viewport.New()
+	m.scroll = key.NewBinding(key.WithKeys("pgup", "pgdown"), key.WithHelp("pgup/pgdn", "scroll"))
 	m.help = help.New()
-	m.help.Styles = t.DialogHelpStyles()
-
-	m.keyMap.Submit = key.NewBinding(
-		key.WithKeys("enter", "ctrl+y"),
-		key.WithHelp("enter", "submit"),
-	)
-	m.keyMap.Close = CloseKey
-
-	return &m, nil
+	m.help.Styles = com.Styles.DialogHelpStyles()
+	m.submit = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "check input"))
+	m.close = key.NewBinding(key.WithKeys("esc", "ctrl+c"), key.WithHelp("esc", "cancel"))
+	m.retry = key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "retry original receipt"))
+	m.reload = key.NewBinding(key.WithKeys("ctrl+n"), key.WithHelp("ctrl+n", "new input / reload status"))
+	m.recover = key.NewBinding(key.WithKeys("alt+r"), key.WithHelp("alt+r", "attempt saved change recovery"))
+	m.retryRecovery = key.NewBinding(key.WithKeys("alt+t"), key.WithHelp("alt+t", "retry recovery receipt"))
+	m.SetPresentation(APIKeyPresentation{Message: "Loading authentication status from the selected workspace…"})
+	return m, nil
+}
+func (m *APIKeyInput) ID() string { return APIKeyInputID }
+func (m *APIKeyInput) SetPresentation(p APIKeyPresentation) {
+	if p.Message != m.presentation.Message || p.Evidence != m.presentation.Evidence {
+		m.details.GotoTop()
+	}
+	m.presentation = p
+	if p.SaveDispatched {
+		m.close.SetHelp("esc", "close; receipt retained")
+	} else {
+		m.close.SetHelp("esc", "cancel")
+	}
+	m.retry.SetEnabled(p.Retry)
+	m.reload.SetEnabled(p.Reload)
+	m.recover.SetEnabled(p.Recover)
+	m.retryRecovery.SetEnabled(p.RetryRecovery)
+	m.submit.SetEnabled(p.Editable || p.Save)
+	if p.Save {
+		m.submit.SetHelp("enter", "save retained input and use model")
+	} else {
+		m.submit.SetHelp("enter", "check input")
+	}
+	if p.Editable {
+		m.input.Focus()
+	} else {
+		m.input.Blur()
+	}
 }
 
-// ID implements Dialog.
-func (m *APIKeyInput) ID() string {
-	return APIKeyInputID
+// TakeSource transfers input into the private request retained by the main
+// model. Editing and paste remain disabled after this transfer.
+func (m *APIKeyInput) TakeSource() string {
+	value := m.input.Value()
+	m.input.SetValue("")
+	m.presentation.Editable = false
+	m.input.Blur()
+	return value
 }
-
-// HandleMsg implements [Dialog].
 func (m *APIKeyInput) HandleMsg(msg tea.Msg) Action {
-	switch msg := msg.(type) {
-	case ActionChangeAPIKeyState:
-		m.state = msg.State
-		switch m.state {
-		case APIKeyInputStateVerifying:
-			current, ok := m.com.Config().ProviderOwner(string(m.provider.ID))
-			if !m.ownerSet || !ok || current != m.owner {
-				m.state = APIKeyInputStateError
-				return ActionCmd{util.ReportError(fmt.Errorf("provider owner changed before API key verification"))}
-			}
-			cmd := tea.Batch(m.spinner.Tick, m.verifyAPIKey)
-			return ActionCmd{cmd}
-		}
-	case spinner.TickMsg:
-		switch m.state {
-		case APIKeyInputStateVerifying:
-			var cmd tea.Cmd
-			m.spinner, cmd = m.spinner.Update(msg)
-			if cmd != nil {
-				return ActionCmd{cmd}
-			}
-		}
-	case tea.KeyPressMsg:
+	if press, ok := msg.(tea.KeyPressMsg); ok {
 		switch {
-		case m.state == APIKeyInputStateVerifying:
-			// do nothing
-		case key.Matches(msg, m.keyMap.Close):
-			switch m.state {
-			case APIKeyInputStateVerified:
-				return m.saveKeyAndContinue()
-			default:
-				return ActionClose{}
-			}
-		case key.Matches(msg, m.keyMap.Submit):
-			switch m.state {
-			case APIKeyInputStateInitial, APIKeyInputStateError:
-				return ActionChangeAPIKeyState{State: APIKeyInputStateVerifying}
-			case APIKeyInputStateVerified:
-				return m.saveKeyAndContinue()
-			}
-		default:
+		case key.Matches(press, m.scroll):
 			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
+			m.details, cmd = m.details.Update(msg)
 			if cmd != nil {
 				return ActionCmd{cmd}
 			}
+			return nil
+		case key.Matches(press, m.close):
+			return ActionClose{}
+		case key.Matches(press, m.retry):
+			return ActionAPIKeyRetry{m}
+		case key.Matches(press, m.reload):
+			return ActionAPIKeyReload{m}
+		case key.Matches(press, m.recover):
+			return ActionAPIKeyRecover{Dialog: m}
+		case key.Matches(press, m.retryRecovery):
+			return ActionAPIKeyRecover{Dialog: m, Retry: true}
+		case key.Matches(press, m.submit):
+			if m.presentation.Save {
+				return ActionAPIKeySave{m}
+			}
+			if m.presentation.Editable && m.input.Value() != "" {
+				return ActionAPIKeyCheck{m}
+			}
 		}
-	case tea.PasteMsg:
-		var cmd tea.Cmd
-		m.input, cmd = m.input.Update(msg)
-		if cmd != nil {
-			return ActionCmd{cmd}
-		}
+	}
+	if !m.presentation.Editable {
+		return nil
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	if cmd != nil {
+		return ActionCmd{cmd}
 	}
 	return nil
 }
-
-// Draw implements [Dialog].
 func (m *APIKeyInput) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	t := m.com.Styles
-
-	m.width = max(0, min(60, area.Dx()-t.Dialog.View.GetHorizontalBorderSize()))
-	innerWidth := m.width - t.Dialog.View.GetHorizontalFrameSize() - 2
-	m.input.SetWidth(max(0, innerWidth-t.Dialog.InputPrompt.GetHorizontalFrameSize()-1)) // (1) cursor padding
-
-	textStyle := t.Dialog.SecondaryText
-	dialogStyle := t.Dialog.View.Width(m.width)
-	inputStyle := t.Dialog.InputPrompt
-	helpView := renderDialogHelp(t, &m.help, m, m.width-dialogStyle.GetHorizontalFrameSize())
-
-	m.input.Prompt = m.spinner.View()
-
-	content := strings.Join([]string{
-		m.headerView(),
-		inputStyle.Render(m.inputView()),
-		textStyle.Render("This will be written in your global configuration:"),
-		textStyle.Render(config.GlobalConfigData()),
-		"",
-		helpView,
-	}, "\n")
-
-	cur := m.Cursor()
-
+	m.width = max(0, min(72, area.Dx()-t.Dialog.View.GetHorizontalBorderSize()))
+	inner := max(0, m.width-t.Dialog.View.GetHorizontalFrameSize())
+	frame := t.Dialog.View.GetVerticalFrameSize()
 	if m.isOnboarding {
-		view := content
-		cur = adjustOnboardingInputCursor(t, cur)
-		DrawOnboardingCursor(scr, area, view, cur)
+		frame = 0
+	}
+	available := max(0, area.Dy()-frame)
+	m.input.SetWidth(max(0, inner-t.Dialog.InputPrompt.GetHorizontalFrameSize()-1))
+	m.input.Prompt = "> "
+	title := common.DialogTitle(t, m.providerName+" API key", inner, t.Dialog.TitleGradFromColor, t.Dialog.TitleGradToColor)
+	input := ""
+	if m.presentation.Editable {
+		input = t.Dialog.InputPrompt.Render(m.input.View())
+	}
+	footer := m.actionFooter(inner)
+	body := t.Dialog.PrimaryText.Width(inner).Render(m.presentation.Message)
+	if m.presentation.Evidence != "" {
+		body += "\n" + t.Dialog.SecondaryText.Width(inner).Render(m.presentation.Evidence)
+	}
+	body += "\n" + t.Dialog.SecondaryText.Width(inner).Render("Save destination: the selected workspace credential owner's global configuration.")
+	m.details.SetWidth(inner)
+	m.details.SetContent(body)
+	fixed := lipgloss.Height(title) + lipgloss.Height(footer)
+	if input != "" {
+		fixed += lipgloss.Height(input)
+	}
+	if fixed >= available && input != "" {
+		fixed -= lipgloss.Height(input)
+		input = ""
+	}
+	if fixed >= available {
+		fixed -= lipgloss.Height(title)
+		title = ""
+	}
+	m.details.SetHeight(min(max(0, available-fixed), m.details.TotalLineCount()))
+	var parts []string
+	if title != "" {
+		parts = append(parts, title)
+	}
+	if input != "" {
+		parts = append(parts, input)
+	}
+	if m.details.Height() > 0 {
+		parts = append(parts, m.details.View())
+	}
+	parts = append(parts, footer)
+	content := strings.Join(parts, "\n")
+	var cur *tea.Cursor
+	if m.presentation.Editable && input != "" {
+		cur = InputCursor(t, m.input.Cursor())
+	}
+	if m.isOnboarding {
+		DrawOnboardingCursor(scr, area, content, adjustOnboardingInputCursor(t, cur))
 	} else {
-		view := dialogStyle.Render(content)
-		DrawCenterCursor(scr, area, view, cur)
+		DrawCenterCursor(scr, area, t.Dialog.View.Width(m.width).Render(content), cur)
 	}
 	return cur
 }
 
-func (m *APIKeyInput) headerView() string {
-	var (
-		t           = m.com.Styles
-		titleStyle  = t.Dialog.Title
-		textStyle   = t.Dialog.PrimaryText
-		dialogStyle = t.Dialog.View.Width(m.width)
-	)
-	if m.isOnboarding {
-		return textStyle.Render(m.dialogTitle())
+type apiKeyHelpRow []key.Binding
+
+func (r apiKeyHelpRow) ShortHelp() []key.Binding  { return r }
+func (r apiKeyHelpRow) FullHelp() [][]key.Binding { return [][]key.Binding{r} }
+
+// Keep every enabled action in the fixed footer. Compact descriptions fit
+// small terminals; the full explanation stays in the scrollable details pane.
+func (m *APIKeyInput) actionFooter(width int) string {
+	bindings := []key.Binding{m.submit, m.close, m.retry, m.recover, m.retryRecovery, m.reload, m.scroll}
+	descriptions := []string{"check", "cancel", "retry", "recover", "retry recovery", "new input", "scroll"}
+	if m.presentation.Save {
+		descriptions[0] = "save"
 	}
-	headerOffset := titleStyle.GetHorizontalFrameSize() + dialogStyle.GetHorizontalFrameSize()
-	return common.DialogTitle(t, titleStyle.Render(m.dialogTitle()), m.width-headerOffset, m.com.Styles.Dialog.TitleGradFromColor, m.com.Styles.Dialog.TitleGradToColor)
-}
-
-func (m *APIKeyInput) dialogTitle() string {
-	var (
-		t           = m.com.Styles
-		textStyle   = t.Dialog.TitleText
-		errorStyle  = t.Dialog.TitleError
-		accentStyle = t.Dialog.TitleAccent
-	)
-	switch m.state {
-	case APIKeyInputStateInitial:
-		return textStyle.Render("Enter your ") + accentStyle.Render(fmt.Sprintf("%s Key", m.provider.Name)) + textStyle.Render(".")
-	case APIKeyInputStateVerifying:
-		return textStyle.Render("Verifying your ") + accentStyle.Render(fmt.Sprintf("%s Key", m.provider.Name)) + textStyle.Render("...")
-	case APIKeyInputStateVerified:
-		return accentStyle.Render(fmt.Sprintf("%s Key", m.provider.Name)) + textStyle.Render(" validated.")
-	case APIKeyInputStateError:
-		return errorStyle.Render("Invalid ") + accentStyle.Render(fmt.Sprintf("%s Key", m.provider.Name)) + errorStyle.Render(". Try again?")
+	if m.presentation.SaveDispatched {
+		descriptions[1] = "close"
 	}
-	return ""
-}
-
-func (m *APIKeyInput) inputView() string {
-	t := m.com.Styles
-
-	switch m.state {
-	case APIKeyInputStateInitial:
-		m.input.Prompt = "> "
-		m.input.SetStyles(t.TextInput)
-		m.input.Focus()
-	case APIKeyInputStateVerifying:
-		ts := t.TextInput
-		ts.Blurred.Prompt = ts.Focused.Prompt
-
-		m.input.Prompt = m.spinner.View()
-		m.input.SetStyles(ts)
-		m.input.Blur()
-	case APIKeyInputStateVerified:
-		ts := t.TextInput
-		ts.Blurred.Prompt = ts.Focused.Prompt
-
-		m.input.Prompt = styles.CheckIcon + " "
-		m.input.SetStyles(ts)
-		m.input.Blur()
-	case APIKeyInputStateError:
-		ts := t.TextInput
-		ts.Focused.Prompt = ts.Focused.Prompt.Foreground(charmtone.Cherry)
-
-		m.input.Prompt = styles.LSPErrorIcon + " "
-		m.input.SetStyles(ts)
-		m.input.Focus()
+	textWidth := max(0, width-m.com.Styles.Dialog.HelpView.GetHorizontalFrameSize())
+	var rows []string
+	var row apiKeyHelpRow
+	used := 0
+	flush := func() {
+		if len(row) > 0 {
+			rows = append(rows, renderDialogHelp(m.com.Styles, &m.help, row, width))
+			row = nil
+			used = 0
+		}
 	}
-	return m.input.View()
-}
-
-// Cursor returns the cursor position relative to the dialog.
-func (m *APIKeyInput) Cursor() *tea.Cursor {
-	return InputCursor(m.com.Styles, m.input.Cursor())
-}
-
-// FullHelp returns the full help view.
-func (m *APIKeyInput) FullHelp() [][]key.Binding {
-	return [][]key.Binding{
-		{
-			m.keyMap.Submit,
-			m.keyMap.Close,
-		},
+	for i, binding := range bindings {
+		if !binding.Enabled() {
+			continue
+		}
+		binding.SetHelp(binding.Help().Key, descriptions[i])
+		size := ansi.StringWidth(binding.Help().Key + " " + binding.Help().Desc)
+		if len(row) > 0 && used+ansi.StringWidth(m.help.ShortSeparator)+size > textWidth {
+			flush()
+		}
+		if len(row) > 0 {
+			used += ansi.StringWidth(m.help.ShortSeparator)
+		}
+		row = append(row, binding)
+		used += size
 	}
+	flush()
+	return strings.Join(rows, "\n")
 }
 
-// ShortHelp returns the full help view.
 func (m *APIKeyInput) ShortHelp() []key.Binding {
-	return []key.Binding{
-		m.keyMap.Submit,
-		m.keyMap.Close,
-	}
+	return []key.Binding{m.submit, m.retry, m.reload, m.recover, m.retryRecovery, m.close}
 }
+func (m *APIKeyInput) FullHelp() [][]key.Binding { return [][]key.Binding{m.ShortHelp()} }
 
-func (m *APIKeyInput) verifyAPIKey() tea.Msg {
-	start := time.Now()
-	validateOwner := func() error {
-		cfg := m.com.Config()
-		if !m.ownerSet || cfg == nil {
-			return fmt.Errorf("provider owner changed during API key verification")
+// APIKeyProbeDescription reports observations without claiming inference or
+// selected-model authorization. HTTP evidence remains useful on failed checks.
+func APIKeyProbeDescription(p config.ConnectionProbeResult) string {
+	var text string
+	switch p.Kind {
+	case config.ConnectionProbeNotProbed:
+		text = "No network probe was performed."
+	case config.ConnectionProbeFormatOnly:
+		text = "Format check only (sk- prefix); no network probe was performed."
+	case config.ConnectionProbeHTTPAttempt:
+		text = "HTTP request attempted; no response was observed."
+	case config.ConnectionProbeHTTPResponse:
+		text = fmt.Sprintf("HTTP %d observed", p.HTTPStatus)
+		if p.Policy == config.ConnectionProbePolicyNon401 {
+			text += " under the provider's non-401 policy."
+		} else {
+			text += " from the models probe (HTTP 200 policy)."
 		}
-		current, ok := cfg.ProviderOwner(string(m.provider.ID))
-		if !ok || current != m.owner {
-			return fmt.Errorf("provider owner changed during API key verification")
-		}
-		return nil
+	case config.ConnectionProbeUnsupported:
+		text = "This provider's connection probe is unsupported."
+	default:
+		return ""
 	}
-	if err := validateOwner(); err != nil {
-		return ActionChangeAPIKeyState{APIKeyInputStateError}
+	if p.AuthorizationOverridden {
+		text += " The configured Authorization header replaced the entered key."
+	} else if p.EnteredKeyInAuthorization {
+		text += " The initial request used the entered key in Authorization."
 	}
-
-	providerConfig := config.ProviderConfig{
-		ID:      string(m.provider.ID),
-		Name:    m.provider.Name,
-		APIKey:  m.input.Value(),
-		Type:    m.provider.Type,
-		BaseURL: m.provider.APIEndpoint,
-	}
-	if cfg := m.com.Config(); cfg != nil {
-		if configured, ok := cfg.Providers.Get(providerConfig.ID); ok {
-			providerConfig.Owner = configured.Owner
-			providerConfig.Plugin = configured.Plugin
-			providerConfig.Preset = configured.Preset
-		} else if preset, ok := cfg.ProviderPreset(providerConfig.ID); ok {
-			providerConfig.Owner = &config.ProviderOwnerReference{
-				Type:         config.ProviderOwnerPreset,
-				Construction: providerregistry.ConstructionOpenAICompat,
-			}
-			providerConfig.Preset = &preset
-		}
-	}
-	err := providerConfig.TestConnection(context.Background(), m.com.Workspace.Resolver(), validateOwner)
-	if ownerErr := validateOwner(); ownerErr != nil {
-		err = ownerErr
-	}
-
-	// intentionally wait for at least 750ms to make sure the user sees the spinner
-	elapsed := time.Since(start)
-	minimum := 750 * time.Millisecond
-	if elapsed < minimum {
-		time.Sleep(minimum - elapsed)
-	}
-
-	if err == nil {
-		return ActionChangeAPIKeyState{APIKeyInputStateVerified}
-	}
-	return ActionChangeAPIKeyState{APIKeyInputStateError}
-}
-
-func (m *APIKeyInput) saveKeyAndContinue() Action {
-	current, ok := m.com.Config().ProviderOwner(string(m.provider.ID))
-	if !ok || current != m.owner {
-		return ActionCmd{util.ReportError(fmt.Errorf("provider owner changed before the API key could be saved"))}
-	}
-	credential := config.ProviderAPIKeyCredential{Owner: m.owner, APIKey: m.input.Value()}
-	err := m.com.Workspace.SetProviderAPIKey(config.ScopeGlobal, string(m.provider.ID), credential)
-	if err != nil {
-		return ActionCmd{util.ReportError(fmt.Errorf("failed to save API key: %w", err))}
-	}
-
-	return ActionSelectModel{
-		Provider:         m.provider,
-		Model:            m.model,
-		ModelType:        m.modelType,
-		ProviderOwner:    m.owner,
-		ProviderOwnerSet: m.ownerSet,
-	}
+	return text + " This does not establish permission to run the selected model."
 }
