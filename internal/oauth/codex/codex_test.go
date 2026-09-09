@@ -483,7 +483,7 @@ func TestOAuthClientIDRequired(t *testing.T) {
 	}
 
 	t.Setenv("CODEX_OAUTH_CLIENT_ID", "client-id")
-	clientID, err := oauthClientID()
+	clientID, err := oauthClientID(t.Context())
 	if err != nil {
 		t.Fatalf("oauthClientID() error = %v", err)
 	}
