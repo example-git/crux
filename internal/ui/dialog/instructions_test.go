@@ -2,7 +2,10 @@ package dialog
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"image"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -22,17 +25,22 @@ import (
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/styles"
+	"github.com/example-git/crux/internal/ui/util"
 	"github.com/example-git/crux/internal/workspace"
 )
 
 type instructionsTestWorkspace struct {
 	workspace.Workspace
-	cfg         *config.Config
-	workingDir  string
-	fields      map[string]any
-	surfaces    []providerregistry.Surface
-	snapshot    agent.InstructionSnapshot
-	snapshotErr error
+	cfg          *config.Config
+	workingDir   string
+	fields       map[string]any
+	surfaces     []providerregistry.Surface
+	snapshot     agent.InstructionSnapshot
+	snapshotErr  error
+	mutationErr  error
+	toolingOwner providerregistry.RegistrationOwner
+	toolingCalls int
+	reloadCalls  int
 }
 
 func (w *instructionsTestWorkspace) Config() *config.Config {
@@ -51,13 +59,48 @@ func (w *instructionsTestWorkspace) WorkingDir() string {
 }
 
 func (w *instructionsTestWorkspace) SetConfigField(_ config.Scope, key string, value any) error {
+	if w.mutationErr != nil {
+		return w.mutationErr
+	}
 	w.fields[key] = value
 	return nil
 }
 
 func (w *instructionsTestWorkspace) RemoveConfigField(_ config.Scope, key string) error {
+	if w.mutationErr != nil {
+		return w.mutationErr
+	}
 	w.fields[key] = nil
 	return nil
+}
+
+func (w *instructionsTestWorkspace) SetProviderToolingInstructions(_ config.Scope, owner providerregistry.RegistrationOwner, profile string) error {
+	w.toolingOwner, w.toolingCalls = owner, w.toolingCalls+1
+	if w.mutationErr != nil {
+		return w.mutationErr
+	}
+	w.fields["providers."+owner.ProviderID+".tooling_instructions"] = profile
+	return nil
+}
+
+func (w *instructionsTestWorkspace) ReloadProviderContextInstructions(context.Context, providerregistry.RegistrationOwner) error {
+	w.reloadCalls++
+	return w.mutationErr
+}
+
+func completeInstructionAction(t *testing.T, d *Instructions, action Action) {
+	t.Helper()
+	command, ok := action.(ActionCmd)
+	if !ok || command.Cmd == nil {
+		t.Fatalf("action = %#v, want command", action)
+	}
+	message, ok := command.Cmd().(ActionInstructionMutationCompleted)
+	if !ok {
+		t.Fatal("instruction command did not return completion")
+	}
+	if err := d.CompleteOperation(message); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (w *instructionsTestWorkspace) AgentInstructionSnapshot(context.Context) (agent.InstructionSnapshot, error) {
@@ -155,18 +198,18 @@ func TestInstructionsMetadataValuePersistsAndCanBeUnset(t *testing.T) {
 	dialog.cursor = index
 	dialog.metadataInput.SetValue("max")
 	dialog.editingMetadata = true
-	if _, ok := dialog.saveMetadataValue().(ActionInstructionsChanged); !ok {
-		t.Fatal("metadata save did not report instruction change")
+	action := dialog.saveMetadataValue()
+	if len(ws.fields) != 0 || dialog.items[index].value != "" {
+		t.Fatal("metadata save changed state before command")
 	}
+	completeInstructionAction(t, dialog, action)
 	if got := ws.fields["options.analysis_effort"]; got != "max" {
 		t.Fatalf("persisted analysis effort = %#v, want max", got)
 	}
 
 	dialog.metadataInput.SetValue("")
 	dialog.editingMetadata = true
-	if _, ok := dialog.saveMetadataValue().(ActionInstructionsChanged); !ok {
-		t.Fatal("metadata removal did not report instruction change")
-	}
+	completeInstructionAction(t, dialog, dialog.saveMetadataValue())
 	if got, ok := ws.fields["options.analysis_effort"]; !ok || got != nil {
 		t.Fatalf("removed analysis effort = %#v, present = %t", got, ok)
 	}
@@ -255,8 +298,20 @@ func TestInstructionsUsesProviderDeclaredNativeDefault(t *testing.T) {
 func TestInstructionsNativeTogglePersistsProviderSetting(t *testing.T) {
 	dialog, ws := newInstructionsTestDialog(t, codex.ID, config.ToolingInstructionsCrux)
 	dialog.cursor = instructionItemIndex(dialog.items, instrNativeToggle, config.ToolingInstructionsNative)
-	if _, ok := dialog.toggle().(ActionInstructionsChanged); !ok {
-		t.Fatal("native toggle did not report instruction change")
+	action := dialog.toggle()
+	if ws.toolingCalls != 0 || !dialog.items[dialog.cursor].disabled {
+		t.Fatal("toggle changed state before command")
+	}
+	command := action.(ActionCmd).Cmd
+	message := command().(ActionInstructionMutationCompleted)
+	if !dialog.items[dialog.cursor].disabled {
+		t.Fatal("command optimistically changed checkbox")
+	}
+	if ws.toolingOwner != dialog.providerOwner {
+		t.Fatalf("owner = %#v, want %#v", ws.toolingOwner, dialog.providerOwner)
+	}
+	if err := dialog.CompleteOperation(message); err != nil {
+		t.Fatal(err)
 	}
 	key := "providers." + codex.ID + ".tooling_instructions"
 	if got := ws.fields[key]; got != config.ToolingInstructionsNative {
@@ -670,5 +725,214 @@ func TestMarkdownPreviewJumpUsesRenderedPhysicalLines(t *testing.T) {
 	firstVisibleLine, _, _ := strings.Cut(ansi.Strip(preview.viewport.View()), "\n")
 	if !strings.Contains(firstVisibleLine, "SECOND SECTION MARKER") {
 		t.Fatalf("first visible line = %q, expected second section", firstVisibleLine)
+	}
+}
+
+func TestInstructionsMutationFailuresPreserveState(t *testing.T) {
+	for _, kind := range []instrItemKind{instrMode, instrNativeToggle, instrSection, instrMetadataValue} {
+		t.Run(fmt.Sprint(kind), func(t *testing.T) {
+			d, ws := newInstructionsTestDialogForModel(t, codex.ID, "gpt-5.6-sol", config.ToolingInstructionsCrux)
+			ws.mutationErr = errors.New("synthetic acknowledgement rejection")
+			id := ""
+			switch kind {
+			case instrMode:
+				id = "project"
+			case instrNativeToggle:
+				id = "native"
+			case instrSection:
+				for _, item := range d.items {
+					if item.kind == instrSection {
+						id = item.id
+						break
+					}
+				}
+			case instrMetadataValue:
+				id = "options.analysis_effort"
+			}
+			d.cursor = instructionItemIndex(d.items, kind, id)
+			if d.cursor < 0 {
+				t.Fatalf("missing %v %s", kind, id)
+			}
+			before := d.items[d.cursor]
+			var action Action
+			if kind == instrMetadataValue {
+				d.metadataInput.SetValue("max")
+				d.editingMetadata = true
+				action = d.saveMetadataValue()
+			} else {
+				action = d.toggle()
+			}
+			if len(ws.fields) != 0 || ws.toolingCalls != 0 {
+				t.Fatal("I/O performed before command")
+			}
+			message := action.(ActionCmd).Cmd().(ActionInstructionMutationCompleted)
+			if err := d.CompleteOperation(message); !errors.Is(err, ws.mutationErr) {
+				t.Fatalf("error = %v", err)
+			}
+			after := d.items[d.cursor]
+			if after.disabled != before.disabled || after.value != before.value || after.replaced != before.replaced {
+				t.Fatal("rejected change altered displayed state")
+			}
+			if len(ws.fields) != 0 || d.operationPending {
+				t.Fatal("rejected change persisted or left operation pending")
+			}
+		})
+	}
+}
+
+func TestInstructionsOwnerReplacementBeforeAndAfterCommand(t *testing.T) {
+	for _, beforeCommand := range []bool{true, false} {
+		t.Run(fmt.Sprint(beforeCommand), func(t *testing.T) {
+			d, ws := newInstructionsTestDialog(t, codex.ID, config.ToolingInstructionsCrux)
+			d.cursor = instructionItemIndex(d.items, instrNativeToggle, "native")
+			command := d.toggle().(ActionCmd).Cmd
+			replace := func() {
+				for index := range ws.surfaces {
+					if ws.surfaces[index].ID == codex.ID {
+						owner := *ws.surfaces[index].Owner
+						owner.ManifestVersion = "replacement"
+						ws.surfaces[index].Owner = &owner
+						return
+					}
+				}
+				t.Fatal("selected provider surface missing")
+			}
+			if beforeCommand {
+				replace()
+			}
+			message := command().(ActionInstructionMutationCompleted)
+			if !beforeCommand {
+				replace()
+			}
+			if err := d.CompleteOperation(message); err == nil || !strings.Contains(err.Error(), "selection changed") {
+				t.Fatalf("error = %v", err)
+			}
+			if !d.items[d.cursor].disabled {
+				t.Fatal("stale completion selected native checkbox")
+			}
+			if beforeCommand && ws.toolingCalls != 0 {
+				t.Fatal("stale command reached provider mutation")
+			}
+		})
+	}
+}
+
+func TestInstructionsRejectsArbitraryMetadataConfigPath(t *testing.T) {
+	d, ws := newInstructionsTestDialog(t, codex.ID, config.ToolingInstructionsCrux)
+	d.items = append(d.items, instrItem{kind: instrMetadataValue, id: "providers.other.api_key", label: "Untrusted control"})
+	d.cursor = len(d.items) - 1
+	d.metadataInput.SetValue("value")
+	message := d.saveMetadataValue().(ActionCmd).Cmd()
+	if _, ok := message.(util.InfoMsg); !ok {
+		t.Fatalf("message = %#v", message)
+	}
+	if len(ws.fields) != 0 {
+		t.Fatal("arbitrary control became configuration path")
+	}
+}
+
+func TestInstructionsEditorPreparationIsDeferred(t *testing.T) {
+	d, ws := newInstructionsTestDialog(t, codex.ID, config.ToolingInstructionsCrux)
+	d.providerContextPath = filepath.Join(t.TempDir(), "new", "provider.txt")
+	action := d.editProviderContextFile().(ActionCmd)
+	if _, err := os.Stat(d.providerContextPath); !os.IsNotExist(err) {
+		t.Fatalf("file created in Update: %v", err)
+	}
+	prepared := action.Cmd().(ActionInstructionEditorPrepared)
+	if prepared.Err != nil || prepared.Cmd == nil {
+		t.Fatalf("prepared = %#v", prepared)
+	}
+	if _, err := os.Stat(d.providerContextPath); err != nil {
+		t.Fatal(err)
+	}
+	if ws.reloadCalls != 0 {
+		t.Fatal("preparation published unedited content")
+	}
+	if err := d.CompleteOperation(ActionInstructionMutationCompleted{Operation: prepared.Operation, Err: errors.New("editor failed")}); err == nil {
+		t.Fatal("editor failure was lost")
+	}
+}
+
+func TestInstructionsModeAndSectionApplyOnlyAcknowledgedChanges(t *testing.T) {
+	d, ws := newInstructionsTestDialog(t, codex.ID, config.ToolingInstructionsCrux)
+	d.cursor = instructionItemIndex(d.items, instrMode, "project")
+	command := d.toggle().(ActionCmd).Cmd
+	if !d.items[d.cursor].disabled {
+		t.Fatal("mode selected before command")
+	}
+	completion := command().(ActionInstructionMutationCompleted)
+	if !d.items[d.cursor].disabled {
+		t.Fatal("mode selected before completion")
+	}
+	if err := d.CompleteOperation(completion); err != nil {
+		t.Fatal(err)
+	}
+	if d.items[d.cursor].disabled || ws.fields["options.instruction_mode"] != "project" {
+		t.Fatal("acknowledged mode was not selected")
+	}
+	for _, item := range d.items {
+		if item.kind == instrMode && item.id != "project" && !item.disabled {
+			t.Fatal("old mode remained selected")
+		}
+	}
+	sectionID := ""
+	for _, item := range d.items {
+		if item.kind == instrSection {
+			sectionID = item.id
+			break
+		}
+	}
+	d.cursor = instructionItemIndex(d.items, instrSection, sectionID)
+	if d.cursor < 0 {
+		t.Fatal("instruction sections missing")
+	}
+	command = d.toggle().(ActionCmd).Cmd
+	if d.items[d.cursor].disabled {
+		t.Fatal("section disabled before command")
+	}
+	completion = command().(ActionInstructionMutationCompleted)
+	if d.items[d.cursor].disabled {
+		t.Fatal("section disabled before completion")
+	}
+	if err := d.CompleteOperation(completion); err != nil {
+		t.Fatal(err)
+	}
+	if !d.items[d.cursor].disabled {
+		t.Fatal("acknowledged section was not disabled")
+	}
+	if got := ws.fields["options.disabled_instruction_sections"].([]string); !slices.Equal(got, []string{sectionID}) {
+		t.Fatalf("disabled sections = %#v", got)
+	}
+	completeInstructionAction(t, d, d.toggle())
+	if got := ws.fields["options.disabled_instruction_sections"].([]string); len(got) != 0 {
+		t.Fatalf("enabled sections = %#v", got)
+	}
+}
+
+func TestInstructionsOldCompletionDoesNotClearNewPendingMutation(t *testing.T) {
+	d, ws := newInstructionsTestDialog(t, codex.ID, config.ToolingInstructionsCrux)
+	d.cursor = instructionItemIndex(d.items, instrNativeToggle, "native")
+	first := d.toggle().(ActionCmd).Cmd().(ActionInstructionMutationCompleted)
+	if err := d.CompleteOperation(first); err != nil {
+		t.Fatal(err)
+	}
+	secondCommand := d.toggle().(ActionCmd).Cmd
+	if !d.operationPending {
+		t.Fatal("second operation did not become pending")
+	}
+	if err := d.CompleteOperation(first); err == nil {
+		t.Fatal("old completion was accepted")
+	}
+	if !d.operationPending || d.items[d.cursor].disabled {
+		t.Fatal("old completion altered pending state or checkbox")
+	}
+	if ws.toolingCalls != 1 {
+		t.Fatal("pending second operation performed early I/O")
+	}
+	if err := d.CompleteOperation(secondCommand().(ActionInstructionMutationCompleted)); err != nil {
+		t.Fatal(err)
+	}
+	if d.operationPending || !d.items[d.cursor].disabled {
+		t.Fatal("second acknowledgement was not applied")
 	}
 }

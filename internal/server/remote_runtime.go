@@ -8,6 +8,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
+	"unicode/utf8"
 
 	"github.com/example-git/crux/internal/backend"
 	"github.com/example-git/crux/internal/config"
@@ -105,6 +107,12 @@ func decodeRuntimeRequest(w http.ResponseWriter, r *http.Request, result any) er
 	if err := validateRuntimeJSON(data); err != nil {
 		return err
 	}
+	switch result.(type) {
+	case *proto.CreateWorkspaceRequest, *proto.UpdateRemoteRuntimeRequest:
+		if err := validateRuntimeProviderFields(data); err != nil {
+			return err
+		}
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(result); err != nil {
@@ -119,6 +127,9 @@ func decodeRuntimeRequest(w http.ResponseWriter, r *http.Request, result any) er
 // Reject duplicate keys and excessive nesting before decoding maps or base64
 // files. Otherwise encoding/json silently merges/replaces duplicate fields.
 func validateRuntimeJSON(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("private runtime JSON must be valid UTF-8")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	remaining := 1_000_000
@@ -171,6 +182,82 @@ func validateRuntimeJSON(data []byte) error {
 		return errors.New("private runtime request must contain exactly one JSON value")
 	}
 	return nil
+}
+
+// Inspect only the private proposal's provider fields. Raw values preserve an
+// explicit empty/null profile, which decoding into ProviderConfig's string
+// would otherwise silently turn into the omitted/default selection. Using the
+// same struct field matching as encoding/json also covers accepted key casing,
+// without assigning meaning to similarly named plugin configuration/schema keys.
+func validateRuntimeProviderFields(data []byte) error {
+	var request struct {
+		Runtime struct {
+			Providers []struct {
+				Config struct {
+					ToolingInstructions json.RawMessage `json:"tooling_instructions"`
+				} `json:"config"`
+			} `json:"providers"`
+			ProviderContextInstructions map[string]json.RawMessage `json:"provider_context_instructions"`
+		} `json:"runtime"`
+	}
+	if err := json.Unmarshal(data, &request); err != nil {
+		return errors.New("invalid private runtime provider fields")
+	}
+	for _, provider := range request.Runtime.Providers {
+		raw := provider.Config.ToolingInstructions
+		if len(raw) == 0 {
+			continue
+		}
+		var profile string
+		if json.Unmarshal(raw, &profile) != nil || (profile != config.ToolingInstructionsCrux && profile != config.ToolingInstructionsNative) {
+			return errors.New("explicit private runtime tooling instructions must be crux or native")
+		}
+	}
+	for _, raw := range request.Runtime.ProviderContextInstructions {
+		if !validRuntimeInstructionString(raw) {
+			return errors.New("private runtime provider instructions must be Unicode strings")
+		}
+	}
+	return nil
+}
+
+// encoding/json replaces unpaired UTF-16 surrogate escapes with U+FFFD, even
+// when the input bytes are valid UTF-8. Provider instruction text must survive
+// admission unchanged; an actual U+FFFD character and valid pairs are allowed.
+func validRuntimeInstructionString(raw []byte) bool {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) < 2 || raw[0] != '"' {
+		return false
+	}
+	for i := 1; i < len(raw)-1; i++ {
+		if raw[i] != '\\' {
+			continue
+		}
+		i++
+		if raw[i] != 'u' {
+			continue
+		}
+		// The structural decoder has already checked escape syntax and length.
+		value, err := strconv.ParseUint(string(raw[i+1:i+5]), 16, 16)
+		if err != nil {
+			return false
+		}
+		i += 4
+		switch {
+		case value >= 0xdc00 && value <= 0xdfff:
+			return false
+		case value >= 0xd800 && value <= 0xdbff:
+			if i+6 >= len(raw) || raw[i+1] != '\\' || raw[i+2] != 'u' {
+				return false
+			}
+			low, err := strconv.ParseUint(string(raw[i+3:i+7]), 16, 16)
+			if err != nil || low < 0xdc00 || low > 0xdfff {
+				return false
+			}
+			i += 6
+		}
+	}
+	return true
 }
 
 func (c *controllerV1) handlePutWorkspaceRuntime(w http.ResponseWriter, r *http.Request) {

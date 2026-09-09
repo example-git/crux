@@ -9,6 +9,8 @@ import (
 )
 
 func TestCollectRemoteRuntimeUsesAcceptedClientBundleGeneration(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	store, _, paths, status := setupReloadPluginStore(t)
 	before := store.RuntimeSnapshot()
 	proposal, err := store.CollectRemoteRuntime(t.Context(), 1)

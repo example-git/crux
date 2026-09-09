@@ -231,6 +231,9 @@ type Workspace interface {
 	// Config mutations (proxied to server in client mode)
 	UpdatePreferredModel(scope config.Scope, modelType config.SelectedModelType, model config.SelectedModel, owner providerregistry.RegistrationOwner) (config.AgentModelState, error)
 	SetProviderDisabled(scope config.Scope, owner providerregistry.RegistrationOwner, disabled bool) error
+	SetProviderToolingInstructions(scope config.Scope, owner providerregistry.RegistrationOwner, profile string) error
+	RemoveProviderToolingInstructions(scope config.Scope, owner providerregistry.RegistrationOwner) error
+	ReloadProviderContextInstructions(ctx context.Context, owner providerregistry.RegistrationOwner) error
 	SetCompactMode(scope config.Scope, enabled bool) error
 	SetProviderAPIKey(scope config.Scope, providerID string, apiKey any) error
 	RemoveProviderCredentials(scope config.Scope, owner providerregistry.RegistrationOwner) error

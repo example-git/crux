@@ -40,6 +40,9 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 			redact.RegisterJSONValue(*definition.GeminiProjectID)
 		}
 	}
+	for _, content := range snapshot.clientRuntime.proposal.ProviderContextInstructions {
+		redact.RegisterJSONValue(content)
+	}
 	for _, binding := range snapshot.clientRuntime.proposal.Credentials {
 		if binding.Account != nil {
 			registerAccountSecrets(*binding.Account)
@@ -49,7 +52,7 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion      = 1
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v15"
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v16"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -60,16 +63,17 @@ const (
 // Configurations contain resolved client values; only Credentials carries the
 // provider's API/OAuth account token. Bundles retain original bytes and digests.
 type RemoteRuntimeProposal struct {
-	Version               int                                 `json:"version"`
-	Revision              uint64                              `json:"revision"`
-	Digest                string                              `json:"digest"`
-	Bundles               []providerplugin.TransportBundle    `json:"bundles"`
-	Providers             []RemoteProviderDefinition          `json:"providers"`
-	Models                map[SelectedModelType]SelectedModel `json:"models"`
-	Controls              RemoteRuntimeControls               `json:"controls"`
-	Credentials           []RemoteCredentialBinding           `json:"credentials"`
-	Images                *ImageConfiguration                 `json:"images,omitempty"`
-	CredentialEnvironment map[string]string                   `json:"credential_environment,omitempty"`
+	Version                     int                                 `json:"version"`
+	Revision                    uint64                              `json:"revision"`
+	Digest                      string                              `json:"digest"`
+	Bundles                     []providerplugin.TransportBundle    `json:"bundles"`
+	Providers                   []RemoteProviderDefinition          `json:"providers"`
+	Models                      map[SelectedModelType]SelectedModel `json:"models"`
+	Controls                    RemoteRuntimeControls               `json:"controls"`
+	Credentials                 []RemoteCredentialBinding           `json:"credentials"`
+	Images                      *ImageConfiguration                 `json:"images,omitempty"`
+	CredentialEnvironment       map[string]string                   `json:"credential_environment,omitempty"`
+	ProviderContextInstructions map[string]string                   `json:"provider_context_instructions,omitempty"`
 }
 
 type RemoteProviderDefinition struct {
@@ -250,6 +254,9 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	}
 	if len(proposal.Bundles) > MaxRemoteRuntimeBundles || len(proposal.Providers) == 0 || len(proposal.Providers) > MaxRemoteRuntimeProviders || len(proposal.Credentials) > MaxRemoteRuntimeProviders {
 		return nil, errors.New("runtime item count exceeds receiver limits")
+	}
+	if err := validateProviderContextInstructions(proposal); err != nil {
+		return nil, err
 	}
 	digest, err := RemoteRuntimeDigest(proposal)
 	if err != nil {
@@ -451,6 +458,9 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	cfg.Options.Debug = debug
 	cfg.captureExplicitModels()
 	cfg.bindProviderScan(scan)
+	if err := cfg.ValidateProviderToolingInstructions(); err != nil {
+		return nil, errors.New("client provider tooling instruction profile is invalid")
+	}
 	for id, provider := range providers.Seq2() {
 		if _, ok := providerOwnerForProvider(cfg, registry, id, provider); !ok {
 			return nil, errors.New("client provider owner cannot be activated")

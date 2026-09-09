@@ -1693,7 +1693,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
-	case dialog.ActionPreviewInstructions:
+	case dialog.ActionPreviewInstructions, dialog.ActionInstructionsChanged,
+		dialog.ActionInstructionMutationCompleted, dialog.ActionInstructionEditorPrepared, dialog.ActionInstructionEditorExited:
 		cmds = append(cmds, m.handleDialogAction(msg))
 	default:
 		if m.dialog.HasDialogs() {
@@ -2248,23 +2249,80 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 
 	// Instructions config changed — dialog stays open for more changes.
 	case dialog.ActionInstructionsChanged:
+		ws := m.com.Workspace
 		cmds = append(cmds, func() tea.Msg {
-			cfg := m.com.Config()
+			cfg := ws.Config()
 			if cfg == nil {
 				return util.ReportError(errors.New("configuration not found"))()
 			}
-			if err := m.com.Workspace.UpdateAgentModel(context.TODO(), cfg.AgentModelState()); err != nil {
+			if err := ws.UpdateAgentModel(context.TODO(), cfg.AgentModelState()); err != nil {
 				return util.ReportError(err)()
 			}
 			return nil
 		})
+	case dialog.ActionInstructionMutationCompleted:
+		if msg.Operation.Dialog == nil {
+			if msg.Err != nil {
+				cmds = append(cmds, util.ReportError(msg.Err))
+			}
+			break
+		}
+		var err error
+		if m.dialog.Dialog(dialog.InstructionsID) == msg.Operation.Dialog {
+			err = msg.Operation.Dialog.CompleteOperation(msg)
+		} else {
+			err = msg.Operation.Dialog.FinishOperation(msg)
+		}
+		if err != nil {
+			cmds = append(cmds, util.ReportError(err))
+			break
+		}
+		// Persistence/publication already succeeded. Closing the dialog only
+		// suppresses its display update; the accepted change still reaches the agent.
+		cmds = append(cmds, msg.Operation.RebuildAgent(m.com.Workspace))
+
+	case dialog.ActionInstructionEditorPrepared:
+		if msg.Operation.Dialog == nil || m.dialog.Dialog(dialog.InstructionsID) != msg.Operation.Dialog {
+			if msg.Operation.Dialog != nil {
+				msg.Operation.Dialog.CancelPreparedEditor(msg.Operation)
+			}
+			if msg.Err != nil {
+				cmds = append(cmds, util.ReportError(msg.Err))
+			}
+			break
+		}
+		err := msg.Err
+		if currentErr := msg.Operation.Dialog.CheckOperation(msg.Operation); currentErr != nil {
+			err = currentErr
+		}
+		if err != nil {
+			cmds = append(cmds, m.handleDialogAction(dialog.ActionInstructionMutationCompleted{Operation: msg.Operation, Err: err}))
+		} else {
+			cmds = append(cmds, msg.Cmd)
+		}
+	case dialog.ActionInstructionEditorExited:
+		if msg.Operation.Dialog == nil {
+			if msg.Err != nil {
+				cmds = append(cmds, util.ReportError(msg.Err))
+			}
+			break
+		}
+		err := msg.Err
+		if currentErr := msg.Operation.Dialog.CheckOperation(msg.Operation); currentErr != nil {
+			err = currentErr
+		}
+		if err != nil {
+			cmds = append(cmds, m.handleDialogAction(dialog.ActionInstructionMutationCompleted{Operation: msg.Operation, Err: err}))
+		} else {
+			cmds = append(cmds, msg.Operation.ReloadEditedInstructions(m.com.Workspace))
+		}
 	case dialog.ActionPreviewInstructions:
 		preview := dialog.NewInstructionsPreview(m.com, msg.Sections, m.width)
 		m.dialog.OpenDialog(preview)
 		cmds = append(cmds, preview.StartLoading())
 	case dialog.ActionPreviewInstructionSectionToggled:
 		if instructions, ok := m.dialog.Dialog(dialog.InstructionsID).(*dialog.Instructions); ok {
-			instructions.SetSectionDisabled(msg.ID, msg.Disabled)
+			cmds = append(cmds, m.handleDialogAction(instructions.SetSectionDisabled(msg.ID, msg.Disabled)))
 		}
 		if msg.Cmd != nil {
 			cmds = append(cmds, msg.Cmd)

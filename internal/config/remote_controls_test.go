@@ -10,6 +10,8 @@ import (
 )
 
 func TestCollectRemoteRuntimePreservesClientControls(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	store, _, _, _ := setupReloadPluginStore(t)
 	require.NoError(t, store.SetConfigFields(ScopeGlobal, map[string]any{
 		"options.disable_auto_summarize":        true,
@@ -52,6 +54,8 @@ func TestCollectRemoteRuntimePreservesClientControls(t *testing.T) {
 }
 
 func TestRemoteRuntimeControlsRejectInvalidReplacement(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	proposal := remoteRuntimeFixture(t, "minimal.plugin")
 	proposal.Controls = RemoteRuntimeControls{InstructionMode: "project", AnalysisEffort: "high"}
 	proposal = sealRemoteRuntime(t, proposal)
@@ -83,6 +87,8 @@ func TestRemoteRuntimeControlsRejectInvalidReplacement(t *testing.T) {
 }
 
 func TestClientRuntimeSettingValidation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	for key, value := range map[string]any{
 		"options.analysis_effort":               "unlimited",
 		"options.response_verbosity":            1,

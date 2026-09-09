@@ -158,7 +158,7 @@ func (p *Prompt) BuildInstructions(ctx context.Context, provider, model string, 
 }
 
 func (p *Prompt) BuildInstructionsWithSnapshot(ctx context.Context, provider, model string, store *config.ConfigStore, snapshot config.RuntimeSnapshot) (fantasy.Instructions, error) {
-	return p.buildLifecycleInstructions(ctx, provider, model, store, snapshot.Config(), snapshot.Resolve, Lifecycle{Stage: LifecycleDefault})
+	return p.buildLifecycleInstructions(ctx, provider, model, store, snapshot, Lifecycle{Stage: LifecycleDefault})
 }
 
 func (p *Prompt) BuildLifecycle(ctx context.Context, provider, model string, store *config.ConfigStore, lifecycle Lifecycle) (string, error) {
@@ -171,14 +171,15 @@ func (p *Prompt) BuildLifecycle(ctx context.Context, provider, model string, sto
 
 func (p *Prompt) BuildLifecycleInstructions(ctx context.Context, provider, model string, store *config.ConfigStore, lifecycle Lifecycle) (fantasy.Instructions, error) {
 	snapshot := store.RuntimeSnapshot()
-	return p.buildLifecycleInstructions(ctx, provider, model, store, snapshot.Config(), snapshot.Resolve, lifecycle)
+	return p.buildLifecycleInstructions(ctx, provider, model, store, snapshot, lifecycle)
 }
 
 func (p *Prompt) BuildLifecycleInstructionsWithSnapshot(ctx context.Context, provider, model string, store *config.ConfigStore, snapshot config.RuntimeSnapshot, lifecycle Lifecycle) (fantasy.Instructions, error) {
-	return p.buildLifecycleInstructions(ctx, provider, model, store, snapshot.Config(), snapshot.Resolve, lifecycle)
+	return p.buildLifecycleInstructions(ctx, provider, model, store, snapshot, lifecycle)
 }
 
-func (p *Prompt) buildLifecycleInstructions(ctx context.Context, provider, model string, store *config.ConfigStore, cfg *config.Config, resolve func(string) (string, error), lifecycle Lifecycle) (fantasy.Instructions, error) {
+func (p *Prompt) buildLifecycleInstructions(ctx context.Context, provider, model string, store *config.ConfigStore, snapshot config.RuntimeSnapshot, lifecycle Lifecycle) (fantasy.Instructions, error) {
+	cfg, resolve := snapshot.Config(), snapshot.Resolve
 	if err := validateLifecycle(lifecycle); err != nil {
 		return fantasy.Instructions{}, err
 	}
@@ -244,9 +245,16 @@ func (p *Prompt) buildLifecycleInstructions(ctx context.Context, provider, model
 		Stability: renderedStability,
 		Text:      builder.String(),
 	}
-	providerInstructions, err := p.providerInstructions(provider)
-	if err != nil {
-		return fantasy.Instructions{}, err
+	var providerInstructions string
+	if p.name == "coder" && provider != "" {
+		var handled bool
+		providerInstructions, handled, err = snapshot.ClientProviderContextInstructions(provider)
+		if !handled {
+			providerInstructions, err = p.providerInstructions(provider)
+		}
+		if err != nil {
+			return fantasy.Instructions{}, err
+		}
 	}
 	var instructions fantasy.Instructions
 	if p.name == "coder" {

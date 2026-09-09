@@ -27,6 +27,7 @@ import (
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/example-git/crux/internal/ui/util"
+	"github.com/example-git/crux/internal/workspace"
 	"github.com/tidwall/gjson"
 )
 
@@ -85,6 +86,11 @@ type Instructions struct {
 	projectInstrPath    string
 	providerContextPath string
 	providerID          string
+	providerModel       string
+	providerOwner       providerregistry.RegistrationOwner
+	providerOwnerSet    bool
+	operationGeneration uint64
+	operationPending    bool
 	metadataInput       textinput.Model
 	editingMetadata     bool
 	viewport            viewport.Model
@@ -182,9 +188,7 @@ func NewInstructions(com *common.Common) *Instructions {
 		runtimeHeader = surface.Name + " Runtime Controls"
 	}
 	if len(surface.RuntimeControls) > 0 {
-		if len(surface.RuntimeControls) > 0 {
 		items = append(items, instrItem{kind: instrHeader, label: runtimeHeader})
-	}
 	}
 	for i := range surface.RuntimeControls {
 		control := surface.RuntimeControls[i]
@@ -242,6 +246,7 @@ func NewInstructions(com *common.Common) *Instructions {
 		projectInstrPath:    projPath,
 		providerContextPath: providerContextPath,
 		providerID:          providerID,
+		providerModel:       selectedModel.Model,
 		metadataInput:       metadataInput,
 		viewport:            viewport.New(),
 		followCursor:        true,
@@ -252,6 +257,9 @@ func NewInstructions(com *common.Common) *Instructions {
 			Edit:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit file")),
 			Close:  CloseKey,
 		},
+	}
+	if surface.Owner != nil {
+		d.providerOwner, d.providerOwnerSet = *surface.Owner, true
 	}
 	// Start cursor on first non-header item.
 	d.updateReplacedSections()
@@ -334,15 +342,7 @@ func (d *Instructions) toggle() Action {
 
 	switch item.kind {
 	case instrMode:
-		// Radio: select this mode, deselect others.
-		for i := range d.items {
-			if d.items[i].kind == instrMode {
-				d.items[i].disabled = d.items[i].id != item.id
-			}
-		}
-		_ = d.com.Workspace.SetConfigField(config.ScopeGlobal, "options.instruction_mode", item.id)
-		return ActionInstructionsChanged{}
-
+		return d.mutate(instructionMutation{kind: instrMode, id: item.id, value: item.id})
 	case instrNativeToggle:
 		if item.unavailable || d.providerID == "" {
 			return nil
@@ -351,23 +351,12 @@ func (d *Instructions) toggle() Action {
 		if !item.disabled {
 			profile = config.ToolingInstructionsCrux
 		}
-		if err := d.com.Workspace.SetConfigField(
-			config.ScopeGlobal,
-			"providers."+d.providerID+".tooling_instructions",
-			profile,
-		); err != nil {
-			return ActionCmd{Cmd: util.ReportError(err)}
-		}
-		item.disabled = !item.disabled
-		d.updateReplacedSections()
-		return ActionInstructionsChanged{}
-
+		return d.mutate(instructionMutation{kind: instrNativeToggle, id: item.id, value: profile, disabled: !item.disabled})
 	case instrSection:
 		if item.replaced {
 			return nil
 		}
-		d.SetSectionDisabled(item.id, !item.disabled)
-		return ActionInstructionsChanged{}
+		return d.SetSectionDisabled(item.id, !item.disabled)
 
 	case instrProviderContextEdit:
 		return d.editProviderContextFile()
@@ -392,25 +381,22 @@ func (d *Instructions) toggle() Action {
 
 func (d *Instructions) saveMetadataValue() Action {
 	item := &d.items[d.cursor]
+	// Manifest control identifiers are not arbitrary configuration paths.
+	switch item.id {
+	case "options.response_verbosity", "options.analysis_effort":
+	default:
+		return ActionCmd{Cmd: util.ReportError(fmt.Errorf("provider runtime control %q does not support editing here", item.id))}
+	}
 	value := strings.TrimSpace(d.metadataInput.Value())
-	if value == "" {
-		if err := d.com.Workspace.RemoveConfigField(config.ScopeGlobal, item.id); err != nil {
-			return ActionCmd{Cmd: util.ReportError(err)}
-		}
-		item.value = ""
-	} else {
-		parsed, ok := parseRuntimeControlValue(item.control, value)
+	var parsed any
+	if value != "" {
+		var ok bool
+		parsed, ok = parseRuntimeControlValue(item.control, value)
 		if !ok {
 			return ActionCmd{Cmd: util.ReportError(fmt.Errorf("invalid %s value %q", item.label, value))}
 		}
-		if err := d.com.Workspace.SetConfigField(config.ScopeGlobal, item.id, parsed); err != nil {
-			return ActionCmd{Cmd: util.ReportError(err)}
-		}
-		item.value = value
 	}
-	d.editingMetadata = false
-	d.metadataInput.Blur()
-	return ActionInstructionsChanged{}
+	return d.mutate(instructionMutation{kind: instrMetadataValue, id: item.id, value: parsed, display: value, remove: value == ""})
 }
 
 func (d *Instructions) updateReplacedSections() {
@@ -428,20 +414,197 @@ func (d *Instructions) updateReplacedSections() {
 	}
 }
 
-func (d *Instructions) SetSectionDisabled(id string, disabled bool) {
-	for index := range d.items {
-		if d.items[index].kind == instrSection && d.items[index].id == id {
-			d.items[index].disabled = disabled
-			break
-		}
-	}
-	var disabledSections []string
+func (d *Instructions) SetSectionDisabled(id string, disabled bool) Action {
+	disabledSections := []string{}
 	for _, item := range d.items {
-		if item.kind == instrSection && item.disabled {
+		if item.kind == instrSection && ((item.id == id && disabled) || (item.id != id && item.disabled)) {
 			disabledSections = append(disabledSections, item.id)
 		}
 	}
-	_ = d.com.Workspace.SetConfigField(config.ScopeGlobal, "options.disabled_instruction_sections", disabledSections)
+	return d.mutate(instructionMutation{kind: instrSection, id: id, value: disabledSections, disabled: disabled})
+}
+
+// InstructionOperation binds asynchronous work to the dialog and exact provider
+// selection that started it. Its payload is immutable once a command starts.
+type InstructionOperation struct {
+	Dialog              *Instructions
+	generation          uint64
+	providerID, modelID string
+	owner               providerregistry.RegistrationOwner
+	ownerSet            bool
+	mutation            instructionMutation
+}
+
+type instructionMutation struct {
+	kind             instrItemKind
+	id               string
+	value            any
+	display          string
+	disabled, remove bool
+}
+
+type ActionInstructionMutationCompleted struct {
+	Operation InstructionOperation
+	Err       error
+}
+
+type ActionInstructionEditorPrepared struct {
+	Operation InstructionOperation
+	Cmd       tea.Cmd
+	Err       error
+}
+
+type ActionInstructionEditorExited struct {
+	Operation InstructionOperation
+	Err       error
+}
+
+func (op InstructionOperation) validateSelection(ws workspace.Workspace) error {
+	cfg := ws.Config()
+	if cfg == nil {
+		return fmt.Errorf("configuration not found")
+	}
+	selected := cfg.Models[config.SelectedModelTypeLarge]
+	surface, _ := providerregistry.LookupSurface(ws.ProviderSurfaces(), selected.Provider)
+	if selected.Provider != op.providerID || selected.Model != op.modelID ||
+		(surface.Owner != nil) != op.ownerSet || (surface.Owner != nil && *surface.Owner != op.owner) {
+		return fmt.Errorf("instruction provider selection changed; reopen the instructions dialog")
+	}
+	return nil
+}
+
+// CheckOperation runs only on the UI thread, including when an editor returns.
+func (d *Instructions) CheckOperation(op InstructionOperation) error {
+	if op.Dialog != d || !d.operationPending || op.generation != d.operationGeneration {
+		return fmt.Errorf("instruction operation is no longer current")
+	}
+	return op.validateSelection(d.com.Workspace)
+}
+
+func (d *Instructions) beginOperation(mutation instructionMutation) (InstructionOperation, error) {
+	if d.operationPending {
+		return InstructionOperation{}, fmt.Errorf("an instruction change is still pending")
+	}
+	op := InstructionOperation{Dialog: d, generation: d.operationGeneration + 1,
+		providerID: d.providerID, modelID: d.providerModel, owner: d.providerOwner,
+		ownerSet: d.providerOwnerSet, mutation: mutation}
+	if err := op.validateSelection(d.com.Workspace); err != nil {
+		return InstructionOperation{}, err
+	}
+	d.operationGeneration, d.operationPending = op.generation, true
+	return op, nil
+}
+
+func (d *Instructions) mutate(mutation instructionMutation) Action {
+	op, err := d.beginOperation(mutation)
+	if err != nil {
+		return ActionCmd{Cmd: util.ReportError(err)}
+	}
+	ws := d.com.Workspace
+	return ActionCmd{Cmd: func() tea.Msg {
+		err := op.validateSelection(ws)
+		if err == nil {
+			switch mutation.kind {
+			case instrNativeToggle:
+				if !op.ownerSet {
+					err = fmt.Errorf("instruction provider owner is unavailable")
+				} else {
+					err = ws.SetProviderToolingInstructions(config.ScopeGlobal, op.owner, mutation.value.(string))
+				}
+			case instrMode:
+				err = ws.SetConfigField(config.ScopeGlobal, "options.instruction_mode", mutation.value)
+			case instrSection:
+				err = ws.SetConfigField(config.ScopeGlobal, "options.disabled_instruction_sections", mutation.value)
+			case instrMetadataValue:
+				if mutation.remove {
+					err = ws.RemoveConfigField(config.ScopeGlobal, mutation.id)
+				} else {
+					err = ws.SetConfigField(config.ScopeGlobal, mutation.id, mutation.value)
+				}
+			}
+		}
+		return ActionInstructionMutationCompleted{Operation: op, Err: err}
+	}}
+}
+
+// FinishOperation completes the execution lifecycle even when its dialog has
+// closed. Display state is applied separately only while that dialog is open.
+func (d *Instructions) FinishOperation(msg ActionInstructionMutationCompleted) error {
+	if err := d.CheckOperation(msg.Operation); err != nil {
+		if msg.Operation.generation == d.operationGeneration {
+			d.operationPending = false
+		}
+		return err
+	}
+	d.operationPending = false
+	return msg.Err
+}
+
+// CancelPreparedEditor cancels work before the terminal editor has launched.
+// After editor exit, saved changes must be published regardless of dialog state.
+func (d *Instructions) CancelPreparedEditor(op InstructionOperation) {
+	if op.Dialog == d && op.generation == d.operationGeneration {
+		d.operationPending = false
+	}
+}
+
+// CompleteOperation applies acknowledged state imperatively on the UI thread.
+func (d *Instructions) CompleteOperation(msg ActionInstructionMutationCompleted) error {
+	if err := d.FinishOperation(msg); err != nil {
+		return err
+	}
+
+	mutation := msg.Operation.mutation
+	for i := range d.items {
+		item := &d.items[i]
+		if item.kind != mutation.kind {
+			continue
+		}
+		if mutation.kind == instrMode {
+			item.disabled = item.id != mutation.id
+		} else if item.id == mutation.id {
+			if mutation.kind == instrMetadataValue {
+				item.value = mutation.display
+			} else {
+				item.disabled = mutation.disabled
+			}
+		}
+	}
+	if mutation.kind == instrMetadataValue {
+		d.editingMetadata = false
+		d.metadataInput.Blur()
+	}
+	d.updateReplacedSections()
+	return nil
+}
+
+// ReloadEditedInstructions runs after the editor has returned successfully.
+func (op InstructionOperation) ReloadEditedInstructions(ws workspace.Workspace) tea.Cmd {
+	return func() tea.Msg {
+		err := op.validateSelection(ws)
+		if err == nil && op.mutation.kind == instrProviderContextEdit {
+			if !op.ownerSet {
+				err = fmt.Errorf("instruction provider owner is unavailable")
+			} else {
+				err = ws.ReloadProviderContextInstructions(context.Background(), op.owner)
+			}
+		}
+		return ActionInstructionMutationCompleted{Operation: op, Err: err}
+	}
+}
+
+// RebuildAgent re-reads the acknowledged configuration and checks the captured
+// selection again before invoking the workspace agent update.
+func (op InstructionOperation) RebuildAgent(ws workspace.Workspace) tea.Cmd {
+	return func() tea.Msg {
+		if err := op.validateSelection(ws); err != nil {
+			return util.ReportError(err)()
+		}
+		if err := ws.UpdateAgentModel(context.Background(), ws.Config().AgentModelState()); err != nil {
+			return util.ReportError(err)()
+		}
+		return nil
+	}
 }
 
 func (d *Instructions) previewInstructionsCmd() tea.Cmd {
@@ -494,25 +657,43 @@ func (d *Instructions) editFile(path, initialContent string) Action {
 	if path == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	kind := instrAction
+	if path == d.providerContextPath {
+		kind = instrProviderContextEdit
+	}
+	op, err := d.beginOperation(instructionMutation{kind: kind})
+	if err != nil {
 		return ActionCmd{Cmd: util.ReportError(err)}
 	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.WriteFile(path, []byte(initialContent), 0o600); err != nil {
-			return ActionCmd{Cmd: util.ReportError(err)}
+	ws := d.com.Workspace
+	return ActionCmd{Cmd: func() tea.Msg {
+		prepared := ActionInstructionEditorPrepared{Operation: op}
+		if err := op.validateSelection(ws); err != nil {
+			prepared.Err = err
+			return prepared
 		}
-	} else if err != nil {
-		return ActionCmd{Cmd: util.ReportError(err)}
-	}
-
-	editorName := os.Getenv("EDITOR")
-	if editorName == "" {
-		editorName = "vi"
-	}
-	cmd := exec.CommandContext(context.Background(), editorName, path)
-	return ActionCmd{Cmd: tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return ActionInstructionsChanged{}
-	})}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			prepared.Err = err
+			return prepared
+		}
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			if err := os.WriteFile(path, []byte(initialContent), 0o600); err != nil {
+				prepared.Err = err
+				return prepared
+			}
+		} else if err != nil {
+			prepared.Err = err
+			return prepared
+		}
+		editorName := os.Getenv("EDITOR")
+		if editorName == "" {
+			editorName = "vi"
+		}
+		prepared.Cmd = tea.ExecProcess(exec.CommandContext(context.Background(), editorName, path), func(err error) tea.Msg {
+			return ActionInstructionEditorExited{Operation: op, Err: err}
+		})
+		return prepared
+	}}
 }
 
 func (d *Instructions) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {

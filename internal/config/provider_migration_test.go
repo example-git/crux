@@ -12,6 +12,29 @@ import (
 	"github.com/example-git/crux/internal/providerregistry"
 )
 
+func TestProviderOwnershipMigrationRequiresOnlyConfiguredPaths(t *testing.T) {
+	for _, path := range []string{"", "."} {
+		t.Run("path="+path, func(t *testing.T) {
+			directory := t.TempDir()
+			t.Chdir(directory)
+			store := &ConfigStore{globalDataPath: path}
+			err := store.migrateProviderReferences(map[string]ProviderOwnerReference{
+				"custom": {Type: ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat},
+			}, nil, nil)
+			if path == "" {
+				require.NoError(t, err, "an in-memory store has no durable file to migrate")
+			} else {
+				require.ErrorContains(t, err, "no global config path configured")
+			}
+			_, err = store.configPath(ScopeGlobal)
+			require.Error(t, err, "explicit persistence must still reject an unconfigured or invalid path")
+			entries, err := os.ReadDir(directory)
+			require.NoError(t, err)
+			require.Empty(t, entries, "migration must not create locks, journals or temporary files")
+		})
+	}
+}
+
 func TestPreparedProviderMigrationValidatesBackupBeforeCleanup(t *testing.T) {
 	for _, scenario := range []string{"valid", "external", "absent", "directory-symlink", "backup-symlink"} {
 		t.Run(scenario, func(t *testing.T) {
