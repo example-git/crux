@@ -1,6 +1,7 @@
 package fsext
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -124,37 +125,54 @@ func LookupClosestBounded(dir, stopDir, target string) (string, bool) {
 // stopDir, then terminates. If stopDir is empty, only dir itself is
 // searched.
 func LookupBounded(dir, stopDir string, targets ...string) ([]string, error) {
+	found, _, err := lookupBounded(context.Background(), dir, stopDir, nil, targets...)
+	return found, err
+}
+
+func lookupBounded(ctx context.Context, dir, stopDir string, replacement *createdFile, targets ...string) ([]string, []string, error) {
 	if len(targets) == 0 {
-		return nil, nil
+		return nil, nil, ctx.Err()
 	}
 
-	var found []string
+	var found, projected []string
 
 	err := traverseUpBounded(dir, stopDir, func(cwd string, owner int) error {
 		for _, target := range targets {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			fpath := filepath.Join(cwd, target)
 			err := probeEnt(fpath, owner)
-
-			// skip to the next file on permission denied
-			if errors.Is(err, os.ErrNotExist) ||
-				errors.Is(err, os.ErrPermission) {
-				continue
-			}
-
-			if err != nil {
+			if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, os.ErrPermission) {
 				return fmt.Errorf("error probing file %s: %w", fpath, err)
 			}
-
-			found = append(found, fpath)
+			present := err == nil
+			if present {
+				found = append(found, fpath)
+			}
+			if replacement != nil {
+				matches, err := replacement.readThrough(ctx, fpath)
+				if err != nil {
+					return err
+				}
+				if matches {
+					// A same-directory temporary renamed into place belongs to
+					// the writing process, including when replacing another owner.
+					present = owner == -1 || owner == os.Geteuid()
+				}
+				if present {
+					projected = append(projected, fpath)
+				}
+			}
 		}
 
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return found, nil
+	return found, projected, ctx.Err()
 }
 
 // traverseUp walks up from given directory up until filesystem root reached.
