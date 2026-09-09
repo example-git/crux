@@ -23,7 +23,7 @@ func TestEnrollmentPairsClientForPinnedMutualTLS(t *testing.T) {
 	setConnectionRoot(t, t.TempDir())
 	_, err := EnsureServerIdentity(t.Context())
 	require.NoError(t, err)
-	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = enrollment.Close() })
 
@@ -64,7 +64,7 @@ func TestEnrollmentListenerExpiresWithoutClient(t *testing.T) {
 	setConnectionRoot(t, t.TempDir())
 	_, err := EnsureServerIdentity(t.Context())
 	require.NoError(t, err)
-	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", 50*time.Millisecond)
+	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", 50*time.Millisecond, approveEnrollmentForTest)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = enrollment.Close() })
 
@@ -90,7 +90,7 @@ func TestEnrollmentTokenAuthorizesExactlyOneConcurrentClient(t *testing.T) {
 	setConnectionRoot(t, t.TempDir())
 	_, err := EnsureServerIdentity(t.Context())
 	require.NoError(t, err)
-	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = enrollment.Close() })
 	setup, err := DecodeEnrollmentSetup(enrollment.SetupCode())
@@ -153,7 +153,7 @@ func TestEnrollmentAuthorizationFailureReleasesSoleReservation(t *testing.T) {
 	duplicate, err := NewClientIdentity("duplicate")
 	require.NoError(t, err)
 	require.NoError(t, AuthorizeClient(t.Context(), "duplicate", duplicate.Certificate))
-	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = enrollment.Close() })
 	setup, err := DecodeEnrollmentSetup(enrollment.SetupCode())
@@ -180,7 +180,7 @@ func TestEnrollmentRejectsWrongFingerprintTokenExpiryAndReplay(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("fingerprint", func(t *testing.T) {
-		enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+		enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = enrollment.Close() })
 		setup, err := DecodeEnrollmentSetup(enrollment.SetupCode())
@@ -191,7 +191,7 @@ func TestEnrollmentRejectsWrongFingerprintTokenExpiryAndReplay(t *testing.T) {
 	})
 
 	t.Run("token", func(t *testing.T) {
-		enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+		enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = enrollment.Close() })
 		setup, err := DecodeEnrollmentSetup(enrollment.SetupCode())
@@ -202,7 +202,7 @@ func TestEnrollmentRejectsWrongFingerprintTokenExpiryAndReplay(t *testing.T) {
 	})
 
 	t.Run("expiry", func(t *testing.T) {
-		enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+		enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 		require.NoError(t, err)
 		t.Cleanup(func() { _ = enrollment.Close() })
 		setup, err := DecodeEnrollmentSetup(enrollment.SetupCode())
@@ -213,7 +213,7 @@ func TestEnrollmentRejectsWrongFingerprintTokenExpiryAndReplay(t *testing.T) {
 	})
 
 	t.Run("replay", func(t *testing.T) {
-		enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+		enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 		require.NoError(t, err)
 		_, err = Pair(t.Context(), "first", enrollment.SetupCode())
 		require.NoError(t, err)
@@ -269,7 +269,7 @@ func TestEnrollmentRejectsMalformedOversizedAndDuplicateRequests(t *testing.T) {
 			if test.prepare != nil {
 				test.prepare(t)
 			}
-			enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+			enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 			require.NoError(t, err)
 			t.Cleanup(func() { _ = enrollment.Close() })
 			setup, err := DecodeEnrollmentSetup(enrollment.SetupCode())
@@ -285,7 +285,7 @@ func TestEnrollmentStopsAfterFailedAttemptLimit(t *testing.T) {
 	setConnectionRoot(t, t.TempDir())
 	_, err := EnsureServerIdentity(t.Context())
 	require.NoError(t, err)
-	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = enrollment.Close() })
 	setup, err := DecodeEnrollmentSetup(enrollment.SetupCode())

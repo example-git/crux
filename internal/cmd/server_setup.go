@@ -55,7 +55,7 @@ var serverSetupCmd = &cobra.Command{
 		if _, err := connection.EnsureServerIdentity(cmd.Context()); err != nil {
 			return err
 		}
-		enrollment, err := connection.StartEnrollment(cmd.Context(), serverSetupHost, serverSetupAdvertise, serverSetupTTL)
+		enrollment, err := connection.StartEnrollment(cmd.Context(), serverSetupHost, serverSetupAdvertise, serverSetupTTL, commandEnrollmentApprover(cmd))
 		if err != nil {
 			return err
 		}

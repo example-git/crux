@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	enrollmentVersion         = 1
+	enrollmentVersion         = 2
 	enrollmentPath            = "/v1/enroll"
 	enrollmentTokenBytes      = 32
 	enrollmentMaxAttempts     = 5
@@ -64,6 +64,8 @@ type EnrollmentListener struct {
 	expired               bool
 	expiresAt             time.Time
 	authorizeClient       func(context.Context, string, string, authorizationCommit) error
+	approve               EnrollmentApprover
+	cancel                context.CancelFunc
 }
 
 type enrollmentTokenState uint8
@@ -84,7 +86,10 @@ type enrollmentRequest struct {
 	Certificate string `json:"certificate"`
 }
 
-func StartEnrollment(ctx context.Context, listenAddress, advertisedAddress string, ttl time.Duration) (*EnrollmentListener, error) {
+func StartEnrollment(ctx context.Context, listenAddress, advertisedAddress string, ttl time.Duration, approve EnrollmentApprover) (*EnrollmentListener, error) {
+	if approve == nil {
+		return nil, errors.New("enrollment requires an explicit approver")
+	}
 	if ttl <= 0 {
 		return nil, errors.New("enrollment expiry must be positive")
 	}
@@ -146,11 +151,14 @@ func StartEnrollment(ctx context.Context, listenAddress, advertisedAddress strin
 		listener.Close()
 		return nil, err
 	}
+	enrollmentContext, cancelEnrollment := context.WithCancel(ctx)
 	enrollment := &EnrollmentListener{
 		setup:     setup,
 		code:      base64.RawURLEncoding.EncodeToString(codeBytes),
 		listener:  listener,
-		ctx:       ctx,
+		ctx:       enrollmentContext,
+		approve:   approve,
+		cancel:    cancelEnrollment,
 		done:      make(chan struct{}),
 		closed:    make(chan struct{}),
 		expiresAt: expiresAt,
@@ -259,7 +267,15 @@ func (e *EnrollmentListener) handleEnrollment(response http.ResponseWriter, requ
 		e.rejectMalformed(response, request, "invalid client certificate")
 		return
 	}
-	if err := e.authorize(request.Context(), payload.Name, payload.Certificate); err != nil {
+	if err := e.authorizeWithResponse(request.Context(), payload.Name, payload.Certificate, func(deadline time.Time) error {
+		return http.NewResponseController(response).SetWriteDeadline(deadline)
+	}); err != nil {
+		if errors.Is(err, ErrEnrollmentApprovalDenied) {
+			// The local operator can inspect the approver error through Wait;
+			// arbitrary local reader or callback details do not cross the wire.
+			http.Error(response, ErrEnrollmentApprovalDenied.Error(), http.StatusForbidden)
+			return
+		}
 		if errors.Is(err, errEnrollmentAuthorizationLimit) {
 			http.Error(response, err.Error(), http.StatusTooManyRequests)
 			return
@@ -279,6 +295,10 @@ func (e *EnrollmentListener) handleEnrollment(response http.ResponseWriter, requ
 }
 
 func (e *EnrollmentListener) authorize(ctx context.Context, name, certificate string) error {
+	return e.authorizeWithResponse(ctx, name, certificate, nil)
+}
+
+func (e *EnrollmentListener) authorizeWithResponse(ctx context.Context, name, certificate string, ready func(time.Time) error) error {
 	parsed, err := parseCertificate(certificate, x509.ExtKeyUsageClientAuth)
 	if err != nil {
 		return err
@@ -302,7 +322,27 @@ func (e *EnrollmentListener) authorize(ctx context.Context, name, certificate st
 	e.tokenState = enrollmentTokenReserved
 	e.mu.Unlock()
 
-	result := EnrollmentResult{Name: name, Fingerprint: certificateFingerprint(parsed)}
+	// Advertised expiry is the protocol boundary. Keep this exact context
+	// through approval, staging and final commit; the listener's finer-grained
+	// timer must not extend the setup code's advertised lifetime.
+	deadline := time.Unix(e.setup.ExpiresAt, 0)
+	approvalContext, cancelApproval := context.WithDeadline(ctx, deadline)
+	stop := context.AfterFunc(e.ctx, cancelApproval)
+	defer func() { stop(); cancelApproval() }()
+	ctx = approvalContext
+	candidate := EnrollmentCandidate{
+		ClientName:        name,
+		ClientFingerprint: certificateFingerprint(parsed),
+		ServerFingerprint: e.setup.Fingerprint,
+		Endpoint:          e.setup.Address,
+		ExpiresAt:         deadline,
+	}
+	result := EnrollmentResult{Name: name, Fingerprint: candidate.ClientFingerprint}
+	err = e.approveReserved(ctx, candidate, ready)
+	if err != nil {
+		e.finish(enrollmentOutcome{err: err})
+		return err
+	}
 	err = e.authorizeClient(ctx, name, certificate, func(persist func() error) error {
 		e.mu.Lock()
 		defer e.mu.Unlock()
@@ -315,7 +355,7 @@ func (e *EnrollmentListener) authorize(ctx context.Context, name, certificate st
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if e.expired || !time.Now().Before(e.expiresAt) {
+		if e.expired || !time.Now().Before(e.expiresAt) || !time.Now().Before(deadline) {
 			return enrollmentExpiredError()
 		}
 		if err := persist(); err != nil {
@@ -327,12 +367,15 @@ func (e *EnrollmentListener) authorize(ctx context.Context, name, certificate st
 		e.publishLocked(enrollmentOutcome{result: result})
 		return nil
 	})
+	if err != nil && !time.Now().Before(deadline) {
+		err = enrollmentExpiredError()
+	}
 	e.mu.Lock()
 	if err != nil {
 		if !e.terminal {
 			e.tokenState = enrollmentTokenAvailable
 		}
-		expired := e.expired || !time.Now().Before(e.expiresAt)
+		expired := e.expired || !time.Now().Before(e.expiresAt) || !time.Now().Before(deadline)
 		e.expired = expired
 		if !e.terminal && !expired && e.ctx.Err() == nil && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 			e.authorizationFailures++
@@ -389,6 +432,9 @@ func (e *EnrollmentListener) publishLocked(outcome enrollmentOutcome) {
 		return
 	}
 	e.terminal = true
+	if e.cancel != nil {
+		e.cancel()
+	}
 	e.outcome = outcome
 	close(e.done)
 	go func() {
@@ -531,7 +577,7 @@ func DecodeEnrollmentSetup(setupCode string) (EnrollmentSetup, error) {
 	if err != nil || len(fingerprint) != 32 || setup.Fingerprint != strings.ToLower(setup.Fingerprint) {
 		return EnrollmentSetup{}, errors.New("enrollment setup contains an invalid server fingerprint")
 	}
-	if time.Now().Unix() > setup.ExpiresAt {
+	if !time.Now().Before(time.Unix(setup.ExpiresAt, 0)) {
 		return EnrollmentSetup{}, errors.New("enrollment setup has expired")
 	}
 	return setup, nil

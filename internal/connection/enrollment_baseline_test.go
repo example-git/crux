@@ -20,7 +20,7 @@ func TestEnrollmentCancellationPreventsLateAuthorization(t *testing.T) {
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	enrollment, err := StartEnrollment(ctx, "tcp://127.0.0.1:0", "", time.Minute)
+	enrollment, err := StartEnrollment(ctx, "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = enrollment.Close() })
 	entered, release := make(chan struct{}), make(chan struct{})
@@ -62,7 +62,7 @@ func TestEnrollmentClientSaveFailureBaseline(t *testing.T) {
 	setConnectionRoot(t, t.TempDir())
 	_, err := EnsureServerIdentity(t.Context())
 	require.NoError(t, err)
-	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute)
+	enrollment, err := StartEnrollment(t.Context(), "tcp://127.0.0.1:0", "", time.Minute, approveEnrollmentForTest)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = enrollment.Close() })
 	original := renameStoreFile

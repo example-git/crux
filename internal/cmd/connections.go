@@ -69,10 +69,10 @@ var connectionsAuthorizeCmd = &cobra.Command{
 	Short: "Authorize a client public key on this server",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := connection.AuthorizeClient(cmd.Context(), args[0], args[1]); err != nil {
+		if err := connection.AuthorizeClientWithApproval(cmd.Context(), args[0], args[1], commandEnrollmentApprover(cmd)); err != nil {
 			return err
 		}
-		fmt.Printf("Authorized client %s.\n", args[0])
+		cmd.Printf("Authorized client %s.\n", args[0])
 		return nil
 	},
 }
