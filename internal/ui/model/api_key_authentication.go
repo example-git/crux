@@ -369,6 +369,9 @@ func (m *UI) completeAPIKeyCheck(msg apiKeyCheckMsg) tea.Cmd {
 	if op.selection.Model.Model == "" {
 		op.message = "Original input for " + op.selection.Model.Provider + " is retained. Enter saves that retained credential. Escape cancels without saving."
 	}
+	if op.checked.PendingConfiguration {
+		op.message = "The entered credential is retained. Other declared credential fields are still required, so no connection probe was performed. Enter saves this field for continued setup. Escape cancels without saving."
+	}
 	m.updateAPIKeyDialogs()
 	return nil
 }
@@ -496,6 +499,17 @@ func (m *UI) completeAPIKeySave(msg apiKeySaveMsg) tea.Cmd {
 		op.message = "The original credential save is historical; it does not authorize a model change. Reload status for new input."
 		m.updateAPIKeyDialogs()
 		return util.ReportWarn(op.message)
+	}
+	var missing []string
+	for _, slot := range msg.outcome.Change.Current.Status.CredentialSlots {
+		if slot.Property != "" && !slot.Configured {
+			missing = append(missing, apiKeyCredentialLabel(slot))
+		}
+	}
+	if len(missing) != 0 {
+		op.message = "Credential field saved and acknowledged. Setup is still pending; configure " + strings.Join(missing, "; ") + ". Ctrl+N reloads the credential choices for the next field."
+		m.updateAPIKeyDialogs()
+		return util.ReportInfo(op.message)
 	}
 	op.message = "Checked credential saved and acknowledged by the selected workspace."
 	m.updateAPIKeyDialogs()
