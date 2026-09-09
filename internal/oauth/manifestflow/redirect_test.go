@@ -93,6 +93,9 @@ func TestOAuthRefreshRedirectsKeepCapturedCredentialDestinations(t *testing.T) {
 				} else {
 					require.Error(t, err)
 					require.Zero(t, reached.Load(), "rejected destination must receive neither credentials nor body")
+					if mode == "other-host" || mode == "other-port" || mode == "forbidden-port" || mode == "downgrade" {
+						require.ErrorContains(t, err, "provider redirect refused", "a TLS or connection error is not destination-policy evidence")
+					}
 					if mode == "loop" {
 						require.ErrorContains(t, err, "redirect limit")
 						require.EqualValues(t, 10, starts.Load())
