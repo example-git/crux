@@ -568,6 +568,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	commands = append(commands,
 		NewCommandItem(c.com.Styles, "login", "Log In to a Provider", "", ActionOpenDialog{DialogID: LoginID}).WithAliases("login"),
 		NewCommandItem(c.com.Styles, "logout", "Log Out of a Provider", "", ActionOpenDialog{DialogID: LogoutID}).WithAliases("logout", "signout"),
+		NewCommandItem(c.com.Styles, "authentication_history", "Authentication History", "", ActionOpenDialog{DialogID: AuthenticationHistoryID}).WithAliases("auth_history"),
 		NewCommandItem(c.com.Styles, "review_saved_authentication", "Review Saved Authentication", "", ActionOpenDialog{DialogID: SavedAuthenticationID}).WithAliases("saved_auth", "reload_auth"),
 		NewCommandItem(c.com.Styles, "switch_account", "Switch Account", "", ActionOpenDialog{DialogID: AccountSwitcherID}).WithAliases("accounts"),
 	)

@@ -19,6 +19,7 @@ import (
 
 type authenticationReconciliation struct {
 	fresh             bool
+	historySourceID   string // Set only for a controller restored from retained history.
 	operation         *authenticationOperation
 	oauthLogin        *oauthLoginOperation
 	dialog            *dialog.AuthenticationReconciliation
@@ -70,12 +71,15 @@ func (m *UI) authenticationReconciliationBusy(operation *authenticationOperation
 func (m *UI) authenticationReconciliationOpen(s *authenticationReconciliation) bool {
 	return s != nil && s.dialog != nil && m.dialog.Dialog(dialog.AuthenticationReconciliationID) == s.dialog
 }
+func (m *UI) authenticationReconciliationCurrent(s *authenticationReconciliation) bool {
+	return s != nil && s.operation.workspace == m.com.Workspace && (s.historySourceID == "" || s.operation.workspace.AuthenticationWorkspaceID() == s.historySourceID)
+}
 func (m *UI) pruneAuthenticationReconciliations() {
-	for operation, s := range m.authenticationReconciliations {
-		if operation.workspace != m.com.Workspace && m.authenticationReconciliationOpen(s) {
+	for _, s := range m.authenticationReconciliations {
+		if !m.authenticationReconciliationCurrent(s) && m.authenticationReconciliationOpen(s) {
 			m.dialog.CloseDialog(dialog.AuthenticationReconciliationID)
 		}
-		if s.preparing != nil && (operation.workspace != m.com.Workspace || !m.authenticationReconciliationOpen(s)) {
+		if s.preparing != nil && (!m.authenticationReconciliationCurrent(s) || !m.authenticationReconciliationOpen(s)) {
 			s.preparing = nil
 			s.message = "Preparation cancelled; no review or apply was dispatched. The original receipt remains available."
 			m.showAuthenticationReconciliation(s)
@@ -159,6 +163,14 @@ func (m *UI) showAuthenticationReconciliation(s *authenticationReconciliation) {
 	if s.oauthLogin != nil {
 		m.showOAuthLogin(s.oauthLogin)
 	}
+	for _, history := range m.authenticationHistories {
+		for _, entry := range history.entries {
+			if entry.reconciliation == s {
+				m.showAuthenticationHistory(history)
+				break
+			}
+		}
+	}
 }
 func authenticationReviewSummaryText(s workspace.ProviderAuthenticationReviewSummary) string {
 	choice := "original intent"
@@ -202,7 +214,7 @@ func (m *UI) handleAuthenticationReconciliation(action dialog.ActionAuthenticati
 			break
 		}
 	}
-	if s == nil || s.dialog != action.Dialog || !m.authenticationReconciliationOpen(s) {
+	if s == nil || s.dialog != action.Dialog || !m.authenticationReconciliationOpen(s) || !m.authenticationReconciliationCurrent(s) {
 		return nil
 	}
 	operation := s.operation
@@ -244,6 +256,11 @@ func (m *UI) handleAuthenticationReconciliation(action dialog.ActionAuthenticati
 		}
 		return m.dispatchAuthenticationReviewedApply(s, *s.apply, true)
 	case "review":
+		for _, other := range m.authenticationReconciliations {
+			if other.operation.workspace == s.operation.workspace && other.fresh == s.fresh && other.operation.row.Target == s.operation.row.Target && (s.fresh || other.operation.id == s.operation.id) {
+				s.sequence = max(s.sequence, other.sequence)
+			}
+		}
 		if s.sequence == math.MaxUint64 {
 			return util.ReportError(errors.New("authentication review sequence exhausted; the original receipt remains retained"))
 		}
@@ -270,7 +287,7 @@ func (m *UI) completeAuthenticationReconciliationPreparation(msg authenticationR
 		return nil
 	}
 	s.preparing = nil
-	if s.operation.workspace != m.com.Workspace || s.dialog != p.dialog || !m.authenticationReconciliationOpen(s) || p.generation != s.dialog.Generation() {
+	if !m.authenticationReconciliationCurrent(s) || s.dialog != p.dialog || !m.authenticationReconciliationOpen(s) || p.generation != s.dialog.Generation() {
 		s.message = "Preparation cancelled; the original receipt remains available."
 		m.showAuthenticationReconciliation(s)
 		return nil
@@ -311,6 +328,9 @@ func (m *UI) completeAuthenticationReconciliationPreparation(msg authenticationR
 	return m.dispatchAuthenticationReviewedApply(s, request, false)
 }
 func (m *UI) dispatchAuthenticationReview(s *authenticationReconciliation, request workspace.ProviderAuthenticationReviewRequest, retry bool) tea.Cmd {
+	if !m.authenticationReconciliationCurrent(s) {
+		return util.ReportError(providerauth.ErrStale)
+	}
 	s.pending, s.delivered = "review", false
 	s.attempt++
 	s.message = "Reviewing the exact current saved state…"
@@ -329,6 +349,9 @@ func (m *UI) dispatchAuthenticationReview(s *authenticationReconciliation, reque
 	}
 }
 func (m *UI) dispatchAuthenticationReviewedApply(s *authenticationReconciliation, request workspace.ProviderAuthenticationApplyRequest, retry bool) tea.Cmd {
+	if !m.authenticationReconciliationCurrent(s) {
+		return util.ReportError(providerauth.ErrStale)
+	}
 	s.pending, s.delivered = "apply", false
 	s.attempt++
 	s.operation.blockNew = true
@@ -404,7 +427,7 @@ func (m *UI) completeAuthenticationReviewedApply(msg authenticationApplyComplete
 	if err != nil {
 		return util.ReportError(errors.New(m.authenticationReconciliationNotice(s)))
 	}
-	if s.operation.workspace != m.com.Workspace {
+	if !m.authenticationReconciliationCurrent(s) {
 		return util.CmdHandler(util.NewInfoMsg("Previous workspace: " + s.message))
 	}
 	m.invalidateBusyCaches()
@@ -418,7 +441,7 @@ func (m *UI) completeAuthenticationReviewedApply(msg authenticationApplyComplete
 }
 
 func (m *UI) authenticationReconciliationNotice(s *authenticationReconciliation) string {
-	if s.operation.workspace != m.com.Workspace {
+	if !m.authenticationReconciliationCurrent(s) {
 		return "Previous workspace: " + s.message
 	}
 	return s.message

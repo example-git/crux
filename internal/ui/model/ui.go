@@ -456,6 +456,7 @@ type UI struct {
 	cancelCopilotImport           context.CancelFunc
 	savedAuthentication           *savedAuthenticationUI
 	savedAuthentications          map[workspace.Workspace]*savedAuthenticationUI
+	authenticationHistories       map[workspace.Workspace]*authenticationHistoryUI
 	authenticationReads           map[*dialog.AccountAuthentication]*authenticationRead
 	authenticationOperations      map[workspace.Workspace]*authenticationOperation
 	authenticationReconciliations map[*authenticationOperation]*authenticationReconciliation
@@ -870,6 +871,14 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 		cmds = append(cmds, m.completeAuthenticationOperation(msg))
 	case authenticationRecoveryPreparedMsg:
 		cmds = append(cmds, m.completeAuthenticationRecoveryPreparation(msg))
+	case authenticationHistoryLoadedMsg:
+		cmds = append(cmds, m.completeAuthenticationHistory(msg))
+	case authenticationHistoryPreparedMsg:
+		cmds = append(cmds, m.completeHistoricalAuthenticationPreparation(msg))
+	case authenticationHistoryRecoveredMsg:
+		cmds = append(cmds, m.completeHistoricalAuthenticationRecovery(msg))
+	case authenticationHistoryRepairedMsg:
+		cmds = append(cmds, m.completeHistoricalAuthenticationRepair(msg))
 	case savedAuthenticationReadMsg:
 		cmds = append(cmds, m.completeSavedAuthenticationRead(msg))
 	case savedAuthenticationReloadMsg:
@@ -2477,6 +2486,8 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		cmds = append(cmds, m.beginAuthenticationRecovery(msg))
 	case dialog.ActionAuthenticationReviewOpen:
 		cmds = append(cmds, m.openAuthenticationReconciliation(msg))
+	case dialog.ActionAuthenticationHistory:
+		cmds = append(cmds, m.handleAuthenticationHistory(msg))
 	case dialog.ActionSavedAuthentication:
 		cmds = append(cmds, m.handleSavedAuthentication(msg))
 	case dialog.ActionAuthenticationReconciliation:
@@ -5430,6 +5441,8 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openLoginDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.AuthenticationHistoryID:
+		cmds = append(cmds, m.openAuthenticationHistory())
 	case dialog.SavedAuthenticationID:
 		cmds = append(cmds, m.openSavedAuthentication())
 	case dialog.LogoutID:
