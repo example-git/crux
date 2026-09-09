@@ -102,12 +102,15 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 			wantedBundles[definition.BundleDigest] = true
 		}
 		credential := RemoteCredentialBinding{Owner: owner, Generation: revision, Unavailable: removed[owner] || provider.Disable}
+		if err := snapshot.validateResolvedProviderAPIKeyOwner(provider); err != nil {
+			return proposal, err
+		}
 		key, err := ResolveProviderAPIKey(provider, resolve)
 		if err != nil {
 			return proposal, errors.New("selected client API credential cannot be resolved")
 		}
 		credential.APIKey = key
-		if !credential.Unavailable && (provider.OAuthToken != nil || owner.HasOAuth) {
+		if !credential.Unavailable && provider.resolvedAPIKey == nil && (provider.OAuthToken != nil || owner.HasOAuth) {
 			entry, err := account(ctx, owner)
 			if err != nil {
 				return proposal, errors.New("selected client account cannot be read")

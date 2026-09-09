@@ -176,6 +176,8 @@ type ProviderConfig struct {
 	APIKey string `json:"api_key,omitempty" jsonschema:"description=API key for authentication with the provider,example=$OPENAI_API_KEY"`
 	// The original API key template before resolution (for re-resolution on auth errors).
 	APIKeyTemplate string `json:"-"`
+	// Immutable host-private literal provenance; never serialized as configuration.
+	resolvedAPIKey *resolvedProviderAPIKey
 	// OAuthToken for providers that use OAuth2 authentication.
 	OAuthToken *oauth.Token `json:"oauth,omitempty" jsonschema:"description=OAuth2 token for authentication with the provider"`
 	// Plugin records durable ownership so configuration and selections remain
@@ -963,6 +965,7 @@ func (c *Config) RedactedForTransport() *Config {
 		for id, provider := range c.Providers.Seq2() {
 			provider.APIKey = ""
 			provider.APIKeyTemplate = ""
+			provider.resolvedAPIKey = nil
 			provider.OAuthToken = nil
 			provider.ExtraHeaders = nil
 			provider.Configuration = maps.Clone(provider.Configuration)

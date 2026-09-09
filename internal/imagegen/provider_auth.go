@@ -73,7 +73,7 @@ func configuredCodexAuth(ctx context.Context, store *config.ConfigStore, snapsho
 		}
 		refreshedToken = strings.TrimSpace(refreshed.AccessToken)
 	}
-	token, err := config.ResolveProviderAPIKey(provider, snapshot.Resolve)
+	token, err := snapshot.ResolveProviderAPIKey(provider)
 	if err != nil {
 		return resolvedAuth{}, true, err
 	}
@@ -116,11 +116,18 @@ func configuredOpenAIAuth(store *config.ConfigStore, snapshot config.RuntimeSnap
 	if !active || owner != expected {
 		return resolvedAuth{}, false, nil
 	}
-	token, err := config.ResolveProviderAPIKey(provider, snapshot.Resolve)
+	token, err := snapshot.ResolveProviderAPIKey(provider)
 	if err != nil {
 		return resolvedAuth{}, true, err
 	}
-	if token = strings.TrimSpace(token); token == "" {
+	explicitAPIKey, err := snapshot.UsesResolvedProviderAPIKey(providerID)
+	if err != nil {
+		return resolvedAuth{}, true, err
+	}
+	if !explicitAPIKey {
+		token = strings.TrimSpace(token)
+	}
+	if token == "" {
 		return resolvedAuth{}, true, errors.New("configured OpenAI API account has no API key")
 	}
 	baseURL := OpenAIBaseURL

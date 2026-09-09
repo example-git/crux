@@ -885,7 +885,18 @@ func (s *ConfigStore) SetResolvedProviderAPIKey(expected providerregistry.Regist
 	if provider.APIKeyTemplate != template {
 		return fmt.Errorf("API key template for provider %s changed before the resolved key could be applied", expected.ProviderID)
 	}
-	provider.APIKey = apiKey
+	if provider.resolvedAPIKey != nil {
+		if !provider.resolvedAPIKey.matches(provider) || provider.resolvedAPIKey.owner != expected {
+			return errResolvedProviderAPIKeyStale
+		}
+		var err error
+		provider, err = bindResolvedProviderAPIKey(RuntimeSnapshot{config: cfg, registry: s.providerRegistry}, provider, expected, template, apiKey)
+		if err != nil {
+			return err
+		}
+	} else {
+		provider.APIKey = apiKey
+	}
 	next := cfg.cloneForWrite()
 	next.Providers.Set(expected.ProviderID, provider)
 	s.setConfig(next)
@@ -908,6 +919,7 @@ func exactOAuthRegistrationFor(cfg *Config, registry *providerregistry.Registry,
 }
 
 func applyOAuthTokenToProvider(providerConfig *ProviderConfig, token *oauth.Token, registration providerregistry.Registration) {
+	providerConfig.resolvedAPIKey = nil
 	providerConfig.OAuthToken = token
 	providerConfig.APIKey = token.AccessToken
 	providerConfig.APIKeyTemplate = ""
@@ -1558,6 +1570,10 @@ func (s *ConfigStore) SetProviderAPIKey(scope Scope, providerID string, apiKey a
 		if err != nil {
 			return err
 		}
+		if providerConfig.resolvedAPIKey != nil {
+			providerConfig.resolvedAPIKey = nil
+			providerConfig.APIKeyTemplate, providerConfig.OAuthToken = "", nil
+		}
 		providerConfig.APIKey = value.APIKey
 		return s.updateLocked(scope, func(cfg *Config) map[string]any {
 			cfg.Providers.Set(providerID, providerConfig)
@@ -1726,6 +1742,7 @@ func (s *ConfigStore) RemoveProviderCredentials(scope Scope, expected providerre
 			return fmt.Errorf("provider %s not found", expected.ProviderID)
 		}
 		providerConfig.APIKey = ""
+		providerConfig.resolvedAPIKey = nil
 		providerConfig.APIKeyTemplate = ""
 		providerConfig.OAuthToken = nil
 		next := cfg.cloneForWrite()

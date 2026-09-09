@@ -74,6 +74,7 @@ func (snapshot RuntimeSnapshot) clientProviderDefinitionRaw(id string) (RemotePr
 		definition.BundleDigest = provider.Preset.Digest
 	}
 	definition.Config.APIKey, definition.Config.APIKeyTemplate, definition.Config.OAuthToken = "", "", nil
+	definition.Config.resolvedAPIKey = nil
 	return definition, owner, nil
 }
 

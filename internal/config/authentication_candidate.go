@@ -233,6 +233,7 @@ func authenticationConfigCandidate(before AuthenticationCapture, owner providerr
 		return candidate, nil
 	}
 	provider.APIKey, provider.APIKeyTemplate, provider.OAuthToken = "", "", nil
+	provider.resolvedAPIKey = nil
 	candidate.Providers.Set(owner.ProviderID, provider)
 	return candidate.WithAuthenticationRevocation(owner)
 }

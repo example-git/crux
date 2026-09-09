@@ -1677,7 +1677,11 @@ func nativeResponsesContinuationOwner(snapshot config.RuntimeSnapshot, registrat
 	if apiKey != "" {
 		account = "credential:" + hashContinuationIdentity(apiKey)
 	}
-	if owner.AccountNamespace != "" {
+	explicitAPIKey, err := snapshot.UsesResolvedProviderAPIKey(providerID)
+	if err != nil {
+		return ""
+	}
+	if owner.AccountNamespace != "" && !explicitAPIKey {
 		entry, captured, err := snapshot.CapturedConstructionAccount(owner)
 		if err != nil {
 			return ""
@@ -2030,7 +2034,7 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 		return nil, fmt.Errorf("OAuth provider %s is unavailable because its registered integration is not active; install, trust, enable, or select the required provider plugin", providerCfg.ID)
 	}
 
-	apiKey, err := config.ResolveProviderAPIKey(providerCfg, snapshot.Resolve)
+	apiKey, err := snapshot.ResolveProviderAPIKey(providerCfg)
 	if err != nil {
 		return nil, fmt.Errorf("resolve provider %s credential: %w", providerCfg.ID, err)
 	}
