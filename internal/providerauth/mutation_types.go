@@ -78,6 +78,7 @@ type MutationResult struct {
 	after         config.AuthenticationCapture
 	current       bool
 	originalOwner providerregistry.RegistrationOwner
+	oauthTokenID  string
 	removal       *removalIntent
 }
 
@@ -96,6 +97,14 @@ func (MutationResult) Format(state fmt.State, _ rune) {
 // a newer owner's namespace, credentials or configuration.
 func (r MutationResult) OriginalOwner() (providerregistry.RegistrationOwner, bool) {
 	return r.originalOwner, r.originalOwner.ProviderID != ""
+}
+
+// OriginalOAuthTokenCredentialID identifies the complete token from a confirmed
+// namespace-free login transaction, including its client registration. It is
+// private intent evidence even on historical replay, never current authority or
+// permission to adopt another token. Public outcomes contain no fingerprint.
+func (r MutationResult) OriginalOAuthTokenCredentialID() (string, bool) {
+	return r.oauthTokenID, r.oauthTokenID != ""
 }
 
 // RuntimeSnapshot is available only after this service verified the exact

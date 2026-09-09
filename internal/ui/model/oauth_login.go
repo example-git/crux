@@ -51,10 +51,18 @@ type oauthLoginOperation struct {
 	recoverer                                                                workspace.ProviderAuthenticationRecoverer
 	recovery                                                                 *workspace.ProviderAuthenticationRecoveryRequest
 	recoverySequence                                                         uint64
+	review                                                                   *authenticationReconciliation
 }
 
 func (*oauthLoginOperation) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private OAuth UI session]"))
+}
+
+func oauthLoginReviewBusy(op *oauthLoginOperation) bool {
+	return op != nil && op.review != nil && (op.review.preparing != nil || op.review.pending != "")
+}
+func oauthLoginReviewResolved(op *oauthLoginOperation) bool {
+	return op != nil && op.review != nil && op.review.resolved
 }
 
 type oauthLoginStatusMsg struct {
@@ -151,7 +159,10 @@ func (m *UI) pruneOAuthLogins() tea.Cmd {
 
 func (m *UI) openOAuthAuthentication(selection *dialog.ActionSelectModel, expected *providerauth.Owner) tea.Cmd {
 	previous := m.oauthLogins[m.com.Workspace]
-	if previous != nil && (previous.resolved || previous.ended && !previous.completeSent && expected != nil && previous.ref.Target.Owner != *expected) {
+	if oauthLoginReviewBusy(previous) {
+		return util.ReportWarn("Saved authentication review is still pending; its original request and receipt remain retained.")
+	}
+	if previous != nil && (previous.resolved || oauthLoginReviewResolved(previous) || previous.ended && !previous.completeSent && expected != nil && previous.ref.Target.Owner != *expected) {
 		if m.oauthDialogOpen(previous.dialog) {
 			m.dialog.CloseDialog(dialog.LoginID)
 		}
@@ -595,7 +606,7 @@ func (m *UI) completeOAuthBrowser(msg oauthLoginOpenMsg) tea.Cmd {
 }
 func (m *UI) retryOAuthLogin(d *dialog.OAuthLogin) tea.Cmd {
 	op := m.oauthLogins[m.com.Workspace]
-	if op == nil || op.dialog != d || !m.oauthDialogOpen(d) || op.busy || op.preparing || op.resolved {
+	if op == nil || op.dialog != d || !m.oauthDialogOpen(d) || op.busy || op.preparing || op.resolved || oauthLoginReviewBusy(op) || oauthLoginReviewResolved(op) {
 		return nil
 	}
 	if op.completeSent {
@@ -625,7 +636,7 @@ func (m *UI) reloadOAuthLogin(d *dialog.OAuthLogin) tea.Cmd {
 		selection, expected = read.selection, read.expected
 	}
 	if op := m.oauthLogins[m.com.Workspace]; op != nil {
-		if !op.resolved && !op.ended {
+		if oauthLoginReviewBusy(op) || !op.resolved && !op.ended && !oauthLoginReviewResolved(op) {
 			return util.ReportError(errors.New("The original login is still active or awaiting acknowledgement; retry or close it before starting another"))
 		}
 		selection = op.selection
@@ -643,7 +654,7 @@ func (m *UI) reloadOAuthLogin(d *dialog.OAuthLogin) tea.Cmd {
 }
 func (m *UI) recoverOAuthLogin(action dialog.ActionOAuthLoginRecover) tea.Cmd {
 	op := m.oauthLogins[m.com.Workspace]
-	if op == nil || op.dialog != action.Dialog || !m.oauthDialogOpen(action.Dialog) || op.busy || op.preparing || op.resolved || !op.completeSent || op.recoverer == nil {
+	if op == nil || op.dialog != action.Dialog || !m.oauthDialogOpen(action.Dialog) || op.busy || op.preparing || op.resolved || !op.completeSent || op.recoverer == nil || oauthLoginReviewBusy(op) || oauthLoginReviewResolved(op) {
 		return nil
 	}
 	if action.Retry {
@@ -711,11 +722,15 @@ func (m *UI) showOAuthLogin(op *oauthLoginOperation) {
 		p.Open = p.AuthorizationURL != ""
 		p.Editable = op.state.Phase == providerauth.OAuthLoginWaitingCode && op.submission.Input == "" && (!op.busy || op.kind == "wait")
 	}
-	if !op.busy && !op.preparing && !op.relayBusy {
-		p.Retry = !op.resolved && !op.ended
-		p.Reload = op.resolved || op.ended
-		p.Recover = op.completeSent && !op.resolved && op.recoverer != nil
+	if !op.busy && !op.preparing && !op.relayBusy && !oauthLoginReviewBusy(op) {
+		reconciled := oauthLoginReviewResolved(op)
+		p.Retry = !op.resolved && !op.ended && !reconciled
+		p.Reload = op.resolved || op.ended || reconciled
+		p.Recover = op.completeSent && !op.resolved && op.recoverer != nil && !reconciled
 		p.RetryRecovery = p.Recover && op.recovery != nil
+		if capability, ok := op.workspace.(workspace.ProviderAuthenticationReconciler); ok {
+			p.Review = op.completeSent && (!op.resolved || op.outcome.Superseded) && !reconciled && capability.CanReconcileProviderAuthentication()
+		}
 	}
 	op.dialog.SetPresentation(p)
 }

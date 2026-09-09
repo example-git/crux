@@ -39,6 +39,7 @@ type mutationReceipt struct {
 	after         config.AuthenticationCapture
 	runtime       config.RuntimeSnapshot
 	originalOwner providerregistry.RegistrationOwner
+	oauthTokenID  string
 	removal       *removalIntent
 	err           error
 }
@@ -228,9 +229,9 @@ func (s *Service) retain(receipt mutationReceipt) {
 func (s *Service) replay(ctx context.Context, receipt mutationReceipt) (MutationResult, error) {
 	outcome, err := cloneMutationOutcome(receipt.outcome)
 	if err != nil {
-		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, LoginID: receipt.request.loginID, RemovedAccountID: receipt.request.removedAccountID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner, removal: receipt.removal}, safeMutationError(err)
+		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, LoginID: receipt.request.loginID, RemovedAccountID: receipt.request.removedAccountID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner, removal: receipt.removal, oauthTokenID: receipt.oauthTokenID}, safeMutationError(err)
 	}
-	result := MutationResult{Outcome: outcome, originalOwner: receipt.originalOwner, removal: receipt.removal}
+	result := MutationResult{Outcome: outcome, originalOwner: receipt.originalOwner, removal: receipt.removal, oauthTokenID: receipt.oauthTokenID}
 	if receipt.err != nil {
 		return result, receipt.err
 	}

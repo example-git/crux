@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"reflect"
@@ -22,11 +23,14 @@ var (
 )
 
 // AuthenticationReconciliationEffect states what already-saved state must prove.
-// Logout requires an empty AccountID; a switch requires a nonempty AccountID.
+// Exactly one of Logout, AccountID, or OAuthTokenID identifies the effect.
+// OAuthTokenID is a private fingerprint of the complete namespace-free token,
+// including its client settings. It is never a public account identifier.
 // This is validation, never authorization to repeat or repair a transaction.
 type AuthenticationReconciliationEffect struct {
-	Logout    bool
-	AccountID string
+	Logout       bool
+	AccountID    string
+	OAuthTokenID string
 }
 
 // AuthenticationReconciliationPreparation retains one verified current capture.
@@ -68,7 +72,21 @@ func (s *ConfigStore) PrepareAuthenticationReconciliation(ctx context.Context, c
 	if current.runtime.IsClientOwned() {
 		return zero, ErrClientRuntimeManaged
 	}
-	if effect.Logout == (effect.AccountID != "") || owner.ProviderID == "" {
+	effects := 0
+	if effect.Logout {
+		effects++
+	}
+	if effect.AccountID != "" {
+		effects++
+	}
+	if effect.OAuthTokenID != "" {
+		digest, err := hex.DecodeString(effect.OAuthTokenID)
+		if err != nil || len(digest) != 32 {
+			return zero, reconciliationConflict("invalid expected OAuth credential")
+		}
+		effects++
+	}
+	if effects != 1 || owner.ProviderID == "" {
 		return zero, reconciliationConflict("invalid expected effect or owner")
 	}
 	if current.runtime.publicationStore != s || !current.inputs.valid || !current.accounts.SameObservation(current.accounts) {
@@ -107,15 +125,22 @@ func (s *ConfigStore) PrepareAuthenticationReconciliation(ctx context.Context, c
 	}
 	provider, configured := current.runtime.config.Providers.Get(owner.ProviderID)
 	if effect.Logout {
-		if configured && (provider.APIKey != "" || provider.APIKeyTemplate != "" || provider.OAuthToken != nil) || current.accounts.ActiveID(owner.AccountNamespace) != "" || len(current.accounts.Entries(owner.AccountNamespace)) != 0 {
+		if configured && (provider.APIKey != "" || provider.APIKeyTemplate != "" || provider.OAuthToken != nil) || owner.AccountNamespace != "" && (current.accounts.ActiveID(owner.AccountNamespace) != "" || len(current.accounts.Entries(owner.AccountNamespace)) != 0) {
 			return zero, reconciliationConflict("logout still has saved credentials or accounts")
 		}
 		if err := validateAuthenticationLogoutFallback(ctx, current.runtime, current.runtime.config, owner); err != nil {
 			return zero, reconciliationObservationError(ctx, err)
 		}
-		retained, _, err := current.runtime.CapturedConstructionAccount(owner)
-		if err != nil || retained != nil {
-			return zero, reconciliationConflict("logout retains an accepted construction account")
+		if owner.AccountNamespace != "" {
+			retained, _, err := current.runtime.CapturedConstructionAccount(owner)
+			if err != nil || retained != nil {
+				return zero, reconciliationConflict("logout retains an accepted construction account")
+			}
+		}
+	} else if effect.OAuthTokenID != "" {
+		identity, err := current.ConfiguredOAuthTokenCredentialID(owner)
+		if err != nil || identity != effect.OAuthTokenID {
+			return zero, reconciliationConflict("the saved OAuth credential is not the requested complete token")
 		}
 	} else {
 		if !owner.HasOAuth || owner.AccountNamespace == "" || !configured {
@@ -166,8 +191,14 @@ func (s *ConfigStore) PrepareAuthenticationReconciliation(ctx context.Context, c
 			continue
 		}
 		if actual.HasOAuth || value.OAuthToken != nil {
-			if err := current.validateReconciliationAccount(actual, value); err != nil {
-				return zero, err
+			if actual.AccountNamespace == "" {
+				if _, err := current.ConfiguredOAuthTokenCredentialID(actual); err != nil {
+					return zero, err
+				}
+			} else {
+				if err := current.validateReconciliationAccount(actual, value); err != nil {
+					return zero, err
+				}
 			}
 		}
 	}
@@ -175,6 +206,25 @@ func (s *ConfigStore) PrepareAuthenticationReconciliation(ctx context.Context, c
 		return zero, reconciliationObservationError(ctx, err)
 	}
 	return AuthenticationReconciliationPreparation{capture: current, owner: owner, effect: effect, definitions: definitions, valid: true}, nil
+}
+
+// ConfiguredOAuthTokenCredentialID returns only the private fingerprint from
+// this immutable capture. It performs no lookup, evaluation, refresh, or I/O.
+// The fingerprint proves intended credential identity, not current authority;
+// PrepareAuthenticationReconciliation verifies current saved inputs separately.
+func (current AuthenticationCapture) ConfiguredOAuthTokenCredentialID(owner providerregistry.RegistrationOwner) (string, error) {
+	if !owner.HasOAuth || owner.AccountNamespace != "" || !slices.Contains(current.owners, owner) || current.runtime.config == nil || current.runtime.config.Providers == nil || !current.inputs.valid {
+		return "", reconciliationConflict("a captured namespace-free OAuth owner is required")
+	}
+	provider, found := current.runtime.config.Providers.Get(owner.ProviderID)
+	actual, exact := current.runtime.ProviderOwner(owner.ProviderID)
+	if !found || !exact || actual != owner || provider.resolvedAPIKey != nil || provider.OAuthToken == nil || provider.APIKey != provider.OAuthToken.AccessToken {
+		return "", reconciliationConflict("saved provider credentials disagree with the selected OAuth token")
+	}
+	if err := validateRemoteOAuthToken(provider.OAuthToken); err != nil {
+		return "", reconciliationConflict("the saved OAuth token is invalid")
+	}
+	return OAuthTokenCredentialID(provider.OAuthToken), nil
 }
 
 func (current AuthenticationCapture) authenticationReconciliationLayers() (authenticationLayers, error) {
