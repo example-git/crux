@@ -92,7 +92,7 @@ func NewPreviewSession(ctx context.Context, dbPath, workingDir, sessionID string
 	p.initialize(p.data.Models[0])
 	ws := p.ui.com.Workspace.(*previewWorkspace)
 	ws.history = files
-	p.data.Files, err = p.ui.loadSessionFiles(sessionID)
+	p.data.Files, err = loadSessionFiles(ctx, ws, sessionID)
 	if err != nil {
 		return nil, err
 	}
