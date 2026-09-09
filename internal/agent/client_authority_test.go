@@ -18,10 +18,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestClientProviderCapturedGenerationExecutesAfterRemoval(t *testing.T) {
+func TestClientProviderCapturedGenerationRefusesNewRequestsAfterRemoval(t *testing.T) {
 	var mu sync.Mutex
 	var credentials []string
-	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		credentials = append(credentials, r.Header.Get("Authorization"))
 		mu.Unlock()
@@ -29,6 +29,9 @@ func TestClientProviderCapturedGenerationExecutesAfterRemoval(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"synthetic","object":"chat.completion","model":"client-model","choices":[{"index":0,"message":{"role":"assistant","content":"verified client inference"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`))
 	}))
 	defer host.Close()
+	oldHTTP := http.DefaultClient
+	http.DefaultClient = host.Client()
+	defer func() { http.DefaultClient = oldHTTP }()
 	owner := providerregistry.RegistrationOwner{ProviderID: "client-only"}
 	selected := config.SelectedModel{Provider: owner.ProviderID, Model: "client-model"}
 	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
@@ -64,14 +67,6 @@ func TestClientProviderCapturedGenerationExecutesAfterRemoval(t *testing.T) {
 	_, err = store.ReplaceRemoteRuntime(t.Context(), proposal, principal, 1)
 	require.NoError(t, err)
 	second := build()
-	proposal.Revision = 3
-	proposal.Credentials[0].Generation = 3
-	proposal.Credentials[0].APIKey = ""
-	proposal.Credentials[0].Unavailable = true
-	seal()
-	_, err = store.ReplaceRemoteRuntime(t.Context(), proposal, principal, 2)
-	require.NoError(t, err)
-	removed := build()
 	for _, model := range []fantasy.LanguageModel{first, second} {
 		response, err := model.Generate(t.Context(), fantasy.Call{Prompt: []fantasy.Message{fantasy.NewUserMessage("Return the synthetic fixture response.")}})
 		require.NoError(t, err)
@@ -79,7 +74,7 @@ func TestClientProviderCapturedGenerationExecutesAfterRemoval(t *testing.T) {
 	}
 	admitted := Model{Model: first, ModelCfg: selected}
 	refresh := refreshAdmittedModel(&admitted, func() Model {
-		return Model{Model: removed, ModelCfg: selected}
+		return Model{Model: first, ModelCfg: selected}
 	}, func(ctx context.Context, _ *fantasy.ProviderError) error {
 		target := ctx.Value(clientAuthRefreshKey{}).(*clientAuthRefreshTarget)
 		target.refreshed = &Model{Model: second, ModelCfg: selected}
@@ -89,6 +84,28 @@ func TestClientProviderCapturedGenerationExecutesAfterRemoval(t *testing.T) {
 	response, err := admitted.Model.Generate(t.Context(), fantasy.Call{Prompt: []fantasy.Message{fantasy.NewUserMessage("Use the captured refresh result.")}})
 	require.NoError(t, err)
 	require.NotEmpty(t, response.Content)
+	proposal.Revision = 3
+	proposal.Credentials[0].Generation = 3
+	proposal.Credentials[0].APIKey = ""
+	proposal.Credentials[0].Unavailable = true
+	seal()
+	_, err = store.ReplaceRemoteRuntime(t.Context(), proposal, principal, 2)
+	require.NoError(t, err)
+	removed := build()
+	for _, model := range []fantasy.LanguageModel{first, second, admitted.Model} {
+		_, err = model.Generate(t.Context(), fantasy.Call{Prompt: []fantasy.Message{fantasy.NewUserMessage("New request after logout")}})
+		require.ErrorContains(t, err, "has no credential", "retained model cannot start another request after removal")
+		stream, streamErr := model.Stream(t.Context(), fantasy.Call{})
+		if streamErr == nil {
+			for event := range stream {
+				if event.Error != nil {
+					streamErr = event.Error
+					break
+				}
+			}
+		}
+		require.ErrorContains(t, streamErr, "has no credential")
+	}
 	_, err = removed.Generate(t.Context(), fantasy.Call{})
 	require.ErrorContains(t, err, "has no credential")
 	_, err = removed.Stream(t.Context(), fantasy.Call{})

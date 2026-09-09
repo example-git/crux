@@ -54,9 +54,12 @@ func TestClientResponsesContinuationBelongsToAcceptedGeneration(t *testing.T) {
 		return store
 	}
 	store := compile(proposal, principal)
-	coord := &coordinator{cfg: store, responsesContinuations: openairesponsestransport.NewContinuationStore()}
-	build := func(snapshot config.RuntimeSnapshot) Model {
-		model, _, err := coord.buildAgentModelsWithSnapshot(t.Context(), config.Agent{Model: config.SelectedModelTypeLarge}, false, snapshot)
+	continuations := openairesponsestransport.NewContinuationStore()
+	build := func(source *config.ConfigStore) Model {
+		// Each simulated receiver owns its actual current store. Share only the
+		// continuation cache to test that authority keys isolate its entries.
+		coord := &coordinator{cfg: source, responsesContinuations: continuations}
+		model, _, err := coord.buildAgentModelsWithSnapshot(t.Context(), config.Agent{Model: config.SelectedModelTypeLarge}, false, source.RuntimeSnapshot())
 		require.NoError(t, err)
 		return model
 	}
@@ -74,20 +77,20 @@ func TestClientResponsesContinuationBelongsToAcceptedGeneration(t *testing.T) {
 	third.Prompt = append(append(fantasy.Prompt{}, followup.Prompt...), fantasy.Message{Role: fantasy.MessageRoleAssistant, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "answer"}}}, fantasy.NewUserMessage("three"))
 	fourth := third
 	fourth.Prompt = append(append(fantasy.Prompt{}, third.Prompt...), fantasy.Message{Role: fantasy.MessageRoleAssistant, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "answer"}}}, fantasy.NewUserMessage("four"))
-	old := build(store.RuntimeSnapshot())
+	old := build(store)
 	consume(old, first)
-	consume(build(store.RuntimeSnapshot()), followup)
+	consume(build(store), followup)
 	proposal.Revision = 2
 	proposal.Credentials[0].Generation = 2
 	sealClientResponsesProposal(t, &proposal)
 	_, err := store.ReplaceRemoteRuntime(t.Context(), proposal, principal, 1)
 	require.NoError(t, err)
-	consume(build(store.RuntimeSnapshot()), third)
+	consume(build(store), third)
 	consume(old, third)
-	consume(build(compile(proposal, strings.Repeat("b", 64)).RuntimeSnapshot()), fourth)
+	consume(build(compile(proposal, strings.Repeat("b", 64))), fourth)
 	proposal.Providers[0].Config.ExtraHeaders = map[string]string{"X-Client-Generation": "changed"}
 	sealClientResponsesProposal(t, &proposal)
-	consume(build(compile(proposal, principal).RuntimeSnapshot()), fourth)
+	consume(build(compile(proposal, principal)), fourth)
 	mu.Lock()
 	defer mu.Unlock()
 	require.Len(t, requests, 6)
