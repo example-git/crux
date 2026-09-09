@@ -258,7 +258,7 @@ waiting:
 }
 
 func TestClientAuthenticationRecoveryRejectsDriftAndUnrelatedAuthority(t *testing.T) {
-	for _, mode := range []string{"account", "config", "principal", "revision", "expired-original"} {
+	for _, mode := range []string{"account", "config", "principal", "revision"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newClientAuthenticationFixture(t, false)
 			request := providerauth.SwitchRequest{OperationID: strings.Repeat("f", 32), Target: f.target(t), AccountID: f.second.ID}
@@ -286,8 +286,6 @@ func TestClientAuthenticationRecoveryRejectsDriftAndUnrelatedAuthority(t *testin
 					f.w.ws.Authority = &copy
 				}
 				f.afterGet.Store(&change)
-			case "expired-original":
-				delete(f.w.authority.authenticationReceipts, request.OperationID)
 			}
 			paths := []string{f.path, f.accountsPath}
 			infos, bodies := clientAuthenticationFiles(t, paths...)
@@ -301,8 +299,62 @@ func TestClientAuthenticationRecoveryRejectsDriftAndUnrelatedAuthority(t *testin
 	}
 }
 
+func TestClientAuthenticationRecoveryRestoresEvictedOriginalFromJournal(t *testing.T) {
+	f := newClientAuthenticationFixture(t, false)
+	request := providerauth.SwitchRequest{OperationID: strings.Repeat("f", 32), Target: f.target(t), AccountID: f.second.ID}
+	f.putMode.Store(1)
+	_, err := f.w.switchClientAuthentication(t.Context(), request)
+	require.Error(t, err)
+	original := f.w.authority.authenticationReceipts[request.OperationID]
+	require.NotNil(t, original)
+	require.NotNil(t, original.proposal)
+	delete(f.w.authority.authenticationReceipts, request.OperationID)
+	paths := []string{f.path, f.accountsPath}
+	infos, bodies := clientAuthenticationFiles(t, paths...)
+	f.putMode.Store(0)
+	outcome, err := f.w.recoverClientAuthentication(t.Context(), clientAuthenticationRecoveryAction(request.OperationID, request.Target, 1))
+	require.NoError(t, err)
+	require.NotNil(t, outcome.Change)
+	restored := f.w.authority.authenticationReceipts[request.OperationID]
+	require.NotNil(t, restored)
+	require.NotSame(t, original, restored)
+	require.Equal(t, original.request, restored.request)
+	require.Equal(t, original.owner, restored.owner)
+	require.Equal(t, original.proposal.Digest, restored.proposal.Digest)
+	require.True(t, restored.acknowledged)
+	require.True(t, restored.adopted)
+	require.EqualValues(t, 2, f.puts.Load())
+	_, err = f.w.switchClientAuthentication(t.Context(), request)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, f.puts.Load(), "replay must not send another publication")
+	requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)
+}
+
+func TestClientAuthenticationRecoveryRejectsMissingDurableOriginal(t *testing.T) {
+	f := newClientAuthenticationFixture(t, false)
+	target := f.target(t)
+	operationID := strings.Repeat("f", 32)
+	journal, err := f.store.CaptureAuthenticationJournal(t.Context())
+	require.NoError(t, err)
+	_, found, err := journal.Load(t.Context(), f.w.authority.authenticationJournalKey(target.WorkspaceID, "original", operationID))
+	require.NoError(t, err)
+	require.False(t, found)
+	require.NotContains(t, f.w.authority.authenticationReceipts, operationID)
+	paths := []string{f.path, f.accountsPath}
+	infos, bodies := clientAuthenticationFiles(t, paths...)
+	requests := f.requests.Load()
+	outcome, err := f.w.recoverClientAuthentication(t.Context(), clientAuthenticationRecoveryAction(operationID, target, 1))
+	require.ErrorIs(t, err, providerauth.ErrStale)
+	require.False(t, clientAuthenticationChanged(outcome.Progress))
+	require.Nil(t, outcome.Change)
+	require.Equal(t, requests, f.requests.Load(), "unavailable original evidence cannot authorize any receiver request")
+	require.Zero(t, f.puts.Load())
+	requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)
+}
+
 func TestClientAuthenticationRecoverySequenceSurvivesEviction(t *testing.T) {
 	f := newClientAuthenticationFixture(t, false)
+	f.attach(t)
 	request := providerauth.SwitchRequest{OperationID: strings.Repeat("a", 32), Target: f.target(t), AccountID: f.second.ID}
 	f.putMode.Store(1)
 	_, err := f.w.switchClientAuthentication(t.Context(), request)
