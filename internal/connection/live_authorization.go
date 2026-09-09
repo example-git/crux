@@ -166,6 +166,31 @@ func (l *liveAuthorization) reconcileLocked(grants map[string]string) {
 			l.revokeLocked(entry)
 		}
 	}
+	l.sweepDrainedLocked()
+}
+
+// A successfully joined old lifetime no longer needs heap retention. A receipt
+// can still verify that no matching live/retired work remains. Errors and work
+// still draining remain retained and cannot be reported as successful cleanup.
+func (l *liveAuthorization) sweepDrainedLocked() {
+	kept := l.retired[:0]
+	for _, entry := range l.retired {
+		finished := false
+		select {
+		case <-entry.drained:
+			finished = entry.err == nil
+		default:
+		}
+		if !finished {
+			kept = append(kept, entry)
+			continue
+		}
+		if l.current[entry.principal] == entry {
+			delete(l.current, entry.principal)
+		}
+	}
+	clear(l.retired[len(kept):])
+	l.retired = kept
 }
 
 func (l *liveAuthorization) revokeLocked(entry *principalRequests) {

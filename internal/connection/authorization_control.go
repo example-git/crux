@@ -18,9 +18,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
+	"github.com/example-git/crux/internal/lock"
 	"github.com/google/uuid"
 )
 
@@ -54,6 +54,11 @@ type authorizationControlReply struct {
 func authorizationDaemonDir(path string) string { return path + ".daemons" }
 
 func startAuthorizationControl(l *liveAuthorization) (*authorizationControl, error) {
+	release, err := lock.File(l.ctx, l.authorization.path+".lock")
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	dir := authorizationDaemonDir(l.authorization.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err
@@ -126,28 +131,20 @@ func startAuthorizationControl(l *liveAuthorization) (*authorizationControl, err
 
 func (c *authorizationControl) remove() { _ = os.Remove(c.path) }
 
-func reconcileAuthorizationDaemons(ctx context.Context, path string, receipt RevocationRecord) ([]DaemonRevocation, error) {
-	entries, err := os.ReadDir(authorizationDaemonDir(path))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("revocation saved; cannot inspect live daemons: %w", err)
-	}
-	if len(entries) > maxAuthorizationDaemons {
-		return nil, errors.New("revocation saved; daemon registry exceeds its bound")
-	}
+func reconcileAuthorizationDaemons(ctx context.Context, path string, receipt RevocationRecord, captured []DaemonRevocation) ([]DaemonRevocation, error) {
 	var outcomes []DaemonRevocation
 	var result error
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	for _, target := range captured {
+		if target.Acknowledged {
+			outcomes = append(outcomes, target)
 			continue
 		}
-		outcome := DaemonRevocation{InstanceID: strings.TrimSuffix(entry.Name(), ".json")}
-		daemon, err := readAuthorizationDaemon(filepath.Join(authorizationDaemonDir(path), entry.Name()))
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		} // Orderly daemon close already joined its work.
+		outcome := DaemonRevocation{InstanceID: target.InstanceID}
+		daemonPath, err := revocationDaemonPath(path, target.InstanceID)
+		var daemon authorizationDaemon
+		if err == nil {
+			daemon, err = readAuthorizationDaemon(daemonPath)
+		}
 		if err == nil && daemon.ServerFingerprint != receipt.ServerFingerprint {
 			err = errors.New("daemon server identity differs from the revoked grant")
 		}

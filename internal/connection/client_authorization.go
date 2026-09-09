@@ -131,6 +131,9 @@ func readClientAuthorization(ctx context.Context, path string) (*store, error) {
 	if err := decoder.Decode(&data); err != nil || data.Version != storeVersion {
 		return nil, ErrClientAuthorization
 	}
+	if err := validateRevocationResolutions(&data); err != nil {
+		return nil, ErrClientAuthorization
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -180,8 +183,12 @@ func validateClientAuthorizationJSON(data []byte) error {
 				}
 			}
 		case '[':
+			childShape := ""
+			if shape == "daemon_revocations" {
+				childShape = "daemon_revocation"
+			}
 			for decoder.More() {
-				if err := value(""); err != nil {
+				if err := value(childShape); err != nil {
 					return err
 				}
 			}
@@ -219,6 +226,8 @@ func clientAuthorizationMemberShape(shape, name string) (string, error) {
 			return "authorization_records", nil
 		case "revocations":
 			return "revocations", nil
+		case "revocation_resolutions":
+			return "revocation_resolutions", nil
 		}
 	case "identity":
 		if name == "certificate" || name == "private_key" {
@@ -230,6 +239,19 @@ func clientAuthorizationMemberShape(shape, name string) (string, error) {
 		return "authorization_record", nil
 	case "revocations":
 		return "revocation_record", nil
+	case "revocation_resolutions":
+		return "revocation_resolution", nil
+	case "revocation_resolution":
+		switch name {
+		case "state", "captured", "recorded_at":
+			return "", nil
+		case "daemons":
+			return "daemon_revocations", nil
+		}
+	case "daemon_revocation":
+		if name == "instance_id" || name == "acknowledged" || name == "error" {
+			return "", nil
+		}
 	case "authorization_record":
 		switch name {
 		case "name", "fingerprint", "grant_id", "created_at", "approved_at", "last_used_at", "revoked_at":

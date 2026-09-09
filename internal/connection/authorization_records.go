@@ -44,8 +44,9 @@ type DaemonRevocation struct {
 
 type RevocationOutcome struct {
 	RevocationRecord
-	Saved   bool               `json:"saved"`
-	Daemons []DaemonRevocation `json:"daemons,omitempty"`
+	Saved      bool               `json:"saved"`
+	Daemons    []DaemonRevocation `json:"daemons,omitempty"`
+	Resolution string             `json:"resolution,omitempty"`
 }
 
 type explicitApprovalKey struct{}
@@ -166,8 +167,21 @@ func RevokeClientWithOutcome(ctx context.Context, name, operationID string) (Rev
 	if err != nil {
 		return outcome, err
 	}
-	outcome.Daemons, err = reconcileAuthorizationDaemons(ctx, path, outcome.RevocationRecord)
-	return outcome, err
+	resolution, err := prepareRevocationResolution(ctx, path, outcome.RevocationRecord)
+	if err != nil {
+		return outcome, err
+	}
+	if !resolvedRevocation(resolution) {
+		observed, drainErr := reconcileAuthorizationDaemons(ctx, path, outcome.RevocationRecord, resolution.Daemons)
+		stored, saveErr := saveRevocationResolution(ctx, path, outcome.RevocationRecord, observed)
+		if saveErr != nil {
+			outcome.Daemons = observed
+			return outcome, errors.Join(drainErr, saveErr)
+		}
+		resolution = stored
+	}
+	outcome.Daemons, outcome.Resolution = resolution.Daemons, resolution.State
+	return outcome, revocationResolutionError(resolution)
 }
 
 // Reading/removing a historical identity must not require its certificate to

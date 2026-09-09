@@ -54,12 +54,13 @@ type AuthorizedClient struct {
 }
 
 type store struct {
-	Version              int                            `json:"version"`
-	Server               *Identity                      `json:"server,omitempty"`
-	AuthorizedClients    map[string]string              `json:"authorized_clients,omitempty"`
-	Connections          map[string]Connection          `json:"connections,omitempty"`
-	AuthorizationRecords map[string]AuthorizationRecord `json:"authorization_records,omitempty"`
-	Revocations          map[string]RevocationRecord    `json:"revocations,omitempty"`
+	Version               int                             `json:"version"`
+	Server                *Identity                       `json:"server,omitempty"`
+	AuthorizedClients     map[string]string               `json:"authorized_clients,omitempty"`
+	Connections           map[string]Connection           `json:"connections,omitempty"`
+	AuthorizationRecords  map[string]AuthorizationRecord  `json:"authorization_records,omitempty"`
+	Revocations           map[string]RevocationRecord     `json:"revocations,omitempty"`
+	RevocationResolutions map[string]RevocationResolution `json:"revocation_resolutions,omitempty"`
 }
 
 func EnsureServerIdentity(ctx context.Context) (string, error) {
@@ -241,6 +242,9 @@ func authorizeClientAt(ctx context.Context, path string, expectedServer *Identit
 				return fmt.Errorf("client certificate is already authorized as %s", existingName)
 			}
 		}
+		if err := admitAuthorizationHistory(data, name); err != nil {
+			return err
+		}
 		data.AuthorizedClients[name] = clientCertificate
 		recordAuthorization(ctx, data, name, fingerprint)
 		return nil
@@ -365,6 +369,9 @@ func readStoreAt(path string) (*store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read connection store: %w", err)
 	}
+	if err := validateClientAuthorizationJSON(content); err != nil {
+		return nil, errors.New("connection store has ambiguous or unsupported authorization fields")
+	}
 	decoder := json.NewDecoder(strings.NewReader(string(content)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(data); err != nil {
@@ -378,6 +385,9 @@ func readStoreAt(path string) (*store, error) {
 	}
 	if data.Connections == nil {
 		data.Connections = map[string]Connection{}
+	}
+	if err := validateRevocationResolutions(data); err != nil {
+		return nil, err
 	}
 	return data, nil
 }
@@ -395,6 +405,10 @@ func writeStoreWithCommit(data *store, commit authorizationCommit) error {
 }
 
 func writeStoreAt(path string, data *store, commit authorizationCommit) error {
+	if err := validateRevocationResolutions(data); err != nil {
+		return err
+	}
+	pruneAuthorizationHistory(data, authorizationHistoryLimit)
 	content, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode connection store: %w", err)
