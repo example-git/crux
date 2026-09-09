@@ -265,10 +265,12 @@ func TestCheckedKeyUIHostOAuthNeverBecomesKeyFallback(t *testing.T) {
 	ws.cfg = cfg
 	selection.ProviderOwner = owner
 	ws.snapshot.Providers[0].Owner = providerauth.PublicOwner(owner)
-	d := openCheckedKey(t, ui, ws, selection)
-	require.False(t, ui.apiKeySessions[d].ready)
-	d.HandleMsg(tea.PasteMsg{Content: "must-not-be-submitted"})
-	require.Nil(t, d.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter}))
+	messages := runCheckedKeyCmd(ws, ui.openAuthenticationDialog(selection))
+	require.Len(t, messages, 1)
+	_, next := ui.Update(messages[0])
+	require.NotNil(t, next, "OAuth status runs through a separate command")
+	require.IsType(t, &dialog.OAuthLogin{}, ui.dialog.Dialog(dialog.LoginID))
+	require.False(t, ui.dialog.ContainsDialog(dialog.APIKeyInputID))
 	require.Empty(t, ws.checks)
 	require.Empty(t, ws.saves)
 }
@@ -321,7 +323,10 @@ func TestCheckedKeyUIResolvedReceiptDoesNotBlockNewOAuthRoute(t *testing.T) {
 	selection.ProviderOwner = owner
 	ws.snapshot.Providers[0].Owner = providerauth.PublicOwner(owner)
 	ui.apiKeyOperations = map[workspace.Workspace]*apiKeyOperation{ws: {resolved: true, message: "old key saved"}}
-	d := openCheckedKey(t, ui, ws, selection)
+	messages := runCheckedKeyCmd(ws, ui.openAuthenticationDialog(selection))
+	require.Len(t, messages, 1)
+	ui.Update(messages[0])
 	require.Nil(t, ui.apiKeyOperations[ws])
-	require.False(t, ui.apiKeySessions[d].ready, "host OAuth family must not become editable key input")
+	require.IsType(t, &dialog.OAuthLogin{}, ui.dialog.Dialog(dialog.LoginID))
+	require.False(t, ui.dialog.ContainsDialog(dialog.APIKeyInputID), "host OAuth family must not become editable key input")
 }

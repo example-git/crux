@@ -297,8 +297,16 @@ func TestAuthenticationUIReconciliationThroughTLS(t *testing.T) {
 					_, cmd := ui.Update(messages[0])
 					messages = collectCommandMessages(cmd)
 				}
-				require.Len(t, messages, 1)
-				return messages[0]
+				var completed []tea.Msg
+				for _, message := range messages {
+					switch message.(type) {
+					case authenticationReviewCompletedMsg, authenticationApplyCompletedMsg:
+						completed = append(completed, message)
+					}
+				}
+				// Update can also schedule its independent TTL cache refresh.
+				require.Len(t, completed, 1)
+				return completed[0]
 			}
 			reviewed := run(tea.KeyPressMsg{Code: tea.KeyEnter}).(authenticationReviewCompletedMsg)
 			if effect == "saved-account" {

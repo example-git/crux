@@ -49,6 +49,7 @@ import (
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/question"
@@ -458,6 +459,9 @@ type UI struct {
 	authenticationReconciliations map[*authenticationOperation]*authenticationReconciliation
 	apiKeySessions                map[*dialog.APIKeyInput]*apiKeySession
 	apiKeyOperations              map[workspace.Workspace]*apiKeyOperation
+	oauthLoginReads               map[*dialog.OAuthLogin]*oauthLoginRead
+	oauthLogins                   map[workspace.Workspace]*oauthLoginOperation
+	oauthOpenURL                  func(string) error
 
 	// brand is the provider wordmark branding for the current large
 	// model provider; nil renders the default Crux branding.
@@ -811,8 +815,10 @@ func (m *UI) loadMCPrompts() tea.Msg {
 }
 
 // Update handles updates to the UI model.
-func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd) {
 	var cmds []tea.Cmd
+	cleanupOAuth := m.pruneOAuthLogins()
+	defer func() { updateCommand = tea.Batch(cleanupOAuth, updateCommand) }()
 	m.pruneAuthenticationReads()
 	m.pruneAPIKeySessions()
 	// Update terminal capabilities
@@ -834,6 +840,16 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	switch msg := msg.(type) {
+	case oauthLoginStatusMsg:
+		cmds = append(cmds, m.completeOAuthLoginStatus(msg))
+	case oauthLoginIDsMsg:
+		cmds = append(cmds, m.completeOAuthLoginIDs(msg))
+	case oauthLoginResultMsg:
+		cmds = append(cmds, m.completeOAuthLoginResult(msg))
+	case oauthLoginRelayMsg:
+		cmds = append(cmds, m.completeOAuthRelay(msg))
+	case oauthLoginOpenMsg:
+		cmds = append(cmds, m.completeOAuthBrowser(msg))
 	case apiKeyStatusMsg:
 		cmds = append(cmds, m.completeAPIKeyStatus(msg))
 	case apiKeyIDsMsg:
@@ -1596,6 +1612,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	case tea.PasteMsg:
+		// OAuth submissions retain the exact source bytes for owner validation.
+		// Deliver them before inline editors or prompt line-ending normalization.
+		if _, ok := m.dialog.DialogLast().(*dialog.OAuthLogin); ok {
+			cmds = append(cmds, m.handleDialogMsg(msg))
+			return m, tea.Batch(cmds...)
+		}
 		if m.activeInline != nil && m.focus == uiFocusEditor {
 			if p, ok := m.activeInline.(dialog.PasteableEditor); ok {
 				if cmd := p.HandlePaste(msg); cmd != nil {
@@ -2249,6 +2271,7 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		m.dialog.CloseFrontDialog()
 		m.pruneAuthenticationReads()
 		m.pruneAPIKeySessions()
+		cmds = append(cmds, m.pruneOAuthLogins())
 
 		if isOnboarding && !msg.Dismiss {
 			if cmd := m.openModelsDialog(); cmd != nil {
@@ -2258,6 +2281,20 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 
 		if m.focus == uiFocusEditor {
 			cmds = append(cmds, m.textarea.Focus())
+		}
+	case dialog.ActionOAuthLoginSelect:
+		cmds = append(cmds, m.beginOAuthLogin(msg.Dialog, msg.Owner))
+	case dialog.ActionOAuthLoginSubmit:
+		cmds = append(cmds, m.submitOAuthLogin(msg.Dialog))
+	case dialog.ActionOAuthLoginRetry:
+		cmds = append(cmds, m.retryOAuthLogin(msg.Dialog))
+	case dialog.ActionOAuthLoginReload:
+		cmds = append(cmds, m.reloadOAuthLogin(msg.Dialog))
+	case dialog.ActionOAuthLoginRecover:
+		cmds = append(cmds, m.recoverOAuthLogin(msg))
+	case dialog.ActionOAuthLoginOpen:
+		if op := m.oauthLogins[m.com.Workspace]; op != nil && op.dialog == msg.Dialog && m.oauthDialogOpen(msg.Dialog) {
+			cmds = append(cmds, m.openOAuthBrowser(op))
 		}
 	case dialog.ActionAPIKeyCheck:
 		cmds = append(cmds, m.beginAPIKeyCheck(msg.Dialog))
@@ -2439,8 +2476,7 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		}
 		cmds = append(cmds, util.CmdHandler(util.NewInfoMsg("Logged out of "+msg.Label)))
 	case dialog.LoginDoneMsg:
-		m.dialog.CloseDialog(dialog.LoginID)
-		cmds = append(cmds, dialog.SaveLoginCmd(m.com, msg))
+		cmds = append(cmds, util.ReportError(errors.New("Legacy OAuth results cannot be saved here; reopen workspace sign-in")))
 	case dialog.ActionSelectProject:
 		cmds = append(cmds, func() tea.Msg {
 			return dialog.ProjectSelectionDoneMsg{
@@ -2560,17 +2596,19 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 	case dialog.ActionQuit:
 		m.cancelAPIKeyReads()
 		m.modelSelectionGen++
+		m.dialog.CloseDialog(dialog.LoginID)
+		closeLogins := m.pruneOAuthLogins()
 		if m.cancelCopilotImport != nil {
 			m.cancelCopilotImport()
 			m.cancelCopilotImport = nil
 		}
 		done := m.deliverySaveDone
-		cmds = append(cmds, func() tea.Msg {
+		cmds = append(cmds, tea.Sequence(closeLogins, func() tea.Msg {
 			if done != nil {
 				<-done
 			}
 			return tea.Quit()
-		})
+		}))
 	case dialog.ActionEnableDockerMCP:
 		m.dialog.CloseDialog(dialog.CommandsID)
 		cmds = append(cmds, m.enableDockerMCP)
@@ -5395,13 +5433,7 @@ func (m *UI) openQuitDialog() tea.Cmd {
 
 // openLoginDialog opens the OAuth login dialog.
 func (m *UI) openLoginDialog() tea.Cmd {
-	if m.dialog.ContainsDialog(dialog.LoginID) {
-		m.dialog.BringToFront(dialog.LoginID)
-		return nil
-	}
-	loginDialog, cmd := dialog.NewLogin(m.com)
-	m.dialog.OpenDialog(loginDialog)
-	return cmd
+	return m.openOAuthAuthentication(nil, nil)
 }
 
 // openModelsDialog opens the models dialog.
@@ -5737,17 +5769,9 @@ func (m *UI) handleReAuthenticate(providerID string, expected providerregistry.R
 	if _, ok := cfg.Providers.Get(providerID); !ok {
 		return nil
 	}
-	if registration, ok := cfg.ProviderRegistration(providerID); ok && registration.OAuth != nil {
-		login, cmd, err := dialog.NewLoginForProvider(m.com, registration.ProviderID)
-		if err != nil {
-			return util.ReportError(err)
-		}
-		if m.dialog.ContainsDialog(dialog.LoginID) {
-			m.dialog.BringToFront(dialog.LoginID)
-			return nil
-		}
-		m.dialog.OpenDialogWithGrace(login)
-		return cmd
+	if expected.HasOAuth {
+		public := providerauth.PublicOwner(expected)
+		return m.openOAuthAuthentication(nil, &public)
 	}
 	agentCfg, ok := cfg.Agents[config.AgentCoder]
 	if !ok {
