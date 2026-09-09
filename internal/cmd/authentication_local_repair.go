@@ -45,7 +45,12 @@ var authenticationLocalRepairCmd = &cobra.Command{
 				fmt.Fprintf(cmd.OutOrStdout(), "To apply this reviewed revision, repeat this command with --apply-revision %d.\n", s.Revision)
 			}
 			if result.NeedsReload || s.NeedsReload {
-				fmt.Fprintln(cmd.OutOrStdout(), "Disk repair is retained. In the owning client, open Review saved authentication, explicitly Reload, then review and apply the exact saved choice. This is a new runtime change, separate from the original operation.")
+				if s.Coherent {
+					fmt.Fprintln(cmd.OutOrStdout(), "The original local transaction completed coherently. No additional disk repair is performed.")
+				} else {
+					fmt.Fprintln(cmd.OutOrStdout(), "Disk repair progress is retained separately from the original transaction.")
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), "In the owning client, open Review saved authentication, explicitly Reload, then review and apply the exact saved choice. This is a new runtime change, separate from the original operation.")
 			}
 		}
 		return err
