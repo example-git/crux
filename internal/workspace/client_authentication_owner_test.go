@@ -73,7 +73,7 @@ func TestClientAuthenticationMutationOriginalOwnerOnRealPartial(t *testing.T) {
 	}
 }
 
-func TestClientAuthenticationMutationOriginalOwnerAbsentOnAdmissionRefusal(t *testing.T) {
+func TestClientAuthenticationMutationIntentOwnerRetainedOnAdmissionRefusal(t *testing.T) {
 	f := newClientAuthenticationFixture(t, false)
 	request := providerauth.SwitchRequest{OperationID: strings.Repeat("d", 32), Target: f.target(t), AccountID: "missing-account"}
 	paths := []string{f.path, f.accountsPath}
@@ -82,9 +82,14 @@ func TestClientAuthenticationMutationOriginalOwnerAbsentOnAdmissionRefusal(t *te
 	require.ErrorIs(t, err, providerauth.ErrAccount)
 	receipt := f.w.authority.authenticationReceipts[request.OperationID]
 	require.NotNil(t, receipt)
-	require.Empty(t, receipt.owner)
+	require.Equal(t, f.owner, receipt.owner, "durable intent retains its exact selected owner independently of Service admission")
+	require.True(t, receipt.localFinished)
+	require.True(t, receipt.journalCompleted)
 	require.False(t, clientAuthenticationChanged(receipt.outcome.Progress))
+	require.Nil(t, receipt.outcome.Change)
 	require.Nil(t, receipt.proposal)
+	require.False(t, receipt.acknowledged)
+	require.False(t, receipt.adopted)
 	requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)
 	require.Zero(t, f.puts.Load())
 }

@@ -280,14 +280,15 @@ func TestClientAuthenticationReviewLostAckAndExplicitReplay(t *testing.T) {
 	requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)
 }
 
-func TestClientAuthenticationReviewSequenceAndEviction(t *testing.T) {
+func TestClientAuthenticationReviewCapacityRetainsPendingUntilExplicitAbandonment(t *testing.T) {
 	f, request := rejectedAuthenticationReviewFixture(t, false)
+	f.attach(t)
 	review := authenticationReviewAction(request.OperationID, request.Target, 1)
 	summary, err := f.w.reviewClientAuthentication(t.Context(), review)
 	require.NoError(t, err)
 	f.putMode.Store(1)
 	apply := authenticationReviewApply(review, summary)
-	_, err = f.w.applyClientAuthenticationReview(t.Context(), apply)
+	originalApply, err := f.w.applyClientAuthenticationReview(t.Context(), apply)
 	require.Error(t, err)
 	other := apply
 	other.ApplyID = strings.Repeat("e", 32)
@@ -298,18 +299,33 @@ func TestClientAuthenticationReviewSequenceAndEviction(t *testing.T) {
 		_, err = f.w.reviewClientAuthentication(t.Context(), authenticationReviewAction(request.OperationID, request.Target, sequence))
 		require.Error(t, err)
 	}
+	require.ErrorContains(t, err, "unresolved reviewed publication")
 	require.Len(t, f.w.authority.authenticationReviews, clientAuthenticationReceiptLimit)
-	require.Nil(t, f.w.authority.authenticationReviews[review.ReviewID])
+	require.NotNil(t, f.w.authority.authenticationReviews[review.ReviewID], "capacity must preserve unresolved publication evidence")
 	requests := f.requests.Load()
-	_, err = f.w.reviewClientAuthentication(t.Context(), review)
-	require.ErrorIs(t, err, providerauth.ErrStale)
-	_, err = f.w.applyClientAuthenticationReview(t.Context(), apply)
-	require.ErrorIs(t, err, providerauth.ErrStale)
+	replayed, err := f.w.reviewClientAuthentication(t.Context(), review)
+	require.NoError(t, err)
+	require.Equal(t, summary, replayed, "reading retained evidence must not create another review")
 	f.w.authority.mu.Lock()
 	err = f.w.reconcileClientAuthority(t.Context(), f.w.authority)
 	f.w.authority.mu.Unlock()
 	require.ErrorContains(t, err, "reviewed authentication", "eviction cannot erase pending-publication guard")
 	require.Equal(t, requests, f.requests.Load())
+	history := journalReview(t, f.w, review.ReviewID)
+	require.True(t, history.ApplyAttempted)
+	retire := ProviderAuthenticationReviewAbandonRequest{WorkspaceID: f.w.workspaceID(), Review: ProviderAuthenticationReviewRequest(review), PreviewID: summary.PreviewID, AbandonID: strings.Repeat("f", 32), Revision: history.JournalRevision}
+	paths := []string{f.path, f.accountsPath}
+	infos, bodies := clientAuthenticationFiles(t, paths...)
+	retired, err := f.w.AbandonProviderAuthenticationReview(t.Context(), retire)
+	require.NoError(t, err)
+	require.NoError(t, retired.Validate(retire))
+	require.Equal(t, originalApply, retired.Original)
+	require.False(t, retired.Original.RemoteAcknowledged)
+	require.False(t, retired.Original.Adopted)
+	_, err = f.w.applyClientAuthenticationReview(t.Context(), apply)
+	require.ErrorIs(t, err, providerauth.ErrStale)
+	require.Equal(t, requests, f.requests.Load(), "explicit abandonment must not contact the receiver")
+	requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)
 	f.getMode.Store(0)
 	f.putMode.Store(0)
 	review = authenticationReviewAction(request.OperationID, request.Target, clientAuthenticationReceiptLimit+3)
@@ -560,7 +576,7 @@ func TestClientAuthenticationReviewNewChoiceSupersedesUnadoptedProof(t *testing.
 	require.EqualValues(t, 3, f.puts.Load())
 }
 
-func TestClientAuthenticationReviewRequestAndUnsupportedEffect(t *testing.T) {
+func TestClientAuthenticationReviewRejectsChangedRequestAndTamperedIntent(t *testing.T) {
 	f, request := rejectedAuthenticationReviewFixture(t, false)
 	review := authenticationReviewAction(request.OperationID, request.Target, 1)
 	_, err := f.w.reviewClientAuthentication(t.Context(), review)
@@ -576,17 +592,16 @@ func TestClientAuthenticationReviewRequestAndUnsupportedEffect(t *testing.T) {
 		_, err = f.w.reviewClientAuthentication(t.Context(), changed)
 		require.Error(t, err)
 	}
-	// A future admitted checked-key operation has no OAuth account selection.
-	// Its phase-one proposal recovery remains supported; this new effect does
-	// not yet have a saved-state reconciliation validator.
+	// A process-local mutation cannot rewrite the original durable intent into
+	// another kind of authentication operation.
 	f.w.authority.authenticationReceipts[request.OperationID].request.accountID = ""
 	for i, choice := range []clientAuthenticationReviewChoice{{}, {Kind: "saved-logout"}} {
 		changed = authenticationReviewAction(request.OperationID, request.Target, uint64(i+2))
 		changed.Choice = choice
 		_, err = f.w.reviewClientAuthentication(t.Context(), changed)
-		require.ErrorContains(t, err, "saved API-key authentication reconciliation is not supported")
+		require.ErrorContains(t, err, "recorded authentication operation identity changed")
 	}
-	require.Equal(t, requests, f.requests.Load(), "unsupported effects never read the receiver or collect")
+	require.Equal(t, requests, f.requests.Load(), "tampered intents never read the receiver or collect")
 }
 
 func TestClientAuthenticationReviewPendingWithoutOriginalWrites(t *testing.T) {

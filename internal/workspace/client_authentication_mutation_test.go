@@ -213,6 +213,31 @@ func (f *clientAuthenticationFixture) observed() []string {
 	defer f.mu.Unlock()
 	return slices.Clone(f.credentials)
 }
+
+// Capacity exercises can outlive the server's creation hold. Keep the actual
+// authenticated stream claim, as the UI does, while those local operations run.
+func (f *clientAuthenticationFixture) attach(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	events, err := f.w.client.SubscribeEvents(ctx, f.w.workspaceID(), *f.w.ws.Authority)
+	require.NoError(t, err)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range events {
+		}
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Error("authentication fixture event stream did not stop")
+		}
+	})
+}
+
 func clientAuthenticationFiles(t *testing.T, paths ...string) ([]os.FileInfo, [][]byte) {
 	t.Helper()
 	var infos []os.FileInfo
@@ -555,6 +580,7 @@ func TestClientAuthenticationMutationGenericReconcileRejectsChangedCache(t *test
 
 func TestClientAuthenticationMutationEvictedTargetCannotRecollect(t *testing.T) {
 	f := newClientAuthenticationFixture(t, false)
+	f.attach(t)
 	request := providerauth.SwitchRequest{OperationID: strings.Repeat("a", 32), Target: f.target(t), AccountID: f.second.ID}
 	_, err := f.w.switchClientAuthentication(t.Context(), request)
 	require.NoError(t, err)
