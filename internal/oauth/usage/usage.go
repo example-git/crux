@@ -110,7 +110,7 @@ func getJSON(ctx context.Context, method, url, token string, body io.Reader, hea
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(http.DefaultClient, req.URL.String())).Do(req)
 	if err != nil {
 		return err
 	}

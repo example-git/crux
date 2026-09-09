@@ -65,7 +65,7 @@ func TestAnthropicConstructorPreservesEfficiencyPolicy(t *testing.T) {
 			}))
 			defer server.Close()
 			coordinator := &coordinator{}
-			provider, err := coordinator.buildAnthropicProvider(false, server.URL, "test", nil, test.policy, func() error { return nil })
+			provider, err := coordinator.buildAnthropicProvider(false, server.URL, "test", nil, test.policy, nil, func() error { return nil })
 			require.NoError(t, err)
 			model, err := provider.LanguageModel(context.Background(), "claude-test")
 			require.NoError(t, err)

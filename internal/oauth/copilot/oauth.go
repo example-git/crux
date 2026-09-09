@@ -54,7 +54,7 @@ func RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
 	}
 	req.Header.Set("User-Agent", userAgent)
 
-	client := providertransport.ClientWithContextOwnerValidator(ctx, &http.Client{Timeout: 30 * time.Second})
+	client := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(&http.Client{Timeout: 30 * time.Second}, req.URL.String()))
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -145,7 +145,7 @@ func tryGetToken(ctx context.Context, deviceCode string) (*oauth.Token, error) {
 	}
 	req.Header.Set("User-Agent", userAgent)
 
-	client := providertransport.ClientWithContextOwnerValidator(ctx, &http.Client{Timeout: 30 * time.Second})
+	client := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(&http.Client{Timeout: 30 * time.Second}, req.URL.String()))
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -191,7 +191,7 @@ func getCopilotToken(ctx context.Context, githubToken string) (*oauth.Token, err
 		req.Header.Set(k, v)
 	}
 
-	client := providertransport.ClientWithContextOwnerValidator(ctx, &http.Client{Timeout: 30 * time.Second})
+	client := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(&http.Client{Timeout: 30 * time.Second}, req.URL.String()))
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

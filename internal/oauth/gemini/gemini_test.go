@@ -122,7 +122,7 @@ func TestInferenceHTTPClientExecutesOperationTimeouts(t *testing.T) {
 				RequestTimeout:    test.request,
 				StreamIdleTimeout: test.idle,
 			}
-			client := inferenceHTTPClient(operation, func() error { return nil })
+			client := inferenceHTTPClient(server.URL, operation, func() error { return nil })
 			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
 			if err != nil {
 				t.Fatal(err)
