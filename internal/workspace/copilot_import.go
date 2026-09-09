@@ -36,6 +36,9 @@ func (w *ClientWorkspace) ImportCopilot(ctx context.Context, owner providerregis
 	if err := w.reconcileClientAuthority(ctx, a); err != nil {
 		return false, err
 	}
+	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
+		return false, err
+	}
 	_, found, err := a.store.ImportCopilotForOwner(ctx, owner)
 	if err != nil || !found {
 		return false, err

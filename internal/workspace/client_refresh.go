@@ -83,6 +83,9 @@ func (w *ClientWorkspace) fulfillClientRefresh(ctx context.Context, request conf
 	if err := w.reconcileClientAuthority(ctx, a); err != nil {
 		return config.ClientRefreshCompletion{}, err
 	}
+	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
+		return config.ClientRefreshCompletion{}, err
+	}
 	if request.Principal != a.principal || request.Revision != a.accepted.Revision || request.Digest != a.accepted.Digest {
 		return config.ClientRefreshCompletion{}, errors.New("refresh request does not match this client's accepted runtime")
 	}

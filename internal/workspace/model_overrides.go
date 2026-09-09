@@ -47,6 +47,9 @@ func (w *ClientWorkspace) OverrideModels(ctx context.Context, requested config.A
 	if err := w.reconcileClientAuthority(ctx, a); err != nil {
 		return config.AgentModelState{}, err
 	}
+	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
+		return config.AgentModelState{}, err
+	}
 	if _, err := a.store.OverrideModelsForOwnersContext(ctx, requested); err != nil {
 		return config.AgentModelState{}, err
 	}

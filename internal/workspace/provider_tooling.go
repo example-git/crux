@@ -76,6 +76,9 @@ func (w *ClientWorkspace) mutateProviderTooling(ctx context.Context, scope confi
 	if err := w.reconcileClientAuthority(ctx, a); err != nil {
 		return err
 	}
+	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
+		return err
+	}
 	var err error
 	if remove {
 		err = a.store.RemoveProviderToolingInstructionsContext(ctx, scope, owner)

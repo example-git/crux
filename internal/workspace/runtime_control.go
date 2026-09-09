@@ -82,6 +82,9 @@ func (w *ClientWorkspace) runtimeControl(ctx context.Context, scope config.Scope
 		}
 		return accepted, ctx.Err()
 	}
+	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
+		return config.RuntimeControlState{}, err
+	}
 	var stored config.RuntimeControlState
 	var err error
 	if set {
