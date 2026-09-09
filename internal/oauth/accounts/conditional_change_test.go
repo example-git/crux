@@ -69,9 +69,14 @@ func TestConditionalAccountSwitchCommitsExactTargetAndRetainsLease(t *testing.T)
 	require.Equal(t, "synthetic-second", unchanged.AccessToken)
 	require.JSONEq(t, `{"number":1.0}`, string(unchanged.Raw))
 	assertConditionalLeaseHeld(t, path)
+	started := time.Now()
 	result, err := change.Commit(t.Context())
+	finished := time.Now()
 	require.NoError(t, err)
 	require.True(t, result.Written)
+	require.False(t, result.CompletionDeadline().IsZero())
+	require.False(t, result.CompletionDeadline().Before(started.Add(accountCommitCompletionTimeout)))
+	require.False(t, result.CompletionDeadline().After(finished.Add(accountCommitCompletionTimeout)))
 	require.Equal(t, "second", result.Snapshot.ActiveID(snapshotNamespace))
 	require.Len(t, result.Snapshot.Entries(snapshotNamespace), 2)
 	require.False(t, before.SameObservation(result.Snapshot))
@@ -114,6 +119,7 @@ func TestConditionalAccountCheckAndCloseNeverWrite(t *testing.T) {
 				result, err := change.Commit(t.Context())
 				require.NoError(t, err)
 				require.False(t, result.Written)
+				require.True(t, result.CompletionDeadline().IsZero())
 				require.True(t, before.SameObservation(result.Snapshot))
 			}
 			change.Close()
@@ -132,6 +138,7 @@ func TestConditionalAccountCheckAndCloseNeverWrite(t *testing.T) {
 		result, err := change.Commit(t.Context())
 		require.NoError(t, err)
 		require.False(t, result.Written)
+		require.True(t, result.CompletionDeadline().IsZero())
 		require.True(t, before.SameObservation(result.Snapshot))
 		_, err = os.Stat(path)
 		require.ErrorIs(t, err, os.ErrNotExist)
@@ -486,6 +493,7 @@ func TestConditionalAccountCancellationAndCapturedPath(t *testing.T) {
 				result, err := change.Commit(ctx)
 				require.ErrorIs(t, err, context.Canceled)
 				require.False(t, result.Written)
+				require.True(t, result.CompletionDeadline().IsZero())
 				require.Equal(t, original, readConditionalDocument(t, path))
 				assertConditionalLeaseHeld(t, path)
 				return
@@ -550,6 +558,7 @@ func TestConditionalAccountCommitReportsPostRenameOutcomes(t *testing.T) {
 			defer change.Close()
 			base, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			var postRenameObserved time.Time
 			change.state.validate = func() error {
 				file, err := openAccountSnapshotFile(path)
 				if err != nil {
@@ -560,6 +569,7 @@ func TestConditionalAccountCommitReportsPostRenameOutcomes(t *testing.T) {
 				if err != nil || observed == before.file {
 					return err
 				}
+				postRenameObserved = time.Now()
 				if failure == "cancellation" {
 					cancel()
 				} else {
@@ -569,6 +579,15 @@ func TestConditionalAccountCommitReportsPostRenameOutcomes(t *testing.T) {
 			}
 			result, err := change.Commit(base)
 			require.True(t, result.Written, "the successful rename must remain observable")
+			require.False(t, postRenameObserved.IsZero())
+			deadline := result.CompletionDeadline()
+			require.False(t, deadline.IsZero(), "post-write errors must preserve the completion budget")
+			require.False(t, deadline.After(postRenameObserved.Add(accountCommitCompletionTimeout)), "the deadline must precede late verification, not restart when Commit returns")
+			continuation, stop := context.WithDeadline(context.WithoutCancel(base), deadline)
+			defer stop()
+			inherited, ok := continuation.Deadline()
+			require.True(t, ok)
+			require.Equal(t, deadline, inherited, "continuation must retain the exact absolute deadline")
 			assertConditionalLeaseHeld(t, path)
 			if failure == "cancellation" {
 				require.NoError(t, err)
@@ -594,7 +613,7 @@ func TestConditionalAccountCommitRechecksPathAndPrivateFormatting(t *testing.T) 
 	change, err := before.BeginSwitch(t.Context(), snapshotNamespace, "second")
 	require.NoError(t, err)
 	defer change.Close()
-	for _, value := range []any{change, *change, change.state, CommitResult{Snapshot: before, Written: true}} {
+	for _, value := range []any{change, *change, change.state, CommitResult{Snapshot: before, Written: true, completionDeadline: time.Date(2042, time.January, 2, 3, 4, 5, 0, time.UTC)}} {
 		_, err := json.Marshal(value)
 		require.Error(t, err)
 		for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%d", "%f"} {
@@ -603,6 +622,7 @@ func TestConditionalAccountCommitRechecksPathAndPrivateFormatting(t *testing.T) 
 			require.NotContains(t, formatted, "synthetic")
 			require.NotContains(t, formatted, snapshotNamespace)
 			require.NotContains(t, formatted, path)
+			require.NotContains(t, formatted, "2042")
 		}
 	}
 	replacement := []byte(`{"active":{},"accounts":{},"foreign":"new writer"}`)
