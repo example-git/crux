@@ -118,6 +118,9 @@ func (w *countingWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCo
 	return w.lspDiags[name]
 }
 
+func (w *countingWorkspace) AuthenticationWorkspaceID() string               { return "counting-workspace" }
+func (w *countingWorkspace) SetCurrentSession(context.Context, string) error { return nil }
+
 func (w *countingWorkspace) ListMessages(context.Context, string) ([]message.Message, error) {
 	return nil, nil
 }
@@ -621,7 +624,7 @@ func TestSessionSwitchRefreshesQueueAndBusy(t *testing.T) {
 	m.promptQueueItems = queuedPrompts("x", "y", "z", "w", "v")
 	ws.resetCounters()
 
-	_, cmd := m.Update(loadSessionMsg{session: &session.Session{ID: "s2"}})
+	_, cmd := m.Update(loadSessionMsg{source: ws, workspaceID: ws.AuthenticationWorkspaceID(), session: &session.Session{ID: "s2"}})
 	require.Zero(t, m.promptQueue, "switching sessions must drop the old session's queue pill")
 	require.True(t, m.promptQueueInFlight, "session switch must schedule a queue refresh")
 	require.True(t, m.busyFetchInFlight, "session switch must schedule a busy refresh")
@@ -939,12 +942,12 @@ func TestSetSessionMessagesGatesAnimationsOnBusy(t *testing.T) {
 	}
 
 	// When the agent is not busy, setSessionMessages must not start animations.
-	cmd := m.setSessionMessages(msgs)
+	cmd := m.setSessionMessages(msgs, nil)
 	require.Nil(t, cmd, "setSessionMessages must not start animations when agent is idle")
 
 	// When the agent is busy, animations should start.
 	warmCaches(m, true)
-	cmd = m.setSessionMessages(msgs)
+	cmd = m.setSessionMessages(msgs, nil)
 	require.NotNil(t, cmd, "setSessionMessages must start animations when agent is busy")
 }
 
@@ -1242,6 +1245,7 @@ func TestSessionFileRefreshRebuildsSidebarCacheAndRejectsStaleResults(t *testing
 	m.sessionFilesFetchGen = 2
 
 	_, _ = m.Update(sessionFilesUpdatesMsg{
+		source: m.com.Workspace, workspaceID: m.com.Workspace.AuthenticationWorkspaceID(),
 		sessionID:  "s1",
 		generation: 2,
 		sessionFiles: []SessionFile{{
@@ -1253,6 +1257,7 @@ func TestSessionFileRefreshRebuildsSidebarCacheAndRejectsStaleResults(t *testing
 	require.Contains(t, ansi.Strip(m.sidebarContent), "current.go")
 
 	_, _ = m.Update(sessionFilesUpdatesMsg{
+		source: m.com.Workspace, workspaceID: m.com.Workspace.AuthenticationWorkspaceID(),
 		sessionID:  "s1",
 		generation: 1,
 		sessionFiles: []SessionFile{{

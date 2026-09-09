@@ -71,6 +71,9 @@ const (
 // recovered transitions of the client-server link. Local (in-process)
 // workspaces never emit it.
 type ConnectionEvent struct {
+	// Source identifies the local Workspace object that emitted this event.
+	// It is never sent over the wire.
+	Source Workspace
 	// Recreated identifies a newly acknowledged workspace ID after loss. It
 	// does not claim that any session/history query has completed.
 	Recreated           bool

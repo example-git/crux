@@ -122,7 +122,11 @@ type openEditorMsg struct {
 	Text string
 }
 
-type initialSessionUnavailableMsg struct{}
+type initialSessionUnavailableMsg struct {
+	source      workspace.Workspace
+	workspaceID string
+	generation  uint64
+}
 
 type tmuxAttachPreparedMsg struct {
 	lease *tmuxsession.Lease
@@ -204,6 +208,9 @@ type (
 
 	// sessionFilesUpdatesMsg is sent when the files for this session have been updated
 	sessionFilesUpdatesMsg struct {
+		err          error
+		source       workspace.Workspace
+		workspaceID  string
 		sessionID    string
 		generation   uint64
 		sessionFiles []SessionFile
@@ -217,10 +224,11 @@ type (
 
 // UI represents the main user interface model.
 type UI struct {
-	com                  *common.Common
-	session              *session.Session
-	sessionFiles         []SessionFile
-	sessionFilesFetchGen uint64
+	com                   *common.Common
+	session               *session.Session
+	sessionFiles          []SessionFile
+	sessionFilesFetchGen  uint64
+	sessionLoadGeneration uint64
 
 	// keeps track of read files while we don't have a session id
 	sessionFileReads []string
@@ -470,7 +478,8 @@ type UI struct {
 	brand *providerBrand
 
 	// Prompt history for up/down navigation through previous messages.
-	promptHistory struct {
+	promptHistoryGeneration uint64
+	promptHistory           struct {
 		messages []string
 		index    int
 		draft    string
@@ -666,15 +675,20 @@ func (m *UI) loadInitialSession() tea.Cmd {
 		return m.loadSession(sessionID)
 	case m.continueLastSession:
 		m.continueLastSession = false
+		ws := m.com.Workspace
+		id := ws.AuthenticationWorkspaceID()
+		m.sessionLoadGeneration++
+		generation := m.sessionLoadGeneration
 		return func() tea.Msg {
-			sessions, err := m.com.Workspace.ListSessions(context.Background())
+			ctx := workspace.ContextWithSessionWorkspace(context.Background(), id)
+			sessions, err := ws.ListSessions(ctx)
 			if err != nil {
-				return util.ReportError(err)
+				return loadSessionMsg{source: ws, workspaceID: id, generation: generation, err: err}
 			}
 			if len(sessions) == 0 {
-				return initialSessionUnavailableMsg{}
+				return initialSessionUnavailableMsg{source: ws, workspaceID: id, generation: generation}
 			}
-			return m.loadSession(sessions[0].ID)()
+			return loadSessionCommand(ws, id, generation, sessions[0].ID)()
 		}
 	default:
 		return nil
@@ -980,6 +994,9 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 	case modelSelectionCompletedMsg:
 		cmds = append(cmds, m.completeModelSelection(msg))
 	case initialSessionUnavailableMsg:
+		if msg.source == nil || msg.source != m.com.Workspace || msg.workspaceID != m.com.Workspace.AuthenticationWorkspaceID() || msg.generation != m.sessionLoadGeneration {
+			break
+		}
 		if cmd := m.sendInitialPrompt(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -1002,6 +1019,16 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 			cmds = append(cmds, cmd)
 		}
 	case loadSessionMsg:
+		if msg.source == nil || msg.source != m.com.Workspace || msg.workspaceID != m.com.Workspace.AuthenticationWorkspaceID() || msg.generation != m.sessionLoadGeneration {
+			break
+		}
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+			break
+		}
+		if msg.session == nil {
+			break
+		}
 		if m.forceCompactMode {
 			m.isCompact = true
 		}
@@ -1028,12 +1055,9 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 			cmds = append(cmds, cmd)
 		}
 		cmds = append(cmds, m.startLSPs(msg.lspFilePaths()))
-		msgs, err := m.com.Workspace.ListMessages(context.Background(), m.session.ID)
-		if err != nil {
-			cmds = append(cmds, util.ReportError(err))
-			break
-		}
-		if cmd := m.setSessionMessages(msgs); cmd != nil {
+		cmds = append(cmds, m.reportCurrentSession(m.session.ID))
+		msgs := msg.messages
+		if cmd := m.setSessionMessages(msgs, msg.nested); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
 		restoreModel := m.restoreModelFromSession(msgs)
@@ -1069,7 +1093,11 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 		m.updateLayoutAndSize()
 
 	case sessionFilesUpdatesMsg:
-		if m.session == nil || msg.sessionID != m.session.ID || msg.generation != m.sessionFilesFetchGen {
+		if msg.source == nil || msg.source != m.com.Workspace || msg.workspaceID != m.com.Workspace.AuthenticationWorkspaceID() || m.session == nil || msg.sessionID != m.session.ID || msg.generation != m.sessionFilesFetchGen {
+			break
+		}
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
 			break
 		}
 		m.sessionFiles = msg.sessionFiles
@@ -1116,6 +1144,13 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 		}
 
 	case promptHistoryLoadedMsg:
+		sessionID := ""
+		if m.session != nil {
+			sessionID = m.session.ID
+		}
+		if msg.source == nil || msg.source != m.com.Workspace || msg.workspaceID != m.com.Workspace.AuthenticationWorkspaceID() || msg.sessionID != sessionID || msg.generation != m.promptHistoryGeneration {
+			break
+		}
 		m.promptHistory.messages = msg.messages
 		m.promptHistory.index = -1
 		m.promptHistory.draft = ""
@@ -1834,7 +1869,7 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 }
 
 // setSessionMessages sets the messages for the current session in the chat
-func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
+func (m *UI) setSessionMessages(msgs []message.Message, nested map[string][]message.Message) tea.Cmd {
 	var cmds []tea.Cmd
 	// Build tool result map to link tool calls with their results
 	msgPtrs := make([]*message.Message, len(msgs))
@@ -1867,7 +1902,7 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 	items = chat.CompactActivityHistory(m.com.Styles, items, chat.ActivityHistoryLimit)
 
 	// Load nested tool calls for agent/agentic_fetch tools.
-	m.loadNestedToolCalls(items)
+	m.loadNestedToolCalls(items, nested, map[string]bool{})
 
 	// If the user switches between sessions while the agent is working we
 	// want to make sure the animations are shown. Gate on the agent actually
@@ -1901,6 +1936,9 @@ func (m *UI) setSessionMessages(msgs []message.Message) tea.Cmd {
 // after a degraded episode: events published while the stream was down are
 // gone, and if the workspace itself was re-created any run died with it.
 func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
+	if msg.Source == nil || msg.Source != m.com.Workspace || msg.WorkspaceID == "" || msg.WorkspaceID != m.com.Workspace.AuthenticationWorkspaceID() {
+		return nil
+	}
 	info := util.InfoMsg{
 		Type: util.InfoTypeWarn,
 		Msg:  "Lost connection to the Crux server — reconnecting…",
@@ -1936,7 +1974,7 @@ func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
 }
 
 // loadNestedToolCalls recursively loads nested tool calls for agent/agentic_fetch tools.
-func (m *UI) loadNestedToolCalls(items []chat.MessageItem) {
+func (m *UI) loadNestedToolCalls(items []chat.MessageItem, loaded map[string][]message.Message, seen map[string]bool) {
 	for _, item := range items {
 		nestedContainer, ok := item.(chat.NestedToolContainer)
 		if !ok {
@@ -1953,9 +1991,12 @@ func (m *UI) loadNestedToolCalls(items []chat.MessageItem) {
 		// Get the agent tool session ID.
 		agentSessionID := m.com.Workspace.CreateAgentToolSessionID(messageID, tc.ID)
 
-		// Fetch nested messages.
-		nestedMsgs, err := m.com.Workspace.ListMessages(context.Background(), agentSessionID)
-		if err != nil || len(nestedMsgs) == 0 {
+		if seen[agentSessionID] {
+			continue
+		}
+		seen[agentSessionID] = true
+		nestedMsgs := loaded[agentSessionID]
+		if len(nestedMsgs) == 0 {
 			continue
 		}
 
@@ -1986,7 +2027,7 @@ func (m *UI) loadNestedToolCalls(items []chat.MessageItem) {
 		for i, nt := range nestedTools {
 			nestedMessageItems[i] = nt
 		}
-		m.loadNestedToolCalls(nestedMessageItems)
+		m.loadNestedToolCalls(nestedMessageItems, loaded, seen)
 
 		// Set nested tools on the parent.
 		nestedContainer.SetNestedTools(nestedTools)
@@ -5835,6 +5876,7 @@ func (m *UI) newSession() tea.Cmd {
 	}
 
 	m.session = nil
+	m.sessionLoadGeneration++
 	m.setEditorPrompt(m.yoloModeCached())
 	m.sidebarOffset = 0
 	m.sessionFilesFetchGen++

@@ -9,28 +9,41 @@ import (
 
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/ui/chat"
+	"github.com/example-git/crux/internal/workspace"
 )
 
 // promptHistoryLoadedMsg is sent when prompt history is loaded.
 type promptHistoryLoadedMsg struct {
-	messages []string
+	source                 workspace.Workspace
+	workspaceID, sessionID string
+	generation             uint64
+	messages               []string
 }
 
 // loadPromptHistory loads user messages for history navigation.
 func (m *UI) loadPromptHistory() tea.Cmd {
+	ws := m.com.Workspace
+	id := ws.AuthenticationWorkspaceID()
+	sessionID := ""
+	if m.session != nil {
+		sessionID = m.session.ID
+	}
+	m.promptHistoryGeneration++
+	generation := m.promptHistoryGeneration
 	return func() tea.Msg {
-		ctx := context.Background()
+		result := promptHistoryLoadedMsg{source: ws, workspaceID: id, sessionID: sessionID, generation: generation}
+		ctx := workspace.ContextWithSessionWorkspace(context.Background(), id)
 		var messages []message.Message
 		var err error
 
-		if m.session != nil {
-			messages, err = m.com.Workspace.ListUserMessages(ctx, m.session.ID)
+		if sessionID != "" {
+			messages, err = ws.ListUserMessages(ctx, sessionID)
 		} else {
-			messages, err = m.com.Workspace.ListAllUserMessages(ctx)
+			messages, err = ws.ListAllUserMessages(ctx)
 		}
 		if err != nil {
 			slog.Error("Failed to load prompt history", "error", err)
-			return promptHistoryLoadedMsg{messages: nil}
+			return result
 		}
 
 		texts := make([]string, 0, len(messages))
@@ -45,7 +58,8 @@ func (m *UI) loadPromptHistory() tea.Cmd {
 				texts = append(texts, "!"+sc.Command)
 			}
 		}
-		return promptHistoryLoadedMsg{messages: texts}
+		result.messages = texts
+		return result
 	}
 }
 
