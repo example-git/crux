@@ -49,7 +49,7 @@ func NewAppWorkspace(a *app.App, store *config.ConfigStore) *AppWorkspace {
 	return &AppWorkspace{
 		app:                a,
 		store:              store,
-		providerAuth:       providerauth.New(store, "local:"+uuid.NewString()),
+		providerAuth:       providerauth.NewWithContext(authCtx, store, "local:"+uuid.NewString()),
 		providerAuthCtx:    authCtx,
 		providerAuthCancel: authCancel,
 	}
@@ -779,6 +779,9 @@ func (w *AppWorkspace) Subscribe(program *tea.Program) {
 func (w *AppWorkspace) Shutdown() {
 	if w.providerAuthCancel != nil {
 		w.providerAuthCancel()
+	}
+	if w.providerAuth != nil {
+		w.providerAuth.Close()
 	}
 	w.app.Shutdown()
 }

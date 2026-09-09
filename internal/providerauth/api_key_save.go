@@ -18,6 +18,8 @@ func (s *Service) SaveAPIKeyForAccepted(ctx context.Context, request APIKeySaveR
 }
 
 func (s *Service) saveAPIKey(ctx context.Context, request APIKeySaveRequest, accepted *config.RemoteRuntimeProposal, view *config.Config) (MutationResult, error) {
+	ctx, done := s.operationContext(ctx)
+	defer done()
 	initial := MutationResult{Outcome: MutationOutcome{OperationID: request.OperationID, CheckID: request.CheckID, Previous: request.Target}}
 	if err := request.Validate(); err != nil {
 		return initial, err
@@ -38,6 +40,9 @@ func (s *Service) saveAPIKey(ctx context.Context, request APIKeySaveRequest, acc
 			return initial, ErrOperationConflict
 		}
 		return s.replay(ctx, receipt)
+	}
+	if s.oauthOperationReserved(request.OperationID) {
+		return initial, ErrOperationConflict
 	}
 	check, found := s.keyChecks[request.CheckID]
 	if !found || check.err != nil || check.outcome.CheckedTarget == nil {

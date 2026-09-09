@@ -84,6 +84,10 @@ func (b *Backend) beginProviderAuthRead(ctx context.Context, workspaceID string)
 		done()
 		return nil, ctx, nil, config.ErrClientRuntimeManaged
 	}
-	ws.providerAuthOnce.Do(func() { ws.providerAuth = providerauth.New(ws.Cfg, workspaceID) })
+	ws.providerAuthOnce.Do(func() { ws.providerAuth = providerauth.NewWithContext(ws.ctx, ws.Cfg, workspaceID) })
+	if ws.providerAuth == nil {
+		done()
+		return nil, ctx, nil, ErrWorkspaceClosing
+	}
 	return ws, ctx, done, nil
 }
