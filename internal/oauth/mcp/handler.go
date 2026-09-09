@@ -198,7 +198,7 @@ func NewHandlerWithContext(
 	// later start can refresh without rediscovery.
 	newTokenSource := func(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token) (oauth2.TokenSource, error) {
 		h.persist(cfg, tok)
-		base := cfg.TokenSource(context.WithValue(lifetime, oauth2.HTTPClient, NewSessionHTTPClient(lifetime)), tok)
+		base := newEndpointTokenSource(lifetime, cfg, tok)
 		return NewSavingTokenSource(base, cfg, tok, func(c *oauth2.Config, t *oauth2.Token) {
 			h.persist(c, t)
 		}), nil
@@ -214,7 +214,7 @@ func NewHandlerWithContext(
 		// validation. Also rewrite internal-cluster redirects back to the
 		// external hostname so the flow works outside the cluster.
 		// Based on Bruno Krugel's fix from PR #3396.
-		Client: newOAuthMetadataClient(NewSessionHTTPClient(lifetime).Transport, serverURL),
+		Client: oauthFlowHTTPClient(newOAuthMetadataClient(NewSessionHTTPClient(lifetime).Transport)),
 		DynamicClientRegistrationConfig: &auth.DynamicClientRegistrationConfig{
 			Metadata: &oauthex.ClientRegistrationMetadata{
 				ClientName:   "Crux",
@@ -265,7 +265,7 @@ func NewHandlerWithContext(
 				AuthStyle: oauth2.AuthStyle(savedToken.Client.AuthStyle),
 			},
 		}
-		base := oc.TokenSource(context.WithValue(lifetime, oauth2.HTTPClient, NewSessionHTTPClient(lifetime)), restored)
+		base := newEndpointTokenSource(lifetime, oc, restored)
 		cfg.InitialTokenSource = NewSavingTokenSource(base, oc, restored, func(c *oauth2.Config, t *oauth2.Token) {
 			h.persist(c, t)
 		})
@@ -357,6 +357,7 @@ func (h *Handler) Authorize(ctx context.Context, req *http.Request, resp *http.R
 	if !h.interactive {
 		return ErrInteractiveAuthRequired
 	}
+	ctx = context.WithValue(ctx, oauthFlowKey{}, &oauthFlowState{})
 	if err := h.inner.Authorize(ctx, req, resp); err != nil {
 		// The SDK reports this when the server supports none of the
 		// registration methods offered and no client was pre-registered.
@@ -783,44 +784,32 @@ func (rt *metadataFixupRoundTripper) RoundTrip(req *http.Request) (*http.Respons
 	return resp, nil
 }
 
-// newOAuthMetadataClient creates an HTTP client for the OAuth flow that
-// smooths over two nonstandard behaviors seen behind corporate proxies:
-//
-//  1. Trailing-slash issuers in metadata responses, normalized by
-//     metadataFixupRoundTripper so they pass the SDK's strict RFC 8414
-//     validation.
-//  2. Metadata discovery requests that get 3xx-redirected to an
-//     unreachable internal host (e.g. a cluster address behind a proxy).
-//     Well-known discovery is never supposed to hop hosts via redirects
-//     (the authorization server location comes from the metadata body,
-//     not a Location header), so for metadata endpoints we rewrite the
-//     redirect back to the original MCP host. Token, registration, and
-//     authorize requests are left untouched, so a separately hosted
-//     identity provider keeps working.
-func newOAuthMetadataClient(base http.RoundTripper, serverURL string) *http.Client {
-	var originalHost, originalScheme string
-	if u, err := url.Parse(serverURL); err == nil {
-		originalHost = u.Host
-		originalScheme = u.Scheme
-	}
-	return &http.Client{
+// newOAuthMetadataClient repairs credential-free metadata GET redirects back
+// to that discovery request's external origin and normalizes metadata issuers.
+// Token and registration requests retain their independently discovered origins;
+// a credential request cannot obtain the metadata exception by redirecting to
+// a well-known-looking path. The final shared policy validates after repair.
+func newOAuthMetadataClient(base http.RoundTripper) *http.Client {
+	return discoveredEndpointHTTPClient(&http.Client{
 		Transport: newMetadataFixupRoundTripper(base),
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			// Supplying CheckRedirect replaces net/http's default, so
-			// re-enforce its 10-redirect cap here.
-			if len(via) >= 10 {
-				return fmt.Errorf("stopped after 10 redirects")
+			if len(via) == 0 || !credentialFreeMetadataRequest(via[0]) || !credentialFreeMetadataRequest(req) {
+				return nil
 			}
-			if originalHost != "" && isMetadataEndpoint(req.URL.Path) && req.URL.Host != originalHost {
-				slog.Debug("Rewriting OAuth metadata redirect back to original host",
-					"from", req.URL.Host, "to", originalHost)
-				req.URL.Host = originalHost
-				req.URL.Scheme = originalScheme
-				req.Host = originalHost
+			original := via[0].URL
+			if req.URL.Host != original.Host || req.URL.Scheme != original.Scheme {
+				slog.Debug("Rewriting OAuth metadata redirect back to original host", "from", req.URL.Host, "to", original.Host)
+				req.URL.Host, req.URL.Scheme, req.Host = original.Host, original.Scheme, original.Host
 			}
 			return nil
 		},
-	}
+	})
+}
+
+func credentialFreeMetadataRequest(req *http.Request) bool {
+	return req != nil && req.URL != nil && req.Method == http.MethodGet &&
+		(req.Body == nil || req.Body == http.NoBody) && req.ContentLength <= 0 &&
+		req.Header.Get("Authorization") == "" && req.Header.Get("Cookie") == "" && isMetadataEndpoint(req.URL.Path)
 }
 
 func isMetadataEndpoint(path string) bool {

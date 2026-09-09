@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"reflect"
 	"testing"
@@ -329,9 +331,15 @@ func TestCreateTransport_HeadersResolution(t *testing.T) {
 		r := shellResolverWithPath(t, map[string]string{
 			"GITHUB_TOKEN": "gh-secret",
 		})
+		endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			w.Header().Set("Observed-Authorization", request.Header.Get("Authorization"))
+			w.Header().Set("Observed-Static", request.Header.Get("X-Static"))
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer endpoint.Close()
 		m := config.MCPConfig{
 			Type: config.MCPHttp,
-			URL:  "https://mcp.example.com/api",
+			URL:  endpoint.URL,
 			Headers: map[string]string{
 				"Authorization": "$(echo Bearer $GITHUB_TOKEN)",
 				"X-Static":      "kept",
@@ -342,12 +350,11 @@ func TestCreateTransport_HeadersResolution(t *testing.T) {
 
 		sct, ok := tr.(*mcp.StreamableClientTransport)
 		require.True(t, ok)
-		rt, ok := sct.HTTPClient.Transport.(*headerRoundTripper)
-		require.True(t, ok, "expected headerRoundTripper, got %T", sct.HTTPClient.Transport)
-		require.Equal(t, map[string]string{
-			"Authorization": "Bearer gh-secret",
-			"X-Static":      "kept",
-		}, rt.headers)
+		response, err := sct.HTTPClient.Get(endpoint.URL)
+		require.NoError(t, err)
+		defer response.Body.Close()
+		require.Equal(t, "Bearer gh-secret", response.Header.Get("Observed-Authorization"))
+		require.Equal(t, "kept", response.Header.Get("Observed-Static"))
 	})
 
 	t.Run("http failing header surfaces error, no transport", func(t *testing.T) {
@@ -391,18 +398,26 @@ func TestCreateTransport_HeadersResolution(t *testing.T) {
 		// regression that either re-introduces strict-by-default
 		// or stops dropping empty headers.
 		r := shellResolverWithPath(t, nil)
+		endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			if _, exists := request.Header["Authorization"]; exists {
+				w.Header().Set("Observed-Authorization-Present", "true")
+			}
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer endpoint.Close()
 		m := config.MCPConfig{
 			Type:    config.MCPSSE,
-			URL:     "https://mcp.example.com/events",
+			URL:     endpoint.URL,
 			Headers: map[string]string{"Authorization": "$MISSING_TOKEN"},
 		}
 		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.NoError(t, err)
 		sse, ok := tr.(*mcp.SSEClientTransport)
 		require.True(t, ok)
-		rt, ok := sse.HTTPClient.Transport.(*headerRoundTripper)
-		require.True(t, ok)
-		require.NotContains(t, rt.headers, "Authorization")
+		response, err := sse.HTTPClient.Get(endpoint.URL)
+		require.NoError(t, err)
+		defer response.Body.Close()
+		require.Empty(t, response.Header.Get("Observed-Authorization-Present"))
 	})
 }
 
