@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/example-git/crux/foundation/catalog"
+	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/connection"
@@ -24,10 +26,21 @@ import (
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/server"
+	"github.com/example-git/crux/internal/session"
+	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/stretchr/testify/require"
 )
 
 func TestLiveRevocationDrainsRealInferenceAndStreamOnSameDaemon(t *testing.T) {
+	testLiveRevocationDrainsCredentialWork(t, false)
+}
+
+func TestLiveRevocationDrainsDetachedAgentOnSameDaemon(t *testing.T) {
+	testLiveRevocationDrainsCredentialWork(t, true)
+}
+
+func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
+	t.Helper()
 	root := t.TempDir()
 	for _, name := range []string{"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CRUX_GLOBAL_DATA", "CRUX_GLOBAL_CONFIG", "CRUX_CACHE_DIR", "AI_CLI_DIR"} {
 		path := filepath.Join(root, name)
@@ -37,21 +50,82 @@ func TestLiveRevocationDrainsRealInferenceAndStreamOnSameDaemon(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 	defer cancel()
 	entered := make(chan struct{})
+	childSessionHashes := make(chan string, 1)
+	var parentSessionHash atomic.Value
+	parentSessionHash.Store("")
+	const childPrompt = "synthetic detached credential drain marker"
+	const toolCallID = "call_detached_revocation"
 	var enterOnce sync.Once
+	var toolCalls atomic.Int32
 	var active, cancelled, conversationCancelled, retainedCalls atomic.Int32
 	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "invalid fixture body", http.StatusBadRequest)
+			return
+		}
 		if r.URL.Path != "/v1/chat/completions" {
 			http.Error(w, "unexpected fixture route", http.StatusNotFound)
 			return
 		}
 		switch r.Header.Get("Authorization") {
 		case "Bearer synthetic-revoked-credential":
+			conversation := r.Header.Get("x-request-purpose") == "conversation"
+			if detached {
+				if !conversation {
+					writeLiveRevocationText(w, "Disposable session title")
+					return
+				}
+				if r.Header.Get("x-session-id") == parentSessionHash.Load().(string) {
+					var request struct {
+						Messages []struct {
+							Role       string `json:"role"`
+							ToolCallID string `json:"tool_call_id"`
+						} `json:"messages"`
+						Tools []struct {
+							Function struct {
+								Name string `json:"name"`
+							} `json:"function"`
+						} `json:"tools"`
+					}
+					if json.Unmarshal(body, &request) != nil {
+						http.Error(w, "invalid parent request", http.StatusBadRequest)
+						return
+					}
+					for _, message := range request.Messages {
+						if message.Role == "tool" && message.ToolCallID == toolCallID {
+							writeLiveRevocationText(w, "Parent finished while its child remains active.")
+							return
+						}
+					}
+					var advertised bool
+					for _, tool := range request.Tools {
+						advertised = advertised || tool.Function.Name == "agent"
+					}
+					if !advertised || !toolCalls.CompareAndSwap(0, 1) {
+						http.Error(w, "agent tool must be advertised and called once", http.StatusBadRequest)
+						return
+					}
+					arguments, _ := json.Marshal(map[string]any{"prompt": childPrompt, "run_in_background": true})
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprintf(w, "data: {\"id\":\"parent\",\"object\":\"chat.completion.chunk\",\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":%q,\"type\":\"function\",\"function\":{\"name\":\"agent\",\"arguments\":%q}}]},\"finish_reason\":null}]}\n\n", toolCallID, string(arguments))
+					_, _ = fmt.Fprint(w, "data: {\"id\":\"parent\",\"object\":\"chat.completion.chunk\",\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n")
+					return
+				}
+				if r.Header.Get("x-session-id") == "" || !strings.Contains(string(body), childPrompt) {
+					http.Error(w, "unexpected child request", http.StatusBadRequest)
+					return
+				}
+			}
 			active.Add(1)
 			defer active.Add(-1)
-			conversation := r.Header.Get("x-request-purpose") == "conversation"
 			if conversation {
-				enterOnce.Do(func() { close(entered) })
+				enterOnce.Do(func() {
+					if detached {
+						childSessionHashes <- r.Header.Get("x-session-id")
+					}
+					close(entered)
+				})
 			}
 			<-r.Context().Done()
 			cancelled.Add(1)
@@ -60,9 +134,7 @@ func TestLiveRevocationDrainsRealInferenceAndStreamOnSameDaemon(t *testing.T) {
 			}
 		case "Bearer synthetic-retained-credential":
 			retainedCalls.Add(1)
-			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = fmt.Fprint(w, "data: {\"id\":\"retained\",\"object\":\"chat.completion.chunk\",\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"retained daemon inference verified\"},\"finish_reason\":null}]}\n\n")
-			_, _ = fmt.Fprint(w, "data: {\"id\":\"retained\",\"object\":\"chat.completion.chunk\",\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n")
+			writeLiveRevocationText(w, "retained daemon inference verified")
 		default:
 			http.Error(w, "wrong fixture credential", http.StatusUnauthorized)
 		}
@@ -144,9 +216,17 @@ func TestLiveRevocationDrainsRealInferenceAndStreamOnSameDaemon(t *testing.T) {
 		require.NoError(t, err)
 		clients[name], workspaces[name], sessions[name], streams[name] = c, ws, session.ID, events
 	}
+	parentSessionHash.Store(session.HashID(sessions["revoked"]))
 	streamEnded := make(chan struct{})
+	parentFinished := make(chan proto.RunComplete, 1)
 	go func() {
-		for range streams["revoked"] {
+		for event := range streams["revoked"] {
+			if finished, ok := event.(pubsub.Event[proto.RunComplete]); ok && finished.Payload.RunID == "active-revoked-run" {
+				select {
+				case parentFinished <- finished.Payload:
+				default:
+				}
+			}
 		}
 		close(streamEnded)
 	}()
@@ -157,13 +237,57 @@ func TestLiveRevocationDrainsRealInferenceAndStreamOnSameDaemon(t *testing.T) {
 		t.Fatal("real inference did not reach the disposable provider")
 	}
 	require.Positive(t, active.Load())
+	var detachedTask managedtask.View
+	var taskCoordinator agent.TaskCoordinator
+	if detached {
+		select {
+		case finished := <-parentFinished:
+			require.Empty(t, finished.Error)
+			require.Contains(t, finished.Text, "Parent finished while its child remains active.")
+		case <-ctx.Done():
+			t.Fatal("parent did not finish while its background child remained active")
+		}
+		tasks, err := clients["revoked"].ListTasks(ctx, workspaces["revoked"].ID)
+		require.NoError(t, err)
+		require.Len(t, tasks, 1)
+		require.Equal(t, managedtask.TypeAgent, tasks[0].Type)
+		require.Equal(t, managedtask.StatusRunning, tasks[0].State.Status)
+		// ListTasks exposes identity/state; TaskOutput carries the full agent
+		// ownership and child session, both fetched through the real mTLS API.
+		output, err := clients["revoked"].TaskOutput(ctx, workspaces["revoked"].ID, tasks[0].ID, false, 0)
+		require.NoError(t, err)
+		detachedTask = output.Task
+		require.Equal(t, tasks[0].ID, detachedTask.ID)
+		require.Equal(t, managedtask.StatusRunning, detachedTask.State.Status)
+		require.Equal(t, sessions["revoked"], detachedTask.Ownership.ParentSessionID)
+		require.Equal(t, toolCallID, detachedTask.Ownership.OriginToolCallID)
+		require.NotEmpty(t, detachedTask.ChildSessionID)
+		require.Equal(t, session.HashID(detachedTask.ChildSessionID), <-childSessionHashes)
+		require.Equal(t, int32(1), toolCalls.Load())
+		require.Equal(t, int32(1), active.Load(), "only the detached child's transport remains active after parent completion")
+		local, err := srv.Backend().GetWorkspace(workspaces["revoked"].ID)
+		require.NoError(t, err)
+		var ok bool
+		taskCoordinator, ok = local.CurrentAgentCoordinator().(agent.TaskCoordinator)
+		require.True(t, ok)
+	}
 	outcome, err := connection.RevokeClientWithOutcome(ctx, "revoked", "")
 	require.NoError(t, err)
 	require.True(t, outcome.Saved)
 	require.Equal(t, "acknowledged", outcome.Resolution)
 	require.Len(t, outcome.Daemons, 1)
 	require.True(t, outcome.Daemons[0].Acknowledged)
-	require.Eventually(t, func() bool { return active.Load() == 0 && cancelled.Load() > 0 && conversationCancelled.Load() > 0 }, 5*time.Second, 10*time.Millisecond, "foreground provider transport must observe real cancellation")
+	require.Eventually(t, func() bool { return active.Load() == 0 && cancelled.Load() > 0 && conversationCancelled.Load() > 0 }, 5*time.Second, 10*time.Millisecond, "credential-bearing provider transport must observe real cancellation")
+	if detached {
+		// Read the real retained manager after the workspace has been retired;
+		// do not call Drain or Stop from the test to manufacture a terminal task.
+		tasks := taskCoordinator.ListTasks()
+		require.Len(t, tasks, 1)
+		require.Equal(t, detachedTask.ID, tasks[0].ID)
+		require.True(t, tasks[0].State.Status.Terminal())
+		require.NotEqual(t, managedtask.StatusCompleted, tasks[0].State.Status)
+		require.False(t, tasks[0].State.EndedAt.IsZero())
+	}
 	select {
 	case <-streamEnded:
 	case <-time.After(5 * time.Second):
@@ -194,4 +318,10 @@ func TestLiveRevocationDrainsRealInferenceAndStreamOnSameDaemon(t *testing.T) {
 			t.Fatal("retained inference did not complete on the same daemon")
 		}
 	}
+}
+
+func writeLiveRevocationText(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	_, _ = fmt.Fprintf(w, "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":%q},\"finish_reason\":null}]}\n\n", text)
+	_, _ = fmt.Fprint(w, "data: {\"id\":\"fixture\",\"object\":\"chat.completion.chunk\",\"model\":\"fixture\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\ndata: [DONE]\n\n")
 }
