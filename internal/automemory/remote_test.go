@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
@@ -28,7 +29,9 @@ func TestClientOwnedMemoryUsesScopedPromptAndToolStorage(t *testing.T) {
 		stores = append(stores, store)
 	}
 	for _, scope := range []Scope{ScopeProject, ScopeUser} {
-		_, err := NewServiceForStore(stores[0]).Upsert(t.Context(), scope, Entry{File: "decision", Name: "Decision", Description: "Saved by first owner", Type: "feedback", Content: "first-client-only"})
+		_, err := NewService(root).Upsert(t.Context(), scope, Entry{File: "host-decision", Name: "Decision", Description: "Host decision", Type: "feedback", Content: "server-memory-only-marker"})
+		require.NoError(t, err)
+		_, err = NewServiceForStore(stores[0]).Upsert(t.Context(), scope, Entry{File: "decision", Name: "Decision", Description: "Saved by first owner", Type: "feedback", Content: "first-client-only"})
 		require.NoError(t, err)
 		entries, err := NewServiceForStore(stores[1]).List(t.Context(), scope)
 		require.NoError(t, err)
@@ -42,4 +45,14 @@ func TestClientOwnedMemoryUsesScopedPromptAndToolStorage(t *testing.T) {
 	require.NotContains(t, Prompt(second), "decision.md")
 	require.Equal(t, filepath.Join(root, "a", "memory", "project"), first.Directory)
 	require.Equal(t, filepath.Join(root, "a", "memory", "user"), first.UserDirectory)
+	firstRelevant, err := RelevantForStore(t.Context(), stores[0], "decision", time.Now())
+	require.NoError(t, err)
+	require.Contains(t, firstRelevant, "first-client-only")
+	require.NotContains(t, firstRelevant, "server-memory-only-marker")
+	secondRelevant, err := RelevantForStore(t.Context(), stores[1], "decision", time.Now())
+	require.NoError(t, err)
+	require.Empty(t, secondRelevant)
+	localRelevant, err := Relevant(t.Context(), root, "decision", time.Now())
+	require.NoError(t, err)
+	require.Contains(t, localRelevant, "server-memory-only-marker", "the ordinary local path still loads host memory")
 }

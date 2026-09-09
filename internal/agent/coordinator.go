@@ -695,7 +695,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		submissionID = uuid.NewString()
 	}
 	codebaseInstructions := codebaseContext.wait()
-	memoryInstructions, memoryErr := automemory.Relevant(ctx, c.cfg.WorkingDir(), prompt, time.Now())
+	memoryInstructions, memoryErr := automemory.RelevantForStore(ctx, c.cfg, prompt, time.Now())
 	if memoryErr != nil {
 		slog.Debug("Could not load relevant auto-memory", "error", memoryErr)
 		memoryInstructions = ""

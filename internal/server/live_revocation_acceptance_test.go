@@ -59,7 +59,7 @@ func testLiveCredentialWorkLifetime(t *testing.T, detached, disconnect bool) {
 	defer cancel()
 	const disconnectGrace = time.Second
 	if disconnect {
-		t.Setenv("CRUX_SERVER_DETACH_GRACE", disconnectGrace.String())
+		t.Setenv("CRUX_SERVER_DETACH_GRACE", fmt.Sprint(int(disconnectGrace/time.Second)))
 	}
 	entered := make(chan struct{})
 	titleEntered := make(chan struct{})
