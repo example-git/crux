@@ -344,6 +344,7 @@ func TestOAuthUIThroughWorkspaceTLSAndActualCallback(t *testing.T) {
 				deadline := time.NewTimer(35 * time.Second)
 				defer deadline.Stop()
 				retryActions := 0
+				newLoginChoices := 0
 				for {
 					op := ui.oauthLogins[ws]
 					if op != nil && op.resolved && len(ui.modelSelectionLanes) == 0 {
@@ -366,19 +367,33 @@ func TestOAuthUIThroughWorkspaceTLSAndActualCallback(t *testing.T) {
 							require.Same(t, ws, status.session.workspace)
 							require.True(t, status.session.ready)
 							require.Equal(t, providerauth.PublicOwner(owner), status.session.target.Owner)
-							require.Equal(t, []providerauth.CredentialSlot{{ID: "provider.api_key", Kind: "api-key"}}, status.session.slots)
+							require.True(t, status.session.target.Owner.HasOAuth)
+							require.Empty(t, status.session.slots, "OAuth token compatibility fields are not editable API-key slots")
 							require.Empty(t, status.session.credentialID)
-							require.Nil(t, ui.oauthLogins[ws], "dual credential owners wait for an explicit choice")
-							require.Same(t, status.session.dialog, ui.dialog.DialogLast())
-							// The bundle declares both api_key and OAuth. Choose OAuth
-							// through the real overlay after its 425 ms input grace.
-							time.Sleep(450 * time.Millisecond)
-							_, cmd = ui.Update(tea.KeyPressMsg{Code: tea.KeyDown})
-							dispatch(cmd)
-							_, cmd = ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
-							dispatch(cmd)
 							require.False(t, ui.dialog.ContainsDialog(dialog.APIKeyInputID))
 							require.IsType(t, &dialog.OAuthLogin{}, ui.dialog.DialogLast())
+						}
+						if recorded, ok := message.(oauthLoginRecordedMsg); ok {
+							require.NoError(t, recorded.err)
+							require.NoError(t, recorded.list.Validate())
+							require.Equal(t, recorded.target, recorded.list.Target)
+							require.Equal(t, created.ID, recorded.target.WorkspaceID)
+							require.Equal(t, providerauth.PublicOwner(owner), recorded.target.Owner)
+							require.Empty(t, recorded.list.Results)
+							require.True(t, recorded.read.recordedLoaded)
+							require.Same(t, recorded.read.dialog, ui.dialog.DialogLast())
+							require.Nil(t, ui.oauthLogins[ws], "loading recorded results must not start a new exchange")
+							require.Zero(t, newLoginChoices)
+							// The actual Workspace supports recorded OAuth recovery.
+							// Select "Start a new login" after the overlay's 425 ms
+							// input grace instead of bypassing that user choice.
+							time.Sleep(450 * time.Millisecond)
+							_, cmd = ui.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+							dispatch(cmd)
+							newLoginChoices++
+							require.NotNil(t, ui.oauthLogins[ws])
+							require.Equal(t, recorded.target, ui.oauthLogins[ws].ref.Target)
+							require.Empty(t, ui.oauthLogins[ws].recordedOperationID)
 						}
 						if result, ok := message.(oauthLoginResultMsg); ok && result.err != nil && result.operation != nil && !result.operation.busy && retryActions < int(lostReplies.Load()) {
 							action := result.operation.dialog.HandleMsg(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl})
@@ -394,6 +409,7 @@ func TestOAuthUIThroughWorkspaceTLSAndActualCallback(t *testing.T) {
 					}
 				}
 				op := ui.oauthLogins[ws]
+				require.Equal(t, 1, newLoginChoices)
 				require.NoError(t, op.outcome.ValidateOAuthLogin(op.ref))
 				require.NotNil(t, op.outcome.Change)
 				require.EqualValues(t, 1, tokens.Load())
