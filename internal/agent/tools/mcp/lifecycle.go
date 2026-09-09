@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
-	"sync"
 
 	"github.com/example-git/crux/internal/config"
 )
@@ -82,63 +81,69 @@ func reconcile(current config.MCPs, running map[string]ClientInfo) map[string]re
 	return actions
 }
 
-// reinitMu guards reinitRunning and reinitDirty.
-var (
-	reinitMu      sync.Mutex
-	reinitRunning bool
-	reinitDirty   bool
-)
-
 // Reinitialize reconciles running MCP servers against the current config.
 // Servers added since the last call are started, servers removed are torn
 // down, and servers whose config changed are restarted. Unchanged servers
 // keep their existing sessions.
 //
-// MCP state is process-global, so reconciliation is single-flighted: at
+// Reconciliation is single-flighted within this workspace: at
 // most one runs at a time. A config write that arrives mid-run just sets a
 // dirty flag and returns; the running reconciliation loops once more to
 // pick up the newer state. This coalesces a burst of rapid writes into at
 // most two reconciles instead of queueing a redundant no-op pass per write,
 // while still guaranteeing the final state reflects the latest config.
-func Reinitialize(ctx context.Context, cfg *config.ConfigStore) {
-	reinitMu.Lock()
-	if reinitRunning {
-		reinitDirty = true
-		reinitMu.Unlock()
+func (runtime *Manager) Reinitialize(ctx context.Context, cfg *config.ConfigStore) {
+	if err := runtime.requireStore(cfg); err != nil {
 		return
 	}
-	reinitRunning = true
-	reinitMu.Unlock()
+	ctx, done, err := runtime.admit(ctx)
+	if err != nil {
+		return
+	}
+	defer done()
+	runtime.reinitMu.Lock()
+	if runtime.reinitRunning {
+		runtime.reinitDirty = true
+		runtime.reinitMu.Unlock()
+		return
+	}
+	runtime.reinitRunning = true
+	runtime.reinitMu.Unlock()
 
 	for {
-		reconcileOnce(ctx, cfg)
+		runtime.reconcileOnce(ctx, cfg)
 
-		reinitMu.Lock()
-		if !reinitDirty {
-			reinitRunning = false
-			reinitMu.Unlock()
+		runtime.reinitMu.Lock()
+		if !runtime.reinitDirty {
+			runtime.reinitRunning = false
+			runtime.reinitMu.Unlock()
 			return
 		}
-		reinitDirty = false
-		reinitMu.Unlock()
+		runtime.reinitDirty = false
+		runtime.reinitMu.Unlock()
 	}
 }
 
 // reconcileOnce applies one reconciliation pass against the current config.
-func reconcileOnce(ctx context.Context, cfg *config.ConfigStore) {
+func (runtime *Manager) reconcileOnce(ctx context.Context, cfg *config.ConfigStore) {
 	current := cfg.Config().MCP
-	actions := reconcile(current, states.Copy())
+	actions := reconcile(current, runtime.states.Copy())
 	for name, action := range actions {
+		_, done, err := runtime.serverOperation(ctx, name)
+		if err != nil {
+			return
+		}
 		switch action {
 		case reinitRemove:
 			slog.Info("Removing MCP server no longer in config", "name", name)
-			removeServer(name)
+			runtime.removeServer(name)
 		case reinitDisable:
 			slog.Info("Disabling MCP server", "name", name)
-			DisableSingle(cfg, name)
+			runtime.teardown(name)
+			runtime.updateState(name, StateDisabled, nil, nil, Counts{})
 		case reinitStart:
 			m := current[name]
-			if _, exists := states.Get(name); exists {
+			if _, exists := runtime.states.Get(name); exists {
 				slog.Info("Re-initializing MCP server after config change", "name", name)
 			} else {
 				slog.Info("Initializing new MCP server after config change", "name", name)
@@ -147,20 +152,20 @@ func reconcileOnce(ctx context.Context, cfg *config.ConfigStore) {
 			// attempt for this server. The StateStarting transition records
 			// m as PendingConfig so a subsequent reconcile can tell whether
 			// the attempt now in flight matches the latest config.
-			teardown(name)
-			updateState(name, StateStarting, nil, nil, Counts{}, withPending(m))
-			goInitClient(ctx, cfg, name, m, nil)
+			runtime.teardown(name)
+			runtime.updateState(name, StateStarting, nil, nil, Counts{}, withPending(m))
+			runtime.goInitClient(context.WithoutCancel(ctx), cfg, name, m, nil)
 		}
+		done()
 	}
 }
 
 // removeServer fully tears down an MCP server and deletes its state
 // entry. Unlike DisableSingle (which keeps the entry as StateDisabled),
 // this is for servers that no longer exist in config at all.
-func removeServer(name string) {
-	teardown(name)
-	states.Del(name)
-	gens.Del(name)
+func (runtime *Manager) removeServer(name string) {
+	runtime.teardown(name)
+	runtime.states.Del(name)
 }
 
 // mcpConfigEqual reports whether two MCPConfig values are equal, ignoring

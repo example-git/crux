@@ -60,6 +60,8 @@ func TestMCPSession_CancelOnClose(t *testing.T) {
 // ResolvedURL wiring is caught at the transport layer rather than only
 // at the config layer.
 func TestCreateTransport_URLResolution(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	t.Parallel()
 
 	shell := config.NewShellVariableResolver(env.NewFromMap(map[string]string{
@@ -72,7 +74,7 @@ func TestCreateTransport_URLResolution(t *testing.T) {
 			Type: config.MCPHttp,
 			URL:  "https://$MCP_HOST/api",
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, shell)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, shell)
 		require.NoError(t, err)
 		require.NotNil(t, tr)
 		sct, ok := tr.(*mcp.StreamableClientTransport)
@@ -86,7 +88,7 @@ func TestCreateTransport_URLResolution(t *testing.T) {
 			Type: config.MCPSSE,
 			URL:  "https://$(echo mcp.example.com)/events",
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, shell)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, shell)
 		require.NoError(t, err)
 		sse, ok := tr.(*mcp.SSEClientTransport)
 		require.True(t, ok, "expected SSEClientTransport, got %T", tr)
@@ -103,7 +105,7 @@ func TestCreateTransport_URLResolution(t *testing.T) {
 			Type: config.MCPHttp,
 			URL:  "https://$(false)/api",
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, shellResolverWithPath(t, nil))
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, shellResolverWithPath(t, nil))
 		require.Error(t, err)
 		require.Nil(t, tr)
 		require.Contains(t, err.Error(), "url:")
@@ -122,7 +124,7 @@ func TestCreateTransport_URLResolution(t *testing.T) {
 			Type: config.MCPHttp,
 			URL:  "https://$MCP_MISSING_HOST/api",
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, shell)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, shell)
 		require.NoError(t, err)
 		sct, ok := tr.(*mcp.StreamableClientTransport)
 		require.True(t, ok)
@@ -135,7 +137,7 @@ func TestCreateTransport_URLResolution(t *testing.T) {
 			Type: config.MCPSSE,
 			URL:  "https://$(false)/events",
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, shell)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, shell)
 		require.Error(t, err)
 		require.Nil(t, tr)
 		require.Contains(t, err.Error(), "url:")
@@ -151,7 +153,7 @@ func TestCreateTransport_URLResolution(t *testing.T) {
 			Type: config.MCPHttp,
 			URL:  "${MCP_EMPTY:-}",
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, shell)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, shell)
 		require.Error(t, err)
 		require.Nil(t, tr)
 		require.Contains(t, err.Error(), "non-empty 'url'")
@@ -163,7 +165,7 @@ func TestCreateTransport_URLResolution(t *testing.T) {
 		// expansion, no error on unset vars.
 		tmpl := "https://$MCP_MISSING_HOST/api"
 		m := config.MCPConfig{Type: config.MCPHttp, URL: tmpl}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, config.IdentityResolver())
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, config.IdentityResolver())
 		require.NoError(t, err)
 		sct, ok := tr.(*mcp.StreamableClientTransport)
 		require.True(t, ok)
@@ -177,6 +179,8 @@ func TestCreateTransport_URLResolution(t *testing.T) {
 // exec.Cmd) and failure (any one field erroring prevents transport
 // creation).
 func TestCreateTransport_StdioResolution(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	t.Parallel()
 
 	t.Run("success expands command, args, and env", func(t *testing.T) {
@@ -194,7 +198,7 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 				"REFERENCE": "$MY_TOKEN",
 			},
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, r)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.NoError(t, err)
 		require.NotNil(t, tr)
 
@@ -220,7 +224,7 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 			Command: "forgejo-mcp",
 			Env:     map[string]string{"TOKEN": "$(false)"},
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, r)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.Error(t, err)
 		require.Nil(t, tr)
 		require.Contains(t, err.Error(), "env TOKEN")
@@ -239,7 +243,7 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 			Command: "forgejo-mcp",
 			Env:     map[string]string{"FORGEJO_ACCESS_TOKEN": "$(exit 5)"},
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, r)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.Error(t, err)
 		require.Nil(t, tr)
 		require.Contains(t, err.Error(), "env FORGEJO_ACCESS_TOKEN")
@@ -260,7 +264,7 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 			Command: "forgejo-mcp",
 			Env:     map[string]string{"FORGEJO_ACCESS_TOKEN": "$FORGEJO_TOKEN_UNSET"},
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, r)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.NoError(t, err)
 		ct, ok := tr.(*mcp.CommandTransport)
 		require.True(t, ok)
@@ -275,7 +279,7 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 			Command: "forgejo-mcp",
 			Args:    []string{"--token", "$(false)"},
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, r)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.Error(t, err)
 		require.Nil(t, tr)
 		require.Contains(t, err.Error(), "arg 1")
@@ -288,7 +292,7 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 			Type:    config.MCPStdio,
 			Command: "$(false)",
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, r)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.Error(t, err)
 		require.Nil(t, tr)
 		require.Contains(t, err.Error(), "invalid mcp command")
@@ -303,7 +307,7 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 			Args:    []string{"--token", "$MCP_MISSING"},
 			Env:     map[string]string{"TOKEN": "$(vault read -f token)"},
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, config.IdentityResolver())
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, config.IdentityResolver())
 		require.NoError(t, err)
 		ct, ok := tr.(*mcp.CommandTransport)
 		require.True(t, ok)
@@ -316,6 +320,8 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 // header aborts HTTP/SSE transport creation and that the successful
 // resolver passes every expanded header through to the round tripper.
 func TestCreateTransport_HeadersResolution(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	t.Parallel()
 
 	t.Run("http headers success expands $(cmd)", func(t *testing.T) {
@@ -331,7 +337,7 @@ func TestCreateTransport_HeadersResolution(t *testing.T) {
 				"X-Static":      "kept",
 			},
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, r)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.NoError(t, err)
 
 		sct, ok := tr.(*mcp.StreamableClientTransport)
@@ -352,7 +358,7 @@ func TestCreateTransport_HeadersResolution(t *testing.T) {
 			URL:     "https://mcp.example.com/api",
 			Headers: map[string]string{"Authorization": "$(false)"},
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, r)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.Error(t, err)
 		require.Nil(t, tr)
 		require.Contains(t, err.Error(), "header Authorization")
@@ -370,7 +376,7 @@ func TestCreateTransport_HeadersResolution(t *testing.T) {
 			URL:     "https://mcp.example.com/events",
 			Headers: map[string]string{"Authorization": "$(false)"},
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, r)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.Error(t, err)
 		require.Nil(t, tr)
 		require.Contains(t, err.Error(), "header Authorization")
@@ -390,7 +396,7 @@ func TestCreateTransport_HeadersResolution(t *testing.T) {
 			URL:     "https://mcp.example.com/events",
 			Headers: map[string]string{"Authorization": "$MISSING_TOKEN"},
 		}
-		tr, _, err := createTransport(t.Context(), nil, "test", m, r)
+		tr, _, err := runtime.createTransport(t.Context(), nil, "test", m, r)
 		require.NoError(t, err)
 		sse, ok := tr.(*mcp.SSEClientTransport)
 		require.True(t, ok)
@@ -407,11 +413,13 @@ func TestCreateTransport_HeadersResolution(t *testing.T) {
 // error instead of the MCP silently sitting in "starting" or being
 // spawned with an empty credential.
 //
-// These subtests cannot run in parallel: `states` is a package-level
+// These subtests cannot run in parallel: `runtime.states` is a package-level
 // csync.Map and each assertion reads the entry written by the call
 // under test. They do use unique MCP names per subtest to keep them
 // independent regardless of ordering.
 func TestCreateSession_ResolutionFailureUpdatesState(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	r := shellResolverWithPath(t, nil)
 
 	tests := []struct {
@@ -509,15 +517,15 @@ func TestCreateSession_ResolutionFailureUpdatesState(t *testing.T) {
 			// Guarantee a clean slate on the shared state map so a
 			// stale entry from another test can't satisfy the
 			// assertion.
-			states.Del(tc.mcpName)
-			t.Cleanup(func() { states.Del(tc.mcpName) })
+			runtime.states.Del(tc.mcpName)
+			t.Cleanup(func() { runtime.states.Del(tc.mcpName) })
 
-			sess, err := createSession(t.Context(), nil, tc.mcpName, tc.cfg, r, false)
+			sess, err := runtime.createSession(t.Context(), nil, tc.mcpName, tc.cfg, r, false)
 			require.Error(t, err)
 			require.Nil(t, sess)
 			require.Contains(t, err.Error(), tc.wantErrContains)
 
-			info, ok := GetState(tc.mcpName)
+			info, ok := runtime.GetState(tc.mcpName)
 			require.True(t, ok, "state entry must be written for %q", tc.mcpName)
 			require.Equal(t, StateError, info.State, "expected StateError, got %s", info.State)
 			require.Error(t, info.Error, "state must carry the failure error")
@@ -771,14 +779,18 @@ func setDistinct(typ reflect.Type, field reflect.Value) {
 // TestBeginAuth_UnknownServer proves BeginAuth rejects a server that is not
 // present in the configuration.
 func TestBeginAuth_UnknownServer(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	cfg := config.NewTestStore(&config.Config{})
-	_, _, err := BeginAuth(cfg, "missing")
+	_, _, err := runtime.BeginAuth(cfg, "missing")
 	require.ErrorContains(t, err, "not found")
 }
 
 // TestBeginAuth_NonOAuth proves BeginAuth rejects a server that does not use
 // OAuth over HTTP.
 func TestBeginAuth_NonOAuth(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	cfg := config.NewTestStore(&config.Config{
 		MCP: config.MCPs{
 			"stdio": {Type: config.MCPStdio},
@@ -786,7 +798,7 @@ func TestBeginAuth_NonOAuth(t *testing.T) {
 		},
 	})
 	for _, name := range []string{"stdio", "plain"} {
-		_, _, err := BeginAuth(cfg, name)
+		_, _, err := runtime.BeginAuth(cfg, name)
 		require.ErrorContains(t, err, "does not use OAuth", "name %q", name)
 	}
 }
@@ -795,18 +807,20 @@ func TestBeginAuth_NonOAuth(t *testing.T) {
 // server may be in progress at a time; a second BeginAuth fails fast while
 // the first is outstanding, and succeeds once the first has finished.
 func TestBeginAuth_Concurrent(t *testing.T) {
+	runtime := newManager()
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 	const name = "oauth-http"
 	cfg := config.NewTestStore(&config.Config{
 		MCP: config.MCPs{name: {Type: config.MCPHttp, URL: "https://example.com/mcp", OAuth: true}},
 	})
 
-	finish, cancel, err := BeginAuth(cfg, name)
+	finish, cancel, err := runtime.BeginAuth(cfg, name)
 	require.NoError(t, err)
 	t.Cleanup(cancel)
 
 	// A second flow for the same server must fail fast while the first is
 	// still outstanding.
-	_, _, err = BeginAuth(cfg, name)
+	_, _, err = runtime.BeginAuth(cfg, name)
 	require.ErrorContains(t, err, "already has an authentication in progress")
 
 	// Finishing the first flow frees the slot for the next caller. Cancel
@@ -815,7 +829,7 @@ func TestBeginAuth_Concurrent(t *testing.T) {
 	cancelCtx()
 	_ = finish(ctx)
 
-	_, cancel2, err := BeginAuth(cfg, name)
+	_, cancel2, err := runtime.BeginAuth(cfg, name)
 	require.NoError(t, err)
 	cancel2()
 }

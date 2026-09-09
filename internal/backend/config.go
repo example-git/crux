@@ -29,7 +29,7 @@ func publishConfigChanged(ws *Workspace) {
 	// triggered the write. Run async so unrelated config writes (model
 	// switches, API keys) don't block on MCP reconciliation. Bound to the
 	// workspace ctx so teardown cancels any in-flight init.
-	go mcptools.Reinitialize(ws.ctx, ws.Cfg)
+	go mcptools.For(ws.Cfg).Reinitialize(ws.ctx, ws.Cfg)
 
 	ws.SendEvent(pubsub.Event[proto.ConfigChanged]{
 		Type:    pubsub.UpdatedEvent,
@@ -259,14 +259,14 @@ func (b *Backend) EnableDockerMCP(ctx context.Context, workspaceID string) error
 		return err
 	}
 
-	if err := mcptools.InitializeSingle(ctx, config.DockerMCPName, ws.Cfg); err != nil {
-		disableErr := mcptools.DisableSingle(ws.Cfg, config.DockerMCPName)
+	if err := mcptools.For(ws.Cfg).InitializeSingle(ctx, config.DockerMCPName, ws.Cfg); err != nil {
+		disableErr := mcptools.For(ws.Cfg).DisableSingle(ws.Cfg, config.DockerMCPName)
 		ws.Cfg.RemoveDockerMCPInMemory()
 		return fmt.Errorf("failed to start docker MCP: %w", errors.Join(err, disableErr))
 	}
 
 	if err := ws.Cfg.PersistDockerMCPConfig(mcpConfig); err != nil {
-		disableErr := mcptools.DisableSingle(ws.Cfg, config.DockerMCPName)
+		disableErr := mcptools.For(ws.Cfg).DisableSingle(ws.Cfg, config.DockerMCPName)
 		ws.Cfg.RemoveDockerMCPInMemory()
 		return fmt.Errorf("docker MCP started but failed to persist configuration: %w", errors.Join(err, disableErr))
 	}
@@ -283,7 +283,7 @@ func (b *Backend) DisableDockerMCP(workspaceID string) error {
 		return err
 	}
 
-	if err := mcptools.DisableSingle(ws.Cfg, config.DockerMCPName); err != nil {
+	if err := mcptools.For(ws.Cfg).DisableSingle(ws.Cfg, config.DockerMCPName); err != nil {
 		return fmt.Errorf("failed to disable docker MCP: %w", err)
 	}
 
@@ -301,7 +301,7 @@ func (b *Backend) RefreshMCPTools(ctx context.Context, workspaceID, name string)
 	if err != nil {
 		return err
 	}
-	mcptools.RefreshTools(ctx, ws.Cfg, name)
+	mcptools.For(ws.Cfg).RefreshTools(ctx, ws.Cfg, name)
 	return nil
 }
 
@@ -311,7 +311,7 @@ func (b *Backend) ReadMCPResource(ctx context.Context, workspaceID, name, uri st
 	if err != nil {
 		return nil, err
 	}
-	contents, err := mcptools.ReadResource(ctx, ws.Cfg, name, uri)
+	contents, err := mcptools.For(ws.Cfg).ReadResource(ctx, ws.Cfg, name, uri)
 	if err != nil {
 		return nil, err
 	}
@@ -337,10 +337,11 @@ func (b *Backend) GetMCPPrompt(workspaceID, clientID, promptID string, args map[
 }
 
 func (b *Backend) ListMCPPrompts(workspaceID string) ([]proto.MCPPrompt, error) {
-	if _, err := b.GetWorkspace(workspaceID); err != nil {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
 		return nil, err
 	}
-	prompts, err := commands.LoadMCPPrompts()
+	prompts, err := commands.LoadMCPPrompts(ws.Cfg)
 	if err != nil {
 		return nil, err
 	}

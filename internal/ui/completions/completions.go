@@ -12,8 +12,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/ordered"
-	"github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/ui/list"
 )
 
@@ -40,6 +40,8 @@ type ClosedMsg struct{}
 
 // CompletionItemsLoadedMsg is sent when files have been loaded for completions.
 type CompletionItemsLoadedMsg struct {
+	Scope     any
+	Error     error
 	Files     []FileCompletionValue
 	Resources []ResourceCompletionValue
 }
@@ -141,15 +143,21 @@ func (c *Completions) KeyMap() KeyMap {
 }
 
 // Open opens the completions with file items from the filesystem.
-func (c *Completions) Open(depth, limit int) tea.Cmd {
+func (c *Completions) Open(depth, limit int, scope any, resources func() ([]proto.MCPResource, error)) tea.Cmd {
 	return func() tea.Msg {
-		var msg CompletionItemsLoadedMsg
+		msg := CompletionItemsLoadedMsg{Scope: scope}
 		var wg sync.WaitGroup
 		wg.Go(func() {
 			msg.Files = loadFiles(depth, limit)
 		})
 		wg.Go(func() {
-			msg.Resources = loadMCPResources()
+			if resources != nil {
+				entries, err := resources()
+				msg.Error = err
+				for _, r := range entries {
+					msg.Resources = append(msg.Resources, ResourceCompletionValue{MCPName: r.MCPName, URI: r.URI, Title: r.Name, MIMEType: r.MIMEType})
+				}
+			}
 		})
 		wg.Wait()
 		return msg
@@ -451,19 +459,4 @@ func loadFiles(depth, limit int) []FileCompletionValue {
 		})
 	}
 	return result
-}
-
-func loadMCPResources() []ResourceCompletionValue {
-	var resources []ResourceCompletionValue
-	for mcpName, mcpResources := range mcp.Resources() {
-		for _, r := range mcpResources {
-			resources = append(resources, ResourceCompletionValue{
-				MCPName:  mcpName,
-				URI:      r.URI,
-				Title:    r.Name,
-				MIMEType: r.MIMEType,
-			})
-		}
-	}
-	return resources
 }

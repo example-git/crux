@@ -494,7 +494,7 @@ func (w *AppWorkspace) SetProviderDisabled(scope config.Scope, owner providerreg
 	if err := w.store.SetProviderDisabled(scope, owner, disabled); err != nil {
 		return err
 	}
-	go mcptools.Reinitialize(context.Background(), w.store)
+	go mcptools.For(w.store).Reinitialize(context.Background(), w.store)
 	return nil
 }
 
@@ -530,7 +530,7 @@ func (w *AppWorkspace) SetConfigField(scope config.Scope, key string, value any)
 			return fmt.Errorf("refresh agent after skill configuration change: %w", err)
 		}
 	}
-	go mcptools.Reinitialize(context.Background(), w.store)
+	go mcptools.For(w.store).Reinitialize(context.Background(), w.store)
 	return nil
 }
 
@@ -543,7 +543,7 @@ func (w *AppWorkspace) RemoveConfigField(scope config.Scope, key string) error {
 			return fmt.Errorf("refresh agent after skill configuration change: %w", err)
 		}
 	}
-	go mcptools.Reinitialize(context.Background(), w.store)
+	go mcptools.For(w.store).Reinitialize(context.Background(), w.store)
 	return nil
 }
 
@@ -690,23 +690,23 @@ func (w *AppWorkspace) ReadSkill(_ context.Context, skillID string) ([]byte, ski
 // -- MCP operations --
 
 func (w *AppWorkspace) MCPGetStates() map[string]mcptools.ClientInfo {
-	return mcptools.GetStates()
+	return mcptools.For(w.store).GetStates()
 }
 
 func (w *AppWorkspace) MCPRefreshPrompts(ctx context.Context, name string) {
-	mcptools.RefreshPrompts(ctx, name)
+	mcptools.For(w.store).RefreshPrompts(ctx, name)
 }
 
 func (w *AppWorkspace) MCPRefreshResources(ctx context.Context, name string) {
-	mcptools.RefreshResources(ctx, name)
+	mcptools.For(w.store).RefreshResources(ctx, name)
 }
 
 func (w *AppWorkspace) RefreshMCPTools(ctx context.Context, name string) {
-	mcptools.RefreshTools(ctx, w.store, name)
+	mcptools.For(w.store).RefreshTools(ctx, w.store, name)
 }
 
 func (w *AppWorkspace) ReadMCPResource(ctx context.Context, name, uri string) ([]MCPResourceContents, error) {
-	contents, err := mcptools.ReadResource(ctx, w.store, name, uri)
+	contents, err := mcptools.For(w.store).ReadResource(ctx, w.store, name, uri)
 	if err != nil {
 		return nil, err
 	}
@@ -723,7 +723,7 @@ func (w *AppWorkspace) ReadMCPResource(ctx context.Context, name, uri string) ([
 }
 
 func (w *AppWorkspace) ListMCPPrompts(context.Context) ([]commands.MCPPrompt, error) {
-	return commands.LoadMCPPrompts()
+	return commands.LoadMCPPrompts(w.store)
 }
 
 func (w *AppWorkspace) GetMCPPrompt(clientID, promptID string, args map[string]string) (string, error) {
@@ -736,14 +736,14 @@ func (w *AppWorkspace) EnableDockerMCP(ctx context.Context) error {
 		return err
 	}
 
-	if err := mcptools.InitializeSingle(ctx, config.DockerMCPName, w.store); err != nil {
-		disableErr := mcptools.DisableSingle(w.store, config.DockerMCPName)
+	if err := mcptools.For(w.store).InitializeSingle(ctx, config.DockerMCPName, w.store); err != nil {
+		disableErr := mcptools.For(w.store).DisableSingle(w.store, config.DockerMCPName)
 		w.store.RemoveDockerMCPInMemory()
 		return fmt.Errorf("failed to start docker MCP: %w", errors.Join(err, disableErr))
 	}
 
 	if err := w.store.PersistDockerMCPConfig(mcpConfig); err != nil {
-		disableErr := mcptools.DisableSingle(w.store, config.DockerMCPName)
+		disableErr := mcptools.For(w.store).DisableSingle(w.store, config.DockerMCPName)
 		w.store.RemoveDockerMCPInMemory()
 		return fmt.Errorf("docker MCP started but failed to persist configuration: %w", errors.Join(err, disableErr))
 	}
@@ -752,22 +752,22 @@ func (w *AppWorkspace) EnableDockerMCP(ctx context.Context) error {
 }
 
 func (w *AppWorkspace) DisableDockerMCP() error {
-	if err := mcptools.DisableSingle(w.store, config.DockerMCPName); err != nil {
+	if err := mcptools.For(w.store).DisableSingle(w.store, config.DockerMCPName); err != nil {
 		return fmt.Errorf("failed to disable docker MCP: %w", err)
 	}
 	return w.store.DisableDockerMCP()
 }
 
 func (w *AppWorkspace) MCPAuthenticate(ctx context.Context, name string) error {
-	return mcptools.AuthenticateMCP(ctx, w.store, name)
+	return mcptools.For(w.store).AuthenticateMCP(ctx, w.store, name)
 }
 
 func (w *AppWorkspace) MCPPendingAuth() []mcptools.PendingAuthServer {
-	return mcptools.PendingAuthMCPs(w.store)
+	return mcptools.For(w.store).PendingAuthMCPs(w.store)
 }
 
 func (w *AppWorkspace) MCPAuthURL(name string) string {
-	return mcptools.MCPAuthURL(name)
+	return mcptools.For(w.store).MCPAuthURL(name)
 }
 
 // -- Lifecycle --

@@ -237,6 +237,7 @@ type InstalledRuntime struct {
 }
 
 type sessionAgent struct {
+	mcpRuntime          *mcp.Manager
 	largeModel          *csync.Value[Model]
 	smallModel          *csync.Value[Model]
 	systemPromptPrefix  *csync.Value[string]
@@ -303,6 +304,7 @@ type sessionAgent struct {
 }
 
 type SessionAgentOptions struct {
+	MCPRuntime              *mcp.Manager
 	LargeModel              Model
 	SmallModel              Model
 	SystemPromptPrefix      string
@@ -337,6 +339,7 @@ func NewSessionAgent(
 	return &sessionAgent{
 		largeModel:              csync.NewValue(cloneModelEfficiency(opts.LargeModel)),
 		smallModel:              csync.NewValue(cloneModelEfficiency(opts.SmallModel)),
+		mcpRuntime:              opts.MCPRuntime,
 		systemPromptPrefix:      csync.NewValue(opts.SystemPromptPrefix),
 		systemInstructions:      csync.NewValue(instructions),
 		systemPromptBuilder:     opts.SystemPromptBuilder,
@@ -690,11 +693,14 @@ func (a *sessionAgent) runtimeMCPInstructions() string {
 	if a.isSubAgent {
 		return ""
 	}
-	return connectedMCPInstructions()
+	return connectedMCPInstructions(a.mcpRuntime)
 }
 
-func connectedMCPInstructions() string {
-	states := mcp.GetStates()
+func connectedMCPInstructions(runtime *mcp.Manager) string {
+	if runtime == nil {
+		return ""
+	}
+	states := runtime.GetStates()
 	names := make([]string, 0, len(states))
 	for name := range states {
 		names = append(names, name)

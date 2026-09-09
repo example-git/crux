@@ -599,7 +599,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		defer codebaseContext.cancel()
 	}
 
-	// MCP servers connect asynchronously (see mcp.Initialize).
+	// MCP servers connect asynchronously (see mcp.For(c.cfg).Initialize).
 	//
 	// Interactive runs never wait for that to finish: the tool list below
 	// is built from whatever is registered right now, servers still
@@ -614,7 +614,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	// server's own connect timeout, so a hung server cannot stall the run
 	// indefinitely.
 	if !c.interactive {
-		if err := mcp.WaitForInit(ctx); err != nil {
+		if err := mcp.For(c.cfg).WaitForInit(ctx); err != nil {
 			return nil, fmt.Errorf("failed to wait for MCP initialization: %w", err)
 		}
 	}
@@ -1169,6 +1169,7 @@ func (c *coordinator) buildAgentWithSnapshot(ctx context.Context, promptTemplate
 
 	largeProviderCfg, _ := cfg.Providers.Get(large.ModelCfg.Provider)
 	result := NewSessionAgent(SessionAgentOptions{
+		MCPRuntime:              mcp.For(c.cfg),
 		LargeModel:              large,
 		SmallModel:              small,
 		SystemPromptPrefix:      largeProviderCfg.SystemPromptPrefix,
@@ -2240,7 +2241,7 @@ func (c *coordinator) instructionSnapshot(ctx context.Context) (InstructionSnaps
 	instructions = appendRuntimeInstructions(
 		instructions,
 		providerCfg.SystemPromptPrefix,
-		connectedMCPInstructions(),
+		connectedMCPInstructions(mcp.For(c.cfg)),
 		"",
 		"",
 		"",

@@ -87,9 +87,9 @@ func FromSkillCatalog(entries []skills.CatalogEntry) []CustomCommand {
 }
 
 // LoadMCPPrompts loads custom commands from available MCP servers.
-func LoadMCPPrompts() ([]MCPPrompt, error) {
+func LoadMCPPrompts(cfg *config.ConfigStore) ([]MCPPrompt, error) {
 	var commands []MCPPrompt
-	for mcpName, prompts := range mcp.Prompts() {
+	for mcpName, prompts := range mcp.For(cfg).Prompts() {
 		for _, prompt := range prompts {
 			key := mcpName + ":" + prompt.Name
 			var args []Argument
@@ -231,7 +231,7 @@ func GetMCPPrompt(cfg *config.ConfigStore, clientID, promptID string, args map[s
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result, err := mcp.GetPromptMessages(ctx, cfg, clientID, promptID, args)
+	result, err := mcp.For(cfg).GetPromptMessages(ctx, cfg, clientID, promptID, args)
 	if err != nil {
 		return "", err
 	}

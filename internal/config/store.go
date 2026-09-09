@@ -341,6 +341,8 @@ func (s RuntimeSnapshot) EphemeralAccount(expected providerregistry.Registration
 }
 
 type ConfigStore struct {
+	mcpRuntime               mcpRuntimeSlot
+	mcpRuntimeOnce           sync.Once
 	config                   *Config
 	publicationSequence      uint64
 	clientRuntime            *clientRuntimeState
