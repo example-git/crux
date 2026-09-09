@@ -106,7 +106,11 @@ func (w *ClientWorkspace) AbandonProviderAuthenticationReview(ctx context.Contex
 		return result, err
 	}
 	if review.abandon != nil {
-		if *review.abandon != request {
+		// Only the current authority envelope may change on a historical
+		// retry; the original review, preview, revision and action ID cannot.
+		retained := *review.abandon
+		retained.WorkspaceID = request.WorkspaceID
+		if retained != request {
 			return result, providerauth.ErrOperationConflict
 		}
 		selected.discardAbandonedReviewPending(review)

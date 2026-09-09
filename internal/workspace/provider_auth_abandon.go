@@ -103,7 +103,12 @@ func (w *ClientWorkspace) AbandonProviderAuthentication(ctx context.Context, req
 	}
 	result.Original, result.RemoteAcknowledged, result.Adopted = original, receipt.acknowledged, receipt.adopted
 	if receipt.abandon != nil {
-		if *receipt.abandon != request {
+		// WorkspaceID is the current authority envelope, already checked
+		// above. The original target, operation, revision and action ID remain
+		// the durable action identity across workspace reincarnations.
+		retained := *receipt.abandon
+		retained.WorkspaceID = request.WorkspaceID
+		if retained != request {
 			return result, providerauth.ErrOperationConflict
 		}
 		result.Abandoned = true
