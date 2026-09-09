@@ -494,6 +494,21 @@ func generateIdentity(commonName string, usage x509.ExtKeyUsage) (Identity, erro
 }
 
 func parseCertificate(code string, usage x509.ExtKeyUsage) (*x509.Certificate, error) {
+	certificate, err := parseHistoricalCertificate(code, usage)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	if now.Before(certificate.NotBefore) || now.After(certificate.NotAfter) {
+		return nil, errors.New("pairing certificate is not currently valid")
+	}
+	return certificate, nil
+}
+
+// parseHistoricalCertificate validates an identity retained as evidence. It
+// does not establish current TLS or enrollment authority; those callers use
+// parseCertificate so expiration still prevents authentication.
+func parseHistoricalCertificate(code string, usage x509.ExtKeyUsage) (*x509.Certificate, error) {
 	certificateDER, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(code))
 	if err != nil {
 		return nil, errors.New("pairing code is not valid base64")
@@ -505,9 +520,8 @@ func parseCertificate(code string, usage x509.ExtKeyUsage) (*x509.Certificate, e
 	if err != nil {
 		return nil, errors.New("pairing code does not contain a certificate")
 	}
-	now := time.Now()
-	if now.Before(certificate.NotBefore) || now.After(certificate.NotAfter) {
-		return nil, errors.New("pairing certificate is not currently valid")
+	if certificate.NotAfter.Before(certificate.NotBefore) {
+		return nil, errors.New("pairing certificate has an invalid validity interval")
 	}
 	if certificate.IsCA || len(certificate.UnhandledCriticalExtensions) != 0 {
 		return nil, errors.New("pairing certificate has unsupported constraints")
@@ -545,6 +559,10 @@ func parseIdentity(identity Identity, usage x509.ExtKeyUsage) (*x509.Certificate
 	if err != nil {
 		return nil, nil, err
 	}
+	return parseIdentityKey(identity, certificate)
+}
+
+func parseIdentityKey(identity Identity, certificate *x509.Certificate) (*x509.Certificate, ed25519.PrivateKey, error) {
 	block, _ := pem.Decode([]byte(identity.PrivateKey))
 	if block == nil || block.Type != "PRIVATE KEY" {
 		return nil, nil, errors.New("identity private key is invalid")

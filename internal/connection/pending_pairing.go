@@ -99,10 +99,14 @@ func validatePending(p pendingPairing) error {
 	if err != nil || address != p.Connection.Address {
 		return errors.New("invalid pending pairing address")
 	}
-	if _, err := parseCertificate(p.Connection.ServerCertificate, x509.ExtKeyUsageServerAuth); err != nil {
+	if _, err := parseHistoricalCertificate(p.Connection.ServerCertificate, x509.ExtKeyUsageServerAuth); err != nil {
 		return errors.New("invalid pending pairing server identity")
 	}
-	if _, _, err := parseIdentity(p.Connection.Client, x509.ExtKeyUsageClientAuth); err != nil {
+	client, err := parseHistoricalCertificate(p.Connection.Client.Certificate, x509.ExtKeyUsageClientAuth)
+	if err != nil {
+		return errors.New("invalid pending pairing client identity")
+	}
+	if _, _, err := parseIdentityKey(p.Connection.Client, client); err != nil {
 		return errors.New("invalid pending pairing client identity")
 	}
 	redact.Register(p.Connection.Client.PrivateKey)
@@ -226,6 +230,12 @@ func syncPairingDirectory(path string) error {
 }
 
 func stagePendingPairing(ctx context.Context, path string, created Connection) (pendingPairing, error) {
+	if _, err := parseCertificate(created.ServerCertificate, x509.ExtKeyUsageServerAuth); err != nil {
+		return pendingPairing{}, err
+	}
+	if _, _, err := parseIdentity(created.Client, x509.ExtKeyUsageClientAuth); err != nil {
+		return pendingPairing{}, err
+	}
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return pendingPairing{}, err
@@ -297,8 +307,8 @@ func ListPendingPairings(ctx context.Context) ([]PendingPairing, error) {
 	}
 	result := make([]PendingPairing, 0, len(pending.Entries))
 	for _, entry := range pending.Entries {
-		client, _ := parseCertificate(entry.Connection.Client.Certificate, x509.ExtKeyUsageClientAuth)
-		server, _ := parseCertificate(entry.Connection.ServerCertificate, x509.ExtKeyUsageServerAuth)
+		client, _ := parseHistoricalCertificate(entry.Connection.Client.Certificate, x509.ExtKeyUsageClientAuth)
+		server, _ := parseHistoricalCertificate(entry.Connection.ServerCertificate, x509.ExtKeyUsageServerAuth)
 		result = append(result, PendingPairing{OperationID: entry.OperationID, Name: entry.Connection.Name, PromotionName: entry.PromotionName, Address: entry.Connection.Address, ClientFingerprint: certificateFingerprint(client), ServerFingerprint: certificateFingerprint(server), CreatedAt: time.Unix(entry.CreatedAt, 0).UTC()})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].OperationID < result[j].OperationID })
@@ -357,6 +367,12 @@ func promotePendingPairing(ctx context.Context, path string, entry pendingPairin
 		return fail(errors.New("pending pairing identity changed before publication"))
 	}
 	created := entry.Connection
+	if _, err := parseCertificate(created.ServerCertificate, x509.ExtKeyUsageServerAuth); err != nil {
+		return fail(err)
+	}
+	if _, _, err := parseIdentity(created.Client, x509.ExtKeyUsageClientAuth); err != nil {
+		return fail(err)
+	}
 	if entry.PromotionName != "" {
 		created.Name = entry.PromotionName
 	}
