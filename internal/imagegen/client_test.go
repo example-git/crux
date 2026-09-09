@@ -603,6 +603,12 @@ func TestStandaloneRefreshDoesNotJoinGlobalRefresher(t *testing.T) {
 		if r.URL.Host != "auth.openai.com" || r.URL.Path != "/oauth/token" {
 			t.Fatalf("unexpected refresh request URL: %s", r.URL)
 		}
+		if err := r.ParseForm(); err != nil {
+			return nil, err
+		}
+		if got := r.Form.Get("refresh_token"); got != "workspace-refresh-next" {
+			t.Errorf("explicit refresh input = %q, want proven successor (not consumed refresh-token)", got)
+		}
 		coreRefreshes.Add(1)
 		return jsonHTTPResponse(http.StatusOK, `{"access_token":"fresh-token","refresh_token":"next-refresh","expires_in":3600}`), nil
 	})}
@@ -629,17 +635,22 @@ func TestStandaloneRefreshDoesNotJoinGlobalRefresher(t *testing.T) {
 		authDone <- authResult{auth: auth, err: err}
 	}()
 
-	var result authResult
-	timedOut := false
+	// The account lease serializes consumption. The explicit core refresher
+	// must wait, then exchange the saved successor using its own authority.
 	select {
-	case result = <-authDone:
-	case <-time.After(5 * time.Second):
-		timedOut = true
+	case result := <-authDone:
+		close(releaseWorkspace)
+		<-globalDone
+		t.Fatalf("standalone returned before account lease release: %v", result.err)
+	case <-time.After(100 * time.Millisecond):
 	}
 	close(releaseWorkspace)
 	globalErr := <-globalDone
-	if timedOut {
-		t.Fatal("standalone authentication joined the workspace refresher")
+	var result authResult
+	select {
+	case result = <-authDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("standalone authentication stayed blocked after predecessor completed")
 	}
 	if result.err != nil {
 		t.Fatalf("resolveAuth: %v", result.err)

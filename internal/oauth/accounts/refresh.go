@@ -34,7 +34,7 @@ func AccessToken(ctx context.Context, provider string) (string, error) {
 	providerMu.RLock()
 	refresher := refreshers[provider]
 	providerMu.RUnlock()
-	fresh, err := ensureFresh(ctx, provider, entry, true, refresher, nil)
+	fresh, err := ensureFresh(ctx, provider, entry, true, refresher, nil, sharedOwnerRefresh)
 	if err != nil {
 		return "", err
 	}
@@ -48,22 +48,31 @@ func EnsureFresh(ctx context.Context, provider string, entry *Entry) (*Entry, er
 	providerMu.RLock()
 	refresher := refreshers[provider]
 	providerMu.RUnlock()
-	return EnsureFreshWithRefresher(ctx, provider, entry, refresher)
+	return ensureFresh(ctx, provider, entry, false, refresher, nil, sharedOwnerRefresh)
 }
 
+// EnsureFreshWithRefresher uses the explicitly supplied exchange when the
+// initiating entry needs refresh. A peer rotation supplies only its proven
+// successor refresh token, never a replacement exchange authority.
 func EnsureFreshWithRefresher(ctx context.Context, provider string, entry *Entry, refresher Refresher) (*Entry, error) {
-	return ensureFresh(ctx, provider, entry, false, refresher, nil)
+	return ensureFresh(ctx, provider, entry, false, refresher, nil, explicitRefresher)
 }
 
 func EnsureFreshForOwner(ctx context.Context, provider string, entry *Entry, refresher Refresher, validate Validator) (*Entry, error) {
-	return ensureFresh(ctx, provider, entry, false, refresher, validate)
+	return ensureFresh(ctx, provider, entry, false, refresher, validate, sharedOwnerRefresh)
 }
 
+// AccessTokenWithRefresher preserves the supplied exchange authority if the
+// active account required refresh when this call observed it.
 func AccessTokenWithRefresher(ctx context.Context, provider string, refresher Refresher) (string, error) {
-	return AccessTokenForOwner(ctx, provider, refresher, nil)
+	return accessTokenForOwner(ctx, provider, refresher, nil, explicitRefresher)
 }
 
 func AccessTokenForOwner(ctx context.Context, provider string, refresher Refresher, validate Validator) (string, error) {
+	return accessTokenForOwner(ctx, provider, refresher, validate, sharedOwnerRefresh)
+}
+
+func accessTokenForOwner(ctx context.Context, provider string, refresher Refresher, validate Validator, authority refreshAuthority) (string, error) {
 	if validate != nil {
 		if err := validate(); err != nil {
 			return "", err
@@ -73,7 +82,7 @@ func AccessTokenForOwner(ctx context.Context, provider string, refresher Refresh
 	if err != nil || entry == nil {
 		return "", err
 	}
-	fresh, err := ensureFresh(ctx, provider, entry, true, refresher, validate)
+	fresh, err := ensureFresh(ctx, provider, entry, true, refresher, validate, authority)
 	if err != nil {
 		return "", err
 	}
@@ -85,12 +94,12 @@ func AccessTokenForOwner(ctx context.Context, provider string, refresher Refresh
 	return fresh.AccessToken, nil
 }
 
-func ensureFresh(ctx context.Context, provider string, entry *Entry, activate bool, fn Refresher, validate Validator) (*Entry, error) {
+func ensureFresh(ctx context.Context, provider string, entry *Entry, activate bool, fn Refresher, validate Validator, authority refreshAuthority) (*Entry, error) {
 	if entry == nil {
 		return nil, errors.New("refresh requires an exact account")
 	}
 	if !entry.Expired() || entry.RefreshToken == "" {
 		return entry, nil
 	}
-	return refreshAccount(ctx, provider, entry, fn, validate, activate, false)
+	return refreshAccount(ctx, provider, entry, fn, validate, activate, false, authority)
 }
