@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,15 +30,16 @@ const DummyHost = "api.crux.localhost"
 
 // Client represents an RPC client connected to a Crux server.
 type Client struct {
-	h                 *http.Client
-	path              string
-	network           string
-	addr              string
-	clientID          string
-	localRuntimeStore *config.ConfigStore
-	secure            bool
-	attachmentMu      sync.RWMutex
-	attachments       map[string]proto.WorkspaceAttachment
+	h                      *http.Client
+	path                   string
+	network                string
+	addr                   string
+	clientID               string
+	localRuntimeStore      *config.ConfigStore
+	secure                 bool
+	authenticationIdentity string
+	attachmentMu           sync.RWMutex
+	attachments            map[string]proto.WorkspaceAttachment
 }
 
 // DefaultClient creates a new [Client] connected to the default server address.
@@ -66,8 +69,22 @@ func NewAuthenticatedClient(path string, saved cruxconnection.Connection) (*Clie
 	if err != nil {
 		return nil, err
 	}
-	return newClient(path, host.Scheme, host.Host, tlsConfig)
+	c, err := newClient(path, host.Scheme, host.Host, tlsConfig)
+	if err != nil {
+		return nil, err
+	}
+	// Only public certificate bytes and the exact selected address contribute.
+	// The identity survives restart and cannot move a receipt to another server
+	// that happens to reuse a workspace ID or the same client certificate.
+	identity, _ := json.Marshal([]string{saved.Address, saved.ServerCertificate, saved.Client.Certificate})
+	digest := sha256.Sum256(identity)
+	c.authenticationIdentity = hex.EncodeToString(digest[:])
+	return c, nil
 }
+
+// AuthenticationJournalIdentity is immutable captured connection authority.
+// Unauthenticated local transports have no durable remote-authentication scope.
+func (c *Client) AuthenticationJournalIdentity() string { return c.authenticationIdentity }
 
 func newClient(path, network, address string, tlsConfig *tls.Config) (*Client, error) {
 	c := new(Client)

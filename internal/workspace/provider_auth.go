@@ -153,6 +153,9 @@ func (w *ClientWorkspace) prepareClientProviderAuth(ctx context.Context, id stri
 		return fmt.Errorf("provider authentication workspace changed")
 	}
 	a := w.authority
+	if err := a.loadAuthenticationJournal(ctx, id); err != nil {
+		return err
+	}
 	if a.recoveryProposal != nil {
 		return fmt.Errorf("workspace recreation is awaiting acknowledgement; retry the same recovery before changing authentication")
 	}
