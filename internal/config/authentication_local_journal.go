@@ -337,7 +337,10 @@ func (w *localAuthenticationWriter) save(ctx context.Context) error {
 	return nil
 }
 func (w *localAuthenticationWriter) beforeAccounts(ctx context.Context, change accounts.DurableChange) error {
-	if w == nil {
+	// Read-only account checks have no staged effect. InitialAccounts already
+	// retains the original observation; treating a check as a pending write
+	// would keep an effect-free failed operation and its reservation alive.
+	if w == nil || !change.Writes() {
 		return nil
 	}
 	raw, err := change.Encode()
