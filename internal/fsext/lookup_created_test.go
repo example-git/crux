@@ -41,6 +41,40 @@ func TestLookupBoundedWithCreatedFileMatchesActualOrder(t *testing.T) {
 	}
 }
 
+func TestLookupBoundedWithCreatedFilesAndLeafReplacement(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, ".crux.json")
+	second := filepath.Join(root, "crux.json")
+	alias := filepath.Join(root, "alias.json")
+	if err := os.Symlink(second, first); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	require.NoError(t, os.Symlink(first, alias))
+	paths := []string{first, second, alias}
+	current, projected, err := LookupBoundedWithCreatedFiles(t.Context(), root, root, []string{first, second}, ".crux.json", "crux.json")
+	require.NoError(t, err)
+	require.Empty(t, current)
+	written, err := PathsReadingCreatedFiles(t.Context(), []string{first, second}, paths)
+	require.NoError(t, err)
+	require.Equal(t, []string{first, alias}, written[first])
+	require.Equal(t, []string{second}, written[second], "the first replacement stops reads through its old leaf symlink")
+	for _, path := range []string{first, second} {
+		temporary := filepath.Join(root, "temporary")
+		require.NoError(t, os.WriteFile(temporary, []byte(path), 0o600))
+		require.NoError(t, os.Rename(temporary, path))
+	}
+	actual, err := LookupBounded(root, root, ".crux.json", "crux.json")
+	require.NoError(t, err)
+	require.Equal(t, actual, projected)
+	for target, aliases := range written {
+		for _, path := range aliases {
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			require.Equal(t, target, string(data))
+		}
+	}
+}
+
 func TestLookupBoundedWithCreatedFileSymlinksAndRenameEntry(t *testing.T) {
 	root := t.TempDir()
 	realDir := filepath.Join(root, "real")

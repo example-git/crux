@@ -13,11 +13,21 @@ import (
 // target ordering and ownership checks as LookupBounded, without creating or
 // reading file contents. The projection is preparation, not a freshness proof.
 func LookupBoundedWithCreatedFile(ctx context.Context, dir, stopDir, createdPath string, targets ...string) (current, projected []string, err error) {
-	replacement, err := newCreatedFile(ctx, createdPath)
-	if err != nil {
-		return nil, nil, err
+	return LookupBoundedWithCreatedFiles(ctx, dir, stopDir, []string{createdPath}, targets...)
+}
+
+// LookupBoundedWithCreatedFiles projects a fixed set of authored replacements
+// in one ordinary traversal. It neither writes files nor reads their contents.
+func LookupBoundedWithCreatedFiles(ctx context.Context, dir, stopDir string, createdPaths []string, targets ...string) (current, projected []string, err error) {
+	replacements := make([]createdFile, 0, len(createdPaths))
+	for _, path := range createdPaths {
+		replacement, err := newCreatedFile(ctx, path)
+		if err != nil {
+			return nil, nil, err
+		}
+		replacements = append(replacements, replacement)
 	}
-	return lookupBounded(ctx, dir, stopDir, &replacement, targets...)
+	return lookupBounded(ctx, dir, stopDir, replacements, targets...)
 }
 
 // PathsReadingCreatedFile identifies lexical paths whose reads pass through
@@ -25,18 +35,37 @@ func LookupBoundedWithCreatedFile(ctx context.Context, dir, stopDir, createdPath
 // Parent symlinks and links pointing to that entry are followed; a symlink at
 // createdPath itself is replaced, so its old referent is not a written alias.
 func PathsReadingCreatedFile(ctx context.Context, createdPath string, paths []string) ([]string, error) {
-	replacement, err := newCreatedFile(ctx, createdPath)
+	result, err := PathsReadingCreatedFiles(ctx, []string{createdPath}, paths)
 	if err != nil {
 		return nil, err
 	}
-	var result []string
-	for _, path := range paths {
-		matches, err := replacement.readThrough(ctx, path)
+	return result[createdPath], nil
+}
+
+// PathsReadingCreatedFiles maps paths to the first replacement entry their
+// reads encounter. Replacing a leaf symlink prevents a later read from reaching
+// its old target, even when that target is another authored replacement.
+func PathsReadingCreatedFiles(ctx context.Context, createdPaths, paths []string) (map[string][]string, error) {
+	replacements := make([]createdFile, 0, len(createdPaths))
+	for _, path := range createdPaths {
+		replacement, err := newCreatedFile(ctx, path)
 		if err != nil {
 			return nil, err
 		}
-		if matches && !slices.Contains(result, path) {
-			result = append(result, path)
+		replacements = append(replacements, replacement)
+	}
+	result := make(map[string][]string, len(createdPaths))
+	for _, path := range paths {
+		matched, err := firstCreatedFile(ctx, path, replacements)
+		if err != nil {
+			return nil, err
+		}
+		if matched >= 0 {
+			for index, replacement := range replacements {
+				if replacement.entry == replacements[matched].entry && !slices.Contains(result[createdPaths[index]], path) {
+					result[createdPaths[index]] = append(result[createdPaths[index]], path)
+				}
+			}
 		}
 	}
 	return result, ctx.Err()
@@ -87,37 +116,44 @@ func replacementEntry(ctx context.Context, path string) (string, error) {
 }
 
 func (f createdFile) readThrough(ctx context.Context, path string) (bool, error) {
+	matched, err := firstCreatedFile(ctx, path, []createdFile{f})
+	return matched >= 0, err
+}
+
+func firstCreatedFile(ctx context.Context, path string, replacements []createdFile) (int, error) {
 	// Resolve leaf link chains only until the replacement entry. Following its
 	// existing leaf symlink would incorrectly authorize the old referent.
 	for range 255 {
 		entry, err := replacementEntry(ctx, path)
 		if err != nil {
 			if errors.Is(err, os.ErrPermission) || errors.Is(err, os.ErrNotExist) {
-				return false, nil
+				return -1, nil
 			}
-			return false, err
+			return -1, err
 		}
-		if entry == f.entry {
-			return true, nil
+		for index, replacement := range replacements {
+			if entry == replacement.entry {
+				return index, nil
+			}
 		}
 		info, err := os.Lstat(entry)
 		if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
-			return false, nil
+			return -1, nil
 		}
 		if err != nil {
-			return false, err
+			return -1, err
 		}
 		if info.Mode()&os.ModeSymlink == 0 {
-			return false, nil
+			return -1, nil
 		}
 		link, err := os.Readlink(entry)
 		if err != nil {
-			return false, err
+			return -1, err
 		}
 		path = link
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(filepath.Dir(entry), path)
 		}
 	}
-	return false, errors.New("file replacement alias has too many symbolic links")
+	return -1, errors.New("file replacement alias has too many symbolic links")
 }

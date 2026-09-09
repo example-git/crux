@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"slices"
@@ -230,12 +231,18 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		registerConfigSecrets(cfg)
 		return store, nil
 	}
+	correctedBasis := basis.startupCorrections(notificationMigration, pendingModelFields, store.globalDataPath)
+	migrationSource := correctedBasis.sources[filepath.Clean(store.globalDataPath)]
+	expectedMigrationFields, _ := selectProviderReferenceMigrationFields(migrationSource.raw, pendingOwners, pendingPlugins, pendingPresets)
+	basis, authoredPaths, err := prepareAuthenticationLoadTopology(context.Background(), basis, notificationMigration, pendingModelFields, expectedMigrationFields, store.globalDataPath, workingDir, store.workspacePath, baseEnvironment)
+	if err != nil {
+		return nil, fmt.Errorf("prepare startup authentication input topology: %w", err)
+	}
+	cfg.authenticationBasis = basis
 	if err := commitStartupCorrections(store, notificationMigration, pendingModelFields, preimages); err != nil {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return nil, errors.Join(fmt.Errorf("commit startup config corrections: %w", err), rollbackErr)
 	}
-	basis = basis.startupCorrections(notificationMigration, pendingModelFields, store.globalDataPath)
-	cfg.authenticationBasis = basis
 	if err := captureConfigPostimages(preimages); err != nil {
 		rollbackErr := restoreConfigPreimages(preimages)
 		return nil, errors.Join(fmt.Errorf("capture startup config correction postimages: %w", err), rollbackErr)
@@ -256,11 +263,10 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		return nil, errors.Join(fmt.Errorf("migrate provider ownership: %w", err), rollbackErr)
 	}
 	migrationFields := migrationReceipt.fields
-	if len(migrationFields) > 0 {
-		basis = basis.authored(store.globalDataPath, migrationFields, nil)
-		cfg.authenticationBasis = basis
-	}
 	_, _, _, migrationInspectErr := fileBytesAndHash(store.globalDataPath)
+	if !maps.EqualFunc(expectedMigrationFields, migrationFields, reflect.DeepEqual) {
+		migrationInspectErr = errors.Join(migrationInspectErr, errors.New("provider ownership migration receipt changed after startup preparation"))
+	}
 	// Only this operation's successful authored receipt permits rollback.
 	ownershipChanged := migrationReceipt.written()
 	_, startupInspectErr := inspectStartupConfigPreimageChanged(preimages, store.globalDataPath)
@@ -273,6 +279,9 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		return nil, errors.Join(fmt.Errorf("inspect provider ownership migration: %w", err), migrationRollbackErr, rollbackErr)
 	}
 	publish := func(published ProviderScan) error {
+		if err := verifyAuthenticationLoadTopology(context.Background(), basis, authoredPaths, workingDir, store.workspacePath, baseEnvironment); err != nil {
+			return err
+		}
 		if publishProcessState {
 			if err := applyEnvironment(baseEnvironment, nil, resolvedEnv); err != nil {
 				return err
