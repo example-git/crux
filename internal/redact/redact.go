@@ -2,8 +2,12 @@ package redact
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"hash/maphash"
 	"sort"
 	"strings"
 	"sync"
@@ -12,43 +16,89 @@ import (
 
 const Replacement = "[REDACTED]"
 
+// The registry deliberately retains keyed fingerprints rather than plaintext
+// values. Historical fingerprints stay available for delayed log messages after
+// their workspace/credential is gone. This is reference release, not physical
+// zeroization of strings already copied elsewhere by the runtime or callers.
+type secretDigest struct {
+	length int
+	digest [sha256.Size]byte
+}
+
+type secretPrefix struct {
+	length int
+	hash   uint64
+}
+
+type redactionSnapshot struct {
+	prefixLengths []int
+	index         map[secretPrefix][]secretDigest
+}
+
+var fingerprintKey = func() [32]byte {
+	var key [32]byte
+	if _, err := rand.Read(key[:]); err != nil {
+		panic("cannot initialize private redaction fingerprints")
+	}
+	return key
+}()
+var prefixSeed = maphash.MakeSeed()
+
 var registry struct {
 	mu       sync.Mutex
-	values   map[string]struct{}
-	snapshot atomic.Pointer[[]string]
+	values   map[secretDigest]secretPrefix
+	snapshot atomic.Pointer[redactionSnapshot]
+}
+
+func fingerprint(value string) [sha256.Size]byte {
+	mac := hmac.New(sha256.New, fingerprintKey[:])
+	_, _ = mac.Write([]byte(value))
+	var result [sha256.Size]byte
+	mac.Sum(result[:0])
+	return result
 }
 
 func Register(values ...string) {
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
 	if registry.values == nil {
-		registry.values = make(map[string]struct{})
+		registry.values = make(map[secretDigest]secretPrefix)
 	}
 	changed := false
 	for _, value := range values {
 		if value == "" || value == Replacement {
 			continue
 		}
-		if _, exists := registry.values[value]; exists {
+		digest := secretDigest{length: len(value), digest: fingerprint(value)}
+		if _, exists := registry.values[digest]; exists {
 			continue
 		}
-		registry.values[value] = struct{}{}
+		length := min(len(value), 16)
+		registry.values[digest] = secretPrefix{length: length, hash: maphash.String(prefixSeed, value[:length])}
 		changed = true
 	}
 	if !changed {
 		return
 	}
-	valuesSnapshot := make([]string, 0, len(registry.values))
-	for value := range registry.values {
-		valuesSnapshot = append(valuesSnapshot, value)
+	snapshot := &redactionSnapshot{index: make(map[secretPrefix][]secretDigest)}
+	lengths := make(map[int]bool)
+	for digest, prefix := range registry.values {
+		snapshot.index[prefix] = append(snapshot.index[prefix], digest)
+		lengths[prefix.length] = true
 	}
-	sort.Slice(valuesSnapshot, func(i, j int) bool {
-		if len(valuesSnapshot[i]) == len(valuesSnapshot[j]) {
-			return valuesSnapshot[i] < valuesSnapshot[j]
-		}
-		return len(valuesSnapshot[i]) > len(valuesSnapshot[j])
-	})
-	registry.snapshot.Store(&valuesSnapshot)
+	for length := range lengths {
+		snapshot.prefixLengths = append(snapshot.prefixLengths, length)
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(snapshot.prefixLengths)))
+	for _, candidates := range snapshot.index {
+		sort.Slice(candidates, func(i, j int) bool {
+			if candidates[i].length != candidates[j].length {
+				return candidates[i].length > candidates[j].length
+			}
+			return bytes.Compare(candidates[i].digest[:], candidates[j].digest[:]) < 0
+		})
+	}
+	registry.snapshot.Store(snapshot)
 }
 
 func RegisterJSONValue(value any) {
@@ -96,30 +146,66 @@ func String(value string) string {
 	if snapshot == nil || value == "" {
 		return value
 	}
-	for _, secret := range *snapshot {
-		value = strings.ReplaceAll(value, secret, Replacement)
+	type span struct{ start, end int }
+	var spans []span
+	for start := 0; start < len(value); start++ {
+		end := start
+		for _, length := range snapshot.prefixLengths {
+			if length > len(value)-start {
+				continue
+			}
+			prefix := secretPrefix{length: length, hash: maphash.String(prefixSeed, value[start:start+length])}
+			previousLength := 0
+			var digest [sha256.Size]byte
+			for _, candidate := range snapshot.index[prefix] {
+				if candidate.length > len(value)-start || candidate.length <= end-start {
+					continue
+				}
+				if previousLength != candidate.length {
+					digest = fingerprint(value[start : start+candidate.length])
+					previousLength = candidate.length
+				}
+				if hmac.Equal(digest[:], candidate.digest[:]) {
+					end = start + candidate.length
+					break
+				}
+			}
+		}
+		if end == start {
+			continue
+		}
+		// Merge every overlap in the original input. A shorter earlier match
+		// must not expose the suffix of a longer overlapping secret.
+		if len(spans) > 0 && start < spans[len(spans)-1].end {
+			spans[len(spans)-1].end = max(spans[len(spans)-1].end, end)
+		} else {
+			spans = append(spans, span{start: start, end: end})
+		}
 	}
-	return value
+	if len(spans) == 0 {
+		return value
+	}
+	var result strings.Builder
+	last := 0
+	for _, span := range spans {
+		result.WriteString(value[last:span.start])
+		result.WriteString(Replacement)
+		last = span.end
+	}
+	result.WriteString(value[last:])
+	return result.String()
 }
 
 func Bytes(value []byte) []byte {
-	snapshot := registry.snapshot.Load()
-	if snapshot == nil || len(value) == 0 {
+	if len(value) == 0 {
 		return value
 	}
-	result := value
-	copied := false
-	for _, secret := range *snapshot {
-		if !bytes.Contains(result, []byte(secret)) {
-			continue
-		}
-		if !copied {
-			result = bytes.Clone(result)
-			copied = true
-		}
-		result = bytes.ReplaceAll(result, []byte(secret), []byte(Replacement))
+	original := string(value)
+	result := String(original)
+	if result == original {
+		return value
 	}
-	return result
+	return []byte(result)
 }
 
 func JSON(value []byte) ([]byte, error) {
