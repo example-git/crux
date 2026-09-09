@@ -113,6 +113,7 @@ func AuthorizeClientWithApproval(ctx context.Context, name, clientCertificate st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	ctx = context.WithValue(ctx, explicitApprovalKey{}, true)
 	return authorizeClientAt(ctx, path, &identity, name, clientCertificate, func(persist func() error) error {
 		if err := ctx.Err(); err != nil {
 			return err

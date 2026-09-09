@@ -109,6 +109,7 @@ type Backend struct {
 	// concurrent CreateWorkspace calls at the same path deduplicate
 	// deterministically.
 	pathIndex       map[string]string
+	drainingPaths   map[string]*Workspace
 	creationFlights map[string]*workspaceCreationFlight
 	// pending counts admitted CreateWorkspace calls that are initializing
 	// or waiting for a shared initialization flight. It is guarded by mu.
@@ -144,6 +145,7 @@ type Backend struct {
 	// as sessions keep arriving inside the idle-shutdown window.
 	retired          map[string]struct{}
 	clientPrincipals map[string]string
+	principals       map[string]*principalLifetime
 	// pendingResponses counts HTTP create responses being delivered for each
 	// client. Their bridge claims remain unarmed until the last response is
 	// complete, so server-side serialization does not consume createGrace.
@@ -232,6 +234,7 @@ type Workspace struct {
 	closing      bool
 	runWG        sync.WaitGroup
 	shutdownOnce sync.Once
+	shutdownErr  error
 
 	// clientsMu guards clients. It is held only briefly (no IO).
 	clientsMu sync.Mutex
@@ -289,6 +292,9 @@ func (w *Workspace) shutdown() {
 	if w.cancel != nil {
 		w.cancel()
 	}
+	if w.Cfg != nil {
+		w.Cfg.RevokeRuntime()
+	}
 	if w.App != nil {
 		if coordinator := w.CurrentAgentCoordinator(); coordinator != nil {
 			coordinator.CancelAll()
@@ -300,19 +306,15 @@ func (w *Workspace) shutdown() {
 	if w.providerAuth != nil {
 		w.providerAuth.Close()
 	}
-	runsDone := make(chan struct{})
-	go func() {
-		w.runWG.Wait()
-		close(runsDone)
-	}()
-	timer := time.NewTimer(workspaceShutdownTimeout)
-	select {
-	case <-runsDone:
-		if !timer.Stop() {
-			<-timer.C
+	// A lost task label or elapsed grace is not evidence that execution ended.
+	// HTTP/admin callers bound their own waits while this cleanup keeps joining.
+	if w.App != nil {
+		if err := w.App.DrainCredentialWork(context.Background()); err != nil {
+			w.shutdownErr = err
+			return
 		}
-	case <-timer.C:
 	}
+	w.runWG.Wait()
 	if w.App != nil {
 		w.App.Shutdown()
 	}
@@ -526,6 +528,10 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, r
 		return nil, proto.Workspace{}, err
 	}
 	b.cancelShutdownLocked()
+	if b.drainingPaths[key] != nil {
+		b.mu.Unlock()
+		return nil, proto.Workspace{}, ErrWorkspaceClosing
+	}
 	if existingID, ok := b.pathIndex[key]; ok {
 		if ws, found := b.workspaces.Get(existingID); found {
 			if err := checkWorkspaceReuse(ws, args); err != nil {
@@ -555,8 +561,15 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, r
 		flightOwner = false
 	}
 	b.pending++
+	principal := b.principalLocked(args.AuthenticatedPrincipal)
+	if principal != nil {
+		principal.creations.Add(1)
+	}
 	b.mu.Unlock()
 	defer func() {
+		if principal != nil {
+			defer principal.creations.Done()
+		}
 		b.mu.Lock()
 		if flightOwner {
 			if errors.Is(err, ErrClientRetired) {
@@ -580,7 +593,15 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, r
 
 	if !flightOwner {
 	waitForFlight:
-		<-flight.done
+		if principal != nil {
+			select {
+			case <-flight.done:
+			case <-principal.ctx.Done():
+				return nil, proto.Workspace{}, ErrPrincipalRevoked
+			}
+		} else {
+			<-flight.done
+		}
 		b.mu.Lock()
 		if err := b.admitLocked(clientID); err != nil {
 			b.mu.Unlock()
@@ -627,6 +648,13 @@ func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, r
 	}
 
 initializeWorkspace:
+	creationCtx := b.ctx
+	if principal != nil {
+		creationCtx = principal.ctx
+	}
+	if err := creationCtx.Err(); err != nil {
+		return nil, proto.Workspace{}, err
+	}
 	id := uuid.New().String()
 	initConfig := b.initConfig
 	if initConfig == nil {
@@ -659,7 +687,7 @@ initializeWorkspace:
 		return nil, proto.Workspace{}, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	conn, err := db.Connect(b.ctx, cfg.Config().Options.DataDirectory, db.WithDataDirLock(true))
+	conn, err := db.Connect(creationCtx, cfg.Config().Options.DataDirectory, db.WithDataDirLock(true))
 	if err != nil {
 		return nil, proto.Workspace{}, fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -676,7 +704,7 @@ initializeWorkspace:
 		skills.WithWorkingDir(discoveryCfg.WorkingDir),
 	)
 
-	traceCtx, closeTraffic, err := cruxlog.SetupTraffic(b.ctx, cfg.Config().Options.DataDirectory, cfg.Config().Options.NetworkTracing)
+	traceCtx, closeTraffic, err := cruxlog.SetupTraffic(creationCtx, cfg.Config().Options.DataDirectory, cfg.Config().Options.NetworkTracing)
 	if err != nil {
 		_ = conn.Close()
 		return nil, proto.Workspace{}, fmt.Errorf("initialize network tracing: %w", err)
@@ -744,6 +772,9 @@ initializeWorkspace:
 		delete(b.pathIndex, key)
 	}
 	b.workspaces.Set(id, ws)
+	if principal != nil {
+		principal.workspaces[id] = ws
+	}
 	b.pathIndex[key] = id
 	// Register the originating client's hold while still holding
 	// b.mu so the workspace is observable with its claim from the
@@ -826,6 +857,9 @@ func (b *Backend) AttachClient(workspaceID, clientID string) error {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := b.admitLocked(clientID); err != nil {
+		return err
+	}
 	ws, ok := b.workspaces.Get(workspaceID)
 	if !ok {
 		return ErrWorkspaceNotFound
@@ -873,6 +907,9 @@ func (b *Backend) admitLocked(clientID string) error {
 	}
 	if _, ok := b.retired[clientID]; ok {
 		return ErrClientRetired
+	}
+	if principal := b.principals[b.clientPrincipals[clientID]]; principal != nil && principal.revoked {
+		return ErrPrincipalRevoked
 	}
 	return nil
 }
@@ -1076,6 +1113,10 @@ func (b *Backend) detachStream(ws *Workspace, clientID string) {
 // order) and aborts if the workspace has been re-claimed.
 func (b *Backend) teardown(ws *Workspace) {
 	b.mu.Lock()
+	if _, active := b.workspaces.Get(ws.ID); !active && b.drainingPaths[ws.resolvedPath] != ws {
+		b.mu.Unlock()
+		return
+	}
 	ws.clientsMu.Lock()
 	if len(ws.clients) > 0 {
 		// Race: a CreateWorkspace re-registered a client
@@ -1090,6 +1131,10 @@ func (b *Backend) teardown(ws *Workspace) {
 		delete(b.pathIndex, ws.resolvedPath)
 	}
 	b.workspaces.Del(ws.ID)
+	if b.drainingPaths == nil {
+		b.drainingPaths = make(map[string]*Workspace)
+	}
+	b.drainingPaths[ws.resolvedPath] = ws
 	// Arm (or, with lingering disabled, request) the idle shutdown. It
 	// only proceeds once there is genuinely nothing left: no live
 	// workspaces AND no create in flight. Deferring via the linger lets a
@@ -1099,6 +1144,7 @@ func (b *Backend) teardown(ws *Workspace) {
 	b.mu.Unlock()
 
 	ws.invokeShutdown()
+	b.releasePrincipalWorkspace(ws)
 
 	if shutdownNow {
 		slog.Info("Last workspace removed, shutting down server...")
@@ -1194,9 +1240,14 @@ func (b *Backend) CloseIdleWorkspace(id string) error {
 		delete(b.pathIndex, ws.resolvedPath)
 	}
 	b.workspaces.Del(ws.ID)
+	if b.drainingPaths == nil {
+		b.drainingPaths = make(map[string]*Workspace)
+	}
+	b.drainingPaths[ws.resolvedPath] = ws
 	shutdownNow := b.scheduleShutdownIfIdleLocked()
 	b.mu.Unlock()
 	ws.invokeShutdown()
+	b.releasePrincipalWorkspace(ws)
 	if shutdownNow && b.shutdownFn != nil {
 		b.shutdownFn()
 	}

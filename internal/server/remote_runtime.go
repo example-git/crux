@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
+	"time"
 	"unicode/utf8"
 
 	"github.com/example-git/crux/internal/backend"
@@ -22,6 +24,8 @@ import (
 
 const maxRemoteRequestBytes = config.MaxRemoteRuntimeBytes + (1 << 20)
 
+type authenticatedConnectionKey struct{}
+
 // Admission wraps the entire router, including documentation and unknown
 // routes, so keepalive and multiplexed requests cannot reuse a revoked grant.
 // Local sockets and explicitly unauthenticated loopback servers retain their
@@ -29,10 +33,30 @@ const maxRemoteRequestBytes = config.MaxRemoteRuntimeBytes + (1 << 20)
 func (s *Server) authorizeRequest(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.tlsConfig != nil || s.remoteManagement() {
-			if r.TLS == nil || s.clientAuthorization.Authorize(r.Context(), *r.TLS) != nil {
+			if r.TLS == nil {
 				jsonError(w, http.StatusForbidden, connection.ErrClientAuthorization.Error())
 				return
 			}
+			incoming := r
+			abort := func() {
+				if conn, ok := incoming.Context().Value(authenticatedConnectionKey{}).(net.Conn); ok {
+					_ = conn.Close()
+					return
+				}
+				controller := http.NewResponseController(w)
+				_ = controller.SetReadDeadline(time.Now())
+				_ = controller.SetWriteDeadline(time.Now())
+				if incoming.Body != nil {
+					_ = incoming.Body.Close()
+				}
+			}
+			ctx, done, err := s.clientAuthorization.AdmitRequest(r.Context(), *r.TLS, abort)
+			if err != nil {
+				jsonError(w, http.StatusForbidden, connection.ErrClientAuthorization.Error())
+				return
+			}
+			defer done()
+			r = r.WithContext(ctx)
 		}
 		next.ServeHTTP(w, r)
 	})

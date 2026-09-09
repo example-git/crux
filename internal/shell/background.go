@@ -98,6 +98,7 @@ func (b *BackgroundShell) Status() managedtask.Status {
 }
 
 type BackgroundShellManager struct {
+	executions      sync.WaitGroup
 	ForegroundWaits managedtask.ForegroundWaits
 	mu              sync.RWMutex
 	workspaceID     string
@@ -334,9 +335,11 @@ func (m *BackgroundShellManager) startLocked(ctx context.Context, id, outputID, 
 	}
 	m.shells[id] = backgroundShell
 	m.active++
+	m.executions.Add(1)
 	m.mu.Unlock()
 
 	go func() {
+		defer m.executions.Done()
 		defer close(backgroundShell.executionDone)
 		backgroundShell.markRunning()
 		executionError := shell.ExecStream(shellCtx, command, output.Stdout(), output.Stderr())
@@ -715,6 +718,20 @@ func (m *BackgroundShellManager) KillAll(ctx context.Context) {
 	waitGroup.Wait()
 	m.notifications.Shutdown()
 	_ = m.outputStore.Close()
+}
+
+// Drain waits for actual shell execution, including tasks already marked lost
+// or removed from the public task map by ordinary shutdown.
+func (m *BackgroundShellManager) Drain(ctx context.Context) error {
+	m.KillAll(ctx)
+	done := make(chan struct{})
+	go func() { m.executions.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (bs *BackgroundShell) GetOutput() (stdout string, stderr string, done bool, err error) {

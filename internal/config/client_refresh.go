@@ -47,6 +47,9 @@ type clientRefreshCall struct {
 func (s *ConfigStore) SetClientRefreshPublisher(publish func(context.Context, ClientRefreshRequest)) {
 	s.clientRefreshMu.Lock()
 	defer s.clientRefreshMu.Unlock()
+	if s.RuntimeRevocation() != nil {
+		return
+	}
 	s.clientRefreshPublisher = publish
 }
 
@@ -66,6 +69,9 @@ func (s *ConfigStore) PendingClientRefreshes() []ClientRefreshRequest {
 // acknowledge an accepted runtime. Identical admitted requests share one call.
 // Completed results retain their captured snapshot for concurrent old callers.
 func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted RuntimeSnapshot, owner providerregistry.RegistrationOwner) (RuntimeSnapshot, error) {
+	if err := s.RuntimeRevocation(); err != nil {
+		return RuntimeSnapshot{}, err
+	}
 	if err := ctx.Err(); err != nil {
 		return RuntimeSnapshot{}, err
 	}
@@ -80,6 +86,10 @@ func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted Runtime
 	}
 	key := fmt.Sprintf("%s/%d/%s/%s/%#v", authority.Principal, authority.Revision, authority.Digest, credentialID, owner)
 	s.clientRefreshMu.Lock()
+	if err := s.RuntimeRevocation(); err != nil {
+		s.clientRefreshMu.Unlock()
+		return RuntimeSnapshot{}, err
+	}
 	call, exists := s.clientRefreshes[key]
 	publish := s.clientRefreshPublisher
 	if !exists {
@@ -153,6 +163,9 @@ func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted Runtime
 	for {
 		select {
 		case <-call.done:
+			if err := s.RuntimeRevocation(); err != nil {
+				return RuntimeSnapshot{}, err
+			}
 			return call.snapshot, call.err
 		case <-waitCtx.Done():
 			return RuntimeSnapshot{}, fmt.Errorf("waiting for owning client refresh: %w", waitCtx.Err())
@@ -170,6 +183,9 @@ func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted Runtime
 func (s *ConfigStore) CompleteClientRefresh(principal string, response ClientRefreshCompletion) error {
 	s.clientRefreshMu.Lock()
 	defer s.clientRefreshMu.Unlock()
+	if err := s.RuntimeRevocation(); err != nil {
+		return err
+	}
 	for _, call := range s.clientRefreshes {
 		if call.request.ID != response.RequestID {
 			continue

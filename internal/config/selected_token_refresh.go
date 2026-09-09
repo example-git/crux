@@ -99,6 +99,12 @@ func (s *ConfigStore) refreshProviderOAuthTokenAtPath(ctx context.Context, path 
 	}
 	environment := admitted.Environment()
 	validateRuntime := func(snapshot RuntimeSnapshot) error {
+		if err := s.RuntimeRevocation(); err != nil {
+			return err
+		}
+		if err := snapshot.RuntimeRevocation(); err != nil {
+			return err
+		}
 		actual, actualOwner, err := snapshot.clientProviderDefinitionRaw(owner.ProviderID)
 		provider, configured := snapshot.Config().Providers.Get(owner.ProviderID)
 		if err != nil || actualOwner != owner || !configured || provider.Disable || !reflect.DeepEqual(actual, definition) || !snapshot.nativeIdentities.matches(environment) {
@@ -196,6 +202,8 @@ func (s *ConfigStore) refreshProviderOAuthTokenAtPath(ctx context.Context, path 
 	// Once exchange starts, caller disconnection cannot discard its successor.
 	finish, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 	defer cancelFinish()
+	finish, cancelRuntime := s.BindRuntimeContext(finish)
+	defer cancelRuntime()
 	if receipt.token() == nil {
 		if err := ctx.Err(); err != nil {
 			s.forgetUnexchangedSelectedToken(ctx, key, receipt)

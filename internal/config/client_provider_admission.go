@@ -37,6 +37,12 @@ func clientProviderWithdrawals(before, next RuntimeSnapshot) map[providerregistr
 // import restores the owner. This is not cancellation of an admitted stream or
 // a cross-workspace/restart epoch guarantee.
 func (s RuntimeSnapshot) ValidateClientProviderAdmission(admitted RuntimeSnapshot, owner providerregistry.RegistrationOwner) error {
+	if err := s.RuntimeRevocation(); err != nil {
+		return err
+	}
+	if err := admitted.RuntimeRevocation(); err != nil {
+		return err
+	}
 	if admitted.clientRuntime == nil || s.clientRuntime == nil {
 		return errors.New("current client runtime authority changed")
 	}

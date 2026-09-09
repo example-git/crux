@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 )
 
 var connectionsRevokeForce bool
+var connectionsRevokeOperation string
 
 var connectionsCmd = &cobra.Command{
 	Use:   "connections",
@@ -98,16 +98,22 @@ var connectionsAuthorizedCmd = &cobra.Command{
 	Short: "List clients authorized by this server",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		clients, err := connection.ListAuthorizedClients(cmd.Context())
+		clients, err := connection.ListAuthorizationRecords(cmd.Context())
 		if err != nil {
 			return err
 		}
 		if len(clients) == 0 {
-			cmd.Println("No clients are authorized.")
+			cmd.Println("No authorization records are available.")
 			return nil
 		}
 		for _, authorized := range clients {
-			cmd.Printf("%s\t%s\n", authorized.Name, authorized.Fingerprint)
+			state := "not authorized"
+			if authorized.Authorized {
+				state = "authorized"
+			} else if authorized.RevokedAt != nil {
+				state = "revoked"
+			}
+			cmd.Printf("%s\t%s\t%s\tcreated=%s\tapproved=%s\tlast-use=%s\trevoked=%s\n", authorized.Name, authorized.Fingerprint, state, authorizationRecordTime(authorized.CreatedAt), authorizationRecordTime(authorized.ApprovedAt), authorizationRecordTime(authorized.LastUsedAt), authorizationRecordTime(authorized.RevokedAt))
 		}
 		return nil
 	},
@@ -119,7 +125,7 @@ var connectionsRevokeCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.TrimSpace(args[0])
-		if !connectionsRevokeForce {
+		if !connectionsRevokeForce && connectionsRevokeOperation == "" {
 			input, ok := cmd.InOrStdin().(*os.File)
 			if !ok || !term.IsTerminal(input.Fd()) {
 				return errors.New("revocation requires confirmation; rerun with --force in non-interactive use")
@@ -127,7 +133,7 @@ var connectionsRevokeCmd = &cobra.Command{
 			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "Revoke authorized client %s? [y/N] ", name); err != nil {
 				return err
 			}
-			answer, err := bufio.NewReader(input).ReadString('\n')
+			answer, err := readEnrollmentApproval(cmd.Context(), input)
 			if err != nil {
 				return err
 			}
@@ -136,10 +142,19 @@ var connectionsRevokeCmd = &cobra.Command{
 				return errors.New("revocation cancelled")
 			}
 		}
-		if err := connection.RevokeClient(cmd.Context(), name); err != nil {
+		outcome, err := connection.RevokeClientWithOutcome(cmd.Context(), name, connectionsRevokeOperation)
+		if !outcome.Saved {
 			return err
 		}
-		cmd.Printf("Revoked stored authorization for client %s. Servers with live authorization checks reject subsequent authenticated requests; already-running work must be stopped separately.\n", name)
+		cmd.Printf("Revoked stored authorization for client %s (%s). Operation: %s.\n", outcome.Name, outcome.Principal, outcome.OperationID)
+		if err != nil {
+			return fmt.Errorf("live cancellation is not fully acknowledged: %w; retry the same receipt with `crux connections revoke %q --operation %s`", err, outcome.Name, outcome.OperationID)
+		}
+		if len(outcome.Daemons) == 0 {
+			cmd.Println("No live daemon was registered; no live cancellation acknowledgement was received.")
+			return nil
+		}
+		cmd.Printf("All %d registered daemon(s) acknowledged cancellation and joined work for this exact principal and grant.\n", len(outcome.Daemons))
 		return nil
 	},
 }
@@ -169,6 +184,7 @@ func waitForPairedServer(ctx context.Context, saved connection.Connection) error
 
 func init() {
 	connectionsRevokeCmd.Flags().BoolVarP(&connectionsRevokeForce, "force", "f", false, "Skip interactive revocation confirmation")
+	connectionsRevokeCmd.Flags().StringVar(&connectionsRevokeOperation, "operation", "", "Retry acknowledgement of an exact saved revocation operation")
 	connectionsCmd.AddCommand(
 		connectionsServerInitCmd,
 		connectionsAddCmd,

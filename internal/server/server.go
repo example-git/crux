@@ -129,6 +129,9 @@ func (s *Server) EnableNetworkAuth(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := authorization.StartLive(ctx, s.backend.AdmitPrincipal, s.backend.RevokePrincipal); err != nil {
+		return err
+	}
 	s.tlsConfig = tlsConfig
 	s.clientAuthorization = authorization
 	if s.remoteManagement() {
@@ -363,6 +366,9 @@ func (s *Server) installHandler() {
 	route("POST /v1/workspaces/{id}/mcp/docker/disable", c.handlePostWorkspaceMCPDisableDocker)
 	mux.Handle("/v1/docs/", httpswagger.WrapHandler)
 	s.h = &http.Server{
+		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
+			return context.WithValue(ctx, authenticatedConnectionKey{}, conn)
+		},
 		Protocols:         &p,
 		Handler:           cruxlog.TraceHTTPHandler(s.recoverHandler(s.loggingHandler(s.authorizeRequest(mux)))),
 		ReadHeaderTimeout: 10 * time.Second,
@@ -411,14 +417,17 @@ func (s *Server) closeListener() {
 // Close force closes all listeners and connections.
 func (s *Server) Close() error {
 	defer func() { s.closeListener() }()
-	return s.h.Close()
+	err := s.h.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return errors.Join(err, s.clientAuthorization.CloseLive(ctx))
 }
 
 // Shutdown gracefully shuts down the server without interrupting active
 // connections.
 func (s *Server) Shutdown(ctx context.Context) error {
 	defer func() { s.closeListener() }()
-	return s.h.Shutdown(ctx)
+	return errors.Join(s.clientAuthorization.CloseLive(ctx), s.h.Shutdown(ctx))
 }
 
 func (s *Server) logDebug(r *http.Request, msg string, args ...any) {
