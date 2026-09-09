@@ -17,11 +17,24 @@ type VariableResolver interface {
 	ResolveValue(value string) (string, error)
 }
 
+// contextVariableResolver is used by request-bound preparation. It does not
+// change the long-lived VariableResolver contract or cache expansion results.
+type contextVariableResolver interface {
+	ResolveValueContext(context.Context, string) (string, error)
+}
+
 // identityResolver is a no-op resolver that returns values unchanged.
 // Used in client mode where variable resolution is handled server-side.
 type identityResolver struct{}
 
 func (identityResolver) ResolveValue(value string) (string, error) {
+	return value, nil
+}
+
+func (identityResolver) ResolveValueContext(ctx context.Context, value string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	return value, nil
 }
 
@@ -86,6 +99,15 @@ func NewShellVariableResolver(e env.Env, opts ...ShellResolverOption) VariableRe
 // strict mode is available via shell.NoUnset for callers that want the
 // old nounset-on behaviour back.
 func (r *shellVariableResolver) ResolveValue(value string) (string, error) {
+	return r.ResolveValueContext(context.Background(), value)
+}
+
+// ResolveValueContext resolves using the captured environment and expander,
+// bounded by both the caller's lifetime and the ordinary expansion timeout.
+func (r *shellVariableResolver) ResolveValueContext(ctx context.Context, value string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", sanitizeResolveError(value, err)
+	}
 	// Preserve the historical backward-compat contract: a lone "$" is a
 	// malformed config value, not a legal literal. The underlying shell
 	// parser would accept it as a literal; we reject it here so existing
@@ -94,10 +116,13 @@ func (r *shellVariableResolver) ResolveValue(value string) (string, error) {
 		return "", fmt.Errorf("invalid value format: %s", value)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), resolveTimeout)
+	ctx, cancel := context.WithTimeout(ctx, resolveTimeout)
 	defer cancel()
 
 	out, err := r.expand(ctx, value, r.env.Env())
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		return "", sanitizeResolveError(value, err)
 	}
