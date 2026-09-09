@@ -49,6 +49,10 @@ var authenticationHistoryCmd = &cobra.Command{
 			}
 			cmd.Printf("  Local observed: refreshed=%t accounts=%t configuration=%t runtime=%t; local result retained=%t.\n", progress.AccountRefreshed, progress.AccountsSaved, progress.ConfigSaved, progress.RuntimePublished, operation.LocalFinished)
 			cmd.Printf("  Receiver acknowledged=%t; adopted=%t; recovery sequence=%d; review sequence=%d.\n", operation.RemoteAcknowledged, operation.Adopted, operation.RecoverySequence, operation.ReviewSequence)
+			cmd.Printf("  Journal revision=%d; publication recovery abandoned=%t.\n", operation.JournalRevision, operation.Abandoned)
+			if operation.AbandonRequest != nil {
+				cmd.Printf("  Retained abandonment action %q from revision %d; original outcome unchanged.\n", operation.AbandonRequest.AbandonID, operation.AbandonRequest.Revision)
+			}
 			if operation.RecoveryRequest != nil {
 				cmd.Printf("  Retained recovery request %q (sequence %d).\n", operation.RecoveryRequest.RecoveryID, operation.RecoveryRequest.RecoverySequence)
 			}
@@ -61,6 +65,14 @@ var authenticationHistoryCmd = &cobra.Command{
 		}
 		for _, review := range history.Reviews {
 			cmd.Printf("Review %q: preview %q; original operation %q; fresh saved choice=%t.\n", review.Request.ReviewID, review.Summary.PreviewID, review.Request.OperationID, review.Request.FreshSaved)
+			originalTarget := review.Request.OriginalTarget
+			if review.Request.FreshSaved {
+				originalTarget = review.Request.SavedTarget
+			}
+			cmd.Printf("  Original workspace %q; journal revision=%d; publication recovery abandoned=%t.\n", originalTarget.WorkspaceID, review.JournalRevision, review.Abandoned)
+			if review.AbandonRequest != nil {
+				cmd.Printf("  Retained review abandonment action %q from revision %d; original apply outcome unchanged.\n", review.AbandonRequest.AbandonID, review.AbandonRequest.Revision)
+			}
 			if review.HistoricalWorkspace {
 				cmd.Println("  Earlier workspace incarnation: this preview cannot be applied to the current workspace.")
 			}
@@ -72,6 +84,12 @@ var authenticationHistoryCmd = &cobra.Command{
 			}
 			if review.SavedStateSupersededBy != "" {
 				cmd.Printf("  Superseded by fresh saved-state preview %q.\n", review.SavedStateSupersededBy)
+			}
+			if review.SupersededByReview != "" {
+				cmd.Printf("  Unused preview superseded by review %q.\n", review.SupersededByReview)
+			}
+			if review.OriginalAbandonedBy != "" {
+				cmd.Printf("  Original publication recovery abandoned by action %q.\n", review.OriginalAbandonedBy)
 			}
 		}
 		return nil
