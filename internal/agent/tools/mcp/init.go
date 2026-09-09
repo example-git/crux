@@ -1105,7 +1105,7 @@ func (runtime *Manager) createTransport(ctx context.Context, cfg *config.ConfigS
 			return &mcp.StreamableClientTransport{
 				Endpoint:     url,
 				OAuthHandler: oauthHandler,
-				HTTPClient:   mcpoauth.NewSessionHTTPClient(ctx),
+				HTTPClient:   mcpoauth.ResourceHTTPClient(mcpoauth.NewSessionHTTPClient(ctx), url),
 			}, oauthHandler, nil
 		}
 
@@ -1115,6 +1115,7 @@ func (runtime *Manager) createTransport(ctx context.Context, cfg *config.ConfigS
 		}
 		client := mcpoauth.NewSessionHTTPClient(ctx)
 		client.Transport = &headerRoundTripper{headers: headers, base: client.Transport}
+		client = mcpoauth.ResourceHTTPClient(client, url)
 		return &mcp.StreamableClientTransport{
 			Endpoint:   url,
 			HTTPClient: client,
@@ -1176,7 +1177,8 @@ func (runtime *Manager) createTransport(ctx context.Context, cfg *config.ConfigS
 			transport = newOAuthRoundTripper(handler, transport)
 		}
 
-		client := &http.Client{Transport: transport}
+		sessionClient.Transport = transport
+		client := mcpoauth.ResourceHTTPClient(sessionClient, url)
 		return &mcp.SSEClientTransport{
 			Endpoint:   url,
 			HTTPClient: client,
@@ -1223,6 +1225,10 @@ func (rt *oauthRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		if authErr := rt.handler.Authorize(req.Context(), req, resp); authErr != nil {
+			if nonRetryableMCPHTTPError(authErr) {
+				resp.Body.Close()
+				return nil, authErr
+			}
 			return resp, nil
 		}
 		resp.Body.Close()
@@ -1239,11 +1245,19 @@ func (rt *oauthRoundTripper) doRequestWithToken(req *http.Request) (*http.Respon
 	}
 	if ts != nil {
 		token, err := ts.Token()
+		if nonRetryableMCPHTTPError(err) {
+			return nil, err
+		}
 		if err == nil && token != nil {
 			req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 		}
 	}
 	return rt.base.RoundTrip(req)
+}
+
+func nonRetryableMCPHTTPError(err error) bool {
+	var refusal interface{ NonRetryable() bool }
+	return errors.As(err, &refusal) && refusal.NonRetryable()
 }
 
 func mcpTimeout(m config.MCPConfig) time.Duration {
