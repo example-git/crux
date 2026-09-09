@@ -200,18 +200,49 @@ func TestDetachClient_LastStreamTearsDown(t *testing.T) {
 	require.ErrorIs(t, err, ErrWorkspaceNotFound)
 }
 
-func TestWorkspaceShutdownIsBoundedAndIdempotent(t *testing.T) {
-	previousTimeout := workspaceShutdownTimeout
-	workspaceShutdownTimeout = 20 * time.Millisecond
-	t.Cleanup(func() { workspaceShutdownTimeout = previousTimeout })
-
+func TestWorkspaceShutdownJoinsWorkAndIsIdempotent(t *testing.T) {
 	workspaceContext, cancel := context.WithCancel(t.Context())
 	workspace := &Workspace{ctx: workspaceContext, cancel: cancel}
 	workspace.runWG.Add(1)
-	started := time.Now()
-	workspace.Shutdown()
-	require.Less(t, time.Since(started), time.Second)
-	workspace.runWG.Done()
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(workspace.runWG.Done) }
+	done := make(chan struct{})
+	var callers sync.WaitGroup
+	for range 20 {
+		callers.Go(workspace.Shutdown)
+	}
+	go func() {
+		callers.Wait()
+		close(done)
+	}()
+	t.Cleanup(func() {
+		release()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Error("workspace shutdown did not finish after execution returned")
+		}
+	})
+	select {
+	case <-workspaceContext.Done():
+	case <-time.After(time.Second):
+		t.Fatal("workspace shutdown did not cancel execution")
+	}
+	workspace.runMu.Lock()
+	closing := workspace.closing
+	workspace.runMu.Unlock()
+	require.True(t, closing, "new work must be fenced before waiting for execution")
+	select {
+	case <-done:
+		t.Fatal("shutdown returned while execution was still running")
+	case <-time.After(50 * time.Millisecond):
+	}
+	release()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("workspace shutdown did not join completed execution")
+	}
 
 	var shutdowns atomic.Int32
 	workspace = &Workspace{shutdownFn: func() { shutdowns.Add(1) }}

@@ -2,7 +2,10 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -32,6 +35,7 @@ func newRemoteAuthorityTLSHarness(t *testing.T, configure ...func(*tls.Config)) 
 	serverCode, err := connection.EnsureServerIdentity(t.Context())
 	require.NoError(t, err)
 	clients := make(map[string]*http.Client)
+	var principals []string
 	for _, name := range []string{"revoked", "retained", "unauthorized"} {
 		saved, code, err := connection.Add(t.Context(), name, "tcp://127.0.0.1:9443", serverCode)
 		require.NoError(t, err)
@@ -40,6 +44,8 @@ func newRemoteAuthorityTLSHarness(t *testing.T, configure ...func(*tls.Config)) 
 		}
 		cfg, err := connection.ClientTLSConfig(saved)
 		require.NoError(t, err)
+		fingerprint := sha256.Sum256(cfg.Certificates[0].Certificate[0])
+		principals = append(principals, hex.EncodeToString(fingerprint[:]))
 		cfg.ClientSessionCache = tls.NewLRUClientSessionCache(4)
 		transport := &http.Transport{TLSClientConfig: cfg}
 		t.Cleanup(transport.CloseIdleConnections)
@@ -48,12 +54,11 @@ func newRemoteAuthorityTLSHarness(t *testing.T, configure ...func(*tls.Config)) 
 	srv := NewServer(nil, "tcp", "127.0.0.1:0")
 	t.Cleanup(func() {
 		// Backend.Shutdown initiates HTTP shutdown; it does not drain the
-		// workspaces created by this fixture. Join their application work
-		// before restoring the environment and removing temporary state.
-		for _, listed := range srv.backend.ListWorkspaces() {
-			workspace, err := srv.backend.GetWorkspace(listed.ID)
-			require.NoError(t, err)
-			workspace.Shutdown()
+		// workspaces created by this fixture. Join each principal's retained
+		// lifetime, including workspaces already removed from the public list
+		// by automatic retirement, before removing temporary state.
+		for _, principal := range principals {
+			require.NoError(t, srv.backend.RevokePrincipal(context.Background(), principal))
 		}
 		srv.backend.Shutdown()
 	})
