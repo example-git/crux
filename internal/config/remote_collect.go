@@ -41,6 +41,14 @@ func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, r
 	s.configMu.Lock()
 	snapshot := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
 	s.configMu.Unlock()
+	return collectRemoteRuntime(ctx, snapshot, revision, removed, snapshot.Resolve, func(ctx context.Context, owner providerregistry.RegistrationOwner) (*accounts.Entry, error) {
+		return accounts.Active(ctx, owner.AccountNamespace)
+	})
+}
+
+// account resolves only a selected owner. Authentication completion supplies
+// its retained observation; ordinary collection preserves its current reader.
+func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revision uint64, removed map[providerregistry.RegistrationOwner]bool, resolve func(string) (string, error), account func(context.Context, providerregistry.RegistrationOwner) (*accounts.Entry, error)) (RemoteRuntimeProposal, error) {
 	if snapshot.IsClientOwned() {
 		return RemoteRuntimeProposal{}, errors.New("collect runtime on its owning client")
 	}
@@ -80,13 +88,13 @@ func (s *ConfigStore) CollectRemoteRuntimeWithUnavailable(ctx context.Context, r
 			wantedBundles[definition.BundleDigest] = true
 		}
 		credential := RemoteCredentialBinding{Owner: owner, Generation: revision, Unavailable: removed[owner] || provider.Disable}
-		key, err := ResolveProviderAPIKey(provider, snapshot.Resolve)
+		key, err := ResolveProviderAPIKey(provider, resolve)
 		if err != nil {
 			return proposal, errors.New("selected client API credential cannot be resolved")
 		}
 		credential.APIKey = key
 		if !credential.Unavailable && (provider.OAuthToken != nil || owner.HasOAuth) {
-			entry, err := accounts.Active(ctx, owner.AccountNamespace)
+			entry, err := account(ctx, owner)
 			if err != nil {
 				return proposal, errors.New("selected client account cannot be read")
 			}
