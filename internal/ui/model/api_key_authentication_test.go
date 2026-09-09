@@ -12,6 +12,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/ui/attachments"
 	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/require"
@@ -105,6 +106,22 @@ func newCheckedKeyUI(t *testing.T) (*UI, *checkedKeyUIWorkspace, dialog.ActionSe
 	status := providerauth.Status{Owner: owner, Configured: true, AccountState: "none", Credentials: []providerauth.CredentialStatus{{Kind: "api-key", State: "configured"}, {Kind: "oauth", State: "absent"}}, CredentialSlots: []providerauth.CredentialSlot{{ID: "provider.api_key", Kind: "api-key", Configured: true}}}
 	ws := &checkedKeyUIWorkspace{testWorkspace: base, t: t, snapshot: providerauth.Snapshot{WorkspaceID: "key-ui", Generation: providerauth.Generation{Epoch: strings.Repeat("a", 32), Sequence: 1}, Providers: []providerauth.Status{status}}}
 	ui.com.Workspace = ws
+	ui.keyMap = DefaultKeyMap()
+	ui.attachments = attachments.New(
+		attachments.NewRenderer(
+			ui.com.Styles.Attachments.Normal,
+			ui.com.Styles.Attachments.Deleting,
+			ui.com.Styles.Attachments.Image,
+			ui.com.Styles.Attachments.Text,
+			ui.com.Styles.Attachments.Skill,
+			ui.com.Styles.Attachments.Remove,
+		),
+		attachments.Keymap{
+			DeleteMode: ui.keyMap.Editor.AttachmentDeleteMode,
+			DeleteAll:  ui.keyMap.Editor.DeleteAllAttachments,
+			Escape:     ui.keyMap.Editor.Escape,
+		},
+	)
 	ui.focus = uiFocusNone
 	ui.agentBusyCache.set(false)
 	ui.yoloCache.set(false)
