@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
+	"github.com/example-git/crux/internal/oauth/useragent"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/providertransport"
@@ -108,6 +110,9 @@ func Run(ctx context.Context, runtime Runtime, request Request) (Report, error) 
 	if err != nil {
 		return Report{}, err
 	}
+	if resolved.provider.Owner.Type == config.ProviderOwnerPlugin && resolved.owner.AccountNamespace == "" && request.AccountID != "" {
+		return Report{}, errors.New("account selection is unavailable for this namespace-free provider")
+	}
 	validate := providertransport.OwnerValidator(func() error {
 		return runtime.ValidateActiveProviderOwner(resolved.owner)
 	})
@@ -127,9 +132,38 @@ func Run(ctx context.Context, runtime Runtime, request Request) (Report, error) 
 		return report, nil
 	}
 
-	entry, source, err := loadAccount(ctx, resolved, request.AccountID, validate)
-	if err != nil || entry == nil || entry.AccessToken == "" {
+	ctx, err = diagnosticContext(ctx, resolved)
+	var accessToken, usageToken, source string
+	if resolved.owner.AccountNamespace == "" {
+		token := configuredToken(resolved)
+		if token != nil {
+			accessToken = token.AccessToken
+			usageToken = quotaToken(token, resolved.registration.QuotaCredential)
+		}
+		source = "configured"
+		if resolved.snapshot.IsClientOwned() {
+			source = "forwarded"
+		}
+		validate = configuredTokenValidator(resolved, token, validate)
+		if err == nil {
+			err = validate()
+		}
+	} else if err == nil {
+		var entry *accounts.Entry
+		entry, source, err = loadAccount(ctx, resolved, request.AccountID, validate)
+		if entry != nil {
+			accessToken, usageToken = entry.AccessToken, entry.AccessToken
+		}
+	}
+	if err != nil || accessToken == "" || usageToken == "" {
 		report.Account = AccountResult{}
+		if resolved.owner.AccountNamespace == "" {
+			for _, check := range checks {
+				report.Checks = append(report.Checks, CheckResult{Check: check, Status: StatusFailed, Message: "configured OAuth credential could not be loaded"})
+			}
+			report.Operations = operationResults(resolved.registration, checks, nil)
+			return report, nil
+		}
 		report.Checks = append(report.Checks, CheckResult{Check: CheckAccount, Status: StatusFailed, Message: "authenticated account could not be loaded"})
 		for _, check := range checks {
 			if check != CheckAccount {
@@ -146,19 +180,95 @@ func Run(ctx context.Context, runtime Runtime, request Request) (Report, error) 
 	for _, check := range checks {
 		switch check {
 		case CheckAccount:
-			err = runAccountCheck(ctx, resolved, entry.AccessToken)
+			err = runAccountCheck(ctx, resolved, accessToken)
 			report.Checks = append(report.Checks, resultForError(check, err, "authenticated account loaded", "authenticated account identity failed"))
 		case CheckUsage:
-			_, err = oauthusage.FetchWithTokenForOwner(ctx, resolved.provider.ID, entry.AccessToken, resolved.registration.Quota, func() error { return validate() })
+			_, err = oauthusage.FetchWithTokenForOwner(ctx, resolved.provider.ID, usageToken, resolved.registration.Quota, func() error { return validate() })
 			report.Checks = append(report.Checks, resultForError(check, err, "usage operations completed", "usage operations failed"))
 		}
 	}
 	if err := validate(); err != nil {
-		report.Checks = append(report.Checks, CheckResult{Check: CheckAccount, Status: StatusFailed, Message: "exact provider owner changed during diagnostics"})
+		check, message := CheckAccount, "exact provider owner changed during diagnostics"
+		if resolved.owner.AccountNamespace == "" {
+			check, message = CheckUsage, "selected OAuth credential or owner changed during diagnostics"
+		}
+		report.Checks = append(report.Checks, CheckResult{Check: check, Status: StatusFailed, Message: message})
 	}
 	report.Operations = operationResults(resolved.registration, checks, recorder.values)
 	report.Valid = checksPassed(report.Checks) && operationsPassed(report.Operations)
 	return report, nil
+}
+
+// Namespace-free diagnostics consume a finite configured credential directly.
+// In particular, an explicit account selection never falls through to it.
+func configuredToken(runtime diagnosticRuntime) *oauth.Token {
+	if runtime.snapshot.IsClientOwned() {
+		token, _ := runtime.snapshot.ClientOAuthToken(runtime.owner)
+		return token
+	}
+	// ProviderForConstruction already cloned the complete token and client.
+	return runtime.provider.OAuthToken
+}
+
+func quotaToken(token *oauth.Token, credential providerregistry.QuotaCredential) string {
+	if token == nil {
+		return ""
+	}
+	switch credential {
+	case "", providerregistry.QuotaCredentialAccessToken:
+		return token.AccessToken
+	case providerregistry.QuotaCredentialRefreshToken:
+		return token.RefreshToken
+	default:
+		return ""
+	}
+}
+
+func configuredTokenValidator(runtime diagnosticRuntime, token *oauth.Token, validate providertransport.OwnerValidator) providertransport.OwnerValidator {
+	identity := config.OAuthTokenCredentialID(token)
+	environment := runtime.snapshot.Environment()
+	slices.Sort(environment)
+	return func() error {
+		if err := validate(); err != nil {
+			return err
+		}
+		// Match ProviderUsage: an accepted request keeps its captured token and
+		// context across same-owner replacement. Existing current-owner checks
+		// still invalidate replacement by a different exact owner.
+		if runtime.snapshot.IsClientOwned() {
+			return nil
+		}
+		current, err := captureRuntime(runtime.runtime, runtime.provider.ID)
+		if err != nil {
+			return err
+		}
+		actualEnvironment := current.snapshot.Environment()
+		slices.Sort(actualEnvironment)
+		if current.snapshot.IsClientOwned() || current.owner != runtime.owner || current.registration.QuotaCredential != runtime.registration.QuotaCredential || config.OAuthTokenCredentialID(configuredToken(current)) != identity || !slices.Equal(actualEnvironment, environment) {
+			return errors.New("selected OAuth credential or environment changed during diagnostics")
+		}
+		return nil
+	}
+}
+
+func diagnosticContext(ctx context.Context, runtime diagnosticRuntime) (context.Context, error) {
+	ctx = oauth.ContextWithEnvironment(ctx, runtime.snapshot.Environment())
+	if !runtime.snapshot.IsClientOwned() {
+		return ctx, ctx.Err()
+	}
+	switch runtime.owner.Construction {
+	case providerregistry.ConstructionCodex, providerregistry.ConstructionGeminiAntigravity:
+		identity, err := runtime.snapshot.ClientNativeIdentity(runtime.provider.ID)
+		if err != nil {
+			return nil, err
+		}
+		if runtime.owner.Construction == providerregistry.ConstructionCodex {
+			return useragent.ContextWithCodexIdentity(ctx, identity)
+		}
+		return useragent.ContextWithGeminiIdentity(ctx, identity)
+	default:
+		return ctx, ctx.Err()
+	}
 }
 
 func captureRuntime(runtime Runtime, providerID string) (diagnosticRuntime, error) {
@@ -240,6 +350,9 @@ func loadAccount(ctx context.Context, runtime diagnosticRuntime, accountID strin
 			return nil, "", err
 		}
 		return entry, "forwarded", nil
+	}
+	if runtime.snapshot.IsClientOwned() {
+		return nil, "", errors.New("selected forwarded account credential is unavailable")
 	}
 	var entry *accounts.Entry
 	var err error
