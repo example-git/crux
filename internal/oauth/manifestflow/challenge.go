@@ -83,9 +83,28 @@ func (e *Executor) PrepareCode(ctx context.Context, port uint16) (*oauth.CodeCha
 	if err != nil {
 		return nil, err
 	}
+	// These protocol fields must describe the captured parser and exchange.
+	// Identical declarations are permitted; a conflicting override fails before
+	// publishing a URL instead of advertising an authorization we cannot finish.
+	method := ""
+	if challenge != "" {
+		method = "S256"
+	}
 	parsed, err := url.Parse(authorizationURL)
-	if err != nil || parsed.Query().Get("redirect_uri") != redirectURI {
-		return nil, errors.New("OAuth authorization parameters replaced the captured callback")
+	if err != nil {
+		return nil, errors.New("OAuth authorization URL is invalid")
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return nil, errors.New("OAuth authorization parameters are invalid")
+	}
+	for _, field := range []struct{ name, value string }{
+		{"client_id", clientID}, {"state", state}, {"code_challenge", challenge},
+		{"code_challenge_method", method}, {"response_type", "code"}, {"redirect_uri", redirectURI},
+	} {
+		if len(query[field.name]) > 1 || query.Get(field.name) != field.value {
+			return nil, fmt.Errorf("OAuth authorization parameter %q conflicts with the captured challenge", field.name)
+		}
 	}
 	return oauth.NewCodeChallenge(ctx, authorizationURL, expiresAt, func(ctx context.Context, input string) (*oauth.Token, error) {
 		var code, returnedState, providerError string
