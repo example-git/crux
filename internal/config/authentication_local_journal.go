@@ -267,12 +267,17 @@ func (w *localAuthenticationWriter) save(ctx context.Context) error {
 	if err != nil {
 		return errors.New("local authentication record cannot be encoded")
 	}
-	entry, err := w.capture.journal.Store(ctx, w.capture.disk.Key, w.capture.revision, raw, w.capture.disk.Coherent || w.capture.disk.Repair.NeedsReload, 2<<20)
+	completed := w.capture.disk.Coherent || w.capture.disk.Repair.NeedsReload
+	reserved := 2 << 20
+	if completed {
+		reserved = 0
+	}
+	entry, err := w.capture.journal.Store(ctx, w.capture.disk.Key, w.capture.revision, raw, completed, reserved)
 	if err != nil {
 		// A rename followed by an observation error is ambiguous. Continue only if
 		// reloading proves that this exact payload is the retained successor.
 		check, found, loadErr := w.capture.journal.Load(ctx, w.capture.disk.Key)
-		if loadErr != nil || !found || check.Revision() <= w.capture.revision || !bytes.Equal(check.Payload(), raw) {
+		if loadErr != nil || !found || check.Revision() < w.capture.revision || check.Completed() != completed || check.ReservedBytes() != reserved || !bytes.Equal(check.Payload(), raw) {
 			return errors.Join(err, loadErr)
 		}
 		entry = check
