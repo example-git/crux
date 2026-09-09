@@ -104,6 +104,11 @@ func TestMCPResourceCredentialRedirectsThroughManagerHTTPS(t *testing.T) {
 							handler.ServeHTTP(w, r)
 						}))
 						defer endpoint.Close()
+						defer func() {
+							for session := range server.Sessions() {
+								require.NoError(t, session.Close())
+							}
+						}()
 						endpointURL = endpoint.URL
 						trustMCPResourceServers(t, sink, endpoint)
 						selected := config.MCPConfig{Type: config.MCPHttp, URL: endpoint.URL + "/start", Timeout: 3, Headers: map[string]string{"X-Credential": "captured-resource-secret"}}
@@ -177,9 +182,10 @@ func TestMCPSSEAdvertisedPostCannotMoveCapturedCredentialsHTTPS(t *testing.T) {
 			manager := For(store)
 			defer closeMCPDestinationManager(t, manager)
 			err := manager.InitializeSingle(ctx, "fixture", store)
-			require.ErrorContains(t, err, "provider redirect refused")
 			require.Positive(t, observed.Load(), "initial allowed SSE request must carry the selected credential")
 			require.Zero(t, foreign.Load(), "advertised endpoint must be checked before header/token injection")
+			require.ErrorContains(t, err, "provider redirect refused")
+			require.True(t, nonRetryableMCPHTTPError(err), "SDK fallback must preserve the policy refusal marker")
 		})
 	}
 }

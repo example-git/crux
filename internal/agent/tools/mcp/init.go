@@ -955,6 +955,7 @@ func (runtime *Manager) createSession(ctx context.Context, cfg *config.ConfigSto
 
 	session, err := client.Connect(mcpCtx, transport, nil)
 	if err != nil {
+		err = resourceTransportError(transport, err)
 		if oauthHandler != nil {
 			oauthHandler.Close()
 		}
@@ -991,6 +992,21 @@ func (runtime *Manager) createSession(ctx context.Context, cfg *config.ConfigSto
 		cancel:        cancel,
 		oauthHandler:  oauthHandler,
 	}, nil
+}
+
+// Keep a captured HTTP refusal visible even when SDK protocol negotiation
+// reports only the subsequent connection-close error.
+func resourceTransportError(transport mcp.Transport, err error) error {
+	switch transport := transport.(type) {
+	case *channelTransport:
+		return resourceTransportError(transport.inner, err)
+	case *mcp.SSEClientTransport:
+		return mcpoauth.ResourceHTTPError(transport.HTTPClient, err)
+	case *mcp.StreamableClientTransport:
+		return mcpoauth.ResourceHTTPError(transport.HTTPClient, err)
+	default:
+		return err
+	}
 }
 
 // maybeStdioErr if a stdio mcp prints an error in non-json format, it'll fail
