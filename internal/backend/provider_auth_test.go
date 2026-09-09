@@ -2,6 +2,7 @@ package backend
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/example-git/crux/internal/providerauth"
@@ -39,6 +40,16 @@ func TestProviderAuthRejectsUnadmittedWorkBeforeServiceCreation(t *testing.T) {
 			require.ErrorIs(t, err, expected)
 			_, err = b.ProviderAccounts(ctx, id, providerauth.Target{})
 			require.ErrorIs(t, err, expected)
+			target := providerauth.Target{WorkspaceID: id, Owner: providerauth.Owner{ProviderID: "fixture", HasOAuth: true}, Generation: providerauth.Generation{Epoch: strings.Repeat("a", 32), Sequence: 1}}
+			switched, err := b.SwitchProviderAccount(ctx, id, providerauth.SwitchRequest{OperationID: strings.Repeat("b", 32), Target: target, AccountID: "selected"})
+			require.ErrorIs(t, err, expected)
+			require.Equal(t, target, switched.Outcome.Previous)
+			require.Zero(t, switched.Outcome.Progress)
+			require.Nil(t, switched.Workspace)
+			cleared, err := b.LogoutProvider(ctx, id, providerauth.LogoutRequest{OperationID: strings.Repeat("c", 32), Target: target})
+			require.ErrorIs(t, err, expected)
+			require.Zero(t, cleared.Outcome.Progress)
+			require.Nil(t, cleared.Workspace)
 			require.Nil(t, ws.providerAuth)
 			ws.runWG.Wait()
 		})

@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/providerauth"
 )
 
@@ -107,6 +109,7 @@ func decodeProviderAuthJSON(body []byte, maximum int, value any) error {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
 		return fmt.Errorf("decode provider authentication JSON: %w", err)
@@ -120,8 +123,20 @@ func decodeProviderAuthJSON(body []byte, maximum int, value any) error {
 // encoding/json accepts case-insensitive aliases for struct fields and null
 // for scalar values. Neither is part of the authentication wire contract.
 func validateProviderAuthShape(body []byte, shape reflect.Type) error {
+	// Arbitrary JSON data (schemas, literal options and manifest values) retain
+	// their keys and null values; the outer lexical validator handles ambiguity.
+	if shape.Kind() == reflect.Interface || shape == reflect.TypeFor[json.RawMessage]() {
+		return nil
+	}
 	if bytes.Equal(bytes.TrimSpace(body), []byte("null")) {
 		return fmt.Errorf("provider authentication fields cannot be null")
+	}
+	if shape.Kind() == reflect.Pointer {
+		return validateProviderAuthShape(body, shape.Elem())
+	}
+	// csync.Map has custom object JSON and deliberately keeps its internals private.
+	if shape == reflect.TypeFor[csync.Map[string, config.ProviderConfig]]() {
+		shape = reflect.TypeFor[map[string]config.ProviderConfig]()
 	}
 	switch shape.Kind() {
 	case reflect.Struct:
@@ -129,11 +144,13 @@ func validateProviderAuthShape(body []byte, shape reflect.Type) error {
 		if err := json.Unmarshal(body, &fields); err != nil {
 			return fmt.Errorf("invalid provider authentication object")
 		}
-		known := make(map[string]reflect.Type, shape.NumField())
-		for i := range shape.NumField() {
-			field := shape.Field(i)
-			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
-			known[name] = field.Type
+		known := map[string]reflect.Type{}
+		required := map[string]bool{}
+		providerAuthShapeFields(shape, known, required)
+		for name := range required {
+			if _, ok := fields[name]; !ok {
+				return fmt.Errorf("provider authentication object is missing %s", name)
+			}
 		}
 		for name, raw := range fields {
 			field, ok := known[name]
@@ -144,7 +161,7 @@ func validateProviderAuthShape(body []byte, shape reflect.Type) error {
 				return err
 			}
 		}
-	case reflect.Slice:
+	case reflect.Slice, reflect.Array:
 		var values []json.RawMessage
 		if err := json.Unmarshal(body, &values); err != nil {
 			return fmt.Errorf("invalid provider authentication array")
@@ -154,6 +171,46 @@ func validateProviderAuthShape(body []byte, shape reflect.Type) error {
 				return err
 			}
 		}
+	case reflect.Map:
+		var values map[string]json.RawMessage
+		if err := json.Unmarshal(body, &values); err != nil {
+			return fmt.Errorf("invalid provider authentication map")
+		}
+		for _, raw := range values {
+			if err := validateProviderAuthShape(raw, shape.Elem()); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func providerAuthShapeFields(shape reflect.Type, known map[string]reflect.Type, required map[string]bool) {
+	for i := range shape.NumField() {
+		field := shape.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		name, options, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if name == "-" {
+			continue
+		}
+		if field.Anonymous && name == "" {
+			embedded := field.Type
+			if embedded.Kind() == reflect.Pointer {
+				embedded = embedded.Elem()
+			}
+			if embedded.Kind() == reflect.Struct {
+				providerAuthShapeFields(embedded, known, required)
+				continue
+			}
+		}
+		if name == "" {
+			name = field.Name
+		}
+		known[name] = field.Type
+		if !strings.Contains(options, "omitempty") && !strings.Contains(options, "omitzero") {
+			required[name] = true
+		}
+	}
 }
