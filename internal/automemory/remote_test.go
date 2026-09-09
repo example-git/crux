@@ -16,6 +16,7 @@ import (
 func TestClientOwnedMemoryUsesScopedPromptAndToolStorage(t *testing.T) {
 	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "")
 	t.Setenv("CRUX_AUTO_MEMORY_DIR", t.TempDir())
+	t.Setenv("CRUX_GLOBAL_DATA", t.TempDir())
 	root := t.TempDir()
 	proposal := config.RemoteRuntimeProposal{Version: 1, Revision: 1, Providers: []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: "fixture", Type: catalog.TypeOpenAICompat, BaseURL: "https://example.invalid/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model"}}}}}, Models: map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "fixture", Model: "model"}}}
 	proposal.Credentials = []config.RemoteCredentialBinding{{Owner: providerregistry.RegistrationOwner{ProviderID: "fixture"}, Generation: 1, APIKey: "synthetic-test-key"}}
