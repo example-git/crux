@@ -44,8 +44,10 @@ func ContextWithAuthenticationOperation(ctx context.Context, key AuthenticationJ
 
 func AuthenticationOperationFromContext(ctx context.Context) (AuthenticationJournalKey, bool) {
 	key, found := ctx.Value(authenticationOperationContextKey{}).(AuthenticationJournalKey)
-	return key, found && key.validate() == nil
+	return key, found
 }
+
+func (key AuthenticationJournalKey) Validate() error { return key.validate() }
 
 func (key AuthenticationJournalKey) validate() error {
 	if key.Kind != AuthenticationJournalOAuth && key.Kind != AuthenticationJournalLocal && key.Kind != AuthenticationJournalClient {
@@ -80,12 +82,14 @@ type AuthenticationJournalEntry struct {
 	key       AuthenticationJournalKey
 	revision  uint64
 	completed bool
+	reserved  int
 	payload   json.RawMessage
 }
 
 func (entry AuthenticationJournalEntry) Revision() uint64         { return entry.revision }
 func (entry AuthenticationJournalEntry) Payload() json.RawMessage { return bytes.Clone(entry.payload) }
 func (entry AuthenticationJournalEntry) Completed() bool          { return entry.completed }
+func (entry AuthenticationJournalEntry) ReservedBytes() int       { return entry.reserved }
 func (AuthenticationJournalEntry) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication journal entries are private")
 }
@@ -102,6 +106,7 @@ type authenticationJournalRecord struct {
 	Key       AuthenticationJournalKey `json:"key"`
 	Revision  uint64                   `json:"revision"`
 	Completed bool                     `json:"completed,omitempty"`
+	Reserved  int                      `json:"reserved_bytes,omitempty"`
 	Payload   json.RawMessage          `json:"payload"`
 }
 
@@ -183,7 +188,7 @@ func (journal AuthenticationJournal) Load(ctx context.Context, key Authenticatio
 	if record.Key != key {
 		return AuthenticationJournalEntry{}, false, errors.New("authentication journal identity conflict")
 	}
-	return AuthenticationJournalEntry{key: key, revision: record.Revision, completed: record.Completed, payload: bytes.Clone(record.Payload)}, true, nil
+	return AuthenticationJournalEntry{key: key, revision: record.Revision, completed: record.Completed, reserved: record.Reserved, payload: bytes.Clone(record.Payload)}, true, nil
 }
 
 // Keys returns identities only. Typed recovery callers must load and validate
@@ -213,11 +218,21 @@ func (journal AuthenticationJournal) Keys(ctx context.Context, kind, workspaceID
 // Store uses a durable compare-and-swap revision. A returned write failure is
 // ambiguous; callers must Load and compare their exact intended bytes before
 // proceeding. An unresolved record is never pruned to admit another operation.
-func (journal AuthenticationJournal) Store(ctx context.Context, key AuthenticationJournalKey, expected uint64, payload json.RawMessage, completed bool) (AuthenticationJournalEntry, error) {
+func (journal AuthenticationJournal) Store(ctx context.Context, key AuthenticationJournalKey, expected uint64, payload json.RawMessage, completed bool, reservation ...int) (AuthenticationJournalEntry, error) {
+	reserved := 0
+	if len(reservation) > 1 {
+		return AuthenticationJournalEntry{}, errors.New("authentication journal has ambiguous capacity reservation")
+	}
+	if len(reservation) == 1 {
+		reserved = reservation[0]
+	}
+	if reserved < 0 || reserved > maxAuthenticationJournalRecordBytes || completed && reserved != 0 {
+		return AuthenticationJournalEntry{}, errors.New("authentication journal has invalid capacity reservation")
+	}
 	if err := key.validate(); err != nil {
 		return AuthenticationJournalEntry{}, err
 	}
-	if len(payload) > maxAuthenticationJournalRecordBytes || !authenticationLayerObject(payload) {
+	if len(payload)+reserved > maxAuthenticationJournalRecordBytes || !authenticationLayerObject(payload) {
 		return AuthenticationJournalEntry{}, errors.New("authentication journal payload is invalid or exceeds its limit")
 	}
 	ctx, release, err := journal.locked(ctx)
@@ -233,8 +248,11 @@ func (journal AuthenticationJournal) Store(ctx context.Context, key Authenticati
 	if exists && (previous.Key != key || previous.Revision != expected) || !exists && expected != 0 {
 		return AuthenticationJournalEntry{}, errors.New("authentication journal revision changed")
 	}
-	if exists && bytes.Equal(previous.Payload, payload) && previous.Completed == completed {
-		return AuthenticationJournalEntry{key: key, revision: previous.Revision, completed: completed, payload: bytes.Clone(payload)}, nil
+	if exists && previous.Completed && (!completed || !bytes.Equal(previous.Payload, payload)) {
+		return AuthenticationJournalEntry{}, errors.New("completed authentication journal record cannot be changed")
+	}
+	if exists && bytes.Equal(previous.Payload, payload) && previous.Completed == completed && previous.Reserved == reserved {
+		return AuthenticationJournalEntry{key: key, revision: previous.Revision, completed: completed, reserved: reserved, payload: bytes.Clone(payload)}, nil
 	}
 	if data.Sequence == ^uint64(0) {
 		return AuthenticationJournalEntry{}, errors.New("authentication journal sequence exhausted")
@@ -253,9 +271,16 @@ func (journal AuthenticationJournal) Store(ctx context.Context, key Authenticati
 		delete(data.Records, oldest)
 	}
 	data.Sequence++
-	data.Records[key.id()] = authenticationJournalRecord{Key: key, Revision: data.Sequence, Completed: completed, Payload: bytes.Clone(payload)}
+	data.Records[key.id()] = authenticationJournalRecord{Key: key, Revision: data.Sequence, Completed: completed, Reserved: reserved, Payload: bytes.Clone(payload)}
 	encoded, err := json.Marshal(data)
-	if err != nil || len(encoded) > maxAuthenticationJournalBytes {
+	capacity := len(encoded)
+	for _, record := range data.Records {
+		if record.Reserved > maxAuthenticationJournalBytes-capacity {
+			return AuthenticationJournalEntry{}, errors.New("authentication journal storage limit reached")
+		}
+		capacity += record.Reserved
+	}
+	if err != nil || capacity > maxAuthenticationJournalBytes {
 		return AuthenticationJournalEntry{}, errors.New("authentication journal storage limit reached")
 	}
 	stage, err := stageAuthenticationScopeWrite(ctx, before, authenticationCredentialEdit{path: journal.path, data: encoded})
@@ -266,7 +291,7 @@ func (journal AuthenticationJournal) Store(ctx context.Context, key Authenticati
 	if _, _, err := stage.Commit(ctx); err != nil {
 		return AuthenticationJournalEntry{}, err
 	}
-	return AuthenticationJournalEntry{key: key, revision: data.Sequence, completed: completed, payload: bytes.Clone(payload)}, nil
+	return AuthenticationJournalEntry{key: key, revision: data.Sequence, completed: completed, reserved: reserved, payload: bytes.Clone(payload)}, nil
 }
 
 func readAuthenticationJournal(ctx context.Context, path string) (authenticationInputFile, authenticationJournalDisk, error) {
@@ -299,10 +324,18 @@ func readAuthenticationJournal(ctx context.Context, path string) (authentication
 	if decoder.Decode(&data) != nil || decoder.Decode(new(any)) != io.EOF || data.Version != 1 || data.Records == nil || len(data.Records) > maxAuthenticationJournalRecords {
 		return before, data, errors.New("authentication journal is malformed or unsupported")
 	}
+	capacity := len(before.data)
 	for id, record := range data.Records {
-		if record.Key.validate() != nil || id != record.Key.id() || record.Revision == 0 || record.Revision > data.Sequence || len(record.Payload) > maxAuthenticationJournalRecordBytes || !authenticationLayerObject(record.Payload) {
+		if record.Key.validate() != nil || id != record.Key.id() || record.Revision == 0 || record.Revision > data.Sequence || record.Reserved < 0 || record.Reserved > maxAuthenticationJournalRecordBytes || record.Completed && record.Reserved != 0 || len(record.Payload)+record.Reserved > maxAuthenticationJournalRecordBytes || !authenticationLayerObject(record.Payload) {
 			return before, data, errors.New("authentication journal record is invalid")
 		}
+		capacity += record.Reserved
+		if capacity > maxAuthenticationJournalBytes {
+			return before, data, errors.New("authentication journal capacity is oversubscribed")
+		}
+	}
+	if capacity > maxAuthenticationJournalBytes {
+		return before, data, errors.New("authentication journal capacity is oversubscribed")
 	}
 	return before, data, ctx.Err()
 }

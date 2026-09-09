@@ -36,6 +36,7 @@ type oauthLoginPreparation struct {
 	route        string
 	codePort     uint16
 	codePortSet  bool
+	journal      *oauthLoginJournal
 }
 
 // AuthorizedOAuthPreparation can only be produced by the retained owner's
@@ -223,6 +224,9 @@ func (s *ConfigStore) PrepareOAuthLogin(ctx context.Context, before Authenticati
 	if err := s.validateOAuthLogin(ctx, p); err != nil {
 		return OAuthLoginPreparation{}, oauthLoginFailure("preparation", err)
 	}
+	if err := s.prepareOAuthLoginJournal(ctx, p); err != nil {
+		return OAuthLoginPreparation{}, oauthLoginFailure("durable preparation", err)
+	}
 	return OAuthLoginPreparation{state: p}, nil
 }
 
@@ -266,6 +270,9 @@ func (s *ConfigStore) AuthorizeOAuthLogin(ctx context.Context, prepared OAuthLog
 			return AuthorizedOAuthPreparation{}, oauthLoginFailure("authorization", err)
 		}
 		bound := s.oauthLoginContext(ctx, p)
+		if err := s.startOAuthLoginExchange(bound, p); err != nil {
+			return AuthorizedOAuthPreparation{}, err
+		}
 		token, err := p.registration.OAuth.Authorize(bound, open, read)
 		if err != nil {
 			return AuthorizedOAuthPreparation{}, oauthLoginFailure("authorization", err)
@@ -313,6 +320,9 @@ func (s *ConfigStore) PollOAuthDeviceCode(ctx context.Context, device OAuthDevic
 			return AuthorizedOAuthPreparation{}, oauthLoginFailure("device polling", err)
 		}
 		bound := s.oauthLoginContext(ctx, p)
+		if err := s.startOAuthLoginExchange(bound, p); err != nil {
+			return AuthorizedOAuthPreparation{}, err
+		}
 		token, err := p.registration.OAuth.PollDeviceCode(bound, &device.state.authorization)
 		if err != nil {
 			return AuthorizedOAuthPreparation{}, oauthLoginFailure("device polling", err)
@@ -325,6 +335,9 @@ func (s *ConfigStore) finishOAuthAuthorization(ctx context.Context, p *oauthLogi
 	token = cloneOAuthToken(token)
 	if token == nil || token.AccessToken == "" {
 		return AuthorizedOAuthPreparation{}, errors.New("OAuth authorization returned no access token")
+	}
+	if err := s.retainOAuthLoginResult(ctx, p, token); err != nil {
+		return AuthorizedOAuthPreparation{}, err
 	}
 	if err := s.validateOAuthLogin(ctx, p); err != nil {
 		return AuthorizedOAuthPreparation{}, oauthLoginFailure("result admission", err)

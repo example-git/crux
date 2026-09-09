@@ -101,6 +101,7 @@ func (l *oauthLoginSession) fail(err error) {
 func (l *oauthLoginSession) clearPrivate() {
 	l.mu.Lock()
 	code := l.code
+	prepared := l.preparation
 	l.code = config.OAuthCodeLogin{}
 	l.preparation = config.OAuthLoginPreparation{}
 	l.authorized = config.AuthorizedOAuthPreparation{}
@@ -111,6 +112,7 @@ func (l *oauthLoginSession) clearPrivate() {
 	}
 	l.mu.Unlock()
 	code.Close()
+	_ = prepared.DiscardUnstartedJournal(l.ctx)
 }
 
 // A deadline comes from the captured adapter, never a service-invented shorter
@@ -164,14 +166,16 @@ func (s *Service) startOAuthWork(login *oauthLoginSession, run func() error) {
 func (s *Service) initializeOAuthLogin(login *oauthLoginSession) error {
 	login.mu.Lock()
 	before, owner := login.before, login.owner
+	operation := config.AuthenticationJournalKey{Kind: config.AuthenticationJournalOAuth, WorkspaceID: login.state.Login.Target.WorkspaceID, OperationID: login.state.Login.OperationID}
 	login.mu.Unlock()
-	prepared, err := s.store.PrepareOAuthLogin(login.ctx, before, owner)
+	prepared, err := s.store.PrepareOAuthLogin(config.ContextWithAuthenticationOperation(login.ctx, operation), before, owner)
 	if err != nil {
 		return err
 	}
 	login.mu.Lock()
 	if oauthLoginTerminal(login.state.Phase) || login.ctx.Err() != nil {
 		login.mu.Unlock()
+		_ = prepared.DiscardUnstartedJournal(login.ctx)
 		return login.ctx.Err()
 	}
 	login.preparation = prepared
