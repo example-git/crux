@@ -2,7 +2,7 @@
 //
 //	@title			Crux API
 //	@version		1.0
-//	@description	Crux is a terminal-based AI coding assistant. This API is served over a Unix socket (or Windows named pipe) and provides programmatic access to workspaces, sessions, agents, LSP, MCP, and more.
+//	@description	Crux is a terminal-based AI coding assistant. This API is served locally over a Unix socket or Windows named pipe, or remotely over TLS 1.3 with mutual certificate authentication. Authenticated remote workspace routes bind IDs to the verified client principal. Client-owned runtimes negotiate capabilities before private admission; public discovery never supplies private credentials for restoration. Enrollment and authorization administration are separate local operations.
 //	@contact.name	Crux
 //	@contact.url	https://github.com/example-git/crux
 //	@license.name	FSL-1.1-MIT

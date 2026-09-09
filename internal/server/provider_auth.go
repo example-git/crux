@@ -11,6 +11,20 @@ import (
 	"github.com/example-git/crux/internal/proto"
 )
 
+// handleGetWorkspaceProviderAuthentication documents the workspace authority contract.
+//
+// @Summary Get workspace authentication status
+// @Description Returns redacted provider owners, credential choices and authority generation. Status is not proof of a completed login or publication. No request body is accepted.
+// @Tags providers
+// @Produce json
+// @Param id path string true "Workspace ID bound to the authenticated principal"
+// @Success 200 {object} proto.ProviderAuthenticationSnapshot
+// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
+// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
+// @Failure 404 {object} proto.Error "Workspace is unavailable"
+// @Failure 408 {object} proto.Error "Request canceled"
+// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
+// @Router /workspaces/{id}/auth [get]
 func (c *controllerV1) handleGetWorkspaceProviderAuthentication(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, proto.MaxProviderAuthRequestBytes))
@@ -27,6 +41,22 @@ func (c *controllerV1) handleGetWorkspaceProviderAuthentication(w http.ResponseW
 	writeProviderAuthResponse(w, state)
 }
 
+// handlePostWorkspaceProviderAccounts documents the workspace authority contract.
+//
+// @Summary List accounts for an exact authentication target
+// @Description The target includes workspace, accepted authority and provider owner. Client-owned account enumeration is handled on the owning client; this remote service does not substitute server accounts.
+// @Tags providers
+// @Produce json
+// @Accept json
+// @Param request body proto.ProviderAuthenticationTarget true "Exact request and operation identity"
+// @Param id path string true "Workspace ID bound to the authenticated principal"
+// @Success 200 {object} proto.ProviderAccountsState
+// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
+// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
+// @Failure 404 {object} proto.Error "Workspace is unavailable"
+// @Failure 408 {object} proto.Error "Request canceled"
+// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
+// @Router /workspaces/{id}/auth/accounts [post]
 func (c *controllerV1) handlePostWorkspaceProviderAccounts(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, proto.MaxProviderAuthRequestBytes))
 	if err != nil {
