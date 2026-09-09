@@ -71,7 +71,7 @@ func (r OAuthLoginRecoveryList) Validate() error {
 			return errors.New("duplicate recorded OAuth operation")
 		}
 		seen[[2]string{result.OriginalWorkspaceID, result.OperationID}] = struct{}{}
-		if result.Abandoned && result.State != "exchange-outcome-unknown" && result.State != "not-started" {
+		if result.Abandoned && result.State != "exchange-outcome-unknown" && result.State != "not-started" && result.State != "token-result-recorded" {
 			return errors.New("invalid abandoned OAuth result")
 		}
 		switch result.State {

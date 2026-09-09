@@ -92,6 +92,10 @@ func (m *UI) completeOAuthLoginRecorded(msg oauthLoginRecordedMsg) tea.Cmd {
 		r.recorded = append([]providerauth.OAuthLoginRecordedResult(nil), msg.list.Results...)
 		for _, result := range r.recorded {
 			if result.Abandoned {
+				if result.State == "token-result-recorded" {
+					lines = append(lines, "Token recovery was explicitly abandoned for workspace "+result.OriginalWorkspaceID+", operation "+result.OperationID+". Its observed result remains recorded until bounded history pruning.")
+					continue
+				}
 				lines = append(lines, "Workspace "+result.OriginalWorkspaceID+", operation "+result.OperationID+": abandoned; original state: "+result.State+". Evidence is retained until bounded history pruning.")
 				continue
 			}

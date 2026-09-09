@@ -19,13 +19,14 @@ import (
 // No verifier, authorization code, or device polling secret is persisted. A
 // record can recover a known token result, never repeat an uncertain exchange.
 type oauthLoginJournalRecord struct {
-	Version   int                                `json:"version"`
-	Scope     string                             `json:"scope,omitempty"`
-	Owner     providerregistry.RegistrationOwner `json:"owner"`
-	Capture   string                             `json:"capture"`
-	Started   bool                               `json:"started"`
-	Abandoned bool                               `json:"abandoned,omitempty"`
-	Token     *oauth.Token                       `json:"token,omitempty"`
+	Version                int                                `json:"version"`
+	Scope                  string                             `json:"scope,omitempty"`
+	Owner                  providerregistry.RegistrationOwner `json:"owner"`
+	Capture                string                             `json:"capture"`
+	Started                bool                               `json:"started"`
+	Abandoned              bool                               `json:"abandoned,omitempty"`
+	TokenRecoveryAbandoned bool                               `json:"token_recovery_abandoned,omitempty"`
+	Token                  *oauth.Token                       `json:"token,omitempty"`
 }
 
 func (oauthLoginJournalRecord) Format(state fmt.State, _ rune) {
@@ -107,7 +108,7 @@ func decodeOAuthLoginJournal(entry AuthenticationJournalEntry) (oauthLoginJourna
 	}
 	decoder := json.NewDecoder(bytes.NewReader(entry.Payload()))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&record) != nil || decoder.Decode(new(any)) != io.EOF || record.Version != 1 || record.Owner.ProviderID == "" || len(record.Capture) != 64 || record.Token != nil && !record.Started || record.Abandoned && (record.Token != nil || !entry.Completed()) {
+	if decoder.Decode(&record) != nil || decoder.Decode(new(any)) != io.EOF || record.Version != 1 || record.Owner.ProviderID == "" || len(record.Capture) != 64 || record.Token != nil && !record.Started || record.Abandoned && (!entry.Completed() || (record.Token != nil) != record.TokenRecoveryAbandoned) || record.TokenRecoveryAbandoned && !record.Abandoned {
 		return record, errors.New("OAuth recovery record is invalid")
 	}
 	if record.Token != nil {
@@ -383,6 +384,11 @@ func (s *ConfigStore) RecoverOAuthLoginResult(ctx context.Context, before Authen
 	if err != nil {
 		return AuthorizedOAuthPreparation{}, err
 	}
+	release, err := journal.AcquireOperation(ctx, key)
+	if err != nil {
+		return AuthorizedOAuthPreparation{}, err
+	}
+	defer release()
 	entry, found, err := journal.Load(ctx, key)
 	if err != nil {
 		return AuthorizedOAuthPreparation{}, err
