@@ -63,7 +63,9 @@ func (s *ConfigStore) CollectRemoteRuntimeForAuthentication(ctx context.Context,
 // Ordinary configured key/context expressions run between these checks without
 // account locks. The lease and final input check cannot bless changed state.
 func (s *ConfigStore) verifyAuthenticationCollectionLocked(ctx context.Context, before AuthenticationCapture) error {
-	s.configMu.Lock()
+	if err := lockAuthenticationMutex(ctx, s.configMu.TryLock, s.configMu.Unlock); err != nil {
+		return err
+	}
 	current := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
 	s.configMu.Unlock()
 	if !before.runtime.SamePublication(current) {
@@ -89,7 +91,9 @@ func (s *ConfigStore) verifyAuthenticationCollectionLocked(ctx context.Context, 
 	if !before.accounts.SameObservation(committed.Snapshot) || !before.accounts.SameObservation(verified) || !before.inputs.sameObservation(inputs) {
 		return errors.New("authentication inputs changed before collection")
 	}
-	s.configMu.Lock()
+	if err := lockAuthenticationMutex(ctx, s.configMu.TryLock, s.configMu.Unlock); err != nil {
+		return err
+	}
 	current = s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
 	s.configMu.Unlock()
 	if !before.runtime.SamePublication(current) {
