@@ -234,6 +234,13 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		return clientAuthenticationOutcome(receipt, receipt.err)
 	}
 	receipt.after = after
+	if err := ctx.Err(); err != nil {
+		// The admitted local writer returned its real result. Retain that
+		// capture for the deferred durable finish, while the caller's canceled
+		// publication request remains canceled and performs no receiver PUT.
+		receipt.err = err
+		return clientAuthenticationOutcome(receipt, err)
+	}
 	if err := a.persistAuthenticationReceipt(ctx, receipt); err != nil {
 		return clientAuthenticationOutcome(receipt, err)
 	}
