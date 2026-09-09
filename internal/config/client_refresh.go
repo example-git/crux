@@ -32,14 +32,16 @@ type ClientRefreshCompletion struct {
 }
 
 type clientRefreshCall struct {
-	request        ClientRefreshRequest
-	providerDigest string
-	done           chan struct{}
-	completed      bool
-	response       ClientRefreshCompletion
-	snapshot       RuntimeSnapshot
-	err            error
-	waiters        int
+	request          ClientRefreshRequest
+	admittedRevision uint64
+	admittedDigest   string
+	providerDigest   string
+	done             chan struct{}
+	completed        bool
+	response         ClientRefreshCompletion
+	snapshot         RuntimeSnapshot
+	err              error
+	waiters          int
 }
 
 func (s *ConfigStore) SetClientRefreshPublisher(publish func(context.Context, ClientRefreshRequest)) {
@@ -82,7 +84,28 @@ func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted Runtime
 	publish := s.clientRefreshPublisher
 	if !exists {
 		current := s.RemoteAuthority()
-		if current == nil || current.Principal != authority.Principal || current.Revision != authority.Revision || current.Digest != authority.Digest {
+		requestAuthority := authority
+		if current != nil && current.Principal == authority.Principal && (current.Revision != authority.Revision || current.Digest != authority.Digest) {
+			// An earlier exact refresh from this captured runtime may have
+			// advanced a different provider. Only a retained completion receipt
+			// can bridge that revision; unrelated runtime updates cannot.
+			for _, prior := range s.clientRefreshes {
+				if !prior.completed || prior.err != nil || prior.request.Principal != authority.Principal || prior.admittedRevision != authority.Revision || prior.admittedDigest != authority.Digest {
+					continue
+				}
+				accepted := prior.snapshot.RemoteAuthority()
+				if accepted == nil || accepted.Revision != current.Revision || accepted.Digest != current.Digest {
+					continue
+				}
+				candidateAccount, candidateCredential, ok := prior.snapshot.clientRefreshCredential(owner)
+				candidateDefinition, err := prior.snapshot.clientRuntime.proposal.ProviderDefinitionDigest(owner.ProviderID)
+				if ok && err == nil && candidateAccount == accountID && candidateCredential == credentialID && candidateDefinition == providerDigest {
+					requestAuthority = current
+					break
+				}
+			}
+		}
+		if current == nil || current.Principal != requestAuthority.Principal || current.Revision != requestAuthority.Revision || current.Digest != requestAuthority.Digest {
 			s.clientRefreshMu.Unlock()
 			return RuntimeSnapshot{}, errors.New("admitted client runtime changed before refresh")
 		}
@@ -104,8 +127,8 @@ func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted Runtime
 			s.clientRefreshMu.Unlock()
 			return RuntimeSnapshot{}, errors.New("too many pending client refresh requests")
 		}
-		call = &clientRefreshCall{done: make(chan struct{}), providerDigest: providerDigest, request: ClientRefreshRequest{
-			ID: uuid.NewString(), Principal: authority.Principal, Revision: authority.Revision, Digest: authority.Digest,
+		call = &clientRefreshCall{done: make(chan struct{}), admittedRevision: authority.Revision, admittedDigest: authority.Digest, providerDigest: providerDigest, request: ClientRefreshRequest{
+			ID: uuid.NewString(), Principal: requestAuthority.Principal, Revision: requestAuthority.Revision, Digest: requestAuthority.Digest,
 			Owner: owner, AccountID: accountID, CredentialID: credentialID, Deadline: time.Now().Add(3 * time.Minute).UnixMilli(),
 		}}
 		s.clientRefreshes[key] = call

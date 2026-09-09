@@ -49,6 +49,8 @@ type PluginCredentials struct {
 	Values     map[string]any
 	CookieJars map[string]http.CookieJar
 	Validate   func() error
+	ReadValues func() (map[string]any, uint64)
+	Refresh    func(context.Context, []string, uint64) (bool, error)
 }
 
 type PluginRuntime struct {
@@ -278,7 +280,7 @@ func (r *PluginRuntime) Execute(ctx context.Context, owner providerplugin.ImageO
 	if err != nil {
 		return nil, err
 	}
-	host := &providertransport.ImageWorkflowHost{Manifest: value, Client: r.Client, Credentials: credentials.Values, CookieJars: credentials.CookieJars, ValidateOwner: func() error {
+	host := &providertransport.ImageWorkflowHost{Manifest: value, Client: r.Client, Credentials: credentials.Values, CookieJars: credentials.CookieJars, ReadCredentials: credentials.ReadValues, RefreshCredentials: credentials.Refresh, ValidateOwner: func() error {
 		if err := r.source().ValidateImageOwner(ctx, owner); err != nil {
 			return err
 		}
