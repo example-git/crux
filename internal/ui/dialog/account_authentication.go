@@ -37,6 +37,8 @@ type AccountAuthentication struct {
 	reloadKey, retryKey          key.Binding
 	recoverKey, retryRecoveryKey key.Binding
 	recover, retryRecovery       bool
+	reviewKey                    key.Binding
+	review                       bool
 }
 
 type AccountSwitcher struct{ *AccountAuthentication }
@@ -54,6 +56,7 @@ func newAccountAuthentication(com *common.Common, id string) *AccountAuthenticat
 	d.retryKey = key.NewBinding(key.WithKeys("ctrl+t"), key.WithHelp("ctrl+t", "retry original"))
 	d.recoverKey = key.NewBinding(key.WithKeys("alt+r"), key.WithHelp("alt+r", "attempt recovery"))
 	d.retryRecoveryKey = key.NewBinding(key.WithKeys("alt+t"), key.WithHelp("alt+t", "retry recovery"))
+	d.reviewKey = key.NewBinding(key.WithKeys("alt+v"), key.WithHelp("alt+v", "review saved state"))
 	d.updateNotice()
 	return d
 }
@@ -105,6 +108,7 @@ func (d *AccountAuthentication) SetRecovery(available, retry bool) {
 	d.recover, d.retryRecovery = available, retry
 	d.updateNotice()
 }
+func (d *AccountAuthentication) SetReview(available bool) { d.review = available; d.updateNotice() }
 func (d *AccountAuthentication) updateNotice() {
 	d.notice = strings.TrimSpace(d.operationNotice + "\n" + d.readNotice)
 	if d.recover && !d.pending {
@@ -118,6 +122,10 @@ func (d *AccountAuthentication) updateNotice() {
 	d.reloadKey.SetEnabled(!d.pending)
 	d.recoverKey.SetEnabled(d.recover && !d.pending)
 	d.retryRecoveryKey.SetEnabled(d.retryRecovery && !d.pending)
+	d.reviewKey.SetEnabled(d.review && !d.pending)
+	if d.review && !d.pending {
+		d.notice = "Alt+V review saved state\n" + d.notice
+	}
 }
 
 type ActionAuthenticationSelect struct {
@@ -152,6 +160,9 @@ func (d *AccountAuthentication) HandleMsg(msg tea.Msg) Action {
 	if key.Matches(kp, d.retryRecoveryKey) {
 		return ActionAuthenticationRecover{Dialog: d, Retry: true}
 	}
+	if key.Matches(kp, d.reviewKey) {
+		return ActionAuthenticationReviewOpen{d}
+	}
 	if key.Matches(kp, d.keyMap.Select) {
 		if d.loading || d.pending {
 			return nil
@@ -181,6 +192,9 @@ func (d *AccountAuthentication) ShortHelp() []key.Binding {
 	}
 	if d.retry {
 		keys := []key.Binding{d.retryKey}
+		if d.review {
+			keys = append(keys, d.reviewKey)
+		}
 		if d.recover {
 			keys = append(keys, d.recoverKey)
 		}

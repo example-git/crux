@@ -448,13 +448,14 @@ type UI struct {
 	// providerUsage is the latest quota usage snapshot for the current
 	// provider (Claude, Codex, or Gemini/Antigravity OAuth). It is nil
 	// when unknown or unsupported.
-	providerUsage            *oauthusage.Usage
-	usageFetchGen            uint64
-	modelSelectionLanes      map[workspace.Workspace]*modelSelectionLane
-	modelSelectionGen        uint64
-	cancelCopilotImport      context.CancelFunc
-	authenticationReads      map[*dialog.AccountAuthentication]*authenticationRead
-	authenticationOperations map[workspace.Workspace]*authenticationOperation
+	providerUsage                 *oauthusage.Usage
+	usageFetchGen                 uint64
+	modelSelectionLanes           map[workspace.Workspace]*modelSelectionLane
+	modelSelectionGen             uint64
+	cancelCopilotImport           context.CancelFunc
+	authenticationReads           map[*dialog.AccountAuthentication]*authenticationRead
+	authenticationOperations      map[workspace.Workspace]*authenticationOperation
+	authenticationReconciliations map[*authenticationOperation]*authenticationReconciliation
 
 	// brand is the provider wordmark branding for the current large
 	// model provider; nil renders the default Crux branding.
@@ -838,6 +839,12 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.completeAuthenticationOperation(msg))
 	case authenticationRecoveryPreparedMsg:
 		cmds = append(cmds, m.completeAuthenticationRecoveryPreparation(msg))
+	case authenticationReconciliationPreparedMsg:
+		cmds = append(cmds, m.completeAuthenticationReconciliationPreparation(msg))
+	case authenticationReviewCompletedMsg:
+		cmds = append(cmds, m.completeAuthenticationReview(msg))
+	case authenticationApplyCompletedMsg:
+		cmds = append(cmds, m.completeAuthenticationReviewedApply(msg))
 	case authenticationUsageMsg:
 		if msg.workspace == m.com.Workspace && msg.generation == m.usageFetchGen {
 			m.providerUsage = msg.usage
@@ -2383,6 +2390,10 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		cmds = append(cmds, m.retryAuthenticationOperation(msg))
 	case dialog.ActionAuthenticationRecover:
 		cmds = append(cmds, m.beginAuthenticationRecovery(msg))
+	case dialog.ActionAuthenticationReviewOpen:
+		cmds = append(cmds, m.openAuthenticationReconciliation(msg))
+	case dialog.ActionAuthenticationReconciliation:
+		cmds = append(cmds, m.handleAuthenticationReconciliation(msg))
 	case dialog.AccountSwitchedMsg:
 		if msg.Err != nil {
 			cmds = append(cmds, util.ReportError(msg.Err))
