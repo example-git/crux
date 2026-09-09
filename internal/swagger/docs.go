@@ -7633,6 +7633,10 @@ const docTemplate = `{
         "proto.CurrentSession": {
             "type": "object",
             "properties": {
+                "selection_generation": {
+                    "description": "SelectionGeneration orders presence within this client UUID/workspace.\nOmission is legacy behavior; an explicitly supplied zero is invalid.",
+                    "type": "integer"
+                },
                 "session_id": {
                     "type": "string"
                 }
