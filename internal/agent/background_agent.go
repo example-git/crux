@@ -82,6 +82,10 @@ type BackgroundAgentTask struct {
 	admissionRelease func()
 	ownerCleanup     func()
 	persist          func(*BackgroundAgentTask) error
+
+	// executionClaimed is guarded by mu. Launch, reservation failure, or
+	// stopping a pending task claims sole responsibility for executionDone.
+	executionClaimed bool
 }
 
 type BackgroundAgentManager struct {
@@ -195,6 +199,7 @@ func (m *BackgroundAgentManager) recover() error {
 			notification:   record.Notification,
 			persist:        m.persistAgent,
 		}
+		backgroundTask.executionClaimed = true
 		m.configureTask(backgroundTask)
 		m.tasks[record.ID] = backgroundTask
 	}
@@ -346,6 +351,26 @@ func (m *BackgroundAgentManager) StartApproved(task *BackgroundAgentTask, childS
 }
 
 func (m *BackgroundAgentManager) start(task *BackgroundAgentTask, childSessionID string, approved bool, run func(context.Context) backgroundAgentResult) error {
+	// Keep closure and launch in the same ordering. Once StopAll marks the
+	// manager closed, no delayed session/approval result may start a task.
+	// When both locks are needed, acquire manager.mu before task.mu; terminal
+	// cleanup releases task.mu before returning manager/global capacity.
+	m.mu.RLock()
+	if m.closed {
+		m.mu.RUnlock()
+		return fmt.Errorf("background agent manager is closed")
+	}
+	if task == nil || m.tasks[task.ID] != task {
+		m.mu.RUnlock()
+		return fmt.Errorf("background agent reservation does not belong to this manager")
+	}
+	task.mu.Lock()
+	if task.executionClaimed || task.state.Status != managedtask.StatusPending || !task.state.StopRequestedAt.IsZero() {
+		task.mu.Unlock()
+		m.mu.RUnlock()
+		return fmt.Errorf("background agent reservation is no longer pending")
+	}
+	task.executionClaimed = true
 	ownership := task.Ownership
 	ownership.OwnerAgentTaskID = task.ID
 	runCtx := permission.WithDetachedAgent(managedtask.WithOwnership(context.Background(), ownership))
@@ -353,20 +378,22 @@ func (m *BackgroundAgentManager) start(task *BackgroundAgentTask, childSessionID
 		runCtx = permission.WithRunApproval(runCtx)
 	}
 	runCtx, cancel := context.WithCancel(runCtx)
-	task.mu.Lock()
 	task.childSessionID = childSessionID
 	task.cancel = cancel
 	task.state.Status = managedtask.StatusRunning
 	task.state.StartedAt = time.Now()
 	persistErr := task.persistLocked()
 	task.mu.Unlock()
+	m.mu.RUnlock()
 	if persistErr != nil {
+		cancel()
 		task.finish(backgroundAgentResult{Err: fmt.Errorf("persisting background agent start: %w", persistErr)})
 		close(task.executionDone)
 		return persistErr
 	}
 	go func() {
 		defer close(task.executionDone)
+		defer cancel()
 		result := run(runCtx)
 		task.finish(result)
 	}()
@@ -374,6 +401,20 @@ func (m *BackgroundAgentManager) start(task *BackgroundAgentTask, childSessionID
 }
 
 func (m *BackgroundAgentManager) FailReservation(task *BackgroundAgentTask, err error) {
+	m.mu.RLock()
+	if task == nil || m.tasks[task.ID] != task {
+		m.mu.RUnlock()
+		return
+	}
+	task.mu.Lock()
+	if task.executionClaimed || task.state.Status != managedtask.StatusPending {
+		task.mu.Unlock()
+		m.mu.RUnlock()
+		return
+	}
+	task.executionClaimed = true
+	task.mu.Unlock()
+	m.mu.RUnlock()
 	task.finish(backgroundAgentResult{Err: err})
 	close(task.executionDone)
 }
@@ -561,8 +602,20 @@ func (t *BackgroundAgentTask) requestStop(timeout time.Duration) {
 		}
 		t.state.StopRequestedAt = time.Now()
 		cancel := t.cancel
+		pending := !t.executionClaimed
+		if pending {
+			t.executionClaimed = true
+		}
 		_ = t.persistLocked()
 		t.mu.Unlock()
+		if pending {
+			// No execution exists to wait for. Claim it under mu so a late
+			// Start or FailReservation cannot replace this terminal result or
+			// close executionDone again.
+			t.finish(backgroundAgentResult{})
+			close(t.executionDone)
+			return
+		}
 		if cancel != nil {
 			cancel()
 		}
