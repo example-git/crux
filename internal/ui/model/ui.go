@@ -2300,6 +2300,8 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		}
 	case dialog.ActionAPIKeyCheck:
 		cmds = append(cmds, m.beginAPIKeyCheck(msg.Dialog))
+	case dialog.ActionAPIKeySelectCredential:
+		cmds = append(cmds, m.selectAPIKeyCredential(msg))
 	case dialog.ActionAPIKeySave:
 		cmds = append(cmds, m.beginAPIKeySave(msg.Dialog))
 	case dialog.ActionAPIKeyRetry:
@@ -5771,19 +5773,12 @@ func (m *UI) handleReAuthenticate(providerID string, expected providerregistry.R
 	if _, ok := cfg.Providers.Get(providerID); !ok {
 		return nil
 	}
-	if expected.HasOAuth {
-		public := providerauth.PublicOwner(expected)
-		return m.openOAuthAuthentication(nil, &public)
-	}
-	agentCfg, ok := cfg.Agents[config.AgentCoder]
-	if !ok {
-		return nil
-	}
 	providerCfg, _ := cfg.Providers.Get(providerID)
+	// A credential notification names a provider, not a new model selection.
+	// The authentication owner reports its available slots and OAuth action.
 	return m.openAuthenticationDialog(dialog.ActionSelectModel{
 		Provider:         providerCfg.ToProvider(),
-		Model:            cfg.Models[agentCfg.Model],
-		ModelType:        agentCfg.Model,
+		Model:            config.SelectedModel{Provider: providerID},
 		ProviderOwner:    expected,
 		ProviderOwnerSet: true,
 	})
