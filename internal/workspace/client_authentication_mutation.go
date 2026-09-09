@@ -16,12 +16,13 @@ import (
 const clientAuthenticationReceiptLimit = 128
 
 type clientAuthenticationRequest struct {
-	operationID string
-	target      providerauth.Target
-	accountID   string
-	logout      bool
-	checkID     string
-	loginID     string
+	operationID      string
+	target           providerauth.Target
+	accountID        string
+	removedAccountID string
+	logout           bool
+	checkID          string
+	loginID          string
 }
 
 // A local receipt is not an acknowledgement. Keep the exact collected proposal
@@ -44,6 +45,9 @@ type clientAuthenticationReceipt struct {
 	reconciledBy     string
 	pendingReview    string
 	err              error
+	removalSuccessor string
+	removalActive    bool
+	removalAdmitted  bool
 }
 
 func (clientAuthenticationReceipt) MarshalJSON() ([]byte, error) {
@@ -68,7 +72,7 @@ func (w *ClientWorkspace) logoutClientAuthentication(ctx context.Context, reques
 }
 
 func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, request clientAuthenticationRequest) (providerauth.MutationOutcome, error) {
-	initial := providerauth.MutationOutcome{OperationID: request.operationID, CheckID: request.checkID, LoginID: request.loginID, Previous: request.target}
+	initial := providerauth.MutationOutcome{OperationID: request.operationID, CheckID: request.checkID, LoginID: request.loginID, RemovedAccountID: request.removedAccountID, Previous: request.target}
 	ctx, done := providerAuthContext(ctx, w.subCtx)
 	defer done()
 	if err := ctx.Err(); err != nil {
@@ -105,7 +109,7 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	if a.unacknowledgedClientAuthentication(request.target.WorkspaceID) {
 		return initial, errors.New("a saved client authentication change is not acknowledged; explicit recovery of its original operation is required")
 	}
-	if a.accepted.Revision == ^uint64(0) {
+	if a.accepted.Revision == ^uint64(0) && request.removedAccountID == "" {
 		return initial, errors.New("client runtime revision exhausted")
 	}
 	receipt := &clientAuthenticationReceipt{request: request, principal: a.principal, base: a.accepted}
@@ -120,12 +124,15 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		local, err = a.providerAuth.CompleteOAuthLoginForAccepted(w.subCtx, providerauth.OAuthLoginRef{LoginID: request.loginID, OperationID: request.operationID, Target: request.target}, a.accepted, a.configView())
 	} else if request.checkID != "" {
 		local, err = a.providerAuth.SaveAPIKeyForAccepted(ctx, providerauth.APIKeySaveRequest{OperationID: request.operationID, Target: request.target, CheckID: request.checkID}, a.accepted, a.configView())
+	} else if request.removedAccountID != "" {
+		local, err = a.providerAuth.RemoveForAccepted(ctx, providerauth.RemoveRequest{OperationID: request.operationID, Target: request.target, AccountID: request.removedAccountID}, a.accepted, a.configView())
 	} else if request.logout {
 		local, err = a.providerAuth.LogoutForAccepted(ctx, providerauth.LogoutRequest{OperationID: request.operationID, Target: request.target}, a.accepted, a.configView())
 	} else {
 		local, err = a.providerAuth.SwitchForAccepted(ctx, providerauth.SwitchRequest{OperationID: request.operationID, Target: request.target, AccountID: request.accountID}, a.accepted, a.configView())
 	}
 	receipt.outcome, receipt.err = local.Outcome, err
+	receipt.removalSuccessor, receipt.removalActive, receipt.removalAdmitted = local.OriginalRemovalSelection()
 	var admitted bool
 	receipt.owner, admitted = local.OriginalOwner()
 	if request.loginID != "" && err != nil && !admitted {
@@ -155,11 +162,27 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		receipt.err = providerauth.ErrOwner
 		return clientAuthenticationOutcome(receipt, receipt.err)
 	}
+	if request.removedAccountID != "" && !receipt.removalActive {
+		// The config transaction proved credentials and publication unchanged.
+		// Retain the original accepted proposal before any cancelable GET, so
+		// retries and explicit recovery only verify it and never issue a PUT.
+		receipt.removed = maps.Clone(a.removed)
+		if err := after.ValidateAcceptedAuthentication(a.accepted, a.configView()); err != nil {
+			receipt.err = err
+			return clientAuthenticationOutcome(receipt, err)
+		}
+		proposal := receipt.base
+		receipt.proposal = &proposal
+		if err := w.verifyClientProviderAuthAuthority(request.target.WorkspaceID, a); err != nil {
+			return clientAuthenticationOutcome(receipt, err)
+		}
+		return w.reconcileClientAuthenticationLocked(ctx, a, receipt)
+	}
 	removed := maps.Clone(a.removed)
 	if removed == nil {
 		removed = map[providerregistry.RegistrationOwner]bool{}
 	}
-	if request.logout {
+	if request.logout || receipt.removalAdmitted && receipt.removalActive && receipt.removalSuccessor == "" {
 		removed[receipt.owner] = true
 	} else {
 		delete(removed, receipt.owner)
@@ -316,7 +339,10 @@ func (w *ClientWorkspace) noteClientAuthenticationAcknowledgementLocked(a *clien
 		if a.removed == nil {
 			a.removed = map[providerregistry.RegistrationOwner]bool{}
 		}
-		if receipt.request.logout {
+		if receipt.removalAdmitted && !receipt.removalActive {
+			continue // An inactive removal preserves prior credential publication intent.
+		}
+		if receipt.request.logout || receipt.removalAdmitted && receipt.removalSuccessor == "" {
 			a.removed[receipt.owner] = true
 		} else {
 			delete(a.removed, receipt.owner)
@@ -344,7 +370,7 @@ func (w *ClientWorkspace) clientAuthenticationAcknowledgedOutcome(ctx context.Co
 func clientAuthenticationOutcome(receipt *clientAuthenticationReceipt, cause error) (providerauth.MutationOutcome, error) {
 	data, err := json.Marshal(receipt.outcome)
 	if err != nil {
-		return providerauth.MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, LoginID: receipt.request.loginID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, providerauth.ErrReceiptUnverified
+		return providerauth.MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, LoginID: receipt.request.loginID, RemovedAccountID: receipt.request.removedAccountID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, providerauth.ErrReceiptUnverified
 	}
 	var outcome providerauth.MutationOutcome
 	decoder := json.NewDecoder(bytes.NewReader(data))

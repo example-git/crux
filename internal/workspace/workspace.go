@@ -230,6 +230,7 @@ type Workspace interface {
 	ProviderAuthentication(context.Context) (providerauth.Snapshot, error)
 	ProviderAccounts(context.Context, providerauth.Target) (providerauth.AccountsState, error)
 	SwitchProviderAccount(context.Context, providerauth.SwitchRequest) (providerauth.MutationOutcome, error)
+	RemoveProviderAccount(context.Context, providerauth.RemoveRequest) (providerauth.MutationOutcome, error)
 	LogoutProvider(context.Context, providerauth.LogoutRequest) (providerauth.MutationOutcome, error)
 	CheckProviderAPIKey(context.Context, providerauth.APIKeyCheckRequest) (providerauth.APIKeyCheckOutcome, error)
 	SaveCheckedProviderAPIKey(context.Context, providerauth.APIKeySaveRequest) (providerauth.MutationOutcome, error)

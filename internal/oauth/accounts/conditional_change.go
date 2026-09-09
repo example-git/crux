@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,6 +35,7 @@ const (
 	accountLogout
 	accountRefresh
 	accountImport
+	accountRemove
 )
 
 // PendingChange holds the process mutex and captured-path account file lock.
@@ -119,6 +121,15 @@ func (before Snapshot) BeginLogout(ctx context.Context, namespace string) (*Pend
 	return before.beginChange(ctx, accountLogout, namespace, "")
 }
 
+// BeginRemove removes one exact existing account. Removing the selected account
+// selects the first remaining account in stored order, or clears selection.
+func (before Snapshot) BeginRemove(ctx context.Context, namespace, accountID string) (*PendingChange, error) {
+	if namespace == "" || accountID == "" || !slices.Contains(before.namespaces, namespace) {
+		return nil, errors.New("account removal requires its captured namespace and exact account")
+	}
+	return before.beginChange(ctx, accountRemove, namespace, accountID)
+}
+
 // BeginCheck holds a matching account observation for a config-only operation.
 // Its Commit rechecks the observation without writing the account database.
 func (before Snapshot) BeginCheck(ctx context.Context) (*PendingChange, error) {
@@ -169,7 +180,8 @@ func (before Snapshot) beginChange(ctx context.Context, kind accountChangeKind, 
 	return change, nil
 }
 
-// SelectedEntry returns an independent credential copy for a staged switch or import.
+// SelectedEntry returns an independent credential copy for a staged switch,
+// import, or the remaining selection after removal.
 // Check/logout leases and closed leases have no selected entry.
 func (change *PendingChange) SelectedEntry() (Entry, bool) {
 	if change == nil || change.state == nil {
@@ -444,6 +456,89 @@ func stageAccountChange(document []byte, kind accountChangeKind, namespace, acco
 		state.Active[namespace] = accountID
 		if err := set([]string{names["active"], namespace}, accountID); err != nil {
 			return nil, nil, errors.New("cannot stage account selection")
+		}
+	} else if kind == accountRemove {
+		if _, err := accountObject(objects["mutations"][namespace]); err != nil {
+			return nil, nil, err
+		}
+		if _, err := accountObject(objects["rotations"][namespace]); err != nil {
+			return nil, nil, err
+		}
+		var rawEntries []json.RawMessage
+		if err := json.Unmarshal(objects["accounts"][namespace], &rawEntries); err != nil {
+			return nil, nil, errors.New("invalid removal account list")
+		}
+		for _, raw := range rawEntries {
+			fields, err := accountObject(raw)
+			if err != nil {
+				return nil, nil, err
+			}
+			identityFields := 0
+			for key := range fields {
+				if strings.EqualFold(key, "id") {
+					identityFields++
+				}
+			}
+			if identityFields != 1 {
+				return nil, nil, errors.New("ambiguous removal account identity")
+			}
+		}
+		index := -1
+		seen := map[string]bool{}
+		for i, entry := range state.Accounts[namespace] {
+			if entry.ID == "" || seen[entry.ID] {
+				return nil, nil, errors.New("account removal contains an ambiguous account identity")
+			}
+			seen[entry.ID] = true
+			if entry.ID == accountID {
+				index = i
+			}
+		}
+		if index < 0 {
+			return nil, nil, errors.New("account removal target is unavailable")
+		}
+		if state.Mutations[namespace][accountID] == math.MaxUint64 {
+			return nil, nil, errors.New("account mutation counter exhausted")
+		}
+		state.markMutation(namespace, accountID)
+		if err := set([]string{names["mutations"], namespace, accountID}, state.Mutations[namespace][accountID]); err != nil {
+			return nil, nil, errors.New("cannot stage account removal")
+		}
+		delete(state.Rotations[namespace], accountID)
+		if err := del(names["rotations"], namespace, accountID); err != nil {
+			return nil, nil, errors.New("cannot stage account removal")
+		}
+		// Delete the array element in place; never re-encode another account's
+		// token payload or unknown fields.
+		staged, err = sjson.DeleteBytes(staged, accountChangePath(names["accounts"], namespace)+"."+strconv.Itoa(index))
+		if err != nil {
+			return nil, nil, errors.New("cannot stage account removal")
+		}
+		state.Accounts[namespace] = slices.Delete(state.Accounts[namespace], index, index+1)
+		if state.Active[namespace] == accountID {
+			if state.Selections[namespace] == math.MaxUint64 {
+				return nil, nil, errors.New("account selection counter exhausted")
+			}
+			state.Selections[namespace]++
+			if err := set([]string{names["selections"], namespace}, state.Selections[namespace]); err != nil {
+				return nil, nil, errors.New("cannot stage account selection")
+			}
+			delete(state.Active, namespace)
+			if len(state.Accounts[namespace]) != 0 {
+				state.Active[namespace] = state.Accounts[namespace][0].ID
+				if err := set([]string{names["active"], namespace}, state.Active[namespace]); err != nil {
+					return nil, nil, errors.New("cannot stage account selection")
+				}
+			} else if err := del(names["active"], namespace); err != nil {
+				return nil, nil, errors.New("cannot stage account selection")
+			}
+		}
+		for _, entry := range state.Accounts[namespace] {
+			if entry.ID == state.Active[namespace] {
+				copy := entry
+				copy.Raw = bytes.Clone(entry.Raw)
+				selected = &copy
+			}
 		}
 	} else {
 		if state.Selections[namespace] == math.MaxUint64 {

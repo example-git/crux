@@ -741,7 +741,7 @@ func isPrivateProviderAuthentication(request *http.Request) bool {
 	if !strings.HasPrefix(request.URL.Path, "/v1/workspaces/") {
 		return false
 	}
-	if strings.HasSuffix(request.URL.Path, "/auth/api-key/check") {
+	if strings.HasSuffix(request.URL.Path, "/auth/api-key/check") || strings.HasSuffix(request.URL.Path, "/auth/remove") {
 		return true
 	}
 	for _, action := range []string{"begin", "bind", "code", "wait", "cancel", "complete"} {

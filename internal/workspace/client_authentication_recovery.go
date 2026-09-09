@@ -100,7 +100,7 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 	if original.acknowledged {
 		return w.replayClientAuthenticationRecoveryLocked(ctx, a, original, recovery)
 	}
-	if original.outcome.Change == nil || !original.outcome.Progress.RuntimePublished || !original.after.SameObservation(original.after) {
+	if original.outcome.Change == nil || !(original.outcome.Progress.RuntimePublished || original.removalAdmitted && !original.removalActive && original.outcome.Progress.AccountsSaved) || !original.after.SameObservation(original.after) {
 		recovery.err = errors.New("authentication recovery has no complete local capture; explicit saved-state reconciliation is required")
 		return clientAuthenticationOutcome(original, recovery.err)
 	}
@@ -127,6 +127,10 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 	if err := w.verifyClientAuthenticationRecoveryCapture(ctx, a, original); err != nil {
 		recovery.err = err
 		return clientAuthenticationOutcome(original, err)
+	}
+	if original.removalAdmitted && !original.removalActive {
+		recovery.err = errors.New("inactive removal has no matching unchanged receiver authority; reload and reconcile explicitly")
+		return clientAuthenticationOutcome(original, recovery.err)
 	}
 	if original.proposal == nil {
 		if original.base.Revision == ^uint64(0) {

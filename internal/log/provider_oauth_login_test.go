@@ -14,7 +14,7 @@ import (
 )
 
 func TestProviderOAuthRoutesSuppressBothPayloadDirectionsForEveryMethod(t *testing.T) {
-	for _, action := range []string{"begin", "bind", "code", "wait", "cancel", "complete"} {
+	for _, action := range []string{"oauth/begin", "oauth/bind", "oauth/code", "oauth/wait", "oauth/cancel", "oauth/complete", "remove"} {
 		for _, method := range []string{http.MethodPost, http.MethodGet} {
 			t.Run(action+"/"+method, func(t *testing.T) {
 				trace, database := testTrafficTrace(t)
@@ -35,7 +35,7 @@ func TestProviderOAuthRoutesSuppressBothPayloadDirectionsForEveryMethod(t *testi
 				}))
 				defer host.Close()
 				ctx := context.WithValue(t.Context(), trafficContextKey{}, trace)
-				request, err := http.NewRequestWithContext(ctx, method, host.URL+"/v1/workspaces/workspace/auth/oauth/"+action, strings.NewReader("malformed input with "+secret))
+				request, err := http.NewRequestWithContext(ctx, method, host.URL+"/v1/workspaces/workspace/auth/"+action, strings.NewReader("malformed input with "+secret))
 				require.NoError(t, err)
 				transport := &HTTPRoundTripLogger{Transport: WrapHTTPTransport(host.Client().Transport)}
 				response, err := (&http.Client{Transport: transport}).Do(request)

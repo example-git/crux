@@ -189,6 +189,10 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	review.summary.OriginalProgress = original.outcome.Progress
 	review.summary.OriginalLogout, review.summary.OriginalAccountID = original.request.logout, original.request.accountID
 	review.summary.OriginalLoginID = original.request.loginID
+	if original.removalAdmitted {
+		review.summary.OriginalLogout = original.removalSuccessor == ""
+		review.summary.OriginalAccountID = original.removalSuccessor
+	}
 	if original.request.loginID != "" && original.outcome.Change != nil {
 		// Keep the admitted request immutable. The resulting account identity
 		// is evidence from this login's confirmed receipt, not a new target
@@ -236,7 +240,18 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	if err != nil {
 		return fail(clientAuthenticationFailure("authentication review cannot capture saved state", err))
 	}
-	effect := config.AuthenticationReconciliationEffect{Logout: original.request.logout, AccountID: review.summary.OriginalAccountID}
+	if original.removalAdmitted && request.Choice.Kind == "" {
+		saved, err := current.Accounts(original.owner)
+		if err != nil {
+			return fail(err)
+		}
+		for _, account := range saved {
+			if account.ID == original.request.removedAccountID {
+				return fail(errors.New("the removed account is present again; review a separate explicit saved-state choice"))
+			}
+		}
+	}
+	effect := config.AuthenticationReconciliationEffect{Logout: review.summary.OriginalLogout, AccountID: review.summary.OriginalAccountID}
 	switch request.Choice.Kind {
 	case "saved-account":
 		effect = config.AuthenticationReconciliationEffect{AccountID: request.Choice.AccountID}
