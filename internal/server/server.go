@@ -304,6 +304,7 @@ func (s *Server) installHandler() {
 	route("POST /v1/workspaces/{id}/agent/jobs/detach", c.handlePostWorkspaceAgentJobsDetach)
 	route("POST /v1/workspaces/{id}/agent/sessions/{sid}/shell", c.handlePostWorkspaceAgentSessionShell)
 	route("GET /v1/workspaces/{id}/agent/default-small-model", c.handleGetWorkspaceAgentDefaultSmallModel)
+	route("POST /v1/workspaces/{id}/providers/usage", c.handlePostWorkspaceProviderUsage)
 	route("GET /v1/workspaces/{id}/tasks", c.handleGetWorkspaceTasks)
 	route("POST /v1/workspaces/{id}/tasks/{tid}/output", c.handlePostWorkspaceTaskOutput)
 	route("POST /v1/workspaces/{id}/tasks/{tid}/stop", c.handlePostWorkspaceTaskStop)

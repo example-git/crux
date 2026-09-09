@@ -6,11 +6,14 @@ import (
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/example-git/crux/internal/ui/common"
 	"strings"
+	"time"
 )
 
 // NewPreviewTasks uses the real task dialog with already-loaded fixture data.
 func NewPreviewTasks(com *common.Common, tasks []managedtask.View, detail bool) *Tasks {
 	d := NewTasksPanel(com)
+	// Freeze elapsed time so repeated previews render the same production frame.
+	d.now = func() time.Time { return time.Unix(1788690045, 0) }
 	d.tasks = tasks
 	d.loading = false
 	if detail && len(tasks) > 0 {

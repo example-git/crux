@@ -162,7 +162,13 @@ func TestPreviewOverlaysUseProductionComponents(t *testing.T) {
 				} else if !p.ui.dialog.HasDialogs() {
 					t.Fatal("modal not installed in real overlay")
 				}
-				if frame.Content != p.ui.View().Content {
+				if actual := p.ui.View().Content; frame.Content != actual {
+					before, after := strings.Split(ansi.Strip(frame.Content), "\n"), strings.Split(ansi.Strip(actual), "\n")
+					for line := 0; line < min(len(before), len(after)); line++ {
+						if before[line] != after[line] {
+							t.Fatalf("modal changed between production renders at line %d: %q -> %q", line, before[line], after[line])
+						}
+					}
 					t.Fatal("modal bypassed production view")
 				}
 			}

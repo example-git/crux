@@ -21,20 +21,23 @@ import (
 // Window is one normalized usage window.
 type Window struct {
 	// Name is a short display label, e.g. "5h", "wk", "pro".
-	Name string
+	Name string `json:"name"`
 	// Percent is utilization 0-100.
-	Percent int
+	Percent int `json:"percent"`
 	// ResetsAt is when the window resets; zero when unknown.
-	ResetsAt time.Time
+	ResetsAt time.Time `json:"resets_at"`
 }
 
 // Usage is the normalized usage snapshot for one provider.
 type Usage struct {
-	ProviderID string
-	Plan       string
-	Windows    []Window
-	FetchedAt  time.Time
+	ProviderID string    `json:"provider_id"`
+	Plan       string    `json:"plan"`
+	Windows    []Window  `json:"windows"`
+	FetchedAt  time.Time `json:"fetched_at"`
 }
+
+// Request is a captured provider usage operation prepared without I/O.
+type Request func(context.Context) (*Usage, error)
 
 // Fetcher is a core-owned provider quota adapter. Declarative plugins do not
 // supply callbacks; generic operation-based usage is interpreted by core.

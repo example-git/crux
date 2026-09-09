@@ -88,7 +88,7 @@ func (d *Tasks) PanelInfoLines() []string {
 	}
 	lines := []string{
 		title,
-		fmt.Sprintf("%s · %s · %s", task.Type, task.ID, taskRuntime(task).Round(time.Second)),
+		fmt.Sprintf("%s · %s · %s", task.Type, task.ID, d.taskRuntime(task).Round(time.Second)),
 	}
 	if task.Command != "" {
 		lines = append(lines, "$ "+task.Command)
@@ -255,7 +255,7 @@ func (d *Tasks) panelTaskRow(task managedtask.View, width int, selected bool, ac
 	}
 	metadata := ""
 	if width >= 55 {
-		metadata = fmt.Sprintf("  %-6s  %9s  ", task.Type, ansi.Truncate(taskRuntime(task).Round(time.Second).String(), 9, "…"))
+		metadata = fmt.Sprintf("  %-6s  %9s  ", task.Type, ansi.Truncate(d.taskRuntime(task).Round(time.Second).String(), 9, "…"))
 	}
 	if width >= 100 {
 		metadata = "  " + task.ID + metadata
