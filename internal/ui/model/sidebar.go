@@ -184,6 +184,9 @@ func (m *UI) updateSidebarScrollState() {
 		return strings.TrimLeft(rest, "\n")
 	}
 	add("model", "Model / Context", m.modelInfo(contentWidth))
+	if authority := m.workspaceAuthorityInfo(contentWidth); authority != "" {
+		add("authority", "Workspace Authority", authority)
+	}
 	if count := fileChangeCount(m.sessionFiles); count > 0 {
 		lines := strings.Split(m.filesInfo(m.com.Workspace.WorkingDir(), contentWidth, count, true), "\n")
 		sections = append(sections, section{id: "files", lines: lines, rows: len(lines)})
