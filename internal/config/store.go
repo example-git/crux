@@ -1092,12 +1092,17 @@ func (s *ConfigStore) atomicWrite(scope Scope, fn func(current []byte) ([]byte, 
 func (s *ConfigStore) configPath(scope Scope) (string, error) {
 	switch scope {
 	case ScopeWorkspace:
-		if s.workspacePath == "" {
+		if s.workspacePath == "" || filepath.Clean(s.workspacePath) == "." {
 			return "", ErrNoWorkspaceConfig
 		}
 		return s.workspacePath, nil
-	default:
+	case ScopeGlobal:
+		if s.globalDataPath == "" || filepath.Clean(s.globalDataPath) == "." {
+			return "", errors.New("no global config path configured")
+		}
 		return s.globalDataPath, nil
+	default:
+		return "", fmt.Errorf("invalid config scope %d", scope)
 	}
 }
 
@@ -1142,6 +1147,9 @@ func (s *ConfigStore) SetConfigField(scope Scope, key string, value any) error {
 // The write is protected by an in-process mutex and a cross-process flock
 // to prevent races between concurrent writers in different processes.
 func (s *ConfigStore) SetConfigFields(scope Scope, kv map[string]any) error {
+	if s.RemoteAuthority() != nil {
+		return ErrClientRuntimeManaged
+	}
 	if value, exists := kv["options.tui.delivery_mode"]; exists {
 		mode, ok := value.(string)
 		if !ok || (mode != "queue" && mode != "steer") {
@@ -1319,6 +1327,9 @@ func (s *ConfigStore) pinPreferredModelLocked(modelType SelectedModelType, model
 func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if s.RemoteAuthority() != nil {
+		return ErrClientRuntimeManaged
+	}
 	if _, err := s.configPath(scope); err != nil {
 		return err
 	}
@@ -2396,7 +2407,12 @@ func (s *ConfigStore) loadReloadConfigInputs(
 	}
 
 	workspacePath := filepath.Join(cfg.Options.DataDirectory, fmt.Sprintf("%s.json", appName))
-	if workspaceData, err := os.ReadFile(workspacePath); err == nil && len(workspaceData) > 0 {
+	workspaceData, workspaceOverridden := fileOverrides[workspacePath]
+	var workspaceErr error
+	if !workspaceOverridden {
+		workspaceData, workspaceErr = os.ReadFile(workspacePath)
+	}
+	if workspaceErr == nil && len(workspaceData) > 0 {
 		if !json.Valid(workspaceData) {
 			return nil, nil, "", fmt.Errorf("invalid JSON in config file %s", workspacePath)
 		}

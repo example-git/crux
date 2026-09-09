@@ -18,6 +18,8 @@ import (
 )
 
 func TestCollectRemoteGeminiProjectUsesCapturedEnvironment(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	t.Setenv("AI_CLI_DIR", t.TempDir())
 	t.Setenv("GEMINI_PROJECT_ID", "client-project")
 	selected := SelectedModel{Provider: gemini.ID, Model: "fixture"}
@@ -89,6 +91,8 @@ func TestRemoteProjectMetadataRejectsUnrelatedConstruction(t *testing.T) {
 }
 
 func TestCollectRemoteGeminiProjectPreservesCompatibilityPluginSchema(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	root := t.TempDir()
 	dataRoot, cacheRoot := filepath.Join(root, "data"), filepath.Join(root, "cache")
 	t.Setenv("CRUX_GLOBAL_DATA", dataRoot)

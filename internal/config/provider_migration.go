@@ -266,14 +266,16 @@ func (s *ConfigStore) migrateProviderReferencesWithPrecondition(owners map[strin
 	if len(owners) == 0 && len(plugins) == 0 && len(presets) == 0 {
 		return nil
 	}
+	// In-memory stores have no durable provider file to migrate. Explicit
+	// mutations still require configPath to resolve a valid persistence path.
+	if s.globalDataPath == "" {
+		return nil
+	}
 	providerMigrationMu.Lock()
 	defer providerMigrationMu.Unlock()
 	configPath, err := s.configPath(ScopeGlobal)
 	if err != nil {
 		return err
-	}
-	if configPath == "" {
-		return nil
 	}
 	migrationDir := providerMigrationDirForConfig(configPath)
 
