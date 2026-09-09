@@ -198,7 +198,16 @@ func TestEnrollmentRejectsWrongFingerprintTokenExpiryAndReplay(t *testing.T) {
 		require.NoError(t, err)
 		setup.Token = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, enrollmentTokenBytes))
 		_, err = Pair(t.Context(), "wrong-token", encodeEnrollmentSetup(t, setup))
-		require.ErrorContains(t, err, "invalid enrollment token")
+		require.ErrorContains(t, err, "HTTP 401")
+		var pendingError *PairingPendingError
+		require.ErrorAs(t, err, &pendingError)
+		pending, err := ListPendingPairings(t.Context())
+		require.NoError(t, err)
+		require.Len(t, pending, 1)
+		require.Equal(t, pendingError.OperationID, pending[0].OperationID)
+		authorized, err := ListAuthorizedClients(t.Context())
+		require.NoError(t, err)
+		require.Empty(t, authorized)
 	})
 
 	t.Run("expiry", func(t *testing.T) {

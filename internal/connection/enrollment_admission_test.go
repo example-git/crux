@@ -105,7 +105,8 @@ func TestEnrollmentAdmissionRejectsSocketsBeforeTLSAndRecovers(t *testing.T) {
 			}
 			require.Eventually(t, func() bool { return len(e.admission.connections) == 0 }, time.Second, time.Millisecond)
 			e.admission.connectionRate.SetLimit(enrollmentConnectionsPerSecond)
-			require.Eventually(t, func() bool { return e.admission.connectionRate.Tokens() >= 1 }, 2*time.Second, 10*time.Millisecond)
+			// Pair performs a pinned TLS preflight before its authorization POST.
+			require.Eventually(t, func() bool { return e.admission.connectionRate.Tokens() >= 2 }, 2*time.Second, 10*time.Millisecond)
 			_, err = Pair(t.Context(), "after-socket-pressure", e.SetupCode())
 			require.NoError(t, err)
 			result, err := e.Wait(t.Context())
