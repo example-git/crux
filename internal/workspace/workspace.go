@@ -234,6 +234,8 @@ type Workspace interface {
 	Config() *config.Config
 	ProviderSurfaces() []providerregistry.Surface
 	ProviderAuthentication(context.Context) (providerauth.Snapshot, error)
+	AuthenticationWorkspaceID() string
+	RepairLocalAuthentication(context.Context, providerauth.LocalRepairRequest) (config.LocalAuthenticationRepairResult, error)
 	ProviderAccounts(context.Context, providerauth.Target) (providerauth.AccountsState, error)
 	SwitchProviderAccount(context.Context, providerauth.SwitchRequest) (providerauth.MutationOutcome, error)
 	RemoveProviderAccount(context.Context, providerauth.RemoveRequest) (providerauth.MutationOutcome, error)

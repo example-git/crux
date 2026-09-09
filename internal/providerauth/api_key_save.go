@@ -66,12 +66,17 @@ func (s *Service) saveAPIKey(ctx context.Context, request APIKeySaveRequest, acc
 	}
 	// Admission is complete. The only mutator receives the retained private
 	// preparation, never caller input or a newly resolved replacement value.
+	ctx = config.ContextWithAuthenticationOperation(ctx, config.AuthenticationJournalKey{Kind: config.AuthenticationJournalLocal, WorkspaceID: s.workspaceID, OperationID: request.OperationID})
+	effectID, effectErr := check.preparation.ConfiguredCredentialEffectID()
 	transaction, err := s.apiKeys.SaveCheckedAPIKey(ctx, config.ScopeGlobal, check.preparation)
 	receipt := mutationReceipt{request: mutation, originalOwner: check.owner, outcome: MutationOutcome{
 		OperationID: request.OperationID, CheckID: request.CheckID, CredentialID: check.outcome.CredentialID, Previous: request.Target, Progress: MutationProgress{
 			AccountRefreshed: transaction.AccountRefreshed, AccountsSaved: transaction.AccountsSaved,
 			ConfigSaved: transaction.ConfigSaved, RuntimePublished: transaction.RuntimePublished,
 		}}}
+	if effectErr == nil {
+		receipt.credentialEffectID = effectID
+	}
 	runtime, coherent := transaction.RuntimeSnapshot()
 	if err != nil || !coherent || transaction.After.SameObservation(before) {
 		s.sequence++
@@ -79,6 +84,12 @@ func (s *Service) saveAPIKey(ctx context.Context, request APIKeySaveRequest, acc
 			err = errors.New("checked API key save returned no coherent changed publication")
 		}
 		receipt.err = safeMutationError(err)
+		s.retain(receipt)
+		return s.replay(ctx, receipt)
+	}
+	confirmedID, proofErr := transaction.After.ConfiguredCredentialEffectID(check.owner, check.outcome.CredentialID)
+	if proofErr != nil || effectErr != nil || confirmedID != effectID {
+		receipt.err = safeMutationError(errors.New("checked credential effect was not confirmed by its transaction"))
 		s.retain(receipt)
 		return s.replay(ctx, receipt)
 	}

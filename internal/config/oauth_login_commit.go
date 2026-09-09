@@ -49,7 +49,12 @@ func (s *ConfigStore) commitOAuthLogin(ctx context.Context, scope Scope, authori
 		return result, err
 	}
 	admitted, err := s.authenticationAdmissionLocked(ctx, scope, before, owner)
+	var journal *localAuthenticationWriter
+	if err == nil {
+		ctx, journal, err = s.beginLocalAuthenticationChangeLocked(ctx, before, admitted, owner, "oauth-login", "", "")
+	}
 	s.writeMu.Unlock()
+	defer func() { journal.finish(ctx, result, &err) }()
 	if err != nil {
 		return result, err
 	}
@@ -195,6 +200,9 @@ func (s *ConfigStore) commitOAuthLogin(ctx context.Context, scope Scope, authori
 		return result, err
 	}
 	defer staged.Close()
+	if err := journal.stage(ctx, staged, admitted.topology, pending); err != nil {
+		return result, err
+	}
 	if err := s.validateAuthenticationAdmissionLocked(ctx, scope, before, owner, admitted); err != nil {
 		return result, err
 	}
@@ -214,6 +222,7 @@ func (s *ConfigStore) commitOAuthLogin(ctx context.Context, scope Scope, authori
 	}
 	post, written, err := staged.commit(finish, committed.CompletionDeadline())
 	result.ConfigSaved = written
+	err = errors.Join(err, journal.configSaved(ctx, written, staged.completionDeadline))
 	if err != nil {
 		return result, err
 	}

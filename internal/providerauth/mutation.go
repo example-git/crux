@@ -34,14 +34,15 @@ type mutationRequest struct {
 }
 
 type mutationReceipt struct {
-	request       mutationRequest
-	outcome       MutationOutcome
-	after         config.AuthenticationCapture
-	runtime       config.RuntimeSnapshot
-	originalOwner providerregistry.RegistrationOwner
-	oauthTokenID  string
-	removal       *removalIntent
-	err           error
+	request            mutationRequest
+	outcome            MutationOutcome
+	after              config.AuthenticationCapture
+	runtime            config.RuntimeSnapshot
+	originalOwner      providerregistry.RegistrationOwner
+	oauthTokenID       string
+	credentialEffectID string
+	removal            *removalIntent
+	err                error
 }
 
 func (mutationReceipt) MarshalJSON() ([]byte, error) {
@@ -160,6 +161,7 @@ func (s *Service) mutate(ctx context.Context, request mutationRequest, accepted 
 		}
 		receipt.removal = &removalIntent{successor: successor, active: active == request.removedAccountID}
 	}
+	ctx = config.ContextWithAuthenticationOperation(ctx, config.AuthenticationJournalKey{Kind: config.AuthenticationJournalLocal, WorkspaceID: s.workspaceID, OperationID: request.operationID})
 	var transaction config.AuthenticationMutationResult
 	if request.removedAccountID != "" {
 		remover, ok := s.mutations.(authenticationRemover)
@@ -229,9 +231,9 @@ func (s *Service) retain(receipt mutationReceipt) {
 func (s *Service) replay(ctx context.Context, receipt mutationReceipt) (MutationResult, error) {
 	outcome, err := cloneMutationOutcome(receipt.outcome)
 	if err != nil {
-		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, CredentialID: receipt.outcome.CredentialID, LoginID: receipt.request.loginID, RemovedAccountID: receipt.request.removedAccountID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner, removal: receipt.removal, oauthTokenID: receipt.oauthTokenID}, safeMutationError(err)
+		return MutationResult{Outcome: MutationOutcome{OperationID: receipt.request.operationID, CheckID: receipt.request.checkID, CredentialID: receipt.outcome.CredentialID, LoginID: receipt.request.loginID, RemovedAccountID: receipt.request.removedAccountID, Previous: receipt.request.target, Progress: receipt.outcome.Progress}, originalOwner: receipt.originalOwner, removal: receipt.removal, oauthTokenID: receipt.oauthTokenID, credentialEffectID: receipt.credentialEffectID}, safeMutationError(err)
 	}
-	result := MutationResult{Outcome: outcome, originalOwner: receipt.originalOwner, removal: receipt.removal, oauthTokenID: receipt.oauthTokenID}
+	result := MutationResult{Outcome: outcome, originalOwner: receipt.originalOwner, removal: receipt.removal, oauthTokenID: receipt.oauthTokenID, credentialEffectID: receipt.credentialEffectID}
 	if receipt.err != nil {
 		return result, receipt.err
 	}

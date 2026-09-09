@@ -362,6 +362,7 @@ func (c *oauthLoginConsole) mutateAuthenticationWithCompletion(ctx context.Conte
 			return outcome, nil
 		}
 		fmt.Fprintf(c.output, "%s completion failed: %v\n", label, err)
+		fmt.Fprintf(c.output, "Original operation for restart recovery: workspace=%s operation=%s. Review with accounts repair-local.\n", target.WorkspaceID, operationID)
 		if valid == nil && (outcome.Progress.AccountsSaved || outcome.Progress.ConfigSaved || outcome.Progress.RuntimePublished) {
 			fmt.Fprintf(c.output, "Retained save progress: accounts=%t, configuration=%t, local runtime=%t. Remote acknowledgement is not confirmed.\n", outcome.Progress.AccountsSaved, outcome.Progress.ConfigSaved, outcome.Progress.RuntimePublished)
 		}
