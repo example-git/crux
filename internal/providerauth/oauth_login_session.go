@@ -174,7 +174,7 @@ func (s *Service) initializeOAuthLogin(login *oauthLoginSession) error {
 	recovery := login.state.Recovery
 	login.mu.Unlock()
 	if recovery != nil {
-		authorized, err := s.store.RecoverOAuthLoginResult(login.ctx, before, owner, operation.WorkspaceID, recovery.OriginalOperationID)
+		authorized, err := s.store.RecoverOAuthLoginResult(login.ctx, before, owner, recovery.OriginalWorkspaceID, recovery.OriginalOperationID)
 		if err != nil {
 			return err
 		}

@@ -20,6 +20,7 @@ import (
 // record can recover a known token result, never repeat an uncertain exchange.
 type oauthLoginJournalRecord struct {
 	Version int                                `json:"version"`
+	Scope   string                             `json:"scope,omitempty"`
 	Owner   providerregistry.RegistrationOwner `json:"owner"`
 	Capture string                             `json:"capture"`
 	Started bool                               `json:"started"`
@@ -145,14 +146,14 @@ func (s *ConfigStore) prepareOAuthLoginJournal(ctx context.Context, p *oauthLogi
 		if err != nil {
 			return err
 		}
-		if record.Owner != p.owner || record.Capture != captureID {
+		if record.Scope != journal.ScopeID() || record.Owner != p.owner || record.Capture != captureID {
 			return errors.New("OAuth operation conflicts with its durable captured intent")
 		}
 		// Recovery is a separately selected action. A reused Begin ID cannot
 		// turn a historical token or unknown exchange into a new authorization.
 		return errors.New("OAuth operation already has a durable record; recover its observed result or start a new login")
 	}
-	handle := &oauthLoginJournal{journal: journal, key: key, record: oauthLoginJournalRecord{Version: 1, Owner: p.owner, Capture: captureID}}
+	handle := &oauthLoginJournal{journal: journal, key: key, record: oauthLoginJournalRecord{Version: 1, Scope: journal.ScopeID(), Owner: p.owner, Capture: captureID}}
 	if err := handle.persist(ctx); err != nil {
 		return err
 	}
@@ -277,17 +278,33 @@ func (authorized AuthorizedOAuthPreparation) AcknowledgeJournalCommit(ctx contex
 // OAuthRecoverySummary is owner-side metadata. Public service projections omit
 // the account namespace. A recorded token is not a save or acknowledgement.
 type OAuthRecoverySummary struct {
-	OperationID string
-	Owner       providerregistry.RegistrationOwner
-	State       string
+	OriginalWorkspaceID string
+	OperationID         string
+	Owner               providerregistry.RegistrationOwner
+	State               string
 }
 
 func (s *ConfigStore) PendingOAuthLoginResults(ctx context.Context, workspaceID string) ([]OAuthRecoverySummary, error) {
+	return s.pendingOAuthLoginResults(ctx, workspaceID, false)
+}
+
+// PendingOAuthLoginResultsForScope enumerates prior workspace incarnations only
+// within the same captured owning configuration paths. No old workspace becomes
+// the current target, and this metadata authorizes no exchange or local write.
+func (s *ConfigStore) PendingOAuthLoginResultsForScope(ctx context.Context) ([]OAuthRecoverySummary, error) {
+	return s.pendingOAuthLoginResults(ctx, "", true)
+}
+func (s *ConfigStore) pendingOAuthLoginResults(ctx context.Context, workspaceID string, all bool) ([]OAuthRecoverySummary, error) {
 	journal, err := s.CaptureAuthenticationJournal(ctx)
 	if err != nil {
 		return nil, err
 	}
-	keys, err := journal.Keys(ctx, AuthenticationJournalOAuth, workspaceID)
+	var keys []AuthenticationJournalKey
+	if all {
+		keys, err = journal.AllKeys(ctx, AuthenticationJournalOAuth)
+	} else {
+		keys, err = journal.Keys(ctx, AuthenticationJournalOAuth, workspaceID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -298,6 +315,11 @@ func (s *ConfigStore) PendingOAuthLoginResults(ctx context.Context, workspaceID 
 			return nil, err
 		}
 		if !found || entry.Completed() {
+			continue
+		}
+		// Filter captured path scope before exposing even the old workspace or
+		// operation identity. Legacy records with no scope are not reassigned.
+		if gjson.GetBytes(entry.Payload(), "scope").String() != journal.ScopeID() {
 			continue
 		}
 		record, err := decodeOAuthLoginJournal(entry)
@@ -311,9 +333,15 @@ func (s *ConfigStore) PendingOAuthLoginResults(ctx context.Context, workspaceID 
 		if record.Token != nil {
 			state = "token-result-recorded"
 		}
-		result = append(result, OAuthRecoverySummary{OperationID: key.OperationID, Owner: record.Owner, State: state})
+		result = append(result, OAuthRecoverySummary{OriginalWorkspaceID: key.WorkspaceID, OperationID: key.OperationID, Owner: record.Owner, State: state})
 	}
 	slices.SortFunc(result, func(a, b OAuthRecoverySummary) int {
+		if a.OriginalWorkspaceID < b.OriginalWorkspaceID {
+			return -1
+		}
+		if a.OriginalWorkspaceID > b.OriginalWorkspaceID {
+			return 1
+		}
 		if a.OperationID < b.OperationID {
 			return -1
 		}
@@ -327,8 +355,8 @@ func (s *ConfigStore) PendingOAuthLoginResults(ctx context.Context, workspaceID 
 
 // RecoverOAuthLoginResult is an explicit owner-side action against a fresh
 // capture. It performs no exchange and cannot adopt a different current token.
-func (s *ConfigStore) RecoverOAuthLoginResult(ctx context.Context, before AuthenticationCapture, owner providerregistry.RegistrationOwner, workspaceID, operationID string) (AuthorizedOAuthPreparation, error) {
-	key := AuthenticationJournalKey{Kind: AuthenticationJournalOAuth, WorkspaceID: workspaceID, OperationID: operationID}
+func (s *ConfigStore) RecoverOAuthLoginResult(ctx context.Context, before AuthenticationCapture, owner providerregistry.RegistrationOwner, originalWorkspaceID, operationID string) (AuthorizedOAuthPreparation, error) {
+	key := AuthenticationJournalKey{Kind: AuthenticationJournalOAuth, WorkspaceID: originalWorkspaceID, OperationID: operationID}
 	journal, err := s.CaptureAuthenticationJournal(ctx)
 	if err != nil {
 		return AuthorizedOAuthPreparation{}, err
@@ -343,6 +371,9 @@ func (s *ConfigStore) RecoverOAuthLoginResult(ctx context.Context, before Authen
 	record, err := decodeOAuthLoginJournal(entry)
 	if err != nil {
 		return AuthorizedOAuthPreparation{}, err
+	}
+	if record.Scope == "" || record.Scope != journal.ScopeID() {
+		return AuthorizedOAuthPreparation{}, errors.New("OAuth recovery belongs to a different captured configuration scope")
 	}
 	if record.Owner != owner || !record.Started || record.Token == nil {
 		return AuthorizedOAuthPreparation{}, errors.New("OAuth exchange has no recoverable observed token; start a new explicit login")

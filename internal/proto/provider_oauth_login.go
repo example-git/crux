@@ -24,6 +24,7 @@ func (r ProviderOAuthLoginWaitRequest) Validate() error { return r.Login.Validat
 // ProviderAuthenticationMutationResponse and its exact transaction receipt.
 type ProviderOAuthLoginResponse struct {
 	Login               providerauth.OAuthLoginRef    `json:"login"`
+	RecoveryWorkspaceID string                        `json:"recovery_workspace_id,omitempty"`
 	RecoveryOperationID string                        `json:"recovery_operation_id,omitempty"`
 	BindingID           string                        `json:"binding_id,omitempty"`
 	Port                uint16                        `json:"port,omitempty"`
@@ -43,6 +44,14 @@ func (r ProviderOAuthLoginResponse) validate(ref providerauth.OAuthLoginRef, bin
 	if r.Login != ref || r.BindingID != bindingID || r.Port != port || r.SubmissionID != submissionID {
 		return errors.New("OAuth login response does not match the requested action")
 	}
+	if (r.RecoveryWorkspaceID == "") != (r.RecoveryOperationID == "") {
+		return errors.New("OAuth response has an incomplete recovery identity")
+	}
+	if r.RecoveryOperationID != "" {
+		if err := (providerauth.OAuthLoginRecoveryRequest{Login: ref, OriginalWorkspaceID: r.RecoveryWorkspaceID, OriginalOperationID: r.RecoveryOperationID}).Validate(); err != nil {
+			return err
+		}
+	}
 	if r.Error != nil {
 		if err := r.Error.Validate(); err != nil {
 			return err
@@ -57,7 +66,7 @@ func (r ProviderOAuthLoginResponse) validate(ref providerauth.OAuthLoginRef, bin
 	if err := r.State.Validate(); err != nil {
 		return err
 	}
-	if r.RecoveryOperationID != "" && !r.State.MatchesOAuthLoginRecovery(r.RecoveryOperationID) {
+	if r.RecoveryOperationID != "" && !r.State.MatchesOAuthLoginRecovery(r.RecoveryWorkspaceID, r.RecoveryOperationID) {
 		return errors.New("OAuth response changed the recorded recovery")
 	}
 	if r.State.Login != ref {
@@ -73,7 +82,7 @@ func (r ProviderOAuthLoginResponse) validate(ref providerauth.OAuthLoginRef, bin
 }
 
 func (r ProviderOAuthLoginResponse) ValidateBegin(request providerauth.OAuthLoginRequest) error {
-	if r.RecoveryOperationID != "" || r.State != nil && r.State.Recovery != nil {
+	if r.RecoveryWorkspaceID != "" || r.RecoveryOperationID != "" || r.State != nil && r.State.Recovery != nil {
 		return errors.New("OAuth begin response substituted a recorded recovery")
 	}
 	return r.validate(request, "", 0, "")

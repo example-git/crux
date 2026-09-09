@@ -55,7 +55,7 @@ func (m *UI) beginOAuthLogin(d *dialog.OAuthLogin, owner providerauth.Owner) tea
 	d.SetPresentation(dialog.OAuthLoginPresentation{Message: "Loading recorded OAuth results for " + owner.ProviderID + "…", Reload: true})
 	capability, ok := r.workspace.(workspace.ProviderOAuthRecovery)
 	if !ok {
-		return m.startOAuthLogin(d, owner, "")
+		return m.startOAuthLogin(d, owner, "", "")
 	}
 	if r.cancel != nil {
 		r.cancel()
@@ -89,9 +89,9 @@ func (m *UI) completeOAuthLoginRecorded(msg oauthLoginRecordedMsg) tea.Cmd {
 		r.recorded = append([]providerauth.OAuthLoginRecordedResult(nil), msg.list.Results...)
 		for _, result := range r.recorded {
 			if result.State == "token-result-recorded" {
-				choices = append(choices, dialog.OAuthLoginResultChoice{OperationID: result.OperationID, Label: "Recover and save recorded result " + result.OperationID})
+				choices = append(choices, dialog.OAuthLoginResultChoice{OriginalWorkspaceID: result.OriginalWorkspaceID, OperationID: result.OperationID, Label: "Recover and save " + result.OriginalWorkspaceID + " / " + result.OperationID})
 			} else {
-				lines = append(lines, "Operation "+result.OperationID+": "+result.State+"; no observed token is available for recovery.")
+				lines = append(lines, "Workspace "+result.OriginalWorkspaceID+", operation "+result.OperationID+": "+result.State+"; no observed token is available for recovery.")
 			}
 		}
 		if len(r.recorded) == 0 {
@@ -108,10 +108,13 @@ func (m *UI) chooseOAuthLoginRecorded(action dialog.ActionOAuthLoginResult) tea.
 	if r == nil || r.workspace != m.com.Workspace || !m.oauthDialogOpen(action.Dialog) || !r.recordedLoaded {
 		return nil
 	}
+	if (action.OriginalWorkspaceID == "") != (action.OriginalOperationID == "") {
+		return util.ReportError(errors.New("The recorded OAuth identity is incomplete."))
+	}
 	if action.OriginalOperationID != "" {
 		found := false
 		for _, result := range r.recorded {
-			if result.OperationID == action.OriginalOperationID && result.State == "token-result-recorded" {
+			if result.OriginalWorkspaceID == action.OriginalWorkspaceID && result.OperationID == action.OriginalOperationID && result.State == "token-result-recorded" {
 				found = true
 				break
 			}
@@ -120,5 +123,5 @@ func (m *UI) chooseOAuthLoginRecorded(action dialog.ActionOAuthLoginResult) tea.
 			return util.ReportError(errors.New("The selected operation has no observed OAuth result to recover."))
 		}
 	}
-	return m.startOAuthLogin(action.Dialog, r.recordedOwner, action.OriginalOperationID)
+	return m.startOAuthLogin(action.Dialog, r.recordedOwner, action.OriginalWorkspaceID, action.OriginalOperationID)
 }

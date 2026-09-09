@@ -35,8 +35,9 @@ type ActionOAuthLoginSelect struct {
 	Dialog *OAuthLogin
 	Owner  providerauth.Owner
 }
-type OAuthLoginResultChoice struct{ OperationID, Label string }
+type OAuthLoginResultChoice struct{ OriginalWorkspaceID, OperationID, Label string }
 type ActionOAuthLoginResult struct {
+	OriginalWorkspaceID string
 	Dialog              *OAuthLogin
 	OriginalOperationID string
 }
@@ -179,7 +180,7 @@ func (m *OAuthLogin) HandleMsg(msg tea.Msg) Action {
 			return ActionClose{}
 		case key.Matches(press, m.choose):
 			if len(m.results) > 0 {
-				return ActionOAuthLoginResult{Dialog: m, OriginalOperationID: m.results[m.selected].OperationID}
+				return ActionOAuthLoginResult{Dialog: m, OriginalWorkspaceID: m.results[m.selected].OriginalWorkspaceID, OriginalOperationID: m.results[m.selected].OperationID}
 			}
 			return ActionOAuthLoginSelect{Dialog: m, Owner: m.providers[m.selected].Owner}
 		case key.Matches(press, m.previous):

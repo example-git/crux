@@ -11,7 +11,7 @@ import (
 // handlePostWorkspaceOAuthLoginResults lists private owner-side result metadata.
 //
 // @Summary List recorded OAuth operation results
-// @Description Lists pending recorded results for the exact current provider owner and target. No token, callback or account namespace is returned. Unknown exchanges remain unknown and cannot be resumed as a new exchange.
+// @Description Lists pending recorded results from this captured configuration scope, including prior workspace incarnations, for the exact current provider owner and target. No token, callback or account namespace is returned. Unknown exchanges remain unknown and cannot be resumed as a new exchange.
 // @Tags providers
 // @Produce json
 // @Accept json
@@ -56,11 +56,11 @@ func (c *controllerV1) handlePostWorkspaceOAuthLoginResults(w http.ResponseWrite
 // handlePostWorkspaceOAuthLoginRecover creates a fresh authorized session from a recorded result.
 //
 // @Summary Recover an observed OAuth login result
-// @Description Explicitly links a fresh login and operation identity to one original recorded token result. Recovery never repeats an OAuth exchange and does not claim original persistence or publication. The returned session uses the normal Complete transaction.
+// @Description Explicitly links a fresh login and operation identity to one original workspace and recorded token operation. Recovery never repeats an OAuth exchange and does not claim original persistence or publication. The returned session uses the normal Complete transaction.
 // @Tags providers
 // @Produce json
 // @Accept json
-// @Param request body proto.ProviderOAuthLoginRecoveryRequest true "Fresh login identity and exact original recorded operation"
+// @Param request body proto.ProviderOAuthLoginRecoveryRequest true "Fresh login identity and exact original workspace and recorded operation"
 // @Param id path string true "Workspace ID bound to the authenticated principal"
 // @Success 200 {object} proto.ProviderOAuthLoginResponse
 // @Failure 400 {object} proto.Error
