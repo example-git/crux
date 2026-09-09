@@ -80,6 +80,9 @@ type ConfigChanged struct {
 // current-session endpoint. An empty SessionID clears the entry.
 type CurrentSession struct {
 	SessionID string `json:"session_id"`
+	// SelectionGeneration orders presence within this client UUID/workspace.
+	// Omission is legacy behavior; an explicitly supplied zero is invalid.
+	SelectionGeneration *uint64 `json:"selection_generation,omitempty"`
 }
 
 // RunComplete is the authoritative end-of-run signal for a session,

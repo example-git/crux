@@ -73,7 +73,7 @@ const (
 type ConnectionEvent struct {
 	// Source identifies the local Workspace object that emitted this event.
 	// It is never sent over the wire.
-	Source Workspace
+	Source Workspace `json:"-"`
 	// Recreated identifies a newly acknowledged workspace ID after loss. It
 	// does not claim that any session/history query has completed.
 	Recreated           bool

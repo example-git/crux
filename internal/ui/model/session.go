@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -149,8 +150,16 @@ func loadNestedSessionMessages(ctx context.Context, ws workspace.Workspace, mess
 func (m *UI) reportCurrentSession(sessionID string) tea.Cmd {
 	ws := m.com.Workspace
 	id := ws.AuthenticationWorkspaceID()
+	if m.sessionPresenceGeneration == nil {
+		m.sessionPresenceGeneration = new(atomic.Uint64)
+	}
+	current := m.sessionPresenceGeneration
+	generation := current.Add(1)
+	ctx := workspace.ContextWithSessionSelection(context.Background(), id, current, generation)
 	return func() tea.Msg {
-		ctx := workspace.ContextWithSessionWorkspace(context.Background(), id)
+		if current.Load() != generation {
+			return nil
+		}
 		if err := ws.SetCurrentSession(ctx, sessionID); err != nil {
 			slog.Debug("Failed to report current session", "session_id", sessionID, "error", err)
 		}

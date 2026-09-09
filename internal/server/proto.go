@@ -241,7 +241,7 @@ func (c *controllerV1) handlePostWorkspaceCurrentSession(w http.ResponseWriter, 
 		jsonError(w, http.StatusBadRequest, "failed to decode request")
 		return
 	}
-	if err := c.backend.SetCurrentSession(id, clientID, req.SessionID); err != nil {
+	if err := c.backend.SetCurrentSessionSelection(id, clientID, req); err != nil {
 		c.handleError(w, r, err)
 		return
 	}
@@ -1492,6 +1492,10 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 		status = http.StatusBadRequest
 	case errors.Is(err, backend.ErrInvalidClientID):
 		status = http.StatusBadRequest
+	case errors.Is(err, backend.ErrSessionSelectionInvalid):
+		status = http.StatusBadRequest
+	case errors.Is(err, backend.ErrSessionSelectionConflict):
+		status = http.StatusConflict
 	case errors.Is(err, backend.ErrClientNotAttached):
 		// 409, not 404: the workspace exists, the caller just has no live
 		// stream yet. A 404 here is indistinguishable from "workspace

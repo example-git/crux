@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -40,6 +41,7 @@ type AppWorkspace struct {
 	providerAuth       *providerauth.Service
 	providerAuthCtx    context.Context
 	providerAuthCancel context.CancelFunc
+	presenceMu         sync.Mutex
 }
 
 // NewAppWorkspace creates a new AppWorkspace wrapping the given app
@@ -110,6 +112,11 @@ func (w *AppWorkspace) ParseAgentToolSessionID(sessionID string) (string, string
 // is irrelevant in single-client local mode, but herdr still needs
 // to know which session is live to support agent resume.
 func (w *AppWorkspace) SetCurrentSession(ctx context.Context, sessionID string) error {
+	w.presenceMu.Lock()
+	defer w.presenceMu.Unlock()
+	if err := checkSessionWorkspace(ctx, w.AuthenticationWorkspaceID()); err != nil {
+		return err
+	}
 	w.app.ReportCurrentSession(sessionID)
 	return nil
 }

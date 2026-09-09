@@ -53,11 +53,6 @@ type ClientWorkspace struct {
 	providerAuthWorkspaceID  string
 	ws                       proto.Workspace
 	skills                   *skills.Manager
-	// lastSession is the most recent session ID reported via
-	// SetCurrentSession. The subscription loop re-asserts it after a
-	// reconnect, because the server's per-client presence entry (or the
-	// whole workspace) may have been re-created in the meantime.
-	lastSession string
 
 	// subCtx bounds the lifetime of the event subscription (and its
 	// reconnect loop). Shutdown cancels it so Subscribe stops
@@ -223,16 +218,27 @@ func (w *ClientWorkspace) ParseAgentToolSessionID(sessionID string) (string, str
 func (w *ClientWorkspace) SetCurrentSession(ctx context.Context, sessionID string) error {
 	ctx, done := providerAuthContext(ctx, w.subCtx)
 	defer done()
-	w.mu.Lock()
-	id := w.ws.ID
+	id := w.workspaceID()
+	// Reject a stale incarnation even if no SDK request can be constructed.
 	if err := checkSessionWorkspace(ctx, id); err != nil {
-		w.mu.Unlock()
 		return err
 	}
-	w.lastSession = sessionID
-	w.mu.Unlock()
-	w.herdrClient.SetSessionID(sessionID)
-	return w.client.SetCurrentSession(ctx, id, sessionID)
+	selection, err := w.client.PrepareCurrentSession(id, sessionID, func() error {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		if w.ws.ID != id {
+			return errors.New("workspace changed while reporting the session")
+		}
+		if err := checkSessionWorkspace(ctx, id); err != nil {
+			return err
+		}
+		w.herdrClient.SetSessionID(sessionID)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return w.client.SendCurrentSessionSelection(ctx, id, selection)
 }
 
 // -- Messages --
@@ -1236,11 +1242,15 @@ func (w *ClientWorkspace) recreateArgs() proto.Workspace {
 // SSE handler attaches the client before writing its 200, so the presence
 // call cannot be rejected as not-attached here.
 func (w *ClientWorkspace) afterReconnect(send func(tea.Msg), recreatedFrom ...string) {
-	w.mu.RLock()
-	sid := w.lastSession
-	w.mu.RUnlock()
-	if sid != "" {
-		if err := w.SetCurrentSession(w.subCtx, sid); err != nil {
+	id := w.workspaceID()
+	previousID := ""
+	if len(recreatedFrom) == 1 {
+		previousID = recreatedFrom[0]
+	}
+	if selection, ok := w.client.CurrentSessionSelection(id, previousID); ok {
+		// Preserve the original generation. A delayed reconnect request must
+		// not become a newer selection than a concurrently accepted UI intent.
+		if err := w.client.SendCurrentSessionSelection(w.subCtx, id, selection); err != nil {
 			slog.Warn("Failed to re-assert current session after reconnect", "error", err)
 		}
 	}

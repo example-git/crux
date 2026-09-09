@@ -61,8 +61,10 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 }
 
 const (
-	RemoteRuntimeVersion      = 1
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v22"
+	RemoteRuntimeVersion = 1
+	// v23 also requires ordered current-session presence. Older receivers may
+	// ignore selection_generation, so exact negotiation must reject them.
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v23"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64

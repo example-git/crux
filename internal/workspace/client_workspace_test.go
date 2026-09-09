@@ -826,9 +826,8 @@ func TestClientWorkspace_RecoversFromWorkspaceGone(t *testing.T) {
 	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1", Path: "/tmp/recover"})
 	// The client was viewing a session, so recovery has to restore that
 	// selection: the server's presence entry died with the workspace.
-	ws.mu.Lock()
-	ws.lastSession = "sess-1"
-	ws.mu.Unlock()
+	_, err := c.PrepareCurrentSession(ws.workspaceID(), "sess-1", nil)
+	require.NoError(t, err)
 
 	rec := &connectionRecorder{}
 	done := make(chan struct{})
@@ -878,9 +877,8 @@ func TestClientWorkspace_ResyncsAfterPlainStreamDrop(t *testing.T) {
 	c := srv.start(t)
 
 	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1", Path: "/tmp/blip"})
-	ws.mu.Lock()
-	ws.lastSession = "sess-9"
-	ws.mu.Unlock()
+	_, err := c.PrepareCurrentSession(ws.workspaceID(), "sess-9", nil)
+	require.NoError(t, err)
 
 	rec := &connectionRecorder{}
 	done := make(chan struct{})

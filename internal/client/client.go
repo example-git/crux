@@ -40,6 +40,9 @@ type Client struct {
 	authenticationIdentity string
 	attachmentMu           sync.RWMutex
 	attachments            map[string]proto.WorkspaceAttachment
+	presenceMu             sync.Mutex
+	presenceGeneration     uint64
+	presenceSelections     map[string]CurrentSessionSelection
 }
 
 // DefaultClient creates a new [Client] connected to the default server address.
