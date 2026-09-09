@@ -142,12 +142,24 @@ func openCheckedKey(t *testing.T, ui *UI, ws *checkedKeyUIWorkspace, selection d
 	t.Helper()
 	messages := runCheckedKeyCmd(ws, ui.openAuthenticationDialog(selection))
 	require.Len(t, messages, 1)
+	status, ok := messages[0].(apiKeyStatusMsg)
+	require.True(t, ok)
+	require.NoError(t, status.err)
+	require.NoError(t, status.snapshot.Validate())
 	updateCheckedKey(t, ui, ws, messages[0])
+	// The production overlay absorbs keys for 425 ms after an async dialog
+	// opens. Model a user's pause before entering input without bypassing it.
+	time.Sleep(450 * time.Millisecond)
+	ui.agentBusyCache.set(false)
+	ui.yoloCache.set(false)
+	ui.lspCheckedAt = time.Now()
 	return ui.dialog.Dialog(dialog.APIKeyInputID).(*dialog.APIKeyInput)
 }
 func checkKeyInput(t *testing.T, ui *UI, ws *checkedKeyUIWorkspace, d *dialog.APIKeyInput, source string) apiKeyCheckMsg {
 	t.Helper()
 	require.Same(t, d, ui.dialog.Dialog(dialog.APIKeyInputID))
+	require.True(t, ui.apiKeySessions[d].ready)
+	require.Equal(t, "provider.api_key", ui.apiKeySessions[d].credentialID)
 	updateCheckedKey(t, ui, ws, tea.PasteMsg{Content: source})
 	ids := updateCheckedKey(t, ui, ws, tea.KeyPressMsg{Code: tea.KeyEnter})
 	require.Len(t, ids, 1)
