@@ -215,6 +215,21 @@ result. Logout clears the provider credential and its saved accounts. A
 concurrent replacement or selection change invalidates an old operation rather
 than authorizing it to affect the new selection.
 
+For an interrupted local account/configuration transaction, inspect its retained
+operation before applying repair:
+
+```sh
+crux --connection NAME --cwd /srv/projects/PROJECT accounts repair-local ORIGINAL_WORKSPACE_ID OPERATION_ID
+crux --connection NAME --cwd /srv/projects/PROJECT accounts repair-local ORIGINAL_WORKSPACE_ID OPERATION_ID --apply-revision REVIEWED_REVISION
+```
+
+Repair finishes only the recorded account/configuration postimages and refuses
+conflicting newer saved state. It preserves the original progress separately,
+does not repeat a token exchange, and does not publish a receiver runtime.
+Afterward, explicitly reload and review the saved choice. An already completed
+local transaction is reported without repeating writes. A refresh that started
+without a retained token response requires a new explicit login.
+
 Automatic OAuth refresh runs on the owning client. The receiver requests refresh
 for an exact principal, runtime, provider definition, account and credential
 generation. The client saves the rotated token before publishing and
@@ -291,6 +306,41 @@ crux connections revoke NAME --operation OPERATION_ID
 That retry does not remove a later replacement grant. Cleanup may continue after
 the administrative wait times out. Noninteractive initial revocation requires
 `--force`; it does not change what counts as a drain acknowledgement.
+
+Inspect retained revocation operations and their captured daemon results with:
+
+```sh
+crux connections revocations
+```
+
+New grants reserve capacity for their future revocation. The budget is 256 active
+grants plus unresolved revocations; revoking an existing grant does not consume
+an additional reservation. Older stores above this budget preserve their grants
+and unresolved receipts, and the listing reports that excess. New approvals wait
+until recovery or explicit abandonment frees capacity.
+
+The store retains up to 256 completed or abandoned revocation receipts and 256
+inactive authorization summaries, in addition to active grants and summaries
+needed by unresolved receipts. Completed history is pruned oldest first on a
+write. An evicted operation returns unavailable; retry never falls back to
+revoking whichever grant currently has the same name. Legacy necessary state
+may exceed these limits; the reader does not discard it or disable its grants
+merely because of size. This is a bound on new audit growth, not a hard size
+limit on an existing connection store.
+
+A captured daemon that disappears without a retained acknowledgement remains
+unknown. If the operator decides to abandon that exact historical outcome:
+
+```sh
+crux connections abandon-revocation NAME OPERATION_ID --confirm-unacknowledged
+```
+
+Abandonment does not assert cancellation, stop a daemon, remove a daemon registry
+entry, or change a current grant. It makes that historical receipt eligible for
+pruning. `crux connections audit-prune` removes completed or explicitly abandoned
+history while preserving active grants and unresolved operations. An operation
+with no registered daemon observed is recorded separately from acknowledged
+live cancellation.
 
 ## Scope and operational limits
 
