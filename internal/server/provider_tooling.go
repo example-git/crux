@@ -12,10 +12,42 @@ import (
 	"github.com/example-git/crux/internal/proto"
 )
 
+// handlePutWorkspaceProviderTooling documents the workspace authority contract.
+//
+// @Summary Set provider tooling instructions
+// @Description Selects the explicit crux or native instruction profile for the exact provider owner and scope. Client-owned mutations persist on the owning client.
+// @Tags providers
+// @Produce json
+// @Accept json
+// @Param request body proto.ProviderToolingRequest true "Exact request and operation identity"
+// @Param id path string true "Workspace ID bound to the authenticated principal"
+// @Success 200 {object} proto.ProviderToolingState
+// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
+// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
+// @Failure 404 {object} proto.Error "Workspace is unavailable"
+// @Failure 408 {object} proto.Error "Request canceled"
+// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
+// @Router /workspaces/{id}/config/provider-tooling [put]
 func (c *controllerV1) handlePutWorkspaceProviderTooling(w http.ResponseWriter, r *http.Request) {
 	c.handleWorkspaceProviderTooling(w, r, false)
 }
 
+// handleDeleteWorkspaceProviderTooling documents the workspace authority contract.
+//
+// @Summary Remove a provider tooling override
+// @Description Removes only the selected provider tooling override; the resulting state reports its effective source.
+// @Tags providers
+// @Produce json
+// @Accept json
+// @Param request body proto.RemoveProviderToolingRequest true "Exact request and operation identity"
+// @Param id path string true "Workspace ID bound to the authenticated principal"
+// @Success 200 {object} proto.ProviderToolingState
+// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
+// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
+// @Failure 404 {object} proto.Error "Workspace is unavailable"
+// @Failure 408 {object} proto.Error "Request canceled"
+// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
+// @Router /workspaces/{id}/config/provider-tooling [delete]
 func (c *controllerV1) handleDeleteWorkspaceProviderTooling(w http.ResponseWriter, r *http.Request) {
 	c.handleWorkspaceProviderTooling(w, r, true)
 }

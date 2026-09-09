@@ -9,6 +9,24 @@ import (
 	"github.com/example-git/crux/internal/providerauth"
 )
 
+// handlePostWorkspaceProviderSwitch documents the workspace authority contract.
+//
+// @Summary Switch the selected provider account
+// @Description Server-owned transaction endpoint. Client-owned workspaces use the owning client transaction and publish an explicit runtime replacement. Request-bound outcomes distinguish account/configuration saves from runtime publication.
+// @Tags providers
+// @Produce json
+// @Accept json
+// @Param request body proto.ProviderAccountSwitchRequest true "Exact request and operation identity"
+// @Param id path string true "Workspace ID bound to the authenticated principal"
+// @Success 200 {object} proto.ProviderAuthenticationMutationResponse
+// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
+// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
+// @Failure 404 {object} proto.Error "Workspace is unavailable"
+// @Failure 408 {object} proto.ProviderAuthenticationMutationResponse "Canceled or deadline exceeded; inspect retained progress"
+// @Failure 409 {object} proto.ProviderAuthenticationMutationResponse "Target changed or retained operation is unavailable"
+// @Failure 422 {object} proto.ProviderAuthenticationMutationResponse "Operation failed; inspect exact saved/publication progress"
+// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
+// @Router /workspaces/{id}/auth/switch [post]
 func (c *controllerV1) handlePostWorkspaceProviderSwitch(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, proto.MaxProviderAuthRequestBytes))
 	if err != nil {
@@ -28,6 +46,24 @@ func (c *controllerV1) handlePostWorkspaceProviderSwitch(w http.ResponseWriter, 
 	writeProviderAuthMutationResponse(w, response)
 }
 
+// handlePostWorkspaceProviderLogout documents the workspace authority contract.
+//
+// @Summary Log out the exact provider selection
+// @Description Server-owned transaction endpoint. An operation retry retains the original target and operation identity; it cannot log out a replacement selection.
+// @Tags providers
+// @Produce json
+// @Accept json
+// @Param request body proto.ProviderLogoutRequest true "Exact request and operation identity"
+// @Param id path string true "Workspace ID bound to the authenticated principal"
+// @Success 200 {object} proto.ProviderAuthenticationMutationResponse
+// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
+// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
+// @Failure 404 {object} proto.Error "Workspace is unavailable"
+// @Failure 408 {object} proto.ProviderAuthenticationMutationResponse "Canceled or deadline exceeded; inspect retained progress"
+// @Failure 409 {object} proto.ProviderAuthenticationMutationResponse "Target changed or retained operation is unavailable"
+// @Failure 422 {object} proto.ProviderAuthenticationMutationResponse "Operation failed; inspect exact saved/publication progress"
+// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
+// @Router /workspaces/{id}/auth/logout [post]
 func (c *controllerV1) handlePostWorkspaceProviderLogout(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, proto.MaxProviderAuthRequestBytes))
 	if err != nil {

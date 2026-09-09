@@ -105,6 +105,18 @@ func (s *Server) authorizeRoute(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// handleGetRemoteRuntimeCapabilities documents the workspace authority contract.
+//
+// @Summary Negotiate client runtime support
+// @Description Authenticate with the selected client certificate before sending private state. Returns the exact compiler, principal, limits, sharing policy and disconnect grace.
+// @Tags runtime
+// @Produce json
+// @Success 200 {object} proto.RemoteRuntimeCapabilities
+// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
+// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
+// @Failure 408 {object} proto.Error "Request canceled"
+// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
+// @Router /runtime-capabilities [get]
 func (c *controllerV1) handleGetRemoteRuntimeCapabilities(w http.ResponseWriter, r *http.Request) {
 	principal := requestPrincipal(r)
 	if principal == "" {
@@ -302,6 +314,25 @@ func validRuntimeInstructionString(raw []byte) bool {
 	return true
 }
 
+// handlePutWorkspaceRuntime documents the workspace authority contract.
+//
+// @Summary Replace the accepted client runtime
+// @Description Stages the complete private proposal and atomically publishes only against expected_revision. Rejected proposals preserve accepted authority. The reply contains no credentials or bundle content.
+// @Tags runtime
+// @Produce json
+// @Accept json
+// @Param request body proto.UpdateRemoteRuntimeRequest true "Exact request and operation identity"
+// @Param id path string true "Workspace ID bound to the authenticated principal"
+// @Param Crux-Runtime-Protocol header string true "Negotiated protocol: crux-client-runtime-v1"
+// @Param X-Crux-Ephemeral-State header string true "Nonempty marker suppressing private request bodies from traffic logs"
+// @Success 200 {object} config.RemoteAuthority
+// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
+// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
+// @Failure 404 {object} proto.Error "Workspace is unavailable"
+// @Failure 409 {object} proto.Error "Accepted revision or exact refresh identity changed"
+// @Failure 428 {object} proto.Error "Runtime protocol negotiation is required"
+// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
+// @Router /workspaces/{id}/runtime [put]
 func (c *controllerV1) handlePutWorkspaceRuntime(w http.ResponseWriter, r *http.Request) {
 	if !requireRuntimeProtocol(w, r) {
 		return
@@ -330,6 +361,25 @@ func (c *controllerV1) handlePutWorkspaceRuntime(w http.ResponseWriter, r *http.
 	jsonEncode(w, ack)
 }
 
+// handlePostClientRefreshCompletion documents the workspace authority contract.
+//
+// @Summary Acknowledge a client credential refresh
+// @Description Completes the exact retained refresh request after the owning client persists and publishes its result. Replaying that completion never starts another token exchange.
+// @Tags runtime
+// @Produce json
+// @Accept json
+// @Param request body config.ClientRefreshCompletion true "Exact request and operation identity"
+// @Param id path string true "Workspace ID bound to the authenticated principal"
+// @Param Crux-Runtime-Protocol header string true "Negotiated protocol: crux-client-runtime-v1"
+// @Param X-Crux-Ephemeral-State header string true "Nonempty marker suppressing private request bodies from traffic logs"
+// @Success 204 "Exact completion acknowledged"
+// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
+// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
+// @Failure 404 {object} proto.Error "Workspace is unavailable"
+// @Failure 409 {object} proto.Error "Accepted revision or exact refresh identity changed"
+// @Failure 428 {object} proto.Error "Runtime protocol negotiation is required"
+// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
+// @Router /workspaces/{id}/runtime/refresh-completion [post]
 func (c *controllerV1) handlePostClientRefreshCompletion(w http.ResponseWriter, r *http.Request) {
 	if !requireRuntimeProtocol(w, r) {
 		return

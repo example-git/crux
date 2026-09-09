@@ -135,7 +135,10 @@ func (c *controllerV1) handleGetWorkspace(w http.ResponseWriter, r *http.Request
 //	@Tags			workspaces
 //	@Accept			json
 //	@Produce		json
-//	@Param			request	body		proto.Workspace	true	"Workspace creation params"
+//	@Description Client mode requires authenticated capability negotiation and a complete private runtime. Server mode is explicit for authenticated remote callers. Public workspace discovery is not reusable private authority.
+//	@Param			request	body		proto.CreateWorkspaceRequest	true	"Workspace creation and private authority"
+//	@Param Crux-Runtime-Protocol header string false "Required for client mode: negotiated runtime protocol"
+//	@Param X-Crux-Ephemeral-State header string false "Required for client mode: nonempty private-state marker"
 //	@Success		200		{object}	proto.Workspace
 //	@Failure		400		{object}	proto.Error
 //	@Failure		500		{object}	proto.Error

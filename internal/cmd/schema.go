@@ -13,15 +13,23 @@ import (
 )
 
 var schemaCmd = &cobra.Command{
-	Use:    "schema [configuration|provider-plugin|provider-preset-plugin|image-provider-plugin|provider-branding]",
+	Use:    "schema [configuration|provider-plugin|provider-preset-plugin|image-provider-plugin|provider-branding|remote-runtime]",
 	Short:  "Generate a JSON schema",
-	Long:   "Generate the Crux configuration or provider plugin manifest JSON schema",
+	Long:   "Generate a Crux configuration, provider manifest or private remote runtime wire schema",
 	Hidden: true,
 	Args:   cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		kind := "configuration"
 		if len(args) == 1 {
 			kind = args[0]
+		}
+		if kind == "remote-runtime" {
+			bts, err := remoteRuntimeSchemaJSON()
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(bts)
+			return err
 		}
 		if kind == "provider-plugin" || kind == "provider-preset-plugin" || kind == "image-provider-plugin" || kind == "provider-branding" {
 			var (
@@ -58,6 +66,18 @@ var schemaCmd = &cobra.Command{
 		fmt.Fprintln(cmd.OutOrStdout(), string(bts))
 		return nil
 	},
+}
+
+// remoteRuntimeSchemaJSON describes private proposal fields without loading
+// local plugins, credentials or configuration. Admission additionally checks
+// the negotiated compiler, exact owners, content digests and destination policy.
+func remoteRuntimeSchemaJSON() ([]byte, error) {
+	reflector := new(jsonschema.Reflector)
+	schema := reflector.Reflect(&config.RemoteRuntimeProposal{})
+	schema.ID = "https://raw.githubusercontent.com/example-git/crux/main/remote-workspace-runtime.schema.json"
+	schema.Title = "Private client-owned remote workspace runtime"
+	schema.Description = "Private admission/update input, never public workspace discovery. Structural schema only: authenticated negotiation, byte budgets, digests, manifest semantics, exact credential owners and permitted destinations are also required by runtime admission."
+	return json.MarshalIndent(schema, "", "  ")
 }
 
 // setProviderTypeEnum overwrites the provider `type` enum with the live set
