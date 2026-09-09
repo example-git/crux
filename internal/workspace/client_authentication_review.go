@@ -86,6 +86,8 @@ type clientAuthenticationApplyReceipt struct {
 }
 
 type clientAuthenticationReviewReceipt struct {
+	supersededByReview         string
+	originalAbandonedBy        string
 	journalRevision            uint64
 	journalCompleted, restored bool
 	observation                string
@@ -194,9 +196,9 @@ func (a *clientAuthority) freshAuthenticationReviewCurrent(review *clientAuthent
 }
 func authenticationReviewOriginalCurrent(a *clientAuthority, original *clientAuthenticationReceipt, review *clientAuthenticationReviewReceipt) bool {
 	if review.request.FreshSaved {
-		return original == nil && review.savedStateSupersededBy == "" && a.freshAuthenticationReviewCurrent(review)
+		return original == nil && review.supersededByReview == "" && review.originalAbandonedBy == "" && review.savedStateSupersededBy == "" && a.freshAuthenticationReviewCurrent(review)
 	}
-	return original != nil && original.savedStateSupersededBy == "" && original.reconciledBy == "" && original.reviewSequence == review.request.ReviewSequence
+	return original != nil && original.abandon == nil && review.supersededByReview == "" && review.originalAbandonedBy == "" && original.savedStateSupersededBy == "" && original.reconciledBy == "" && original.reviewSequence == review.request.ReviewSequence
 }
 
 func (w *ClientWorkspace) lockAuthenticationReview(ctx context.Context, operation string, target providerauth.Target) (*clientAuthority, *clientAuthenticationReceipt, error) {
@@ -254,6 +256,17 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 		return initial, err
 	}
 	defer a.mu.Unlock()
+	release, leaseErr := a.acquireAuthenticationPublication(ctx, request.target().WorkspaceID)
+	if leaseErr != nil {
+		return initial, leaseErr
+	}
+	defer release()
+	if err := a.loadAuthenticationJournal(ctx, request.target().WorkspaceID); err != nil {
+		return initial, err
+	}
+	if !request.FreshSaved {
+		original = a.authenticationReceipts[request.OperationID]
+	}
 	defer func() {
 		if err := a.finishAuthenticationJournal(ctx); err != nil {
 			failure = errors.Join(failure, err)
@@ -278,7 +291,7 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 			}
 		}
 	} else {
-		if original.savedStateSupersededBy != "" || original.reconciledBy != "" || original.acknowledged && original.adopted || request.ReviewSequence <= original.reviewSequence {
+		if original.abandon != nil || original.savedStateSupersededBy != "" || original.reconciledBy != "" || original.acknowledged && original.adopted || request.ReviewSequence <= original.reviewSequence {
 			return initial, providerauth.ErrStale
 		}
 		original.reviewSequence = request.ReviewSequence
@@ -293,6 +306,14 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	}
 	review := &clientAuthenticationReviewReceipt{request: request, owner: owner, summary: initial}
 	a.retainAuthenticationReview(review)
+	for _, previous := range a.authenticationReviews {
+		if previous == review || previous.owner != owner || previous.request.target() != request.target() || previous.request.ReviewSequence >= request.ReviewSequence || previous.request.FreshSaved != request.FreshSaved || previous.request.OperationID != request.OperationID || previous.journalCompleted {
+			continue
+		}
+		if previous.apply == nil || !previous.apply.put {
+			previous.supersededByReview = request.ReviewID
+		}
+	}
 	review.summary.Owner = providerauth.PublicOwner(owner)
 	if original != nil {
 		review.summary.OriginalProgress = original.outcome.Progress
@@ -494,7 +515,7 @@ func (a *clientAuthority) pendingAuthenticationReview(id string) bool {
 		}
 	}
 	for _, original := range a.authenticationReceipts {
-		if original.request.target.WorkspaceID == id && original.pendingReview != "" && original.reconciledBy == "" && original.savedStateSupersededBy == "" {
+		if original.abandon == nil && original.request.target.WorkspaceID == id && original.pendingReview != "" && original.reconciledBy == "" && original.savedStateSupersededBy == "" {
 			return true
 		}
 	}
@@ -586,13 +607,24 @@ func (w *ClientWorkspace) applyClientAuthenticationReview(ctx context.Context, r
 		return initial, err
 	}
 	defer a.mu.Unlock()
+	release, leaseErr := a.acquireAuthenticationPublication(ctx, request.target().WorkspaceID)
+	if leaseErr != nil {
+		return initial, leaseErr
+	}
+	defer release()
+	if err := a.loadAuthenticationJournal(ctx, request.target().WorkspaceID); err != nil {
+		return initial, err
+	}
+	if !request.FreshSaved {
+		original = a.authenticationReceipts[request.OperationID]
+	}
 	defer func() {
 		if err := a.finishAuthenticationJournal(ctx); err != nil {
 			failure = errors.Join(failure, err)
 		}
 	}()
 	review := a.authenticationReviews[request.ReviewID]
-	if review == nil || review.request.OperationID != request.OperationID || review.request.OriginalTarget != request.OriginalTarget || review.request.FreshSaved != request.FreshSaved || review.request.SavedTarget != request.SavedTarget || review.summary.PreviewID != request.PreviewID || review.err != nil || review.proposal == nil {
+	if review == nil || review.request.OperationID != request.OperationID || review.request.OriginalTarget != request.OriginalTarget || review.request.FreshSaved != request.FreshSaved || review.request.SavedTarget != request.SavedTarget || review.summary.PreviewID != request.PreviewID || review.err != nil || review.proposal == nil || review.supersededByReview != "" || review.originalAbandonedBy != "" {
 		return initial, providerauth.ErrStale
 	}
 	for _, other := range a.authenticationReviews {
@@ -643,6 +675,9 @@ func (w *ClientWorkspace) applyClientAuthenticationReview(ctx context.Context, r
 	}
 	if original != nil {
 		original.pendingReview = review.summary.PreviewID
+		if err := a.persistAuthenticationReceipt(ctx, original); err != nil {
+			return fail(err)
+		}
 	}
 	a.pending, a.pendingView = review.proposal, review.proposal.CollectionConfig()
 	ack, err := w.client.ReplaceRemoteRuntime(ctx, request.target().WorkspaceID, review.base.Revision, *review.proposal)
@@ -735,7 +770,7 @@ func (a *clientAuthority) supersedeAuthenticationWithSavedReview(review *clientA
 		}
 	}
 	for _, previous := range a.authenticationReviews {
-		if previous != review && previous.owner == review.owner && previous.request.target().WorkspaceID == review.request.SavedTarget.WorkspaceID && previous.apply != nil && previous.apply.put && !previous.apply.outcome.Adopted {
+		if previous != review && !previous.journalCompleted && previous.originalAbandonedBy == "" && previous.owner == review.owner && previous.request.target().WorkspaceID == review.request.SavedTarget.WorkspaceID && previous.apply != nil && previous.apply.put && !previous.apply.outcome.Adopted {
 			previous.savedStateSupersededBy = review.summary.PreviewID
 		}
 	}

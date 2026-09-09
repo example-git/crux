@@ -78,11 +78,16 @@ type MutationResult struct {
 	runtime            config.RuntimeSnapshot
 	after              config.AuthenticationCapture
 	current            bool
+	localCommitPending bool
 	originalOwner      providerregistry.RegistrationOwner
 	oauthTokenID       string
 	credentialEffectID string
 	removal            *removalIntent
 }
+
+// LocalCommitPending means this admitted fixed writer outlived its caller's
+// wait. No final progress or success is asserted by that interrupted response.
+func (r MutationResult) LocalCommitPending() bool { return r.localCommitPending }
 
 func (MutationResult) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication mutation results are private")
