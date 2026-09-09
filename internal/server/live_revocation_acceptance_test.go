@@ -316,7 +316,17 @@ func testLiveRevocationDrainsCredentialWork(t *testing.T, detached bool) {
 		require.Equal(t, detachedTask.ID, tasks[0].ID)
 		require.True(t, tasks[0].State.Status.Terminal())
 		require.NotEqual(t, managedtask.StatusCompleted, tasks[0].State.Status)
-		require.False(t, tasks[0].State.EndedAt.IsZero())
+		// ListTasks deliberately projects state to status only. Inspect the
+		// full retained result for the end timestamp and exact child identity;
+		// this read must not stop, drain, or otherwise finish the task itself.
+		output, err := taskCoordinator.TaskOutput(ctx, detachedTask.ID, false, 0)
+		require.NoError(t, err)
+		require.Equal(t, managedtask.RetrievalReady, output.RetrievalStatus)
+		require.Equal(t, detachedTask.ID, output.Task.ID)
+		require.Equal(t, detachedTask.Ownership, output.Task.Ownership)
+		require.Equal(t, detachedTask.ChildSessionID, output.Task.ChildSessionID)
+		require.Equal(t, tasks[0].State.Status, output.Task.State.Status)
+		require.False(t, output.Task.State.EndedAt.IsZero())
 	}
 	select {
 	case <-streamEnded:
