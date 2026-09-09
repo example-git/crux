@@ -12,6 +12,15 @@ func TestCapturedOAuthEnvironment(t *testing.T) {
 	t.Setenv("OAUTH_ENV_ABSENT", "ambient-fallback")
 	entries := []string{"OAUTH_ENV_TEST=captured-secret"}
 	ctx := ContextWithEnvironment(t.Context(), entries)
+	copy, bound := EnvironmentFromContext(ctx)
+	require.True(t, bound)
+	require.Equal(t, entries, copy)
+	copy[0] = "OAUTH_ENV_TEST=modified-output"
+	_, bound = EnvironmentFromContext(t.Context())
+	require.False(t, bound)
+	empty, bound := EnvironmentFromContext(ContextWithEnvironment(t.Context(), nil))
+	require.True(t, bound)
+	require.Empty(t, empty)
 	entries[0] = "OAUTH_ENV_TEST=modified-input"
 	t.Setenv("OAUTH_ENV_TEST", "later-ambient")
 	value, ok := LookupEnvironment(ctx, "OAUTH_ENV_TEST")
