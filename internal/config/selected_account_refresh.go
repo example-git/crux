@@ -38,11 +38,9 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 	if err != nil || admittedOwner != owner {
 		return nil, errors.New("selected provider definition is unavailable in the captured runtime")
 	}
-	validateDefinition := func() error {
-		current := s.Config()
-		snapshot := RuntimeSnapshot{config: current, registry: current.providerCapabilities()}
+	validateDefinition := func(snapshot RuntimeSnapshot) error {
 		actual, actualOwner, err := snapshot.clientProviderDefinitionRaw(owner.ProviderID)
-		if err != nil || actualOwner != owner || !reflect.DeepEqual(actual, definition) {
+		if err != nil || actualOwner != owner || !reflect.DeepEqual(actual, definition) || !snapshot.nativeIdentities.matches(admitted.Environment()) {
 			return errors.New("selected provider definition changed during refresh")
 		}
 		return nil
@@ -70,7 +68,11 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 	if err := validate(); err != nil {
 		return nil, err
 	}
-	if err := validateDefinition(); err != nil {
+	currentRuntime, err := s.captureRemoteCollectionRuntime(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateDefinition(currentRuntime); err != nil {
 		return nil, err
 	}
 	cfg := admitted.Config()
@@ -105,7 +107,14 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 		}
 	}
 	refresh := func(exchangeCtx context.Context, token string) (*oauth.Token, error) {
-		if err := validateDefinition(); err != nil {
+		// Accounts releases its store lock before the exchange callback. Capture
+		// the full current runtime here; the lightweight owner validator below
+		// remains safe when accounts invokes it under its own lock.
+		currentRuntime, err := s.captureRemoteCollectionRuntime(exchangeCtx)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateDefinition(currentRuntime); err != nil {
 			return nil, err
 		}
 		// A mismatch may be a completed peer rotation, which the accounts layer
@@ -116,6 +125,7 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 		if !diskHasAccountOrAbsent(diskBefore, expected) {
 			return nil, fmt.Errorf("provider configuration on disk no longer matches the selected account: %w", accounts.ErrCredentialChanged)
 		}
+		exchangeCtx = oauth.ContextWithEnvironment(exchangeCtx, admitted.Environment())
 		if s.exchangeToken != nil {
 			return s.exchangeToken(exchangeCtx, owner.ProviderID, token)
 		}
@@ -135,10 +145,13 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 		if err := validate(); err != nil {
 			return err
 		}
-		if err := validateDefinition(); err != nil {
+		s.configMu.Lock()
+		currentRuntime := s.runtimeSnapshotLocked(s.config, s.resolver, s.providerRegistry, s.effectiveEnvironment)
+		s.configMu.Unlock()
+		if err := validateDefinition(currentRuntime); err != nil {
 			return err
 		}
-		current := s.Config()
+		current := currentRuntime.Config()
 		provider, _ := current.Providers.Get(owner.ProviderID)
 		if !reflect.DeepEqual(provider, before) && !providerHasAccount(provider, *fresh) || !providerHasAccount(before, expected) && !providerHasAccount(before, *fresh) {
 			return accounts.ErrCredentialChanged
