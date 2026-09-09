@@ -44,22 +44,25 @@ type EnrollmentResult struct {
 }
 
 type EnrollmentListener struct {
-	setup           EnrollmentSetup
-	code            string
-	listener        net.Listener
-	server          *http.Server
-	ctx             context.Context
-	outcome         enrollmentOutcome
-	terminal        bool
-	done            chan struct{}
-	closed          chan struct{}
-	shutdownErr     error
-	mu              sync.Mutex
-	attempts        int
-	tokenState      enrollmentTokenState
-	expired         bool
-	expiresAt       time.Time
-	authorizeClient func(context.Context, string, string, authorizationCommit) error
+	setup                 EnrollmentSetup
+	code                  string
+	listener              net.Listener
+	server                *http.Server
+	ctx                   context.Context
+	outcome               enrollmentOutcome
+	terminal              bool
+	done                  chan struct{}
+	closed                chan struct{}
+	shutdownErr           error
+	mu                    sync.Mutex
+	attempts              int
+	malformed             int
+	authorizationFailures int
+	admission             *enrollmentAdmission
+	tokenState            enrollmentTokenState
+	expired               bool
+	expiresAt             time.Time
+	authorizeClient       func(context.Context, string, string, authorizationCommit) error
 }
 
 type enrollmentTokenState uint8
@@ -145,12 +148,14 @@ func StartEnrollment(ctx context.Context, listenAddress, advertisedAddress strin
 		done:            make(chan struct{}),
 		closed:          make(chan struct{}),
 		expiresAt:       expiresAt,
+		admission:       newEnrollmentAdmission(),
 		authorizeClient: authorizeClientWithCommit,
 	}
+	enrollment.listener = &enrollmentAdmissionListener{Listener: listener, admission: enrollment.admission}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST "+enrollmentPath, enrollment.handleEnrollment)
 	enrollment.server = &http.Server{
-		Handler:           mux,
+		Handler:           enrollment.serveEnrollmentHTTP(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
@@ -165,7 +170,7 @@ func StartEnrollment(ctx context.Context, listenAddress, advertisedAddress strin
 		}},
 	}
 	go func() {
-		err := enrollment.server.Serve(tls.NewListener(listener, tlsConfig))
+		err := enrollment.server.Serve(tls.NewListener(enrollment.listener, tlsConfig))
 		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			enrollment.finish(enrollmentOutcome{err: fmt.Errorf("enrollment listener failed: %w", err)})
 		}
@@ -229,24 +234,28 @@ func (e *EnrollmentListener) handleEnrollment(response http.ResponseWriter, requ
 	decoder.DisallowUnknownFields()
 	var payload enrollmentRequest
 	if err := decoder.Decode(&payload); err != nil {
-		http.Error(response, "invalid enrollment request", http.StatusBadRequest)
+		e.rejectMalformed(response, request, "invalid enrollment request")
 		return
 	}
 	if err := ensureJSONEnd(decoder); err != nil {
-		http.Error(response, "invalid enrollment request", http.StatusBadRequest)
+		e.rejectMalformed(response, request, "invalid enrollment request")
 		return
 	}
 	payload.Name = strings.TrimSpace(payload.Name)
 	if payload.Name == "" || len(payload.Name) > 128 || strings.IndexFunc(payload.Name, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
-		http.Error(response, "invalid client name", http.StatusBadRequest)
+		e.rejectMalformed(response, request, "invalid client name")
 		return
 	}
 	certificate, err := parseCertificate(payload.Certificate, x509.ExtKeyUsageClientAuth)
 	if err != nil {
-		http.Error(response, "invalid client certificate", http.StatusBadRequest)
+		e.rejectMalformed(response, request, "invalid client certificate")
 		return
 	}
 	if err := e.authorize(request.Context(), payload.Name, payload.Certificate); err != nil {
+		if errors.Is(err, errEnrollmentAuthorizationLimit) {
+			http.Error(response, err.Error(), http.StatusTooManyRequests)
+			return
+		}
 		if errors.Is(err, errEnrollmentExpired) {
 			http.Error(response, err.Error(), http.StatusGone)
 			e.finish(enrollmentOutcome{err: err})
@@ -317,6 +326,13 @@ func (e *EnrollmentListener) authorize(ctx context.Context, name, certificate st
 		}
 		expired := e.expired || !time.Now().Before(e.expiresAt)
 		e.expired = expired
+		if !e.terminal && !expired && e.ctx.Err() == nil && ctx.Err() == nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+			e.authorizationFailures++
+			if e.authorizationFailures >= enrollmentMaxAuthorizationFailures {
+				err = errEnrollmentAuthorizationLimit
+				e.publishLocked(enrollmentOutcome{err: err})
+			}
+		}
 		e.mu.Unlock()
 		if expired {
 			e.finish(enrollmentOutcome{err: enrollmentExpiredError()})
@@ -383,6 +399,8 @@ func (e *EnrollmentListener) publishLocked(outcome enrollmentOutcome) {
 
 var errEnrollmentExpired = errors.New("enrollment code expired")
 var errEnrollmentClosed = errors.New("enrollment closed")
+var errEnrollmentMalformedLimit = errors.New("enrollment malformed submission limit exceeded")
+var errEnrollmentAuthorizationLimit = errors.New("enrollment authorization failure limit exceeded")
 
 func enrollmentExpiredError() error {
 	return fmt.Errorf("%w; rerun `crux server setup` to generate a new code", errEnrollmentExpired)
