@@ -68,7 +68,7 @@ var authenticationAbandonCmd = &cobra.Command{
 					return err
 				}
 				outcome, err := capability.AbandonProviderAuthenticationReview(ctx, request)
-				if outcome.Validate(request) == nil {
+				if outcome.Validate(request) == nil && entry.ApplyRequest != nil && outcome.Original.Validate(*entry.ApplyRequest) == nil {
 					cmd.Printf("Review %q in original workspace %q was retired by %q. Original receiver acknowledged=%t; adopted=%t.\n", args[1], args[0], abandonID, outcome.Original.RemoteAcknowledged, outcome.Original.Adopted)
 					cmd.Println("The original apply outcome is unchanged. This action made no receiver publication and did not undo any previous one.")
 				} else if err == nil {
@@ -91,7 +91,8 @@ var authenticationAbandonCmd = &cobra.Command{
 				return err
 			}
 			outcome, err := capability.AbandonProviderAuthentication(ctx, request)
-			if outcome.Validate(request) == nil {
+			originalIdentityMatches := outcome.Original.CheckID == entry.Outcome.CheckID && outcome.Original.CredentialID == entry.Outcome.CredentialID && outcome.Original.LoginID == entry.Outcome.LoginID && outcome.Original.RemovedAccountID == entry.Outcome.RemovedAccountID
+			if outcome.Validate(request) == nil && originalIdentityMatches {
 				p := outcome.Original.Progress
 				cmd.Printf("Operation %q in original workspace %q was retired by %q. Original receiver acknowledged=%t; adopted=%t.\n", args[1], args[0], abandonID, outcome.RemoteAcknowledged, outcome.Adopted)
 				cmd.Printf("Original observed progress: refreshed=%t accounts=%t configuration=%t local runtime=%t.\n", p.AccountRefreshed, p.AccountsSaved, p.ConfigSaved, p.RuntimePublished)
