@@ -108,6 +108,7 @@ func newOAuthUI(t *testing.T) (*UI, *oauthUIWorkspace, dialog.ActionSelectModel)
 	key.cfg = cfg
 	selection.ProviderOwner = owner
 	key.snapshot.Providers[0].Owner = providerauth.PublicOwner(owner)
+	key.snapshot.Providers[0].CredentialSlots = nil // This fixture models an OAuth-only owner.
 	ws := &oauthUIWorkspace{checkedKeyUIWorkspace: key}
 	ui.com.Workspace = ws
 	ui.oauthOpenURL = func(rawURL string) error {
