@@ -29,6 +29,10 @@ type ProviderAuthenticationHistoryOperation struct {
 	ReconciledBy, SavedStateSupersededBy       string
 }
 type ProviderAuthenticationHistoryReview struct {
+	ApplyAttempted         bool
+	JournalRevision        uint64
+	Abandoned              bool
+	AbandonRequest         *ProviderAuthenticationReviewAbandonRequest
 	SupersededByReview     string
 	OriginalAbandonedBy    string
 	HistoricalWorkspace    bool
@@ -135,8 +139,13 @@ func authenticationHistoryProjection(a *clientAuthority, id string, historical b
 		if review.request.target().WorkspaceID != id {
 			continue
 		}
-		entry := ProviderAuthenticationHistoryReview{OriginalAbandonedBy: review.originalAbandonedBy, SupersededByReview: review.supersededByReview, HistoricalWorkspace: historical, Request: ProviderAuthenticationReviewRequest(review.request), Summary: cloneAuthenticationReviewSummary(review.summary), SavedStateSupersededBy: review.savedStateSupersededBy}
+		entry := ProviderAuthenticationHistoryReview{JournalRevision: review.journalRevision, Abandoned: review.abandon != nil, OriginalAbandonedBy: review.originalAbandonedBy, SupersededByReview: review.supersededByReview, HistoricalWorkspace: historical, Request: ProviderAuthenticationReviewRequest(review.request), Summary: cloneAuthenticationReviewSummary(review.summary), SavedStateSupersededBy: review.savedStateSupersededBy}
+		if review.abandon != nil {
+			request := *review.abandon
+			entry.AbandonRequest = &request
+		}
 		if review.apply != nil {
+			entry.ApplyAttempted = review.apply.put
 			request := ProviderAuthenticationApplyRequest(review.apply.request)
 			outcome := review.apply.outcome
 			entry.ApplyRequest, entry.ApplyOutcome = &request, &outcome

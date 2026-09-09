@@ -130,6 +130,20 @@ func (w *ClientWorkspace) AbandonProviderAuthentication(ctx context.Context, req
 // The caller holds the publication lane lease. Each associated record keeps
 // its own immutable progress/ack, with only a separate terminal marker added.
 func (a *clientAuthority) retireAbandonedOriginalReviews(ctx context.Context, original *clientAuthenticationReceipt) error {
+	a.discardAbandonedOriginalPending(original)
+	for _, review := range a.authenticationReviews {
+		if review.request.FreshSaved || review.request.OperationID != original.request.operationID || review.request.OriginalTarget != original.request.target || review.owner != original.owner || review.journalCompleted {
+			continue
+		}
+		review.originalAbandonedBy = original.abandon.AbandonID
+		if err := a.persistAuthenticationReview(ctx, review); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *clientAuthority) discardAbandonedOriginalPending(original *clientAuthenticationReceipt) {
 	if a.pending != nil && original.proposal != nil && a.pending.Revision == original.proposal.Revision && a.pending.Digest == original.proposal.Digest {
 		a.pending, a.pendingView = nil, nil
 	}
@@ -141,14 +155,4 @@ func (a *clientAuthority) retireAbandonedOriginalReviews(ctx context.Context, or
 			}
 		}
 	}
-	for _, review := range a.authenticationReviews {
-		if review.request.FreshSaved || review.request.OperationID != original.request.operationID || review.request.OriginalTarget != original.request.target || review.owner != original.owner || review.journalCompleted {
-			continue
-		}
-		review.originalAbandonedBy = original.abandon.AbandonID
-		if err := a.persistAuthenticationReview(ctx, review); err != nil {
-			return err
-		}
-	}
-	return nil
 }
