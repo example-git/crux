@@ -140,9 +140,10 @@ private proposal. Incompatible peers fail explicitly; the client does not retry
 with legacy forwarding or silently request server-owned mode.
 
 Collection includes selected main/auxiliary providers, configured image
-dependencies and the selected account for each required provider. It does not
-forward every saved account. Bundle bytes and assets come from the captured
-configuration scan. Runtime admission rejects malformed or unsupported bundles,
+dependencies and each required provider's selected credential binding, including
+an account when applicable. It does not forward every saved account. Bundle
+bytes and assets come from the captured configuration scan. Runtime admission
+rejects malformed or unsupported bundles,
 bad digests, unsafe paths, oversized input and mismatched credential owners or
 destinations before publication.
 
@@ -322,9 +323,10 @@ capacity refusal requires explicit recovery or retirement rather than another
 token exchange.
 
 Automatic OAuth refresh runs on the owning client. The receiver requests refresh
-for an exact principal, runtime, provider definition, account and credential
-generation. The client saves the rotated token before publishing and
-acknowledging the replacement. Completed rotation receipts let other workspaces
+for an exact principal, runtime, provider definition and credential generation,
+including the account or configuration-only token binding. The client saves the
+rotated token before publishing and acknowledging the replacement. Completed
+rotation receipts let other workspaces
 adopt the proven result without consuming the same refresh token again.
 
 Image HTTP authentication recovery retries the failed request boundary after an
