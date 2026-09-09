@@ -843,6 +843,8 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 		}
 	}
 	switch msg := msg.(type) {
+	case oauthLoginAbandonMsg:
+		cmds = append(cmds, m.completeOAuthLoginAbandon(msg))
 	case oauthLoginRecordedMsg:
 		cmds = append(cmds, m.completeOAuthLoginRecorded(msg))
 	case oauthLoginStatusMsg:

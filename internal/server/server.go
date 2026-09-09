@@ -276,6 +276,7 @@ func (s *Server) installHandler() {
 	route("POST /v1/workspaces/{id}/auth/oauth/begin", c.handlePostWorkspaceOAuthLoginBegin)
 	route("POST /v1/workspaces/{id}/auth/oauth/results", c.handlePostWorkspaceOAuthLoginResults)
 	route("POST /v1/workspaces/{id}/auth/oauth/recover", c.handlePostWorkspaceOAuthLoginRecover)
+	route("POST /v1/workspaces/{id}/auth/oauth/abandon", c.handlePostWorkspaceOAuthLoginAbandon)
 	route("POST /v1/workspaces/{id}/auth/oauth/bind", c.handlePostWorkspaceOAuthLoginBind)
 	route("POST /v1/workspaces/{id}/auth/oauth/code", c.handlePostWorkspaceOAuthLoginCode)
 	route("POST /v1/workspaces/{id}/auth/oauth/wait", c.handlePostWorkspaceOAuthLoginWait)

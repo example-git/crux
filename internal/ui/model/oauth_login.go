@@ -31,6 +31,8 @@ type oauthLoginRead struct {
 	recorded         []providerauth.OAuthLoginRecordedResult
 	recordedSequence uint64
 	recordedLoaded   bool
+	recordedNotice   string
+	abandonRequest   *providerauth.OAuthLoginAbandonRequest
 	cancel           context.CancelFunc
 }
 

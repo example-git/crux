@@ -48,6 +48,7 @@ type OAuthLoginRecordedResult struct {
 	OriginalWorkspaceID string `json:"original_workspace_id"`
 	OperationID         string `json:"operation_id"`
 	State               string `json:"state"`
+	Abandoned           bool   `json:"abandoned,omitempty"`
 }
 type OAuthLoginRecoveryList struct {
 	Target  Target                     `json:"target"`
@@ -70,6 +71,9 @@ func (r OAuthLoginRecoveryList) Validate() error {
 			return errors.New("duplicate recorded OAuth operation")
 		}
 		seen[[2]string{result.OriginalWorkspaceID, result.OperationID}] = struct{}{}
+		if result.Abandoned && result.State != "exchange-outcome-unknown" && result.State != "not-started" {
+			return errors.New("invalid abandoned OAuth result")
+		}
 		switch result.State {
 		case "not-started", "exchange-outcome-unknown", "token-result-recorded":
 		default:
@@ -127,7 +131,7 @@ func (s *Service) listOAuthLoginResults(ctx context.Context, target Target, acce
 		}
 		for _, record := range records {
 			if record.Owner == provider.Owner {
-				result.Results = append(result.Results, OAuthLoginRecordedResult{OriginalWorkspaceID: record.OriginalWorkspaceID, OperationID: record.OperationID, State: record.State})
+				result.Results = append(result.Results, OAuthLoginRecordedResult{OriginalWorkspaceID: record.OriginalWorkspaceID, OperationID: record.OperationID, State: record.State, Abandoned: record.Abandoned})
 			}
 		}
 		latest, _, err := s.capture(ctx, accepted, view)

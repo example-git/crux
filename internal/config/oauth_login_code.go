@@ -145,9 +145,11 @@ func (s *ConfigStore) ExchangeOAuthCode(ctx context.Context, code OAuthCodeLogin
 			return AuthorizedOAuthPreparation{}, oauthLoginFailure("code exchange", err)
 		}
 		bound := s.oauthLoginContext(ctx, p)
-		if err := s.startOAuthLoginExchange(bound, p); err != nil {
+		releaseExchange, err := s.startOAuthLoginExchange(bound, p)
+		if err != nil {
 			return AuthorizedOAuthPreparation{}, err
 		}
+		defer releaseExchange()
 		token, err := state.challenge.Exchange(bound, input)
 		if err != nil {
 			return AuthorizedOAuthPreparation{}, oauthLoginFailure("code exchange", err)

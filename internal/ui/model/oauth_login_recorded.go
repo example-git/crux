@@ -81,16 +81,28 @@ func (m *UI) completeOAuthLoginRecorded(msg oauthLoginRecordedMsg) tea.Cmd {
 		err = providerauth.ErrStale
 	}
 	choices := []dialog.OAuthLoginResultChoice{{Label: "Start a new login"}}
-	lines := []string{"Choose a new login, or recover and save one observed token result. Recovery runs no new OAuth exchange and does not claim the original operation succeeded."}
+	lines := []string{"Choose a new login, recover and save an observed token, or explicitly abandon a tokenless preparation or unknown exchange. Abandonment frees its reservation while preserving its original not-started or unknown state; it cannot discard a recorded token and does not acknowledge authentication."}
 	r.recorded = nil
+	if r.recordedNotice != "" {
+		lines = append(lines, r.recordedNotice)
+	}
 	if err != nil {
 		lines = append(lines, "Recorded results could not be loaded: "+safeOAuthLoginError(err))
 	} else {
 		r.recorded = append([]providerauth.OAuthLoginRecordedResult(nil), msg.list.Results...)
 		for _, result := range r.recorded {
+			if result.Abandoned {
+				lines = append(lines, "Workspace "+result.OriginalWorkspaceID+", operation "+result.OperationID+": abandoned; original state: "+result.State+". Evidence is retained until bounded history pruning.")
+				continue
+			}
 			if result.State == "token-result-recorded" {
 				choices = append(choices, dialog.OAuthLoginResultChoice{OriginalWorkspaceID: result.OriginalWorkspaceID, OperationID: result.OperationID, Label: "Recover and save " + result.OriginalWorkspaceID + " / " + result.OperationID})
 			} else {
+				if result.State == "exchange-outcome-unknown" || result.State == "not-started" {
+					if _, ok := r.workspace.(workspace.ProviderOAuthAbandoner); ok {
+						choices = append(choices, dialog.OAuthLoginResultChoice{OriginalWorkspaceID: result.OriginalWorkspaceID, OperationID: result.OperationID, Label: "Abandon " + result.State + " operation " + result.OriginalWorkspaceID + " / " + result.OperationID, Abandon: true})
+					}
+				}
 				lines = append(lines, "Workspace "+result.OriginalWorkspaceID+", operation "+result.OperationID+": "+result.State+"; no observed token is available for recovery.")
 			}
 		}
@@ -111,10 +123,13 @@ func (m *UI) chooseOAuthLoginRecorded(action dialog.ActionOAuthLoginResult) tea.
 	if (action.OriginalWorkspaceID == "") != (action.OriginalOperationID == "") {
 		return util.ReportError(errors.New("The recorded OAuth identity is incomplete."))
 	}
+	if action.Abandon {
+		return m.abandonOAuthLoginRecorded(action, r)
+	}
 	if action.OriginalOperationID != "" {
 		found := false
 		for _, result := range r.recorded {
-			if result.OriginalWorkspaceID == action.OriginalWorkspaceID && result.OperationID == action.OriginalOperationID && result.State == "token-result-recorded" {
+			if result.OriginalWorkspaceID == action.OriginalWorkspaceID && result.OperationID == action.OriginalOperationID && result.State == "token-result-recorded" && !result.Abandoned {
 				found = true
 				break
 			}
