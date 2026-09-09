@@ -120,7 +120,7 @@ func (d localAuthenticationDisk) Format(s fmt.State, _ rune) {
 }
 func (c LocalAuthenticationChange) Summary() LocalAuthenticationSummary {
 	d := c.disk
-	return LocalAuthenticationSummary{WorkspaceID: d.Key.WorkspaceID, OperationID: d.Key.OperationID, Revision: c.revision, Action: d.Action, ProviderID: d.Owner.ProviderID, AccountID: d.AccountID, RemovedAccountID: d.RemoveID, Original: d.Original, RefreshStarted: d.RefreshStarted, RefreshObserved: d.RefreshToken != nil, Finished: d.Finished, Coherent: d.Coherent, RepairReady: len(d.Accounts) > 0 || len(d.RefreshAccounts) > 0 || d.RefreshToken != nil, NeedsReload: d.Repair.NeedsReload}
+	return LocalAuthenticationSummary{WorkspaceID: d.Key.WorkspaceID, OperationID: d.Key.OperationID, Revision: c.revision, Action: d.Action, ProviderID: d.Owner.ProviderID, AccountID: d.AccountID, RemovedAccountID: d.RemoveID, Original: d.Original, RefreshStarted: d.RefreshStarted, RefreshObserved: d.RefreshToken != nil, Finished: d.Finished, Coherent: d.Coherent, RepairReady: len(d.Accounts) > 0 || len(d.RefreshAccounts) > 0 || d.RefreshToken != nil, NeedsReload: d.Coherent || d.Repair.NeedsReload}
 }
 func (s *ConfigStore) LoadAuthenticationLocalChange(ctx context.Context, key AuthenticationJournalKey) (LocalAuthenticationChange, bool, error) {
 	journal, err := s.CaptureAuthenticationJournal(ctx)

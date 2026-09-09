@@ -44,6 +44,11 @@ func (s *ConfigStore) RepairAuthenticationLocalChange(ctx context.Context, captu
 	if current.revision != expected && d.RepairBase != expected {
 		return result, errors.New("local authentication repair revision changed; review it again")
 	}
+	if d.Coherent {
+		// The original successful journal entry is immutable. Observing that
+		// result never repeats its disk writes or asserts current runtime state.
+		return LocalAuthenticationRepairResult{Summary: current.Summary(), NeedsReload: true}, nil
+	}
 	if d.Repair.NeedsReload {
 		result = d.Repair
 		result.Summary = current.Summary()
