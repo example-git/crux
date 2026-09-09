@@ -112,6 +112,7 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		local, err = a.providerAuth.SwitchForAccepted(ctx, providerauth.SwitchRequest{OperationID: request.operationID, Target: request.target, AccountID: request.accountID}, a.accepted, a.configView())
 	}
 	receipt.outcome, receipt.err = local.Outcome, err
+	receipt.owner, _ = local.OriginalOwner()
 	a.retainClientAuthentication(receipt)
 	if err != nil {
 		return clientAuthenticationOutcome(receipt, err)
@@ -122,13 +123,14 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		return clientAuthenticationOutcome(receipt, receipt.err)
 	}
 	receipt.after = after
+	ownerRetained := false
 	for _, provider := range after.Providers() {
-		if providerauth.PublicOwner(provider.Owner) == request.target.Owner {
-			receipt.owner = provider.Owner
+		if provider.Owner == receipt.owner && providerauth.PublicOwner(provider.Owner) == request.target.Owner {
+			ownerRetained = true
 			break
 		}
 	}
-	if receipt.owner.ProviderID == "" {
+	if !ownerRetained {
 		receipt.err = providerauth.ErrOwner
 		return clientAuthenticationOutcome(receipt, receipt.err)
 	}
