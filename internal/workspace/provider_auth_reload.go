@@ -40,6 +40,10 @@ func (w *ClientWorkspace) lockSavedAuthentication(ctx context.Context, id string
 		a.mu.Unlock()
 		return nil, providerauth.ErrStale
 	}
+	if err := a.loadAuthenticationJournal(ctx, id); err != nil {
+		a.mu.Unlock()
+		return nil, err
+	}
 	// Do not reconcile pending original publications. Fresh intent preserves
 	// those historical receipts, including unknown results.
 	if a.providerAuth == nil || a.providerAuthWorkspaceID != id {

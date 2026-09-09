@@ -86,18 +86,21 @@ type clientAuthenticationApplyReceipt struct {
 }
 
 type clientAuthenticationReviewReceipt struct {
-	request                clientAuthenticationReviewRequest
-	summary                clientAuthenticationReviewSummary
-	owner                  providerregistry.RegistrationOwner
-	capture                config.AuthenticationCapture
-	base                   config.RemoteAuthority
-	cache                  config.RemoteAuthority
-	accepted               config.RemoteAuthority
-	priorRemoved, removed  map[providerregistry.RegistrationOwner]bool
-	proposal               *config.RemoteRuntimeProposal
-	apply                  *clientAuthenticationApplyReceipt
-	err                    error
-	savedStateSupersededBy string
+	journalRevision            uint64
+	journalCompleted, restored bool
+	observation                string
+	request                    clientAuthenticationReviewRequest
+	summary                    clientAuthenticationReviewSummary
+	owner                      providerregistry.RegistrationOwner
+	capture                    config.AuthenticationCapture
+	base                       config.RemoteAuthority
+	cache                      config.RemoteAuthority
+	accepted                   config.RemoteAuthority
+	priorRemoved, removed      map[providerregistry.RegistrationOwner]bool
+	proposal                   *config.RemoteRuntimeProposal
+	apply                      *clientAuthenticationApplyReceipt
+	err                        error
+	savedStateSupersededBy     string
 }
 
 func (clientAuthenticationReviewReceipt) MarshalJSON() ([]byte, error) {
@@ -214,6 +217,12 @@ func (w *ClientWorkspace) lockAuthenticationReview(ctx context.Context, operatio
 	}
 	valid := w.authority == a && w.ws.ID == target.WorkspaceID && w.ws.Authority != nil && w.ws.Authority.Mode == "client" && w.ws.Authority.Principal == a.principal
 	w.mu.Unlock()
+	if valid {
+		if err := a.loadAuthenticationJournal(ctx, target.WorkspaceID); err != nil {
+			a.mu.Unlock()
+			return nil, nil, err
+		}
+	}
 	original := a.authenticationReceipts[operation]
 	if !valid || original == nil {
 		a.mu.Unlock()
@@ -226,7 +235,7 @@ func (w *ClientWorkspace) lockAuthenticationReview(ctx context.Context, operatio
 	return a, original, nil
 }
 
-func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, request clientAuthenticationReviewRequest) (clientAuthenticationReviewSummary, error) {
+func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, request clientAuthenticationReviewRequest) (summary clientAuthenticationReviewSummary, failure error) {
 	initial := clientAuthenticationReviewSummary{FreshSaved: request.FreshSaved, OperationID: request.OperationID, ReviewID: request.ReviewID, ReviewSequence: request.ReviewSequence, Choice: request.Choice}
 	if err := request.validate(); err != nil {
 		return initial, err
@@ -245,6 +254,11 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 		return initial, err
 	}
 	defer a.mu.Unlock()
+	defer func() {
+		if err := a.finishAuthenticationJournal(ctx); err != nil {
+			failure = errors.Join(failure, err)
+		}
+	}()
 	if review := a.authenticationReviews[request.ReviewID]; review != nil {
 		if review.request != request {
 			return initial, providerauth.ErrOperationConflict
@@ -297,11 +311,8 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 		review.err = err
 		return cloneAuthenticationReviewSummary(review.summary), err
 	}
-	// Checked-key receipts have a distinct effect and no account selection.
-	// Until that effect has a validator, never reinterpret one as a switch or
-	// permit an alternate choice to replace its original admitted authority.
-	if original != nil && original.request.loginID == "" && !original.request.logout && original.request.accountID == "" {
-		return fail(errors.New("saved API-key authentication reconciliation is not supported"))
+	if original != nil && original.request.checkID != "" && request.Choice.Kind == "" && original.credentialEffectID == "" {
+		return fail(errors.New("original checked credential proof is unavailable; select a separate saved credential explicitly"))
 	}
 	if original != nil && original.request.loginID != "" && review.summary.OriginalAccountID == "" && original.oauthTokenID == "" && request.Choice.Kind == "" {
 		return fail(errors.New("saved OAuth login has no confirmed credential selection for review; use exact completed-capture recovery or a separate explicit saved-state choice"))
@@ -351,6 +362,9 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	effect := config.AuthenticationReconciliationEffect{Logout: review.summary.OriginalLogout, AccountID: review.summary.OriginalAccountID}
 	if original != nil {
 		effect.OAuthTokenID = original.oauthTokenID
+		if original.request.checkID != "" {
+			effect = config.AuthenticationReconciliationEffect{CredentialID: original.outcome.CredentialID, CredentialEffectID: original.credentialEffectID}
+		}
 	}
 	switch request.Choice.Kind {
 	case "saved-account":
@@ -520,6 +534,12 @@ func (w *ClientWorkspace) verifyAuthenticationReviewCache(ctx context.Context, a
 		return err
 	}
 	defer w.mu.Unlock()
+	if review.restored {
+		if w.authority != a || w.ws.ID != review.request.target().WorkspaceID || w.ws.Authority == nil || w.ws.Authority.Principal != a.principal || !matchesAuthority(w.ws.Authority, a.principal, a.accepted) {
+			return errors.New("restored authentication review authority changed")
+		}
+		return nil
+	}
 	if w.authority != a || w.ws.ID != review.request.target().WorkspaceID || w.ws.Authority == nil || !authenticationReviewAuthorityEqual(*w.ws.Authority, review.cache) || !matchesAuthority(&review.accepted, a.principal, a.accepted) || !maps.Equal(a.removed, review.priorRemoved) {
 		return errors.New("authentication review cached authority changed; review saved state again")
 	}
@@ -527,6 +547,9 @@ func (w *ClientWorkspace) verifyAuthenticationReviewCache(ctx context.Context, a
 }
 
 func (w *ClientWorkspace) verifyAuthenticationReviewCapture(ctx context.Context, a *clientAuthority, review *clientAuthenticationReviewReceipt) error {
+	if err := w.restoreAuthenticationReview(ctx, a, review); err != nil {
+		return err
+	}
 	current, err := a.store.CaptureAuthentication(ctx)
 	if err != nil {
 		return clientAuthenticationFailure("authentication review cannot verify saved state", err)
@@ -537,7 +560,7 @@ func (w *ClientWorkspace) verifyAuthenticationReviewCapture(ctx context.Context,
 	return ctx.Err()
 }
 
-func (w *ClientWorkspace) applyClientAuthenticationReview(ctx context.Context, request clientAuthenticationApplyRequest) (clientAuthenticationReconciliationOutcome, error) {
+func (w *ClientWorkspace) applyClientAuthenticationReview(ctx context.Context, request clientAuthenticationApplyRequest) (outcome clientAuthenticationReconciliationOutcome, failure error) {
 	initial := clientAuthenticationReconciliationOutcome{OperationID: request.OperationID, ReviewID: request.ReviewID, PreviewID: request.PreviewID, ApplyID: request.ApplyID, OriginalDisposition: "unresolved"}
 	if request.FreshSaved {
 		initial.OriginalDisposition = "not-applicable"
@@ -559,6 +582,11 @@ func (w *ClientWorkspace) applyClientAuthenticationReview(ctx context.Context, r
 		return initial, err
 	}
 	defer a.mu.Unlock()
+	defer func() {
+		if err := a.finishAuthenticationJournal(ctx); err != nil {
+			failure = errors.Join(failure, err)
+		}
+	}()
 	review := a.authenticationReviews[request.ReviewID]
 	if review == nil || review.request.OperationID != request.OperationID || review.request.OriginalTarget != request.OriginalTarget || review.request.FreshSaved != request.FreshSaved || review.request.SavedTarget != request.SavedTarget || review.summary.PreviewID != request.PreviewID || review.err != nil || review.proposal == nil {
 		return initial, providerauth.ErrStale
@@ -605,6 +633,10 @@ func (w *ClientWorkspace) applyClientAuthenticationReview(ctx context.Context, r
 	// This preview permits one attempt. Transport retries only inspect the
 	// receiver for the retained exact proposal; they never re-collect or PUT.
 	apply.put = true
+	if err := a.persistAuthenticationReview(ctx, review); err != nil {
+		apply.put = false
+		return fail(err)
+	}
 	if original != nil {
 		original.pendingReview = review.summary.PreviewID
 	}
@@ -646,6 +678,9 @@ func (w *ClientWorkspace) completeAuthenticationReviewApply(ctx context.Context,
 		return apply.outcome, providerauth.ErrReceiptUnverified
 	}
 	apply.outcome.RemoteAcknowledged = true
+	if review.restored {
+		return w.adoptRestoredAuthenticationReview(ctx, a, original, review, ack)
+	}
 	if err := w.verifyAuthenticationReviewCapture(ctx, a, review); err != nil {
 		return apply.outcome, err
 	}
@@ -691,7 +726,7 @@ func (a *clientAuthority) supersedeAuthenticationWithSavedReview(review *clientA
 		return
 	}
 	for _, receipt := range a.authenticationReceipts {
-		if receipt.owner == review.owner && receipt.principal == a.principal && receipt.request.target.WorkspaceID == review.request.SavedTarget.WorkspaceID && receipt.savedStateSupersededBy == "" {
+		if !receipt.journalCompleted && receipt.owner == review.owner && receipt.principal == a.principal && receipt.request.target.WorkspaceID == review.request.SavedTarget.WorkspaceID && receipt.savedStateSupersededBy == "" {
 			receipt.savedStateSupersededBy = review.summary.PreviewID
 		}
 	}

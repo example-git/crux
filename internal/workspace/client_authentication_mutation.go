@@ -27,29 +27,32 @@ type clientAuthenticationRequest struct {
 
 // A local receipt is not an acknowledgement. Keep the exact collected proposal
 // even after generic pending reconciliation concludes the PUT was rejected.
-// Retention matches the local service's bounded receipt window; it is not a
-// restart-persistent operation-ID ledger.
+// Saved TLS connections also retain this receipt in the captured private journal.
+// A restored receipt is historical until exact receiver/capture evidence agrees.
 type clientAuthenticationReceipt struct {
-	request                clientAuthenticationRequest
-	principal              string
-	base                   config.RemoteRuntimeProposal
-	outcome                providerauth.MutationOutcome
-	after                  config.AuthenticationCapture
-	owner                  providerregistry.RegistrationOwner
-	removed                map[providerregistry.RegistrationOwner]bool
-	proposal               *config.RemoteRuntimeProposal
-	acknowledged           bool
-	adopted                bool
-	recoverySequence       uint64
-	reviewSequence         uint64
-	savedStateSupersededBy string
-	reconciledBy           string
-	pendingReview          string
-	err                    error
-	removalSuccessor       string
-	removalActive          bool
-	removalAdmitted        bool
-	oauthTokenID           string
+	journalRevision                           uint64
+	journalCompleted, restored, localFinished bool
+	observation, credentialEffectID           string
+	request                                   clientAuthenticationRequest
+	principal                                 string
+	base                                      config.RemoteRuntimeProposal
+	outcome                                   providerauth.MutationOutcome
+	after                                     config.AuthenticationCapture
+	owner                                     providerregistry.RegistrationOwner
+	removed                                   map[providerregistry.RegistrationOwner]bool
+	proposal                                  *config.RemoteRuntimeProposal
+	acknowledged                              bool
+	adopted                                   bool
+	recoverySequence                          uint64
+	reviewSequence                            uint64
+	savedStateSupersededBy                    string
+	reconciledBy                              string
+	pendingReview                             string
+	err                                       error
+	removalSuccessor                          string
+	removalActive                             bool
+	removalAdmitted                           bool
+	oauthTokenID                              string
 }
 
 func (clientAuthenticationReceipt) MarshalJSON() ([]byte, error) {
@@ -73,7 +76,7 @@ func (w *ClientWorkspace) logoutClientAuthentication(ctx context.Context, reques
 	return w.mutateClientAuthentication(ctx, clientAuthenticationRequest{operationID: request.OperationID, target: request.Target, logout: true})
 }
 
-func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, request clientAuthenticationRequest) (providerauth.MutationOutcome, error) {
+func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, request clientAuthenticationRequest) (outcome providerauth.MutationOutcome, failure error) {
 	initial := providerauth.MutationOutcome{OperationID: request.operationID, CheckID: request.checkID, LoginID: request.loginID, RemovedAccountID: request.removedAccountID, Previous: request.target}
 	ctx, done := providerAuthContext(ctx, w.subCtx)
 	defer done()
@@ -94,6 +97,14 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	if request.target.WorkspaceID != w.workspaceID() || w.authority != a || !w.clientOwned() {
 		return initial, providerauth.ErrStale
 	}
+	if err := a.loadAuthenticationJournal(ctx, request.target.WorkspaceID); err != nil {
+		return initial, err
+	}
+	defer func() {
+		if err := a.finishAuthenticationJournal(ctx); err != nil {
+			failure = errors.Join(failure, err)
+		}
+	}()
 	if receipt := a.authenticationReceipts[request.operationID]; receipt != nil {
 		if receipt.request != request {
 			return initial, providerauth.ErrOperationConflict
@@ -114,9 +125,35 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 	if a.accepted.Revision == ^uint64(0) && request.removedAccountID == "" {
 		return initial, errors.New("client runtime revision exhausted")
 	}
-	receipt := &clientAuthenticationReceipt{request: request, principal: a.principal, base: a.accepted}
+	if request.loginID != "" {
+		state, err := a.providerAuth.WaitOAuthLogin(ctx, providerauth.OAuthLoginRef{LoginID: request.loginID, OperationID: request.operationID, Target: request.target}, 0)
+		if err != nil {
+			return initial, err
+		}
+		if state.Phase != providerauth.OAuthLoginAuthorized {
+			return initial, errors.New("OAuth login is not authorized for completion")
+		}
+	}
+	before, err := a.store.CaptureAuthentication(ctx)
+	if err != nil {
+		return initial, err
+	}
+	var intentOwner providerregistry.RegistrationOwner
+	for _, provider := range before.Providers() {
+		if providerauth.PublicOwner(provider.Owner) == request.target.Owner {
+			intentOwner = provider.Owner
+			break
+		}
+	}
+	if intentOwner.ProviderID == "" {
+		return initial, providerauth.ErrOwner
+	}
+	receipt := &clientAuthenticationReceipt{request: request, principal: a.principal, base: a.accepted, outcome: initial, owner: intentOwner}
+	if err := a.persistAuthenticationReceipt(ctx, receipt); err != nil {
+		return initial, err
+	}
+	a.retainClientAuthentication(receipt)
 	var local providerauth.MutationResult
-	var err error
 	if request.loginID != "" {
 		// Admission above belongs to the caller. Once admitted, keep the local
 		// fixed commit joined until its workspace-owned result is known. The
@@ -134,8 +171,10 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		local, err = a.providerAuth.SwitchForAccepted(ctx, providerauth.SwitchRequest{OperationID: request.operationID, Target: request.target, AccountID: request.accountID}, a.accepted, a.configView())
 	}
 	receipt.outcome, receipt.err = local.Outcome, err
+	receipt.localFinished = true
 	receipt.removalSuccessor, receipt.removalActive, receipt.removalAdmitted = local.OriginalRemovalSelection()
 	receipt.oauthTokenID, _ = local.OriginalOAuthTokenCredentialID()
+	receipt.credentialEffectID, _ = local.OriginalConfiguredCredentialEffectID()
 	var admitted bool
 	receipt.owner, admitted = local.OriginalOwner()
 	if request.loginID != "" && err != nil && !admitted {
@@ -144,7 +183,6 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		// permanently shadow the later authorized result for this login.
 		return clientAuthenticationOutcome(receipt, err)
 	}
-	a.retainClientAuthentication(receipt)
 	if err != nil {
 		return clientAuthenticationOutcome(receipt, err)
 	}
@@ -154,6 +192,9 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		return clientAuthenticationOutcome(receipt, receipt.err)
 	}
 	receipt.after = after
+	if err := a.persistAuthenticationReceipt(ctx, receipt); err != nil {
+		return clientAuthenticationOutcome(receipt, err)
+	}
 	ownerRetained := false
 	for _, provider := range after.Providers() {
 		if provider.Owner == receipt.owner && providerauth.PublicOwner(provider.Owner) == request.target.Owner {
@@ -176,6 +217,9 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		}
 		proposal := receipt.base
 		receipt.proposal = &proposal
+		if err := a.persistAuthenticationReceipt(ctx, receipt); err != nil {
+			return clientAuthenticationOutcome(receipt, err)
+		}
 		if err := w.verifyClientProviderAuthAuthority(request.target.WorkspaceID, a); err != nil {
 			return clientAuthenticationOutcome(receipt, err)
 		}
@@ -197,6 +241,9 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		return clientAuthenticationOutcome(receipt, receipt.err)
 	}
 	receipt.proposal = &proposal
+	if err := a.persistAuthenticationReceipt(ctx, receipt); err != nil {
+		return clientAuthenticationOutcome(receipt, err)
+	}
 	if err := w.verifyClientProviderAuthAuthority(request.target.WorkspaceID, a); err != nil {
 		receipt.err = err
 		return clientAuthenticationOutcome(receipt, err)
@@ -268,7 +315,7 @@ func (w *ClientWorkspace) replayClientAuthenticationLocked(ctx context.Context, 
 	if a.pendingAuthenticationReview(receipt.request.target.WorkspaceID) {
 		return clientAuthenticationOutcome(receipt, errors.New("acknowledge the reviewed authentication publication through its apply action"))
 	}
-	if receipt.err != nil {
+	if receipt.err != nil && (!receipt.restored || receipt.proposal == nil) {
 		return clientAuthenticationOutcome(receipt, receipt.err)
 	}
 	if receipt.proposal == nil {
@@ -313,6 +360,9 @@ func (w *ClientWorkspace) reconcileClientAuthenticationLocked(ctx context.Contex
 }
 
 func (w *ClientWorkspace) adoptClientAuthenticationLocked(ctx context.Context, a *clientAuthority, receipt *clientAuthenticationReceipt, ack *config.RemoteAuthority) error {
+	if err := w.restoreAuthenticationReceipt(ctx, a, receipt); err != nil {
+		return err
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -369,7 +419,15 @@ func (w *ClientWorkspace) clientAuthenticationAcknowledgedOutcome(ctx context.Co
 	if err != nil {
 		return outcome, clientAuthenticationFailure("acknowledged authentication receipt cannot be verified against current local state", err)
 	}
-	outcome.Superseded = !receipt.after.SameObservation(current)
+	if receipt.restored {
+		id, err := current.DurableObservationID()
+		if err != nil {
+			return outcome, err
+		}
+		outcome.Superseded = id != receipt.observation
+	} else {
+		outcome.Superseded = !receipt.after.SameObservation(current)
+	}
 	return outcome, ctx.Err()
 }
 

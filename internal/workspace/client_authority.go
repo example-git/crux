@@ -31,6 +31,8 @@ func TransactCredentials(ctx context.Context, w Workspace, mutate func(Credentia
 }
 
 type clientAuthority struct {
+	authenticationConnection  string
+	authenticationJournal     *config.AuthenticationJournal
 	mu                        sync.Mutex
 	store                     *config.ConfigStore
 	view                      atomic.Pointer[config.Config]
@@ -57,7 +59,7 @@ func newClientAuthority(c *client.Client, ws proto.Workspace) *clientAuthority {
 	if c == nil || c.LocalRuntimeStore() == nil || ws.Authority == nil || ws.Authority.Mode != "client" || ws.Runtime == nil || ws.Creation == nil {
 		return nil
 	}
-	a := &clientAuthority{store: c.LocalRuntimeStore(), accepted: *ws.Runtime, principal: ws.Authority.Principal, creation: *ws.Creation, removed: map[providerregistry.RegistrationOwner]bool{}}
+	a := &clientAuthority{authenticationConnection: c.AuthenticationJournalIdentity(), store: c.LocalRuntimeStore(), accepted: *ws.Runtime, principal: ws.Authority.Principal, creation: *ws.Creation, removed: map[providerregistry.RegistrationOwner]bool{}}
 	a.view.Store(clientCollectionConfig(*ws.Runtime, c.LocalRuntimeStore()))
 	for _, credential := range a.accepted.Credentials {
 		providerDisabled := false
@@ -96,7 +98,15 @@ func matchesAuthority(ack *config.RemoteAuthority, principal string, proposal co
 
 // reconcileClientAuthority handles an ambiguous previous PUT before another
 // mutation. It never overwrites a different client's accepted revision.
-func (w *ClientWorkspace) reconcileClientAuthority(ctx context.Context, a *clientAuthority) error {
+func (w *ClientWorkspace) reconcileClientAuthority(ctx context.Context, a *clientAuthority) (failure error) {
+	if err := a.loadAuthenticationJournal(ctx, w.workspaceID()); err != nil {
+		return err
+	}
+	defer func() {
+		if err := a.finishAuthenticationJournal(ctx); err != nil {
+			failure = errors.Join(failure, err)
+		}
+	}()
 	if a.recoveryProposal != nil {
 		return errors.New("workspace recreation is awaiting acknowledgement; retry the same recovery before changing client authority")
 	}
@@ -195,7 +205,12 @@ func (w *ClientWorkspace) mutateClientPresentation(mutate func(*config.ConfigSto
 	return nil
 }
 
-func (w *ClientWorkspace) publishClientAuthorityLocked(ctx context.Context, a *clientAuthority) error {
+func (w *ClientWorkspace) publishClientAuthorityLocked(ctx context.Context, a *clientAuthority) (failure error) {
+	defer func() {
+		if err := a.finishAuthenticationJournal(ctx); err != nil {
+			failure = errors.Join(failure, err)
+		}
+	}()
 	if err := a.requireAuthenticationPublication(w.workspaceID()); err != nil {
 		return err
 	}

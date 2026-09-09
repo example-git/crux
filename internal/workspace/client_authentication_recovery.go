@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/proto"
@@ -51,7 +52,7 @@ func (clientAuthenticationRecoveryReceipt) Format(state fmt.State, _ rune) {
 // removes an account and never writes local configuration. A failed collection
 // may be repeated only by a new recovery action and only from the same original
 // completed capture. Drift requires a separate explicit reconciliation flow.
-func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, request clientAuthenticationRecoveryRequest) (providerauth.MutationOutcome, error) {
+func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, request clientAuthenticationRecoveryRequest) (outcome providerauth.MutationOutcome, failure error) {
 	initial := providerauth.MutationOutcome{OperationID: request.OperationID, Previous: request.Target}
 	if err := request.validate(); err != nil {
 		return initial, err
@@ -72,6 +73,14 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 	if w.authority != a || w.workspaceID() != request.Target.WorkspaceID || !w.clientOwned() {
 		return initial, providerauth.ErrStale
 	}
+	if err := a.loadAuthenticationJournal(ctx, request.Target.WorkspaceID); err != nil {
+		return initial, err
+	}
+	defer func() {
+		if err := a.finishAuthenticationJournal(ctx); err != nil {
+			failure = errors.Join(failure, err)
+		}
+	}()
 	original := a.authenticationReceipts[request.OperationID]
 	if original == nil {
 		return initial, providerauth.ErrStale
@@ -103,10 +112,6 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 	if original.acknowledged {
 		return w.replayClientAuthenticationRecoveryLocked(ctx, a, original, recovery)
 	}
-	if original.outcome.Change == nil || !(original.outcome.Progress.RuntimePublished || original.removalAdmitted && !original.removalActive && original.outcome.Progress.AccountsSaved) || !original.after.SameObservation(original.after) {
-		recovery.err = errors.New("authentication recovery has no complete local capture; explicit saved-state reconciliation is required")
-		return clientAuthenticationOutcome(original, recovery.err)
-	}
 	if err := w.verifyClientAuthenticationRecoveryCache(a, original); err != nil {
 		recovery.err = err
 		return clientAuthenticationOutcome(original, err)
@@ -122,6 +127,14 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 	}
 	if original.proposal != nil && matchesAuthority(remote.Authority, original.principal, *original.proposal) {
 		return w.acknowledgeClientAuthenticationRecoveryLocked(ctx, a, original, remote)
+	}
+	if err := w.restoreAuthenticationReceipt(ctx, a, original); err != nil {
+		recovery.err = err
+		return clientAuthenticationOutcome(original, err)
+	}
+	if original.outcome.Change == nil || !(original.outcome.Progress.RuntimePublished || original.removalAdmitted && !original.removalActive && original.outcome.Progress.AccountsSaved) || !original.after.SameObservation(original.after) {
+		recovery.err = errors.New("authentication recovery has no complete local capture; explicit saved-state reconciliation is required")
+		return clientAuthenticationOutcome(original, recovery.err)
 	}
 	if !matchesAuthority(remote.Authority, original.principal, original.base) || a.accepted.Revision != original.base.Revision || a.accepted.Digest != original.base.Digest {
 		recovery.err = errors.New("authentication recovery receiver no longer has the original accepted authority")
@@ -158,6 +171,9 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 	}
 	if err := ctx.Err(); err != nil {
 		recovery.err = err
+		return clientAuthenticationOutcome(original, err)
+	}
+	if err := a.persistAuthenticationReceipt(ctx, original); err != nil {
 		return clientAuthenticationOutcome(original, err)
 	}
 	// These fields now describe the authorized recovery attempt; the original
@@ -241,7 +257,7 @@ func (a *clientAuthority) unacknowledgedClientAuthentication(id string) bool {
 		return true
 	}
 	for _, receipt := range a.authenticationReceipts {
-		if receipt.request.target.WorkspaceID == id && receipt.reconciledBy == "" && receipt.savedStateSupersededBy == "" && (!receipt.acknowledged || !receipt.adopted) && clientAuthenticationChanged(receipt.outcome.Progress) {
+		if receipt.request.target.WorkspaceID == id && receipt.reconciledBy == "" && receipt.savedStateSupersededBy == "" && (!receipt.acknowledged || !receipt.adopted) && (!receipt.localFinished || clientAuthenticationChanged(receipt.outcome.Progress)) {
 			return true
 		}
 	}
@@ -258,6 +274,11 @@ func (a *clientAuthority) requireAuthenticationPublication(id string) error {
 }
 
 func (a *clientAuthority) requireAuthenticationReceipt(id string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := a.loadAuthenticationJournal(ctx, id); err != nil {
+		return err
+	}
 	if a.unacknowledgedClientAuthentication(id) {
 		return errors.New("recover the saved authentication operation before publishing client runtime changes")
 	}
