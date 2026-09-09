@@ -53,12 +53,12 @@ func declarativeRuntimeCapability(providerID string, construction Construction, 
 				}
 				return result
 			}
-			declarative := &declarativetransport.Options{Controls: controlsByPath}
+			declarative := &declarativetransport.Options{Controls: map[string]any{}}
 			if current, ok := result[providerID].(*declarativetransport.Options); ok {
 				declarative.Values = maps.Clone(current.Values)
 				maps.Copy(declarative.Controls, current.Controls)
-				maps.Copy(declarative.Controls, controlsByPath)
 			}
+			maps.Copy(declarative.Controls, controlsByPath)
 			if len(declarative.Values) > 0 || len(declarative.Controls) > 0 {
 				result[providerID] = declarative
 			}
@@ -70,21 +70,7 @@ func declarativeRuntimeCapability(providerID string, construction Construction, 
 func declarativeReasoningCapability(providerID string, construction Construction, controls []manifest.RuntimeControl) *ReasoningCapability {
 	return &ReasoningCapability{
 		Options: func(_ string, effort string, canReason bool, merged map[string]any) (fantasy.ProviderOptions, error) {
-			values := maps.Clone(merged)
-			controlsByPath := map[string]any{}
-			for _, control := range controls {
-				keys := []string{control.ID}
-				if index := strings.LastIndexAny(control.ID, "."); index >= 0 {
-					keys = append(keys, control.ID[index+1:])
-				}
-				for _, key := range keys {
-					if value, ok := values[key]; ok {
-						controlsByPath[control.RequestPath] = value
-						delete(values, key)
-						break
-					}
-				}
-			}
+			values, controlsByPath, _ := ResolveRuntimeControlOptions(controls, merged)
 			if canReason && effort != "" {
 				mapped := false
 				for _, control := range controls {

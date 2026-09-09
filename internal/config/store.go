@@ -204,7 +204,9 @@ func (s RuntimeSnapshot) ValidateAgentModelState(expected AgentModelState) error
 	if err := expected.Validate(); err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(expected, s.AgentModelState()) {
+	wanted, wantedErr := json.Marshal(expected)
+	actual, actualErr := json.Marshal(s.AgentModelState())
+	if wantedErr != nil || actualErr != nil || !RuntimeControlJSONEqual(wanted, actual) {
 		return fmt.Errorf("agent model generation changed before runtime publication")
 	}
 	return nil

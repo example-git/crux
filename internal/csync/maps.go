@@ -1,7 +1,10 @@
 package csync
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"iter"
 	"maps"
 	"sync"
@@ -165,7 +168,15 @@ func (m *Map[K, V]) UnmarshalJSON(data []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.inner = make(map[K]V)
-	return json.Unmarshal(data, &m.inner)
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&m.inner); err != nil {
+		return err
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return errors.New("map must contain exactly one JSON value")
+	}
+	return nil
 }
 
 // MarshalJSON implements json.Marshaler.

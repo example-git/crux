@@ -120,3 +120,16 @@ func TestAgentUpdateEndpointRejectsInvalidStateBeforeDispatch(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.Code)
 	require.Equal(t, []config.AgentModelState{validState}, coordinator.capturedStates())
 }
+
+func TestRuntimeControlAgentUpdatePreservesExactNumericState(t *testing.T) {
+	coordinator := &recordingAgentUpdateCoordinator{runCoordinator: newRunCoordinator(func(context.Context) error { return nil })}
+	controller, workspaceID := buildAgentWorkspace(t, coordinator)
+	state := serverAgentModelState()
+	state.Large.Model.ProviderOptions["vendor.count"] = json.Number("9007199254740993")
+	state.Small.Model.ProviderOptions = map[string]any{"vendor.count": json.Number("0")}
+	body, err := json.Marshal(proto.AgentUpdateRequest{State: state})
+	require.NoError(t, err)
+	response := postAgentUpdateState(t, controller, workspaceID, body)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Equal(t, []config.AgentModelState{state}, coordinator.capturedStates())
+}

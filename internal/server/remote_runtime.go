@@ -114,6 +114,7 @@ func decodeRuntimeRequest(w http.ResponseWriter, r *http.Request, result any) er
 		}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(result); err != nil {
 		return errors.New("invalid or oversized private runtime request")

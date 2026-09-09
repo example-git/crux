@@ -1694,7 +1694,8 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case dialog.ActionPreviewInstructions, dialog.ActionInstructionsChanged,
-		dialog.ActionInstructionMutationCompleted, dialog.ActionInstructionEditorPrepared, dialog.ActionInstructionEditorExited:
+		dialog.ActionInstructionMutationCompleted, dialog.ActionInstructionEditorPrepared, dialog.ActionInstructionEditorExited,
+		dialog.ActionInstructionControlsLoaded:
 		cmds = append(cmds, m.handleDialogAction(msg))
 	default:
 		if m.dialog.HasDialogs() {
@@ -2260,6 +2261,12 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 			}
 			return nil
 		})
+	case dialog.ActionInstructionControlsLoaded:
+		if msg.Dialog != nil {
+			if err := msg.Dialog.CompleteRuntimeControls(msg, m.dialog.Dialog(dialog.InstructionsID) == msg.Dialog); err != nil {
+				cmds = append(cmds, util.ReportError(err))
+			}
+		}
 	case dialog.ActionInstructionMutationCompleted:
 		if msg.Operation.Dialog == nil {
 			if msg.Err != nil {
@@ -2280,6 +2287,9 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 		// Persistence/publication already succeeded. Closing the dialog only
 		// suppresses its display update; the accepted change still reaches the agent.
 		cmds = append(cmds, msg.Operation.RebuildAgent(m.com.Workspace))
+		if m.dialog.Dialog(dialog.InstructionsID) == msg.Operation.Dialog {
+			cmds = append(cmds, msg.Operation.Dialog.RefreshRuntimeControlsAfter(msg))
+		}
 
 	case dialog.ActionInstructionEditorPrepared:
 		if msg.Operation.Dialog == nil || m.dialog.Dialog(dialog.InstructionsID) != msg.Operation.Dialog {
@@ -2981,7 +2991,9 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 			}
 			return true
 		case key.Matches(msg, m.keyMap.Instructions):
-			m.openInstructionsDialog()
+			if cmd := m.openInstructionsDialog(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 			return true
 		case key.Matches(msg, m.keyMap.Sessions):
 			if cmd := m.openSessionsDialog(); cmd != nil {
@@ -5552,9 +5564,11 @@ func (m *UI) openProvidersDialog() {
 }
 
 // openInstructionsDialog opens the instructions toggle dialog.
-func (m *UI) openInstructionsDialog() {
+func (m *UI) openInstructionsDialog() tea.Cmd {
 	m.dialog.CloseDialog(dialog.InstructionsID)
-	m.dialog.OpenDialog(dialog.NewInstructions(m.com))
+	instructions := dialog.NewInstructions(m.com)
+	m.dialog.OpenDialog(instructions)
+	return instructions.LoadRuntimeControls()
 }
 
 // openCommandsDialog opens the commands dialog.

@@ -141,8 +141,13 @@ func (c *Client) GetWorkspace(ctx context.Context, id string) (*proto.Workspace,
 		return nil, fmt.Errorf("failed to get workspace: %w", err)
 	}
 	var ws proto.Workspace
-	if err := json.NewDecoder(rsp.Body).Decode(&ws); err != nil {
+	decoder := json.NewDecoder(rsp.Body)
+	decoder.UseNumber()
+	if err := decoder.Decode(&ws); err != nil {
 		return nil, fmt.Errorf("failed to decode workspace: %w", err)
+	}
+	if ws.ID != id {
+		return nil, fmt.Errorf("workspace response changed identity from %q to %q", id, ws.ID)
 	}
 	if err := bindWorkspaceProviderOwners(&ws); err != nil {
 		return nil, fmt.Errorf("failed to bind workspace provider owners: %w", err)

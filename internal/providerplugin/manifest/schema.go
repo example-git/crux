@@ -17,7 +17,11 @@ const (
 )
 
 var (
-	compiledProviderSchema = sync.OnceValues(func() (*validator.Schema, error) {
+	// The validator lazily caches patterns during evaluation. Each shared
+	// compiled schema therefore needs serialized validation, not just creation.
+	providerSchemaValidationMu sync.Mutex
+	presetSchemaValidationMu   sync.Mutex
+	compiledProviderSchema     = sync.OnceValues(func() (*validator.Schema, error) {
 		data, err := SchemaJSON()
 		if err != nil {
 			return nil, err
@@ -68,6 +72,8 @@ func ProviderSchemaIssuePaths(data []byte) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile provider plugin schema: %w", err)
 	}
+	providerSchemaValidationMu.Lock()
+	defer providerSchemaValidationMu.Unlock()
 	return schemaIssuePaths(schema.ValidateJSON(data)), nil
 }
 
@@ -76,6 +82,8 @@ func PresetSchemaIssuePaths(data []byte) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("compile provider preset plugin schema: %w", err)
 	}
+	presetSchemaValidationMu.Lock()
+	defer presetSchemaValidationMu.Unlock()
 	return schemaIssuePaths(schema.ValidateJSON(data)), nil
 }
 

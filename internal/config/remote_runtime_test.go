@@ -57,6 +57,23 @@ func TestRemoteRuntimeReplacementIsAtomicAndKeepsCapturedState(t *testing.T) {
 	require.Equal(t, files, remoteBaselineTree(t, root))
 }
 
+func TestRemoteRuntimeCompilerRetainsExactProviderOptionNumbers(t *testing.T) {
+	proposal := remoteRuntimeFixture(t, "minimal.plugin")
+	model := proposal.Models[SelectedModelTypeLarge]
+	model.ProviderOptions = map[string]any{"vendor.limit": json.Number("9007199254740993")}
+	proposal.Models[SelectedModelTypeLarge] = model
+	proposal.Providers[0].Config.ProviderOptions = map[string]any{"vendor.zero": json.Number("0.00")}
+	proposal = sealRemoteRuntime(t, proposal)
+	root := t.TempDir()
+	store, err := CompileRemoteRuntime(root, filepath.Join(root, "workspace"), false, proposal, strings.Repeat("a", 64), env.NewFromMap(map[string]string{"HOME": root}))
+	require.NoError(t, err)
+	require.Equal(t, json.Number("9007199254740993"), store.Config().Models[SelectedModelTypeLarge].ProviderOptions["vendor.limit"])
+	provider, ok := store.Config().Providers.Get(proposal.Providers[0].Config.ID)
+	require.True(t, ok)
+	require.Equal(t, json.Number("0.00"), provider.ProviderOptions["vendor.zero"])
+	require.Equal(t, proposal.Digest, store.RemoteAuthority().Digest)
+}
+
 func TestClientRuntimeCannotPersistOrReloadServerAuthority(t *testing.T) {
 	proposal := remoteRuntimeFixture(t, "minimal.plugin")
 	root := t.TempDir()

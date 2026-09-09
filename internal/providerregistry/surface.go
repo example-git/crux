@@ -36,7 +36,11 @@ type InstructionSurface struct {
 // model can currently apply it through a host-owned adapter.
 type RuntimeControlSurface struct {
 	manifest.RuntimeControl
-	Available bool `json:"available"`
+	Available        bool                   `json:"available"`
+	AvailableModels  []string               `json:"available_models,omitempty"`
+	Binding          *RuntimeControlBinding `json:"binding,omitempty"`
+	DescriptorDigest string                 `json:"descriptor_digest,omitempty"`
+	Diagnostic       string                 `json:"diagnostic,omitempty"`
 }
 
 // Surface is the redacted, serializable provider presentation contract shared
@@ -151,8 +155,30 @@ func (r *Registry) Surfaces(providers []catalog.Provider, selectedModels map[str
 		}
 		modelID := selectedModels[registration.ProviderID]
 		available := registration.Runtime != nil && registration.Runtime.Available != nil && registration.Runtime.Available(modelID)
+		var availableModels []string
+		if registration.Runtime != nil && registration.Runtime.Available != nil {
+			for _, model := range surface.Models {
+				if model.ID != "" && registration.Runtime.Available(model.ID) {
+					availableModels = append(availableModels, model.ID)
+				}
+			}
+			if modelID != "" && available {
+				availableModels = append(availableModels, modelID)
+			}
+			slices.Sort(availableModels)
+			availableModels = slices.Compact(availableModels)
+		}
 		for _, control := range registration.RuntimeControls {
-			surface.RuntimeControls = append(surface.RuntimeControls, RuntimeControlSurface{RuntimeControl: cloneJSON(control), Available: available})
+			item := RuntimeControlSurface{RuntimeControl: cloneJSON(control), Available: available}
+			binding, err := ResolveRuntimeControlBinding(registration, control)
+			if err != nil {
+				item.Available, item.Diagnostic = false, err.Error()
+			} else {
+				item.Binding = &binding
+				item.DescriptorDigest = RuntimeControlDescriptorDigest(control, binding)
+				item.AvailableModels = slices.Clone(availableModels)
+			}
+			surface.RuntimeControls = append(surface.RuntimeControls, item)
 		}
 		result = append(result, surface)
 	}

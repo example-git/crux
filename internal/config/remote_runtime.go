@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -52,7 +53,7 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion      = 1
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v16"
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v17"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -272,7 +273,9 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		return nil, errors.New("runtime proposal cannot be copied")
 	}
 	var owned RemoteRuntimeProposal
-	if json.Unmarshal(encoded, &owned) != nil {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if decoder.Decode(&owned) != nil {
 		return nil, errors.New("runtime proposal cannot be decoded")
 	}
 	proposal = owned

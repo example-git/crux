@@ -21,6 +21,8 @@ const (
 	ImageSchemaID           = "https://raw.githubusercontent.com/example-git/crux/main/image-provider-plugin.schema.json"
 )
 
+var imageSchemaValidationMu sync.Mutex
+
 var compiledImageSchema = sync.OnceValues(func() (*validator.Schema, error) {
 	data, err := ImageSchemaJSON()
 	if err != nil {
@@ -34,6 +36,8 @@ func ImageSchemaIssuePaths(data []byte) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	imageSchemaValidationMu.Lock()
+	defer imageSchemaValidationMu.Unlock()
 	return schemaIssuePaths(schema.ValidateJSON(data)), nil
 }
 

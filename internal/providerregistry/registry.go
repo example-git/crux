@@ -5,6 +5,7 @@
 package providerregistry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -900,7 +901,9 @@ func cloneJSON[T any](value T) T {
 		return value
 	}
 	var result T
-	if err := json.Unmarshal(data, &result); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&result); err != nil {
 		return value
 	}
 	return result

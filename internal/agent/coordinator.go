@@ -927,8 +927,22 @@ func getProviderOptions(model Model, providerCfg config.ProviderConfig, registra
 	}
 
 	mergedOptions := make(map[string]any)
-	if err := json.Unmarshal([]byte(got), &mergedOptions); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(got))
+	decoder.UseNumber()
+	if err := decoder.Decode(&mergedOptions); err != nil {
 		return nil, fmt.Errorf("decode merged provider options: %w", err)
+	}
+	// The general merge library materializes numeric leaves as float64.
+	// Declared controls are scalar, literal top-level keys: retain their exact
+	// values from the same catalog < provider < selected-model precedence.
+	for _, control := range registration.RuntimeControls {
+		for _, key := range providerregistry.RuntimeControlOptionKeys(control) {
+			for _, layer := range []map[string]any{model.CatalogModel.Options.ProviderOptions, providerCfg.ProviderOptions, model.ModelCfg.ProviderOptions} {
+				if value, exists := layer[key]; exists {
+					mergedOptions[key] = value
+				}
+			}
+		}
 	}
 
 	reasoningEffort := effectiveReasoningEffort(model)
@@ -1925,40 +1939,11 @@ func runtimeControlValues(controls []manifest.RuntimeControl, options *config.Op
 }
 
 func validateRuntimeControlValue(control manifest.RuntimeControl, value any) error {
-	switch control.Type {
-	case "boolean":
-		if _, ok := value.(bool); !ok {
-			return fmt.Errorf("control %q requires a boolean", control.ID)
-		}
-	case "integer":
-		switch number := value.(type) {
-		case int, int32, int64:
-		case float64:
-			if number != float64(int64(number)) {
-				return fmt.Errorf("control %q requires an integer", control.ID)
-			}
-		default:
-			return fmt.Errorf("control %q requires an integer", control.ID)
-		}
-	case "number":
-		switch value.(type) {
-		case int, int32, int64, float32, float64:
-		default:
-			return fmt.Errorf("control %q requires a number", control.ID)
-		}
-	case "string":
-		if _, ok := value.(string); !ok {
-			return fmt.Errorf("control %q requires a string", control.ID)
-		}
-	case "enum":
-		text, ok := value.(string)
-		if !ok || !slices.Contains(control.Values, text) {
-			return fmt.Errorf("control %q has invalid explicit value %q", control.ID, text)
-		}
-	default:
-		return fmt.Errorf("control %q uses unsupported type %q", control.ID, control.Type)
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("control %q cannot be encoded: %w", control.ID, err)
 	}
-	return nil
+	return providerregistry.ValidateRuntimeControlValue(control, raw)
 }
 
 // buildProvider is the runtime ownership gate for configured providers. A
