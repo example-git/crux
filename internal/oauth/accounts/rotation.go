@@ -15,6 +15,15 @@ import (
 	"github.com/example-git/crux/internal/providertransport"
 )
 
+type refreshAuthority uint8
+
+const (
+	// Registered and exact-owner consumers may share a proven stored rotation.
+	sharedOwnerRefresh refreshAuthority = iota
+	// An unqualified explicit refresher is the caller's chosen exchange source.
+	explicitRefresher
+)
+
 var ErrCredentialChanged = errors.New("account or credential changed during refresh")
 
 type rotation struct {
@@ -63,7 +72,7 @@ func RefreshSelectedForOwner(ctx context.Context, provider string, entry *Entry,
 	if validate == nil {
 		return nil, errors.New("account owner validator is required")
 	}
-	return refreshAccount(ctx, provider, entry, refresher, validate, true, force)
+	return refreshAccount(ctx, provider, entry, refresher, validate, true, force, sharedOwnerRefresh)
 }
 
 // WithSelectedForOwner runs a local commit while the exact account selection
@@ -101,7 +110,7 @@ func rotationDescends(s *store, provider, id, before, after string) bool {
 	return current == after
 }
 
-func refreshAccount(ctx context.Context, provider string, expected *Entry, refresher Refresher, validate Validator, selected, force bool) (*Entry, error) {
+func refreshAccount(ctx context.Context, provider string, expected *Entry, refresher Refresher, validate Validator, selected, force bool, authority refreshAuthority) (*Entry, error) {
 	if expected == nil || expected.ID == "" || provider == "" {
 		return nil, errors.New("refresh requires an exact account")
 	}
@@ -160,8 +169,15 @@ func refreshAccount(ctx context.Context, provider string, expected *Entry, refre
 			return nil, err
 		}
 	}
-	if adopted || !force && !current.Expired() {
+	exchangeSuccessor := adopted && authority == explicitRefresher
+	if !exchangeSuccessor && (adopted || !force && !current.Expired()) {
 		return &current, nil
+	}
+	// The preceding rotation consumed the original refresh token. Retain the
+	// same account lease and exchange only its proven current descendant. The
+	// persistence CAS/history must now bind that descendant, not the old input.
+	if exchangeSuccessor {
+		expectedID = CredentialID(current)
 	}
 	if current.RefreshToken == "" || refresher == nil {
 		return nil, errors.New("selected account has no refresh capability; sign in again")
