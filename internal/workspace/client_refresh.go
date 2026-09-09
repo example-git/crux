@@ -120,7 +120,7 @@ func (w *ClientWorkspace) fulfillClientRefresh(ctx context.Context, request conf
 		}
 		credentialID = accounts.CredentialID(*fresh)
 	} else {
-		fresh, err := a.store.RefreshProviderOAuthTokenForRuntime(ctx, config.ScopeGlobal, request.Owner, expectedToken, localRuntime)
+		fresh, err := a.store.RefreshProviderOAuthTokenAtOrigin(ctx, request.Owner, expectedToken, localRuntime)
 		if err != nil {
 			return config.ClientRefreshCompletion{}, err
 		}

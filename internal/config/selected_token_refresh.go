@@ -66,12 +66,12 @@ func (selectedTokenRotation) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth rotation receipts are private")
 }
 
-// RefreshProviderOAuthTokenForRuntime rotates a namespace-free owner's exact
+// refreshProviderOAuthTokenAtPath rotates a namespace-free owner's exact
 // accepted token, then persists its successor without touching account storage.
 // A returned token with an error is a retained successor, not acknowledgement
 // that configuration or the remote runtime was published. Repeating the same
 // admitted credential reuses only a proven in-memory or durable rotation receipt.
-func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, scope Scope, owner providerregistry.RegistrationOwner, expected *oauth.Token, admitted RuntimeSnapshot) (*oauth.Token, error) {
+func (s *ConfigStore) refreshProviderOAuthTokenAtPath(ctx context.Context, path string, identityScope any, validateOrigin func(RuntimeSnapshot) error, owner providerregistry.RegistrationOwner, expected *oauth.Token, admitted RuntimeSnapshot) (*oauth.Token, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -94,10 +94,6 @@ func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, s
 	if !ok || !owner.Matches(registration) || registration.OAuth == nil || registration.OAuth.Refresh == nil {
 		return nil, errors.New("selected provider does not support OAuth refresh")
 	}
-	path, err := s.configPath(scope)
-	if err != nil {
-		return nil, err
-	}
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path || isShellConfig(path) {
 		return nil, errors.New("OAuth refresh requires its captured absolute JSON config path")
 	}
@@ -108,13 +104,16 @@ func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, s
 		if err != nil || actualOwner != owner || !configured || provider.Disable || !reflect.DeepEqual(actual, definition) || !snapshot.nativeIdentities.matches(environment) {
 			return errors.New("selected provider definition or environment changed during OAuth refresh")
 		}
+		if validateOrigin != nil {
+			return validateOrigin(snapshot)
+		}
 		return nil
 	}
 	definitionID, err := definition.Digest()
 	if err != nil {
 		return nil, err
 	}
-	identity, _ := json.Marshal([]any{scope, owner, definitionID, OAuthTokenCredentialID(expected)})
+	identity, _ := json.Marshal([]any{identityScope, owner, definitionID, OAuthTokenCredentialID(expected)})
 	key := fmt.Sprintf("%x", sha256.Sum256(identity))
 	lockCtx, cancelLock := context.WithTimeout(ctx, refreshLockDeadline)
 	defer cancelLock()
@@ -265,7 +264,7 @@ func (s *ConfigStore) RefreshProviderOAuthTokenForRuntime(ctx context.Context, s
 			return cloneOAuthToken(receipt.token()), fmt.Errorf("OAuth token rotated and retained in memory; durable lineage is not acknowledged: %w", err)
 		}
 	}
-	if err := s.commitSelectedTokenRotation(finish, scope, owner, registration, receipt, validateRuntime); err != nil {
+	if err := s.commitSelectedTokenRotation(finish, owner, registration, receipt, validateRuntime); err != nil {
 		return cloneOAuthToken(receipt.token()), fmt.Errorf("OAuth token rotated and retained; provider configuration is not acknowledged: %w", err)
 	}
 	if durable := receipt.lineage.journal.Records[receipt.lineage.key]; !durable.Committed {
@@ -338,7 +337,7 @@ func selectedTokenAliasedField(object gjson.Result, fields ...string) bool {
 	return ambiguous
 }
 
-func (s *ConfigStore) commitSelectedTokenRotation(ctx context.Context, scope Scope, owner providerregistry.RegistrationOwner, registration providerregistry.Registration, receipt *selectedTokenRotation, validateRuntime func(RuntimeSnapshot) error) error {
+func (s *ConfigStore) commitSelectedTokenRotation(ctx context.Context, owner providerregistry.RegistrationOwner, registration providerregistry.Registration, receipt *selectedTokenRotation, validateRuntime func(RuntimeSnapshot) error) error {
 	if err := lockAuthenticationMutex(ctx, s.writeMu.TryLock, s.writeMu.Unlock); err != nil {
 		return err
 	}
