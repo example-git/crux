@@ -53,6 +53,7 @@ type clientAuthenticationReviewSummary struct {
 	OriginalProgress                 providerauth.MutationProgress
 	OriginalLogout                   bool
 	OriginalAccountID                string
+	OriginalLoginID                  string
 	Choice                           clientAuthenticationReviewChoice
 	ActiveAccountID                  string
 	Configured, Disabled             bool
@@ -187,6 +188,13 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	review.summary.Owner = providerauth.PublicOwner(original.owner)
 	review.summary.OriginalProgress = original.outcome.Progress
 	review.summary.OriginalLogout, review.summary.OriginalAccountID = original.request.logout, original.request.accountID
+	review.summary.OriginalLoginID = original.request.loginID
+	if original.request.loginID != "" && original.outcome.Change != nil {
+		// Keep the admitted request immutable. The resulting account identity
+		// is evidence from this login's confirmed receipt, not a new target
+		// or an inference from whichever account happens to be active now.
+		review.summary.OriginalAccountID = original.outcome.Change.Current.Status.ActiveAccountID
+	}
 	fail := func(err error) (clientAuthenticationReviewSummary, error) {
 		review.err = err
 		return cloneAuthenticationReviewSummary(review.summary), err
@@ -194,8 +202,11 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	// Checked-key receipts have a distinct effect and no account selection.
 	// Until that effect has a validator, never reinterpret one as a switch or
 	// permit an alternate choice to replace its original admitted authority.
-	if !original.request.logout && original.request.accountID == "" {
+	if original.request.loginID == "" && !original.request.logout && original.request.accountID == "" {
 		return fail(errors.New("saved API-key authentication reconciliation is not supported"))
+	}
+	if original.request.loginID != "" && review.summary.OriginalAccountID == "" && request.Choice.Kind == "" {
+		return fail(errors.New("saved OAuth login has no confirmed account selection for review; use exact completed-capture recovery or a separate explicit saved-state choice"))
 	}
 	if err := w.lockAuthenticationReviewWorkspace(ctx); err != nil {
 		return fail(err)
@@ -225,7 +236,7 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	if err != nil {
 		return fail(clientAuthenticationFailure("authentication review cannot capture saved state", err))
 	}
-	effect := config.AuthenticationReconciliationEffect{Logout: original.request.logout, AccountID: original.request.accountID}
+	effect := config.AuthenticationReconciliationEffect{Logout: original.request.logout, AccountID: review.summary.OriginalAccountID}
 	switch request.Choice.Kind {
 	case "saved-account":
 		effect = config.AuthenticationReconciliationEffect{AccountID: request.Choice.AccountID}

@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -9,6 +10,41 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCollectRemoteRuntimeRetainsUnconfiguredOAuthCandidate(t *testing.T) {
+	f := newAuthenticationCandidateFixture(t, "example-responses", false, false, "")
+	next := f.store.Config().cloneForWrite()
+	next.Models = map[SelectedModelType]SelectedModel{SelectedModelTypeLarge: {Provider: f.owner.ProviderID, Model: "example-reasoner"}, SelectedModelTypeSmall: {Provider: f.owner.ProviderID, Model: "example-small"}}
+	f.store.setConfig(next)
+	before, err := os.ReadFile(filepath.Join(f.root, "crux.json"))
+	require.NoError(t, err)
+	proposal, err := f.store.CollectRemoteRuntime(t.Context(), 1)
+	require.NoError(t, err)
+	require.Len(t, proposal.Providers, 1)
+	require.Len(t, proposal.Credentials, 1)
+	require.True(t, proposal.Credentials[0].Unavailable)
+	require.Empty(t, proposal.Credentials[0].APIKey)
+	require.Nil(t, proposal.Credentials[0].Account)
+	require.Equal(t, "captured-client", proposal.Providers[0].Config.Configuration["oauth_client_id"])
+	require.Equal(t, "command-header", proposal.Providers[0].Config.ExtraHeaders["X-Once"])
+	_, configured := f.store.Config().Providers.Get(f.owner.ProviderID)
+	require.False(t, configured)
+	require.False(t, f.store.Config().CanInitializeAgent())
+	capture, err := f.store.CaptureAuthentication(t.Context())
+	require.NoError(t, err)
+	require.NoError(t, capture.ValidateAcceptedAuthentication(proposal, proposal.CollectionConfig()))
+	require.NoFileExists(t, f.marker, "collection/status must reuse prepared headers")
+	after, err := os.ReadFile(filepath.Join(f.root, "crux.json"))
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+	require.Empty(t, f.store.Config().RedactedForTransport().authenticationCandidates)
+	definition, _, err := f.store.RuntimeSnapshot().ClientProviderDefinition(f.owner.ProviderID)
+	require.NoError(t, err)
+	definition.Config.Configuration["oauth_client_id"] = "caller-change"
+	unchanged, _, err := f.store.RuntimeSnapshot().ClientProviderDefinition(f.owner.ProviderID)
+	require.NoError(t, err)
+	require.Equal(t, "captured-client", unchanged.Config.Configuration["oauth_client_id"])
+}
 
 func TestCollectRemoteRuntimeReadsCurrentCapturedAccountPath(t *testing.T) {
 	for _, change := range []string{"token", "active account"} {

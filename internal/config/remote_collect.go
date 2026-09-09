@@ -120,7 +120,7 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 		}
 	}
 	for _, id := range slices.Sorted(maps.Keys(selected)) {
-		provider, ok := cfg.Providers.Get(id)
+		provider, ok := cfg.authenticationCollectionProvider(id)
 		if !ok {
 			return proposal, fmt.Errorf("selected client provider %q is unavailable", id)
 		}
@@ -149,7 +149,13 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 			if provider.OAuthToken != nil {
 				selectedAccess = provider.OAuthToken.AccessToken
 			}
-			if entry == nil || entry.ID == "" || entry.AccessToken != selectedAccess || provider.OAuthToken != nil && entry.RefreshToken != provider.OAuthToken.RefreshToken {
+			if entry == nil && key == "" && provider.OAuthToken == nil {
+				// A never-configured or logged-out selected OAuth provider is
+				// a valid unavailable runtime. It must remain discoverable so
+				// its owning client can begin login. Saved credential/account
+				// disagreements below still require explicit reconciliation.
+				credential.Unavailable = true
+			} else if entry == nil || entry.ID == "" || entry.AccessToken != selectedAccess || provider.OAuthToken != nil && entry.RefreshToken != provider.OAuthToken.RefreshToken {
 				return proposal, errors.New("selected client account changed; reload client configuration before reconnecting")
 			}
 			credential.Account, credential.APIKey = entry, ""

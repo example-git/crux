@@ -233,6 +233,12 @@ type Workspace interface {
 	LogoutProvider(context.Context, providerauth.LogoutRequest) (providerauth.MutationOutcome, error)
 	CheckProviderAPIKey(context.Context, providerauth.APIKeyCheckRequest) (providerauth.APIKeyCheckOutcome, error)
 	SaveCheckedProviderAPIKey(context.Context, providerauth.APIKeySaveRequest) (providerauth.MutationOutcome, error)
+	BeginProviderOAuthLogin(context.Context, providerauth.OAuthLoginRequest) (providerauth.OAuthLoginState, error)
+	BindProviderOAuthLogin(context.Context, providerauth.OAuthLoginBindRequest) (providerauth.OAuthLoginState, error)
+	SubmitProviderOAuthLoginCode(context.Context, providerauth.OAuthLoginCodeRequest) (providerauth.OAuthLoginState, error)
+	WaitProviderOAuthLogin(context.Context, providerauth.OAuthLoginRef, uint64) (providerauth.OAuthLoginState, error)
+	CancelProviderOAuthLogin(context.Context, providerauth.OAuthLoginRef) (providerauth.OAuthLoginState, error)
+	CompleteProviderOAuthLogin(context.Context, providerauth.OAuthLoginRef) (providerauth.MutationOutcome, error)
 	WorkingDir() string
 	Resolver() config.VariableResolver
 
