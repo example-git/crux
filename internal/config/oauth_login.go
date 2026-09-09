@@ -270,9 +270,11 @@ func (s *ConfigStore) AuthorizeOAuthLogin(ctx context.Context, prepared OAuthLog
 			return AuthorizedOAuthPreparation{}, oauthLoginFailure("authorization", err)
 		}
 		bound := s.oauthLoginContext(ctx, p)
-		if err := s.startOAuthLoginExchange(bound, p); err != nil {
+		releaseExchange, err := s.startOAuthLoginExchange(bound, p)
+		if err != nil {
 			return AuthorizedOAuthPreparation{}, err
 		}
+		defer releaseExchange()
 		token, err := p.registration.OAuth.Authorize(bound, open, read)
 		if err != nil {
 			return AuthorizedOAuthPreparation{}, oauthLoginFailure("authorization", err)
@@ -320,9 +322,11 @@ func (s *ConfigStore) PollOAuthDeviceCode(ctx context.Context, device OAuthDevic
 			return AuthorizedOAuthPreparation{}, oauthLoginFailure("device polling", err)
 		}
 		bound := s.oauthLoginContext(ctx, p)
-		if err := s.startOAuthLoginExchange(bound, p); err != nil {
+		releaseExchange, err := s.startOAuthLoginExchange(bound, p)
+		if err != nil {
 			return AuthorizedOAuthPreparation{}, err
 		}
+		defer releaseExchange()
 		token, err := p.registration.OAuth.PollDeviceCode(bound, &device.state.authorization)
 		if err != nil {
 			return AuthorizedOAuthPreparation{}, oauthLoginFailure("device polling", err)

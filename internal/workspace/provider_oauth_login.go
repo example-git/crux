@@ -368,3 +368,81 @@ func (w *ClientWorkspace) ListProviderOAuthLoginResults(ctx context.Context, tar
 	}
 	return result, err
 }
+
+// ProviderOAuthAbandoner retires an explicitly selected tokenless preparation
+// or unknown exchange.
+// The receipt cannot substitute for login completion or runtime acknowledgement.
+type ProviderOAuthAbandoner interface {
+	AbandonProviderOAuthLoginResult(context.Context, providerauth.OAuthLoginAbandonRequest) (providerauth.OAuthLoginAbandonOutcome, error)
+}
+
+func (w *AppWorkspace) AbandonProviderOAuthLoginResult(ctx context.Context, request providerauth.OAuthLoginAbandonRequest) (providerauth.OAuthLoginAbandonOutcome, error) {
+	initial := providerauth.OAuthLoginAbandonOutcome{Request: request}
+	if err := request.Validate(); err != nil {
+		return initial, err
+	}
+	ctx, done := providerAuthContext(ctx, w.providerAuthCtx)
+	defer done()
+	if err := ctx.Err(); err != nil {
+		return initial, err
+	}
+	if w.providerAuth == nil {
+		return initial, errors.New("local provider authentication service is unavailable")
+	}
+	return w.providerAuth.AbandonOAuthLoginResult(ctx, request)
+}
+func (w *ClientWorkspace) AbandonProviderOAuthLoginResult(ctx context.Context, request providerauth.OAuthLoginAbandonRequest) (providerauth.OAuthLoginAbandonOutcome, error) {
+	initial := providerauth.OAuthLoginAbandonOutcome{Request: request}
+	if err := request.Validate(); err != nil {
+		return initial, err
+	}
+	ctx, done := providerAuthContext(ctx, w.subCtx)
+	defer done()
+	if err := ctx.Err(); err != nil {
+		return initial, err
+	}
+	id := w.workspaceID()
+	if id == "" || id != request.Target.WorkspaceID {
+		return initial, providerauth.ErrStale
+	}
+	if !w.clientOwned() {
+		before := w.cached()
+		if w.client == nil || before.ID != id || before.Authority != nil && before.Authority.Mode != "server" {
+			return initial, providerauth.ErrStale
+		}
+		response, err := w.client.AbandonProviderOAuthLoginResult(ctx, id, request)
+		if response.Outcome.Validate(request) != nil {
+			if err != nil {
+				return initial, err
+			}
+			return initial, providerauth.ErrReceiptUnverified
+		}
+		w.mu.RLock()
+		valid := w.ws.ID == id && reflect.DeepEqual(w.ws.Authority, before.Authority) && w.authority == nil
+		w.mu.RUnlock()
+		if !valid {
+			return response.Outcome, providerauth.ErrStale
+		}
+		return response.Outcome, err
+	}
+	a := w.authority
+	if a == nil || a.store == nil {
+		return initial, providerauth.ErrStale
+	}
+	if err := lockProviderAuthAuthority(ctx, a); err != nil {
+		return initial, err
+	}
+	defer a.mu.Unlock()
+	if w.authority != a || !w.clientOwned() || w.workspaceID() != id {
+		return initial, providerauth.ErrStale
+	}
+	if err := w.prepareClientProviderAuth(ctx, id); err != nil {
+		return initial, err
+	}
+	service := a.providerAuth
+	outcome, err := service.AbandonOAuthLoginResultForAccepted(ctx, request, a.accepted, a.configView())
+	if check := w.verifyClientOAuthSession(id, a, service); check != nil {
+		return outcome, check
+	}
+	return outcome, err
+}

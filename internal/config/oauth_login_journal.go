@@ -19,12 +19,13 @@ import (
 // No verifier, authorization code, or device polling secret is persisted. A
 // record can recover a known token result, never repeat an uncertain exchange.
 type oauthLoginJournalRecord struct {
-	Version int                                `json:"version"`
-	Scope   string                             `json:"scope,omitempty"`
-	Owner   providerregistry.RegistrationOwner `json:"owner"`
-	Capture string                             `json:"capture"`
-	Started bool                               `json:"started"`
-	Token   *oauth.Token                       `json:"token,omitempty"`
+	Version   int                                `json:"version"`
+	Scope     string                             `json:"scope,omitempty"`
+	Owner     providerregistry.RegistrationOwner `json:"owner"`
+	Capture   string                             `json:"capture"`
+	Started   bool                               `json:"started"`
+	Abandoned bool                               `json:"abandoned,omitempty"`
+	Token     *oauth.Token                       `json:"token,omitempty"`
 }
 
 func (oauthLoginJournalRecord) Format(state fmt.State, _ rune) {
@@ -106,7 +107,7 @@ func decodeOAuthLoginJournal(entry AuthenticationJournalEntry) (oauthLoginJourna
 	}
 	decoder := json.NewDecoder(bytes.NewReader(entry.Payload()))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&record) != nil || decoder.Decode(new(any)) != io.EOF || record.Version != 1 || record.Owner.ProviderID == "" || len(record.Capture) != 64 || record.Token != nil && !record.Started {
+	if decoder.Decode(&record) != nil || decoder.Decode(new(any)) != io.EOF || record.Version != 1 || record.Owner.ProviderID == "" || len(record.Capture) != 64 || record.Token != nil && !record.Started || record.Abandoned && (record.Token != nil || !entry.Completed()) {
 		return record, errors.New("OAuth recovery record is invalid")
 	}
 	if record.Token != nil {
@@ -184,19 +185,36 @@ func (journal *oauthLoginJournal) persist(ctx context.Context) error {
 	return nil
 }
 
-func (s *ConfigStore) startOAuthLoginExchange(ctx context.Context, p *oauthLoginPreparation) error {
+func (s *ConfigStore) startOAuthLoginExchange(ctx context.Context, p *oauthLoginPreparation) (func(), error) {
 	if p.journal == nil {
-		return nil
+		return func() {}, nil
+	}
+	release, err := p.journal.journal.AcquireOperation(ctx, p.journal.key)
+	if err != nil {
+		return nil, err
+	}
+	retained := false
+	defer func() {
+		if !retained {
+			release()
+		}
+	}()
+	if err := s.validateOAuthLogin(ctx, p); err != nil {
+		return nil, err
 	}
 	if err := lockAuthenticationMutex(ctx, p.journal.mu.TryLock, p.journal.mu.Unlock); err != nil {
-		return err
+		return nil, err
 	}
 	defer p.journal.mu.Unlock()
-	if p.journal.record.Started || p.journal.completed {
-		return errors.New("OAuth exchange was already started; its recorded result requires explicit recovery")
+	if p.journal.record.Started || p.journal.record.Abandoned || p.journal.completed {
+		return nil, errors.New("OAuth exchange was already started; its recorded result requires explicit recovery")
 	}
 	p.journal.record.Started = true
-	return p.journal.persist(ctx)
+	if err := p.journal.persist(ctx); err != nil {
+		return nil, err
+	}
+	retained = true
+	return release, nil
 }
 
 func (s *ConfigStore) retainOAuthLoginResult(ctx context.Context, p *oauthLoginPreparation, token *oauth.Token) error {
@@ -213,7 +231,7 @@ func (s *ConfigStore) retainOAuthLoginResult(ctx context.Context, p *oauthLoginP
 		return err
 	}
 	defer p.journal.mu.Unlock()
-	if !p.journal.record.Started {
+	if !p.journal.record.Started || p.journal.record.Abandoned || p.journal.completed {
 		return errors.New("OAuth result has no recorded exchange intent")
 	}
 	if p.journal.record.Token != nil && OAuthTokenCredentialID(p.journal.record.Token) != OAuthTokenCredentialID(token) {
@@ -282,6 +300,7 @@ type OAuthRecoverySummary struct {
 	OperationID         string
 	Owner               providerregistry.RegistrationOwner
 	State               string
+	Abandoned           bool
 }
 
 func (s *ConfigStore) PendingOAuthLoginResults(ctx context.Context, workspaceID string) ([]OAuthRecoverySummary, error) {
@@ -314,7 +333,7 @@ func (s *ConfigStore) pendingOAuthLoginResults(ctx context.Context, workspaceID 
 		if err != nil {
 			return nil, err
 		}
-		if !found || entry.Completed() {
+		if !found {
 			continue
 		}
 		// Filter captured path scope before exposing even the old workspace or
@@ -326,6 +345,9 @@ func (s *ConfigStore) pendingOAuthLoginResults(ctx context.Context, workspaceID 
 		if err != nil {
 			return nil, err
 		}
+		if entry.Completed() && !record.Abandoned {
+			continue
+		}
 		state := "not-started"
 		if record.Started {
 			state = "exchange-outcome-unknown"
@@ -333,7 +355,7 @@ func (s *ConfigStore) pendingOAuthLoginResults(ctx context.Context, workspaceID 
 		if record.Token != nil {
 			state = "token-result-recorded"
 		}
-		result = append(result, OAuthRecoverySummary{OriginalWorkspaceID: key.WorkspaceID, OperationID: key.OperationID, Owner: record.Owner, State: state})
+		result = append(result, OAuthRecoverySummary{OriginalWorkspaceID: key.WorkspaceID, OperationID: key.OperationID, Owner: record.Owner, State: state, Abandoned: record.Abandoned})
 	}
 	slices.SortFunc(result, func(a, b OAuthRecoverySummary) int {
 		if a.OriginalWorkspaceID < b.OriginalWorkspaceID {
