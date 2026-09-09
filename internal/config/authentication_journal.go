@@ -277,27 +277,46 @@ func (journal AuthenticationJournal) Store(ctx context.Context, key Authenticati
 		return AuthenticationJournalEntry{}, errors.New("authentication journal sequence exhausted")
 	}
 	data.Records = maps.Clone(data.Records)
-	if !exists && len(data.Records) >= maxAuthenticationJournalRecords {
+	data.Sequence++
+	data.Records[key.id()] = authenticationJournalRecord{Key: key, Revision: data.Sequence, Completed: completed, Reserved: reserved, Payload: bytes.Clone(payload)}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return AuthenticationJournalEntry{}, errors.New("authentication journal payload cannot be encoded")
+	}
+	capacity := len(encoded)
+	for _, record := range data.Records {
+		capacity += record.Reserved
+	}
+	pruned := false
+	for len(data.Records) > maxAuthenticationJournalRecords || capacity > maxAuthenticationJournalBytes {
 		oldest := ""
 		for id, record := range data.Records {
-			if record.Completed && (oldest == "" || record.Revision < data.Records[oldest].Revision) {
+			if id != key.id() && record.Completed && (oldest == "" || record.Revision < data.Records[oldest].Revision) {
 				oldest = id
 			}
 		}
 		if oldest == "" {
-			return AuthenticationJournalEntry{}, errors.New("authentication journal is full of unresolved operations")
+			return AuthenticationJournalEntry{}, errors.New("authentication journal capacity is reserved by unresolved operations")
 		}
+		// Count this exact compact JSON member and its separating comma. The
+		// new/updated record remains in the map, so deletion never empties it.
+		// Marshal the full file only once more after pruning, rather than once
+		// per old result when a large new reservation needs several evictions.
+		removed := data.Records[oldest]
+		member, err := json.Marshal(map[string]authenticationJournalRecord{oldest: removed})
+		if err != nil {
+			return AuthenticationJournalEntry{}, errors.New("authentication journal record cannot be encoded")
+		}
+		capacity -= len(member) - 1 + removed.Reserved
 		delete(data.Records, oldest)
+		pruned = true
 	}
-	data.Sequence++
-	data.Records[key.id()] = authenticationJournalRecord{Key: key, Revision: data.Sequence, Completed: completed, Reserved: reserved, Payload: bytes.Clone(payload)}
-	encoded, err := json.Marshal(data)
-	capacity := len(encoded)
-	for _, record := range data.Records {
-		if record.Reserved > maxAuthenticationJournalBytes-capacity {
-			return AuthenticationJournalEntry{}, errors.New("authentication journal storage limit reached")
+	if pruned {
+		encoded, err = json.Marshal(data)
+		capacity = len(encoded)
+		for _, record := range data.Records {
+			capacity += record.Reserved
 		}
-		capacity += record.Reserved
 	}
 	if err != nil || capacity > maxAuthenticationJournalBytes {
 		return AuthenticationJournalEntry{}, errors.New("authentication journal storage limit reached")
