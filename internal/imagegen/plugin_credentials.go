@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"reflect"
 	"strings"
@@ -41,6 +42,7 @@ func resolvePluginCredentialsSnapshot(ctx context.Context, store *config.ConfigS
 		}
 	}
 	result := PluginCredentials{Values: map[string]any{}, CookieJars: map[string]http.CookieJar{}}
+	refreshState := newImageCredentialRefresh(store)
 	identities := map[string]any{}
 	validators := []func() error{}
 	for _, declaration := range bundle.Manifest.Credentials {
@@ -56,6 +58,7 @@ func resolvePluginCredentialsSnapshot(ctx context.Context, store *config.ConfigS
 			result.Values[declaration.ID] = value
 		case "provider":
 			credentialSnapshot := snapshot
+			refreshSpent := false
 			owner, ok := bindings.Providers[declaration.ID]
 			if !ok || owner.ProviderID != declaration.Provider {
 				return PluginCredentials{}, errors.New("image provider credential requires an explicit exact owner binding")
@@ -74,6 +77,7 @@ func resolvePluginCredentialsSnapshot(ctx context.Context, store *config.ConfigS
 						return PluginCredentials{}, err
 					}
 					credentialSnapshot = refreshed
+					refreshSpent = true
 				} else {
 					if _, err := store.RefreshOAuthTokenForOwner(ctx, config.ScopeGlobal, owner); err != nil {
 						return PluginCredentials{}, err
@@ -86,6 +90,9 @@ func resolvePluginCredentialsSnapshot(ctx context.Context, store *config.ConfigS
 				return PluginCredentials{}, err
 			}
 			result.Values[declaration.ID] = values
+			if credentialSnapshot.IsClientOwned() && provider.OAuthToken != nil {
+				refreshState.bind(declaration.ID, owner, credentialSnapshot, refreshSpent)
+			}
 			identities[declaration.ID] = owner
 			validators = append(validators, func() error {
 				if credentialSnapshot.IsClientOwned() {
@@ -121,6 +128,11 @@ func resolvePluginCredentialsSnapshot(ctx context.Context, store *config.ConfigS
 		}
 	}
 	redact.RegisterJSONValue(result.Values)
+	if len(refreshState.owners) > 0 {
+		refreshState.values = maps.Clone(result.Values)
+		result.ReadValues = refreshState.read
+		result.Refresh = refreshState.refresh
+	}
 	digest, err := imageSessionIdentity([32]byte{}, PluginCredentials{Values: identities})
 	if err != nil {
 		return PluginCredentials{}, err

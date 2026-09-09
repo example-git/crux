@@ -23,16 +23,18 @@ import (
 )
 
 type ImageWorkflowHost struct {
-	budgetMu      sync.Mutex
-	budgetErr     error
-	requestCount  int
-	stepCount     int
-	responseBytes int64
-	Manifest      manifest.ImageManifest
-	Client        *http.Client
-	ValidateOwner func() error
-	Credentials   map[string]any
-	CookieJars    map[string]http.CookieJar
+	budgetMu           sync.Mutex
+	budgetErr          error
+	requestCount       int
+	stepCount          int
+	responseBytes      int64
+	Manifest           manifest.ImageManifest
+	Client             *http.Client
+	ValidateOwner      func() error
+	Credentials        map[string]any
+	CookieJars         map[string]http.CookieJar
+	ReadCredentials    func() (map[string]any, uint64)
+	RefreshCredentials func(context.Context, []string, uint64) (bool, error)
 }
 
 func (h *ImageWorkflowHost) charge(requests, steps int, bytes int64) error {
@@ -273,6 +275,19 @@ func (t imageOwnerTransport) RoundTrip(request *http.Request) (*http.Response, e
 }
 
 func (h *ImageWorkflowHost) request(ctx context.Context, declaration manifest.ImageRequest, values map[string]any) (any, error) {
+	return h.requestWithRefresh(ctx, declaration, values, true)
+}
+
+func (h *ImageWorkflowHost) requestWithRefresh(ctx context.Context, declaration manifest.ImageRequest, values map[string]any, refreshAllowed bool) (any, error) {
+	bound := h.Credentials
+	epoch := uint64(0)
+	if h.ReadCredentials != nil {
+		bound, epoch = h.ReadCredentials()
+	}
+	values, err := h.credentialValuesUsing(values, bound)
+	if err != nil {
+		return nil, err
+	}
 	evaluation := imageEvaluation{remaining: 100000, credentials: map[string]bool{}}
 	resolved, err := evaluation.value(declaration.URL, values)
 	if err != nil {
@@ -417,6 +432,20 @@ func (h *ImageWorkflowHost) request(ctx context.Context, declaration manifest.Im
 			return nil, &ImageWorkflowError{Phase: "validation", Cause: errors.New("response exceeds declared byte limit")}
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			if response.StatusCode == http.StatusUnauthorized && refreshAllowed && h.RefreshCredentials != nil {
+				ids := make([]string, 0, len(evaluation.credentials))
+				for id := range evaluation.credentials {
+					ids = append(ids, id)
+				}
+				slices.Sort(ids)
+				refreshed, refreshErr := h.RefreshCredentials(ctx, ids, epoch)
+				if refreshErr != nil {
+					return nil, &ImageWorkflowError{Phase: declaration.Phase, Status: response.StatusCode, Cause: refreshErr}
+				}
+				if refreshed {
+					return h.requestWithRefresh(ctx, declaration, values, false)
+				}
+			}
 			if declaration.Retry != nil && attempt+1 < attempts && slices.Contains(declaration.Retry.Statuses, response.StatusCode) {
 				timer := time.NewTimer(time.Duration(declaration.Retry.DelayMS) * time.Millisecond)
 				select {

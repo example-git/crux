@@ -133,6 +133,14 @@ func (h *ImageWorkflowHost) checkCredentials(target *url.URL, credentials map[st
 }
 
 func (h *ImageWorkflowHost) credentialValues(values map[string]any) (map[string]any, error) {
+	bound := h.Credentials
+	if h.ReadCredentials != nil {
+		bound, _ = h.ReadCredentials()
+	}
+	return h.credentialValuesUsing(values, bound)
+}
+
+func (h *ImageWorkflowHost) credentialValuesUsing(values map[string]any, bound map[string]any) (map[string]any, error) {
 	if h.Client != nil && h.Client.Jar != nil {
 		return nil, errors.New("image workflow requires explicitly scoped cookie jars")
 	}
@@ -140,8 +148,8 @@ func (h *ImageWorkflowHost) credentialValues(values map[string]any) (map[string]
 	for _, credential := range h.Manifest.Credentials {
 		declared[credential.ID] = credential.Source
 	}
-	credentials := make(map[string]any, len(h.Credentials))
-	for id, value := range h.Credentials {
+	credentials := make(map[string]any, len(bound))
+	for id, value := range bound {
 		if declared[id] == "" || declared[id] == "browser" {
 			return nil, errors.New("image credential source does not match declaration")
 		}
