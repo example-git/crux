@@ -262,6 +262,10 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 		registerAccountSecrets(account.Entry)
 	}
 	s.configMu.Lock()
+	if err := s.RuntimeRevocation(); err != nil {
+		s.configMu.Unlock()
+		return nil, err
+	}
 	s.publishConfigLocked(next)
 	s.providerRegistry = candidate.providerRegistry
 	s.knownProviders = candidate.knownProviders

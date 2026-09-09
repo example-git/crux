@@ -10,7 +10,12 @@ var ErrRuntimeRevoked = errors.New("workspace credential authority was revoked")
 // RevokeRuntime retires this store and every snapshot captured from it. It does
 // not erase history, change account files, or fall back to execution-host secrets.
 func (s *ConfigStore) RevokeRuntime() {
+	// Publication checks this flag while holding the same lock. Cancel work
+	// before joining writeMu, but never let a prepared replacement publish
+	// after the revocation boundary won.
+	s.configMu.Lock()
 	s.runtimeRevoked.Store(true)
+	s.configMu.Unlock()
 	s.ensureRuntimeLifetime()
 	s.runtimeCancel()
 	s.writeMu.Lock()
