@@ -743,16 +743,20 @@ func (w *ClientWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Sc
 	if w.clientOwned() {
 		return w.mutateClientAuthority(ctx, func(store *config.ConfigStore) error {
 			for _, binding := range w.authority.accepted.Credentials {
-				if binding.Owner == owner && !binding.Unavailable && binding.Account != nil {
+				if binding.Owner == owner && !binding.Unavailable && (binding.Account != nil || binding.OAuthToken != nil) {
 					runtime, err := w.authority.runtimeForRefresh(owner)
 					if err != nil {
 						return err
 					}
-					_, err = store.RefreshSelectedOAuthAccountForRuntime(ctx, scope, owner, *binding.Account, true, runtime)
+					if binding.Account != nil {
+						_, err = store.RefreshSelectedOAuthAccountForRuntime(ctx, scope, owner, *binding.Account, true, runtime)
+					} else {
+						_, err = store.RefreshProviderOAuthTokenForRuntime(ctx, scope, owner, binding.OAuthToken, runtime)
+					}
 					return err
 				}
 			}
-			return errors.New("accepted client runtime has no selected account for this provider")
+			return errors.New("accepted client runtime has no OAuth credential for this provider")
 		})
 	}
 	err := w.client.RefreshOAuthToken(ctx, w.workspaceID(), scope, owner)

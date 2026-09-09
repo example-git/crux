@@ -140,7 +140,22 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 			return proposal, errors.New("selected client API credential cannot be resolved")
 		}
 		credential.APIKey = key
-		if !credential.Unavailable && provider.resolvedAPIKey == nil && (provider.OAuthToken != nil || owner.HasOAuth) {
+		if !credential.Unavailable && provider.resolvedAPIKey == nil && owner.HasOAuth && owner.AccountNamespace == "" {
+			if provider.OAuthToken == nil {
+				if key != "" {
+					return proposal, errors.New("namespace-free client OAuth credential has no saved token; reload client configuration")
+				}
+				credential.Unavailable = true
+			} else {
+				if err := validateRemoteOAuthToken(provider.OAuthToken); err != nil {
+					return proposal, err
+				}
+				if key != provider.OAuthToken.AccessToken {
+					return proposal, errors.New("namespace-free client OAuth token does not match its configured credential")
+				}
+				credential.OAuthToken, credential.APIKey = cloneOAuthToken(provider.OAuthToken), ""
+			}
+		} else if !credential.Unavailable && provider.resolvedAPIKey == nil && (provider.OAuthToken != nil || owner.HasOAuth) {
 			entry, err := account(ctx, owner)
 			if err != nil {
 				return proposal, errors.New("selected client account cannot be read")
@@ -163,6 +178,7 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 		if credential.Unavailable {
 			credential.APIKey = ""
 			credential.Account = nil
+			credential.OAuthToken = nil
 		}
 		proposal.Providers = append(proposal.Providers, definition)
 		proposal.Credentials = append(proposal.Credentials, credential)

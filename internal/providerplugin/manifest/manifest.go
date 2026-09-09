@@ -66,7 +66,7 @@ type Provider struct {
 	Name                 string   `json:"name" jsonschema:"required,minLength=1,maxLength=128"`
 	Description          string   `json:"description,omitempty" jsonschema:"maxLength=1024"`
 	Aliases              []string `json:"aliases,omitempty" jsonschema:"uniqueItems=true,maxItems=16"`
-	AccountNamespace     string   `json:"account_namespace" jsonschema:"required,pattern=^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$,maxLength=128"`
+	AccountNamespace     string   `json:"account_namespace,omitempty" jsonschema:"pattern=^(?:[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*)?$,maxLength=128,description=Optional account store namespace. Without a namespace OAuth tokens are stored only in provider configuration."`
 	LegacyAccountAliases []string `json:"legacy_account_aliases,omitempty" jsonschema:"uniqueItems=true,maxItems=16"`
 	DefaultLargeModel    string   `json:"default_large_model" jsonschema:"required,minLength=1,maxLength=256"`
 	DefaultSmallModel    string   `json:"default_small_model" jsonschema:"required,minLength=1,maxLength=256"`

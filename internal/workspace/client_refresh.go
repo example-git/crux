@@ -8,6 +8,7 @@ import (
 
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
@@ -90,27 +91,45 @@ func (w *ClientWorkspace) fulfillClientRefresh(ctx context.Context, request conf
 		return config.ClientRefreshCompletion{}, errors.New("refresh request does not match this client's accepted runtime")
 	}
 	var expected *accounts.Entry
+	var expectedToken *oauth.Token
 	for _, binding := range a.accepted.Credentials {
-		if binding.Owner == request.Owner && !binding.Unavailable && binding.Account != nil && binding.Account.ID == request.AccountID && accounts.CredentialID(*binding.Account) == request.CredentialID {
+		if binding.Owner != request.Owner || binding.Unavailable {
+			continue
+		}
+		if binding.Account != nil && binding.Account.ID == request.AccountID && accounts.CredentialID(*binding.Account) == request.CredentialID {
 			expected = binding.Account
 			break
 		}
+		if request.Owner.AccountNamespace == "" && request.AccountID == "" && binding.OAuthToken != nil && config.OAuthTokenCredentialID(binding.OAuthToken) == request.CredentialID {
+			expectedToken = binding.OAuthToken
+			break
+		}
 	}
-	if expected == nil {
-		return config.ClientRefreshCompletion{}, errors.New("refresh request does not match the accepted account")
+	if expected == nil && expectedToken == nil {
+		return config.ClientRefreshCompletion{}, errors.New("refresh request does not match the accepted OAuth credential")
 	}
 	localRuntime, err := a.runtimeForRefresh(request.Owner)
 	if err != nil {
 		return config.ClientRefreshCompletion{}, err
 	}
-	fresh, err := a.store.RefreshSelectedOAuthAccountForRuntime(ctx, config.ScopeGlobal, request.Owner, *expected, true, localRuntime)
-	if err != nil {
-		return config.ClientRefreshCompletion{}, err
+	var credentialID string
+	if expected != nil {
+		fresh, err := a.store.RefreshSelectedOAuthAccountForRuntime(ctx, config.ScopeGlobal, request.Owner, *expected, true, localRuntime)
+		if err != nil {
+			return config.ClientRefreshCompletion{}, err
+		}
+		credentialID = accounts.CredentialID(*fresh)
+	} else {
+		fresh, err := a.store.RefreshProviderOAuthTokenForRuntime(ctx, config.ScopeGlobal, request.Owner, expectedToken, localRuntime)
+		if err != nil {
+			return config.ClientRefreshCompletion{}, err
+		}
+		credentialID = config.OAuthTokenCredentialID(fresh)
 	}
 	if err := w.publishClientAuthorityLocked(ctx, a); err != nil {
 		return config.ClientRefreshCompletion{}, err
 	}
-	return config.ClientRefreshCompletion{RequestID: request.ID, Revision: a.accepted.Revision, Digest: a.accepted.Digest, CredentialID: accounts.CredentialID(*fresh)}, nil
+	return config.ClientRefreshCompletion{RequestID: request.ID, Revision: a.accepted.Revision, Digest: a.accepted.Digest, CredentialID: credentialID}, nil
 }
 
 // The caller holds a.mu so the accepted definition cannot move between this

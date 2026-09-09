@@ -34,6 +34,36 @@ func TestCanonicalExamples(t *testing.T) {
 	}
 }
 
+func TestOptionalAccountNamespaceMatchesSchemaAndSemanticValidation(t *testing.T) {
+	for _, namespace := range []string{"", "valid.namespace", "Not-Valid", " ", ".invalid", strings.Repeat("x", 129)} {
+		t.Run(namespace, func(t *testing.T) {
+			value, err := DecodeStrict(readRepoFile(t, "docs", "provider-plugins", "examples", "responses-oauth.plugin", "manifest.json"))
+			require.NoError(t, err)
+			value.Provider.AccountNamespace = namespace
+			data, err := json.Marshal(value)
+			require.NoError(t, err)
+			if namespace == "" || namespace == "valid.namespace" {
+				require.NoError(t, Validate(value))
+				decoded, err := DecodeStrict(data)
+				require.NoError(t, err)
+				require.Equal(t, namespace, decoded.Provider.AccountNamespace)
+				if namespace == "" {
+					var raw map[string]any
+					require.NoError(t, json.Unmarshal(data, &raw))
+					raw["provider"].(map[string]any)["account_namespace"] = ""
+					data, err = json.Marshal(raw)
+					require.NoError(t, err)
+					_, err = DecodeStrict(data)
+					require.NoError(t, err)
+				}
+			} else {
+				_, err := DecodeStrict(data)
+				require.Error(t, err)
+			}
+		})
+	}
+}
+
 func TestCompatibilityInventoryClassifiesEveryDelegate(t *testing.T) {
 	t.Parallel()
 	data := readRepoFile(t, "docs", "provider-plugins", "examples", "responses-oauth.plugin", "manifest.json")

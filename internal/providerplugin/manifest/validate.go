@@ -119,7 +119,7 @@ func Validate(m Manifest) error {
 	if strings.TrimSpace(m.Provider.Name) == "" {
 		add("provider.name is required")
 	}
-	if !pluginIDPattern.MatchString(m.Provider.AccountNamespace) {
+	if m.Provider.AccountNamespace != "" && (!pluginIDPattern.MatchString(m.Provider.AccountNamespace) || len(m.Provider.AccountNamespace) > 128) {
 		add("provider.account_namespace is invalid")
 	}
 	if m.Provider.LoginOrder < 1 || m.Provider.AccountOrder < 1 {

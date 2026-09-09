@@ -37,6 +37,18 @@ type accountFileObservation struct {
 	modified int64
 }
 
+// EmptySnapshot represents a capture with no account namespaces. It performs no
+// path lookup or I/O and permits only the no-op check lifecycle. Config-only
+// authentication can use its observation without acquiring account authority.
+func EmptySnapshot(ctx context.Context) (Snapshot, error) {
+	if err := ctx.Err(); err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{valid: true}, nil
+}
+
+func (s Snapshot) empty() bool { return s.valid && s.path == "" && len(s.namespaces) == 0 }
+
 func (Snapshot) String() string   { return "accounts.Snapshot(private)" }
 func (Snapshot) GoString() string { return "accounts.Snapshot(private)" }
 func (Snapshot) Format(state fmt.State, _ rune) {

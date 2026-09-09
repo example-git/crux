@@ -386,6 +386,10 @@ type ConfigStore struct {
 	// at a time. See RefreshOAuthToken.
 	refreshSF singleflight.Group
 
+	// selectedTokenRotations retains exact namespace-free OAuth successors.
+	// Protected by writeMu; see RefreshProviderOAuthTokenForRuntime.
+	selectedTokenRotations map[string]*selectedTokenRotation
+
 	// exchangeToken performs the provider-specific OAuth token exchange.
 	// It is a field so tests can substitute a fake exchange without making
 	// real network calls. Production code leaves it nil, and exchange falls

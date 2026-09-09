@@ -1797,7 +1797,8 @@
         "account_namespace": {
           "type": "string",
           "maxLength": 128,
-          "pattern": "^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$"
+          "pattern": "^(?:[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*)?$",
+          "description": "Optional account store namespace. Without a namespace OAuth tokens are stored only in provider configuration."
         },
         "legacy_account_aliases": {
           "items": {
@@ -1839,7 +1840,6 @@
       "required": [
         "id",
         "name",
-        "account_namespace",
         "default_large_model",
         "default_small_model",
         "login_order",

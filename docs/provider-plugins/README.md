@@ -107,6 +107,14 @@ Required root fields:
 
 `provider.id`, `provider.account_namespace`, model IDs, metadata namespaces, and configuration keys are migration identities. Display names, brand fields, catalog position, and bundle filename are not identities.
 
+`provider.account_namespace` is optional. An omitted or empty namespace selects
+config-only OAuth: the complete token, expiry, and captured OAuth client metadata
+remain in the provider configuration, with no account-store entry or invented
+account ID. A nonempty namespace retains the existing account selection and
+rotation behavior. Connected client runtimes transport config-only OAuth through
+an exclusive private token binding; compiler v20 negotiation is required before
+that private runtime is sent to an execution host.
+
 Integrated, compatibility-backed, and plugin-native implementations must use the same logical provider ID. One immutable registry generation has exactly one owner for that ID. Bundle presence and discovery order never select ownership.
 
 `provider.aliases`, `provider.login_order`, `provider.account_order`, and both brand gradient colors are explicit presentation/account declarations. `legacy_account_aliases` declares migration aliases only. It does not create additional credential stores. `default_large_model` and `default_small_model` must reference entries in the same manifest; no first-model fallback is applied.

@@ -408,7 +408,7 @@ func TestWorkspaceOAuthBeginReplayRejectsCacheChangeDuringServiceWait(t *testing
 	}
 }
 
-func newWorkspaceOAuthFixture(t *testing.T, host *httptest.Server, mode string) workspaceOAuthFixture {
+func newWorkspaceOAuthFixture(t *testing.T, host *httptest.Server, mode string, customize ...func(*manifest.Manifest)) workspaceOAuthFixture {
 	t.Helper()
 	f := newClientAuthenticationFixture(t, false)
 	root := t.TempDir()
@@ -437,6 +437,9 @@ func newWorkspaceOAuthFixture(t *testing.T, host *httptest.Server, mode string) 
 		declaration.Capabilities.Endpoints = append(declaration.Capabilities.Endpoints, manifest.Endpoint{ID: "device", BaseURL: host.URL + "/device", AllowedSchemes: []string{"https"}, AllowedHosts: []string{endpoint.Hostname()}, Override: "forbidden"})
 		flow.DeviceCode = &manifest.DeviceCodeFlow{Endpoint: "device", Request: []manifest.FieldRule{{Name: "client_id", Value: manifest.Template{Kind: "context", Ref: "oauth.client_id"}}}, DeviceCodePointer: "/device_code", UserCodePointer: "/user_code", VerificationURLPointer: "/verification_uri", ExpiresInPointer: "/expires_in", IntervalPointer: "/interval", DefaultIntervalSeconds: 1, Poll: []manifest.FieldRule{{Name: "device_code", Value: manifest.Template{Kind: "context", Ref: "oauth.device_code"}}}, ErrorPointer: "/error", MaxBodyBytes: 1024}
 		flow.DeviceCode.Poll = append(flow.DeviceCode.Poll, manifest.FieldRule{Name: "client_id", Value: manifest.Template{Kind: "context", Ref: "oauth.client_id"}})
+	}
+	for _, edit := range customize {
+		edit(&declaration)
 	}
 	data, err = json.Marshal(declaration)
 	require.NoError(t, err)
