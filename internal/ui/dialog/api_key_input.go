@@ -2,6 +2,7 @@ package dialog
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/help"
@@ -22,6 +23,11 @@ type ActionAPIKeyCheck struct{ Dialog *APIKeyInput }
 type ActionAPIKeySave struct{ Dialog *APIKeyInput }
 type ActionAPIKeyRetry struct{ Dialog *APIKeyInput }
 type ActionAPIKeyReload struct{ Dialog *APIKeyInput }
+type ActionAPIKeySelectCredential struct {
+	Dialog       *APIKeyInput
+	CredentialID string
+	OAuth        bool
+}
 type ActionAPIKeyRecover struct {
 	Dialog *APIKeyInput
 	Retry  bool
@@ -31,8 +37,16 @@ type ActionAPIKeyRecover struct {
 // never copied into a status, completion or transport acknowledgement.
 type APIKeyPresentation struct {
 	SaveDispatched                                        bool
-	Message, Evidence                                     string
+	Message, Evidence, Credential                         string
 	Editable, Save, Retry, Reload, Recover, RetryRecovery bool
+}
+
+// APIKeyCredentialChoice contains only public owner-reported slot metadata.
+// OAuth is a distinct action; it never becomes a Check credential identifier.
+type APIKeyCredentialChoice struct {
+	ID, Label  string
+	Configured bool
+	OAuth      bool
 }
 
 // APIKeyInput owns editing and rendering. The workspace owner performs all
@@ -48,6 +62,10 @@ type APIKeyInput struct {
 	help                                                 help.Model
 	presentation                                         APIKeyPresentation
 	submit, close, retry, reload, recover, retryRecovery key.Binding
+	choices                                              []APIKeyCredentialChoice
+	selected                                             int
+	revealChoice                                         bool
+	choose, previous, next                               key.Binding
 }
 
 func NewAPIKeyInput(com *common.Common, isOnboarding bool, selection ActionSelectModel) (*APIKeyInput, tea.Cmd) {
@@ -56,8 +74,9 @@ func NewAPIKeyInput(com *common.Common, isOnboarding bool, selection ActionSelec
 		m.providerName = selection.Model.Provider
 	}
 	m.input = textinput.New()
+	m.input.CharLimit = 0
 	m.input.SetVirtualCursor(false)
-	m.input.Placeholder = "Enter API key or expression…"
+	m.input.Placeholder = "Enter credential or expression…"
 	m.input.SetStyles(com.Styles.TextInput)
 	m.input.EchoMode = textinput.EchoPassword
 	m.input.EchoCharacter = '•'
@@ -71,15 +90,29 @@ func NewAPIKeyInput(com *common.Common, isOnboarding bool, selection ActionSelec
 	m.reload = key.NewBinding(key.WithKeys("ctrl+n"), key.WithHelp("ctrl+n", "new input / reload status"))
 	m.recover = key.NewBinding(key.WithKeys("alt+r"), key.WithHelp("alt+r", "attempt saved change recovery"))
 	m.retryRecovery = key.NewBinding(key.WithKeys("alt+t"), key.WithHelp("alt+t", "retry recovery receipt"))
+	m.choose = key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "choose credential"))
+	m.previous = key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/↓", "select credential"))
+	m.next = key.NewBinding(key.WithKeys("down", "j"))
 	m.SetPresentation(APIKeyPresentation{Message: "Loading authentication status from the selected workspace…"})
 	return m, nil
 }
 func (m *APIKeyInput) ID() string { return APIKeyInputID }
+func (m *APIKeyInput) SetChoices(choices []APIKeyCredentialChoice) {
+	m.choices = slices.Clone(choices)
+	m.selected = 0
+	m.revealChoice = len(choices) != 0
+	m.details.GotoTop()
+	m.setBindings()
+}
 func (m *APIKeyInput) SetPresentation(p APIKeyPresentation) {
 	if p.Message != m.presentation.Message || p.Evidence != m.presentation.Evidence {
 		m.details.GotoTop()
 	}
 	m.presentation = p
+	m.setBindings()
+}
+func (m *APIKeyInput) setBindings() {
+	p := m.presentation
 	if p.SaveDispatched {
 		m.close.SetHelp("esc", "close; receipt retained")
 	} else {
@@ -89,13 +122,16 @@ func (m *APIKeyInput) SetPresentation(p APIKeyPresentation) {
 	m.reload.SetEnabled(p.Reload)
 	m.recover.SetEnabled(p.Recover)
 	m.retryRecovery.SetEnabled(p.RetryRecovery)
-	m.submit.SetEnabled(p.Editable || p.Save)
+	m.choose.SetEnabled(len(m.choices) != 0)
+	m.previous.SetEnabled(len(m.choices) != 0)
+	m.next.SetEnabled(len(m.choices) != 0)
+	m.submit.SetEnabled(len(m.choices) == 0 && (p.Editable || p.Save))
 	if p.Save {
-		m.submit.SetHelp("enter", "save retained input and use model")
+		m.submit.SetHelp("enter", "save retained credential")
 	} else {
 		m.submit.SetHelp("enter", "check input")
 	}
-	if p.Editable {
+	if p.Editable && len(m.choices) == 0 {
 		m.input.Focus()
 	} else {
 		m.input.Blur()
@@ -123,6 +159,17 @@ func (m *APIKeyInput) HandleMsg(msg tea.Msg) Action {
 			return nil
 		case key.Matches(press, m.close):
 			return ActionClose{}
+		case key.Matches(press, m.choose):
+			choice := m.choices[m.selected]
+			return ActionAPIKeySelectCredential{Dialog: m, CredentialID: choice.ID, OAuth: choice.OAuth}
+		case key.Matches(press, m.previous):
+			m.selected = max(0, m.selected-1)
+			m.revealChoice = true
+			return nil
+		case key.Matches(press, m.next):
+			m.selected = min(len(m.choices)-1, m.selected+1)
+			m.revealChoice = true
+			return nil
 		case key.Matches(press, m.retry):
 			return ActionAPIKeyRetry{m}
 		case key.Matches(press, m.reload):
@@ -140,7 +187,7 @@ func (m *APIKeyInput) HandleMsg(msg tea.Msg) Action {
 			}
 		}
 	}
-	if !m.presentation.Editable {
+	if !m.presentation.Editable || len(m.choices) != 0 {
 		return nil
 	}
 	var cmd tea.Cmd
@@ -161,13 +208,33 @@ func (m *APIKeyInput) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	available := max(0, area.Dy()-frame)
 	m.input.SetWidth(max(0, inner-t.Dialog.InputPrompt.GetHorizontalFrameSize()-1))
 	m.input.Prompt = "> "
-	title := common.DialogTitle(t, m.providerName+" API key", inner, t.Dialog.TitleGradFromColor, t.Dialog.TitleGradToColor)
+	title := common.DialogTitle(t, m.providerName+" authentication", inner, t.Dialog.TitleGradFromColor, t.Dialog.TitleGradToColor)
 	input := ""
-	if m.presentation.Editable {
+	if m.presentation.Editable && len(m.choices) == 0 {
 		input = t.Dialog.InputPrompt.Render(m.input.View())
 	}
 	footer := m.actionFooter(inner)
-	body := t.Dialog.PrimaryText.Width(inner).Render(m.presentation.Message)
+	var rows []string
+	selectedLine := 0
+	for i, choice := range m.choices {
+		style, marker := t.Dialog.PrimaryText, "  "
+		if i == m.selected {
+			if len(rows) > 0 {
+				selectedLine = lipgloss.Height(strings.Join(rows, "\n"))
+			}
+			style, marker = t.Dialog.SelectedItem, "> "
+		}
+		label := choice.Label
+		if choice.Configured {
+			label += " (configured)"
+		}
+		rows = append(rows, style.Width(inner).Render(marker+label))
+	}
+	if m.presentation.Credential != "" {
+		rows = append(rows, t.Dialog.PrimaryText.Width(inner).Render("Selected credential: "+m.presentation.Credential))
+	}
+	rows = append(rows, t.Dialog.PrimaryText.Width(inner).Render(m.presentation.Message))
+	body := strings.Join(rows, "\n")
 	if m.presentation.Evidence != "" {
 		body += "\n" + t.Dialog.SecondaryText.Width(inner).Render(m.presentation.Evidence)
 	}
@@ -187,6 +254,14 @@ func (m *APIKeyInput) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		title = ""
 	}
 	m.details.SetHeight(min(max(0, available-fixed), m.details.TotalLineCount()))
+	if m.revealChoice && m.details.Height() > 0 {
+		if selectedLine < m.details.YOffset() {
+			m.details.SetYOffset(selectedLine)
+		} else if selectedLine >= m.details.YOffset()+m.details.Height() {
+			m.details.SetYOffset(selectedLine - m.details.Height() + 1)
+		}
+		m.revealChoice = false
+	}
 	var parts []string
 	if title != "" {
 		parts = append(parts, title)
@@ -219,8 +294,8 @@ func (r apiKeyHelpRow) FullHelp() [][]key.Binding { return [][]key.Binding{r} }
 // Keep every enabled action in the fixed footer. Compact descriptions fit
 // small terminals; the full explanation stays in the scrollable details pane.
 func (m *APIKeyInput) actionFooter(width int) string {
-	bindings := []key.Binding{m.submit, m.close, m.retry, m.recover, m.retryRecovery, m.reload, m.scroll}
-	descriptions := []string{"check", "cancel", "retry", "recover", "retry recovery", "new input", "scroll"}
+	bindings := []key.Binding{m.submit, m.close, m.retry, m.recover, m.retryRecovery, m.reload, m.choose, m.previous, m.scroll}
+	descriptions := []string{"check", "cancel", "retry", "recover", "retry recovery", "new input", "choose", "select", "scroll"}
 	if m.presentation.Save {
 		descriptions[0] = "save"
 	}
@@ -258,7 +333,7 @@ func (m *APIKeyInput) actionFooter(width int) string {
 }
 
 func (m *APIKeyInput) ShortHelp() []key.Binding {
-	return []key.Binding{m.submit, m.retry, m.reload, m.recover, m.retryRecovery, m.close}
+	return []key.Binding{m.choose, m.previous, m.submit, m.retry, m.reload, m.recover, m.retryRecovery, m.close}
 }
 func (m *APIKeyInput) FullHelp() [][]key.Binding { return [][]key.Binding{m.ShortHelp()} }
 

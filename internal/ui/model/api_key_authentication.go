@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,13 +20,15 @@ import (
 )
 
 type apiKeySession struct {
-	workspace  workspace.Workspace
-	dialog     *dialog.APIKeyInput
-	selection  dialog.ActionSelectModel
-	generation uint64
-	target     providerauth.Target
-	ready      bool
-	cancel     context.CancelFunc
+	workspace                     workspace.Workspace
+	dialog                        *dialog.APIKeyInput
+	selection                     dialog.ActionSelectModel
+	generation                    uint64
+	target                        providerauth.Target
+	slots                         []providerauth.CredentialSlot
+	credentialID, credentialLabel string
+	ready                         bool
+	cancel                        context.CancelFunc
 }
 type apiKeyOperation struct {
 	initialCheck                                        bool
@@ -43,6 +47,7 @@ type apiKeyOperation struct {
 	attempt                                             uint64
 	busy, preparing, attemptedSave, resolved, continued bool
 	kind, message                                       string
+	credentialLabel                                     string
 	cancel                                              context.CancelFunc
 }
 
@@ -132,7 +137,7 @@ func (m *UI) completeAPIKeyStatus(msg apiKeyStatusMsg) tea.Cmd {
 	if err == nil {
 		err = s.selection.ValidateProviderOwner(s.workspace.Config())
 	}
-	if err == nil && s.generation != m.modelSelectionGen {
+	if err == nil && s.selection.Model.Model != "" && s.generation != m.modelSelectionGen {
 		err = errors.New("model selection changed; reopen authentication")
 	}
 	var found *providerauth.Status
@@ -154,17 +159,77 @@ func (m *UI) completeAPIKeyStatus(msg apiKeyStatusMsg) tea.Cmd {
 		return util.ReportError(errors.New("Could not load selected workspace authentication: " + safeAPIKeyError(err)))
 	}
 	s.target = providerauth.Target{WorkspaceID: msg.snapshot.WorkspaceID, Owner: found.Owner, Generation: msg.snapshot.Generation}
+	s.slots = slices.Clone(found.CredentialSlots)
 	s.ready = true
-	// Status from the credential owner decides the authentication family. A
-	// missing local OAuth registration must never turn into an API-key fallback.
-	if found.Owner.HasOAuth && m.apiKeyOperations[s.workspace] == nil {
+	if m.apiKeyOperations[s.workspace] != nil {
+		m.showAPIKeyOperation(s.dialog)
+		return nil
+	}
+	// Only the owner's declared choices are offered. OAuth capability does not
+	// hide declared configuration credentials or imply an API-key fallback.
+	var choices []dialog.APIKeyCredentialChoice
+	for _, slot := range s.slots {
+		choices = append(choices, dialog.APIKeyCredentialChoice{ID: slot.ID, Label: apiKeyCredentialLabel(slot), Configured: slot.Configured})
+	}
+	if found.Owner.HasOAuth {
+		choices = append(choices, dialog.APIKeyCredentialChoice{OAuth: true, Label: "OAuth sign-in"})
+	}
+	if len(choices) == 1 && (choices[0].ID == "provider.api_key" || choices[0].OAuth) {
+		return m.selectAPIKeyCredential(dialog.ActionAPIKeySelectCredential{Dialog: s.dialog, CredentialID: choices[0].ID, OAuth: choices[0].OAuth})
+	}
+	if len(choices) == 0 {
+		s.ready = false
+		s.dialog.SetPresentation(dialog.APIKeyPresentation{Message: "This owner reports no editable credential slots or OAuth sign-in. Reload status after changing the provider definition.", Reload: true})
+		return nil
+	}
+	s.dialog.SetChoices(choices)
+	s.dialog.SetPresentation(dialog.APIKeyPresentation{Message: "Choose the credential to configure. Each check and save keeps this exact choice. OAuth sign-in is a separate action.", Reload: true})
+	return nil
+}
+
+func apiKeyCredentialLabel(slot providerauth.CredentialSlot) string {
+	if slot.ID == "provider.api_key" {
+		return "Provider API key (provider.api_key)"
+	}
+	return slot.ID + " · " + slot.Kind + " · configuration property " + strconv.Quote(slot.Property)
+}
+
+func (m *UI) selectAPIKeyCredential(action dialog.ActionAPIKeySelectCredential) tea.Cmd {
+	s := m.apiKeySessions[action.Dialog]
+	if s == nil || !s.ready || s.workspace != m.com.Workspace || !m.apiKeyDialogOpen(action.Dialog) || s.selection.Model.Model != "" && s.generation != m.modelSelectionGen {
+		return util.ReportError(errors.New("Reload authentication for the current provider before choosing a credential"))
+	}
+	if err := s.selection.ValidateProviderOwner(s.workspace.Config()); err != nil {
+		return util.ReportError(err)
+	}
+	if m.apiKeyOperations[s.workspace] != nil {
+		return util.ReportError(errors.New("The original credential request is retained; use its retry or explicitly reload before choosing another credential"))
+	}
+	if s.credentialID != "" {
+		return util.ReportError(errors.New("Credential input is already selected; explicitly reload before choosing another credential"))
+	}
+	if action.OAuth {
+		if action.CredentialID != "" || !s.target.Owner.HasOAuth {
+			return util.ReportError(providerauth.ErrOwner)
+		}
 		m.dialog.CloseDialog(dialog.APIKeyInputID)
 		m.pruneAPIKeySessions()
-		return m.openOAuthAuthentication(&s.selection, &found.Owner)
+		var selection *dialog.ActionSelectModel
+		if s.selection.Model.Model != "" {
+			selection = &s.selection
+		}
+		return m.openOAuthAuthentication(selection, &s.target.Owner)
 	}
-	s.dialog.SetPresentation(dialog.APIKeyPresentation{Message: "Enter an API key or expression to check on the selected workspace. Enter checks; saving is a separate action.", Editable: true, Reload: true})
-	m.showAPIKeyOperation(s.dialog)
-	return nil
+	for _, slot := range s.slots {
+		if slot.ID != action.CredentialID {
+			continue
+		}
+		s.credentialID, s.credentialLabel = slot.ID, apiKeyCredentialLabel(slot)
+		s.dialog.SetChoices(nil)
+		s.dialog.SetPresentation(dialog.APIKeyPresentation{Credential: s.credentialLabel, Message: "Enter a credential or expression to check on the selected workspace. Enter checks; saving is a separate action. Ctrl+N reloads credential choices.", Editable: true, Reload: true})
+		return nil
+	}
+	return util.ReportError(errors.New("The selected credential is not declared by this owner; reload status"))
 }
 func (m *UI) showAPIKeyOperation(d *dialog.APIKeyInput) {
 	s := m.apiKeySessions[d]
@@ -175,7 +240,8 @@ func (m *UI) showAPIKeyOperation(d *dialog.APIKeyInput) {
 	if op == nil {
 		return
 	}
-	p := dialog.APIKeyPresentation{SaveDispatched: op.attemptedSave, Message: "Original key request for " + op.selection.Model.Provider + ". " + op.message, Evidence: dialog.APIKeyProbeDescription(op.checked.Probe)}
+	d.SetChoices(nil)
+	p := dialog.APIKeyPresentation{SaveDispatched: op.attemptedSave, Credential: op.credentialLabel, Message: "Original credential request for " + op.selection.Model.Provider + ". " + op.message, Evidence: dialog.APIKeyProbeDescription(op.checked.Probe)}
 	if !op.busy && !op.preparing {
 		p.Retry = op.kind != "" && !op.resolved
 		p.Save = op.checked.CheckedTarget != nil && !op.attemptedSave
@@ -192,24 +258,27 @@ func (m *UI) updateAPIKeyDialogs() {
 }
 func (m *UI) beginAPIKeyCheck(d *dialog.APIKeyInput) tea.Cmd {
 	s := m.apiKeySessions[d]
-	if s == nil || !s.ready || !m.apiKeyDialogOpen(d) || s.workspace != m.com.Workspace || s.generation != m.modelSelectionGen {
+	if s == nil || !s.ready || !m.apiKeyDialogOpen(d) || s.workspace != m.com.Workspace || s.selection.Model.Model != "" && s.generation != m.modelSelectionGen {
 		return util.ReportError(errors.New("Reload authentication for the current model selection before checking input"))
 	}
 	if err := s.selection.ValidateProviderOwner(s.workspace.Config()); err != nil {
 		return util.ReportError(err)
 	}
 	if previous := m.apiKeyOperations[s.workspace]; previous != nil {
-		return util.ReportError(errors.New("Retry the retained request or explicitly start new input before checking another key"))
+		return util.ReportError(errors.New("Retry the retained request or explicitly start new input before checking another credential"))
+	}
+	if s.credentialID == "" || !slices.ContainsFunc(s.slots, func(slot providerauth.CredentialSlot) bool { return slot.ID == s.credentialID }) {
+		return util.ReportError(errors.New("Choose a credential reported by the selected owner before checking input"))
 	}
 	source := d.TakeSource()
 	if strings.TrimSpace(source) == "" {
-		d.SetPresentation(dialog.APIKeyPresentation{Message: "Enter an API key or expression.", Editable: true, Reload: true})
+		d.SetPresentation(dialog.APIKeyPresentation{Credential: s.credentialLabel, Message: "Enter a credential or expression.", Editable: true, Reload: true})
 		return nil
 	}
 	if m.apiKeyOperations == nil {
 		m.apiKeyOperations = make(map[workspace.Workspace]*apiKeyOperation)
 	}
-	op := &apiKeyOperation{initialCheck: true, workspace: s.workspace, dialog: d, selection: s.selection, generation: s.generation, check: providerauth.APIKeyCheckRequest{Target: s.target, CredentialID: "provider.api_key", Source: source}, preparing: true, kind: "check", attempt: 1, message: "Preparing the original key check…"}
+	op := &apiKeyOperation{initialCheck: true, workspace: s.workspace, dialog: d, selection: s.selection, generation: s.generation, credentialLabel: s.credentialLabel, check: providerauth.APIKeyCheckRequest{Target: s.target, CredentialID: s.credentialID, Source: source}, preparing: true, kind: "check", attempt: 1, message: "Preparing the original credential check…"}
 	if r, ok := op.workspace.(workspace.ProviderAuthenticationRecoverer); ok && r.CanRecoverProviderAuthentication() {
 		op.recoverer = r
 	}
@@ -248,7 +317,7 @@ func (m *UI) completeAPIKeyIDs(msg apiKeyIDsMsg) tea.Cmd {
 	}
 	initialCheck := op.initialCheck
 	op.initialCheck = false
-	if op.workspace != m.com.Workspace || !m.apiKeyDialogOpen(op.dialog) || initialCheck && op.generation != m.modelSelectionGen {
+	if op.workspace != m.com.Workspace || !m.apiKeyDialogOpen(op.dialog) || initialCheck && op.selection.Model.Model != "" && op.generation != m.modelSelectionGen {
 		op.message = "Preparation cancelled before dispatch. The original request remains available for explicit retry."
 		m.updateAPIKeyDialogs()
 		return nil
@@ -291,12 +360,15 @@ func (m *UI) completeAPIKeyCheck(msg apiKeyCheckMsg) tea.Cmd {
 	}
 	if err != nil {
 		op.checked.CheckedTarget = nil
-		op.message = "Key check did not complete: " + safeAPIKeyError(err) + " Ctrl+T retries the original check; Ctrl+N starts new input."
+		op.message = "Credential check did not complete: " + safeAPIKeyError(err) + " Ctrl+T retries the original check; Ctrl+N starts new input."
 		m.updateAPIKeyDialogs()
 		return util.ReportError(errors.New(op.message))
 	}
 	op.save.Target = *op.checked.CheckedTarget
 	op.message = "Original input for " + op.selection.Model.Provider + " is retained. Enter saves that retained input and continues the originally selected model only if that selection is still current. Escape cancels without saving."
+	if op.selection.Model.Model == "" {
+		op.message = "Original input for " + op.selection.Model.Provider + " is retained. Enter saves that retained credential. Escape cancels without saving."
+	}
 	m.updateAPIKeyDialogs()
 	return nil
 }
@@ -355,7 +427,7 @@ func (m *UI) recoverAPIKeyOperation(action dialog.ActionAPIKeyRecover) tea.Cmd {
 	}
 	op.preparing = true
 	op.attempt++
-	op.message = "Preparing an explicit recovery attempt for the original saved key…"
+	op.message = "Preparing an explicit recovery attempt for the original saved credential…"
 	m.updateAPIKeyDialogs()
 	return prepareAPIKeyIDs(op, op.attempt, true)
 }
@@ -370,7 +442,7 @@ func (m *UI) dispatchAPIKeySave(op *apiKeyOperation, recovery bool) tea.Cmd {
 		value := *op.recovery
 		recoveryRequest = &value
 		op.kind = "recovery"
-		op.message = "Attempting explicit publication recovery of the original saved key…"
+		op.message = "Attempting explicit publication recovery of the original saved credential…"
 	}
 	ws, request, attempt, recoverer := op.workspace, op.save, op.attempt, op.recoverer
 	m.updateAPIKeyDialogs()
@@ -397,7 +469,9 @@ func (m *UI) completeAPIKeySave(msg apiKeySaveMsg) tea.Cmd {
 	}
 	op.busy = false
 	err := msg.err
-	if validation := msg.outcome.ValidateAPIKeySave(op.save); validation != nil {
+	if validation := msg.outcome.ValidateAPIKeySave(op.save); validation != nil ||
+		msg.outcome.CredentialID != "" && msg.outcome.CredentialID != op.check.CredentialID ||
+		msg.outcome.Change != nil && msg.outcome.CredentialID != op.check.CredentialID {
 		err = providerauth.ErrReceiptUnverified
 	} else {
 		op.outcome = msg.outcome
@@ -410,21 +484,24 @@ func (m *UI) completeAPIKeySave(msg apiKeySaveMsg) tea.Cmd {
 		err = providerauth.ErrReceiptUnverified
 	}
 	if err != nil {
-		op.message = "Key save has no current acknowledgement: " + safeAPIKeyError(err) + " " + apiKeyProgress(op.progress) + " Ctrl+T retries the original save receipt."
+		op.message = "Credential save has no current acknowledgement: " + safeAPIKeyError(err) + " " + apiKeyProgress(op.progress) + " Ctrl+T retries the original save receipt."
 		if op.recoverer != nil {
-			op.message += " Alt+R attempts publication recovery; saved-key review is not supported here."
+			op.message += " Alt+R attempts publication recovery; checked-credential review is not supported here."
 		}
 		m.updateAPIKeyDialogs()
 		return util.ReportError(errors.New(op.message))
 	}
 	op.resolved = true
 	if msg.outcome.Superseded {
-		op.message = "The original key save is historical; it does not authorize a model change. Reload status for new input."
+		op.message = "The original credential save is historical; it does not authorize a model change. Reload status for new input."
 		m.updateAPIKeyDialogs()
 		return util.ReportWarn(op.message)
 	}
-	op.message = "Checked key saved and acknowledged by the selected workspace."
+	op.message = "Checked credential saved and acknowledged by the selected workspace."
 	m.updateAPIKeyDialogs()
+	if op.selection.Model.Model == "" {
+		return util.ReportInfo(op.message)
+	}
 	if op.continued || op.workspace != m.com.Workspace || op.generation != m.modelSelectionGen {
 		return util.ReportInfo(op.message + " The newer model selection was preserved.")
 	}
@@ -443,7 +520,7 @@ func (m *UI) reloadAPIKeyInput(d *dialog.APIKeyInput) tea.Cmd {
 	}
 	if op := m.apiKeyOperations[s.workspace]; op != nil {
 		if op.busy || op.preparing || op.attemptedSave && !op.resolved {
-			return util.ReportError(errors.New("The original save receipt remains unresolved; retry it or attempt explicit recovery before entering another key"))
+			return util.ReportError(errors.New("The original save receipt remains unresolved; retry it or attempt explicit recovery before entering another credential"))
 		}
 		delete(m.apiKeyOperations, s.workspace)
 	}
