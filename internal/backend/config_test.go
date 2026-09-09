@@ -153,7 +153,9 @@ func TestImportCopilot_PublishesConfigChanged(t *testing.T) {
 	b, ws, evc := newPublishingWorkspace(t)
 
 	// Not-found path: no token exists, so no event must fire.
-	_, ok, err := b.ImportCopilot(ws.ID)
+	owner, registered := ws.Cfg.RuntimeSnapshot().ProviderOwner("copilot")
+	require.True(t, registered)
+	ok, err := b.ImportCopilot(t.Context(), ws.ID, owner)
 	require.NoError(t, err)
 	require.False(t, ok, "ImportCopilot should return ok=false when no token is present")
 

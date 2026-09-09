@@ -18,7 +18,6 @@ import (
 	"github.com/example-git/crux/internal/history"
 	"github.com/example-git/crux/internal/lsp"
 	"github.com/example-git/crux/internal/message"
-	"github.com/example-git/crux/internal/oauth"
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
@@ -239,7 +238,7 @@ type Workspace interface {
 	RemoveConfigField(scope config.Scope, key string) error
 	// PrepareProviderUsage captures authority without I/O; execute the returned request asynchronously.
 	PrepareProviderUsage(owner providerregistry.RegistrationOwner) oauthusage.Request
-	ImportCopilot() (*oauth.Token, bool)
+	ImportCopilot(ctx context.Context, owner providerregistry.RegistrationOwner) (bool, error)
 	RefreshOAuthToken(ctx context.Context, scope config.Scope, owner providerregistry.RegistrationOwner) error
 	CodebaseIndexStatus(ctx context.Context) (proto.CodebaseIndexStatus, error)
 	UpdateCodebaseIndex(ctx context.Context, update proto.CodebaseIndexUpdate) (proto.CodebaseIndexStatus, error)

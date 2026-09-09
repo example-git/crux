@@ -23,7 +23,6 @@ import (
 	"github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/lsp"
 	"github.com/example-git/crux/internal/message"
-	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
@@ -722,17 +721,6 @@ func (w *ClientWorkspace) RemoveConfigField(scope config.Scope, key string) erro
 		w.refreshWorkspace()
 	}
 	return err
-}
-
-func (w *ClientWorkspace) ImportCopilot() (*oauth.Token, bool) {
-	token, ok, err := w.client.ImportCopilot(context.Background(), w.workspaceID())
-	if err != nil {
-		return nil, false
-	}
-	if ok {
-		w.refreshWorkspace()
-	}
-	return token, ok
 }
 
 func (w *ClientWorkspace) RefreshOAuthToken(ctx context.Context, scope config.Scope, owner providerregistry.RegistrationOwner) error {

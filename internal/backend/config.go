@@ -9,7 +9,6 @@ import (
 	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/commands"
 	"github.com/example-git/crux/internal/config"
-	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
@@ -153,19 +152,6 @@ func (b *Backend) RemoveProviderCredentials(workspaceID string, scope config.Sco
 	}
 	publishConfigChanged(ws)
 	return nil
-}
-
-// ImportCopilot attempts to import a GitHub Copilot token from disk.
-func (b *Backend) ImportCopilot(workspaceID string) (*oauth.Token, bool, error) {
-	ws, err := b.GetWorkspace(workspaceID)
-	if err != nil {
-		return nil, false, err
-	}
-	token, ok := ws.Cfg.ImportCopilot()
-	if ok {
-		publishConfigChanged(ws)
-	}
-	return token, ok, nil
 }
 
 // RefreshOAuthToken refreshes the OAuth token for a provider.

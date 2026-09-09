@@ -14,6 +14,7 @@ import (
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/useragent"
 	"github.com/example-git/crux/internal/providertransport"
+	"github.com/example-git/crux/internal/redact"
 )
 
 const (
@@ -157,6 +158,7 @@ func tryGetToken(ctx context.Context, deviceCode string) (*oauth.Token, error) {
 }
 
 func getCopilotToken(ctx context.Context, githubToken string) (*oauth.Token, error) {
+	redact.Register(githubToken)
 	req, err := http.NewRequestWithContext(ctx, "GET", copilotTokenURL, nil)
 	if err != nil {
 		return nil, err
@@ -187,7 +189,7 @@ func getCopilotToken(ctx context.Context, githubToken string) (*oauth.Token, err
 		return nil, ErrNotAvailable
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("copilot token request failed: %s - %s", resp.Status, string(body))
+		return nil, fmt.Errorf("copilot token request failed: %s", resp.Status)
 	}
 
 	var result struct {
@@ -204,6 +206,7 @@ func getCopilotToken(ctx context.Context, githubToken string) (*oauth.Token, err
 		ExpiresAt:    result.ExpiresAt,
 	}
 	copilotToken.SetExpiresIn()
+	redact.Register(copilotToken.AccessToken, copilotToken.RefreshToken)
 
 	return copilotToken, nil
 }

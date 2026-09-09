@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -210,24 +213,46 @@ func (c *controllerV1) handlePostWorkspaceConfigProviderKey(w http.ResponseWrite
 	w.WriteHeader(http.StatusOK)
 }
 
-// handlePostWorkspaceConfigImportCopilot imports Copilot credentials.
+// handlePostWorkspaceConfigImportCopilot imports receiver-owned Copilot credentials.
 //
 //	@Summary		Import Copilot credentials
 //	@Tags			config
+//	@Accept			json
+//	@Param			request	body	proto.ImportCopilotRequest	true	"Initiating provider owner"
 //	@Produce		json
 //	@Param			id	path		string						true	"Workspace ID"
 //	@Success		200	{object}	proto.ImportCopilotResponse
 //	@Failure		404	{object}	proto.Error
-//	@Failure		500	{object}	proto.Error
+//	@Failure		400	{object}	proto.Error
+//	@Failure		502	{object}	proto.Error
 //	@Router			/workspaces/{id}/config/import-copilot [post]
 func (c *controllerV1) handlePostWorkspaceConfigImportCopilot(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	token, ok, err := c.backend.ImportCopilot(id)
-	if err != nil {
-		c.handleError(w, r, err)
+	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16<<10))
+	if err != nil || validateRuntimeJSON(data) != nil {
+		jsonError(w, http.StatusBadRequest, "invalid Copilot import request")
 		return
 	}
-	jsonEncode(w, proto.ImportCopilotResponse{Token: token, Success: ok})
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var request proto.ImportCopilotRequest
+	if err := decoder.Decode(&request); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid Copilot import request")
+		return
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF || request.Owner.ProviderID != "copilot" {
+		jsonError(w, http.StatusBadRequest, "Copilot import requires its initiating owner")
+		return
+	}
+	found, err := c.backend.ImportCopilot(r.Context(), r.PathValue("id"), request.Owner)
+	if err != nil {
+		if errors.Is(err, config.ErrClientRuntimeManaged) {
+			c.handleError(w, r, err)
+		} else {
+			jsonError(w, http.StatusBadGateway, "Copilot import failed")
+		}
+		return
+	}
+	jsonEncode(w, proto.ImportCopilotResponse{Success: found})
 }
 
 // handlePostWorkspaceConfigRefreshOAuth refreshes an OAuth token for a provider.

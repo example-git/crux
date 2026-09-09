@@ -2147,39 +2147,16 @@ func newTestStoreWithRegistry(cfg *Config, registry *providerregistry.Registry, 
 
 // ImportCopilot attempts to import a GitHub Copilot token from disk.
 func (s *ConfigStore) ImportCopilot() (*oauth.Token, bool) {
-	providerID := string(catalog.ProviderCopilot)
-	registration, err := s.exactOAuthRegistration(s.Config(), providerID)
-	if err != nil || registration.Construction != providerregistry.ConstructionCopilot || registration.OAuth.Import == nil {
+	registration, err := s.exactOAuthRegistration(s.Config(), string(catalog.ProviderCopilot))
+	if err != nil {
 		return nil, false
 	}
-	owner := registration.Owner()
-	if s.HasConfigField(ScopeGlobal, "providers.copilot.api_key") || s.HasConfigField(ScopeGlobal, "providers.copilot.oauth") {
-		return nil, false
-	}
-
-	ctx := providertransport.ContextWithOwnerValidator(context.TODO(), func() error {
-		return s.ValidateRegistrationOwner(owner)
-	})
-	token, found, err := registration.OAuth.Import(ctx)
-	if ownerErr := s.ValidateRegistrationOwner(owner); ownerErr != nil {
-		slog.Error("Unable to import GitHub Copilot token", "error", ownerErr)
-		return nil, false
-	}
+	token, found, err := s.ImportCopilotForOwner(context.Background(), registration.Owner())
 	if err != nil {
 		slog.Error("Unable to import GitHub Copilot token", "error", err)
 		return nil, false
 	}
-	if !found || token == nil {
-		return nil, false
-	}
-
-	slog.Info("Found existing GitHub Copilot token on disk. Authenticating...")
-	if err := s.SetProviderOAuthToken(ScopeGlobal, owner, token); err != nil {
-		return nil, false
-	}
-
-	slog.Info("GitHub Copilot successfully imported")
-	return token, true
+	return token, found
 }
 
 // StalenessResult contains the result of a staleness check.

@@ -191,25 +191,22 @@ func (c *Client) RemoveProviderCredentials(ctx context.Context, id string, scope
 	return nil
 }
 
-// ImportCopilot attempts to import a GitHub Copilot token on the
-// server.
-func (c *Client) ImportCopilot(ctx context.Context, id string) (*oauth.Token, bool, error) {
-	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/import-copilot", id), nil, nil, nil)
+// ImportCopilot imports receiver-owned Copilot credentials for the exact
+// initiating owner. Client-owned workspaces reject this endpoint.
+func (c *Client) ImportCopilot(ctx context.Context, id string, owner providerregistry.RegistrationOwner) (bool, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/config/import-copilot", id), nil, jsonBody(proto.ImportCopilotRequest{Owner: owner}), http.Header{"Content-Type": {"application/json"}})
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to import copilot: %w", err)
+		return false, fmt.Errorf("import Copilot: %w", err)
 	}
 	defer rsp.Body.Close()
 	if rsp.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("failed to import copilot: status code %d", rsp.StatusCode)
+		return false, fmt.Errorf("import Copilot: status code %d", rsp.StatusCode)
 	}
-	var result struct {
-		Token   *oauth.Token `json:"token"`
-		Success bool         `json:"success"`
-	}
+	var result proto.ImportCopilotResponse
 	if err := json.NewDecoder(rsp.Body).Decode(&result); err != nil {
-		return nil, false, fmt.Errorf("failed to decode import copilot response: %w", err)
+		return false, fmt.Errorf("decode Copilot import: %w", err)
 	}
-	return result.Token, result.Success, nil
+	return result.Success, nil
 }
 
 // RefreshOAuthToken refreshes an OAuth token for a provider on the
