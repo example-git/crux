@@ -82,7 +82,7 @@ type Config struct {
 	ID      string
 	BaseURL string
 	APIKey  string
-	// APIKeyLiteral is set only for a provider key matching its OAuth access token.
+	// APIKeyLiteral is set only for a proven resolved key or matching OAuth access token.
 	APIKeyLiteral bool
 	ExtraHeaders  map[string]string
 	// Existing models from config — IDs present in this list are skipped

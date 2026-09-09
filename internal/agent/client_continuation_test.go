@@ -114,6 +114,10 @@ func sealClientResponsesProposal(t *testing.T, proposal *config.RemoteRuntimePro
 }
 
 func clientResponsesProposal(t *testing.T, endpoint string) config.RemoteRuntimeProposal {
+	return clientResponsesProposalWithAPIKey(t, endpoint, "")
+}
+
+func clientResponsesProposalWithAPIKey(t *testing.T, endpoint, apiKey string) config.RemoteRuntimeProposal {
 	t.Helper()
 	source := filepath.Join(t.TempDir(), "responses.plugin")
 	require.NoError(t, os.MkdirAll(source, 0o700))
@@ -129,6 +133,12 @@ func clientResponsesProposal(t *testing.T, endpoint string) config.RemoteRuntime
 		item.BaseURL = endpoint
 		item.AllowedHosts = []string{u.Hostname()}
 		item.AllowedSchemes = []string{"https"}
+		if apiKey != "" && item.ID == "api" {
+			item.Credential = "key"
+		}
+	}
+	if apiKey != "" {
+		value.Capabilities.Credentials = append(value.Capabilities.Credentials, manifest.Credential{ID: "key", Kind: "api-key", Audience: []string{"api"}})
 	}
 	data, err = json.Marshal(value)
 	require.NoError(t, err)
@@ -151,6 +161,9 @@ func clientResponsesProposal(t *testing.T, endpoint string) config.RemoteRuntime
 	provider := config.ProviderConfig{ID: bundle.ProviderID(), Name: metadata.Name, Type: metadata.Type, BaseURL: endpoint, Models: metadata.Models, Plugin: &config.ProviderPluginReference{ID: bundle.ID(), Version: bundle.Version()}, Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerPlugin, Construction: registration.Construction}, Configuration: map[string]any{"oauth_client_id": "synthetic-client"}}
 	selected := config.SelectedModel{Provider: provider.ID, Model: provider.Models[0].ID}
 	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1, Bundles: bundles, Providers: []config.RemoteProviderDefinition{{Config: provider, BundleDigest: bundle.Digest()}}, Models: map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: selected, config.SelectedModelTypeSmall: selected}, Credentials: []config.RemoteCredentialBinding{{Owner: registration.Owner(), Generation: 1, Account: &accounts.Entry{ID: "same-account", AccessToken: "synthetic-access", RefreshToken: "synthetic-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}}}}
+	if apiKey != "" {
+		proposal.Credentials[0].Account, proposal.Credentials[0].APIKey = nil, apiKey
+	}
 	sealClientResponsesProposal(t, &proposal)
 	return proposal
 }

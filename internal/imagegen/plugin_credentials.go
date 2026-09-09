@@ -144,7 +144,7 @@ func imageProviderCredential(ctx context.Context, snapshot config.RuntimeSnapsho
 	if !ok || !active || provider.Disable || actual != owner {
 		return nil, errors.New("image credential provider owner is unavailable")
 	}
-	key, err := config.ResolveProviderAPIKey(provider, snapshot.Resolve)
+	key, err := snapshot.ResolveProviderAPIKey(provider)
 	if err != nil {
 		return nil, errors.New("image provider API credential resolution failed")
 	}
@@ -160,7 +160,11 @@ func imageProviderCredential(ctx context.Context, snapshot config.RuntimeSnapsho
 		return nil, errors.New("image provider endpoint resolution failed")
 	}
 	result := map[string]any{"api_key": key, "access_token": access, "base_url": strings.TrimRight(baseURL, "/"), "account": map[string]any{}}
-	if owner.AccountNamespace != "" {
+	explicitAPIKey, err := snapshot.UsesResolvedProviderAPIKey(owner.ProviderID)
+	if err != nil {
+		return nil, errors.New("image provider API credential changed")
+	}
+	if owner.AccountNamespace != "" && !explicitAPIKey {
 		entry, forwarded := snapshot.EphemeralAccount(owner)
 		if !forwarded && !snapshot.IsClientOwned() {
 			entry, err = accounts.Active(ctx, owner.AccountNamespace)

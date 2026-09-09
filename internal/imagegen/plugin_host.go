@@ -140,7 +140,7 @@ func NewHostPluginRuntime(ctx context.Context, store *config.ConfigStore, bindin
 					if !ok {
 						return providerplugin.ImageOwner{}, errors.New("preferred image credential provider is unavailable")
 					}
-					key, err := config.ResolveProviderAPIKey(providerConfig, snapshot.Resolve)
+					key, err := snapshot.ResolveProviderAPIKey(providerConfig)
 					if err != nil {
 						return providerplugin.ImageOwner{}, errors.New("preferred image credential resolution failed")
 					}

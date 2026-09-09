@@ -392,6 +392,16 @@ func (c *Config) configureProviders(ctx context.Context, store *ConfigStore, env
 }
 
 func (c *Config) configureProvidersWithMigration(ctx context.Context, store *ConfigStore, env env.Env, resolver VariableResolver, knownProviders []catalog.Provider, migrate func(map[string]ProviderOwnerReference, map[string]ProviderPluginReference, map[string]ProviderPresetReference) error) error {
+	// Validate retained credential identity before preparation can resolve
+	// headers, migrate owners, or issue discovery requests.
+	snapshot := RuntimeSnapshot{config: c, registry: c.providerCapabilities()}
+	if c.Providers != nil {
+		for _, provider := range c.Providers.Seq2() {
+			if err := snapshot.validateResolvedProviderAPIKeyOwner(provider); err != nil {
+				return err
+			}
+		}
+	}
 	if err := prepareConfiguredProviderOwners(c); err != nil {
 		return err
 	}
@@ -489,6 +499,9 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 		prepared.BaseURL = p.APIEndpoint
 		prepared.APIKey = p.APIKey
 		prepared.APIKeyTemplate = p.APIKey // Store ordinary key expressions for re-resolution.
+		if prepared.resolvedAPIKey != nil {
+			prepared.APIKeyTemplate = config.APIKeyTemplate
+		}
 		prepared.Type = p.Type
 		prepared.Models = p.Models
 		prepared.ExtraHeaders = headers
@@ -545,6 +558,9 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 		// If the provider API key is missing, skip it. Copilot OAuth setup
 		// above replaces the catalog template before this check.
 		v, err := ResolveProviderAPIKey(prepared, resolver.ResolveValue)
+		if err != nil && prepared.resolvedAPIKey != nil {
+			return err
+		}
 		if v == "" && !anonymous || err != nil {
 			if configExists {
 				slog.Warn("Skipping provider due to missing API key", "provider", p.ID)
@@ -606,7 +622,7 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 			ID:             providerID,
 			BaseURL:        pc.BaseURL,
 			APIKey:         pc.APIKey,
-			APIKeyLiteral:  providerHasLiteralOAuthCredential(pc),
+			APIKeyLiteral:  providerHasLiteralAPIKey(pc),
 			ExtraHeaders:   pc.ExtraHeaders,
 			ExistingModels: pc.Models,
 		}

@@ -581,7 +581,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			continue
 		}
 		registration, registered := cfg.ProviderRegistration(selected.Provider)
-		if registered && registration.OAuth != nil && provider.OAuthToken == nil {
+		if registered && registration.OAuth != nil && provider.OAuthToken == nil && !registrationAPIKeySlotSupported(registration) {
 			return nil, fmt.Errorf("selected %s client provider requires its selected OAuth account", kind)
 		}
 		requiresAPI := !registered || registration.Manifest == nil
