@@ -71,7 +71,12 @@ func (s *ConfigStore) removeInactiveAuthenticationAccount(ctx context.Context, b
 	}
 	globalPath, workspacePath := s.globalDataPath, s.workspacePath
 	err = s.validateAuthenticationPublication(before, owner)
+	var journal *localAuthenticationWriter
+	if err == nil {
+		ctx, journal, err = s.beginLocalAuthenticationChangeLocked(ctx, before, authenticationAdmission{}, owner, "remove", "", accountID)
+	}
 	s.writeMu.Unlock()
+	defer func() { journal.finish(ctx, result, &err) }()
 	if err != nil {
 		return result, err
 	}

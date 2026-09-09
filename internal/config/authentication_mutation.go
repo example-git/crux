@@ -176,7 +176,19 @@ func (s *ConfigStore) mutateAuthenticationChange(ctx context.Context, scope Scop
 		return result, err
 	}
 	admitted, err := s.authenticationAdmissionLocked(ctx, scope, before, owner)
+	var journal *localAuthenticationWriter
+	if err == nil {
+		action := "logout"
+		if accountID != "" {
+			action = "switch"
+		}
+		if removeID != "" {
+			action = "remove"
+		}
+		ctx, journal, err = s.beginLocalAuthenticationChangeLocked(ctx, before, admitted, owner, action, accountID, removeID)
+	}
 	s.writeMu.Unlock()
+	defer func() { journal.finish(ctx, result, &err) }()
 	if err != nil {
 		return result, err
 	}
@@ -223,7 +235,7 @@ func (s *ConfigStore) mutateAuthenticationChange(ctx context.Context, scope Scop
 		if registration.OAuth == nil {
 			return result, errors.New("authentication provider does not support OAuth")
 		}
-		refreshed, err := before.accounts.RefreshInactive(ctx, owner.AccountNamespace, accountID, registration.OAuth.Refresh, validate)
+		refreshed, err := before.accounts.RefreshInactive(ctx, owner.AccountNamespace, accountID, journal.refresher(registration.OAuth.Refresh), validate)
 		result.AccountRefreshed = refreshed.Written
 		if err != nil {
 			return result, err
@@ -367,6 +379,9 @@ func (s *ConfigStore) mutateAuthenticationChange(ctx context.Context, scope Scop
 		return result, err
 	}
 	defer staged.Close()
+	if err := journal.stage(ctx, staged, admitted.topology, pending); err != nil {
+		return result, err
+	}
 	if err := s.validateAuthenticationAdmissionLocked(ctx, scope, before, owner, admitted); err != nil {
 		return result, err
 	}
@@ -389,6 +404,7 @@ func (s *ConfigStore) mutateAuthenticationChange(ctx context.Context, scope Scop
 	}
 	postimage, written, err := staged.commit(commitCtx, committed.CompletionDeadline())
 	result.ConfigSaved = written
+	err = errors.Join(err, journal.configSaved(ctx, written, staged.completionDeadline))
 	if err != nil {
 		return result, err
 	}

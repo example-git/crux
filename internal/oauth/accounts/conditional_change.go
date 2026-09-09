@@ -204,7 +204,7 @@ func (change *PendingChange) SelectedEntry() (Entry, bool) {
 // Cancellation aborts before rename. Once rename succeeds, directory sync and
 // verification finish under a separate bounded context; caller cancellation
 // cannot undo the durable effect. Blocking filesystem calls are not preemptible.
-func (change *PendingChange) Commit(ctx context.Context) (CommitResult, error) {
+func (change *PendingChange) Commit(ctx context.Context) (result CommitResult, err error) {
 	if change == nil || change.state == nil {
 		return CommitResult{}, errors.New("pending account change is unavailable")
 	}
@@ -213,6 +213,30 @@ func (change *PendingChange) Commit(ctx context.Context) (CommitResult, error) {
 	defer state.guard.Unlock()
 	if state.closed || state.committed || state.release == nil {
 		return CommitResult{}, errors.New("pending account change is closed or already used")
+	}
+	observer, observed := ctx.Value(pendingChangeObserverKey{}).(PendingChangeObserver)
+	if observed {
+		durable := durableAccountState(state)
+		if err := durable.validate(); err != nil {
+			return CommitResult{}, err
+		}
+		if observer.Before != nil {
+			if err := observer.Before(ctx, durable); err != nil {
+				return CommitResult{}, err
+			}
+		}
+		defer func() {
+			if observer.After == nil {
+				return
+			}
+			finish := ctx
+			if result.Written {
+				var cancel context.CancelFunc
+				finish, cancel = context.WithDeadline(context.WithoutCancel(ctx), result.completionDeadline)
+				defer cancel()
+			}
+			err = errors.Join(err, observer.After(finish, durable, result.Written))
+		}()
 	}
 	state.committed = true
 	current, err := state.checkCurrent(ctx)
@@ -263,7 +287,7 @@ func (change *PendingChange) Commit(ctx context.Context) (CommitResult, error) {
 	if err := os.Rename(temporary, state.before.path); err != nil {
 		return CommitResult{}, privateSnapshotError(err)
 	}
-	result := CommitResult{Written: true}
+	result = CommitResult{Written: true}
 	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountCommitCompletionTimeout)
 	defer cancel()
 	result.completionDeadline, _ = finishCtx.Deadline()

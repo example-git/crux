@@ -270,6 +270,7 @@ func (s *Server) installHandler() {
 	route("POST /v1/workspaces/{id}/auth/switch", c.handlePostWorkspaceProviderSwitch)
 	route("POST /v1/workspaces/{id}/auth/logout", c.handlePostWorkspaceProviderLogout)
 	route("POST /v1/workspaces/{id}/auth/remove", c.handlePostWorkspaceProviderRemove)
+	route("POST /v1/workspaces/{id}/auth/local-repair", c.handlePostWorkspaceLocalRepair)
 	route("POST /v1/workspaces/{id}/auth/api-key/check", c.handlePostWorkspaceAPIKeyCheck)
 	route("POST /v1/workspaces/{id}/auth/api-key/save", c.handlePostWorkspaceAPIKeySave)
 	route("POST /v1/workspaces/{id}/auth/oauth/begin", c.handlePostWorkspaceOAuthLoginBegin)

@@ -88,7 +88,11 @@ func (s *Service) completeOAuthLogin(ctx context.Context, ref OAuthLoginRef, acc
 		defer s.workers.Done()
 		defer close(finished)
 		defer func() { <-s.gate }()
-		transaction, failure := s.store.CommitOAuthLogin(login.ctx, config.ScopeGlobal, authorized)
+		commitCtx := config.ContextWithAuthenticationOperation(login.ctx, config.AuthenticationJournalKey{Kind: config.AuthenticationJournalLocal, WorkspaceID: s.workspaceID, OperationID: ref.OperationID})
+		transaction, failure := s.store.CommitOAuthLogin(commitCtx, config.ScopeGlobal, authorized)
+		if failure == nil {
+			failure = authorized.AcknowledgeJournalCommit(login.ctx, transaction)
+		}
 		receipt := mutationReceipt{request: request, originalOwner: owner, outcome: initial.Outcome}
 		receipt.outcome.Progress = MutationProgress{AccountRefreshed: transaction.AccountRefreshed, AccountsSaved: transaction.AccountsSaved, ConfigSaved: transaction.ConfigSaved, RuntimePublished: transaction.RuntimePublished}
 		runtime, coherent := transaction.RuntimeSnapshot()

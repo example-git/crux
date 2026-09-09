@@ -37,6 +37,21 @@ func (s *ConfigStore) SaveCheckedAPIKey(ctx context.Context, scope Scope, prepar
 	if err != nil {
 		return result, err
 	}
+	ctx, journal, err := s.beginLocalAuthenticationChangeLocked(ctx, before, admitted, owner, "api-key", "", "")
+	if err != nil {
+		return result, err
+	}
+	defer func() { journal.finish(ctx, result, &err) }()
+	if journal != nil {
+		effect, effectErr := prepared.ConfiguredCredentialEffectID()
+		if effectErr != nil {
+			return result, effectErr
+		}
+		journal.capture.disk.CredentialEffectID = effect
+		if err := journal.save(ctx); err != nil {
+			return result, err
+		}
+	}
 	layers := prepared.layers
 	if err := before.validateConfigBasis(layers, ""); err != nil {
 		return result, err
@@ -133,6 +148,9 @@ func (s *ConfigStore) SaveCheckedAPIKey(ctx context.Context, scope Scope, prepar
 		return result, err
 	}
 	defer staged.Close()
+	if err := journal.stage(ctx, staged, admitted.topology, pending); err != nil {
+		return result, err
+	}
 	if err := s.validateAuthenticationAdmissionLocked(ctx, scope, before, owner, admitted); err != nil {
 		return result, err
 	}
@@ -145,6 +163,7 @@ func (s *ConfigStore) SaveCheckedAPIKey(ctx context.Context, scope Scope, prepar
 	}
 	post, written, err := staged.Commit(ctx)
 	result.ConfigSaved = written
+	err = errors.Join(err, journal.configSaved(ctx, written, staged.completionDeadline))
 	if err != nil {
 		return result, err
 	}

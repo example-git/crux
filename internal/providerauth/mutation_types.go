@@ -74,13 +74,14 @@ type MutationOutcome struct {
 // MutationResult retains private runtime authority. Serialize Outcome explicitly
 // at transport boundaries; never serialize the full result or a Config snapshot.
 type MutationResult struct {
-	Outcome       MutationOutcome
-	runtime       config.RuntimeSnapshot
-	after         config.AuthenticationCapture
-	current       bool
-	originalOwner providerregistry.RegistrationOwner
-	oauthTokenID  string
-	removal       *removalIntent
+	Outcome            MutationOutcome
+	runtime            config.RuntimeSnapshot
+	after              config.AuthenticationCapture
+	current            bool
+	originalOwner      providerregistry.RegistrationOwner
+	oauthTokenID       string
+	credentialEffectID string
+	removal            *removalIntent
 }
 
 func (MutationResult) MarshalJSON() ([]byte, error) {
@@ -259,4 +260,11 @@ func (o MutationOutcome) validateRequest(request mutationRequest) error {
 		return nil
 	}
 	return validateMutationEffect(request, o)
+}
+
+// OriginalConfiguredCredentialEffectID names the exact checked source/literal
+// admitted by this operation. It remains private historical intent on partial
+// save failures, never permission to adopt a different saved credential.
+func (r MutationResult) OriginalConfiguredCredentialEffectID() (string, bool) {
+	return r.credentialEffectID, r.credentialEffectID != ""
 }
