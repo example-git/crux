@@ -541,29 +541,7 @@ func TestConditionalAccountCancellationAndCapturedPath(t *testing.T) {
 	})
 }
 
-// The context observes an actual replacement, not the number of internal
-// cancellation checks. This injects a failure only after the account rename.
-type afterAccountRenameContext struct {
-	context.Context
-	path   string
-	before accountFileObservation
-	once   sync.Once
-	action func()
-}
-
-func (ctx *afterAccountRenameContext) Err() error {
-	file, err := openAccountSnapshotFile(ctx.path)
-	if err == nil {
-		observation, err := observeAccountFile(file)
-		_ = file.Close()
-		if err == nil && observation != ctx.before {
-			ctx.once.Do(ctx.action)
-		}
-	}
-	return ctx.Context.Err()
-}
-
-func TestConditionalAccountCommitReportsWrittenAfterCaptureFailure(t *testing.T) {
+func TestConditionalAccountCommitReportsPostRenameOutcomes(t *testing.T) {
 	for _, failure := range []string{"cancellation", "invalid document"} {
 		t.Run(failure, func(t *testing.T) {
 			path, _, before := conditionalAccountFixture(t)
@@ -572,24 +550,40 @@ func TestConditionalAccountCommitReportsWrittenAfterCaptureFailure(t *testing.T)
 			defer change.Close()
 			base, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			ctx := &afterAccountRenameContext{Context: base, path: path, before: before.file}
-			ctx.action = func() {
+			change.state.validate = func() error {
+				file, err := openAccountSnapshotFile(path)
+				if err != nil {
+					return err
+				}
+				observed, err := observeAccountFile(file)
+				_ = file.Close()
+				if err != nil || observed == before.file {
+					return err
+				}
 				if failure == "cancellation" {
 					cancel()
 				} else {
 					require.NoError(t, os.WriteFile(path, []byte("{invalid"), 0o600))
 				}
+				return nil
 			}
-			result, err := change.Commit(ctx)
-			require.Error(t, err)
-			require.True(t, result.Written, "the successful rename must remain observable despite postcapture failure")
-			require.False(t, result.Snapshot.valid)
+			result, err := change.Commit(base)
+			require.True(t, result.Written, "the successful rename must remain observable")
 			assertConditionalLeaseHeld(t, path)
 			if failure == "cancellation" {
-				require.ErrorIs(t, err, context.Canceled)
+				require.NoError(t, err)
+				require.ErrorIs(t, base.Err(), context.Canceled)
+				verified, err := change.VerifyCommitted(t.Context())
+				require.NoError(t, err)
+				require.True(t, result.Snapshot.SameObservation(verified))
 				var state store
 				require.NoError(t, json.Unmarshal(readConditionalDocument(t, path), &state))
 				require.Equal(t, "second", state.Active[snapshotNamespace])
+			} else {
+				require.Error(t, err)
+				require.False(t, result.Snapshot.valid)
+				_, err = change.VerifyCommitted(t.Context())
+				require.Error(t, err)
 			}
 		})
 	}
@@ -600,7 +594,7 @@ func TestConditionalAccountCommitRechecksPathAndPrivateFormatting(t *testing.T) 
 	change, err := before.BeginSwitch(t.Context(), snapshotNamespace, "second")
 	require.NoError(t, err)
 	defer change.Close()
-	for _, value := range []any{change, *change, CommitResult{Snapshot: before, Written: true}} {
+	for _, value := range []any{change, *change, change.state, CommitResult{Snapshot: before, Written: true}} {
 		_, err := json.Marshal(value)
 		require.Error(t, err)
 		for _, format := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%d", "%f"} {

@@ -556,16 +556,14 @@ func TestInactiveRefreshValidatesAtCommitAndPreservesWrittenErrors(t *testing.T)
 				if err == nil && observed != before.file && failure == "owner after rename" {
 					return errors.New("owner replaced after account write")
 				}
+				if err == nil && observed != before.file && failure == "postcapture corruption" {
+					return os.WriteFile(path, []byte("{"), 0o600)
+				}
 				return err
 			}
 			privateTarget, err := readInactiveRefreshTarget(before.document, snapshotNamespace, target.ID)
 			require.NoError(t, err)
 			fresh := FromToken(target.ID, target.DisplayName, rotatedToken(), &target)
-			if failure == "postcapture corruption" {
-				ctx = &afterAccountRenameContext{Context: ctx, path: path, before: before.file, action: func() {
-					require.NoError(t, os.WriteFile(path, []byte("{"), 0o600))
-				}}
-			}
 			result, err := before.saveInactiveRefresh(ctx, snapshotNamespace, target.ID, privateTarget, fresh, validator)
 			require.Error(t, err)
 			written := failure == "owner after rename" || failure == "postcapture corruption"
