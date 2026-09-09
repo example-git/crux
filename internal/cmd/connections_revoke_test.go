@@ -31,6 +31,7 @@ func TestConnectionsRevokeReportsStoredAuthorizationOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, clients)
 	require.Contains(t, output.String(), "Revoked stored authorization for client fixture")
-	require.Contains(t, output.String(), "already-running work must be stopped separately")
+	require.Contains(t, output.String(), "No live daemon was registered; no live cancellation acknowledgement was received.")
+	require.NotContains(t, output.String(), "acknowledged cancellation and joined work")
 	require.NotContains(t, output.String(), "Restart")
 }
