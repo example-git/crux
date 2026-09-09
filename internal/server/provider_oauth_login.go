@@ -2,9 +2,10 @@ package server
 
 import (
 	"encoding/json"
-	"github.com/example-git/crux/internal/proto"
 	"io"
 	"net/http"
+
+	"github.com/example-git/crux/internal/proto"
 )
 
 func (c *controllerV1) handlePostWorkspaceOAuthLoginBegin(w http.ResponseWriter, r *http.Request) {
