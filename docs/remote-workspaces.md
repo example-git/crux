@@ -163,9 +163,20 @@ operation identity and inspect the reported account/configuration/publication
 progress. Retrying the original request, recovering its publication, and
 explicitly reviewing currently saved state are different actions.
 
-The provider API-key flow checks an exact owner and credential field, retains the
-checked input, and saves that same input without repeating the probe. OAuth
-interaction completion is followed by the persistence/publication transaction;
+The provider credential flow checks an exact owner and credential field, retains
+the checked input, and saves that same input without repeating resolution or a
+probe. Manifest-declared configuration credentials appear as separate fields
+alongside the primary API key and OAuth choice. Saving one field preserves the
+other credential fields, accounts and model selection.
+
+A property field uses an applicable declared catalog probe. When no such probe
+is declared for that field, Check explicitly reports source/schema validation
+only. This does not establish that the credential can authenticate. Partial
+setup also reports no probe and lists the remaining required inputs; a saved
+partial configuration remains unavailable for execution until those inputs are
+complete. Malformed or ambiguous probe declarations fail visibly.
+
+OAuth interaction completion is followed by the persistence/publication transaction;
 an authorization callback alone does not mean the workspace is using the new
 account. Changing an authentication credential does not select a different model.
 

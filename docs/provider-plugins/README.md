@@ -57,7 +57,7 @@ The host enforces 64 MiB per bundle, 32 MiB per file, 1,024 files, 256 directori
 
 `crux plugins list` exposes the local execution host's authoritative status; `--json` returns the complete revisioned snapshot. Each entry includes bundle type, plugin and provider identity, version, canonical digest, lifecycle state, independent trust and compatibility states, declared capability groups, safe provenance, installation time, and bounded redacted validation diagnostics. An empty directory returns a valid core-only snapshot.
 
-A Crux server exposes the same redacted status through `GET /v1/plugins`, and the typed client exposes it as `Client.PluginSnapshot`. This endpoint is host-global rather than workspace-scoped: a remote client reports the server's installed plugins and never substitutes plugins from the client machine. The current server transport has no administrative authentication boundary, so installation, trust changes, and rescans intentionally remain local-host CLI operations; no unauthenticated remote mutation endpoint exists.
+A Crux server exposes the same redacted status through `GET /v1/plugins`, and the typed client exposes it as `Client.PluginSnapshot`. This endpoint is host-global rather than workspace-scoped: a remote client reports the server's installed plugins and never substitutes plugins from the client machine. Authenticated TCP servers apply the daemon authorization boundary to this route, including live revocation; local socket/loopback servers keep their local trust model. Installation, trust changes, and rescans remain explicit local-host CLI operations. A client-owned workspace uses its separately accepted runtime and does not install its bundles through this host-global endpoint.
 
 ## Provider branding
 
