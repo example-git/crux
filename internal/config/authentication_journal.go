@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -96,10 +98,11 @@ type AuthenticationJournalEntry struct {
 	payload   json.RawMessage
 }
 
-func (entry AuthenticationJournalEntry) Revision() uint64         { return entry.revision }
-func (entry AuthenticationJournalEntry) Payload() json.RawMessage { return bytes.Clone(entry.payload) }
-func (entry AuthenticationJournalEntry) Completed() bool          { return entry.completed }
-func (entry AuthenticationJournalEntry) ReservedBytes() int       { return entry.reserved }
+func (entry AuthenticationJournalEntry) Key() AuthenticationJournalKey { return entry.key }
+func (entry AuthenticationJournalEntry) Revision() uint64              { return entry.revision }
+func (entry AuthenticationJournalEntry) Payload() json.RawMessage      { return bytes.Clone(entry.payload) }
+func (entry AuthenticationJournalEntry) Completed() bool               { return entry.completed }
+func (entry AuthenticationJournalEntry) ReservedBytes() int            { return entry.reserved }
 func (AuthenticationJournalEntry) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication journal entries are private")
 }
@@ -207,6 +210,41 @@ func (journal AuthenticationJournal) Load(ctx context.Context, key Authenticatio
 		return AuthenticationJournalEntry{}, false, errors.New("authentication journal identity conflict")
 	}
 	return AuthenticationJournalEntry{key: key, revision: record.Revision, completed: record.Completed, reserved: record.Reserved, payload: bytes.Clone(record.Payload)}, true, nil
+}
+
+// Entries captures one kind/workspace from one locked, fully validated journal
+// read. Typed callers still validate each private payload before using it. The
+// oldest durable revisions come first so bounded in-memory restoration retains
+// the newest observations deterministically. Payloads never borrow disk state.
+// A snapshot grants no write authority: Store still requires the entry's exact
+// current revision, and callers must reload after acquiring an operation lease.
+func (journal AuthenticationJournal) Entries(ctx context.Context, kind, workspaceID string) ([]AuthenticationJournalEntry, error) {
+	if err := (AuthenticationJournalKey{Kind: kind, WorkspaceID: workspaceID, OperationID: "listing"}).validate(); err != nil {
+		return nil, err
+	}
+	ctx, release, err := journal.locked(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	_, data, err := readAuthenticationJournal(ctx, journal.path)
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]AuthenticationJournalEntry, 0)
+	for _, record := range data.Records {
+		if record.Key.Kind != kind || record.Key.WorkspaceID != workspaceID {
+			continue
+		}
+		entries = append(entries, AuthenticationJournalEntry{key: record.Key, revision: record.Revision, completed: record.Completed, reserved: record.Reserved, payload: bytes.Clone(record.Payload)})
+	}
+	slices.SortFunc(entries, func(a, b AuthenticationJournalEntry) int {
+		if order := cmp.Compare(a.revision, b.revision); order != 0 {
+			return order
+		}
+		return cmp.Compare(a.key.OperationID, b.key.OperationID)
+	})
+	return entries, nil
 }
 
 // ScopeID binds captured owning configuration paths without exporting them.

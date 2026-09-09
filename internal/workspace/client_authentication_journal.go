@@ -151,18 +151,12 @@ func (a *clientAuthority) loadAuthenticationJournal(ctx context.Context, workspa
 		a.authenticationJournal = &journal
 		a.authenticationScope = journal.ScopeID()
 	}
-	keys, err := a.authenticationJournal.Keys(ctx, config.AuthenticationJournalClient, workspace)
+	entries, err := a.authenticationJournal.Entries(ctx, config.AuthenticationJournalClient, workspace)
 	if err != nil {
 		return err
 	}
-	for _, key := range keys {
-		entry, found, err := a.authenticationJournal.Load(ctx, key)
-		if err != nil {
-			return err
-		}
-		if !found {
-			continue
-		}
+	for _, entry := range entries {
+		key := entry.Key()
 		var record clientAuthenticationJournalRecord
 		decoder := json.NewDecoder(bytes.NewReader(entry.Payload()))
 		decoder.DisallowUnknownFields()
