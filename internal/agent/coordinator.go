@@ -172,7 +172,12 @@ type coordinator struct {
 	skillsMu      sync.RWMutex
 	updateMu      sync.Mutex
 
-	readyWg errgroup.Group
+	readyWg         errgroup.Group
+	readinessMu     sync.Mutex
+	readinessCtx    context.Context
+	readinessCancel context.CancelFunc
+	readinessClosed bool
+	readinessWork   sync.WaitGroup
 
 	reasoningMu            sync.RWMutex
 	reasoningDisabled      map[string]bool
@@ -272,6 +277,12 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		backgroundAgents:       opts.BackgroundAgents,
 		backgroundImages:       opts.BackgroundImages,
 	}
+	constructed := false
+	defer func() {
+		if !constructed {
+			c.stopReadiness()
+		}
+	}()
 	c.automaticCodebaseContext = c.retrieveAutomaticCodebaseContext
 
 	// TODO: make this dynamic when we support multiple agents
@@ -307,6 +318,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	}
 	c.startCodebaseIndexLifecycle(ctx, codebaseIndexReconcileInterval)
 	c.cfg.SetRuntimeGenerationPreparer(c.prepareRuntimeGeneration)
+	constructed = true
 	return c, nil
 }
 
@@ -1158,6 +1170,11 @@ func (c *coordinator) buildAgent(ctx context.Context, promptTemplate *prompt.Pro
 }
 
 func (c *coordinator) buildAgentWithSnapshot(ctx context.Context, promptTemplate *prompt.Prompt, agent config.Agent, isSubAgent bool, snapshot config.RuntimeSnapshot) (SessionAgent, error) {
+	ctx, finish, err := c.beginReadiness(ctx, false)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
 	cfg := snapshot.Config()
 	large, small, err := c.buildAgentModelsWithSnapshot(ctx, agent, isSubAgent, snapshot)
 	if err != nil {
@@ -1191,35 +1208,29 @@ func (c *coordinator) buildAgentWithSnapshot(ctx context.Context, promptTemplate
 		RunComplete:             c.runComplete,
 	})
 
-	// The readiness goroutines below perform one-time setup — building the
-	// system prompt and the initial tool list — whose results the
-	// coordinator needs for its whole lifetime, so they must survive the
-	// caller's context being canceled. Several entry points build an agent
-	// from a short-lived HTTP request context: the server's
-	// InitAgent/UpdateAgent handlers, and UpdateModels -> buildTools ->
-	// agentTool -> buildAgent for the sub-agent. The tool-list build reads
-	// the MCP registry as it stands; servers still connecting are picked up
-	// by later runs. WithoutCancel drops cancellation while keeping context
-	// values; the work is local and always completes.
-	initCtx := context.WithoutCancel(ctx)
-
-	c.readyWg.Go(func() error {
+	// Readiness survives the short-lived request that started construction, but
+	// remains owned by this coordinator and is canceled and joined on close.
+	if err := c.startReadiness(ctx, func(initCtx context.Context) error {
 		instructions, err := promptTemplate.BuildInstructionsWithSnapshot(initCtx, large.ModelCfg.Provider, large.Model.Model(), c.cfg, snapshot)
 		if err != nil {
 			return err
 		}
 		result.SetInstructions(applySubagentInstructions(instructions, isSubAgent, agent.Instructions))
 		return nil
-	})
+	}); err != nil {
+		return nil, err
+	}
 
-	c.readyWg.Go(func() error {
+	if err := c.startReadiness(ctx, func(initCtx context.Context) error {
 		palettes, err := c.buildToolsWithSnapshot(initCtx, agent, isSubAgent, snapshot)
 		if err != nil {
 			return err
 		}
 		result.SetTools(palettes.normal, palettes.planMode)
 		return nil
-	})
+	}); err != nil {
+		return nil, err
+	}
 
 	return result, nil
 }
@@ -2190,6 +2201,7 @@ func (c *coordinator) CancelAll() {
 }
 
 func (c *coordinator) CloseContext(ctx context.Context) {
+	c.stopReadiness()
 	c.stopCodebaseIndexLifecycle(ctx)
 	if c.backgroundAgents != nil {
 		c.backgroundAgents.StopAll(ctx)

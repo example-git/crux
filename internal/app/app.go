@@ -58,9 +58,11 @@ type App struct {
 	BackgroundImages *imagegen.JobManager
 	TaskStore        *managedtask.Store
 
-	AgentCoordinator agent.Coordinator
-	agentInitMu      sync.RWMutex
-	newCoordinator   func(context.Context, agent.CoordinatorOptions) (agent.Coordinator, error)
+	AgentCoordinator    agent.Coordinator
+	agentInitMu         sync.RWMutex
+	agentClosing        bool
+	retiredCoordinators []agent.Coordinator
+	newCoordinator      func(context.Context, agent.CoordinatorOptions) (agent.Coordinator, error)
 
 	LSPManager *lsp.Manager
 
@@ -864,6 +866,9 @@ func (app *App) initCoderAgent(ctx context.Context, interactive bool) (agent.Coo
 func (app *App) ensureCoderAgent(ctx context.Context, interactive bool) (agent.Coordinator, error) {
 	app.agentInitMu.Lock()
 	defer app.agentInitMu.Unlock()
+	if app.agentClosing {
+		return nil, errors.New("application is shutting down")
+	}
 	if app.AgentCoordinator != nil {
 		return app.AgentCoordinator, nil
 	}
@@ -871,6 +876,9 @@ func (app *App) ensureCoderAgent(ctx context.Context, interactive bool) (agent.C
 }
 
 func (app *App) newCoderAgentLocked(ctx context.Context, interactive bool) (agent.Coordinator, error) {
+	if app.agentClosing {
+		return nil, errors.New("application is shutting down")
+	}
 	ctx = log.WithTrafficContext(ctx, app.globalCtx)
 	coderAgentCfg := app.config.Config().Agents[config.AgentCoder]
 	if coderAgentCfg.ID == "" {
@@ -901,9 +909,34 @@ func (app *App) newCoderAgentLocked(ctx context.Context, interactive bool) (agen
 		slog.Error("Failed to create coder agent")
 		return nil, err
 	}
+	if app.AgentCoordinator != nil {
+		app.retiredCoordinators = append(app.retiredCoordinators, app.AgentCoordinator)
+	}
 	app.AgentCoordinator = coordinator
 	app.startTaskNotificationDelivery()
 	return coordinator, nil
+}
+
+// closeAgentCoordinators fences new initialization and includes coordinators
+// replaced by a later explicit InitCoderAgent call, whose readiness work may
+// still be running. The current coordinator remains available for inspection.
+func (app *App) closeAgentCoordinators(ctx context.Context) {
+	app.agentInitMu.Lock()
+	app.agentClosing = true
+	coordinators := app.retiredCoordinators
+	app.retiredCoordinators = nil
+	if app.AgentCoordinator != nil {
+		coordinators = append(coordinators, app.AgentCoordinator)
+	}
+	app.agentInitMu.Unlock()
+	for _, coordinator := range coordinators {
+		coordinator.CancelAll()
+		if closer, ok := coordinator.(interface{ CloseContext(context.Context) }); ok {
+			closer.CloseContext(ctx)
+		} else if closer, ok := coordinator.(interface{ Close() }); ok {
+			closer.Close()
+		}
+	}
 }
 
 // Subscribe sends events to the TUI as tea.Msgs.
@@ -951,16 +984,9 @@ func (app *App) shutdown() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// First, cancel all agents and wait for them to finish. This must complete
-	// before closing the DB so agents can finish writing their state.
-	if coordinator := app.CurrentAgentCoordinator(); coordinator != nil {
-		coordinator.CancelAll()
-		if closer, ok := coordinator.(interface{ CloseContext(context.Context) }); ok {
-			closer.CloseContext(shutdownCtx)
-		} else if closer, ok := coordinator.(interface{ Close() }); ok {
-			closer.Close()
-		}
-	}
+	// Close admission under the same lock as initialization, then join every
+	// coordinator created for this app before closing shared services.
+	app.closeAgentCoordinators(shutdownCtx)
 
 	// Drain any debounced message updates before the DB-close cleanup
 	// runs in the parallel block below. message.Service buffers
