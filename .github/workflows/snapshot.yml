@@ -26,3 +26,13 @@ jobs:
           distribution: goreleaser
           version: "~> v2"
           args: release --snapshot --clean
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: snapshot-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
