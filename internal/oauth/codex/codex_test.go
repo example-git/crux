@@ -47,21 +47,21 @@ func (roundTrip codexRoundTripFunc) RoundTrip(request *http.Request) (*http.Resp
 
 func TestNewProviderRequiresExecutableImagePolicy(t *testing.T) {
 	validate := func() error { return nil }
-	_, err := NewProvider("", nil, nil, nil, nil, nil, nil, nil, validate)
+	_, err := NewProvider("wss://codex-inference.example.invalid/responses", nil, nil, nil, nil, nil, nil, nil, validate)
 	if err == nil || !strings.Contains(err.Error(), "image history budget is unavailable") {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
 
 	withoutHistory := testCodexImages()
 	withoutHistory.HistoryBudget = nil
-	_, err = NewProvider("", nil, nil, nil, nil, nil, nil, withoutHistory, validate)
+	_, err = NewProvider("wss://codex-inference.example.invalid/responses", nil, nil, nil, nil, nil, nil, withoutHistory, validate)
 	if err == nil || !strings.Contains(err.Error(), "image history budget is unavailable") {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
 
 	malformed := testCodexImages()
 	malformed.MaxSourceBytes = 0
-	_, err = NewProvider("", nil, nil, nil, nil, nil, nil, malformed, validate)
+	_, err = NewProvider("wss://codex-inference.example.invalid/responses", nil, nil, nil, nil, nil, nil, malformed, validate)
 	if err == nil || !strings.Contains(err.Error(), "max_source_bytes is outside the executable range") {
 		t.Fatalf("NewProvider() error = %v", err)
 	}
@@ -455,12 +455,12 @@ func TestOAuthAndIdentityRejectOwnerReplacementBeforeDispatch(t *testing.T) {
 		return errors.New("owner changed")
 	})
 
-	_, err := tokenRequest(ctx, url.Values{})
+	_, err := testClient().tokenRequest(ctx, url.Values{})
 	if err == nil || !strings.Contains(err.Error(), "owner changed") {
-		t.Fatalf("tokenRequest() error = %v", err)
+		t.Fatalf("testClient().tokenRequest() error = %v", err)
 	}
-	if email := AccountEmail(ctx, "token"); email != "" {
-		t.Fatalf("AccountEmail() = %q", email)
+	if email := testClient().AccountEmail(ctx, "token"); email != "" {
+		t.Fatalf("testClient().AccountEmail() = %q", email)
 	}
 	if dispatched.Load() != 0 {
 		t.Fatalf("dispatched = %d", dispatched.Load())
@@ -471,15 +471,15 @@ func TestOAuthClientIDRequired(t *testing.T) {
 	t.Setenv("CODEX_OAUTH_CLIENT_ID", "")
 
 	opened := false
-	_, err := Authorize(context.Background(), func(string) error {
+	_, err := testClient().Authorize(context.Background(), func(string) error {
 		opened = true
 		return nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "CODEX_OAUTH_CLIENT_ID") {
-		t.Fatalf("Authorize() error = %v, want missing client ID guidance", err)
+		t.Fatalf("testClient().Authorize() error = %v, want missing client ID guidance", err)
 	}
 	if opened {
-		t.Fatal("Authorize() opened a browser without a configured OAuth client ID")
+		t.Fatal("testClient().Authorize() opened a browser without a configured OAuth client ID")
 	}
 
 	t.Setenv("CODEX_OAUTH_CLIENT_ID", "client-id")

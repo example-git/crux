@@ -17,6 +17,7 @@ import (
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -211,9 +212,9 @@ func TestApplyEphemeralProviderStateRequiresActiveCoreOwner(t *testing.T) {
 }
 
 func TestApplyEphemeralProviderStateAcceptsExactActiveCoreOwner(t *testing.T) {
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
-	for _, providerID := range []string{"copilot", "codex", "gemini-ag"} {
+	for _, providerID := range []string{"copilot"} {
 		t.Run(providerID, func(t *testing.T) {
 			cfg := &Config{Providers: csync.NewMap[string, ProviderConfig]()}
 			cfg.setDefaults(t.TempDir(), t.TempDir())
@@ -1297,6 +1298,8 @@ func TestRefreshOAuthToken_UsesDiskTokenWhenDifferent(t *testing.T) {
 	configContent := `{
 		"providers": {
 			"codex": {
+"plugin":{"id":"test.codex","version":"1.1.0"},
+"owner":{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"},
 				"api_key": "newer-access-token",
 				"oauth": {
 					"access_token": "newer-access-token",
@@ -1320,16 +1323,18 @@ func TestRefreshOAuthToken_UsesDiskTokenWhenDifferent(t *testing.T) {
 	providers := csync.NewMap[string, ProviderConfig]()
 	providers.Set("codex", ProviderConfig{
 		ID:         "codex",
+		Plugin:     &ProviderPluginReference{ID: "test.codex", Version: "1.1.0"},
 		Name:       "Codex",
 		APIKey:     oldToken.AccessToken,
 		OAuthToken: oldToken,
 		Owner: &ProviderOwnerReference{
-			Type:         ProviderOwnerCore,
-			Construction: providerregistry.ConstructionCodex,
+			Type:                 ProviderOwnerPlugin,
+			CompatibilityAdapter: providerregistry.ConstructionCodex,
+			Construction:         providerregistry.ConstructionCodex,
 		},
 	})
 
-	registry, registryErr := providerregistry.New(providerregistry.Integrated()...)
+	registry, registryErr := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, registryErr)
 	store := &ConfigStore{
 		config: &Config{

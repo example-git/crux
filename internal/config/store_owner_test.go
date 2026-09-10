@@ -15,6 +15,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -469,7 +470,7 @@ func TestOwnerBoundMutationsAcceptMatchingOwner(t *testing.T) {
 
 func coreCopilotOwnerTestRegistration(t *testing.T) providerregistry.Registration {
 	t.Helper()
-	for _, registration := range providerregistry.Integrated() {
+	for _, registration := range registrytest.Registrations() {
 		if registration.ProviderID == string(catalog.ProviderCopilot) {
 			return registration
 		}
@@ -914,7 +915,7 @@ func TestRuntimeSnapshotPreservesExplicitCustomOwnerAgainstSameIDPlugin(t *testi
 
 func TestRuntimeSnapshotProviderForConstructionAuthorizesExactOwnerTypes(t *testing.T) {
 	plugin := ownerTestRegistration("plugin-owned", "plugin.one")
-	registrations := providerregistry.Integrated()
+	registrations := registrytest.Registrations()
 	registrations = append(registrations, plugin)
 	registry, err := providerregistry.New(registrations...)
 	require.NoError(t, err)

@@ -36,6 +36,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/gemini/antigravity"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/providertransport"
 	openairesponsestransport "github.com/example-git/crux/internal/providertransport/openairesponses"
 	"github.com/example-git/crux/internal/pubsub"
@@ -84,7 +85,7 @@ func TestAnthropicConstructorPreservesEfficiencyPolicy(t *testing.T) {
 
 func integratedRegistration(t *testing.T, providerID string) (providerregistry.Registration, bool) {
 	t.Helper()
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	return registry.Lookup(providerID)
 }
@@ -1805,8 +1806,8 @@ func TestOAuthModelCatalogsEnableReasoningByDefault(t *testing.T) {
 		levels []string
 		effort string
 	}{
-		{name: codex.ID, models: codex.Models(), levels: []string{"low", "medium", "high", "xhigh"}, effort: "medium"},
-		{name: gemini.ID, models: gemini.Models(), levels: []string{"LOW", "MEDIUM", "HIGH"}, effort: "MEDIUM"},
+		{name: codex.ID, models: registrytest.Models("codex"), levels: []string{"low", "medium", "high", "xhigh"}, effort: "medium"},
+		{name: gemini.ID, models: registrytest.Models("gemini-ag"), levels: []string{"LOW", "MEDIUM", "HIGH"}, effort: "MEDIUM"},
 	}
 
 	for _, tc := range tests {
@@ -1945,11 +1946,11 @@ func TestIsUnsupportedReasoningMessage(t *testing.T) {
 
 func TestBuildAgentModelsPinsRuntimeToEachOAuthProvider(t *testing.T) {
 	env := testEnv(t)
-	largeCatalog := codex.Models()[0]
+	largeCatalog := registrytest.Models("codex")[0]
 	largeCatalog.CanReason = true
 	largeCatalog.ReasoningLevels = []string{"low", "medium", "high", "xhigh"}
 	largeCatalog.DefaultReasoningEffort = "medium"
-	smallCatalog := gemini.Models()[0]
+	smallCatalog := registrytest.Models("gemini-ag")[0]
 	smallCatalog.CanReason = true
 	smallCatalog.ReasoningLevels = []string{"LOW", "MEDIUM", "HIGH"}
 	smallCatalog.DefaultReasoningEffort = "MEDIUM"
@@ -1982,10 +1983,10 @@ func TestBuildAgentModelsPinsRuntimeToEachOAuthProvider(t *testing.T) {
 		Provider: gemini.ID,
 		Model:    smallCatalog.ID,
 	}
-	codexRegistration, codexRegistered := integratedRegistration(t, codex.ID)
-	require.True(t, codexRegistered)
-	geminiRegistration, geminiRegistered := integratedRegistration(t, gemini.ID)
-	require.True(t, geminiRegistered)
+	codexRegistration, _, bindErr := registrytest.BundleFor(codex.ID, largeProvider.BaseURL, largeProvider.Models)
+	require.NoError(t, bindErr)
+	geminiRegistration, _, bindErr := registrytest.BundleFor(gemini.ID, smallProvider.BaseURL, smallProvider.Models)
+	require.NoError(t, bindErr)
 	coord.cfg = config.NewTestStoreWithRegistrations(coord.cfg.Config(), codexRegistration, geminiRegistration)
 
 	large, small, err := coord.buildAgentModels(t.Context(), config.Agent{Model: config.SelectedModelTypeLarge}, false)

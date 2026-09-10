@@ -1556,19 +1556,20 @@ func validateClientID(id string) (string, error) {
 func workspaceToProto(ws *Workspace) proto.Workspace {
 	cfg := ws.Cfg.Config()
 	out := proto.Workspace{
-		ID:               ws.ID,
-		Path:             ws.Path,
-		ConnectedClients: ws.ConnectedClients(),
-		YOLO:             ws.Cfg.Overrides().SkipPermissionRequests,
-		Channels:         ws.Cfg.Overrides().EnabledChannels,
-		DataDir:          cfg.Options.DataDirectory,
-		RequestedDataDir: ws.requestedDataDir,
-		Debug:            cfg.Options.Debug,
-		Config:           cfg.RedactedForTransport(),
-		ProviderSurfaces: config.ProviderSurfaces(cfg),
-		Authority:        ws.Cfg.RemoteAuthority(),
-		Env:              ws.Env,
-		Version:          version.Version,
+		ID:                 ws.ID,
+		Path:               ws.Path,
+		ConnectedClients:   ws.ConnectedClients(),
+		YOLO:               ws.Cfg.Overrides().SkipPermissionRequests,
+		Channels:           ws.Cfg.Overrides().EnabledChannels,
+		DataDir:            cfg.Options.DataDirectory,
+		RequestedDataDir:   ws.requestedDataDir,
+		Debug:              cfg.Options.Debug,
+		Config:             cfg.RedactedForTransport(),
+		ProviderSurfaces:   config.ProviderSurfaces(cfg),
+		ProviderLoadIssues: cfg.ProviderLoadIssues(),
+		Authority:          ws.Cfg.RemoteAuthority(),
+		Env:                ws.Env,
+		Version:            version.Version,
 	}
 	if out.Authority == nil {
 		out.Authority = &config.RemoteAuthority{Mode: "server", Principal: ws.principal}

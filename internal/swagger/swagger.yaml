@@ -521,6 +521,17 @@ definitions:
           The provider type. Empty custom-provider types default to openai-compat;
           registered local aliases use the same protocol.
     type: object
+  config.ProviderLoadIssue:
+    properties:
+      message:
+        type: string
+      plugin_id:
+        type: string
+      provider_id:
+        type: string
+      version:
+        type: string
+    type: object
   config.ProviderOwnerReference:
     properties:
       compatibility_adapter:
@@ -600,6 +611,15 @@ definitions:
       revision:
         type: integer
     type: object
+  config.RemoteCodebaseIndex:
+    properties:
+      access_token:
+        type: string
+      credential_invalid:
+        type: boolean
+      settings:
+        $ref: '#/definitions/config.ToolCodebaseSearch'
+    type: object
   config.RemoteCredentialBinding:
     properties:
       account:
@@ -653,6 +673,8 @@ definitions:
         type: string
       native_identity:
         $ref: '#/definitions/config.NativeIdentity'
+      unloaded:
+        $ref: '#/definitions/config.ProviderLoadIssue'
     type: object
   config.RemoteRuntimeControls:
     properties:
@@ -683,6 +705,8 @@ definitions:
         items:
           $ref: '#/definitions/providerplugin.TransportBundle'
         type: array
+      codebase_index:
+        $ref: '#/definitions/config.RemoteCodebaseIndex'
       controls:
         $ref: '#/definitions/config.RemoteRuntimeControls'
       credential_environment:
@@ -965,6 +989,10 @@ definitions:
             $ref: '#/definitions/config.SelectedModel'
           type: array
         description: Recently used models stored in the data directory config.
+        type: object
+      remote_codebase_indexes:
+        additionalProperties:
+          $ref: '#/definitions/config.ToolCodebaseSearch'
         type: object
       tools:
         $ref: '#/definitions/config.Tools'
@@ -1418,6 +1446,10 @@ definitions:
         type: string
       path:
         type: string
+      provider_load_issues:
+        items:
+          $ref: '#/definitions/config.ProviderLoadIssue'
+        type: array
       provider_surfaces:
         description: |-
           ProviderSurfaces is the execution host's redacted registry-generated
@@ -2109,6 +2141,8 @@ definitions:
     type: object
   proto.RemoteRuntimeCapabilities:
     properties:
+      codebase_index:
+        type: boolean
       compiler:
         type: string
       disconnect_grace_millis:
@@ -2326,6 +2360,10 @@ definitions:
         type: string
       path:
         type: string
+      provider_load_issues:
+        items:
+          $ref: '#/definitions/config.ProviderLoadIssue'
+        type: array
       provider_surfaces:
         description: |-
           ProviderSurfaces is the execution host's redacted registry-generated

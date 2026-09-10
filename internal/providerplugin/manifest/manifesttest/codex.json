@@ -1,0 +1,716 @@
+{
+  "manifest_version": 1,
+  "id": "test.codex",
+  "version": "1.1.0",
+  "name": "Synthetic codex",
+  "description": "Synthetic delegated endpoint fixture",
+  "publisher": {
+    "id": "test",
+    "name": "Test"
+  },
+  "compatibility": {
+    "host_api": {
+      "min": 1,
+      "max": 1
+    }
+  },
+  "provider": {
+    "id": "codex",
+    "name": "Synthetic codex",
+    "aliases": [],
+    "account_namespace": "codex",
+    "default_large_model": "fixture",
+    "default_small_model": "fixture",
+    "login_order": 30,
+    "account_order": 20,
+    "flat_rate": true
+  },
+  "models": [
+    {
+      "id": "fixture",
+      "name": "Fixture",
+      "context_window": 32000,
+      "default_max_tokens": 1024,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "levels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ],
+        "default": "medium"
+      }
+    }
+  ],
+  "capabilities": {
+    "compatibility_adapter": {
+      "id": "integrated-codex",
+      "delegates": [
+        "construction",
+        "identity",
+        "usage",
+        "runtime",
+        "reasoning"
+      ],
+      "inventory": [
+        {
+          "delegate": "construction",
+          "classification": "private-stateful",
+          "behavior": "official Codex version discovery, terminal identity, process installation identity and user-agent resolution"
+        },
+        {
+          "delegate": "identity",
+          "classification": "finite-core-primitive",
+          "behavior": "ChatGPT account identity from a bounded whoami response with JWT-claim fallback",
+          "primitive": "ordered account-operation and credential-claim extraction"
+        },
+        {
+          "delegate": "construction",
+          "classification": "private-stateful",
+          "behavior": "private WebSocket handshake, per-turn client metadata and credential-sensitive connection identity"
+        },
+        {
+          "delegate": "construction",
+          "classification": "finite-core-primitive",
+          "behavior": "Responses request shaping, deterministic tool ordering, call/result pairing and opaque encrypted-reasoning replay",
+          "primitive": "bounded Responses request compiler and replay projection"
+        },
+        {
+          "delegate": "construction",
+          "classification": "finite-core-primitive",
+          "behavior": "workspace dynamic-environment extraction and bounded head/tail tool-output truncation",
+          "primitive": "structured prompt-section extraction and truncation policy"
+        },
+        {
+          "delegate": "construction",
+          "classification": "private-stateful",
+          "behavior": "reusable private sockets, continuation compatibility, reconnect sequencing and credential isolation"
+        },
+        {
+          "delegate": "construction",
+          "classification": "finite-core-primitive",
+          "behavior": "serialized request budgeting, close-1009 retry ceiling and ordered historical-image omission",
+          "primitive": "aggregate request budget and before-first-event close policy"
+        },
+        {
+          "delegate": "construction",
+          "classification": "private-stateful",
+          "behavior": "remote_compaction_v2 trigger, encrypted-result validation, retries, retained-history construction and chain finalization"
+        },
+        {
+          "delegate": "usage",
+          "classification": "finite-core-primitive",
+          "behavior": "plan extraction and duration-derived quota labels with declared tolerance and fallbacks",
+          "primitive": "usage duration buckets and plan projection"
+        },
+        {
+          "delegate": "runtime",
+          "classification": "finite-core-primitive",
+          "behavior": "model-predicate-gated runtime controls applied to request JSON paths",
+          "primitive": "model predicates and typed request-control application"
+        },
+        {
+          "delegate": "reasoning",
+          "classification": "private-stateful",
+          "behavior": "provider/model reasoning disablement learned from unsupported-response failures"
+        },
+        {
+          "delegate": "construction",
+          "classification": "finite-core-primitive",
+          "behavior": "private event assembly, completed-output fallback, usage arithmetic and provider-error classification",
+          "primitive": "bounded event reducer, arithmetic usage mapping and structured error extraction"
+        }
+      ],
+      "endpoints": {
+        "identity": "identity",
+        "images": "images"
+      }
+    },
+    "credentials": [
+      {
+        "id": "account",
+        "kind": "oauth2",
+        "audience": [
+          "identity",
+          "inference",
+          "usage",
+          "images"
+        ],
+        "scopes": [
+          "fixture.read",
+          "fixture.email"
+        ],
+        "legacy_fields": [
+          "api_key",
+          "oauth"
+        ]
+      }
+    ],
+    "oauth": [
+      {
+        "id": "codex",
+        "credential": "account",
+        "authorization_endpoint": "authorize",
+        "token_endpoint": "token",
+        "client_id": {
+          "kind": "literal",
+          "value": "synthetic-client"
+        },
+        "scopes": [
+          "fixture.read",
+          "fixture.email"
+        ],
+        "refresh_scopes": [],
+        "pkce": "required-s256",
+        "redirect": {
+          "mode": "loopback-fixed",
+          "state_required": true,
+          "uri": "http://localhost:1455/auth/callback",
+          "callback_path": "/auth/callback",
+          "port": 1455
+        },
+        "authorization_params": [
+          {
+            "name": "id_token_add_organizations",
+            "value": {
+              "kind": "literal",
+              "value": "true"
+            }
+          },
+          {
+            "name": "codex_cli_simplified_flow",
+            "value": {
+              "kind": "literal",
+              "value": "true"
+            }
+          }
+        ],
+        "token_request": {
+          "encoding": "form",
+          "auth_style": "params",
+          "authorization_code": [
+            {
+              "name": "grant_type",
+              "value": {
+                "kind": "literal",
+                "value": "authorization_code"
+              }
+            },
+            {
+              "name": "code",
+              "value": {
+                "kind": "context",
+                "ref": "oauth.code"
+              }
+            },
+            {
+              "name": "redirect_uri",
+              "value": {
+                "kind": "context",
+                "ref": "oauth.redirect_uri"
+              }
+            },
+            {
+              "name": "client_id",
+              "value": {
+                "kind": "literal",
+                "value": "synthetic-client"
+              }
+            },
+            {
+              "name": "code_verifier",
+              "value": {
+                "kind": "context",
+                "ref": "oauth.pkce_verifier"
+              }
+            }
+          ],
+          "refresh_token": [
+            {
+              "name": "grant_type",
+              "value": {
+                "kind": "literal",
+                "value": "refresh_token"
+              }
+            },
+            {
+              "name": "refresh_token",
+              "value": {
+                "kind": "context",
+                "ref": "oauth.refresh_token"
+              }
+            },
+            {
+              "name": "client_id",
+              "value": {
+                "kind": "literal",
+                "value": "synthetic-client"
+              }
+            }
+          ],
+          "headers": []
+        },
+        "token_response": {
+          "access_token_pointer": "/access_token",
+          "refresh_token_pointer": "/refresh_token",
+          "expires_in_pointer": "/expires_in",
+          "preserve_refresh_token_when_omitted": true,
+          "max_body_bytes": 1048576
+        },
+        "timeout_seconds": 300
+      }
+    ],
+    "endpoints": [
+      {
+        "id": "authorize",
+        "base_url": "https://codex-authorize.example.invalid/authorize",
+        "allowed_schemes": [
+          "https"
+        ],
+        "allowed_hosts": [
+          "codex-authorize.example.invalid"
+        ],
+        "override": "forbidden",
+        "follow_redirects": false
+      },
+      {
+        "id": "token",
+        "base_url": "https://codex-token.example.invalid/token",
+        "allowed_schemes": [
+          "https"
+        ],
+        "allowed_hosts": [
+          "codex-token.example.invalid"
+        ],
+        "override": "forbidden",
+        "follow_redirects": false
+      },
+      {
+        "id": "identity",
+        "base_url": "https://codex-identity.example.invalid/identity",
+        "allowed_schemes": [
+          "https"
+        ],
+        "allowed_hosts": [
+          "codex-identity.example.invalid"
+        ],
+        "override": "forbidden",
+        "follow_redirects": false,
+        "credential": "account"
+      },
+      {
+        "id": "inference",
+        "base_url": "wss://codex-inference.example.invalid/inference",
+        "allowed_schemes": [
+          "wss"
+        ],
+        "allowed_hosts": [
+          "codex-inference.example.invalid"
+        ],
+        "override": "forbidden",
+        "follow_redirects": false,
+        "credential": "account"
+      },
+      {
+        "id": "usage",
+        "base_url": "https://codex-usage.example.invalid/usage",
+        "allowed_schemes": [
+          "https"
+        ],
+        "allowed_hosts": [
+          "codex-usage.example.invalid"
+        ],
+        "override": "forbidden",
+        "follow_redirects": false,
+        "credential": "account"
+      },
+      {
+        "id": "images",
+        "base_url": "https://codex-images.example.invalid/images",
+        "allowed_schemes": [
+          "https"
+        ],
+        "allowed_hosts": [
+          "codex-images.example.invalid"
+        ],
+        "override": "forbidden",
+        "credential": "account",
+        "follow_redirects": false
+      }
+    ],
+    "headers": [
+      {
+        "operation": "set",
+        "name": "Origin",
+        "value": {
+          "kind": "literal",
+          "value": "https://chatgpt.com"
+        },
+        "protected": true
+      },
+      {
+        "operation": "set",
+        "name": "openai-beta",
+        "value": {
+          "kind": "literal",
+          "value": "responses_websockets=2026-02-06"
+        },
+        "protected": true
+      },
+      {
+        "operation": "append-unique",
+        "name": "x-codex-beta-features",
+        "value": {
+          "kind": "literal",
+          "value": "remote_compaction_v2"
+        },
+        "protected": true
+      }
+    ],
+    "json_transforms": {},
+    "prompt_transforms": {},
+    "role_maps": {},
+    "tool_codecs": {},
+    "operations": [
+      {
+        "id": "responses",
+        "kind": "inference",
+        "protocol": "openai-responses",
+        "transport": "websocket-json",
+        "endpoint": "inference",
+        "method": "POST",
+        "path": "/",
+        "streaming": {
+          "event_source": "websocket-json",
+          "done_marker": "[DONE]",
+          "event_type_pointer": "/type",
+          "mappings": [
+            {
+              "source": "response.output_text.delta",
+              "event": "text-delta"
+            },
+            {
+              "source": "response.reasoning_summary_text.delta",
+              "event": "reasoning-delta",
+              "metadata_namespace": "codex"
+            },
+            {
+              "source": "response.function_call_arguments.delta",
+              "event": "tool-input-delta"
+            },
+            {
+              "source": "response.output_item.done",
+              "event": "tool-call",
+              "metadata_namespace": "codex"
+            },
+            {
+              "source": "response.completed",
+              "event": "finish"
+            },
+            {
+              "source": "response.incomplete",
+              "event": "error"
+            },
+            {
+              "source": "response.failed",
+              "event": "error"
+            },
+            {
+              "source": "error",
+              "event": "error"
+            }
+          ],
+          "require_terminal": true,
+          "unknown_event": "warn",
+          "max_event_bytes": 1048576
+        },
+        "retry": {
+          "max_attempts": 2,
+          "initial_delay_ms": 0,
+          "max_delay_ms": 0,
+          "factor": 1,
+          "jitter": false,
+          "retry_after": false,
+          "statuses": [],
+          "codes": [],
+          "transport_errors": true,
+          "unexpected_eof": true,
+          "authentication": "refresh-once",
+          "replay_requirement": "before-first-event"
+        },
+        "continuation": {
+          "mode": "previous-response",
+          "response_id_pointer": "/response/id",
+          "request_field": "previous_response_id",
+          "required_stable_fields": [
+            "model",
+            "instructions",
+            "tools",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "include",
+            "text",
+            "prompt_cache_key",
+            "store"
+          ],
+          "append_only_history": true,
+          "store": "optional",
+          "fallback": "full-replay",
+          "max_idle_seconds": 1800,
+          "metadata_namespace": "codex"
+        },
+        "compaction": {
+          "mode": "remote-operation",
+          "operation": "remote-compact",
+          "retained_token_budget": 64000,
+          "preserve_tool_pairs": true,
+          "metadata_namespace": "codex"
+        },
+        "timeouts": {
+          "connect_seconds": 30,
+          "request_seconds": 600,
+          "idle_seconds": 600
+        },
+        "headers": []
+      },
+      {
+        "id": "remote-compact",
+        "kind": "compaction",
+        "protocol": "openai-responses",
+        "transport": "websocket-json",
+        "endpoint": "inference",
+        "method": "POST",
+        "path": "/",
+        "retry": {
+          "max_attempts": 3,
+          "initial_delay_ms": 0,
+          "max_delay_ms": 0,
+          "factor": 1,
+          "jitter": false,
+          "retry_after": false,
+          "statuses": [],
+          "codes": [],
+          "transport_errors": true,
+          "unexpected_eof": true,
+          "authentication": "refresh-once",
+          "replay_requirement": "before-first-event"
+        },
+        "timeouts": {
+          "connect_seconds": 30,
+          "request_seconds": 600,
+          "idle_seconds": 600
+        },
+        "headers": []
+      },
+      {
+        "id": "quota",
+        "kind": "usage",
+        "protocol": "generic-json",
+        "transport": "http-json",
+        "endpoint": "usage",
+        "method": "GET",
+        "path": "/quota",
+        "retry": {
+          "max_attempts": 1,
+          "initial_delay_ms": 0,
+          "max_delay_ms": 0,
+          "factor": 1,
+          "jitter": false,
+          "retry_after": false,
+          "statuses": [],
+          "codes": [],
+          "transport_errors": false,
+          "unexpected_eof": false,
+          "authentication": "never",
+          "replay_requirement": "never"
+        },
+        "timeouts": {
+          "connect_seconds": 30,
+          "request_seconds": 600,
+          "idle_seconds": 600
+        },
+        "headers": [
+          {
+            "name": "Origin",
+            "operation": "set",
+            "value": {
+              "kind": "literal",
+              "value": "https://codex-usage.example.invalid/"
+            },
+            "protected": true
+          },
+          {
+            "name": "Referer",
+            "operation": "set",
+            "value": {
+              "kind": "literal",
+              "value": "https://codex-usage.example.invalid/"
+            },
+            "protected": true
+          }
+        ]
+      }
+    ],
+    "usage": {
+      "operation": "quota",
+      "source": "operation",
+      "mappings": [
+        {
+          "target": "total_tokens",
+          "pointer": "/rate_limit/primary_window/used_percent",
+          "operation": "replace"
+        }
+      ],
+      "windows": [
+        {
+          "id": "usage",
+          "used_pointer": "/rate_limit/primary_window/used_percent",
+          "reset_pointer": "/rate_limit/primary_window/reset_at",
+          "reset_format": "unix-seconds"
+        },
+        {
+          "id": "secondary usage",
+          "used_pointer": "/rate_limit/secondary_window/used_percent",
+          "reset_pointer": "/rate_limit/secondary_window/reset_at",
+          "reset_format": "unix-seconds"
+        }
+      ],
+      "fallback": "unavailable"
+    },
+    "images": {
+      "accepted_media_types": [
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp"
+      ],
+      "max_source_bytes": 26214400,
+      "max_side_pixels": 1920,
+      "max_output_bytes": 524288,
+      "max_patches": 2500,
+      "output_media_type": "image/jpeg",
+      "flatten_alpha": "white",
+      "quality_steps": [
+        85,
+        75,
+        65,
+        55,
+        45,
+        35,
+        25
+      ],
+      "resize_percent": 80,
+      "history_budget": {
+        "request_bytes": 14680064,
+        "retry_request_bytes": 10485760,
+        "per_image_targets": [
+          524288,
+          262144,
+          65536
+        ],
+        "omit_old_images": true,
+        "retain_newest_image": true
+      }
+    },
+    "runtime_controls": [
+      {
+        "id": "options.response_verbosity",
+        "label": "Final response verbosity",
+        "type": "enum",
+        "values": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "scope": "model",
+        "request_path": "/text/verbosity"
+      },
+      {
+        "id": "options.analysis_effort",
+        "label": "Analysis effort / Juice",
+        "type": "enum",
+        "values": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "scope": "model",
+        "request_path": "/reasoning/effort"
+      }
+    ],
+    "metadata": [
+      {
+        "namespace": "codex",
+        "version": 1,
+        "scope": "reasoning",
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "required_for_replay": true
+      },
+      {
+        "namespace": "codex",
+        "version": 1,
+        "scope": "tool-call",
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "required_for_replay": true
+      },
+      {
+        "namespace": "codex",
+        "version": 1,
+        "scope": "continuation",
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      {
+        "namespace": "codex",
+        "version": 1,
+        "scope": "compaction",
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "required_for_replay": true
+      }
+    ],
+    "errors": [],
+    "instructions": {
+      "default": "native",
+      "profiles": {
+        "native": "instructions/native.md"
+      }
+    }
+  },
+  "configuration": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {},
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "fields": {}
+  }
+}

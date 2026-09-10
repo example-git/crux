@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -14,13 +15,15 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
-func nativeImageRuntime(t *testing.T, raw json.RawMessage) (*config.ConfigStore, config.RemoteRuntimeProposal) {
+func nativeImageRuntime(t *testing.T, raw json.RawMessage, imageURL string) (*config.ConfigStore, config.RemoteRuntimeProposal) {
 	t.Helper()
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("codex")
 	require.True(t, ok)
@@ -29,6 +32,20 @@ func nativeImageRuntime(t *testing.T, raw json.RawMessage) (*config.ConfigStore,
 		Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "codex", Model: "fixture"}, config.SelectedModelTypeSmall: {Provider: "codex", Model: "fixture"}},
 		Credentials: []config.RemoteCredentialBinding{{Owner: registration.Owner(), Generation: 1, Account: &accounts.Entry{ID: "selected", AccessToken: "synthetic-image-access", RefreshToken: "synthetic-image-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Raw: raw}}},
 	}
+	bindNativeTestBundles(t, &proposal)
+	var declaration manifest.Manifest
+	require.NoError(t, json.Unmarshal(proposal.Bundles[0].Files[0].Data, &declaration))
+	u, err := url.Parse(imageURL)
+	require.NoError(t, err)
+	for i := range declaration.Capabilities.Endpoints {
+		e := &declaration.Capabilities.Endpoints[i]
+		if e.ID == "images" {
+			e.BaseURL = imageURL
+			e.AllowedHosts = []string{u.Hostname()}
+		}
+	}
+	proposal.Bundles[0] = registrytest.Bundle(declaration)
+	proposal.Providers[0].BundleDigest = proposal.Bundles[0].Digest
 	proposal.Digest, err = config.RemoteRuntimeDigest(proposal)
 	require.NoError(t, err)
 	store, err := config.CompileRemoteRuntime(t.TempDir(), t.TempDir(), false, proposal, strings.Repeat("a", 64), env.NewFromMap(map[string]string{}))
@@ -48,9 +65,6 @@ func TestClientImageNativeHeadersRetainAcceptedRuntime(t *testing.T) {
 			if mode == "absent-account-metadata" {
 				raw, wantedAccount = nil, ""
 			}
-			store, proposal := nativeImageRuntime(t, raw)
-			captured, err := resolveConfiguredAuth(t.Context(), store)
-			require.NoError(t, err)
 			headers := make(chan http.Header, 4)
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				headers <- r.Header.Clone()
@@ -60,9 +74,9 @@ func TestClientImageNativeHeadersRetainAcceptedRuntime(t *testing.T) {
 				_, _ = io.WriteString(w, `{"data":[{"b64_json":"aW1hZ2U="}]}`)
 			}))
 			defer server.Close()
-			original := codexBaseURLOverride
-			codexBaseURLOverride = server.URL
-			t.Cleanup(func() { codexBaseURLOverride = original })
+			store, proposal := nativeImageRuntime(t, raw, server.URL)
+			captured, err := resolveConfiguredAuth(t.Context(), store)
+			require.NoError(t, err)
 			client := NewProviderClient(store)
 			client.HTTPClient = server.Client()
 			_, err = client.Generate(t.Context(), GenerateRequest{Prompt: "accepted image", N: 1})
@@ -80,6 +94,7 @@ func TestClientImageNativeHeadersRetainAcceptedRuntime(t *testing.T) {
 			nextIdentity := config.NativeIdentity{UserAgent: "next-image/2.3.4 (NextOS 2; fixture) NextTerminal", Version: "2.3.4", Originator: "next-image"}
 			proposal.Providers[0].NativeIdentity = &nextIdentity
 			proposal.Revision, proposal.Credentials[0].Generation = 2, 2
+			bindNativeTestBundles(t, &proposal)
 			proposal.Digest, err = config.RemoteRuntimeDigest(proposal)
 			require.NoError(t, err)
 			_, err = store.ReplaceRemoteRuntime(t.Context(), proposal, strings.Repeat("a", 64), 1)
@@ -99,5 +114,29 @@ func TestClientImageNativeHeadersRetainAcceptedRuntime(t *testing.T) {
 			require.ErrorContains(t, err, "context canceled")
 			require.Empty(t, headers)
 		})
+	}
+}
+
+// bindNativeTestBundles makes the fixture's provider authority explicit before
+// sealing its remote digest. Existing plugin/custom proposals are unchanged.
+func bindNativeTestBundles(t *testing.T, proposal *config.RemoteRuntimeProposal) {
+	t.Helper()
+	for i := range proposal.Providers {
+		definition := &proposal.Providers[i]
+		p := &definition.Config
+		if p.Owner == nil || p.Owner.Type != config.ProviderOwnerCore || (p.ID != "codex" && p.ID != "gemini-ag") {
+			continue
+		}
+		registration, bundle, err := registrytest.BundleFor(p.ID, p.BaseURL, p.Models)
+		require.NoError(t, err)
+		p.Plugin = &config.ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+		p.Owner = &config.ProviderOwnerReference{Type: config.ProviderOwnerPlugin, Construction: registration.Construction, CompatibilityAdapter: registration.CompatibilityAdapter}
+		definition.BundleDigest = bundle.Digest
+		proposal.Bundles = append(proposal.Bundles, bundle)
+		for j := range proposal.Credentials {
+			if proposal.Credentials[j].Owner.ProviderID == p.ID {
+				proposal.Credentials[j].Owner = registration.Owner()
+			}
+		}
 	}
 }

@@ -38,7 +38,7 @@ func newProvider(baseURL string, token TokenSource, accountID AccountIDSource, h
 		return nil, fmt.Errorf("Codex provider owner validator is unavailable")
 	}
 	if baseURL == "" {
-		baseURL = APIEndpoint
+		return nil, fmt.Errorf("unsupported provider: manifest inference endpoint is required")
 	}
 	if images == nil || images.HistoryBudget == nil {
 		return nil, fmt.Errorf("Codex image history budget is unavailable")

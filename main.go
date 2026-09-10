@@ -12,6 +12,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	_ "net/http/pprof"
@@ -20,8 +21,8 @@ import (
 	"github.com/example-git/crux/internal/cmd"
 	"github.com/example-git/crux/internal/compatibility"
 	"github.com/example-git/crux/internal/compatibility/localaddon"
-	_ "github.com/example-git/crux/internal/dns"
-	_ "github.com/joho/godotenv/autoload"
+	"github.com/example-git/crux/internal/dns"
+	"github.com/joho/godotenv"
 )
 
 func registerCompatibility() error {
@@ -29,6 +30,21 @@ func registerCompatibility() error {
 }
 
 func main() {
+	if !localaddon.IsCompatibilityExecutable(os.Args[0]) || os.Getenv(compatibility.BypassEnvironment) != "" {
+		if handled, err := cmd.ExecuteShellCompletion(os.Args[0], os.Args[1:], os.Stdout, os.Stderr); handled {
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Error:", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+	// Completion requests must not read local dotenv files or initialize
+	// normal application services. Preserve dotenv loading for every other
+	// command, including compatibility aliases.
+	_ = godotenv.Load()
+	dns.Configure()
+	cmd.InitializeEnvironmentDefaults()
 	if err := registerCompatibility(); err != nil {
 		slog.Error("Failed to register CLI compatibility adapters", "error", err)
 		os.Exit(1)

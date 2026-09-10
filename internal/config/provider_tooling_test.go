@@ -10,7 +10,9 @@ import (
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/providerplugin/manifest/manifesttest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -27,18 +29,19 @@ func providerToolingTestStore(t *testing.T) (*ConfigStore, string) {
 		"HOME": root, "CRUX_GLOBAL_CONFIG": configDir,
 		"CRUX_GLOBAL_DATA":      filepath.Join(root, "global-data"),
 		"CRUX_CACHE_DIR":        filepath.Join(root, "cache"),
-		"CRUX_PROVIDER_PROFILE": string(ProviderProfileIntegrated),
+		"CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginCompat),
 	})
 	cfg := &Config{
 		Options: &Options{InstructionMode: "project"},
 		Providers: csync.NewMapFrom(map[string]ProviderConfig{
-			"codex": {ID: "codex", APIKey: "synthetic-tooling-key", Models: []catalog.Model{{ID: "fixture"}}},
+			"codex": {ID: "codex", Plugin: &ProviderPluginReference{ID: "test.codex", Version: "1.1.0"}, APIKey: "synthetic-tooling-key", Models: []catalog.Model{{ID: "fixture"}}},
 		}),
 		Models: map[SelectedModelType]SelectedModel{
 			SelectedModelTypeLarge: {Provider: "codex", Model: "fixture"},
 			SelectedModelTypeSmall: {Provider: "codex", Model: "fixture"},
 		},
 	}
+	require.NoError(t, registrytest.Install(t.Context(), filepath.Join(root, "global-data"), filepath.Join(root, "cache"), manifesttest.Delegated("codex")))
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, "crux.json"), mustMarshalConfig(cfg), 0o600))
 	store, err := LoadIsolated(workingDir, filepath.Join(root, "workspace-data"), false, base)
 	require.NoError(t, err)

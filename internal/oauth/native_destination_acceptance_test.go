@@ -14,10 +14,10 @@ import (
 	"testing"
 
 	"github.com/example-git/crux/internal/oauth"
-	"github.com/example-git/crux/internal/oauth/codex"
 	"github.com/example-git/crux/internal/oauth/copilot"
-	"github.com/example-git/crux/internal/oauth/gemini"
 	"github.com/example-git/crux/internal/oauth/usage"
+	"github.com/example-git/crux/internal/providerplugin/manifest/manifesttest"
+	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/providertransport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,6 +26,19 @@ import (
 type nativeDestinationRoundTrip func(*http.Request) (*http.Response, error)
 
 func (f nativeDestinationRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// This fixture explicitly permits same-origin redirects; private bundles may forbid them.
+func redirectRegistration(id string) providerregistry.Registration {
+	value := manifesttest.Delegated(id)
+	for i := range value.Capabilities.Endpoints {
+		value.Capabilities.Endpoints[i].FollowRedirects = true
+	}
+	registration, err := providerregistry.FromManifest(value, manifesttest.StaticText())
+	if err != nil {
+		panic(err)
+	}
+	return registration
+}
 
 func TestNativeCredentialDestinationsThroughHTTPS(t *testing.T) {
 	root := t.TempDir()
@@ -50,23 +63,27 @@ func TestNativeCredentialDestinationsThroughHTTPS(t *testing.T) {
 		optional                                                bool
 		call                                                    func(context.Context) (string, error)
 	}{
-		{"codex-code", "https://auth.openai.com/oauth/token", "POST", "code=synthetic-code", "", "synthetic-access", false, func(ctx context.Context) (string, error) {
-			return tokenResult(codex.ExchangeCode(ctx, "synthetic-code", "synthetic-verifier", "http://127.0.0.1:1455/auth/callback"))
+		{"codex-code", "https://codex-token.example.invalid/token", "POST", "code=synthetic-code", "", "synthetic-access", false, func(ctx context.Context) (string, error) {
+			return tokenResult(redirectRegistration("codex").Codex.ExchangeCode(ctx, "synthetic-code", "synthetic-verifier", "http://127.0.0.1:1455/auth/callback"))
 		}},
-		{"codex-refresh", "https://auth.openai.com/oauth/token", "POST", "refresh_token=synthetic-refresh", "", "synthetic-access", false, func(ctx context.Context) (string, error) {
-			return tokenResult(codex.RefreshToken(ctx, "synthetic-refresh"))
+		{"codex-refresh", "https://codex-token.example.invalid/token", "POST", "refresh_token=synthetic-refresh", "", "synthetic-access", false, func(ctx context.Context) (string, error) {
+			return tokenResult(redirectRegistration("codex").Codex.RefreshToken(ctx, "synthetic-refresh"))
 		}},
-		{"codex-account", "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami", "GET", "", "Bearer synthetic-access", "synthetic@example.invalid", true, func(ctx context.Context) (string, error) { return codex.AccountEmail(ctx, "synthetic-access"), nil }},
-		{"gemini-code", "https://oauth2.googleapis.com/token", "POST", "client_secret=synthetic-client-secret", "", "synthetic-access", false, func(ctx context.Context) (string, error) {
-			return tokenResult(gemini.ExchangeCode(ctx, "synthetic-code", "synthetic-verifier"))
+		{"codex-account", "https://codex-identity.example.invalid/identity", "GET", "", "Bearer synthetic-access", "synthetic@example.invalid", true, func(ctx context.Context) (string, error) {
+			return redirectRegistration("codex").Codex.AccountEmail(ctx, "synthetic-access"), nil
 		}},
-		{"gemini-refresh", "https://oauth2.googleapis.com/token", "POST", "refresh_token=synthetic-refresh", "", "synthetic-access", false, func(ctx context.Context) (string, error) {
-			return tokenResult(gemini.Refresh(ctx, "synthetic-refresh"))
+		{"gemini-code", "https://gemini-ag-token.example.invalid/token", "POST", "client_secret=synthetic-client-secret", "", "synthetic-access", false, func(ctx context.Context) (string, error) {
+			return tokenResult(redirectRegistration("gemini-ag").Gemini.ExchangeCode(ctx, "synthetic-code", "synthetic-verifier"))
 		}},
-		{"gemini-project", "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", "POST", "{}", "Bearer synthetic-access", "synthetic-project", true, func(ctx context.Context) (string, error) {
-			return gemini.ProjectForCredential(ctx, "synthetic-access"), nil
+		{"gemini-refresh", "https://gemini-ag-token.example.invalid/token", "POST", "refresh_token=synthetic-refresh", "", "synthetic-access", false, func(ctx context.Context) (string, error) {
+			return tokenResult(redirectRegistration("gemini-ag").Gemini.Refresh(ctx, "synthetic-refresh"))
 		}},
-		{"gemini-account", "https://www.googleapis.com/oauth2/v2/userinfo", "GET", "", "Bearer synthetic-access", "synthetic@example.invalid", true, func(ctx context.Context) (string, error) { return gemini.AccountEmail(ctx, "synthetic-access"), nil }},
+		{"gemini-project", "https://gemini-ag-project.example.invalid/project", "POST", "{}", "Bearer synthetic-access", "synthetic-project", true, func(ctx context.Context) (string, error) {
+			return redirectRegistration("gemini-ag").Gemini.ProjectForCredential(ctx, "synthetic-access"), nil
+		}},
+		{"gemini-account", "https://gemini-ag-identity.example.invalid/identity", "GET", "", "Bearer synthetic-access", "synthetic@example.invalid", true, func(ctx context.Context) (string, error) {
+			return redirectRegistration("gemini-ag").Gemini.AccountEmail(ctx, "synthetic-access"), nil
+		}},
 		{"copilot-device", "https://github.com/login/device/code", "POST", "client_id=", "", "synthetic-device", false, func(ctx context.Context) (string, error) {
 			value, err := copilot.RequestDeviceCode(ctx)
 			if err != nil {
@@ -80,8 +97,8 @@ func TestNativeCredentialDestinationsThroughHTTPS(t *testing.T) {
 		{"copilot-refresh", "https://api.github.com/copilot_internal/v2/token", "GET", "", "Bearer synthetic-access", "synthetic-access", false, func(ctx context.Context) (string, error) {
 			return tokenResult(copilot.RefreshToken(ctx, "synthetic-access"))
 		}},
-		{"codex-usage", "https://chatgpt.com/backend-api/wham/usage", "GET", "", "Bearer synthetic-access", "synthetic-plan", false, func(ctx context.Context) (string, error) {
-			value, err := usage.FetchWithTokenForOwner(ctx, "codex", "synthetic-access", usage.FetchCodex, nil)
+		{"codex-usage", "https://codex-usage.example.invalid/quota", "GET", "", "Bearer synthetic-access", "synthetic-plan", false, func(ctx context.Context) (string, error) {
+			value, err := usage.FetchWithTokenForOwner(ctx, "codex", "synthetic-access", redirectRegistration("codex").Quota, nil)
 			if err != nil {
 				return "", err
 			}

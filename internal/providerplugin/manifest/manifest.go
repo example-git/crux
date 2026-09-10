@@ -148,9 +148,19 @@ type Capabilities struct {
 // every remaining behavior to either a proposed bounded core primitive or an
 // explicit private/stateful compatibility boundary; bundles never provide code.
 type CompatibilityAdapter struct {
+	Endpoints *CompatibilityEndpoints      `json:"endpoints,omitempty"`
 	ID        string                       `json:"id" jsonschema:"required,pattern=^integrated-[a-z][a-z0-9-]*$,maxLength=128"`
 	Delegates []string                     `json:"delegates" jsonschema:"required,minItems=1,uniqueItems=true,maxItems=8,enum=construction,enum=oauth,enum=identity,enum=usage,enum=runtime,enum=reasoning"`
 	Inventory []CompatibilityInventoryItem `json:"inventory" jsonschema:"required,minItems=1,uniqueItems=true,maxItems=128"`
+}
+
+// CompatibilityEndpoints assigns endpoint declarations to the remaining native
+// metadata and image consumers. OAuth, inference and usage use their existing
+// flow/operation endpoint references. Required bindings depend on construction.
+type CompatibilityEndpoints struct {
+	Identity string `json:"identity" jsonschema:"required,minLength=1,maxLength=64"`
+	Images   string `json:"images,omitempty" jsonschema:"maxLength=64"`
+	Project  string `json:"project,omitempty" jsonschema:"maxLength=64"`
 }
 
 // CompatibilityInventoryItem makes temporary adapter ownership reviewable and

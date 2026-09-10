@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -22,6 +24,7 @@ import (
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
@@ -57,6 +60,13 @@ func newCoordinatorAuthenticationFixture(t *testing.T, providerID, endpoint stri
 	second := accounts.Entry{ID: "account-b", AccessToken: "literal-$(touch '" + marker + "')-$AUTH_LITERAL", RefreshToken: "synthetic-refresh-b", ExpiresAt: first.ExpiresAt, Raw: json.RawMessage(`{"account_id":"account-metadata-b"}`)}
 	require.NoError(t, accounts.Save(t.Context(), registration.AccountNamespace, first))
 	require.NoError(t, accounts.SaveWithoutActivating(t.Context(), registration.AccountNamespace, second))
+	if registration.Manifest != nil {
+		var bindErr error
+		registration, _, bindErr = registrytest.BundleFor(providerID, endpoint, nil)
+		require.NoError(t, bindErr)
+		values["CRUX_PROVIDER_PROFILE"] = string(config.ProviderProfilePluginCompat)
+		require.NoError(t, registrytest.Install(t.Context(), values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"], *registration.Manifest))
+	}
 	selectedProvider := providerID
 	providers := map[string]any{providerID: map[string]any{
 		"base_url": endpoint, "disable": disabled,
@@ -67,6 +77,11 @@ func newCoordinatorAuthenticationFixture(t *testing.T, providerID, endpoint stri
 			{"id": "fixture-small", "name": "Small", "context_window": 16000, "default_max_tokens": 64},
 		},
 	}}
+	if registration.Manifest != nil {
+		p := providers[providerID].(map[string]any)
+		p["plugin"] = &config.ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+		p["owner"] = &config.ProviderOwnerReference{Type: config.ProviderOwnerPlugin, Construction: registration.Construction, CompatibilityAdapter: registration.CompatibilityAdapter}
+	}
 	if disabled {
 		selectedProvider = "unrelated"
 		providers[selectedProvider] = map[string]any{"type": "openai-compat", "base_url": endpoint, "api_key": "unrelated-retained-key",
@@ -277,10 +292,19 @@ func TestCoordinatorAuthenticationMutationCopilotHTTPS(t *testing.T) {
 	require.NoFileExists(t, f.marker)
 }
 
-// Codex is a separate native Responses/WebSocket path. This disposable loopback
-// server verifies account metadata on real handshakes, not Copilot behavior or
-// TLS certificate policy (the native dialer has no test-root injection seam).
+// This local TLS server verifies account metadata on native Codex handshakes.
+// The test isolates its TLS trust in a subprocess because the dialer uses system roots.
 func TestCoordinatorAuthenticationMutationCodexCapturedMetadata(t *testing.T) {
+	// Fallback TLS roots are process-global and immutable; isolate this trust setup.
+	if os.Getenv("CRUX_TEST_CODEX_TLS") != "1" {
+		command := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestCoordinatorAuthenticationMutationCodexCapturedMetadata$", "-test.timeout=60s")
+		command.Env = append(os.Environ(), "CRUX_TEST_CODEX_TLS=1", "GODEBUG=x509usefallbackroots=1")
+		output, err := command.CombinedOutput()
+		require.NoError(t, err, "%s", output)
+		return
+	}
+
+	config.DefaultProviderProfile = string(config.ProviderProfilePluginCompat)
 	var mu sync.Mutex
 	var credentials, accountIDs []string
 	var frames int
@@ -290,7 +314,7 @@ func TestCoordinatorAuthenticationMutationCodexCapturedMetadata(t *testing.T) {
 		return slices.Clone(credentials), slices.Clone(accountIDs), frames
 	}
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		connection, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
@@ -317,7 +341,10 @@ func TestCoordinatorAuthenticationMutationCodexCapturedMetadata(t *testing.T) {
 		}
 	}))
 	t.Cleanup(host.Close)
-	f := newCoordinatorAuthenticationFixture(t, "codex", strings.Replace(host.URL, "http://", "ws://", 1)+"/responses", false)
+	roots := x509.NewCertPool()
+	roots.AddCert(host.Certificate())
+	x509.SetFallbackRoots(roots)
+	f := newCoordinatorAuthenticationFixture(t, "codex", strings.Replace(host.URL, "https://", "wss://", 1)+"/responses", false)
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	old := f.coordinator.currentAgent.Runtime()

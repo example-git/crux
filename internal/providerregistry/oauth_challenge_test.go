@@ -12,38 +12,23 @@ import (
 
 func TestOAuthChallengeRegistrationCloneAndCompatibility(t *testing.T) {
 	ctx := oauth.ContextWithEnvironment(t.Context(), []string{"CODEX_OAUTH_CLIENT_ID=captured-codex", "GEMINI_OAUTH_CLIENT_ID=captured-gemini", "GEMINI_OAUTH_CLIENT_SECRET=captured-secret"})
-	for _, registration := range Integrated() {
-		if registration.Construction != ConstructionCodex && registration.Construction != ConstructionGeminiAntigravity {
-			continue
-		}
-		t.Run(registration.ProviderID, func(t *testing.T) {
-			require.NotNil(t, registration.OAuth.Callback)
-			require.NotNil(t, registration.OAuth.PrepareCode)
+	_ = ctx
+	for _, providerID := range []string{"codex", "gemini-ag"} {
+		t.Run(providerID, func(t *testing.T) {
+			registration := testDelegatedRegistration(t, providerID)
 			original := *registration.OAuth.Callback
-			clone := registration.Clone()
-			clone.OAuth.Callback.Mode = "changed"
-			require.Equal(t, original, *registration.OAuth.Callback)
-			delegated := Registration{ProviderID: registration.ProviderID, AccountNamespace: registration.AccountNamespace, OAuth: &OAuthCapability{Adapter: LoginDeviceCode, Callback: &oauth.CallbackRequirement{Mode: "wrong"}, FlowID: "declared-flow"}}
-			require.NoError(t, attachCompatibilityAdapter(&delegated, manifest.CompatibilityAdapter{ID: string(registration.Construction), Delegates: []string{"oauth"}}))
-			require.Equal(t, registration.OAuth.Adapter, delegated.OAuth.Adapter)
-			require.Equal(t, original, *delegated.OAuth.Callback)
-			require.Equal(t, "declared-flow", delegated.OAuth.FlowID)
-			bound, err := BindRegistrationConfiguration(delegated, map[string]any{"irrelevant": "value"})
+			bound, err := BindRegistrationConfiguration(registration, nil)
 			require.NoError(t, err)
-			challenge, err := bound.OAuth.PrepareCode(ctx, original.Port)
+			challenge, err := bound.OAuth.PrepareCode(t.Context(), original.Port)
 			require.NoError(t, err)
 			defer challenge.Close()
 			parsed, err := url.Parse(challenge.AuthorizationURL())
 			require.NoError(t, err)
-			if registration.Construction == ConstructionCodex {
-				require.Equal(t, "captured-codex", parsed.Query().Get("client_id"))
-				require.Equal(t, "http://localhost:1455/auth/callback", parsed.Query().Get("redirect_uri"))
-			} else {
-				require.Equal(t, "captured-gemini", parsed.Query().Get("client_id"))
-				require.Equal(t, "hosted-paste", bound.OAuth.Callback.Mode)
-			}
+			require.Equal(t, "synthetic-client", parsed.Query().Get("client_id"))
+			require.Equal(t, "fixture.read fixture.email", parsed.Query().Get("scope"))
+			require.Equal(t, providerID+"-authorize.example.invalid", parsed.Host)
 			bound.OAuth.Callback.Path = "changed"
-			require.Equal(t, original, *delegated.OAuth.Callback)
+			require.Equal(t, original, *registration.OAuth.Callback)
 		})
 	}
 }

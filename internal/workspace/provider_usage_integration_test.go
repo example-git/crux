@@ -22,6 +22,7 @@ import (
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/assert"
@@ -41,7 +42,8 @@ func TestProviderUsageThroughTLS(t *testing.T) {
 			t.Setenv("AI_CLI_DIR", t.TempDir())
 			t.Setenv("CODEX_VERSION", "1.0.0")
 			t.Setenv("COPILOT_CLI_VERSION", "1.0.0")
-			t.Setenv("CRUX_PROVIDER_PROFILE", "integrated")
+			t.Setenv("CRUX_PROVIDER_PROFILE", "plugin-compat")
+			serverData, serverCache := os.Getenv("CRUX_GLOBAL_DATA"), os.Getenv("CRUX_CACHE_DIR")
 			if mode == "plugin" {
 				t.Setenv("CRUX_PROVIDER_PROFILE", "plugin-compat")
 			}
@@ -49,7 +51,7 @@ func TestProviderUsageThroughTLS(t *testing.T) {
 				serverConfig := os.Getenv("CRUX_GLOBAL_CONFIG")
 				require.NoError(t, os.MkdirAll(serverConfig, 0o700))
 				require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, accounts.Entry{ID: "selected", AccessToken: "synthetic-quota-access", RefreshToken: "synthetic-quota-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}))
-				require.NoError(t, os.WriteFile(filepath.Join(serverConfig, "crux.json"), []byte(`{"providers":{"codex":{"api_key":"synthetic-quota-access","oauth":{"access_token":"synthetic-quota-access","refresh_token":"synthetic-quota-refresh"},"owner":{"type":"core","construction":"integrated-codex"},"models":[{"id":"fixture","name":"Fixture"}]}},"models":{"large":{"provider":"codex","model":"fixture"},"small":{"provider":"codex","model":"fixture"}}}`), 0o600))
+				require.NoError(t, os.WriteFile(filepath.Join(serverConfig, "crux.json"), []byte(`{"providers":{"codex":{"api_key":"synthetic-quota-access","oauth":{"access_token":"synthetic-quota-access","refresh_token":"synthetic-quota-refresh"},"plugin":{"id":"test.codex","version":"1.1.0"},"owner":{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"},"models":[{"id":"fixture","name":"Fixture"}]}},"models":{"large":{"provider":"codex","model":"fixture"},"small":{"provider":"codex","model":"fixture"}}}`), 0o600))
 			}
 			serverCode, err := connection.EnsureServerIdentity(t.Context())
 			require.NoError(t, err)
@@ -96,7 +98,7 @@ func TestProviderUsageThroughTLS(t *testing.T) {
 			provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				assert.Equal(t, expected.Load(), r.Header.Get("Authorization"))
-				assert.Contains(t, []string{"/quota", "/backend-api/wham/usage", "/copilot_internal/user"}, r.URL.Path)
+				assert.Contains(t, []string{"/quota", "/copilot_internal/user"}, r.URL.Path)
 				if wait := barrier.Swap(nil); wait != nil {
 					close(wait.started)
 					select {
@@ -126,10 +128,9 @@ func TestProviderUsageThroughTLS(t *testing.T) {
 			http.DefaultTransport = provider.Client().Transport.(*http.Transport).Clone()
 			target, err := url.Parse(provider.URL)
 			require.NoError(t, err)
-			// Integrated adapters have fixed public URLs. Redirect only those exact
-			// fixture destinations; plugin usage uses its declared HTTPS URL directly.
+			// Copilot retains its core URL; bundle usage uses the declared TLS URL.
 			http.DefaultClient = &http.Client{Transport: refreshFixtureTransport(func(r *http.Request) (*http.Response, error) {
-				if !((r.URL.Host == "chatgpt.com" && r.URL.Path == "/backend-api/wham/usage") || (r.URL.Host == "api.github.com" && r.URL.Path == "/copilot_internal/user")) {
+				if !(r.URL.Host == "api.github.com" && r.URL.Path == "/copilot_internal/user") {
 					return nil, fmt.Errorf("unexpected isolated quota destination %s", r.URL.Host)
 				}
 				clone := r.Clone(r.Context())
@@ -146,6 +147,20 @@ func TestProviderUsageThroughTLS(t *testing.T) {
 				id, namespace, construction = "copilot", accounts.ProviderCopilot, providerregistry.ConstructionCopilot
 			}
 			configuration := fmt.Sprintf(`{"providers":{%q:{"api_key":"synthetic-quota-access","owner":{"type":"core","construction":%q},"models":[{"id":"fixture","name":"Fixture"}]}},"models":{"large":{"provider":%q,"model":"fixture"},"small":{"provider":%q,"model":"fixture"}}}`, id, construction, id, id)
+			if id == "codex" && mode != "plugin" {
+				value := *registrytest.Provider("codex").Manifest
+				for i := range value.Capabilities.Endpoints {
+					e := &value.Capabilities.Endpoints[i]
+					if e.ID == "usage" {
+						e.BaseURL, e.AllowedHosts = provider.URL, []string{target.Hostname()}
+					}
+				}
+				require.NoError(t, registrytest.Install(t.Context(), dataDir, cacheDir, value))
+				if mode == "server-owned" {
+					require.NoError(t, registrytest.Install(t.Context(), serverData, serverCache, value))
+				}
+				configuration = strings.Replace(configuration, `"owner":{"type":"core","construction":"integrated-codex"}`, `"plugin":{"id":"test.codex","version":"1.1.0"},"owner":{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"}`, 1)
+			}
 			if mode == "plugin" {
 				installRefreshFixture(t, provider.URL, dataDir, cacheDir, "quota")
 				id, namespace = "example-responses", "example.responses"

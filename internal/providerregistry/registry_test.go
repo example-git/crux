@@ -109,7 +109,13 @@ func TestRegistryCapturesAccountAliasesWithoutPublishing(t *testing.T) {
 }
 
 func TestIntegratedRegistrationsDeclareBehavioralCapabilities(t *testing.T) {
-	registry, err := New(Integrated()...)
+	registrations := []Registration{testDelegatedRegistration(t, "codex"), testDelegatedRegistration(t, "gemini-ag")}
+	for _, value := range Integrated() {
+		if value.Construction == ConstructionCopilot {
+			registrations = append(registrations, value)
+		}
+	}
+	registry, err := New(registrations...)
 	require.NoError(t, err)
 
 	codex, ok := registry.Lookup("codex")
@@ -122,7 +128,7 @@ func TestIntegratedRegistrationsDeclareBehavioralCapabilities(t *testing.T) {
 
 	gemini, ok := registry.Lookup("gemini-ag")
 	require.True(t, ok)
-	require.Nil(t, gemini.Quota)
+	require.NotNil(t, gemini.Quota)
 	require.NotNil(t, gemini.Images)
 	require.NotNil(t, gemini.Reasoning)
 
@@ -637,6 +643,7 @@ func TestRegistryValidatesDelegatedConstructionAtActivation(t *testing.T) {
 		Manifest:  manifestFor(ConstructionCodex, "construction"),
 		Operation: operationFor(string(ConstructionOpenAIResponses), "websocket-json"),
 	}
+	addTestEndpointBindings(t, &codex)
 	require.NoError(t, ValidateActivation(codex))
 	codexImages := codex.Clone()
 	codexImages.Images = integratedCodexImagePolicy()
@@ -658,6 +665,7 @@ func TestRegistryValidatesDelegatedConstructionAtActivation(t *testing.T) {
 		Manifest:  manifestFor(ConstructionGeminiAntigravity, "construction"),
 		Operation: operationFor(string(ConstructionGeminiContent), "sse"),
 	}
+	addTestEndpointBindings(t, &gemini)
 	require.NoError(t, ValidateActivation(gemini))
 	geminiTransform := gemini.Clone()
 	geminiTransform.Operation.RoleMap = &manifest.RoleMap{System: "system", Developer: "system", User: "user", Assistant: "model", Tool: "user", Unknown: "reject"}
@@ -730,7 +738,7 @@ func TestRegistryValidatesDelegatedConstructionAtActivation(t *testing.T) {
 		}, want: "do not match"},
 		{name: "stream usage", edit: func(value *Registration) {
 			value.Usage = &manifest.UsagePolicy{Source: "stream", Fallback: "estimate"}
-		}, want: "is unavailable for compatibility construction"},
+		}, want: "requires a manifest usage operation"},
 		{name: "identity delegate without executor", edit: func(value *Registration) {
 			value.Manifest.Capabilities.Compatibility.Delegates = append(value.Manifest.Capabilities.Compatibility.Delegates, "identity")
 		}, want: "identity has no compatibility executor"},
@@ -808,6 +816,7 @@ func TestRegistryValidatesDelegatedRemoteCompactionOperationAtActivation(t *test
 		Operations: map[string]*providertransport.Operation{"inference": inference, "remote-compact": compaction},
 		Metadata:   delegatedMetadataContracts(ConstructionCodex),
 	}
+	addTestEndpointBindings(t, &registration)
 	require.NoError(t, ValidateActivation(registration))
 	cloned := registration.Clone()
 	require.Contains(t, cloned.Operations, "remote-compact")
@@ -879,6 +888,7 @@ func TestRegistryValidatesErrorMappingBindingsAtActivation(t *testing.T) {
 		},
 		Errors: mappings,
 	}
+	addTestEndpointBindings(t, &base)
 	require.NoError(t, ValidateActivation(base))
 
 	for _, kind := range []string{"account", "usage"} {

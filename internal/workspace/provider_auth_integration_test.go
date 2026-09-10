@@ -18,6 +18,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerauth"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/assert"
@@ -33,7 +34,7 @@ func TestProviderAuthenticationThroughTLS(t *testing.T) {
 func testProviderAuthenticationThroughTLS(t *testing.T, mode string) {
 	clientOwned := strings.HasPrefix(mode, "client")
 	xdgIsolate(t)
-	t.Setenv("CRUX_PROVIDER_PROFILE", "integrated")
+	t.Setenv("CRUX_PROVIDER_PROFILE", "plugin-compat")
 	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "true")
 	serverAccounts, clientAccounts := t.TempDir(), t.TempDir()
 	t.Setenv("AI_CLI_DIR", serverAccounts)
@@ -42,6 +43,7 @@ func testProviderAuthenticationThroughTLS(t *testing.T, mode string) {
 	t.Setenv("AUTH_STATUS_ENDPOINT", "https://initial.invalid/v1")
 	writeFixture := func(path, who string) accounts.Entry {
 		t.Helper()
+		require.NoError(t, registrytest.Install(t.Context(), os.Getenv("CRUX_GLOBAL_DATA"), os.Getenv("CRUX_CACHE_DIR"), *registrytest.Provider("codex").Manifest))
 		entry := accounts.Entry{ID: who + "-account", DisplayName: who + " account", AccessToken: "synthetic-" + who + "-access", RefreshToken: "synthetic-" + who + "-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Raw: json.RawMessage(`{"private":"synthetic-raw"}`)}
 		require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, entry))
 		key, endpoint := "synthetic-"+who+"-key", "https://initial.invalid/v1"
@@ -49,7 +51,7 @@ func testProviderAuthenticationThroughTLS(t *testing.T, mode string) {
 			key = "$(printf x >> '" + expressionMarker + "'; printf synthetic-client-key)"
 			endpoint = "$AUTH_STATUS_ENDPOINT"
 		}
-		codex := map[string]any{"api_key": entry.AccessToken, "oauth": entry.Token(), "owner": map[string]any{"type": "core", "construction": "integrated-codex"}, "models": []map[string]string{{"id": "fixture", "name": "Fixture"}}}
+		codex := map[string]any{"api_key": entry.AccessToken, "oauth": entry.Token(), "plugin": map[string]any{"id": "test.codex", "version": "1.1.0"}, "owner": map[string]any{"type": "plugin", "construction": "integrated-codex", "compatibility_adapter": "integrated-codex"}, "models": []map[string]string{{"id": "fixture", "name": "Fixture"}}}
 		if who == "server" && mode == "server" {
 			// The positive logout case owns credentials in its writable scope.
 			// Inherited credentials are separately tested as a prewrite refusal.

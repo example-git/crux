@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/oauth/codex"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -104,7 +106,7 @@ func TestProviderClientFallsBackToConfiguredOpenAIAccount(t *testing.T) {
 }
 
 func TestConfiguredCodexAuthRejectsReplacementOwnerGeneration(t *testing.T) {
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup(codex.ID)
 	require.True(t, ok)
@@ -127,6 +129,7 @@ func TestConfiguredCodexAuthRejectsReplacementOwnerGeneration(t *testing.T) {
 		Providers: csync.NewMapFrom(map[string]config.ProviderConfig{codex.ID: replacementProvider}),
 	}, replacement)
 
+	replacementProvider, _ = currentStore.Config().Providers.Get(codex.ID)
 	_, configured, err := configuredCodexAuth(t.Context(), currentStore, snapshot)
 	require.True(t, configured)
 	require.ErrorContains(t, err, "changed")
@@ -137,7 +140,7 @@ func TestConfiguredCodexAuthRejectsReplacementOwnerGeneration(t *testing.T) {
 
 func TestConfiguredCodexAccountIDRejectsSameNamespaceForwardedOwner(t *testing.T) {
 	t.Setenv("AI_CLI_DIR", t.TempDir())
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup(codex.ID)
 	require.True(t, ok)
@@ -205,7 +208,7 @@ func TestConfiguredOpenAIAuthUsesOneSnapshotDuringStoreReplacement(t *testing.T)
 
 func TestProviderClientRejectsInactiveCapturedOwnerBeforePaidRequest(t *testing.T) {
 	t.Run("Codex generation fanout", func(t *testing.T) {
-		registry, err := providerregistry.New(providerregistry.Integrated()...)
+		registry, err := providerregistry.New(registrytest.Registrations()...)
 		require.NoError(t, err)
 		registration, ok := registry.Lookup(codex.ID)
 		require.True(t, ok)
@@ -220,8 +223,9 @@ func TestProviderClientRejectsInactiveCapturedOwnerBeforePaidRequest(t *testing.
 		auth, err := resolveConfiguredAuth(t.Context(), store)
 		require.NoError(t, err)
 		require.Equal(t, registration.Owner(), auth.owner)
+		provider, _ = store.Config().Providers.Get(codex.ID)
 		provider.Disable = true
-		require.NoError(t, store.ApplyEphemeralProviderState(map[string]config.ProviderConfig{codex.ID: provider}, nil))
+		store.Config().Providers.Set(codex.ID, provider)
 
 		var requests atomic.Int32
 		client := NewClient()
@@ -301,7 +305,11 @@ func TestProviderClientRejectsSameIDOwnedCredentials(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			store := config.NewTestStore(&config.Config{Providers: csync.NewMapFrom(providers)})
 			_, err := NewProviderClient(store).Generate(t.Context(), GenerateRequest{Prompt: "masked account", N: 1})
-			require.ErrorIs(t, err, ErrNoConfiguredCredentials)
+			if strings.HasPrefix(name, "codex") {
+				require.ErrorIs(t, err, errUnsupportedCodexBundle)
+			} else {
+				require.ErrorIs(t, err, ErrNoConfiguredCredentials)
+			}
 		})
 	}
 }

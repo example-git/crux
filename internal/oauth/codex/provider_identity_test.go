@@ -11,6 +11,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/codex"
 	"github.com/example-git/crux/internal/oauth/useragent"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -21,7 +22,7 @@ func (f identityNoHTTP) RoundTrip(r *http.Request) (*http.Response, error) { ret
 func TestLegacyCodexIdentityKeepsExistingHeaderValues(t *testing.T) {
 	t.Setenv("CODEX_VERSION", strings.Repeat("1", 129))
 	t.Setenv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", strings.Repeat("o", 257))
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("codex")
 	require.True(t, ok)
@@ -43,7 +44,7 @@ func TestLegacyCodexPreflightDoesNotDiscoverIdentity(t *testing.T) {
 		return nil, errors.New("unexpected identity discovery")
 	})}
 	t.Cleanup(func() { http.DefaultClient = original })
-	_, err := codex.NewProvider("", nil, nil, nil, nil, nil, nil, nil, nil)
+	_, err := codex.NewProvider("wss://codex-inference.example.invalid/responses", nil, nil, nil, nil, nil, nil, nil, nil)
 	require.ErrorContains(t, err, "owner validator")
 	require.Zero(t, requests.Load())
 	// General OAuth context helpers preserve existing printable overrides too;

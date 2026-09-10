@@ -13,6 +13,7 @@ import (
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/example-git/crux/internal/workspace"
@@ -57,7 +58,7 @@ func (w *importingTestWorkspace) LSPGetStates() map[string]workspace.LSPClientIn
 func newImportTestUI(t *testing.T) (*UI, *importingTestWorkspace, dialog.ActionSelectModel, func() *config.Config) {
 	t.Helper()
 	var registration providerregistry.Registration
-	for _, value := range providerregistry.Integrated() {
+	for _, value := range registrytest.Registrations() {
 		if value.ProviderID == "copilot" {
 			registration = value
 			break

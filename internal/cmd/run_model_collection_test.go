@@ -7,17 +7,19 @@ import (
 
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 )
 
 func TestRunModelFlagsApplyBeforeInitialClientCollection(t *testing.T) {
 	t.Setenv("AI_CLI_DIR", t.TempDir())
-	t.Setenv("CRUX_PROVIDER_PROFILE", "integrated")
+	t.Setenv("CRUX_PROVIDER_PROFILE", "plugin-compat")
 	for _, key := range []string{"HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "CRUX_GLOBAL_CONFIG", "CRUX_GLOBAL_DATA", "CRUX_CACHE_DIR"} {
 		t.Setenv(key, t.TempDir())
 	}
-	data := []byte(`{"providers":{"codex":{"api_key":"synthetic-unselected-token","owner":{"type":"core","construction":"integrated-codex"},"models":[{"id":"fixture","name":"Fixture"}]},"chosen":{"owner":{"type":"custom","construction":"openai-compat"},"type":"openai-compat","api_key":"synthetic-chosen","base_url":"https://chosen.invalid/v1","models":[{"id":"flag","name":"Flag"},{"id":"tiny","name":"Tiny"}]}},"models":{"large":{"provider":"codex","model":"fixture"},"small":{"provider":"codex","model":"fixture"}}}`)
+	require.NoError(t, registrytest.Install(t.Context(), os.Getenv("CRUX_GLOBAL_DATA"), os.Getenv("CRUX_CACHE_DIR"), *registrytest.Provider("codex").Manifest))
+	data := []byte(`{"providers":{"codex":{"api_key":"synthetic-unselected-token","plugin":{"id":"test.codex","version":"1.1.0"},"owner":{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"},"models":[{"id":"fixture","name":"Fixture"}]},"chosen":{"owner":{"type":"custom","construction":"openai-compat"},"type":"openai-compat","api_key":"synthetic-chosen","base_url":"https://chosen.invalid/v1","models":[{"id":"flag","name":"Flag"},{"id":"tiny","name":"Tiny"}]}},"models":{"large":{"provider":"codex","model":"fixture"},"small":{"provider":"codex","model":"fixture"}}}`)
 	path := config.GlobalConfigData()
 	require.NoError(t, os.WriteFile(path, data, 0600))
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, accounts.Entry{ID: "other", AccessToken: "synthetic-unselected-active"}))

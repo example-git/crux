@@ -17,7 +17,7 @@ func TestClientNativeUsageKeepsAcceptedIdentityAcrossReplacement(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	nativeIdentityTLS(t, func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/backend-api/wham/usage", r.URL.Path)
+		require.Equal(t, "/quota", r.URL.Path)
 		headers <- r.Header.Clone()
 		if calls.Add(1) == 1 {
 			close(entered)

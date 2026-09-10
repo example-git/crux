@@ -143,6 +143,9 @@ func (snapshot RuntimeSnapshot) prepareNativeIdentities(ctx context.Context) err
 		}
 	}
 	for id := range selected {
+		if snapshot.config.providerLoadIssue(id) != nil {
+			continue
+		}
 		_, owner, err := snapshot.clientProviderDefinitionRaw(id)
 		if err != nil {
 			return err

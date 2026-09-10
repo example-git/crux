@@ -68,6 +68,7 @@ func TestCopilotIdentityCLI(t *testing.T) {
 
 func TestCodexUserAgentShape(t *testing.T) {
 	t.Setenv("CODEX_VERSION", "7.7.7")
+	t.Setenv("CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "codex_cli_rs")
 	ua := Codex()
 	if !strings.HasPrefix(ua, "codex_cli_rs/7.7.7 (") || !strings.Contains(ua, "; ") {
 		t.Fatalf("unexpected UA: %q", ua)

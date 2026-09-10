@@ -175,6 +175,9 @@ func (o RegistrationOwner) Matches(registration Registration) bool {
 
 // Registration is one immutable logical provider capability registration.
 type Registration struct {
+	Codex                *codex.Client
+	Gemini               *gemini.Client
+	ImageEndpoint        *manifest.Endpoint
 	ProviderID           string
 	Name                 string
 	Brand                *Brand
@@ -208,6 +211,18 @@ type Registration struct {
 // mappings held by the active registry. Shallow copies here create cross-client
 // behavior changes that are extremely difficult to attribute to a plugin.
 func (r Registration) Clone() Registration {
+	if r.Codex != nil {
+		value := cloneJSON(*r.Codex)
+		r.Codex = &value
+	}
+	if r.Gemini != nil {
+		value := cloneJSON(*r.Gemini)
+		r.Gemini = &value
+	}
+	if r.ImageEndpoint != nil {
+		value := cloneJSON(*r.ImageEndpoint)
+		r.ImageEndpoint = &value
+	}
 	if r.AnthropicEfficiency != nil {
 		value := *r.AnthropicEfficiency
 		r.AnthropicEfficiency = &value
@@ -411,9 +426,13 @@ func (r *Registry) Clone() *Registry {
 	return result
 }
 
-// Integrated returns the current core-owned compatibility registrations.
-// Copilot remains core-owned because codebase indexing depends on it.
+// Integrated returns host adapter descriptors. Only Copilot can activate without
+// a manifest; Codex and Gemini descriptors reserve their delegated constructions.
 func Integrated() []Registration {
+	return integratedAdapters(codex.Client{}, gemini.Client{})
+}
+
+func integratedAdapters(codexClient codex.Client, geminiClient gemini.Client) []Registration {
 	return []Registration{
 		{
 			ProviderID: gemini.ID, Name: gemini.Name,
@@ -424,17 +443,17 @@ func Integrated() []Registration {
 			Reasoning: &ReasoningCapability{FallbackOnUnsupported: true, Options: geminiReasoningOptions, Disable: disableGeminiReasoning},
 			OAuth: &OAuthCapability{
 				Adapter: LoginHostedPaste, FlowID: "gemini-antigravity",
-				Callback: new(gemini.CallbackRequirement()), PrepareCode: gemini.PrepareCode,
+				Callback: new(gemini.CallbackRequirement()), PrepareCode: geminiClient.PrepareCode,
 				Authorize: func(ctx context.Context, open OpenURL, read ReadCode) (*oauth.Token, error) {
 					if read == nil {
 						return nil, fmt.Errorf("provider %s requires pasted authorization input", gemini.ID)
 					}
-					return gemini.Authorize(ctx, open, read)
+					return geminiClient.Authorize(ctx, open, read)
 				},
-				Refresh: gemini.Refresh,
+				Refresh: geminiClient.Refresh,
 			},
 			Identity: func(ctx context.Context, accessToken string) (string, string, json.RawMessage) {
-				email := gemini.AccountEmail(ctx, accessToken)
+				email := geminiClient.AccountEmail(ctx, accessToken)
 				return email, email, nil
 			},
 		},
@@ -447,17 +466,17 @@ func Integrated() []Registration {
 			Instructions:    integratedInstructions("native", codex.StandardToolingInstructions()),
 			RuntimeControls: codexRuntimeControls(), Runtime: codexRuntimeCapability(),
 			Reasoning: &ReasoningCapability{FallbackOnUnsupported: true, Options: codexReasoningOptions, Disable: disableCodexReasoning},
-			Quota:     oauthusage.FetchCodex,
+
 			OAuth: &OAuthCapability{
 				Adapter: LoginBrowser, FlowID: "codex",
-				Callback: new(codex.CallbackRequirement()), PrepareCode: codex.PrepareCode,
+				Callback: new(codex.CallbackRequirement()), PrepareCode: codexClient.PrepareCode,
 				Authorize: func(ctx context.Context, open OpenURL, _ ReadCode) (*oauth.Token, error) {
-					return codex.Authorize(ctx, open)
+					return codexClient.Authorize(ctx, open)
 				},
-				Refresh: codex.RefreshToken,
+				Refresh: codexClient.RefreshToken,
 			},
 			Identity: func(ctx context.Context, accessToken string) (string, string, json.RawMessage) {
-				email := codex.AccountEmail(ctx, accessToken)
+				email := codexClient.AccountEmail(ctx, accessToken)
 				accountID := codex.AccountID(accessToken)
 				id := email
 				if id == "" {
@@ -722,9 +741,20 @@ func FromManifest(value manifest.Manifest, staticFiles ...map[string]string) (Re
 // not wholesale replace the plugin registration or infer delegation: undeclared
 // manifest operation and identity policy must remain plugin-owned.
 func attachCompatibilityAdapter(registration *Registration, declaration manifest.CompatibilityAdapter) error {
+	if err := bindCompatibilityEndpoints(registration, declaration); err != nil {
+		return err
+	}
+	var codexClient codex.Client
+	var geminiClient gemini.Client
+	if registration.Codex != nil {
+		codexClient = cloneJSON(*registration.Codex)
+	}
+	if registration.Gemini != nil {
+		geminiClient = cloneJSON(*registration.Gemini)
+	}
 	adapterID := Construction(declaration.ID)
 	var adapter *Registration
-	for _, candidate := range Integrated() {
+	for _, candidate := range integratedAdapters(codexClient, geminiClient) {
 		if candidate.Construction == adapterID {
 			value := candidate
 			adapter = &value
@@ -746,25 +776,22 @@ func attachCompatibilityAdapter(registration *Registration, declaration manifest
 		case "construction":
 			registration.Construction = adapter.Construction
 		case "oauth":
-			if registration.OAuth == nil || adapter.OAuth == nil {
-				return fmt.Errorf("provider %q delegates OAuth without both a declaration and adapter", registration.ProviderID)
+			// The compiled manifest flow owns endpoints, scopes, client credentials,
+			// redirect and request/response policy for delegated constructions too.
+			if registration.OAuth == nil {
+				return fmt.Errorf("provider %q delegates OAuth without a declaration", registration.ProviderID)
 			}
-			registration.OAuth.Adapter = adapter.OAuth.Adapter
-			registration.OAuth.Callback = nil
-			if adapter.OAuth.Callback != nil {
-				callback := *adapter.OAuth.Callback
-				registration.OAuth.Callback = &callback
-			}
-			registration.OAuth.PrepareCode = adapter.OAuth.PrepareCode
-			registration.OAuth.Authorize = adapter.OAuth.Authorize
-			registration.OAuth.Import = adapter.OAuth.Import
-			registration.OAuth.RequestDeviceCode = adapter.OAuth.RequestDeviceCode
-			registration.OAuth.PollDeviceCode = adapter.OAuth.PollDeviceCode
-			registration.OAuth.Refresh = adapter.OAuth.Refresh
 		case "identity":
 			registration.Identity = adapter.Identity
 		case "usage":
-			registration.Quota = adapter.Quota
+			if registration.Usage == nil {
+				return fmt.Errorf("delegated usage requires a manifest usage operation")
+			}
+			fetcher, err := oauthusage.CodexFetcher(registration.Operations[registration.Usage.Operation])
+			if err != nil {
+				return err
+			}
+			registration.Quota = fetcher
 		case "runtime":
 			registration.Runtime = adapter.Runtime
 		case "reasoning":

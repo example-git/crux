@@ -18,6 +18,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/oauth/gemini"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
@@ -61,7 +62,7 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 				assert.Equal(t, expectedIdentity.Load().(string), r.Header.Get("User-Agent"))
 				assert.NotNil(t, r.TLS, "native inference and metadata must use the HTTPS fixture")
 				w.Header().Set("Content-Type", "application/json")
-				if strings.HasSuffix(r.URL.Path, ":loadCodeAssist") {
+				if r.URL.Path == "/project" {
 					lookups.Add(1)
 					if mode == "missing-metadata" {
 						_, _ = w.Write([]byte(`{}`))
@@ -87,7 +88,7 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 			http.DefaultClient = &http.Client{Transport: clientProjectRoundTrip(func(r *http.Request) (*http.Response, error) {
 				// Only the fixed metadata endpoint is redirected in this fixture. Every
 				// request still executes over the disposable HTTPS connection.
-				if strings.HasSuffix(r.URL.Path, ":loadCodeAssist") {
+				if r.URL.Path == "/project" {
 					copy := r.Clone(r.Context())
 					target := *r.URL
 					target.Scheme, target.Host = local.Scheme, local.Host
@@ -98,7 +99,7 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 				return transport.RoundTrip(r)
 			})}
 			defer func() { http.DefaultClient = previous }()
-			registry, err := providerregistry.New(providerregistry.Integrated()...)
+			registry, err := providerregistry.New(registrytest.Registrations()...)
 			require.NoError(t, err)
 			registration, ok := registry.Lookup(gemini.ID)
 			require.True(t, ok)

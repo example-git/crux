@@ -18,6 +18,7 @@ import (
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/workspace"
@@ -43,7 +44,7 @@ func (w *authenticationSDKUIWorkspace) UpdateAgentModel(context.Context, config.
 // acceptance tests, not asserted by this UI fixture.
 func TestAuthenticationUIThroughWorkspaceSDKSwitchAndLogout(t *testing.T) {
 	root := t.TempDir()
-	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": "integrated", "CRUX_DISABLE_AUTO_MEMORY": "true"}
+	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": "plugin-compat", "CRUX_DISABLE_AUTO_MEMORY": "true"}
 	t.Setenv("AI_CLI_DIR", values["AI_CLI_DIR"])
 	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_DATA"], 0700))
 	first := accounts.Entry{ID: "first", DisplayName: "First", AccessToken: "synthetic-first", RefreshToken: "synthetic-refresh-first", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
@@ -52,6 +53,11 @@ func TestAuthenticationUIThroughWorkspaceSDKSwitchAndLogout(t *testing.T) {
 	require.NoError(t, accounts.SaveWithoutActivating(t.Context(), accounts.ProviderCodex, second))
 	models := map[string]any{"large": map[string]any{"provider": "codex", "model": "retained-main", "max_tokens": 123}, "small": map[string]any{"provider": "codex", "model": "retained-main", "max_tokens": 45}}
 	document := map[string]any{"providers": map[string]any{"codex": map[string]any{"api_key": first.AccessToken, "oauth": first.Token(), "models": []map[string]any{{"id": "retained-main", "name": "Retained Main", "context_window": 8192, "default_max_tokens": 1024}}}}, "models": models}
+	registration := registrytest.Provider("codex")
+	require.NoError(t, registrytest.Install(t.Context(), values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"], *registration.Manifest))
+	provider := document["providers"].(map[string]any)["codex"].(map[string]any)
+	provider["plugin"] = &config.ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+	provider["owner"] = &config.ProviderOwnerReference{Type: config.ProviderOwnerPlugin, Construction: registration.Construction, CompatibilityAdapter: registration.CompatibilityAdapter}
 	data, err := json.Marshal(document)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json"), data, 0600))

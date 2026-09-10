@@ -30,6 +30,15 @@ func (c *Common) Config() *config.Config {
 	return c.Workspace.Config()
 }
 
+func (c *Common) ProviderLoadIssues() []config.ProviderLoadIssue {
+	if source, ok := c.Workspace.(interface {
+		ProviderLoadIssues() []config.ProviderLoadIssue
+	}); ok {
+		return source.ProviderLoadIssues()
+	}
+	return c.Config().ProviderLoadIssues()
+}
+
 func (c *Common) SetupAgents() {
 	workspace, ok := c.Workspace.(interface {
 		Store() *config.ConfigStore

@@ -12,6 +12,7 @@ import (
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -140,6 +141,7 @@ func remoteRuntimeFixture(t *testing.T, name string) RemoteRuntimeProposal {
 }
 
 func sealRemoteRuntime(t *testing.T, proposal RemoteRuntimeProposal) RemoteRuntimeProposal {
+	bindNativeTestBundles(t, &proposal)
 	t.Helper()
 	digest, err := RemoteRuntimeDigest(proposal)
 	require.NoError(t, err)
@@ -250,4 +252,28 @@ func TestRemoteRuntimeExplicitMissingCredential(t *testing.T) {
 	store, err := CompileRemoteRuntime(root, filepath.Join(root, "data"), false, proposal, strings.Repeat("a", 64), SnapshotEnvironment())
 	require.NoError(t, err)
 	require.ErrorContains(t, store.RuntimeSnapshot().ClientProviderUnavailable(proposal.Providers[0].Config.ID), "has no credential")
+}
+
+// bindNativeTestBundles makes the fixture's provider authority explicit before
+// sealing its remote digest. Existing plugin/custom proposals are unchanged.
+func bindNativeTestBundles(t *testing.T, proposal *RemoteRuntimeProposal) {
+	t.Helper()
+	for i := range proposal.Providers {
+		definition := &proposal.Providers[i]
+		p := &definition.Config
+		if p.Owner == nil || p.Owner.Type != ProviderOwnerCore || (p.ID != "codex" && p.ID != "gemini-ag") {
+			continue
+		}
+		registration, bundle, err := registrytest.BundleFor(p.ID, p.BaseURL, p.Models)
+		require.NoError(t, err)
+		p.Plugin = &ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+		p.Owner = &ProviderOwnerReference{Type: ProviderOwnerPlugin, Construction: registration.Construction, CompatibilityAdapter: registration.CompatibilityAdapter}
+		definition.BundleDigest = bundle.Digest
+		proposal.Bundles = append(proposal.Bundles, bundle)
+		for j := range proposal.Credentials {
+			if proposal.Credentials[j].Owner.ProviderID == p.ID {
+				proposal.Credentials[j].Owner = registration.Owner()
+			}
+		}
+	}
 }

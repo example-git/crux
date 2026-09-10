@@ -6283,6 +6283,23 @@ const docTemplate = `{
                 }
             }
         },
+        "config.ProviderLoadIssue": {
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string"
+                },
+                "plugin_id": {
+                    "type": "string"
+                },
+                "provider_id": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
         "config.ProviderOwnerReference": {
             "type": "object",
             "properties": {
@@ -6402,6 +6419,20 @@ const docTemplate = `{
                 }
             }
         },
+        "config.RemoteCodebaseIndex": {
+            "type": "object",
+            "properties": {
+                "access_token": {
+                    "type": "string"
+                },
+                "credential_invalid": {
+                    "type": "boolean"
+                },
+                "settings": {
+                    "$ref": "#/definitions/config.ToolCodebaseSearch"
+                }
+            }
+        },
         "config.RemoteCredentialBinding": {
             "type": "object",
             "properties": {
@@ -6482,6 +6513,9 @@ const docTemplate = `{
                 },
                 "native_identity": {
                     "$ref": "#/definitions/config.NativeIdentity"
+                },
+                "unloaded": {
+                    "$ref": "#/definitions/config.ProviderLoadIssue"
                 }
             }
         },
@@ -6528,6 +6562,9 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/providerplugin.TransportBundle"
                     }
+                },
+                "codebase_index": {
+                    "$ref": "#/definitions/config.RemoteCodebaseIndex"
                 },
                 "controls": {
                     "$ref": "#/definitions/config.RemoteRuntimeControls"
@@ -6946,6 +6983,12 @@ const docTemplate = `{
                         "items": {
                             "$ref": "#/definitions/config.SelectedModel"
                         }
+                    }
+                },
+                "remote_codebase_indexes": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "$ref": "#/definitions/config.ToolCodebaseSearch"
                     }
                 },
                 "tools": {
@@ -7601,6 +7644,12 @@ const docTemplate = `{
                 },
                 "path": {
                     "type": "string"
+                },
+                "provider_load_issues": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/config.ProviderLoadIssue"
+                    }
                 },
                 "provider_surfaces": {
                     "description": "ProviderSurfaces is the execution host's redacted registry-generated\nprovider presentation metadata.",
@@ -8642,6 +8691,9 @@ const docTemplate = `{
         "proto.RemoteRuntimeCapabilities": {
             "type": "object",
             "properties": {
+                "codebase_index": {
+                    "type": "boolean"
+                },
                 "compiler": {
                     "type": "string"
                 },
@@ -8969,6 +9021,12 @@ const docTemplate = `{
                 },
                 "path": {
                     "type": "string"
+                },
+                "provider_load_issues": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/config.ProviderLoadIssue"
+                    }
                 },
                 "provider_surfaces": {
                     "description": "ProviderSurfaces is the execution host's redacted registry-generated\nprovider presentation metadata.",

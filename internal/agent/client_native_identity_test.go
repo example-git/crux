@@ -21,6 +21,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -100,7 +101,7 @@ func TestClientCodexNativeIdentityWSS(t *testing.T) {
 				identity = config.NativeIdentity{UserAgent: "codex_cli_rs/0.146.0 (client-os client-release; client-arch) unknown", Version: "0.146.0", Originator: "codex_cli_rs"}
 			}
 			nextIdentity := config.NativeIdentity{UserAgent: "next_owner/7.8.9 (next-os next-release; next-arch) next-terminal", Version: "7.8.9", Originator: "next_owner"}
-			registry, err := providerregistry.New(providerregistry.Integrated()...)
+			registry, err := providerregistry.New(registrytest.Registrations()...)
 			require.NoError(t, err)
 			registration, ok := registry.Lookup("codex")
 			require.True(t, ok)

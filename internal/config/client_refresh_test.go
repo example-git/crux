@@ -11,12 +11,13 @@ import (
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
 func clientRefreshRuntimeFixture(t *testing.T) (*ConfigStore, RemoteRuntimeProposal) {
 	t.Helper()
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("codex")
 	require.True(t, ok)
@@ -119,6 +120,15 @@ func TestClientRefreshCompletionRejectsChangedProviderDefinition(t *testing.T) {
 			proposal.Credentials[0].Account = &fresh
 			if field == "endpoint" {
 				proposal.Providers[0].Config.BaseURL = "wss://changed.invalid/responses"
+				_, bundle, bindErr := registrytest.BundleFor("codex", proposal.Providers[0].Config.BaseURL, proposal.Providers[0].Config.Models)
+				require.NoError(t, bindErr)
+				oldDigest := proposal.Providers[0].BundleDigest
+				for i := range proposal.Bundles {
+					if proposal.Bundles[i].Digest == oldDigest {
+						proposal.Bundles[i] = bundle
+					}
+				}
+				proposal.Providers[0].BundleDigest = bundle.Digest
 			} else {
 				proposal.Providers[0].Config.ExtraHeaders = map[string]string{"X-Workspace-Policy": "changed"}
 			}

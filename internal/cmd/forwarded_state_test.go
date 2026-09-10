@@ -14,6 +14,7 @@ import (
 	"github.com/example-git/crux/internal/connection"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/server"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
@@ -116,7 +117,7 @@ func TestRemoteConnectionWithShortCredential(t *testing.T) {
 
 func TestCollectedRuntimeIncludesOnlySelectedCanonicalAccount(t *testing.T) {
 	t.Setenv("AI_CLI_DIR", t.TempDir())
-	t.Setenv("CRUX_PROVIDER_PROFILE", "integrated")
+	t.Setenv("CRUX_PROVIDER_PROFILE", "plugin-compat")
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -126,15 +127,17 @@ func TestCollectedRuntimeIncludesOnlySelectedCanonicalAccount(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("CRUX_GLOBAL_DATA", dataDir)
 	t.Setenv("CRUX_GLOBAL_CONFIG", t.TempDir())
+	t.Setenv("CRUX_CACHE_DIR", t.TempDir())
+	require.NoError(t, registrytest.Install(t.Context(), dataDir, os.Getenv("CRUX_CACHE_DIR"), *registrytest.Provider("codex").Manifest))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dataDir, "crux.json"),
-		[]byte(`{"providers":{"codex":{"api_key":"account-secret","owner":{"type":"core","construction":"integrated-codex"},"models":[{"id":"fixture-model","name":"Fixture"}]}},"models":{"large":{"provider":"codex","model":"fixture-model"},"small":{"provider":"codex","model":"fixture-model"}}}`),
+		[]byte(`{"providers":{"codex":{"api_key":"account-secret","plugin":{"id":"test.codex","version":"1.1.0"},"owner":{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"},"models":[{"id":"fixture-model","name":"Fixture"}]}},"models":{"large":{"provider":"codex","model":"fixture-model"},"small":{"provider":"codex","model":"fixture-model"}}}`),
 		0o600,
 	))
 
 	proposal, err := collectRemoteProviderState(t.Context(), false, 1)
 	require.NoError(t, err)
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("codex")
 	require.True(t, ok)

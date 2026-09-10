@@ -116,6 +116,9 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 	for _, model := range proposal.Models {
 		selected[model.Provider] = true
 	}
+	for _, issue := range cfg.ProviderLoadIssues() {
+		selected[issue.ProviderID] = true
+	}
 	wantedBundles := make(map[string]bool)
 	if proposal.Images != nil {
 		for _, owner := range proposal.Images.Preferred {
@@ -130,6 +133,11 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 	}
 	for _, id := range slices.Sorted(maps.Keys(selected)) {
 		provider, ok := cfg.authenticationCollectionProvider(id)
+		if issue := cfg.providerLoadIssue(id); issue != nil {
+			provider.ID = id
+			proposal.Providers = append(proposal.Providers, RemoteProviderDefinition{Config: unloadedProviderConfig(provider), Unloaded: issue})
+			continue
+		}
 		if !ok {
 			return proposal, fmt.Errorf("selected client provider %q is unavailable", id)
 		}

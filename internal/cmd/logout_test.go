@@ -22,7 +22,7 @@ func TestLogoutCmd_HasForceFlag(t *testing.T) {
 }
 
 func TestLogoutCmd_ValidArgs(t *testing.T) {
-	t.Parallel()
+	initializeProviderCompletions()
 
 	validPlatforms := map[string]bool{}
 	for _, p := range logoutCmd.ValidArgs {

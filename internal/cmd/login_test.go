@@ -9,6 +9,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/require"
 )
@@ -56,7 +57,7 @@ func (w *commandLoginStatusWorkspace) ImportCopilot(context.Context, providerreg
 func newCommandLoginStatusWorkspace(t *testing.T) *commandLoginStatusWorkspace {
 	t.Helper()
 	var owner providerregistry.RegistrationOwner
-	for _, registration := range providerregistry.Integrated() {
+	for _, registration := range registrytest.Registrations() {
 		if registration.ProviderID == "copilot" {
 			owner = registration.Owner()
 			break

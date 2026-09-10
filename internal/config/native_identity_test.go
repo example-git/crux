@@ -32,7 +32,7 @@ func nativeIdentityTLS(t *testing.T, handler http.HandlerFunc) *httptest.Server 
 	t.Cleanup(server.Close)
 	target, err := url.Parse(server.URL)
 	require.NoError(t, err)
-	original := http.DefaultClient
+	original, originalTransport := http.DefaultClient, http.DefaultTransport
 	http.DefaultClient = &http.Client{Transport: nativeIdentityTransport(func(r *http.Request) (*http.Response, error) {
 		copy := r.Clone(r.Context())
 		address := *r.URL
@@ -40,7 +40,8 @@ func nativeIdentityTLS(t *testing.T, handler http.HandlerFunc) *httptest.Server 
 		copy.URL = &address
 		return server.Client().Transport.RoundTrip(copy)
 	})}
-	t.Cleanup(func() { http.DefaultClient = original })
+	http.DefaultTransport = http.DefaultClient.Transport
+	t.Cleanup(func() { http.DefaultClient = original; http.DefaultTransport = originalTransport })
 	return server
 }
 

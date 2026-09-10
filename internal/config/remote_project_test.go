@@ -25,7 +25,7 @@ func TestCollectRemoteGeminiProjectUsesCapturedEnvironment(t *testing.T) {
 	selected := SelectedModel{Provider: gemini.ID, Model: "fixture"}
 	cfg := &Config{Providers: csync.NewMap[string, ProviderConfig](), Models: map[SelectedModelType]SelectedModel{SelectedModelTypeLarge: selected, SelectedModelTypeSmall: selected}}
 	cfg.setDefaults(t.TempDir(), t.TempDir())
-	cfg.Providers.Set(gemini.ID, ProviderConfig{ID: gemini.ID, APIKey: "synthetic-access", BaseURL: gemini.APIEndpoint, Type: catalog.TypeOpenAICompat,
+	cfg.Providers.Set(gemini.ID, ProviderConfig{ID: gemini.ID, APIKey: "synthetic-access", BaseURL: "https://gemini-ag-cloud-code.example.invalid/cloud-code", Type: catalog.TypeOpenAICompat,
 		Owner: &ProviderOwnerReference{Type: ProviderOwnerCore, Construction: providerregistry.ConstructionGeminiAntigravity}, Models: []catalog.Model{{ID: selected.Model, Name: "Fixture"}},
 	})
 	store := NewTestStore(cfg)
@@ -118,6 +118,7 @@ func TestCollectRemoteGeminiProjectPreservesCompatibilityPluginSchema(t *testing
 		Owner: providerOwnerReferenceForRegistration(registered), Plugin: &ProviderPluginReference{ID: registered.Manifest.ID, Version: registered.Manifest.Version},
 	})
 	cfg.bindProviderScan(scan)
+	require.NoError(t, accounts.Save(t.Context(), registered.AccountNamespace, accounts.Entry{ID: "fixture", AccessToken: "synthetic-key"}))
 	store := NewTestStore(cfg)
 	proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
 	require.NoError(t, err)

@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/oauth/accounts"
-	"github.com/example-git/crux/internal/oauth/codex"
-	"github.com/example-git/crux/internal/oauth/gemini"
 	"github.com/example-git/crux/internal/providerregistry"
 )
 
@@ -278,13 +276,6 @@ func (c AuthenticationCapture) ValidateAcceptedAuthentication(accepted RemoteRun
 			wanted, _, err = source.runtime.clientProviderDefinitionRaw(transported.Config.ID)
 			if err != nil {
 				return pending
-			}
-		} else if current.Config.BaseURL == "" && current.Config.Owner != nil && current.Config.Owner.Type == ProviderOwnerCore {
-			switch current.Config.Owner.Construction {
-			case providerregistry.ConstructionCodex:
-				current.Config.BaseURL = codex.APIEndpoint
-			case providerregistry.ConstructionGeminiAntigravity:
-				current.Config.BaseURL = gemini.APIEndpoint
 			}
 		}
 		if transported.Config.Owner != nil && nativeConstruction(transported.Config.Owner.Construction) {

@@ -20,12 +20,12 @@ func authenticationFixture(t *testing.T) (*config.ConfigStore, providerregistry.
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("AI_CLI_DIR", root)
-	registration := providerregistry.Registration{ProviderID: "codex", AccountNamespace: "private-fixture-namespace", Construction: providerregistry.ConstructionCodex, OAuth: &providerregistry.OAuthCapability{}}
+	registration := providerregistry.Registration{ProviderID: "copilot", AccountNamespace: "private-fixture-namespace", Construction: providerregistry.ConstructionCopilot, OAuth: &providerregistry.OAuthCapability{}}
 	entry := accounts.Entry{ID: "account-one", DisplayName: "Account One", AccessToken: "synthetic-private-access", RefreshToken: "synthetic-private-refresh", ExpiresAt: time.Now().Add(-time.Hour).UnixMilli(), Raw: json.RawMessage(`{"private":"synthetic-private-raw"}`)}
 	require.NoError(t, accounts.Save(t.Context(), registration.AccountNamespace, entry))
-	cfg := &config.Config{Options: &config.Options{DataDirectory: filepath.Join(root, "data")}, Providers: csync.NewMapFrom(map[string]config.ProviderConfig{"codex": {ID: "codex", APIKey: entry.AccessToken, OAuthToken: entry.Token()}})}
+	cfg := &config.Config{Options: &config.Options{DataDirectory: filepath.Join(root, "data")}, Providers: csync.NewMapFrom(map[string]config.ProviderConfig{"copilot": {ID: "copilot", APIKey: entry.AccessToken, OAuthToken: entry.Token()}})}
 	store := config.NewTestStoreWithRegistrations(cfg, registration)
-	owner, ok := store.RuntimeSnapshot().ProviderOwner("codex")
+	owner, ok := store.RuntimeSnapshot().ProviderOwner("copilot")
 	require.True(t, ok)
 	require.Equal(t, registration.AccountNamespace, owner.AccountNamespace)
 	return store, owner, entry, root
@@ -131,12 +131,12 @@ func TestAuthenticationServiceUnconfiguredDisabledAndExpression(t *testing.T) {
 	second, err := service.Status(t.Context())
 	require.NoError(t, err)
 	require.Greater(t, second.Generation.Sequence, first.Generation.Sequence)
-	registration := providerregistry.Registration{ProviderID: "codex", AccountNamespace: owner.AccountNamespace, Construction: providerregistry.ConstructionCodex, OAuth: &providerregistry.OAuthCapability{}}
+	registration := providerregistry.Registration{ProviderID: "copilot", AccountNamespace: owner.AccountNamespace, Construction: providerregistry.ConstructionCopilot, OAuth: &providerregistry.OAuthCapability{}}
 	unconfigured := config.NewTestStoreWithRegistrations(&config.Config{}, registration)
 	unconfiguredStatus, err := New(unconfigured, "unconfigured").Status(t.Context())
 	require.NoError(t, err)
-	require.False(t, statusFor(t, unconfiguredStatus, "codex").Configured)
-	require.Equal(t, "out-of-sync", statusFor(t, unconfiguredStatus, "codex").AccountState)
+	require.False(t, statusFor(t, unconfiguredStatus, "copilot").Configured)
+	require.Equal(t, "out-of-sync", statusFor(t, unconfiguredStatus, "copilot").AccountState)
 	marker := filepath.Join(t.TempDir(), "must-not-run")
 	expression := "$(touch " + marker + ")"
 	expr := config.NewTestStore(&config.Config{Providers: csync.NewMapFrom(map[string]config.ProviderConfig{"custom": {ID: "custom", APIKey: expression, Disable: true}})})

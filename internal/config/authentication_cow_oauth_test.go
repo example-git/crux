@@ -16,21 +16,26 @@ import (
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/sjson"
 )
 
 func authenticationCOWOAuthStore(t *testing.T, providerID string) (*ConfigStore, providerregistry.RegistrationOwner, accounts.Entry) {
 	t.Helper()
 	root := t.TempDir()
-	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfileIntegrated)}
+	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginCompat)}
 	t.Setenv("AI_CLI_DIR", values["AI_CLI_DIR"])
 	for _, dir := range []string{"config", "data", "project"} {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0o700))
 	}
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup(providerID)
 	require.True(t, ok)
+	if registration.Manifest != nil {
+		require.NoError(t, registrytest.Install(t.Context(), values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"], *registration.Manifest))
+	}
 	entry := accounts.Entry{ID: "selected", AccessToken: "synthetic-old", RefreshToken: "synthetic-old-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Raw: json.RawMessage(`{"account_id":"retained-account"}`)}
 	credentials := map[string]any{}
 	if providerID == "codex" {
@@ -39,6 +44,10 @@ func authenticationCOWOAuthStore(t *testing.T, providerID string) (*ConfigStore,
 	}
 	source, err := json.Marshal(map[string]any{"providers": map[string]any{providerID: map[string]any{"owner": providerOwnerReferenceForRegistration(registration), "models": []map[string]any{{"id": "gpt-5.6"}}}}, "models": map[string]any{"large": map[string]any{"provider": providerID, "model": "gpt-5.6"}, "small": map[string]any{"provider": providerID, "model": "gpt-5.6"}}})
 	require.NoError(t, err)
+	if registration.Manifest != nil {
+		source, err = sjson.SetBytes(source, "providers."+providerID+".plugin", ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version})
+		require.NoError(t, err)
+	}
 	require.NoError(t, os.WriteFile(filepath.Join(root, "config", "crux.json"), source, 0o600))
 	data, err := json.Marshal(map[string]any{"providers": map[string]any{providerID: credentials}, "foreign": json.RawMessage(`9007199254740993`)})
 	require.NoError(t, err)

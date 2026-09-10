@@ -22,6 +22,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/redact"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -475,9 +476,9 @@ func TestCreateWorkspaceRejectsInvalidForwardedAccountOwnerBeforePublication(t *
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
-	registration, ok := registry.Lookup("codex")
+	registration, ok := registry.Lookup("copilot")
 	require.True(t, ok)
 	exact := registration.Owner()
 	mismatched := exact
@@ -495,8 +496,8 @@ func TestCreateWorkspaceRejectsInvalidForwardedAccountOwnerBeforePublication(t *
 			backend := New(context.Background(), nil, func() {})
 			request := protoWS(t.TempDir(), t.TempDir(), uuid.New().String())
 			request.ForwardedProviders = map[string]config.ProviderConfig{
-				"codex": {
-					ID:    "codex",
+				"copilot": {
+					ID:    "copilot",
 					Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: exact.Construction},
 				},
 			}
@@ -532,14 +533,14 @@ func TestCreateWorkspaceAppliesForwardedStateWithoutReturningOrPersistingIt(t *t
 	request := protoWS(cwd, dataDir, uuid.New().String())
 	request.ForwardedProviders = map[string]config.ProviderConfig{
 		"remote": {ID: "remote", Type: "openai-compat", APIKey: "provider-secret"},
-		"codex": {
-			ID:    "codex",
-			Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionCodex},
+		"copilot": {
+			ID:    "copilot",
+			Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionCopilot},
 		},
 	}
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
-	registration, ok := registry.Lookup("codex")
+	registration, ok := registry.Lookup("copilot")
 	require.True(t, ok)
 	owner := registration.Owner()
 	request.ForwardedAccounts = map[string]config.ForwardedAccount{

@@ -10,7 +10,8 @@ import (
 	"os"
 )
 
-func init() {
+// Configure applies the Termux resolver for normal application startup.
+func Configure() {
 	if os.Getenv("TERMUX_VERSION") == "" {
 		return
 	}

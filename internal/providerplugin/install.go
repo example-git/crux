@@ -113,6 +113,15 @@ func (m *Manager) installDirectory(ctx context.Context, request InstallRequest, 
 		return Snapshot{}, err
 	}
 	cleanup = false
+	if request.AfterCommit != nil {
+		installed := InstalledBundle{ID: validated.id(), ProviderID: validated.providerID(),
+			Version: validated.version(), Digest: validated.digest, PluginType: validated.pluginType}
+		if err := request.AfterCommit(installed); err != nil {
+			m.mu.Unlock()
+			release()
+			return Snapshot{}, fmt.Errorf("plugin %q version %s was installed, but updating its configured references failed (retry --update after correcting the error): %w", installed.ID, installed.Version, err)
+		}
+	}
 	m.mu.Unlock()
 	release()
 	result, err := m.Rescan(ctx, 0)

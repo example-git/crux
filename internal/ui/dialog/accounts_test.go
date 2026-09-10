@@ -9,6 +9,7 @@ import (
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/require"
@@ -57,7 +58,7 @@ func (w *accountSwitchTestWorkspace) RemoveProviderCredentials(_ config.Scope, o
 
 func copilotTestRegistration(t *testing.T) providerregistry.Registration {
 	t.Helper()
-	for _, registration := range providerregistry.Integrated() {
+	for _, registration := range registrytest.Registrations() {
 		if registration.ProviderID == "copilot" {
 			return registration
 		}

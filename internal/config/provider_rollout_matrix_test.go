@@ -45,8 +45,6 @@ func requireRolloutScanOwner(t *testing.T, scan ProviderScan, providerID string,
 }
 
 func TestFreshProviderScanProtectedAndOrdinaryRolloutMatrix(t *testing.T) {
-	codexCore := rolloutScanOwner{mode: providerregistry.OwnerIntegrated, construction: providerregistry.ConstructionCodex}
-	geminiCore := rolloutScanOwner{mode: providerregistry.OwnerIntegrated, construction: providerregistry.ConstructionGeminiAntigravity}
 	copilotCore := rolloutScanOwner{mode: providerregistry.OwnerIntegrated, construction: providerregistry.ConstructionCopilot}
 	codexCompat := rolloutScanOwner{mode: providerregistry.OwnerPluginCompat, construction: providerregistry.ConstructionCodex, compatibility: providerregistry.ConstructionCodex, manifestID: "test.claim." + codex.ID}
 	geminiCompat := rolloutScanOwner{mode: providerregistry.OwnerPluginCompat, construction: providerregistry.ConstructionGeminiAntigravity, compatibility: providerregistry.ConstructionGeminiAntigravity, manifestID: "test.claim." + gemini.ID}
@@ -66,8 +64,8 @@ func TestFreshProviderScanProtectedAndOrdinaryRolloutMatrix(t *testing.T) {
 	}{
 		{name: "core only", profile: ProviderProfileCoreOnly, compatibility: true, codex: disabled, gemini: disabled, ordinary: disabled},
 		{name: "core only allow plugins", profile: ProviderProfileCoreOnly, allowlist: string(catalog.ProviderCopilot) + "," + codex.ID + "," + gemini.ID + ",example-echo", compatibility: true, codex: disabled, gemini: disabled, ordinary: disabled},
-		{name: "integrated", profile: ProviderProfileIntegrated, compatibility: true, codex: codexCore, gemini: geminiCore, ordinary: disabled},
-		{name: "integrated allow plugins", profile: ProviderProfileIntegrated, allowlist: string(catalog.ProviderCopilot) + "," + codex.ID + "," + gemini.ID + ",example-echo", compatibility: true, codex: codexCore, gemini: geminiCore, ordinary: disabled},
+		{name: "integrated", profile: ProviderProfileIntegrated, compatibility: true, codex: disabled, gemini: disabled, ordinary: disabled},
+		{name: "integrated allow plugins", profile: ProviderProfileIntegrated, allowlist: string(catalog.ProviderCopilot) + "," + codex.ID + "," + gemini.ID + ",example-echo", compatibility: true, codex: disabled, gemini: disabled, ordinary: disabled},
 		{name: "plugin compat all compatibility", profile: ProviderProfilePluginCompat, compatibility: true, codex: codexCompat, gemini: geminiCompat, ordinary: ordinaryNative},
 		{name: "plugin compat allow copilot", profile: ProviderProfilePluginCompat, allowlist: string(catalog.ProviderCopilot), compatibility: true, codex: disabled, gemini: disabled, ordinary: disabled},
 		{name: "plugin compat allow codex", profile: ProviderProfilePluginCompat, allowlist: codex.ID, compatibility: true, codex: codexCompat, gemini: disabled, ordinary: disabled},

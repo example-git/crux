@@ -299,6 +299,13 @@ func validateCapabilities(m Manifest, add func(string, ...any)) {
 		validateClientIdentity("client_identities."+name, &identity, add)
 	}
 	endpoints := collectIDs("endpoints", len(c.Endpoints), func(i int) string { return c.Endpoints[i].ID }, add)
+	if c.Compatibility != nil && c.Compatibility.Endpoints != nil {
+		for name, ref := range map[string]string{"identity": c.Compatibility.Endpoints.Identity, "images": c.Compatibility.Endpoints.Images, "project": c.Compatibility.Endpoints.Project} {
+			if ref != "" {
+				requireRef("compatibility_adapter.endpoints."+name, ref, endpoints, add)
+			}
+		}
+	}
 	oauth := collectIDs("oauth", len(c.OAuth), func(i int) string { return c.OAuth[i].ID }, add)
 	operations := collectIDs("operations", len(c.Operations), func(i int) string { return c.Operations[i].ID }, add)
 	_ = oauth

@@ -27,7 +27,7 @@ func TestOAuthLoginRealCodexChallengeHTTPSAndScopedPublication(t *testing.T) {
 		t.Run(map[bool]string{false: "invalid state", true: "exchange and publish"}[validState], func(t *testing.T) {
 			f := newAuthenticationMutationFixture(t, ScopeWorkspace, false)
 			values := environmentValues(f.store.baseEnvironment)
-			values["CODEX_OAUTH_CLIENT_ID"] = "synthetic-captured-client"
+			values["CODEX_OAUTH_CLIENT_ID"] = "synthetic-client"
 			var err error
 			f.store, err = LoadIsolated(f.root, filepath.Join(f.root, "workspace-data"), false, env.NewFromMap(values))
 			require.NoError(t, err)
@@ -44,8 +44,8 @@ func TestOAuthLoginRealCodexChallengeHTTPSAndScopedPublication(t *testing.T) {
 			authorization, err := url.Parse(code.AuthorizationURL())
 			require.NoError(t, err)
 			query := authorization.Query()
-			require.Equal(t, "https://auth.openai.com/oauth/authorize", authorization.Scheme+"://"+authorization.Host+authorization.Path)
-			require.Equal(t, "synthetic-captured-client", query.Get("client_id"))
+			require.Equal(t, "https://codex-authorize.example.invalid/authorize", authorization.Scheme+"://"+authorization.Host+authorization.Path)
+			require.Equal(t, "synthetic-client", query.Get("client_id"))
 			require.Equal(t, "http://localhost:1455/auth/callback", query.Get("redirect_uri"))
 			require.NotEmpty(t, query.Get("code_challenge"))
 			require.False(t, code.ExpiresAt().IsZero())
@@ -55,17 +55,17 @@ func TestOAuthLoginRealCodexChallengeHTTPSAndScopedPublication(t *testing.T) {
 			var exchanges, identities atomic.Int32
 			host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/oauth/token":
+				case "/token":
 					exchanges.Add(1)
 					require.NoError(t, r.ParseForm())
 					require.Equal(t, "authorization_code", r.Form.Get("grant_type"))
-					require.Equal(t, "synthetic-captured-client", r.Form.Get("client_id"))
+					require.Equal(t, "synthetic-client", r.Form.Get("client_id"))
 					require.Equal(t, "synthetic-code", r.Form.Get("code"))
 					require.Equal(t, "http://localhost:1455/auth/callback", r.Form.Get("redirect_uri"))
 					digest := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
 					require.Equal(t, query.Get("code_challenge"), base64.RawURLEncoding.EncodeToString(digest[:]))
 					_ = json.NewEncoder(w).Encode(map[string]any{"access_token": access, "refresh_token": "synthetic-refresh", "expires_in": 120})
-				case "/api/accounts/v1/user-auth-credential/whoami":
+				case "/identity":
 					identities.Add(1)
 					require.Equal(t, "Bearer "+access, r.Header.Get("Authorization"))
 					_ = json.NewEncoder(w).Encode(map[string]string{"email": "synthetic@example.invalid"})
@@ -77,9 +77,9 @@ func TestOAuthLoginRealCodexChallengeHTTPSAndScopedPublication(t *testing.T) {
 			defer host.Close()
 			target, err := url.Parse(host.URL)
 			require.NoError(t, err)
-			original := http.DefaultClient
+			original, originalTransport := http.DefaultClient, http.DefaultTransport
 			http.DefaultClient = &http.Client{Transport: oauthLoginRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-				if r.URL.Scheme != "https" || r.URL.Host != "auth.openai.com" {
+				if r.URL.Scheme != "https" || (r.URL.Host != "codex-token.example.invalid" && r.URL.Host != "codex-identity.example.invalid") {
 					return nil, errors.New("unexpected outbound OAuth endpoint")
 				}
 				copy := r.Clone(r.Context())
@@ -88,7 +88,8 @@ func TestOAuthLoginRealCodexChallengeHTTPSAndScopedPublication(t *testing.T) {
 				copy.URL = &address
 				return host.Client().Transport.RoundTrip(copy)
 			})}
-			defer func() { http.DefaultClient = original }()
+			http.DefaultTransport = http.DefaultClient.Transport
+			defer func() { http.DefaultClient, http.DefaultTransport = original, originalTransport }()
 			input := url.Values{"state": {query.Get("state")}, "code": {"synthetic-code"}}
 			if !validState {
 				input.Set("state", "synthetic-wrong-state")

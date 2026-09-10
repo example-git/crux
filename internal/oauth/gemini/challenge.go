@@ -13,7 +13,7 @@ func CallbackRequirement() oauth.CallbackRequirement {
 	return oauth.CallbackRequirement{Mode: "hosted-paste"}
 }
 
-func PrepareCode(ctx context.Context, port uint16) (*oauth.CodeChallenge, error) {
+func (client Client) PrepareCode(ctx context.Context, port uint16) (*oauth.CodeChallenge, error) {
 	if err := CallbackRequirement().ValidatePort(port); err != nil {
 		return nil, err
 	}
@@ -35,7 +35,7 @@ func PrepareCode(ctx context.Context, port uint16) (*oauth.CodeChallenge, error)
 	if err != nil {
 		return nil, err
 	}
-	return oauth.NewCodeChallenge(ctx, buildAuthorizeURL(challenge, state, clientID), time.Time{}, func(ctx context.Context, input string) (*oauth.Token, error) {
+	return oauth.NewCodeChallenge(ctx, client.buildAuthorizeURL(challenge, state, clientID), time.Time{}, func(ctx context.Context, input string) (*oauth.Token, error) {
 		code, returnedState, err := parsePastedCode(input)
 		if err != nil {
 			return nil, err
@@ -46,7 +46,7 @@ func PrepareCode(ctx context.Context, port uint16) (*oauth.CodeChallenge, error)
 		if err := providertransport.ValidateContextOwner(ctx); err != nil {
 			return nil, err
 		}
-		token, err := exchangeCodeWithClientCredentials(ctx, code, verifier, clientID, clientSecret)
+		token, err := client.exchangeCodeWithClientCredentials(ctx, code, verifier, clientID, clientSecret)
 		if err == nil {
 			err = providertransport.ValidateContextOwner(ctx)
 		}

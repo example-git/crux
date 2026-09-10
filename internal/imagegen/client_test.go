@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
 )
@@ -483,223 +482,63 @@ func TestDefaultModelForAuthMode(t *testing.T) {
 	}
 }
 
-func TestGenerateRefreshesExpiredCodexAccountStandalone(t *testing.T) {
+func TestGenerateRejectsExpiredCodexAccountWithoutBundle(t *testing.T) {
 	t.Setenv("AI_CLI_DIR", t.TempDir())
-	t.Setenv(openAIAPIKeyEnv, "")
-	t.Setenv("CODEX_OAUTH_CLIENT_ID", "client-test")
-	t.Setenv("CODEX_VERSION", "1.0.0")
-
-	var workspaceRefreshes atomic.Int64
-	workspaceRefresher := func(context.Context, string) (*oauth.Token, error) {
-		workspaceRefreshes.Add(1)
-		return &oauth.Token{AccessToken: "workspace-token"}, nil
-	}
-	accounts.PublishProviders([]accounts.ProviderRegistration{{
-		ProviderID: accountProvider,
-		Namespace:  accountProvider,
-		Refresher:  workspaceRefresher,
-	}})
-	t.Cleanup(func() { accounts.PublishProviders(nil) })
-
-	ctx := context.Background()
-	err := accounts.Save(ctx, accountProvider, accounts.Entry{
-		ID:           "user@example.com",
-		DisplayName:  "user@example.com",
-		AccessToken:  "expired-token",
-		RefreshToken: "refresh-token",
-		ExpiresAt:    time.Now().Add(-time.Hour).UnixMilli(),
-		Raw:          json.RawMessage(`{"account_id":"acct-refresh"}`),
-	})
+	t.Setenv(openAIAPIKeyEnv, "unrelated-api-key")
+	err := accounts.Save(t.Context(), accountProvider, accounts.Entry{ID: "standalone", AccessToken: "old-access", RefreshToken: "refresh-token", ExpiresAt: 1})
 	if err != nil {
-		t.Fatalf("save expired account: %v", err)
+		t.Fatal(err)
 	}
-
-	originalDefaultClient := http.DefaultClient
-	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Host != "auth.openai.com" || r.URL.Path != "/oauth/token" {
-			t.Fatalf("unexpected refresh request URL: %s", r.URL)
-		}
-		return jsonHTTPResponse(http.StatusOK, `{"access_token":"fresh-token","refresh_token":"next-refresh","expires_in":3600}`), nil
-	})}
-	defer func() { http.DefaultClient = originalDefaultClient }()
-
-	var authorization, accountID string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authorization = r.Header.Get("Authorization")
-		accountID = r.Header.Get("ChatGPT-Account-ID")
-		_, _ = w.Write([]byte(`{"data":[{"b64_json":"aGVsbG8="}]}`))
-	}))
-	defer srv.Close()
-	codexBaseURLOverride = srv.URL
-	defer func() { codexBaseURLOverride = "" }()
-
-	resp, err := NewClient().Generate(ctx, GenerateRequest{Prompt: "test", N: 1})
+	_, err = NewClient().Generate(t.Context(), GenerateRequest{Prompt: "fixture", N: 1})
+	if err == nil || !strings.Contains(err.Error(), "unsupported provider") {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	entry, err := accounts.Active(t.Context(), accountProvider)
 	if err != nil {
-		t.Fatalf("Generate: %v", err)
+		t.Fatal(err)
 	}
-	if resp.AuthMode != AuthCodex {
-		t.Fatalf("AuthMode = %v, want AuthCodex", resp.AuthMode)
-	}
-	if authorization != "Bearer fresh-token" {
-		t.Errorf("Authorization = %q, want fresh token", authorization)
-	}
-	if accountID != "acct-refresh" {
-		t.Errorf("ChatGPT-Account-ID = %q, want acct-refresh", accountID)
-	}
-	if got := workspaceRefreshes.Load(); got != 0 {
-		t.Fatalf("workspace refresher calls = %d, want 0", got)
-	}
-	namespace, refresher, ok := accounts.ProviderSnapshot(accountProvider)
-	if !ok || namespace != accountProvider || refresher == nil {
-		t.Fatalf("workspace refresher snapshot = (%q, %v, %t), want preserved", namespace, refresher, ok)
-	}
-	workspaceToken, err := refresher(ctx, "workspace-refresh")
-	if err != nil {
-		t.Fatalf("workspace refresher: %v", err)
-	}
-	if workspaceToken.AccessToken != "workspace-token" || workspaceRefreshes.Load() != 1 {
-		t.Fatalf("workspace refresher changed: token=%q calls=%d", workspaceToken.AccessToken, workspaceRefreshes.Load())
+	if entry.AccessToken != "old-access" {
+		t.Fatal("standalone credential was changed")
 	}
 }
 
-func TestStandaloneRefreshDoesNotJoinGlobalRefresher(t *testing.T) {
+func TestStandaloneWithoutBundleDoesNotRefresh(t *testing.T) {
 	t.Setenv("AI_CLI_DIR", t.TempDir())
-	t.Setenv(openAIAPIKeyEnv, "")
-	t.Setenv("CODEX_OAUTH_CLIENT_ID", "client-test")
-	t.Setenv("CODEX_VERSION", "1.0.0")
-
-	ctx := t.Context()
-	if err := accounts.Save(ctx, accountProvider, accounts.Entry{
-		ID:           "user@example.com",
-		AccessToken:  "expired-token",
-		RefreshToken: "refresh-token",
-		ExpiresAt:    time.Now().Add(-time.Hour).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("save expired account: %v", err)
+	t.Setenv(openAIAPIKeyEnv, "unrelated-api-key")
+	err := accounts.Save(t.Context(), accountProvider, accounts.Entry{ID: "standalone", AccessToken: "old-access", RefreshToken: "refresh-token", ExpiresAt: 1})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	workspaceStarted := make(chan struct{})
-	releaseWorkspace := make(chan struct{})
-	var workspaceRefreshes atomic.Int64
-	accounts.PublishProviders([]accounts.ProviderRegistration{{
-		ProviderID: accountProvider,
-		Namespace:  accountProvider,
-		Refresher: func(context.Context, string) (*oauth.Token, error) {
-			workspaceRefreshes.Add(1)
-			close(workspaceStarted)
-			<-releaseWorkspace
-			return &oauth.Token{
-				AccessToken:  "workspace-token",
-				RefreshToken: "workspace-refresh-next",
-				ExpiresAt:    time.Now().Add(time.Hour).Unix(),
-			}, nil
-		},
-	}})
-	t.Cleanup(func() { accounts.PublishProviders(nil) })
-
-	originalDefaultClient := http.DefaultClient
-	var coreRefreshes atomic.Int64
-	http.DefaultClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Host != "auth.openai.com" || r.URL.Path != "/oauth/token" {
-			t.Fatalf("unexpected refresh request URL: %s", r.URL)
-		}
-		if err := r.ParseForm(); err != nil {
-			return nil, err
-		}
-		if got := r.Form.Get("refresh_token"); got != "workspace-refresh-next" {
-			t.Errorf("explicit refresh input = %q, want proven successor (not consumed refresh-token)", got)
-		}
-		coreRefreshes.Add(1)
-		return jsonHTTPResponse(http.StatusOK, `{"access_token":"fresh-token","refresh_token":"next-refresh","expires_in":3600}`), nil
-	})}
-	defer func() { http.DefaultClient = originalDefaultClient }()
-
-	globalDone := make(chan error, 1)
-	go func() {
-		_, err := accounts.AccessToken(ctx, accountProvider)
-		globalDone <- err
-	}()
-	select {
-	case <-workspaceStarted:
-	case <-time.After(5 * time.Second):
-		t.Fatal("workspace refresh did not start")
+	_, err = NewClient().Generate(t.Context(), GenerateRequest{Prompt: "fixture", N: 1})
+	if err == nil || !strings.Contains(err.Error(), "unsupported provider") {
+		t.Fatalf("Generate() error = %v", err)
 	}
-
-	type authResult struct {
-		auth resolvedAuth
-		err  error
+	entry, err := accounts.Active(t.Context(), accountProvider)
+	if err != nil {
+		t.Fatal(err)
 	}
-	authDone := make(chan authResult, 1)
-	go func() {
-		auth, err := resolveAuth(ctx)
-		authDone <- authResult{auth: auth, err: err}
-	}()
-
-	// The account lease serializes consumption. The explicit core refresher
-	// must wait, then exchange the saved successor using its own authority.
-	select {
-	case result := <-authDone:
-		close(releaseWorkspace)
-		<-globalDone
-		t.Fatalf("standalone returned before account lease release: %v", result.err)
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(releaseWorkspace)
-	globalErr := <-globalDone
-	var result authResult
-	select {
-	case result = <-authDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("standalone authentication stayed blocked after predecessor completed")
-	}
-	if result.err != nil {
-		t.Fatalf("resolveAuth: %v", result.err)
-	}
-	if globalErr != nil {
-		t.Fatalf("global refresh: %v", globalErr)
-	}
-	if result.auth.mode != AuthCodex || result.auth.token != "fresh-token" {
-		t.Fatalf("standalone auth = (%v, %q), want core Codex fresh token", result.auth.mode, result.auth.token)
-	}
-	if got := coreRefreshes.Load(); got != 1 {
-		t.Fatalf("core refresher calls = %d, want 1", got)
-	}
-	if got := workspaceRefreshes.Load(); got != 1 {
-		t.Fatalf("workspace refresher calls = %d, want only its initiating call", got)
-	}
-	namespace, refresher, ok := accounts.ProviderSnapshot(accountProvider)
-	if !ok || namespace != accountProvider || refresher == nil {
-		t.Fatalf("workspace refresher snapshot = (%q, %v, %t), want preserved", namespace, refresher, ok)
+	if entry.AccessToken != "old-access" {
+		t.Fatal("standalone credential was changed")
 	}
 }
 
-func TestGenerateFallsBackToAPIKeyForUnusableCodexAccount(t *testing.T) {
+func TestGenerateRejectsUnconfiguredCodexInsteadOfUsingAPIKey(t *testing.T) {
 	t.Setenv("AI_CLI_DIR", t.TempDir())
-	t.Setenv(openAIAPIKeyEnv, "sk-fallback")
-	ctx := context.Background()
-	if err := accounts.Save(ctx, accountProvider, accounts.Entry{
-		ID:          "expired",
-		AccessToken: "expired-token",
-		ExpiresAt:   time.Now().Add(-time.Hour).UnixMilli(),
-	}); err != nil {
-		t.Fatalf("save expired account: %v", err)
-	}
-
-	var authorization string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authorization = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"data":[{"b64_json":"aGVsbG8="}]}`))
-	}))
-	defer srv.Close()
-	openAIBaseURLOverride = srv.URL
-	defer func() { openAIBaseURLOverride = "" }()
-
-	resp, err := NewClient().Generate(ctx, GenerateRequest{Prompt: "test", N: 1})
+	t.Setenv(openAIAPIKeyEnv, "unrelated-api-key")
+	err := accounts.Save(t.Context(), accountProvider, accounts.Entry{ID: "standalone", AccessToken: "old-access", RefreshToken: "refresh-token", ExpiresAt: 1})
 	if err != nil {
-		t.Fatalf("Generate: %v", err)
+		t.Fatal(err)
 	}
-	if resp.AuthMode != AuthAPIKey || authorization != "Bearer sk-fallback" {
-		t.Fatalf("fallback auth = (%v, %q), want API key", resp.AuthMode, authorization)
+	_, err = NewClient().Generate(t.Context(), GenerateRequest{Prompt: "fixture", N: 1})
+	if err == nil || !strings.Contains(err.Error(), "unsupported provider") {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	entry, err := accounts.Active(t.Context(), accountProvider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.AccessToken != "old-access" {
+		t.Fatal("standalone credential was changed")
 	}
 }
 

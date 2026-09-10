@@ -125,7 +125,7 @@ func TestCatalogOwnerInvariantProductionProfiles(t *testing.T) {
 		plugin, integrated bool
 	}{
 		{"core", config.ProviderProfileCoreOnly, "", false, false},
-		{"integrated", config.ProviderProfileIntegrated, "", false, true},
+		{"integrated", config.ProviderProfileIntegrated, "", false, false},
 		{"compat", config.ProviderProfilePluginCompat, "", true, false},
 		{"native", config.ProviderProfilePluginNative, "", true, false},
 		{"filtered plugin", config.ProviderProfilePluginNative, "other-provider", false, false},

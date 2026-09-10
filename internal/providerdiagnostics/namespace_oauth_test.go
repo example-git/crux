@@ -3,12 +3,12 @@ package providerdiagnostics
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,6 +22,7 @@ import (
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providerplugin/manifest/manifesttest"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,27 +93,19 @@ func namespaceDiagnosticStore(t *testing.T, server *httptest.Server, accepted, n
 		manifest.Operation{ID: "diagnostic-usage", Kind: "usage", Protocol: "generic-json", Transport: "http-json", Endpoint: "api", Method: http.MethodPost, Path: "/usage/final"})
 	declaration.Capabilities.Usage = &manifest.UsagePolicy{Source: "operation", Operation: "diagnostic-usage", Fallback: "unavailable", Setup: []manifest.UsageSetup{{Operation: "diagnostic-setup"}}, Windows: []manifest.WindowMap{{ID: "usage", RemainingFractionPointer: "/remaining"}}}
 	if native {
+		declaration = manifesttest.Delegated("codex")
 		declaration.ID = "example.native-diagnostics"
-		declaration.Provider.ID = "codex"
-		declaration.Provider.AccountNamespace = "codex"
-		declaration.Capabilities = manifest.Capabilities{
-			Credentials: declaration.Capabilities.Credentials, OAuth: declaration.Capabilities.OAuth,
-			Endpoints: declaration.Capabilities.Endpoints,
-			Compatibility: &manifest.CompatibilityAdapter{ID: string(providerregistry.ConstructionCodex), Delegates: []string{"construction", "usage"}, Inventory: []manifest.CompatibilityInventoryItem{
-				{Delegate: "construction", Classification: "private-stateful", Behavior: "Native Codex request construction"},
-				{Delegate: "usage", Classification: "finite-core-primitive", Behavior: "Native Codex quota request", Primitive: "codex-quota"},
-			}},
-			Operations: []manifest.Operation{{ID: "responses", Kind: "inference", Protocol: "openai-responses", Transport: "websocket-json", Endpoint: "api", Method: http.MethodPost, Path: "/"}},
+		if len(version) != 0 {
+			declaration.Version = version[0]
 		}
-		for index := range declaration.Capabilities.Endpoints {
-			endpoint := &declaration.Capabilities.Endpoints[index]
-			if endpoint.ID == "api" {
-				endpoint.BaseURL, endpoint.AllowedSchemes, endpoint.AllowedHosts = "wss://native.invalid/responses", []string{"wss"}, []string{"native.invalid"}
+		declaration.Capabilities.Instructions = nil
+		declaration.Capabilities.Compatibility.Delegates = slices.DeleteFunc(declaration.Capabilities.Compatibility.Delegates, func(s string) bool { return s == "identity" })
+		declaration.Capabilities.Compatibility.Inventory = slices.DeleteFunc(declaration.Capabilities.Compatibility.Inventory, func(i manifest.CompatibilityInventoryItem) bool { return i.Delegate == "identity" })
+		for i := range declaration.Capabilities.Endpoints {
+			endpoint := &declaration.Capabilities.Endpoints[i]
+			if endpoint.ID == "usage" {
+				endpoint.BaseURL, endpoint.AllowedHosts = server.URL, []string{target.Hostname()}
 			}
-		}
-		for index := range declaration.Models {
-			declaration.Models[index].Reasoning, declaration.Models[index].DefaultOptions = nil, nil
-			declaration.Models[index].Modalities.Input = []string{"text"}
 		}
 	}
 	data, err = json.Marshal(declaration)
@@ -146,6 +139,10 @@ func namespaceDiagnosticStore(t *testing.T, server *httptest.Server, accepted, n
 		f.proposal.Providers[0].NativeIdentity = &config.NativeIdentity{UserAgent: "accepted-diagnostic/7.8.9 (CapturedOS 1; fixture) CapturedTerminal", Originator: "accepted-diagnostic", Version: "7.8.9"}
 		f.proposal.Credentials[0].OAuthToken = nil
 		f.proposal.Credentials[0].Account = &accounts.Entry{ID: "selected-native-account", AccessToken: f.token.AccessToken, RefreshToken: f.token.RefreshToken, ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	}
+	if native {
+		f.provider.Configuration = nil
+		f.proposal.Providers[0].Config.Configuration = nil
 	}
 	sealNamespaceDiagnostic(t, &f.proposal)
 	if accepted {
@@ -266,23 +263,6 @@ func (f namespaceRoundTripFunc) RoundTrip(request *http.Request) (*http.Response
 	return f(request)
 }
 
-func redirectNamespaceNative(t *testing.T, server *httptest.Server) {
-	t.Helper()
-	target, err := url.Parse(server.URL)
-	require.NoError(t, err)
-	transport := server.Client().Transport
-	http.DefaultClient = &http.Client{Transport: namespaceRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if request.URL.Host != "chatgpt.com" {
-			return nil, errors.New("unexpected diagnostic network destination")
-		}
-		copy := request.Clone(request.Context())
-		value := *request.URL
-		copy.URL = &value
-		copy.URL.Scheme, copy.URL.Host = target.Scheme, target.Host
-		return transport.RoundTrip(copy)
-	})}
-}
-
 func TestNamespaceDiagnosticsQuotaCredentialAndCapturedEnvironment(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -383,7 +363,7 @@ func TestNamespaceDiagnosticsAcceptedNativeIdentitySurvivesSameOwnerReplacement(
 	var calls atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.NotNil(t, r.TLS)
-		assert.Equal(t, "/backend-api/wham/usage", r.URL.Path)
+		assert.Equal(t, "/quota", r.URL.Path)
 		headers <- r.Header.Clone()
 		if calls.Add(1) == 1 {
 			close(entered)
@@ -393,7 +373,6 @@ func TestNamespaceDiagnosticsAcceptedNativeIdentitySurvivesSameOwnerReplacement(
 	}))
 	t.Cleanup(server.Close)
 	f := namespaceDiagnosticStore(t, server, true, true)
-	redirectNamespaceNative(t, server)
 	type result struct {
 		report Report
 		err    error
@@ -563,7 +542,6 @@ func TestNamespaceDiagnosticsAcceptedAccountNeverFallsBackToReceiverStorage(t *t
 			} else {
 				request.AccountID = "receiver-selected-account"
 			}
-			redirectNamespaceNative(t, server)
 			// A real receiver account would satisfy the old Active/List fallback.
 			// Its presence must never replace the admitted credential selection.
 			t.Setenv("AI_CLI_DIR", t.TempDir())

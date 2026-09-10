@@ -43,6 +43,8 @@ For a local source, the installer snapshots the bytes present when installation 
 
 Installation is explicit and transactional. Existing plugin IDs are not overwritten without an explicit update operation. The CLI trusts only the exact validated digest produced by that explicit install or update; `--no-trust` installs it for inspection without activation. Updates repeat validation and exact-digest trust evaluation; installed Git plugins are never auto-pulled. A failed copy or validation leaves the previous installed generation intact. If persisting trust fails after a first install commits, the new bundle remains installed but untrusted and inactive.
 
+`crux plugins install <source> --update` also updates existing references to that same provider plugin in global and current-project JSON configuration, including the workspace data directory selected by configuration or `--data-dir`. Provider references receive the committed version; preset references receive the version and digest. Other plugin identities, credentials, accounts, and model selections are preserved. This also repairs a stale configured version when the bundle was already updated, and supports explicit downgrades. A config write failure is reported after the bundle commit; fix the reported config error and repeat `--update`. `--no-trust` still leaves new untrusted bytes inactive. Shell configuration is not executed or rewritten, and configuration in other projects is not searched; references authored there need an update in that scope. Ordinary startup continues to require an exact configured owner and does not silently adopt a different version.
+
 During first initialization, the host may offer:
 
 ```text
@@ -429,3 +431,24 @@ Canonical examples are schema-validated and semantically decoded by package test
 - [`responses-oauth.plugin`](examples/responses-oauth.plugin/manifest.json) demonstrates OAuth, endpoint policy, header and JSON/prompt transforms, a role map, a bidirectional tool codec, OpenAI Responses SSE events, continuation, retries, usage, images, instructions, controls, errors, and opaque metadata.
 
 Both examples use reserved `.invalid` origins and are intentionally nonfunctional. Target-provider bundles and private endpoint policy are not distributed as authoring examples.
+
+## Delegated Codex and Gemini endpoint ownership
+
+`integrated-codex` and `integrated-gemini-antigravity` require a bundle. Their models and large/small defaults come from the manifest; the host does not seed a fallback catalog or infer a service URL when the bundle is absent.
+
+Each delegated construction must supply one OAuth flow with authorization/token endpoint references and nonempty scopes, an inference endpoint, and explicit metadata endpoint bindings:
+
+```json
+"compatibility_adapter": {
+  "id": "integrated-codex",
+  "endpoints": { "identity": "account-metadata", "images": "image-api" },
+  "delegates": ["construction", "identity", "usage"],
+  "inventory": []
+}
+```
+
+The fragment illustrates endpoint binding names only; a complete bundle still needs inventory entries for every delegate. `identity` and `images` reference entries in `capabilities.endpoints`. Gemini/Antigravity requires `identity` and `project` instead; `project` is the full project-discovery URL, including its path. Authenticated endpoint bindings must name the OAuth credential and declare its allowed audience. Codex also requires an operation-backed usage policy. Authorization, refresh, scopes, and client credentials execute through the declared OAuth flow, including when OAuth is listed as a compatibility delegate. Usage executes its declared operation endpoint, path, headers, transforms, and transport limits.
+
+Metadata and image clients receive the exact registered endpoint policies, including redirect restrictions. The inference URL and headers are taken from the inference operation; the default WebSocket Origin is derived from that URL. Inference client identity remains the existing native identity contract: an unsupported `client_identity` declaration is rejected, not silently accepted.
+
+Old delegated bundles without these bindings fail activation and stay unloaded. Crux continues startup with the available providers and displays a “Providers not loaded” screen explaining the affected bundles and the required update. Missing legacy Codex/Gemini provider entries produce the same startup notice. Continue dismisses the screen before normal onboarding, session loading, or an initial prompt. Saved accounts, provider entries, and model selections are retained; an unavailable selection is never replaced automatically. Publish a new bundle version and update installed copies through the normal digest/trust workflow. There is no automatic fallback to host service URLs.

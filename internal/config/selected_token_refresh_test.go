@@ -21,6 +21,7 @@ import (
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/providertransport"
 	"github.com/example-git/crux/internal/redact"
 	"github.com/stretchr/testify/assert"
@@ -59,7 +60,7 @@ func newSelectedTokenFixture(t *testing.T, clientPresent bool) *selectedTokenFix
 		require.NoError(t, json.NewEncoder(w).Encode(f.successor))
 	}))
 	t.Cleanup(server.Close)
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("codex")
 	require.True(t, ok)
@@ -89,7 +90,7 @@ func newSelectedTokenFixture(t *testing.T, clientPresent bool) *selectedTokenFix
 		}
 		return &token, nil
 	}
-	provider := ProviderConfig{ID: "codex", Name: "Namespace-free OAuth", Type: catalog.TypeOpenAICompat, BaseURL: "https://inference.invalid/v1", APIKey: f.original.AccessToken, OAuthToken: cloneOAuthToken(f.original), Owner: providerOwnerReferenceForRegistration(registration), Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}}}
+	provider := ProviderConfig{ID: "codex", Plugin: &ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}, Name: "Namespace-free OAuth", Type: catalog.TypeOpenAICompat, BaseURL: "https://inference.invalid/v1", APIKey: f.original.AccessToken, OAuthToken: cloneOAuthToken(f.original), Owner: providerOwnerReferenceForRegistration(registration), Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}}}
 	cfg := &Config{Providers: csync.NewMap[string, ProviderConfig](), Models: map[SelectedModelType]SelectedModel{SelectedModelTypeLarge: {Provider: "codex", Model: "fixture"}, SelectedModelTypeSmall: {Provider: "codex", Model: "fixture"}}}
 	cfg.Providers.Set("codex", provider)
 	f.store = NewTestStoreWithRegistrations(cfg, registration)

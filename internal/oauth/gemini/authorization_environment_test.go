@@ -37,7 +37,7 @@ func TestAuthorizeRetainsClientCredentials(t *testing.T) {
 			target, err := url.Parse(host.URL)
 			require.NoError(t, err)
 			http.DefaultClient = &http.Client{Transport: geminiRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-				require.Equal(t, tokenURL, r.URL.String())
+				require.Equal(t, testClient().Token.BaseURL, r.URL.String())
 				copy := r.Clone(r.Context())
 				address := *r.URL
 				address.Scheme, address.Host = target.Scheme, target.Host
@@ -45,7 +45,7 @@ func TestAuthorizeRetainsClientCredentials(t *testing.T) {
 				return host.Client().Transport.RoundTrip(copy)
 			})}
 			defer func() { http.DefaultClient = original }()
-			token, err := Authorize(ctx, func(raw string) error {
+			token, err := testClient().Authorize(ctx, func(raw string) error {
 				u, e := url.Parse(raw)
 				require.NoError(t, e)
 				require.Equal(t, expectedID, u.Query().Get("client_id"))
@@ -64,7 +64,7 @@ func TestAuthorizeRetainsClientCredentials(t *testing.T) {
 func TestBoundClientCredentialsDoNotUseAmbientValues(t *testing.T) {
 	t.Setenv("GEMINI_OAUTH_CLIENT_ID", "ambient-id")
 	t.Setenv("GEMINI_OAUTH_CLIENT_SECRET", "ambient-secret")
-	_, err := Authorize(oauth.ContextWithEnvironment(t.Context(), nil), func(string) error { t.Fatal("missing captured credentials opened browser"); return nil }, func() (string, error) { t.Fatal("missing captured credentials requested code"); return "", nil })
+	_, err := testClient().Authorize(oauth.ContextWithEnvironment(t.Context(), nil), func(string) error { t.Fatal("missing captured credentials opened browser"); return nil }, func() (string, error) { t.Fatal("missing captured credentials requested code"); return "", nil })
 	require.ErrorContains(t, err, "not configured")
 }
 
@@ -75,7 +75,7 @@ func TestAuthorizeCancellationReleasesPastedCodeWait(t *testing.T) {
 	defer close(release)
 	done := make(chan error, 1)
 	go func() {
-		_, err := Authorize(ctx, func(string) error { return nil }, func() (string, error) { close(entered); <-release; return "late-code", nil })
+		_, err := testClient().Authorize(ctx, func(string) error { return nil }, func() (string, error) { close(entered); <-release; return "late-code", nil })
 		done <- err
 	}()
 	<-entered

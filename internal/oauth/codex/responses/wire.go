@@ -1,7 +1,7 @@
 package responses
 
 // Wire types for the Codex Responses API over WebSocket, matching the frames
-// the Codex CLI exchanges with wss://chatgpt.com/backend-api/codex/responses:
+// the Codex CLI exchanges with the manifest-selected Responses endpoint:
 //
 //   - out: {type:"response.create", model, instructions, input[], tools,
 //     reasoning, stream:true, include:["reasoning.encrypted_content"], ...}

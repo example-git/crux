@@ -7,7 +7,8 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/oauth/codex"
-	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerplugin/manifest/manifesttest"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 )
 
 func TestToolingInstructionsDefaultsToCrux(t *testing.T) {
@@ -36,7 +37,7 @@ func TestToolingInstructionsSelectsProviderNativeProfile(t *testing.T) {
 		providerID string
 		expected   string
 	}{
-		{providerID: codex.ID, expected: codex.StandardToolingInstructions()},
+		{providerID: codex.ID, expected: manifesttest.StaticText()["instructions/native.md"]},
 	}
 
 	for _, test := range tests {
@@ -47,7 +48,7 @@ func TestToolingInstructionsSelectsProviderNativeProfile(t *testing.T) {
 					test.providerID: {ToolingInstructions: config.ToolingInstructionsNative},
 				}),
 			}
-			cfg = config.NewTestStoreWithRegistrations(cfg, providerregistry.Integrated()...).RuntimeSnapshot().Config()
+			cfg = config.NewTestStoreWithRegistrations(cfg, registrytest.Registrations()...).RuntimeSnapshot().Config()
 
 			instructions, err := toolingInstructions(test.providerID, cfg)
 			if err != nil {
@@ -123,12 +124,12 @@ func TestToolingInstructionsOnlyFiltersCruxSections(t *testing.T) {
 			codex.ID: {ToolingInstructions: config.ToolingInstructionsNative},
 		}),
 	}
-	nativeConfig = config.NewTestStoreWithRegistrations(nativeConfig, providerregistry.Integrated()...).RuntimeSnapshot().Config()
+	nativeConfig = config.NewTestStoreWithRegistrations(nativeConfig, registrytest.Registrations()...).RuntimeSnapshot().Config()
 	nativeInstructions, err := toolingInstructions(codex.ID, nativeConfig)
 	if err != nil {
 		t.Fatalf("select native tooling instructions: %v", err)
 	}
-	if nativeInstructions != codex.StandardToolingInstructions() {
+	if nativeInstructions != manifesttest.StaticText()["instructions/native.md"] {
 		t.Fatal("Crux section filters changed provider-native instructions")
 	}
 }

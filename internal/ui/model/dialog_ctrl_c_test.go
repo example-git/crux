@@ -12,6 +12,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/ui/attachments"
 	"github.com/example-git/crux/internal/ui/completions"
 	"github.com/example-git/crux/internal/ui/dialog"
@@ -238,7 +239,7 @@ func TestInstructionChangesRebuildActiveAgent(t *testing.T) {
 			},
 		}),
 	}
-	bound := config.NewTestStoreWithRegistrations(cfg, providerregistry.Integrated()...).RuntimeSnapshot().Config()
+	bound := config.NewTestStoreWithRegistrations(cfg, registrytest.Registrations()...).RuntimeSnapshot().Config()
 	ui := newTestUI()
 	workspace := &instructionRefreshWorkspace{testWorkspace: testWorkspace{cfg: bound}}
 	ui.com.Workspace = workspace
