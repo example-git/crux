@@ -548,7 +548,7 @@ func buildNativeProjectStore(ctx context.Context, projectRoot, storeDirectory st
 	if err := writeJSONAtomically(checkpointPath, catalog); err != nil {
 		return fmt.Errorf("complete native codebase index checkpoint: %w", err)
 	}
-	if err := writeJSONAtomically(catalogPath, catalog); err != nil {
+	if err := activateProjectCatalog(ctx, catalogPath, catalog); err != nil {
 		return fmt.Errorf("activate native codebase search catalog: %w", err)
 	}
 	reportProgress("Complete", "")

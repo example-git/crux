@@ -51,10 +51,12 @@ func codexNativeAPIFixture(t *testing.T) string {
 	return nativeAPIFixture(t, "streamed response")
 }
 
-func nativeAPIFixture(t *testing.T, responseText string) string {
+func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, string, string)) string {
 	t.Helper()
 	workingDir := t.TempDir()
 	var mu sync.Mutex
+	selectedProvider, selectedModel := "openai", "gpt-5"
+	agentProvider, agentModel := selectedProvider, selectedModel
 	sessions := make(map[string]map[string]any)
 	cancelled := make(map[string]bool)
 	events := make(chan map[string]any, 16)
@@ -77,9 +79,11 @@ func nativeAPIFixture(t *testing.T, responseText string) string {
 		case path == "/workspaces" && r.Method == http.MethodPost:
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "workspace-1", "path": workingDir})
 		case path == "/workspaces/workspace-1" && r.Method == http.MethodGet:
+			mu.Lock()
+			defer mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id": "workspace-1", "path": workingDir,
-				"config":            map[string]any{"models": map[string]any{"large": map[string]any{"provider": "openai", "model": "gpt-5"}}},
+				"config":            map[string]any{"models": map[string]any{"large": map[string]any{"provider": selectedProvider, "model": selectedModel}}},
 				"provider_surfaces": providerSurfaces(),
 			})
 		case strings.HasSuffix(path, "/providers"):
@@ -91,14 +95,17 @@ func nativeAPIFixture(t *testing.T, responseText string) string {
 			_ = json.NewDecoder(r.Body).Decode(&request)
 			model, _ := request["model"].(map[string]any)
 			owner, _ := request["owner"].(map[string]any)
-			if model["provider"] != "anthropic" || model["model"] != "claude-sonnet" {
+			if !(model["provider"] == "anthropic" && model["model"] == "claude-sonnet") && !(model["provider"] == "openai" && (model["model"] == "gpt-5" || model["model"] == "gpt-4.1")) {
 				http.Error(w, "compatibility model was not translated", http.StatusBadRequest)
 				return
 			}
-			if owner["provider_id"] != "anthropic" {
+			if owner["provider_id"] != model["provider"] {
 				http.Error(w, "compatibility provider owner was not retained", http.StatusBadRequest)
 				return
 			}
+			mu.Lock()
+			selectedProvider, selectedModel = model["provider"].(string), model["model"].(string)
+			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"large": map[string]any{
 					"model": model,
@@ -119,7 +126,16 @@ func nativeAPIFixture(t *testing.T, responseText string) string {
 					return
 				}
 			}
-		case strings.HasSuffix(path, "/agent/init") || strings.HasSuffix(path, "/agent/update"):
+		case strings.HasSuffix(path, "/agent/update"):
+			var request proto.AgentUpdateRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+			if request.State.Large != nil {
+				mu.Lock()
+				agentProvider, agentModel = request.State.Large.Model.Provider, request.State.Large.Model.Model
+				mu.Unlock()
+			}
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(path, "/agent/init"):
 			w.WriteHeader(http.StatusOK)
 		case strings.HasSuffix(path, "/agent") && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"is_ready": true})
@@ -127,9 +143,16 @@ func nativeAPIFixture(t *testing.T, responseText string) string {
 			var request map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&request)
 			sessionID, _ := request["session_id"].(string)
-			if sessionID != "thread-1" {
+			mu.Lock()
+			_, exists := sessions[sessionID]
+			provider, model := agentProvider, agentModel
+			mu.Unlock()
+			if !exists {
 				http.Error(w, "compatibility ID was not translated", http.StatusBadRequest)
 				return
+			}
+			for _, observe := range onRun {
+				observe(sessionID, provider, model)
 			}
 			runID, _ := request["run_id"].(string)
 			go func() {
@@ -183,8 +206,8 @@ func nativeAPIFixture(t *testing.T, responseText string) string {
 			mu.Unlock()
 			w.WriteHeader(http.StatusOK)
 		case strings.HasSuffix(path, "/sessions") && r.Method == http.MethodPost:
-			id := "thread-1"
 			mu.Lock()
+			id := fmt.Sprintf("thread-%d", len(sessions)+1)
 			sess := map[string]any{"id": id, "title": "Codex", "created_at": int64(1), "updated_at": int64(1)}
 			sessions[id] = sess
 			mu.Unlock()

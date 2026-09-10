@@ -331,12 +331,12 @@ func (w *ClientWorkspace) recreateClientWorkspace(ctx context.Context) (*proto.W
 
 // Serialize a reconnect with local runtime publication. The acknowledgement
 // retained by this owning client, not a newer public snapshot, grants a claim.
-func (w *ClientWorkspace) subscribeAcceptedEvents() (<-chan any, error) {
+func (w *ClientWorkspace) subscribeAcceptedEvents(ctx context.Context) (<-chan any, error) {
 	if a := w.authority; a != nil {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		accepted := config.RemoteAuthority{Mode: "client", Principal: a.principal, Revision: a.accepted.Revision, Digest: a.accepted.Digest}
-		return w.client.SubscribeEvents(w.subCtx, w.workspaceID(), accepted)
+		return w.client.SubscribeEvents(ctx, w.workspaceID(), accepted)
 	}
-	return w.client.SubscribeEvents(w.subCtx, w.workspaceID())
+	return w.client.SubscribeEvents(ctx, w.workspaceID())
 }

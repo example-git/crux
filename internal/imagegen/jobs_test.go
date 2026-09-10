@@ -568,6 +568,28 @@ func TestWriteJobImagesStreamsExactOutputsAndClearsResponseData(t *testing.T) {
 	}
 }
 
+func TestWriteStagedImagePreservesOriginalOnFailure(t *testing.T) {
+	for _, failure := range []string{"canceled", "missing stage"} {
+		t.Run(failure, func(t *testing.T) {
+			output := filepath.Join(t.TempDir(), "image.png")
+			require.NoError(t, os.WriteFile(output, []byte("original"), 0o644))
+			temporary, err := stageJobImage(t.Context(), output, base64.StdEncoding.EncodeToString([]byte("replacement")))
+			require.NoError(t, err)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if failure == "canceled" {
+				cancel()
+			} else {
+				require.NoError(t, os.Remove(temporary))
+			}
+			require.Error(t, writeStagedImage(ctx, temporary, output, true))
+			original, err := os.ReadFile(output)
+			require.NoError(t, err)
+			require.Equal(t, "original", string(original))
+		})
+	}
+}
+
 func TestWriteJobImagesKeepsSuccessfulForcedOutputs(t *testing.T) {
 	directory := t.TempDir()
 	outputs := []string{

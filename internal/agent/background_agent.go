@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"time"
@@ -582,8 +583,7 @@ func (t *BackgroundAgentTask) finish(result backgroundAgentResult) {
 	default:
 		t.state.Status = managedtask.StatusCompleted
 	}
-	notification := t.notificationLocked()
-	_ = t.persistLocked()
+	notification := t.persistTerminalLocked()
 	t.mu.Unlock()
 	t.cleanupOwnedShells()
 	t.release()
@@ -640,8 +640,7 @@ func (t *BackgroundAgentTask) markLost(reason string) {
 	t.state.Status = managedtask.StatusLost
 	t.state.EndedAt = time.Now()
 	t.state.LostReason = reason
-	notification := t.notificationLocked()
-	_ = t.persistLocked()
+	notification := t.persistTerminalLocked()
 	t.mu.Unlock()
 	t.cleanupOwnedShells()
 	t.release()
@@ -961,6 +960,30 @@ func newAgentNotification(id, description string, ownership managedtask.Ownershi
 		FinalOutput:     finalOutput,
 		Usage:           usage,
 	}
+}
+
+func (t *BackgroundAgentTask) persistTerminalLocked() *managedtask.Notification {
+	notification := t.notificationLocked()
+	if err := t.persistLocked(); err != nil {
+		if t.state.Status == managedtask.StatusCompleted {
+			t.state.Status = managedtask.StatusFailed
+		}
+		previousError := t.state.ErrorMessage
+		t.state.ErrorCode = "agent_persistence_failed"
+		t.state.ErrorMessage = fmt.Sprintf("Failed to persist terminal task record; output may be lost on restart: %v", err)
+		if previousError != "" {
+			t.state.ErrorMessage = previousError + "; " + t.state.ErrorMessage
+		}
+		if notification != nil {
+			id := notification.ID
+			*notification = *newAgentNotification(t.ID, t.Description, t.Ownership, t.state, t.childSessionID, t.finalOutput, t.usage)
+			notification.ID = id
+		}
+		if retryErr := t.persistLocked(); retryErr != nil {
+			slog.Error("Failed to persist background agent terminal failure", "task_id", t.ID, "error", retryErr)
+		}
+	}
+	return notification
 }
 
 func (t *BackgroundAgentTask) notificationLocked() *managedtask.Notification {

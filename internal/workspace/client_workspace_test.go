@@ -530,6 +530,72 @@ func TestClientWorkspaceListMCPPromptsServerError(t *testing.T) {
 // subscription loop reconnects after the SSE stream drops instead of
 // leaving the TUI permanently orphaned (which surfaced as a stuck
 // "coder agent is offline"), and that Shutdown stops the loop.
+func TestClientWorkspaceReconnectRefreshesMissedConfiguration(t *testing.T) {
+	originalInitial, originalMax := sseReconnectInitialBackoff, sseReconnectMaxBackoff
+	sseReconnectInitialBackoff, sseReconnectMaxBackoff = time.Millisecond, time.Millisecond
+	defer func() { sseReconnectInitialBackoff, sseReconnectMaxBackoff = originalInitial, originalMax }()
+	var subscriptions, refreshes atomic.Int32
+	snapshot := func(model string) proto.Workspace {
+		return proto.Workspace{ID: "ws-1", Config: &config.Config{
+			Models:  map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "test", Model: model}},
+			Options: &config.Options{},
+		}}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/events"):
+			count := subscriptions.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.(http.Flusher).Flush()
+			if count > 1 {
+				<-r.Context().Done()
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/workspaces/ws-1":
+			if refreshes.Add(1) == 1 {
+				http.Error(w, "temporary snapshot failure", http.StatusServiceUnavailable)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(snapshot("changed-while-detached"))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+	endpoint, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	sdk, err := client.NewClient(t.TempDir(), "tcp", endpoint.Host)
+	require.NoError(t, err)
+	workspace := NewClientWorkspace(sdk, snapshot("original"))
+	messages := make(chan ConnectionEvent, 10)
+	done := make(chan struct{})
+	go func() {
+		workspace.runSubscription(func(message tea.Msg) {
+			if event, ok := message.(ConnectionEvent); ok {
+				messages <- event
+			}
+		})
+		close(done)
+	}()
+	defer func() {
+		workspace.subCancel()
+		<-done
+	}()
+	for {
+		select {
+		case event := <-messages:
+			if event.State == ConnectionRecovered {
+				require.False(t, event.Recreated)
+				require.Equal(t, "changed-while-detached", workspace.Config().Models[config.SelectedModelTypeLarge].Model)
+				require.EqualValues(t, 2, refreshes.Load())
+				require.EqualValues(t, 3, subscriptions.Load())
+				return
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("reconnect did not refresh the missed configuration")
+		}
+	}
+}
+
 func TestClientWorkspace_ReconnectsOnStreamDrop(t *testing.T) {
 	// Shrink the backoff so several reconnects happen quickly.
 	origInitial, origMax := sseReconnectInitialBackoff, sseReconnectMaxBackoff
@@ -542,6 +608,10 @@ func TestClientWorkspace_ReconnectsOnStreamDrop(t *testing.T) {
 
 	var subscribes atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/workspaces/ws-1" && r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(proto.Workspace{ID: "ws-1"})
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/events") {
 			// Any other bookkeeping call (e.g. GetWorkspace) just
 			// gets an empty OK; the test only cares about the stream.
@@ -707,6 +777,8 @@ func (s *recoveryServer) start(t *testing.T) *client.Client {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/workspaces/"+s.liveID && s.liveID != "":
+			require.NoError(t, json.NewEncoder(w).Encode(proto.Workspace{ID: s.liveID, Path: "/tmp/recover"}))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces":
 			s.creates++
 			if s.createErr != nil {

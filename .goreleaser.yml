@@ -57,6 +57,7 @@ archives:
       - provider-preset-plugin.schema.json
       - provider-branding.schema.json
       - image-provider-plugin.schema.json
+      - remote-workspace-runtime.schema.json
       - docs/provider-plugins/README.md
       - docs/provider-plugins/**/*
       - docs/compatibility/README.md

@@ -489,6 +489,61 @@ func TestBackgroundAgentManagerStopAllIsBounded(t *testing.T) {
 	close(release)
 }
 
+func TestBackgroundAgentTerminalPersistenceFailureIsVisible(t *testing.T) {
+	for _, permanent := range []bool{false, true} {
+		for _, lost := range []bool{false, true} {
+			recordStore, err := managedtask.NewStore(filepath.Join(t.TempDir(), "metadata"))
+			require.NoError(t, err)
+			manager, err := NewBackgroundAgentManagerWithStore("workspace", nil, recordStore)
+			require.NoError(t, err)
+			notifications := manager.SubscribeNotifications(t.Context())
+			backgroundTask, err := manager.Reserve("prompt", "reviewer", "description", managedtask.Ownership{ParentSessionID: "parent"})
+			require.NoError(t, err)
+			persist := backgroundTask.persist
+			attempts := 0
+			backgroundTask.persist = func(task *BackgroundAgentTask) error {
+				attempts++
+				if permanent || attempts == 1 {
+					return errors.New("injected terminal write failure")
+				}
+				return persist(task)
+			}
+			if lost {
+				backgroundTask.markLost("execution did not stop")
+			} else {
+				backgroundTask.finish(backgroundAgentResult{Output: "retained output"})
+			}
+			info, _, err := manager.Output(t.Context(), backgroundTask.ID, true, time.Second)
+			require.NoError(t, err)
+			require.Equal(t, "agent_persistence_failed", info.State.ErrorCode)
+			require.Contains(t, info.State.ErrorMessage, "injected terminal write failure")
+			if lost {
+				require.Equal(t, managedtask.StatusLost, info.State.Status)
+			} else {
+				require.Equal(t, managedtask.StatusFailed, info.State.Status)
+				require.Equal(t, "retained output", info.FinalOutput)
+			}
+			require.Equal(t, 2, attempts)
+			require.Zero(t, manager.ActiveCount())
+			select {
+			case event := <-notifications:
+				require.Equal(t, info.State.ErrorCode, event.Payload.ErrorCode)
+				require.Equal(t, info.State.Status, event.Payload.Status)
+			case <-time.After(time.Second):
+				t.Fatal("missing persistence failure notification")
+			}
+			if !permanent {
+				record, err := recordStore.Get(backgroundTask.ID)
+				require.NoError(t, err)
+				require.Equal(t, info.State.ErrorCode, record.State.ErrorCode)
+				require.Equal(t, info.FinalOutput, record.Agent.FinalOutput)
+			}
+			manager.StopAll(t.Context())
+			require.NoError(t, recordStore.Close())
+		}
+	}
+}
+
 func TestBackgroundAgentManagerRecoversPersistedTasks(t *testing.T) {
 	t.Parallel()
 
