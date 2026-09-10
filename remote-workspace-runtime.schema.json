@@ -373,6 +373,28 @@
       "additionalProperties": false,
       "type": "object"
     },
+    "ProviderLoadIssue": {
+      "properties": {
+        "provider_id": {
+          "type": "string"
+        },
+        "plugin_id": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "provider_id",
+        "message"
+      ]
+    },
     "ProviderOwnerReference": {
       "properties": {
         "type": {
@@ -597,6 +619,9 @@
     },
     "RemoteProviderDefinition": {
       "properties": {
+        "unloaded": {
+          "$ref": "#/$defs/ProviderLoadIssue"
+        },
         "config": {
           "$ref": "#/$defs/ProviderConfig"
         },
