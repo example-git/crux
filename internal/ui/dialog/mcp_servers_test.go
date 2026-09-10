@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/ui/common"

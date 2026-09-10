@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	fantasy "github.com/example-git/crux/foundation"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/agent/tools"
 	"github.com/example-git/crux/internal/app"
 	"github.com/example-git/crux/internal/ui/util"

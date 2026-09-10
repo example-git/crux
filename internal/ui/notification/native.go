@@ -3,7 +3,7 @@ package notification
 import (
 	"log/slog"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 )
 
 // NativeBackend sends desktop notifications using the native OS notification

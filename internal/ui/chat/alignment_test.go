@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/stretchr/testify/require"
 )

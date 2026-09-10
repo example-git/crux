@@ -456,7 +456,7 @@ func (c *coordinator) scheduleCodebaseIndexReconcile() {
 	c.codebaseIndexLastReconcile = time.Now()
 	reconcile := c.reconcileCodebaseIndexFn
 	if reconcile == nil {
-		reconcile = c.reconcileCodebaseIndex
+		reconcile = func(ctx context.Context) (codebaseindex.StoreStatus, error) { return c.reconcileCodebaseIndex(ctx) }
 	}
 	c.codebaseIndexReconcileMu.Unlock()
 
@@ -473,24 +473,24 @@ func (c *coordinator) scheduleCodebaseIndexReconcile() {
 }
 
 type codebaseIndexController interface {
-	codebaseIndexStatus(context.Context) (codebaseindex.StoreStatus, error)
-	reconcileCodebaseIndex(context.Context) (codebaseindex.StoreStatus, error)
+	codebaseIndexStatus(context.Context, ...config.RuntimeSnapshot) (codebaseindex.StoreStatus, error)
+	reconcileCodebaseIndex(context.Context, ...config.RuntimeSnapshot) (codebaseindex.StoreStatus, error)
 }
 
-func CodebaseIndexStatus(ctx context.Context, coordinator Coordinator) (codebaseindex.StoreStatus, error) {
+func CodebaseIndexStatus(ctx context.Context, coordinator Coordinator, snapshots ...config.RuntimeSnapshot) (codebaseindex.StoreStatus, error) {
 	controller, ok := coordinator.(codebaseIndexController)
 	if !ok {
 		return codebaseindex.StoreStatus{}, fmt.Errorf("codebase index controller is unavailable")
 	}
-	return controller.codebaseIndexStatus(ctx)
+	return controller.codebaseIndexStatus(ctx, snapshots...)
 }
 
-func ReconcileCodebaseIndex(ctx context.Context, coordinator Coordinator) (codebaseindex.StoreStatus, error) {
+func ReconcileCodebaseIndex(ctx context.Context, coordinator Coordinator, snapshots ...config.RuntimeSnapshot) (codebaseindex.StoreStatus, error) {
 	controller, ok := coordinator.(codebaseIndexController)
 	if !ok {
 		return codebaseindex.StoreStatus{}, fmt.Errorf("codebase index controller is unavailable")
 	}
-	return controller.reconcileCodebaseIndex(ctx)
+	return controller.reconcileCodebaseIndex(ctx, snapshots...)
 }
 
 type InstructionSnapshotSection struct {
@@ -531,13 +531,39 @@ func (c *coordinator) autoMemoryActivity() string {
 	return c.memoryWorker.Activity()
 }
 
-func (c *coordinator) codebaseIndexOptions(ctx context.Context) (codebaseindex.ProjectIndexOptions, error) {
+func (c *coordinator) codebaseIndexOptions(ctx context.Context, snapshots ...config.RuntimeSnapshot) (codebaseindex.ProjectIndexOptions, error) {
 	projectRoot, err := codebaseindex.CanonicalProjectRoot(ctx, c.cfg.WorkingDir())
 	if err != nil {
 		return codebaseindex.ProjectIndexOptions{}, err
 	}
-	toolConfig := c.cfg.Config().Tools.CodebaseSearch
+	var snapshot config.RuntimeSnapshot
+	if len(snapshots) > 0 {
+		snapshot = snapshots[0]
+	} else {
+		snapshot = c.cfg.RuntimeSnapshot()
+	}
+	toolConfig := snapshot.Config().Tools.CodebaseSearch
+	identity := ""
+	var bindContext func(context.Context) (context.Context, context.CancelFunc)
+	if authority := snapshot.RemoteAuthority(); authority != nil {
+		identity = authority.Digest
+		c.codebaseIndexReconcileMu.Lock()
+		lifetime := c.codebaseIndexLifecycleCtx
+		c.codebaseIndexReconcileMu.Unlock()
+		if lifetime == nil {
+			lifetime = ctx
+		}
+		bindContext = func(parent context.Context) (context.Context, context.CancelFunc) {
+			bound, cancel := c.cfg.BindRuntimeContext(parent)
+			stop := context.AfterFunc(lifetime, cancel)
+			if lifetime.Err() != nil {
+				cancel()
+			}
+			return bound, func() { stop(); cancel() }
+		}
+	}
 	return codebaseindex.ProjectIndexOptions{
+		TokenSource: snapshot.CodebaseIndexToken, RuntimeIdentity: identity, BindContext: bindContext,
 		ProjectRoot:            projectRoot,
 		ConfiguredDatabasePath: toolConfig.DatabasePath,
 		StoreDirectory:         toolConfig.GetStoreDirectory(),
@@ -549,16 +575,16 @@ func (c *coordinator) codebaseIndexOptions(ctx context.Context) (codebaseindex.P
 	}, nil
 }
 
-func (c *coordinator) codebaseIndexStatus(ctx context.Context) (codebaseindex.StoreStatus, error) {
-	options, err := c.codebaseIndexOptions(ctx)
+func (c *coordinator) codebaseIndexStatus(ctx context.Context, snapshots ...config.RuntimeSnapshot) (codebaseindex.StoreStatus, error) {
+	options, err := c.codebaseIndexOptions(ctx, snapshots...)
 	if err != nil {
 		return codebaseindex.StoreStatus{}, err
 	}
 	return codebaseindex.InspectProjectIndexStatus(options), nil
 }
 
-func (c *coordinator) reconcileCodebaseIndex(ctx context.Context) (codebaseindex.StoreStatus, error) {
-	options, err := c.codebaseIndexOptions(ctx)
+func (c *coordinator) reconcileCodebaseIndex(ctx context.Context, snapshots ...config.RuntimeSnapshot) (codebaseindex.StoreStatus, error) {
+	options, err := c.codebaseIndexOptions(ctx, snapshots...)
 	if err != nil {
 		return codebaseindex.StoreStatus{}, err
 	}
@@ -1367,7 +1393,7 @@ func (c *coordinator) buildToolsForSkills(ctx context.Context, agent config.Agen
 		tools.NewWriteTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 	)
 	if !isSubAgent && cfg.Tools.CodebaseSearch.IsEnabled() {
-		allTools = append(allTools, tools.NewCodebaseSearchTool(c.cfg.WorkingDir(), cfg.Tools.CodebaseSearch, nil, c.requestCodebaseIndexReconcile))
+		allTools = append(allTools, tools.NewCodebaseSearchTool(c.cfg.WorkingDir(), cfg.Tools.CodebaseSearch, nil, c.requestCodebaseIndexReconcile, runtimeSnapshot.CodebaseIndexToken))
 	}
 	if agent.Script != nil {
 		allTools = append(allTools, tools.NewScriptTool(c.permissions, c.cfg.WorkingDir(), *agent.Script, environment))

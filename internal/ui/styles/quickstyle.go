@@ -3,15 +3,15 @@ package styles
 import (
 	"image/color"
 
-	"charm.land/bubbles/v2/filepicker"
-	"charm.land/bubbles/v2/help"
-	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/textinput"
-	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2/ansi"
 	"charm.land/lipgloss/v2"
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/exp/charmtone"
+	"github.com/example-git/crux/foundation/bubbles/filepicker"
+	"github.com/example-git/crux/foundation/bubbles/help"
+	"github.com/example-git/crux/foundation/bubbles/textarea"
+	"github.com/example-git/crux/foundation/bubbles/textinput"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/ui/diffview"
 )
 
@@ -871,6 +871,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Sidebar.Background = panelBackground
 	s.Sidebar.SessionTitle = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
 	s.Sidebar.WorkingDir = lipgloss.NewStyle().Foreground(o.fgMoreSubtle)
+	s.Sidebar.Directory = lipgloss.NewStyle().Foreground(charmtone.Pepper).Background(charmtone.Smoke).Bold(true)
 
 	// ModelInfo
 	s.ModelInfo.Icon = lipgloss.NewStyle().Foreground(o.fgMostSubtle)

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/foundation/catalog"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/agent/notify"
 	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/config"

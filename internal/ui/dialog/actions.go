@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/commands"
 	"github.com/example-git/crux/internal/config"

@@ -50,7 +50,7 @@ func (p *Preview) UseLaunchProviders(cfg *config.Config) error {
 	p.data.Provider = surface.Clone()
 	p.data.Models = p.data.Provider.Models
 	p.data.Provider.Models = nil
-	p.data.Settings = PreviewSettings{InstructionMode: cfg.Options.InstructionMode, DisabledInstructionSections: cfg.Options.DisabledInstructionSections, DisableAutoSummarize: cfg.Options.DisableAutoSummarize, SummarizationContextCap: cfg.Options.SummarizationContextCap, SummarizationMaxTokens: cfg.Options.SummarizationMaxTokens, SummarizationFastMode: cfg.Options.SummarizationFastMode, CodexCompactionV2: cfg.Options.CodexCompactionV2}
+	p.data.Settings = PreviewSettings{Debug: cfg.Options.Debug, InstructionMode: cfg.Options.InstructionMode, DisabledInstructionSections: cfg.Options.DisabledInstructionSections, DisableAutoSummarize: cfg.Options.DisableAutoSummarize, SummarizationContextCap: cfg.Options.SummarizationContextCap, SummarizationMaxTokens: cfg.Options.SummarizationMaxTokens, SummarizationFastMode: cfg.Options.SummarizationFastMode, CodexCompactionV2: cfg.Options.CodexCompactionV2}
 	p.base = clonePreviewValue(reflect.ValueOf(p.data)).Interface().(*PreviewData)
 	p.ui = nil
 	p.itemsKey = ""

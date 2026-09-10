@@ -41,33 +41,42 @@ func (m *UI) workspaceAuthorityInfo(width int) string {
 	if authority == nil || width <= 0 {
 		return ""
 	}
-	lines := []string{workspaceAuthorityLabel(authority)}
+	type field struct{ key, value string }
+	fields := []field{{value: workspaceAuthorityLabel(authority)}}
 	if authority.Principal != "" {
-		lines = append(lines, "Client fingerprint:", authority.Principal)
+		fields = append(fields, field{key: "Client fingerprint:"}, field{value: authority.Principal})
 	}
 	if authority.Mode == "client" {
-		lines = append(lines, "Credentials: owning client")
+		fields = append(fields, field{key: "Credentials:", value: "owning client"})
 		if cfg := m.com.Config(); cfg != nil {
 			provider := cfg.Models[config.SelectedModelTypeLarge].Provider
 			for _, account := range authority.Accounts {
 				if account.ProviderID == provider && account.AccountID != "" {
-					lines = append(lines, "Selected account: "+account.AccountID)
+					fields = append(fields, field{key: "Selected account:", value: account.AccountID})
 					break
 				}
 			}
 		}
 	} else if authority.Mode == "server" {
-		lines = append(lines, "Credentials: execution server")
+		fields = append(fields, field{key: "Credentials:", value: "execution server"})
 	}
 	// Account labels are presentation data, never terminal control sequences.
-	for i, line := range lines {
-		line = strings.Map(func(r rune) rune {
+	valueStyle := m.com.Styles.Sidebar.SessionTitle.Bold(false)
+	keyStyle := valueStyle.Bold(true)
+	lines := make([]string, len(fields))
+	for i, field := range fields {
+		value := strings.Map(func(r rune) rune {
 			if unicode.IsControl(r) {
 				return -1
 			}
 			return r
-		}, ansi.Strip(line))
-		lines[i] = m.com.Styles.Sidebar.SessionTitle.Width(width).Render(ansi.Hardwrap(line, width, true))
+		}, ansi.Strip(field.value))
+		line := keyStyle.Render(field.key)
+		if field.key != "" && value != "" {
+			line += " "
+		}
+		line += valueStyle.Render(value)
+		lines[i] = valueStyle.Width(width).Render(ansi.Hardwrap(line, width, true))
 	}
 	return strings.Join(lines, "\n")
 }

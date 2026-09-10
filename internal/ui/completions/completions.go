@@ -7,11 +7,11 @@ import (
 	"strings"
 	"sync"
 
-	"charm.land/bubbles/v2/key"
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/ordered"
+	"github.com/example-git/crux/foundation/bubbles/key"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/ui/list"

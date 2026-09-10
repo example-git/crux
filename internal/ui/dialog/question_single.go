@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"charm.land/bubbles/v2/key"
-	tea "charm.land/bubbletea/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/foundation/bubbles/key"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/question"
 	"github.com/example-git/crux/internal/ui/styles"
 )

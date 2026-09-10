@@ -83,7 +83,8 @@ func automaticCodebaseContextInstructions(result automaticCodebaseContextResult)
 }
 
 func (c *coordinator) retrieveAutomaticCodebaseContext(ctx context.Context, userPrompt string) (string, error) {
-	toolConfig := c.cfg.Config().Tools.CodebaseSearch
+	snapshot := c.cfg.RuntimeSnapshot()
+	toolConfig := snapshot.Config().Tools.CodebaseSearch
 	projectRoot, err := codebaseindex.CanonicalProjectRoot(ctx, c.cfg.WorkingDir())
 	if err != nil {
 		return "", err
@@ -92,13 +93,13 @@ func (c *coordinator) retrieveAutomaticCodebaseContext(ctx context.Context, user
 	reader, err := codebaseindex.OpenReadyProjectWithFilters(projectRoot, toolConfig.GetStoreDirectory(), codebaseindex.ProjectFilters{
 		IncludePaths: toolConfig.IncludePaths,
 		ExcludePaths: toolConfig.ExcludePaths,
-	})
+	}, snapshot.CodebaseIndexToken)
 	if err != nil {
 		return "", err
 	}
 	defer reader.Close()
 
-	embedder := codebaseindex.NewGitHubClient(nil, codebaseindex.CodebaseIndexToken, codebaseindex.GitHubSemanticUserAgent)
+	embedder := codebaseindex.NewGitHubClient(nil, snapshot.CodebaseIndexToken, codebaseindex.GitHubSemanticUserAgent)
 	results, err := reader.Search(ctx, embedder, projectRoot, userPrompt, codebaseindex.SearchOptions{
 		Limit:    automaticCodebaseResultLimit,
 		MinScore: automaticCodebaseMinScore,

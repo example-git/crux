@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/example-git/crux/internal/ui/util"
 )

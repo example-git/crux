@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
 	fantasy "github.com/example-git/crux/foundation"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/agent/notify"

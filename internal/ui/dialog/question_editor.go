@@ -4,11 +4,11 @@ import (
 	"image"
 	"strings"
 
-	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textarea"
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/foundation/bubbles/key"
+	"github.com/example-git/crux/foundation/bubbles/textarea"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/ui/styles"
 )
 

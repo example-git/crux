@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/commands"

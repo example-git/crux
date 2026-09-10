@@ -27,7 +27,11 @@ type CodebaseSearchParams struct {
 	PathPrefix string   `json:"path_prefix,omitempty" description:"Optional project-relative path prefix"`
 }
 
-func NewCodebaseSearchTool(workingDir string, toolConfig config.ToolCodebaseSearch, httpClient *http.Client, requestReconcile func()) fantasy.AgentTool {
+func NewCodebaseSearchTool(workingDir string, toolConfig config.ToolCodebaseSearch, httpClient *http.Client, requestReconcile func(), tokenSources ...codebaseindex.TokenSource) fantasy.AgentTool {
+	tokenSource := codebaseindex.TokenSource(codebaseindex.CodebaseIndexToken)
+	if len(tokenSources) > 0 && tokenSources[0] != nil {
+		tokenSource = tokenSources[0]
+	}
 	return fantasy.NewParallelAgentTool(
 		CodebaseSearchToolName,
 		codebaseSearchDescription,
@@ -65,7 +69,7 @@ func NewCodebaseSearchTool(workingDir string, toolConfig config.ToolCodebaseSear
 			reader, err := codebaseindex.OpenReadyProjectWithFilters(projectRoot, toolConfig.GetStoreDirectory(), codebaseindex.ProjectFilters{
 				IncludePaths: toolConfig.IncludePaths,
 				ExcludePaths: toolConfig.ExcludePaths,
-			})
+			}, tokenSource)
 			if err != nil {
 				var unavailable *codebaseindex.StoreUnavailableError
 				if errors.As(err, &unavailable) {
@@ -75,7 +79,7 @@ func NewCodebaseSearchTool(workingDir string, toolConfig config.ToolCodebaseSear
 			}
 			defer reader.Close()
 
-			embedder := codebaseindex.NewGitHubClient(httpClient, codebaseindex.CodebaseIndexToken, codebaseindex.GitHubSemanticUserAgent)
+			embedder := codebaseindex.NewGitHubClient(httpClient, tokenSource, codebaseindex.GitHubSemanticUserAgent)
 			results, err := reader.Search(ctx, embedder, projectRoot, params.Query, codebaseindex.SearchOptions{
 				Limit:      codebaseSearchCandidateLimit(params.Count),
 				MinScore:   minScore,

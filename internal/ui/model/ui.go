@@ -21,18 +21,18 @@ import (
 	"time"
 	"unicode"
 
-	"charm.land/bubbles/v2/help"
-	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/textarea"
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	uv "github.com/charmbracelet/ultraviolet"
-	"github.com/charmbracelet/ultraviolet/layout"
-	"github.com/charmbracelet/ultraviolet/screen"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/editor"
 	xstrings "github.com/charmbracelet/x/exp/strings"
+	"github.com/example-git/crux/foundation/bubbles/help"
+	"github.com/example-git/crux/foundation/bubbles/key"
+	"github.com/example-git/crux/foundation/bubbles/spinner"
+	"github.com/example-git/crux/foundation/bubbles/textarea"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
+	"github.com/example-git/crux/foundation/ultraviolet/layout"
+	"github.com/example-git/crux/foundation/ultraviolet/screen"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/agent/notify"
 	agenttools "github.com/example-git/crux/internal/agent/tools"
@@ -175,6 +175,7 @@ type (
 		text string
 	}
 	tasksAvailabilityMsg struct {
+		request   uint64
 		available bool
 		err       error
 	}
@@ -312,6 +313,11 @@ type UI struct {
 	// Active inline editor replaces the textarea when non-nil.
 	activeInline dialog.InlineEditor
 	taskPanel    *dialog.Tasks
+	// Ctrl+Down hides the view while retaining its selection, scroll and draft.
+	// Keep delivering task replies while hidden so pending actions can finish.
+	taskPanelHidden      bool
+	taskPanelOpenPending bool
+	taskPanelOpenRequest uint64
 	// inlineCursor stores the cursor from the last inline editor
 	// Draw call, used by the cursor positioning logic below.
 	inlineCursor *tea.Cursor
@@ -389,6 +395,7 @@ type UI struct {
 	sidebarFilesCollapsed   bool
 	sidebarCollapsed        map[string]bool
 	sidebarSectionHeaders   map[string]int
+	sidebarSession          sidebarSessionState
 
 	// Notification state
 	notifyBackend       notification.Backend
@@ -609,6 +616,11 @@ func New(com *common.Common, initialSessionID string, continueLast bool, initial
 	// Initialize compact mode from config
 	ui.forceCompactMode = com.Config().Options.TUI.CompactMode
 	ui.forceSidebar = !ui.forceCompactMode
+	if initialSessionID != "" || continueLast {
+		// Resumed sessions start with the sidebar available, using the normal
+		// size breakpoints rather than a saved or forced compact preference.
+		ui.forceCompactMode, ui.forceSidebar = false, false
+	}
 
 	// set onboarding state defaults
 	ui.onboarding.yesInitializeSelected = true
@@ -836,11 +848,16 @@ func (m *UI) loadMCPrompts() tea.Msg {
 func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd) {
 	var cmds []tea.Cmd
 	cleanupOAuth := m.pruneOAuthLogins()
-	defer func() { updateCommand = tea.Batch(cleanupOAuth, updateCommand) }()
+	defer func() { updateCommand = tea.Batch(cleanupOAuth, updateCommand, m.syncSidebarDirectoryTicker()) }()
 	m.pruneAuthenticationReads()
 	m.pruneAPIKeySessions()
 	// Update terminal capabilities
 	m.caps.Update(msg)
+	m.trackSidebarDirectoryHover(msg)
+	// A sidebar selection owns its drag and release even outside the sidebar.
+	if handled, cmd := m.routeSidebarSessionInput(msg); handled {
+		return m, cmd
+	}
 	if reply, ok := msg.(taskPanelReplyMsg); ok {
 		if m.taskPanel == reply.panel {
 			return m, m.handleTaskPanelMsg(reply.msg)
@@ -858,6 +875,14 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 		}
 	}
 	switch msg := msg.(type) {
+	case sidebarDirectoryTickMsg:
+		return m, m.advanceSidebarDirectoryTicker(msg)
+	case copySidebarSessionIDMsg:
+		return m, m.copySidebarSessionID(msg)
+	case sidebarSessionIDCopiedMsg:
+		if msg.generation == m.sidebarSession.selectionGeneration {
+			m.sidebarSession.clearSelection()
+		}
 	case oauthLoginAbandonMsg:
 		cmds = append(cmds, m.completeOAuthLoginAbandon(msg))
 	case oauthLoginRecordedMsg:
@@ -1158,6 +1183,10 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 		m.promptHistory.draft = ""
 
 	case tasksAvailabilityMsg:
+		if msg.request != m.taskPanelOpenRequest || !m.taskPanelOpenPending {
+			break
+		}
+		m.taskPanelOpenPending = false
 		if msg.err != nil {
 			cmds = append(cmds, util.ReportError(msg.err))
 		} else if msg.available && !m.dialog.HasDialogs() {
@@ -1504,6 +1533,10 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 					clickable.SetHover(msg.X, msg.Y)
 				}
 			}
+		}
+		if msg.Button == uv.MouseNone {
+			// Hover needs no editor update or chat drag/edge scrolling.
+			return m, tea.Batch(cmds...)
 		}
 
 		switch m.state {
@@ -3064,13 +3097,20 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 		return nil
 	}
 
-	if m.taskPanel != nil {
-		return m.handleTaskPanelMsg(msg)
-	}
-
 	if msg.Code == tea.KeyDown && msg.Mod == tea.ModCtrl && (m.state == uiChat || m.state == uiLanding) {
+		if m.taskPanelVisible() {
+			return m.hideTaskPanel()
+		}
+		if m.taskPanelOpenPending {
+			m.cancelTaskPanelOpen()
+			return nil
+		}
 		cmds = append(cmds, m.openTasksIfPresent())
 		return tea.Batch(cmds...)
+	}
+
+	if m.taskPanelVisible() {
+		return m.handleTaskPanelMsg(msg)
 	}
 
 	if m.completionsOpen && key.Matches(msg, m.keyMap.Quit) {
@@ -3610,7 +3650,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		main := uv.NewStyledString(m.landingView())
 		main.Draw(scr, layout.main)
 
-		if m.taskPanel != nil {
+		if m.taskPanelVisible() {
 			m.inlineCursor = m.taskPanel.DrawPanel(scr, layout.editor, m.editorAccent())
 		} else if m.activeInline != nil {
 			m.activeInline.SetFocused(m.focus == uiFocusEditor)
@@ -3639,7 +3679,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		m.chat.Draw(scr, layout.main)
 		if layout.pills.Dy() > 0 && m.pillsView != "" {
 			uv.NewStyledString(m.pillsView).Draw(scr, layout.pills)
-			if m.taskPanel == nil && m.pillsExpanded && m.hasSession() && hasIncompleteTodos(m.session.Todos) && m.effectiveFocusedSection() == pillSectionTodos && layout.pills.Dx() >= 4 {
+			if !m.taskPanelVisible() && m.pillsExpanded && m.hasSession() && hasIncompleteTodos(m.session.Todos) && m.effectiveFocusedSection() == pillSectionTodos && layout.pills.Dx() >= 4 {
 				surface := layout.pills
 				if m.promptQueue > 0 {
 					surface.Min.Y += pillHeightWithBorder
@@ -3650,7 +3690,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 			}
 		}
 
-		if m.taskPanel != nil {
+		if m.taskPanelVisible() {
 			m.inlineCursor = m.taskPanel.DrawPanel(scr, layout.editor, m.editorAccent())
 		} else if m.activeInline != nil {
 			m.activeInline.SetFocused(m.focus == uiFocusEditor)
@@ -3679,12 +3719,12 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 	// Add status and help layer
 	m.status.SetHideHelp(isOnboarding)
-	if m.taskPanel == nil {
+	if !m.taskPanelVisible() {
 		m.status.Draw(scr, layout.status)
 	}
 
 	// Draw completions popup if open
-	if !isOnboarding && m.taskPanel == nil && m.completionsOpen && m.completions.HasItems() {
+	if !isOnboarding && !m.taskPanelVisible() && m.completionsOpen && m.completions.HasItems() {
 		w, h := m.completions.Size()
 		x := m.completionsPositionStart.X
 		y := m.completionsPositionStart.Y - h
@@ -3720,7 +3760,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 		return m.dialog.Draw(scr, scr.Bounds())
 	}
 
-	if m.taskPanel != nil {
+	if m.taskPanelVisible() {
 		return m.inlineCursor
 	}
 	switch m.focus {
@@ -3760,16 +3800,17 @@ func (m *UI) View() tea.View {
 	if !m.isTransparent {
 		v.BackgroundColor = m.com.Styles.Background
 	}
-	if m.activeInline != nil {
-		v.MouseMode = tea.MouseModeAllMotion
-	} else {
-		v.MouseMode = tea.MouseModeCellMotion
-	}
 	v.ReportFocus = m.caps.ReportFocusEvents
 	v.WindowTitle = "crux " + home.Short(m.com.Workspace.WorkingDir())
 
 	canvas := uv.NewScreenBuffer(m.width, m.height)
 	v.Cursor = m.Draw(canvas, canvas.Bounds())
+	// Draw establishes directory bounds on the very first frame. Hover needs
+	// unpressed motion; short paths retain the normal drag-only mouse mode.
+	v.MouseMode = tea.MouseModeCellMotion
+	if m.activeInline != nil || m.sidebarDirectoryCanHover() && m.sidebarSession.directoryOverflow {
+		v.MouseMode = tea.MouseModeAllMotion
+	}
 
 	content := strings.ReplaceAll(canvas.Render(), "\r\n", "\n") // normalize newlines
 	contentLines := strings.Split(content, "\n")
@@ -3792,7 +3833,7 @@ func (m *UI) View() tea.View {
 
 // ShortHelp implements [help.KeyMap].
 func (m *UI) ShortHelp() []key.Binding {
-	if m.taskPanel != nil {
+	if m.taskPanelVisible() {
 		return nil
 	}
 	var binds []key.Binding
@@ -3890,7 +3931,7 @@ func (m *UI) ShortHelp() []key.Binding {
 
 // FullHelp implements [help.KeyMap].
 func (m *UI) FullHelp() [][]key.Binding {
-	if m.taskPanel != nil {
+	if m.taskPanelVisible() {
 		return nil
 	}
 	// When an inline editor is active, show its help.
@@ -4231,7 +4272,7 @@ func (m *UI) updateSize() {
 	m.chat.SetSize(m.layout.main.Dx(), m.layout.main.Dy())
 	m.textarea.MaxHeight = TextareaMaxHeight
 	m.textarea.SetWidth(max(1, m.layout.editor.Dx()-2))
-	if m.taskPanel == nil && m.activeInline == nil {
+	if !m.taskPanelVisible() && m.activeInline == nil {
 		availableHeight := max(1, m.layout.editor.Max.Y-m.layout.main.Min.Y-editorHeightMargin-1)
 		m.textarea.SetHeight(min(m.textarea.Height(), availableHeight))
 	}
@@ -4271,7 +4312,7 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 			editorHeight = m.activeInline.Height(editorWidth)
 		}
 	}
-	if m.taskPanel != nil {
+	if m.taskPanelVisible() {
 		editorHeight = min(max(9, (h*3+5)/10), max(0, h-5))
 	}
 	// The sidebar width
@@ -4297,7 +4338,7 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 	helpRect.Min.Y -= 1
 	appRect.Min.X += 1
 	appRect.Max.X -= 1
-	if m.taskPanel != nil {
+	if m.taskPanelVisible() {
 		appRect.Max.Y = area.Max.Y
 	}
 
@@ -4459,7 +4500,7 @@ func (m *UI) generateLayout(w, h int) uiLayout {
 		uiLayout.sidebar.Max = image.Pt(area.Max.X-1, max(uiLayout.sidebar.Min.Y, uiLayout.editor.Min.Y-1))
 	}
 
-	if m.taskPanel != nil {
+	if m.taskPanelVisible() {
 		uiLayout.editor.Max = area.Max
 		uiLayout.status = image.Rectangle{}
 		if len(m.taskPanel.PanelInfoLines()) > 0 {
@@ -5057,9 +5098,9 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 		if err != nil {
 			return util.ReportError(err)
 		}
-		if m.forceCompactMode {
-			m.isCompact = true
-		}
+		// The first message opens the sidebar when the terminal has room,
+		// regardless of a saved preference or the previous session's toggle.
+		m.forceCompactMode, m.forceSidebar = false, false
 		if newSession.ID != "" {
 			m.session = &newSession
 			cmds = append(cmds, m.loadSession(newSession.ID))
@@ -5123,9 +5164,8 @@ func (m *UI) runShellCommandInternal(command string, isFirstMessage bool) tea.Cm
 		if err != nil {
 			return util.ReportError(err)
 		}
-		if m.forceCompactMode {
-			m.isCompact = true
-		}
+		// A shell command can also be the first message of a new session.
+		m.forceCompactMode, m.forceSidebar = false, false
 		if newSession.ID != "" {
 			m.session = &newSession
 			cmds = append(cmds, m.loadSession(newSession.ID))
@@ -5635,22 +5675,34 @@ func (m *UI) openTmuxSessionsDialog() tea.Cmd {
 }
 
 func (m *UI) openTasksIfPresent() tea.Cmd {
+	if m.taskPanel != nil {
+		return m.openTasksDialog()
+	}
+	m.taskPanelOpenRequest++
+	request := m.taskPanelOpenRequest
+	m.taskPanelOpenPending = true
 	return func() tea.Msg {
 		tasks, err := m.com.Workspace.ListTasks(context.Background())
-		return tasksAvailabilityMsg{available: len(tasks) > 0, err: err}
+		return tasksAvailabilityMsg{request: request, available: len(tasks) > 0, err: err}
 	}
 }
 
 func (m *UI) openTasksDialog() tea.Cmd {
-	if m.taskPanel != nil {
+	m.cancelTaskPanelOpen()
+	if m.taskPanelVisible() {
 		return nil
 	}
-	m.taskPanel = dialog.NewTasksPanel(m.com)
+	var cmd tea.Cmd
+	if m.taskPanel == nil {
+		m.taskPanel = dialog.NewTasksPanel(m.com)
+		cmd = wrapTaskPanelCmd(m.taskPanel, m.taskPanel.InitialCmd())
+	}
+	m.taskPanelHidden = false
 	m.textarea.Blur()
 	m.chat.Blur()
 	m.closeCompletions()
 	m.updateLayoutAndSize()
-	return wrapTaskPanelCmd(m.taskPanel, m.taskPanel.InitialCmd())
+	return cmd
 }
 
 func (m *UI) openCodebaseIndexDialog() tea.Cmd {

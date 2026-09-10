@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/agent"
 	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/app"
@@ -605,25 +605,27 @@ func (w *AppWorkspace) UpdateCodebaseIndex(ctx context.Context, update proto.Cod
 
 func codebaseIndexStatusProto(settings config.ToolCodebaseSearch, status codebaseindex.StoreStatus) proto.CodebaseIndexStatus {
 	result := proto.CodebaseIndexStatus{
-		Enabled:          settings.IsEnabled(),
-		State:            string(status.State),
-		Serving:          status.Serving,
-		ProjectRoot:      status.ProjectRoot,
-		DatabasePath:     status.DatabasePath,
-		StoreDirectory:   status.StoreDirectory,
-		SourceMode:       status.SourceMode,
-		CredentialStatus: status.CredentialStatus,
-		Model:            status.Model,
-		IncludePaths:     append([]string(nil), settings.IncludePaths...),
-		ExcludePaths:     append([]string(nil), settings.ExcludePaths...),
-		FilesTotal:       status.FilesTotal,
-		FilesProcessed:   status.FilesProcessed,
-		ChunksCreated:    status.ChunksCreated,
-		FilesSkipped:     status.FilesSkipped,
-		CurrentPath:      status.CurrentPath,
-		Stage:            status.Stage,
-		StartedAt:        status.StartedAt,
-		FinishedAt:       status.FinishedAt,
+		ConfiguredDatabasePath:   settings.DatabasePath,
+		ConfiguredStoreDirectory: settings.GetStoreDirectory(),
+		Enabled:                  settings.IsEnabled(),
+		State:                    string(status.State),
+		Serving:                  status.Serving,
+		ProjectRoot:              status.ProjectRoot,
+		DatabasePath:             status.DatabasePath,
+		StoreDirectory:           status.StoreDirectory,
+		SourceMode:               status.SourceMode,
+		CredentialStatus:         status.CredentialStatus,
+		Model:                    status.Model,
+		IncludePaths:             append([]string(nil), settings.IncludePaths...),
+		ExcludePaths:             append([]string(nil), settings.ExcludePaths...),
+		FilesTotal:               status.FilesTotal,
+		FilesProcessed:           status.FilesProcessed,
+		ChunksCreated:            status.ChunksCreated,
+		FilesSkipped:             status.FilesSkipped,
+		CurrentPath:              status.CurrentPath,
+		Stage:                    status.Stage,
+		StartedAt:                status.StartedAt,
+		FinishedAt:               status.FinishedAt,
 	}
 	if status.Err != nil {
 		result.Error = status.Err.Error()

@@ -1,7 +1,7 @@
 package common
 
 import (
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 )
 
 // Model represents a common interface for UI components.

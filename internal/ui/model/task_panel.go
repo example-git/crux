@@ -3,7 +3,7 @@ package model
 import (
 	"image"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/dialog"
 )
@@ -30,13 +30,38 @@ func wrapTaskPanelCmd(panel *dialog.Tasks, cmd tea.Cmd) tea.Cmd {
 	}
 }
 
+func (m *UI) taskPanelVisible() bool {
+	return m.taskPanel != nil && !m.taskPanelHidden
+}
+
+func (m *UI) hideTaskPanel() tea.Cmd {
+	m.cancelTaskPanelOpen()
+	m.taskPanelHidden = true
+	return m.restoreTaskPanelEditor()
+}
+
+func (m *UI) cancelTaskPanelOpen() {
+	m.taskPanelOpenRequest++
+	m.taskPanelOpenPending = false
+}
+
+func (m *UI) restoreTaskPanelEditor() tea.Cmd {
+	m.focus = uiFocusEditor
+	m.updateLayoutAndSize()
+	if m.activeInline != nil {
+		m.activeInline.SetFocused(true)
+		return nil
+	}
+	return m.textarea.Focus()
+}
+
 func (m *UI) handleTaskPanelMsg(msg tea.Msg) tea.Cmd {
 	if m.taskPanel == nil {
 		return nil
 	}
 	infoHeight := len(m.taskPanel.PanelInfoLines())
 	defer func() {
-		if m.taskPanel != nil && len(m.taskPanel.PanelInfoLines()) != infoHeight {
+		if m.taskPanelVisible() && len(m.taskPanel.PanelInfoLines()) != infoHeight {
 			m.updateLayoutAndSize()
 		}
 	}()
@@ -44,20 +69,19 @@ func (m *UI) handleTaskPanelMsg(msg tea.Msg) tea.Cmd {
 	case dialog.ActionCmd:
 		return wrapTaskPanelCmd(m.taskPanel, action.Cmd)
 	case dialog.ActionClose:
+		m.cancelTaskPanelOpen()
 		m.taskPanel.ClosePanel()
 		m.taskPanel = nil
-		m.focus = uiFocusEditor
-		m.updateLayoutAndSize()
-		if m.activeInline != nil {
-			m.activeInline.SetFocused(true)
-			return nil
-		}
-		return m.textarea.Focus()
+		m.taskPanelHidden = false
+		return m.restoreTaskPanelEditor()
 	}
 	return nil
 }
 
 func (m *UI) routeTaskPanelInput(msg tea.Msg) (bool, tea.Cmd) {
+	if !m.taskPanelVisible() {
+		return false, nil
+	}
 	var point image.Point
 	switch event := msg.(type) {
 	case tea.PasteMsg:

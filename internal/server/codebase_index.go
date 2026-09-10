@@ -23,7 +23,12 @@ func (c *controllerV1) handlePostWorkspaceCodebaseIndex(w http.ResponseWriter, r
 		jsonError(w, http.StatusBadRequest, "failed to decode request")
 		return
 	}
-	status, err := c.backend.UpdateCodebaseIndex(r.PathValue("id"), update)
+	accepted, err := proto.ParseWorkspaceAttachment(r.Header)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	status, err := c.backend.UpdateCodebaseIndex(r.PathValue("id"), update, accepted)
 	if err != nil {
 		c.handleError(w, r, err)
 		return

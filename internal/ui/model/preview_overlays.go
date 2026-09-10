@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/session"
 	managedtask "github.com/example-git/crux/internal/task"
@@ -95,6 +95,7 @@ func (p *Preview) applyPreviewOverlays(o PreviewOptions) error {
 		u.taskPanel.ClosePanel()
 		u.taskPanel = nil
 	}
+	u.taskPanelHidden = false
 	u.dialog = dialog.NewOverlay()
 	u.completions.Close()
 	u.completionsOpen = false

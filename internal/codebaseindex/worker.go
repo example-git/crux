@@ -54,6 +54,9 @@ type StoreStatus struct {
 }
 
 type ProjectIndexOptions struct {
+	TokenSource            TokenSource
+	RuntimeIdentity        string
+	BindContext            func(context.Context) (context.Context, context.CancelFunc)
 	ProjectRoot            string
 	ConfiguredDatabasePath string
 	StoreDirectory         string
@@ -104,8 +107,8 @@ var backgroundIndexes = struct {
 
 var (
 	findImportDatabase       = FindImportDatabasePath
-	runNativeProjectIndexing = func(ctx context.Context, projectRoot, storeDirectory string, filters ProjectFilters, report func(IndexProgress)) error {
-		client := NewGitHubClient(http.DefaultClient, CodebaseIndexToken, GitHubSemanticUserAgent)
+	runNativeProjectIndexing = func(ctx context.Context, projectRoot, storeDirectory string, filters ProjectFilters, tokenSource TokenSource, report func(IndexProgress)) error {
+		client := NewGitHubClient(http.DefaultClient, indexTokenSource(tokenSource), GitHubSemanticUserAgent)
 		return buildNativeProjectStore(ctx, projectRoot, storeDirectory, filters, client, report)
 	}
 	runProjectIndexing = indexProjectWithFilters
@@ -115,7 +118,7 @@ func OpenReadyProject(projectRoot, storeDirectory string) (*Reader, error) {
 	return OpenReadyProjectWithFilters(projectRoot, storeDirectory, ProjectFilters{})
 }
 
-func OpenReadyProjectWithFilters(projectRoot, storeDirectory string, filters ProjectFilters) (*Reader, error) {
+func OpenReadyProjectWithFilters(projectRoot, storeDirectory string, filters ProjectFilters, tokenSources ...TokenSource) (*Reader, error) {
 	directory, err := resolveStoreDirectory(storeDirectory)
 	if err != nil {
 		return nil, err
@@ -127,6 +130,9 @@ func OpenReadyProjectWithFilters(projectRoot, storeDirectory string, filters Pro
 		StoreDirectory: directory,
 		Enabled:        true,
 		Filters:        filters,
+	}
+	if len(tokenSources) > 0 {
+		options.TokenSource = tokenSources[0]
 	}
 	var lastErr error
 	for range 3 {
@@ -235,6 +241,10 @@ func ReconcileProjectIndexing(ctx context.Context, options ProjectIndexOptions) 
 		status.Stage = "Preparing index"
 	}
 	workerContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	if options.BindContext != nil {
+		cancel()
+		workerContext, cancel = options.BindContext(context.WithoutCancel(ctx))
+	}
 	backgroundIndexes.jobs[key] = backgroundIndexJob{
 		status: status,
 		digest: digest,
@@ -244,6 +254,7 @@ func ReconcileProjectIndexing(ctx context.Context, options ProjectIndexOptions) 
 	backgroundIndexes.Unlock()
 
 	go func() {
+		defer cancel()
 		report := func(progress IndexProgress) {
 			backgroundIndexes.Lock()
 			current := backgroundIndexes.jobs[key]
@@ -258,7 +269,7 @@ func ReconcileProjectIndexing(ctx context.Context, options ProjectIndexOptions) 
 			}
 			backgroundIndexes.Unlock()
 		}
-		err := runProjectIndexing(workerContext, options.ProjectRoot, options.ConfiguredDatabasePath, directory, options.Filters, report)
+		err := runProjectIndexing(workerContext, options.ProjectRoot, options.ConfiguredDatabasePath, directory, options.Filters, options.TokenSource, report)
 		if err == nil {
 			if _, pruneErr := pruneStoreGenerations(directory); pruneErr != nil {
 				slog.Warn("Could not prune codebase index store after indexing", "store_directory", directory, "error", pruneErr)
@@ -334,7 +345,7 @@ func inspectProjectIndexStatus(options ProjectIndexOptions, checkNativeSource bo
 	backgroundIndexes.RLock()
 	job, exists := backgroundIndexes.jobs[key]
 	backgroundIndexes.RUnlock()
-	jobMatches := exists && (job.digest == digest || options.ConfiguredDatabasePath == "" && strings.HasPrefix(job.digest, filter+"\x00"))
+	jobMatches := exists && (job.digest == digest || options.RuntimeIdentity == "" && options.ConfiguredDatabasePath == "" && strings.HasPrefix(job.digest, filter+"\x00"))
 
 	catalog, catalogErr := loadProjectCatalog(directory, options.ProjectRoot)
 	if catalogErr == nil {
@@ -393,7 +404,7 @@ func statusWithDetails(options ProjectIndexOptions, directory string, status Sto
 	if status.StoreDirectory == "" {
 		status.StoreDirectory, _ = DefaultStoreDirectory()
 	}
-	token, err := CodebaseIndexToken(context.Background())
+	token, err := indexTokenSource(options.TokenSource)(context.Background())
 	switch {
 	case err != nil:
 		status.CredentialStatus = "invalid"
@@ -436,10 +447,10 @@ func projectIndexKey(projectRoot, storeDirectory string) string {
 }
 
 func projectIndexOptionsDigest(options ProjectIndexOptions) string {
-	return filterDigest(options.Filters) + "\x00" + options.ConfiguredDatabasePath
+	return filterDigest(options.Filters) + "\x00" + options.ConfiguredDatabasePath + "\x00" + options.RuntimeIdentity
 }
 
-func indexProjectWithFilters(ctx context.Context, projectRoot, configuredDatabasePath, storeDirectory string, filters ProjectFilters, report func(IndexProgress)) error {
+func indexProjectWithFilters(ctx context.Context, projectRoot, configuredDatabasePath, storeDirectory string, filters ProjectFilters, tokenSource TokenSource, report func(IndexProgress)) error {
 	if report != nil {
 		report(IndexProgress{Stage: "Checking index source"})
 	}
@@ -448,7 +459,7 @@ func indexProjectWithFilters(ctx context.Context, projectRoot, configuredDatabas
 		return err
 	}
 	if !found {
-		return runNativeProjectIndexing(ctx, projectRoot, storeDirectory, filters, report)
+		return runNativeProjectIndexing(ctx, projectRoot, storeDirectory, filters, tokenSource, report)
 	}
 	if report != nil {
 		report(IndexProgress{Stage: "Importing database"})
@@ -471,4 +482,11 @@ func indexProjectWithFilters(ctx context.Context, projectRoot, configuredDatabas
 func IsStoreUnavailable(err error) bool {
 	var unavailable *StoreUnavailableError
 	return errors.As(err, &unavailable)
+}
+
+func indexTokenSource(source TokenSource) TokenSource {
+	if source != nil {
+		return source
+	}
+	return CodebaseIndexToken
 }

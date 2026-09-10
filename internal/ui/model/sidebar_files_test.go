@@ -7,8 +7,8 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	tea "charm.land/bubbletea/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/history"
 	"github.com/stretchr/testify/require"
 )
@@ -85,7 +85,7 @@ func TestSidebarFullContentsPriorityAndNativeCollapse(t *testing.T) {
 		}
 		u.Update(tea.MouseClickMsg(tea.Mouse{X: u.layout.sidebar.Min.X + 2, Y: u.layout.sidebar.Min.Y + 1 + logoHeight + line, Button: uv.MouseLeft}))
 	}
-	for _, id := range []string{"model", "session", "lsp", "mcp", "skills", "usage"} {
+	for _, id := range []string{"model", "session", "lsp", "mcp", "skills"} {
 		line, exists := u.sidebarSectionHeaders[id]
 		require.True(t, exists, id)
 		click(line)

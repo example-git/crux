@@ -214,3 +214,17 @@ func TestOpenReadyNativeProjectDoesNotRequireFreshnessScan(t *testing.T) {
 	require.Len(t, results, 1)
 	require.Equal(t, "main.go", results[0].Chunk.Path)
 }
+
+func TestNativeProjectIndexExcludesItsWorkspaceState(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".crux", "remote"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".crux", "remote", "metadata.json"), []byte(`{"generated":true}`), 0600))
+	embedder := &nativeReadyEmbedder{}
+	require.NoError(t, buildNativeProjectStore(t.Context(), root, filepath.Join(root, ".crux", "remote", "index"), ProjectFilters{}, embedder, nil))
+	require.Equal(t, []string{"main.go"}, embedder.paths)
+	// Git-listed paths must obey the same exclusion as the filesystem walk.
+	require.False(t, validNativeProjectPath(".crux/remote/metadata.json"))
+	require.False(t, validNativeProjectPath("nested/.crux/metadata.json"))
+	require.True(t, validNativeProjectPath("src/crux.go"))
+}

@@ -21,7 +21,7 @@ type authenticationConfigWrite struct {
 // prepareAuthenticationLoadTopology projects only the loader's fixed writes.
 // All bytes come from retained reads plus exact field receipts, never a later
 // file observation. The returned basis is complete before runtime preparation.
-func prepareAuthenticationLoadTopology(ctx context.Context, original *authenticationLoadBasis, notification notificationMigrationPlan, modelFields, migrationFields map[string]any, globalPath, workingDir, workspacePath string, base env.Env) (*authenticationLoadBasis, []string, error) {
+func prepareAuthenticationLoadTopology(ctx context.Context, original *authenticationLoadBasis, notification notificationMigrationPlan, modelFields, migrationFields map[string]any, globalPath, workingDir, workspacePath string, base env.Env, globalOnly ...bool) (*authenticationLoadBasis, []string, error) {
 	writes := []authenticationConfigWrite{}
 	for _, path := range slices.Sorted(maps.Keys(notification.overrides)) {
 		write := authenticationConfigWrite{path: path, fields: map[string]any{}}
@@ -39,13 +39,13 @@ func prepareAuthenticationLoadTopology(ctx context.Context, original *authentica
 	if len(migrationFields) > 0 {
 		writes = append(writes, authenticationConfigWrite{path: globalPath, fields: migrationFields})
 	}
-	return projectAuthenticationBasisWrites(ctx, original, writes, workingDir, workspacePath, base)
+	return projectAuthenticationBasisWrites(ctx, original, writes, workingDir, workspacePath, base, globalOnly...)
 }
 
 // projectAuthenticationBasisWrites serves startup and ordinary typed writes.
 // Its result belongs only to an unpublished candidate until the actual writes
 // have been verified; no later observation can advance these retained sources.
-func projectAuthenticationBasisWrites(ctx context.Context, original *authenticationLoadBasis, writes []authenticationConfigWrite, workingDir, workspacePath string, base env.Env) (*authenticationLoadBasis, []string, error) {
+func projectAuthenticationBasisWrites(ctx context.Context, original *authenticationLoadBasis, writes []authenticationConfigWrite, workingDir, workspacePath string, base env.Env, globalOnly ...bool) (*authenticationLoadBasis, []string, error) {
 	if original == nil || len(writes) == 0 {
 		return original, nil, nil
 	}
@@ -63,10 +63,13 @@ func projectAuthenticationBasisWrites(ctx context.Context, original *authenticat
 	if cached, ok := worktreeRootCache.Load(workingDir); ok && cached.(string) != "" {
 		boundary = cached.(string)
 	}
-	current, projected, err := fsext.LookupBoundedWithCreatedFiles(ctx, workingDir, boundary, paths,
-		"."+appName+"rc", appName+"rc", "."+appName+".json", appName+".json")
-	if err != nil {
-		return nil, nil, err
+	var current, projected []string
+	if len(globalOnly) == 0 || !globalOnly[0] {
+		current, projected, err = fsext.LookupBoundedWithCreatedFiles(ctx, workingDir, boundary, paths,
+			"."+appName+"rc", appName+"rc", "."+appName+".json", appName+".json")
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	slices.Reverse(current)
 	slices.Reverse(projected)
@@ -122,11 +125,11 @@ func projectAuthenticationBasisWrites(ctx context.Context, original *authenticat
 
 // verifyAuthenticationWriteTopology checks the predicted order and authored
 // source postimages. It never advances the prepared basis or evaluates shell.
-func verifyAuthenticationWriteTopology(ctx context.Context, basis *authenticationLoadBasis, writtenPaths []string, workingDir, workspacePath string, base env.Env) error {
+func verifyAuthenticationWriteTopology(ctx context.Context, basis *authenticationLoadBasis, writtenPaths []string, workingDir, workspacePath string, base env.Env, globalOnly ...bool) error {
 	if len(writtenPaths) == 0 {
 		return nil
 	}
-	order := append(lookupConfigsFromEnvironment(workingDir, base), workspacePath)
+	order := append(lookupConfigsFromEnvironment(workingDir, base, globalOnly...), workspacePath)
 	for i := range order {
 		order[i] = filepath.Clean(order[i])
 	}

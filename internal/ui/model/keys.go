@@ -1,6 +1,6 @@
 package model
 
-import "charm.land/bubbles/v2/key"
+import "github.com/example-git/crux/foundation/bubbles/key"
 
 type KeyMap struct {
 	Editor struct {
@@ -61,20 +61,20 @@ type KeyMap struct {
 	}
 
 	// Global key maps
-	Quit          key.Binding
-	Help          key.Binding
-	Commands      key.Binding
-	Models        key.Binding
-	Providers     key.Binding
-	Instructions  key.Binding
-	CodebaseIndex key.Binding
-	Suspend       key.Binding
-	Sessions      key.Binding
-	Tab           key.Binding
+	Quit           key.Binding
+	Help           key.Binding
+	Commands       key.Binding
+	Models         key.Binding
+	Providers      key.Binding
+	Instructions   key.Binding
+	CodebaseIndex  key.Binding
+	Suspend        key.Binding
+	Sessions       key.Binding
+	Tab            key.Binding
 	ToggleDelivery key.Binding
-	ToggleYolo    key.Binding
-	TogglePlan    key.Binding
-	DetachJob     key.Binding
+	ToggleYolo     key.Binding
+	TogglePlan     key.Binding
+	DetachJob      key.Binding
 }
 
 func DefaultKeyMap() KeyMap {

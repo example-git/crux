@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/stretchr/testify/require"
 )
@@ -134,7 +134,7 @@ func TestFilter_MotionThrottledIndependently(t *testing.T) {
 	t.Parallel()
 	f, now := newTestFilter(t)
 
-	motion := tea.MouseMotionMsg(tea.Mouse{X: 1, Y: 1})
+	motion := tea.MouseMotionMsg(tea.Mouse{X: 1, Y: 1, Button: tea.MouseLeft})
 
 	// First motion passes.
 	result := f.Filter(nil, motion)
@@ -159,4 +159,12 @@ func TestFilter_NonMouseMessagesPassThrough(t *testing.T) {
 	msg := customMsg{}
 	result := f.Filter(nil, msg)
 	require.Equal(t, msg, result, "non-mouse messages should pass through unchanged")
+}
+
+func TestFilter_HoverPreservesFinalPosition(t *testing.T) {
+	f, _ := newTestFilter(t)
+	for _, x := range []int{80, 81, 82, 15} {
+		motion := tea.MouseMotionMsg{X: x, Y: 10, Button: tea.MouseNone}
+		require.Equal(t, motion, f.Filter(nil, motion), "an unpressed leave event must not be dropped")
+	}
 }

@@ -6,13 +6,13 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/help"
-	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textinput"
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/foundation/bubbles/help"
+	"github.com/example-git/crux/foundation/bubbles/key"
+	"github.com/example-git/crux/foundation/bubbles/textinput"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/ui/common"
 )
@@ -40,18 +40,19 @@ type codebaseIndexResultMsg struct {
 type codebaseIndexPollMsg struct{}
 
 type CodebaseIndex struct {
-	com       *common.Common
-	help      help.Model
-	database  textinput.Model
-	store     textinput.Model
-	include   textinput.Model
-	exclude   textinput.Model
-	status    proto.CodebaseIndexStatus
-	enabled   bool
-	focus     int
-	busy      bool
-	lastError string
-	keyMap    struct {
+	com         *common.Common
+	help        help.Model
+	database    textinput.Model
+	store       textinput.Model
+	include     textinput.Model
+	exclude     textinput.Model
+	status      proto.CodebaseIndexStatus
+	enabled     bool
+	focus       int
+	initialized bool
+	busy        bool
+	lastError   string
+	keyMap      struct {
 		Up      key.Binding
 		Down    key.Binding
 		Select  key.Binding
@@ -72,12 +73,6 @@ func NewCodebaseIndex(com *common.Common) (*CodebaseIndex, tea.Cmd) {
 	index.store = codebaseIndexInput(com, "default global store")
 	index.include = codebaseIndexInput(com, "all project paths")
 	index.exclude = codebaseIndexInput(com, "none")
-	settings := com.Config().Tools.CodebaseSearch
-	index.enabled = settings.IsEnabled()
-	index.database.SetValue(settings.DatabasePath)
-	index.store.SetValue(settings.GetStoreDirectory())
-	index.include.SetValue(strings.Join(settings.IncludePaths, ", "))
-	index.exclude.SetValue(strings.Join(settings.ExcludePaths, ", "))
 	index.keyMap.Up = key.NewBinding(key.WithKeys("up", "shift+tab"), key.WithHelp("↑", "previous"))
 	index.keyMap.Down = key.NewBinding(key.WithKeys("down", "tab"), key.WithHelp("↓", "next"))
 	index.keyMap.Select = key.NewBinding(key.WithKeys("enter", "space"), key.WithHelp("enter", "select"))
@@ -111,7 +106,10 @@ func (d *CodebaseIndex) HandleMsg(msg tea.Msg) Action {
 		}
 		d.status = msg.status
 		d.lastError = msg.status.Error
-		if msg.saved {
+		if msg.saved || !d.initialized {
+			d.initialized = true
+			d.database.SetValue(msg.status.ConfiguredDatabasePath)
+			d.store.SetValue(msg.status.ConfiguredStoreDirectory)
 			d.enabled = msg.status.Enabled
 			d.include.SetValue(strings.Join(msg.status.IncludePaths, ", "))
 			d.exclude.SetValue(strings.Join(msg.status.ExcludePaths, ", "))
@@ -280,7 +278,7 @@ func (d *CodebaseIndex) inputLine(row int, label, value string) string {
 }
 
 func (d *CodebaseIndex) save(reindex bool) Action {
-	if d.busy {
+	if d.busy || !d.initialized {
 		return nil
 	}
 	d.busy = true

@@ -80,6 +80,13 @@
           "properties": {},
           "type": "object"
         },
+        "remote_codebase_indexes": {
+          "additionalProperties": {
+            "$ref": "#/$defs/ToolCodebaseSearch"
+          },
+          "description": "Client-owned codebase index settings by remote workspace identity",
+          "type": "object"
+        },
         "tools": {
           "$ref": "#/$defs/Tools",
           "description": "Tool configurations"

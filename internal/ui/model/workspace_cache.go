@@ -28,7 +28,7 @@ import (
 	"slices"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/workspace"

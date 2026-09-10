@@ -3,11 +3,11 @@ package dialog
 import (
 	"errors"
 
-	"charm.land/bubbles/v2/help"
-	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textinput"
-	tea "charm.land/bubbletea/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/foundation/bubbles/help"
+	"github.com/example-git/crux/foundation/bubbles/key"
+	"github.com/example-git/crux/foundation/bubbles/textinput"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/list"

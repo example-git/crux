@@ -9,6 +9,15 @@ type AuthorityViewProvider interface {
 	AcceptedAuthority() *config.RemoteAuthority
 }
 
+// RemoteAddressProvider exposes the connection endpoint already held locally.
+type RemoteAddressProvider interface {
+	RemoteAddress() string
+}
+
+func (w *ClientWorkspace) RemoteAddress() string {
+	return w.client.RemoteAddress()
+}
+
 func (w *ClientWorkspace) AcceptedAuthority() *config.RemoteAuthority {
 	w.mu.RLock()
 	defer w.mu.RUnlock()

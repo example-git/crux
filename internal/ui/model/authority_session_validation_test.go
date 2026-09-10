@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/history"

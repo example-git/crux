@@ -7,10 +7,10 @@ import (
 	"hash/fnv"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/tree"
 	"github.com/charmbracelet/x/ansi"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/ui/anim"
 	"github.com/example-git/crux/internal/ui/common"

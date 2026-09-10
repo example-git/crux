@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/ui/chat"
@@ -292,7 +292,7 @@ func (m *UI) effectiveFocusedSection() pillSection {
 
 // pillsAreaHeight calculates the total height needed for the pills area.
 func (m *UI) pillsAreaHeight() int {
-	if m.taskPanel != nil {
+	if m.taskPanelVisible() {
 		if lines := m.taskPanel.PanelInfoLines(); len(lines) > 0 {
 			return len(lines) + 1
 		}
@@ -334,7 +334,7 @@ func (m *UI) pillsAreaHeight() int {
 // renderPills renders the pills panel and stores it in m.pillsView.
 func (m *UI) renderPills() {
 	m.pillsView = ""
-	if m.taskPanel != nil {
+	if m.taskPanelVisible() {
 		if lines := m.taskPanel.PanelInfoLines(); len(lines) > 0 {
 			m.pillsView = m.taskPanel.RenderPanelInfo(m.layout.pills.Dx(), m.editorAccent())
 			return

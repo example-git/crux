@@ -10,6 +10,7 @@ import (
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/agent/tools"
 	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
 	"github.com/example-git/crux/internal/permission"
@@ -26,6 +27,7 @@ import (
 // PreviewData is the editable document shared by HTTP and the native renderer.
 // All initial values come from the dummy fixture; edits exist only in the page.
 type PreviewSettings struct {
+	Debug                       bool     `json:"debug"`
 	InstructionMode             string   `json:"instructionMode"`
 	DisabledInstructionSections []string `json:"disabledInstructionSections"`
 	DisableAutoSummarize        bool     `json:"disableAutoSummarize"`
@@ -35,6 +37,9 @@ type PreviewSettings struct {
 	CodexCompactionV2           bool     `json:"codexCompactionV2"`
 }
 type PreviewData struct {
+	Directory           string                                `json:"directory"`
+	RemoteAddress       string                                `json:"remoteAddress"`
+	Authority           *config.RemoteAuthority               `json:"authority,omitempty"`
 	ForegroundWaitCount int                                   `json:"foregroundWaitCount"`
 	Messages            []*message.Message                    `json:"messages"`
 	CodebaseIndex       proto.CodebaseIndexStatus             `json:"codebaseIndex"`
@@ -74,7 +79,7 @@ func (p *Preview) defaultData() *PreviewData {
 	d.Permission = permission.PermissionRequest{ID: "fixture-permission", SessionID: d.Session.ID, ToolName: tools.BashToolName, Description: "Run the local fixture checks", Action: "execute", Path: "/preview/crush", Params: tools.BashPermissionsParams{Command: "go test ./fixture -v"}}
 	d.Settings.InstructionMode = "all"
 	d.Settings.DisabledInstructionSections = []string{}
-	d.CodebaseIndex = proto.CodebaseIndexStatus{Enabled: true, State: "indexing", Serving: true, ProjectRoot: "/preview/crush", DatabasePath: "/preview/crush/.crux/index.db", StoreDirectory: "/preview/index-store", SourceMode: "local fixture", CredentialStatus: "ready", Model: "dummy-embeddings", IncludePaths: []string{"internal/", "foundation/"}, ExcludePaths: []string{"node_modules/", "vendor/"}, FilesTotal: 1280, FilesProcessed: 864, ChunksCreated: 4320, FilesSkipped: 12, CurrentPath: "internal/ui/model/preview_registry.go", Stage: "embedding"}
+	d.CodebaseIndex = proto.CodebaseIndexStatus{Enabled: true, State: "indexing", Serving: true, ProjectRoot: "/preview/crush", DatabasePath: "/preview/crush/.crux/index.db", StoreDirectory: "/preview/index-store", ConfiguredDatabasePath: "/preview/crush/.crux/index.db", ConfiguredStoreDirectory: "/preview/index-store", SourceMode: "local fixture", CredentialStatus: "ready", Model: "dummy-embeddings", IncludePaths: []string{"internal/", "foundation/"}, ExcludePaths: []string{"node_modules/", "vendor/"}, FilesTotal: 1280, FilesProcessed: 864, ChunksCreated: 4320, FilesSkipped: 12, CurrentPath: "internal/ui/model/preview_registry.go", Stage: "embedding"}
 	for _, name := range []string{"Overview", "Project context", "Tooling instructions", "Provider context", "Runtime settings", "Disabled section"} {
 		d.Instructions = append(d.Instructions, dialog.InstructionPreviewSection{ID: name, Label: name, Content: "# " + name + "\n\nLocal dummy instruction text for rendering tests.\n\n" + previewReport(name), Toggleable: true, Disabled: name == "Disabled section"})
 	}

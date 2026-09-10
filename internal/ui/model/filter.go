@@ -3,7 +3,7 @@ package model
 import (
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/ui/common"
 )
 
@@ -59,6 +59,11 @@ func (f *Filter) Filter(_ tea.Model, msg tea.Msg) tea.Msg {
 		return aggregated
 
 	case tea.MouseMotionMsg:
+		// A hover's final position must reach the UI, even in a burst: dropping
+		// a leave event can strand a hover-driven animation indefinitely.
+		if typed.Button == tea.MouseNone {
+			return msg
+		}
 		if !f.allow(&f.lastMotion) {
 			return nil
 		}

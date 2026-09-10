@@ -5,8 +5,8 @@ import (
 	"image"
 	"os"
 
-	tea "charm.land/bubbletea/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/clipboard"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/providerregistry"

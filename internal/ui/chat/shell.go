@@ -5,8 +5,8 @@ import (
 	"strings"
 	"sync/atomic"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/example-git/crux/internal/ui/anim"
