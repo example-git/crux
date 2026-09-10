@@ -39,6 +39,9 @@ Thumbs.db
 .agents/session-summary.md
 ROADMAP.md
 docs/*
+!docs/assets/
+docs/assets/*
+!docs/assets/crux-demo.gif
 !docs/compatibility/
 docs/compatibility/*
 !docs/compatibility/README.md
