@@ -14,8 +14,10 @@ import (
 	"github.com/example-git/crux/internal/providerregistry"
 )
 
-var ErrNoConfiguredCredentials = errors.New("no usable configured Codex or OpenAI API account; sign in to Codex or configure an OpenAI API account")
-var errUnsupportedCodexBundle = errors.New("unsupported provider: Codex requires an active provider bundle with an image endpoint")
+var (
+	ErrNoConfiguredCredentials = errors.New("no usable configured Codex or OpenAI API account; sign in to Codex or configure an OpenAI API account")
+	errUnsupportedCodexBundle  = errors.New("unsupported provider: Codex requires an active provider bundle with an image endpoint")
+)
 
 func NewProviderClient(store *config.ConfigStore) *Client {
 	client := NewClient()

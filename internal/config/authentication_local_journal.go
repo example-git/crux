@@ -76,6 +76,7 @@ type localAuthenticationFile struct {
 func localAuthenticationFileFrom(f authenticationInputFile) localAuthenticationFile {
 	return localAuthenticationFile{f.path, bytes.Clone(f.data), f.info.exists, f.info.identity, f.info.size, f.info.mode, f.info.modified}
 }
+
 func (f localAuthenticationFile) input() authenticationInputFile {
 	return authenticationInputFile{path: f.Path, data: bytes.Clone(f.Data), info: authenticationInputFileInfo{exists: f.Exists, identity: f.Identity, size: f.Size, mode: f.Mode, modified: f.Modified}}
 }
@@ -121,16 +122,20 @@ type LocalAuthenticationChange struct {
 func (LocalAuthenticationChange) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("local authentication repair captures are private")
 }
+
 func (LocalAuthenticationChange) Format(s fmt.State, _ rune) {
 	_, _ = io.WriteString(s, "[private local authentication repair capture]")
 }
+
 func (d localAuthenticationDisk) Format(s fmt.State, _ rune) {
 	_, _ = io.WriteString(s, "[private local authentication change]")
 }
+
 func (c LocalAuthenticationChange) Summary() LocalAuthenticationSummary {
 	d := c.disk
 	return LocalAuthenticationSummary{WorkspaceID: d.Key.WorkspaceID, OperationID: d.Key.OperationID, Revision: c.revision, Action: d.Action, ProviderID: d.Owner.ProviderID, AccountID: d.AccountID, RemovedAccountID: d.RemoveID, Original: d.Original, RefreshStarted: d.RefreshStarted, RefreshObserved: d.RefreshToken != nil, Finished: d.Finished, Coherent: d.Coherent, RepairReady: !d.Abandoned && !d.NoEffects && (len(d.Accounts) > 0 || len(d.RefreshAccounts) > 0 || d.RefreshToken != nil), NeedsReload: d.Coherent || d.Repair.NeedsReload, Abandoned: d.Abandoned, NoEffects: d.NoEffects, RepairStarted: d.RepairStarted, RepairAccountsWritten: d.Repair.AccountsWritten, RepairConfigWritten: d.Repair.ConfigWritten}
 }
+
 func (s *ConfigStore) LoadAuthenticationLocalChange(ctx context.Context, key AuthenticationJournalKey) (LocalAuthenticationChange, bool, error) {
 	journal, err := s.CaptureAuthenticationJournal(ctx)
 	if err != nil {
@@ -138,6 +143,7 @@ func (s *ConfigStore) LoadAuthenticationLocalChange(ctx context.Context, key Aut
 	}
 	return loadAuthenticationLocalChange(ctx, journal, key)
 }
+
 func loadAuthenticationLocalChange(ctx context.Context, journal AuthenticationJournal, key AuthenticationJournalKey) (LocalAuthenticationChange, bool, error) {
 	if key.Kind != AuthenticationJournalLocal {
 		return LocalAuthenticationChange{}, false, errors.New("local authentication operation is required")
@@ -201,7 +207,7 @@ func loadAuthenticationLocalChange(ctx context.Context, journal AuthenticationJo
 		}
 		accountPath = change.Path()
 	}
-	if d.Original.RuntimePublished && !d.Original.ConfigSaved || d.Coherent && (!d.Finished || !d.Original.RuntimePublished && !(d.Action == "remove" && d.Original.AccountsSaved)) || d.Repair.NeedsReload && (!d.RepairStarted || d.RepairBase == 0) {
+	if d.Original.RuntimePublished && !d.Original.ConfigSaved || d.Coherent && (!d.Finished || !d.Original.RuntimePublished && (d.Action != "remove" || !d.Original.AccountsSaved)) || d.Repair.NeedsReload && (!d.RepairStarted || d.RepairBase == 0) {
 		return LocalAuthenticationChange{}, false, errors.New("local authentication progress is inconsistent")
 	}
 	if d.Abandoned != (d.AbandonBase != 0) || d.Abandoned && d.AbandonBase >= entry.Revision() || d.Abandoned && (d.Coherent || d.Repair.NeedsReload || d.NoEffects) || d.NoEffects && (!d.Finished || !d.noLocalEffect()) || d.Repair.Abandoned || entry.Completed() != d.completed() {
@@ -224,6 +230,7 @@ func loadAuthenticationLocalChange(ctx context.Context, journal AuthenticationJo
 	registerLocalAuthenticationConfigSecrets(d.ConfigAfter)
 	return LocalAuthenticationChange{journal: journal, revision: entry.Revision(), disk: d}, true, nil
 }
+
 func registerLocalAuthenticationConfigSecrets(raw []byte) {
 	var c Config
 	if json.Unmarshal(raw, &c) == nil {
@@ -234,15 +241,18 @@ func registerLocalAuthenticationConfigSecrets(raw []byte) {
 func (d localAuthenticationDisk) noLocalEffect() bool {
 	return !d.RefreshStarted && d.RefreshToken == nil && len(d.Accounts) == 0 && len(d.RefreshAccounts) == 0 && len(d.ConfigAfter) == 0 && d.Original == (LocalAuthenticationProgress{}) && !d.RepairStarted
 }
+
 func (d localAuthenticationDisk) completed() bool {
 	return d.Coherent || d.Repair.NeedsReload || d.Abandoned || d.NoEffects
 }
 
-type localAuthenticationLeaseContextKey struct{}
-type localAuthenticationLease struct {
-	journal AuthenticationJournal
-	key     AuthenticationJournalKey
-}
+type (
+	localAuthenticationLeaseContextKey struct{}
+	localAuthenticationLease           struct {
+		journal AuthenticationJournal
+		key     AuthenticationJournalKey
+	}
+)
 
 // Acquire before writeMu: a running producer may need that lock again before
 // retaining its result. The captured journal path must still match at admission.
@@ -310,6 +320,7 @@ func (s *ConfigStore) beginLocalAuthenticationChangeLocked(ctx context.Context, 
 	ctx = accounts.WithPendingChangeObserver(ctx, accounts.PendingChangeObserver{Before: writer.beforeAccounts, After: writer.afterAccounts})
 	return ctx, writer, nil
 }
+
 func (w *localAuthenticationWriter) save(ctx context.Context) error {
 	if w == nil {
 		return nil
@@ -336,6 +347,7 @@ func (w *localAuthenticationWriter) save(ctx context.Context) error {
 	w.capture.revision = entry.Revision()
 	return nil
 }
+
 func (w *localAuthenticationWriter) beforeAccounts(ctx context.Context, change accounts.DurableChange) error {
 	// Read-only account checks have no staged effect. InitialAccounts already
 	// retains the original observation; treating a check as a pending write
@@ -354,6 +366,7 @@ func (w *localAuthenticationWriter) beforeAccounts(ctx context.Context, change a
 	}
 	return w.save(ctx)
 }
+
 func (w *localAuthenticationWriter) afterAccounts(ctx context.Context, change accounts.DurableChange, written bool) error {
 	if w == nil || !written {
 		return nil
@@ -365,6 +378,7 @@ func (w *localAuthenticationWriter) afterAccounts(ctx context.Context, change ac
 	}
 	return w.save(ctx)
 }
+
 func (w *localAuthenticationWriter) stage(ctx context.Context, stage *authenticationScopeWrite, topology authenticationScopeTopology, pending *accounts.PendingChange) error {
 	if w == nil {
 		return nil
@@ -389,6 +403,7 @@ func (w *localAuthenticationWriter) stage(ctx context.Context, stage *authentica
 	}
 	return w.save(ctx)
 }
+
 func (w *localAuthenticationWriter) configSaved(ctx context.Context, written bool, deadline time.Time) error {
 	if w == nil || !written {
 		return nil
@@ -398,6 +413,7 @@ func (w *localAuthenticationWriter) configSaved(ctx context.Context, written boo
 	defer cancel()
 	return w.save(finish)
 }
+
 func (w *localAuthenticationWriter) finish(ctx context.Context, result AuthenticationMutationResult, failure *error) {
 	if w == nil {
 		return
@@ -416,6 +432,7 @@ func (w *localAuthenticationWriter) finish(ctx context.Context, result Authentic
 	defer cancel()
 	*failure = errors.Join(*failure, w.save(finish))
 }
+
 func (w *localAuthenticationWriter) refresher(next accounts.Refresher) accounts.Refresher {
 	if w == nil || next == nil {
 		return next
@@ -474,6 +491,7 @@ func localAuthenticationSurface(value gjson.Result) bool {
 	})
 	return valid
 }
+
 func (s LocalAuthenticationSummary) Validate() error {
 	key := AuthenticationJournalKey{Kind: AuthenticationJournalLocal, WorkspaceID: s.WorkspaceID, OperationID: s.OperationID}
 	if key.Validate() != nil || s.Revision == 0 {

@@ -114,8 +114,10 @@ func (m *Manager) installDirectory(ctx context.Context, request InstallRequest, 
 	}
 	cleanup = false
 	if request.AfterCommit != nil {
-		installed := InstalledBundle{ID: validated.id(), ProviderID: validated.providerID(),
-			Version: validated.version(), Digest: validated.digest, PluginType: validated.pluginType}
+		installed := InstalledBundle{
+			ID: validated.id(), ProviderID: validated.providerID(),
+			Version: validated.version(), Digest: validated.digest, PluginType: validated.pluginType,
+		}
 		if err := request.AfterCommit(installed); err != nil {
 			m.mu.Unlock()
 			release()

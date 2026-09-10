@@ -33,6 +33,7 @@ func (w *queuedSelectionWorkspace) Config() *config.Config { return w.store.Conf
 func (w *queuedSelectionWorkspace) ProviderSurfaces() []providerregistry.Surface {
 	return config.ProviderSurfaces(w.Config())
 }
+
 func (w *queuedSelectionWorkspace) UpdatePreferredModel(scope config.Scope, kind config.SelectedModelType, model config.SelectedModel, owner providerregistry.RegistrationOwner) (config.AgentModelState, error) {
 	if w.writes.Add(1) == 1 && w.entered != nil {
 		close(w.entered)
@@ -43,9 +44,11 @@ func (w *queuedSelectionWorkspace) UpdatePreferredModel(scope config.Scope, kind
 	}
 	return w.store.UpdatePreferredModelForOwner(scope, kind, model, owner)
 }
+
 func (w *queuedSelectionWorkspace) UpdateAgentModel(context.Context, config.AgentModelState) error {
 	return nil
 }
+
 func (w *queuedSelectionWorkspace) PermissionSkipRequests() bool                     { return false }
 func (w *queuedSelectionWorkspace) LSPGetStates() map[string]workspace.LSPClientInfo { return nil }
 
@@ -53,11 +56,11 @@ func queuedSelectionFixture(t *testing.T) (*UI, *queuedSelectionWorkspace, dialo
 	t.Helper()
 	root := t.TempDir()
 	for _, name := range []string{"config", "data", "project"} {
-		require.NoError(t, os.MkdirAll(filepath.Join(root, name), 0700))
+		require.NoError(t, os.MkdirAll(filepath.Join(root, name), 0o700))
 	}
 	data := []byte(`{"providers":{"queue":{"type":"openai-compat","base_url":"https://example.invalid/v1","api_key":"synthetic-key","models":[{"id":"first"},{"id":"second"},{"id":"small"}]}},"models":{"large":{"provider":"queue","model":"first"},"small":{"provider":"queue","model":"small"}}}`)
 	path := filepath.Join(root, "data", "crux.json")
-	require.NoError(t, os.WriteFile(path, data, 0600))
+	require.NoError(t, os.WriteFile(path, data, 0o600))
 	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": "integrated", "CRUX_DISABLE_AUTO_MEMORY": "true"}
 	store, err := config.LoadIsolated(filepath.Join(root, "project"), filepath.Join(root, "workspace-data"), false, env.NewFromMap(values))
 	require.NoError(t, err)
@@ -74,6 +77,7 @@ func queuedSelectionFixture(t *testing.T) (*UI, *queuedSelectionWorkspace, dialo
 	action := dialog.ActionSelectModel{Provider: provider.ToProvider(), Model: config.SelectedModel{Provider: "queue", Model: "first"}, ModelType: config.SelectedModelTypeLarge, ProviderOwner: owner, ProviderOwnerSet: true}
 	return ui, ws, action, path
 }
+
 func singleSelectionCompletion(t *testing.T, command tea.Cmd) modelSelectionCompletedMsg {
 	t.Helper()
 	var results []modelSelectionCompletedMsg

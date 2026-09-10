@@ -27,7 +27,8 @@ func nativeImageRuntime(t *testing.T, raw json.RawMessage, imageURL string) (*co
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("codex")
 	require.True(t, ok)
-	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+	proposal := config.RemoteRuntimeProposal{
+		Version: config.RemoteRuntimeVersion, Revision: 1,
 		Providers:   []config.RemoteProviderDefinition{{NativeIdentity: &config.NativeIdentity{UserAgent: "image-owner/1.2.3 (OwnerOS 1; fixture) OwnerTerminal", Version: "1.2.3", Originator: "image-owner"}, Config: config.ProviderConfig{ID: "codex", Name: "Fixture", Type: catalog.TypeOpenAICompat, BaseURL: "wss://fixture.invalid/responses", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionCodex}, Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}}}}},
 		Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "codex", Model: "fixture"}, config.SelectedModelTypeSmall: {Provider: "codex", Model: "fixture"}},
 		Credentials: []config.RemoteCredentialBinding{{Owner: registration.Owner(), Generation: 1, Account: &accounts.Entry{ID: "selected", AccessToken: "synthetic-image-access", RefreshToken: "synthetic-image-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Raw: raw}}},

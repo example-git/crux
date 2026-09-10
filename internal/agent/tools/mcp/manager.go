@@ -58,11 +58,13 @@ func For(cfg *config.ConfigStore) *Manager {
 
 func newManager() *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &Manager{ctx: ctx, cancel: cancel, closeDone: make(chan struct{}), initDone: make(chan struct{}),
+	r := &Manager{
+		ctx: ctx, cancel: cancel, closeDone: make(chan struct{}), initDone: make(chan struct{}),
 		sessions: csync.NewMap[string, *ClientSession](), states: csync.NewMap[string, ClientInfo](),
 		authURLs: csync.NewMap[string, *mcpoauth.Handler](), broker: pubsub.NewBroker[Event](),
 		renewMus: map[string]*sync.Mutex{}, gens: csync.NewMap[string, uint64](), suppressMus: csync.NewMap[string, *sync.Mutex](),
-		allTools: csync.NewMap[string, []*Tool](), allPrompts: csync.NewMap[string, []*Prompt](), allResources: csync.NewMap[string, []*Resource]()}
+		allTools: csync.NewMap[string, []*Tool](), allPrompts: csync.NewMap[string, []*Prompt](), allResources: csync.NewMap[string, []*Resource](),
+	}
 	r.newSession = r.createSession
 	return r
 }

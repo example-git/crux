@@ -27,12 +27,15 @@ type oauthCodeLogin struct {
 func (OAuthCodeLogin) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth code logins are private")
 }
+
 func (OAuthCodeLogin) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private OAuth code login]"))
 }
+
 func (*oauthCodeLogin) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth code state is private")
 }
+
 func (*oauthCodeLogin) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private OAuth code state]"))
 }
@@ -53,12 +56,14 @@ func (c OAuthCodeLogin) AuthorizationURL() string {
 	}
 	return c.state.challenge.AuthorizationURL()
 }
+
 func (c OAuthCodeLogin) ExpiresAt() time.Time {
 	if c.state == nil || c.state.challenge == nil {
 		return time.Time{}
 	}
 	return c.state.challenge.ExpiresAt()
 }
+
 func (c OAuthCodeLogin) Close() {
 	if c.state != nil && c.state.challenge != nil {
 		c.state.challenge.Close()

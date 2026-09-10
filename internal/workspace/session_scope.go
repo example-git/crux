@@ -6,12 +6,14 @@ import (
 	"sync/atomic"
 )
 
-type sessionWorkspaceContextKey struct{}
-type sessionSelectionContextKey struct{}
-type sessionSelectionGuard struct {
-	current  *atomic.Uint64
-	expected uint64
-}
+type (
+	sessionWorkspaceContextKey struct{}
+	sessionSelectionContextKey struct{}
+	sessionSelectionGuard      struct {
+		current  *atomic.Uint64
+		expected uint64
+	}
+)
 
 // ContextWithSessionSelection binds a scheduled UI command to its immutable
 // selection generation. The atomic source is independent of the UI model.
@@ -25,6 +27,7 @@ func ContextWithSessionSelection(ctx context.Context, id string, current *atomic
 func ContextWithSessionWorkspace(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, sessionWorkspaceContextKey{}, id)
 }
+
 func checkSessionWorkspace(ctx context.Context, id string) error {
 	if expected, ok := ctx.Value(sessionWorkspaceContextKey{}).(string); ok && expected != id {
 		return errors.New("workspace changed while loading the session")
@@ -34,6 +37,7 @@ func checkSessionWorkspace(ctx context.Context, id string) error {
 	}
 	return ctx.Err()
 }
+
 func (w *ClientWorkspace) sessionReadContext(ctx context.Context) (context.Context, string, func(), error) {
 	ctx, done := providerAuthContext(ctx, w.subCtx)
 	id := w.workspaceID()

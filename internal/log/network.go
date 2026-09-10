@@ -365,6 +365,7 @@ func trafficSchemaReady(database *sql.DB, statements []string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("inspect traffic database schema: %w", err)
 	}
+	defer rows.Close()
 	normalize := func(statement string) string {
 		return strings.Join(strings.Fields(strings.ReplaceAll(statement, "IF NOT EXISTS ", "")), " ")
 	}
@@ -372,7 +373,6 @@ func trafficSchemaReady(database *sql.DB, statements []string) (bool, error) {
 	for rows.Next() {
 		var statement string
 		if err := rows.Scan(&statement); err != nil {
-			rows.Close()
 			return false, fmt.Errorf("read traffic database schema: %w", err)
 		}
 		definitions[normalize(statement)] = struct{}{}

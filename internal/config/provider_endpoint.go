@@ -20,12 +20,15 @@ type resolvedProviderEndpoint struct {
 func (resolvedProviderEndpoint) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("resolved provider endpoints are private")
 }
+
 func (resolvedProviderEndpoint) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private resolved provider endpoint]"))
 }
+
 func (b *resolvedProviderEndpoint) matches(p ProviderConfig) bool {
 	return b != nil && p.ID == b.owner.ProviderID && p.BaseURL == b.literal && providerOwnershipReferencesMatch(p, b.references)
 }
+
 func bindResolvedProviderEndpoint(snapshot RuntimeSnapshot, p ProviderConfig, owner providerregistry.RegistrationOwner, source, literal string) (ProviderConfig, error) {
 	actual, ok := snapshot.ProviderOwnerFor(p.ID, p)
 	current, active := snapshot.ProviderOwner(p.ID)
@@ -49,6 +52,7 @@ func ResolveProviderEndpoint(p ProviderConfig, resolve func(string) (string, err
 	}
 	return resolve(p.BaseURL)
 }
+
 func (s RuntimeSnapshot) validateResolvedProviderEndpointOwner(p ProviderConfig) error {
 	if p.resolvedEndpoint == nil {
 		return nil
@@ -64,6 +68,7 @@ func (s RuntimeSnapshot) validateResolvedProviderEndpointOwner(p ProviderConfig)
 	}
 	return nil
 }
+
 func (s RuntimeSnapshot) ResolveProviderEndpoint(p ProviderConfig) (string, error) {
 	if err := s.RuntimeRevocation(); err != nil {
 		return "", err

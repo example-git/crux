@@ -24,6 +24,7 @@ func (w *AppWorkspace) MCPResources(ctx context.Context) ([]proto.MCPResource, e
 	}
 	return result, nil
 }
+
 func (w *ClientWorkspace) MCPResources(ctx context.Context) ([]proto.MCPResource, error) {
 	if err := w.subCtx.Err(); err != nil {
 		return nil, err

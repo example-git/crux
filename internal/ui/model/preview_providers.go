@@ -2,11 +2,12 @@ package model
 
 import (
 	"fmt"
+	"reflect"
+
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/providerregistry"
-	"reflect"
 )
 
 func (p *Preview) UseLaunchProviders(cfg *config.Config) error {
@@ -56,12 +57,14 @@ func (p *Preview) UseLaunchProviders(cfg *config.Config) error {
 	p.itemsKey = ""
 	return nil
 }
+
 func (p *Preview) InitialModel() string {
 	if p.initialModel != "" {
 		return p.initialModel
 	}
 	return "dummy-coder"
 }
+
 func (p *Preview) Catalog() map[string]any {
 	result := PreviewRegistry()
 	if p.runtimeConfig == nil {

@@ -51,9 +51,13 @@ func (d *Instructions) LoadRuntimeControls() tea.Cmd {
 		return nil
 	}
 	d.controlsGeneration++
-	message := ActionInstructionControlsLoaded{Dialog: d, generation: d.controlsGeneration,
-		operation: InstructionOperation{providerID: d.providerID, modelID: d.providerModel,
-			owner: d.providerOwner, ownerSet: d.providerOwnerSet}}
+	message := ActionInstructionControlsLoaded{
+		Dialog: d, generation: d.controlsGeneration,
+		operation: InstructionOperation{
+			providerID: d.providerID, modelID: d.providerModel,
+			owner: d.providerOwner, ownerSet: d.providerOwnerSet,
+		},
+	}
 	ws := d.com.Workspace
 	return func() tea.Msg {
 		for _, target := range targets {
@@ -191,8 +195,10 @@ func (d *Instructions) saveMetadataValue() Action {
 	if !ok {
 		return ActionCmd{Cmd: util.ReportError(fmt.Errorf("invalid %s value %q", item.label, value))}
 	}
-	return d.mutate(instructionMutation{kind: instrMetadataValue, id: item.id,
-		controlTarget: item.controlState.Target, value: parsed})
+	return d.mutate(instructionMutation{
+		kind: instrMetadataValue, id: item.id,
+		controlTarget: item.controlState.Target, value: parsed,
+	})
 }
 
 func (d *Instructions) removeMetadataValue() Action {
@@ -200,8 +206,10 @@ func (d *Instructions) removeMetadataValue() Action {
 	if err := d.checkControlItem(item); err != nil {
 		return ActionCmd{Cmd: util.ReportError(err)}
 	}
-	return d.mutate(instructionMutation{kind: instrMetadataValue, id: item.id,
-		controlTarget: item.controlState.Target, remove: true})
+	return d.mutate(instructionMutation{
+		kind: instrMetadataValue, id: item.id,
+		controlTarget: item.controlState.Target, remove: true,
+	})
 }
 
 func runtimeControlInputValue(value config.RuntimeControlValue) string {

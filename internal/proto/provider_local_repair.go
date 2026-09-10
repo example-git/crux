@@ -33,6 +33,7 @@ func (e *ProviderLocalRepairError) Unwrap() error {
 	}
 	return nil
 }
+
 func localRepairMessage(code string) string {
 	switch code {
 	case "canceled":
@@ -48,6 +49,7 @@ func localRepairMessage(code string) string {
 	}
 	return ""
 }
+
 func NewProviderLocalRepairError(err error) *ProviderLocalRepairError {
 	code := "failed"
 	switch {
@@ -62,6 +64,7 @@ func NewProviderLocalRepairError(err error) *ProviderLocalRepairError {
 	}
 	return &ProviderLocalRepairError{Code: code, Message: localRepairMessage(code)}
 }
+
 func (r ProviderLocalRepairResponse) Validate(request providerauth.LocalRepairRequest) error {
 	if err := request.Validate(); err != nil {
 		return err
@@ -102,6 +105,7 @@ func (r ProviderLocalRepairResponse) Validate(request providerauth.LocalRepairRe
 	}
 	return nil
 }
+
 func DecodeProviderLocalRepairRequest(body []byte) (providerauth.LocalRepairRequest, error) {
 	var request providerauth.LocalRepairRequest
 	if err := decodeProviderAuthJSON(body, MaxProviderAuthRequestBytes, &request); err != nil {
@@ -109,6 +113,7 @@ func DecodeProviderLocalRepairRequest(body []byte) (providerauth.LocalRepairRequ
 	}
 	return request, request.Validate()
 }
+
 func DecodeProviderLocalRepairResponse(body []byte, request providerauth.LocalRepairRequest) (ProviderLocalRepairResponse, error) {
 	var response ProviderLocalRepairResponse
 	if err := decodeProviderAuthJSON(body, MaxProviderAuthResponseBytes, &response); err != nil {

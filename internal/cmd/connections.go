@@ -13,8 +13,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var connectionsRevokeForce bool
-var connectionsRevokeOperation string
+var (
+	connectionsRevokeForce     bool
+	connectionsRevokeOperation string
+)
 
 var connectionsCmd = &cobra.Command{
 	Use:   "connections",

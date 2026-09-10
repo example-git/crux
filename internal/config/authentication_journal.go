@@ -86,6 +86,7 @@ type AuthenticationJournal struct {
 func (AuthenticationJournal) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication journals are private")
 }
+
 func (AuthenticationJournal) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication journal]"))
 }
@@ -106,6 +107,7 @@ func (entry AuthenticationJournalEntry) ReservedBytes() int            { return 
 func (AuthenticationJournalEntry) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication journal entries are private")
 }
+
 func (AuthenticationJournalEntry) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication journal entry]"))
 }
@@ -133,6 +135,7 @@ func authenticationJournalReservation(completed bool, reserved int) int {
 func (authenticationJournalDisk) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication journal file]"))
 }
+
 func (authenticationJournalRecord) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication journal record]"))
 }
@@ -175,7 +178,7 @@ func (journal AuthenticationJournal) locked(ctx context.Context) (context.Contex
 		cancel()
 		return bound, nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(journal.path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(journal.path), 0o700); err != nil {
 		cancel()
 		return bound, nil, authenticationInputError(err)
 	}
@@ -262,6 +265,7 @@ func (journal AuthenticationJournal) AllKeys(ctx context.Context, kind string) (
 func (journal AuthenticationJournal) Keys(ctx context.Context, kind, workspaceID string) ([]AuthenticationJournalKey, error) {
 	return journal.keys(ctx, kind, workspaceID, false)
 }
+
 func (journal AuthenticationJournal) keys(ctx context.Context, kind, workspaceID string, all bool) ([]AuthenticationJournalKey, error) {
 	validationWorkspace := workspaceID
 	if all {
@@ -398,7 +402,7 @@ func readAuthenticationJournal(ctx context.Context, path string) (authentication
 	}
 	defer file.Close()
 	before.info, err = observeAuthenticationInput(file)
-	if err != nil || before.info.size > maxAuthenticationJournalBytes || before.info.mode.Perm()&0077 != 0 {
+	if err != nil || before.info.size > maxAuthenticationJournalBytes || before.info.mode.Perm()&0o077 != 0 {
 		return before, data, errors.New("authentication journal has invalid size or permissions")
 	}
 	before.data, err = io.ReadAll(io.LimitReader(authenticationInputReader{ctx: ctx, reader: file}, maxAuthenticationJournalBytes+1))

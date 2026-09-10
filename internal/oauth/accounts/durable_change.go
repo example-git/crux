@@ -6,36 +6,40 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/example-git/crux/internal/oauth"
-	"github.com/tidwall/gjson"
 	"io"
 	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/tidwall/gjson"
 )
 
 // DurableChange is a private, fixed account-file change. Its explicit encoding
 // is for the owner-side journal, never discovery, receipts or logging.
-type DurableChange struct{ disk durableAccountChange }
-type durableAccountChange struct {
-	Version    int               `json:"version"`
-	Path       string            `json:"path"`
-	Namespaces []string          `json:"namespaces"`
-	Kind       accountChangeKind `json:"kind"`
-	Exists     bool              `json:"exists"`
-	Identity   [32]byte          `json:"identity"`
-	Size       int64             `json:"size"`
-	Mode       os.FileMode       `json:"mode"`
-	Modified   int64             `json:"modified"`
-	Before     []byte            `json:"before"`
-	After      []byte            `json:"after"`
-}
+type (
+	DurableChange        struct{ disk durableAccountChange }
+	durableAccountChange struct {
+		Version    int               `json:"version"`
+		Path       string            `json:"path"`
+		Namespaces []string          `json:"namespaces"`
+		Kind       accountChangeKind `json:"kind"`
+		Exists     bool              `json:"exists"`
+		Identity   [32]byte          `json:"identity"`
+		Size       int64             `json:"size"`
+		Mode       os.FileMode       `json:"mode"`
+		Modified   int64             `json:"modified"`
+		Before     []byte            `json:"before"`
+		After      []byte            `json:"after"`
+	}
+)
 
 func (DurableChange) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "[private durable account change]")
 }
+
 func (DurableChange) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("durable account changes are private")
 }
@@ -61,6 +65,7 @@ func DecodeDurableChange(data json.RawMessage) (DurableChange, error) {
 	}
 	return d, d.validate()
 }
+
 func (d DurableChange) validate() error {
 	v := d.disk
 	if v.Version != 1 || v.Kind > accountRemove || v.Kind == accountCheck && !bytes.Equal(v.Before, v.After) {
@@ -94,6 +99,7 @@ func (d DurableChange) validate() error {
 	}
 	return nil
 }
+
 func durableAccountState(state *pendingAccountChange) DurableChange {
 	before := state.before
 	after := state.staged
@@ -102,6 +108,7 @@ func durableAccountState(state *pendingAccountChange) DurableChange {
 	}
 	return DurableChange{disk: durableAccountChange{Version: 1, Path: before.path, Namespaces: slices.Clone(before.namespaces), Kind: state.kind, Exists: before.file.exists, Identity: before.file.identity, Size: before.file.size, Mode: before.file.mode, Modified: before.file.modified, Before: bytes.Clone(before.document), After: bytes.Clone(after)}}
 }
+
 func (change *PendingChange) DurableChange() (DurableChange, error) {
 	if change == nil || change.state == nil {
 		return DurableChange{}, errors.New("pending account change is unavailable")

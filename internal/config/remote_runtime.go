@@ -24,8 +24,10 @@ import (
 	"github.com/example-git/crux/internal/redact"
 )
 
-var ErrRemoteRuntimeRevision = errors.New("client runtime revision changed")
-var ErrClientRuntimeManaged = errors.New("this runtime is owned by the connected client; update or refresh it on that client and submit the next runtime revision")
+var (
+	ErrRemoteRuntimeRevision = errors.New("client runtime revision changed")
+	ErrClientRuntimeManaged  = errors.New("this runtime is owned by the connected client; update or refresh it on that client and submit the next runtime revision")
+)
 
 // RegisterRemoteRuntimeSecrets runs only after admission selects client mode.
 // Redaction outlives the workspace to protect delayed asynchronous log entries.

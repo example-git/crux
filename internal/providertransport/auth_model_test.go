@@ -21,6 +21,7 @@ func (m *authStreamFixture) Stream(context.Context, fantasy.Call) (fantasy.Strea
 	m.calls++
 	return m.text, nil
 }
+
 func (m *authStreamFixture) StreamObject(context.Context, fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
 	m.calls++
 	return m.object, nil

@@ -58,6 +58,7 @@ func (c *Client) BeginProviderOAuthLogin(ctx context.Context, id string, request
 		return proto.DecodeProviderOAuthLoginBeginResponse(body, request)
 	})
 }
+
 func (c *Client) BindProviderOAuthLogin(ctx context.Context, id string, request providerauth.OAuthLoginBindRequest) (proto.ProviderOAuthLoginResponse, error) {
 	if err := request.Validate(); err != nil {
 		return proto.ProviderOAuthLoginResponse{}, err
@@ -66,6 +67,7 @@ func (c *Client) BindProviderOAuthLogin(ctx context.Context, id string, request 
 		return proto.DecodeProviderOAuthLoginBindResponse(body, request)
 	})
 }
+
 func (c *Client) SubmitProviderOAuthLoginCode(ctx context.Context, id string, request providerauth.OAuthLoginCodeRequest) (proto.ProviderOAuthLoginResponse, error) {
 	if err := request.Validate(); err != nil {
 		return proto.ProviderOAuthLoginResponse{}, err
@@ -74,12 +76,14 @@ func (c *Client) SubmitProviderOAuthLoginCode(ctx context.Context, id string, re
 		return proto.DecodeProviderOAuthLoginCodeResponse(body, request)
 	})
 }
+
 func (c *Client) WaitProviderOAuthLogin(ctx context.Context, id string, ref providerauth.OAuthLoginRef, after uint64) (proto.ProviderOAuthLoginResponse, error) {
 	request := proto.ProviderOAuthLoginWaitRequest{Login: ref, After: after}
 	return c.providerOAuthInteraction(ctx, id, ref, "wait", request, proto.MaxProviderAuthRequestBytes, func(body []byte) (proto.ProviderOAuthLoginResponse, error) {
 		return proto.DecodeProviderOAuthLoginWaitResponse(body, ref, after)
 	})
 }
+
 func (c *Client) CancelProviderOAuthLogin(ctx context.Context, id string, ref providerauth.OAuthLoginRef) (proto.ProviderOAuthLoginResponse, error) {
 	return c.providerOAuthInteraction(ctx, id, ref, "cancel", ref, proto.MaxProviderAuthRequestBytes, func(body []byte) (proto.ProviderOAuthLoginResponse, error) {
 		return proto.DecodeProviderOAuthLoginCancelResponse(body, ref)

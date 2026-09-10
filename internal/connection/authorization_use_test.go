@@ -99,7 +99,9 @@ func authorizationUseFixture(t *testing.T) (*ClientAuthorization, func(), string
 	t.Cleanup(transport.CloseIdleConnections)
 	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
 	request := func() {
-		response, err := client.Get(server.URL)
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+		require.NoError(t, err)
+		response, err := client.Do(request)
 		require.NoError(t, err)
 		require.NoError(t, response.Body.Close())
 		require.Equal(t, http.StatusNoContent, response.StatusCode)
@@ -185,7 +187,7 @@ func TestAuthorizationUseControlScopeReapprovalAndDaemonExit(t *testing.T) {
 	// that no request was observed. Listing must not clean up that file.
 	encoded, err := json.Marshal(daemon)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(authority.live.control.path, encoded, 0600))
+	require.NoError(t, os.WriteFile(authority.live.control.path, encoded, 0o600))
 	before := authorizationUseTree(t, filepath.Dir(authority.path))
 	records, err = ListAuthorizationRecords(t.Context())
 	require.NoError(t, err)
@@ -250,7 +252,7 @@ func TestAuthorizationUsePartialAndOversizedDaemonRegistry(t *testing.T) {
 	encoded, err := json.Marshal(daemon)
 	require.NoError(t, err)
 	directory := authorizationDaemonDir(authority.path)
-	require.NoError(t, os.WriteFile(filepath.Join(directory, daemon.InstanceID+".json"), encoded, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(directory, daemon.InstanceID+".json"), encoded, 0o600))
 	before := authorizationUseTree(t, root)
 	records, err := ListAuthorizationRecords(t.Context())
 	require.NoError(t, err)
@@ -264,7 +266,7 @@ func TestAuthorizationUsePartialAndOversizedDaemonRegistry(t *testing.T) {
 		daemon.InstanceID = uuid.NewString()
 		encoded, err = json.Marshal(daemon)
 		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(filepath.Join(directory, daemon.InstanceID+".json"), encoded, 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, daemon.InstanceID+".json"), encoded, 0o600))
 	}
 	before = authorizationUseTree(t, root)
 	records, err = ListAuthorizationRecords(t.Context())

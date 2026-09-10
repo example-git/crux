@@ -29,7 +29,7 @@ func TestSelectedRefreshUsesCapturedAccountDatabase(t *testing.T) {
 			database := filepath.Join(values["AI_CLI_DIR"], "accounts.json")
 			if mode == "captured-home" {
 				target := filepath.Join(values["HOME"], ".ai-cli", "accounts.json")
-				require.NoError(t, os.MkdirAll(filepath.Dir(target), 0700))
+				require.NoError(t, os.MkdirAll(filepath.Dir(target), 0o700))
 				require.NoError(t, os.Rename(database, target))
 				database = target
 				delete(values, "AI_CLI_DIR")
@@ -49,7 +49,7 @@ func TestSelectedRefreshUsesCapturedAccountDatabase(t *testing.T) {
 			require.NoError(t, err)
 			before, err = sjson.SetRawBytes(before, "accounts.gemini.0.vendor", []byte(`{"number":3.0,"keep":true}`))
 			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(database, before, 0600))
+			require.NoError(t, os.WriteFile(database, before, 0o600))
 			admitted := store.RuntimeSnapshot()
 
 			ambientRoots := []string{t.TempDir(), t.TempDir()}
@@ -58,7 +58,7 @@ func TestSelectedRefreshUsesCapturedAccountDatabase(t *testing.T) {
 				document, err := json.Marshal(map[string]any{"active": map[string]string{owner.AccountNamespace: original.ID}, "accounts": map[string][]accounts.Entry{owner.AccountNamespace: {original}}, "hostileMarker": root})
 				require.NoError(t, err)
 				path := filepath.Join(root, "accounts.json")
-				require.NoError(t, os.WriteFile(path, document, 0600))
+				require.NoError(t, os.WriteFile(path, document, 0o600))
 				ambientBytes[path] = document
 			}
 			for key, value := range map[string]string{"AI_CLI_DIR": ambientRoots[0], "HOME": ambientRoots[0], "USERPROFILE": ambientRoots[0], "GEMINI_OAUTH_CLIENT_ID": "ambient-client", "GEMINI_OAUTH_CLIENT_SECRET": "ambient-secret", "GEMINI_PROJECT_ID": "ambient-project"} {

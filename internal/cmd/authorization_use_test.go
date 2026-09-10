@@ -51,7 +51,9 @@ func TestConnectionsAuthorizedReportsLiveUseWithoutPersistence(t *testing.T) {
 	transport := &http.Transport{TLSClientConfig: clientTLS, Proxy: nil}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
-	response, err := client.Get(server.URL)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	response, err := client.Do(request)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusNoContent, response.StatusCode)
 	require.NoError(t, response.Body.Close())

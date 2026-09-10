@@ -44,6 +44,7 @@ type clientAuthenticationRecoveryReceipt struct {
 func (clientAuthenticationRecoveryReceipt) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("client authentication recovery receipts are private")
 }
+
 func (clientAuthenticationRecoveryReceipt) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private client authentication recovery receipt]"))
 }
@@ -143,7 +144,7 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 		recovery.err = err
 		return clientAuthenticationOutcome(original, err)
 	}
-	if original.outcome.Change == nil || !(original.outcome.Progress.RuntimePublished || original.removalAdmitted && !original.removalActive && original.outcome.Progress.AccountsSaved) || !original.after.SameObservation(original.after) {
+	if original.outcome.Change == nil || (!original.outcome.Progress.RuntimePublished && (!original.removalAdmitted || original.removalActive || !original.outcome.Progress.AccountsSaved)) || !original.after.SameObservation(original.after) {
 		recovery.err = errors.New("authentication recovery has no complete local capture; explicit saved-state reconciliation is required")
 		return clientAuthenticationOutcome(original, recovery.err)
 	}

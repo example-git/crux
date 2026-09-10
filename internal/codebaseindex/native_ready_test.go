@@ -217,9 +217,9 @@ func TestOpenReadyNativeProjectDoesNotRequireFreshnessScan(t *testing.T) {
 
 func TestNativeProjectIndexExcludesItsWorkspaceState(t *testing.T) {
 	root := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(root, ".crux", "remote"), 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0600))
-	require.NoError(t, os.WriteFile(filepath.Join(root, ".crux", "remote", "metadata.json"), []byte(`{"generated":true}`), 0600))
+	require.NoError(t, os.MkdirAll(filepath.Join(root, ".crux", "remote"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, ".crux", "remote", "metadata.json"), []byte(`{"generated":true}`), 0o600))
 	embedder := &nativeReadyEmbedder{}
 	require.NoError(t, buildNativeProjectStore(t.Context(), root, filepath.Join(root, ".crux", "remote", "index"), ProjectFilters{}, embedder, nil))
 	require.Equal(t, []string{"main.go"}, embedder.paths)

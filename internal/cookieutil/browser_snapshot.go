@@ -16,8 +16,10 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-const MaxBrowserSnapshotCookies = 512
-const MaxBrowserSnapshotBytes = 1 << 20
+const (
+	MaxBrowserSnapshotCookies = 512
+	MaxBrowserSnapshotBytes   = 1 << 20
+)
 
 // BrowserCookie preserves host-only versus domain, path, security and expiry
 // semantics. It is private credential input, never public browser metadata.

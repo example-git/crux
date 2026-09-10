@@ -25,7 +25,7 @@ func TestAccountRemovalClientTLSActiveInactiveAndLastInference(t *testing.T) {
 			require.NoError(t, f.w.InitCoderAgentNonInteractive(t.Context()))
 			receiver, err := f.s.Backend().GetWorkspace(f.w.workspaceID())
 			require.NoError(t, err)
-			coordinator := receiver.App.CurrentAgentCoordinator()
+			coordinator := receiver.CurrentAgentCoordinator()
 			call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("verify removal")}}
 			_, err = coordinator.Model().Model.Generate(t.Context(), call)
 			require.NoError(t, err)
@@ -129,9 +129,10 @@ func TestAccountRemovalClientTLSLostAcknowledgementAndRecovery(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, before, after)
 			expected := int32(0)
-			if mode == "active-lost" {
+			switch mode {
+			case "active-lost":
 				expected = 1
-			} else if mode == "active-rejected-recovery" {
+			case "active-rejected-recovery":
 				expected = 2
 			}
 			require.Equal(t, expected, f.puts.Load())
@@ -144,6 +145,7 @@ func TestAccountRemovalServerTLSRegisteredRouteAndLostReply(t *testing.T) {
 		t.Run(map[bool]string{false: "inactive", true: "active"}[active], func(t *testing.T) { testAccountRemovalServerTLS(t, active) })
 	}
 }
+
 func testAccountRemovalServerTLS(t *testing.T, active bool) {
 	f := newClientAuthenticationFixture(t, false)
 	t.Cleanup(func() { f.w.Shutdown(); require.NoError(t, f.s.Close()) })
@@ -160,7 +162,7 @@ func testAccountRemovalServerTLS(t *testing.T, active bool) {
 	require.NoError(t, w.InitCoderAgentNonInteractive(t.Context()))
 	receiver, err := f.s.Backend().GetWorkspace(w.workspaceID())
 	require.NoError(t, err)
-	coordinator := receiver.App.CurrentAgentCoordinator()
+	coordinator := receiver.CurrentAgentCoordinator()
 	call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("verify server removal")}}
 	_, err = coordinator.Model().Model.Generate(t.Context(), call)
 	require.NoError(t, err)
@@ -236,7 +238,7 @@ func TestAccountRemovalClientTLSPartialSavedStateReview(t *testing.T) {
 				return config.RuntimeGenerationCandidate{Abort: func() {}, Commit: func() {
 					data, err := os.ReadFile(f.accountsPath)
 					require.NoError(t, err)
-					require.NoError(t, os.WriteFile(f.accountsPath, append(data, ' '), 0600))
+					require.NoError(t, os.WriteFile(f.accountsPath, append(data, ' '), 0o600))
 				}}, nil
 			})
 			original, err := f.w.RemoveProviderAccount(t.Context(), request)
@@ -267,7 +269,7 @@ func TestAccountRemovalClientTLSPartialSavedStateReview(t *testing.T) {
 			requireClientAuthenticationFilesUnchanged(t, []string{f.path, f.accountsPath}, infos, bodies)
 			receiver, err := f.s.Backend().GetWorkspace(f.w.workspaceID())
 			require.NoError(t, err)
-			_, err = receiver.App.CurrentAgentCoordinator().Model().Model.Generate(t.Context(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("verify reviewed successor")}})
+			_, err = receiver.CurrentAgentCoordinator().Model().Model.Generate(t.Context(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("verify reviewed successor")}})
 			require.NoError(t, err)
 			require.Equal(t, []string{"Bearer " + f.second.AccessToken}, f.observed())
 			replay, err := f.w.RemoveProviderAccount(t.Context(), request)

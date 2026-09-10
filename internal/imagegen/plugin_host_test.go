@@ -89,7 +89,8 @@ func testImageRuntimeUsesCapturedEnvironment(t *testing.T, clientOwned bool) {
 		generation := manager.Snapshot()
 		bundles, err := manager.ExportRegisteredBundles(generation.Revision, map[string]string{owner.PluginID: owner.Digest})
 		require.NoError(t, err)
-		proposal := config.RemoteRuntimeProposal{Version: 1, Revision: 1, Bundles: bundles, Images: cfg.Images, CredentialEnvironment: map[string]string{"FIXTURE_IMAGE_KEY": "captured-image-key"},
+		proposal := config.RemoteRuntimeProposal{
+			Version: 1, Revision: 1, Bundles: bundles, Images: cfg.Images, CredentialEnvironment: map[string]string{"FIXTURE_IMAGE_KEY": "captured-image-key"},
 			Providers:   []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: "fixture-inference", Type: catalog.TypeOpenAICompat, BaseURL: "https://example.invalid/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model"}}}}},
 			Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "fixture-inference", Model: "model"}},
 			Credentials: []config.RemoteCredentialBinding{{Owner: providerregistry.RegistrationOwner{ProviderID: "fixture-inference"}, Generation: 1, APIKey: "synthetic-inference-key"}},

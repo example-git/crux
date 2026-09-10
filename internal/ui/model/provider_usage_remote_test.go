@@ -44,7 +44,8 @@ func TestProviderUsageUIUsesRemoteSurfaceWithoutCredentials(t *testing.T) {
 	ui := newTestUI()
 	cfg := &config.Config{Options: &config.Options{}, Providers: csync.NewMap[string, config.ProviderConfig]()}
 	cfg.Providers.Set(owner.ProviderID, config.ProviderConfig{ID: owner.ProviderID})
-	remoteWorkspace := workspace.NewClientWorkspace(c, proto.Workspace{ID: "fixture", Config: cfg,
+	remoteWorkspace := workspace.NewClientWorkspace(c, proto.Workspace{
+		ID: "fixture", Config: cfg,
 		ProviderSurfaces: []providerregistry.Surface{{ID: owner.ProviderID, Owner: &owner, Available: true, UsageAvailable: true}},
 	})
 	defer remoteWorkspace.Shutdown()

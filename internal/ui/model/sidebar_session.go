@@ -14,12 +14,16 @@ import (
 	"github.com/example-git/crux/internal/workspace"
 )
 
-const sidebarDirectoryPause = 1200 * time.Millisecond
-const sidebarDirectoryStep = 160 * time.Millisecond
+const (
+	sidebarDirectoryPause = 1200 * time.Millisecond
+	sidebarDirectoryStep  = 160 * time.Millisecond
+)
 
-type sidebarDirectoryTickMsg struct{ generation uint64 }
-type copySidebarSessionIDMsg struct{ generation uint64 }
-type sidebarSessionIDCopiedMsg struct{ generation uint64 }
+type (
+	sidebarDirectoryTickMsg   struct{ generation uint64 }
+	copySidebarSessionIDMsg   struct{ generation uint64 }
+	sidebarSessionIDCopiedMsg struct{ generation uint64 }
+)
 
 type sidebarSessionState struct {
 	path, id                  string
@@ -223,7 +227,7 @@ func (m *UI) copySidebarSessionID(msg copySidebarSessionIDMsg) tea.Cmd {
 		return nil
 	}
 	return common.CopyToClipboardWithCallback(s.selectedID(), "Selected text copied to clipboard", func() tea.Msg {
-		return sidebarSessionIDCopiedMsg{msg.generation}
+		return sidebarSessionIDCopiedMsg(msg)
 	})
 }
 

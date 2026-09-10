@@ -33,27 +33,29 @@ func newCheckedAPIKeyFixture(t *testing.T, endpoint string, scope Scope) checked
 	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfileIntegrated), "CRUX_DISABLE_AUTO_MEMORY": "true", "SHOULD_NOT_EXPAND": "wrong"}
 	t.Setenv("AI_CLI_DIR", values["AI_CLI_DIR"])
 	for _, dir := range []string{"config", "data", "workspace-data"} {
-		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0700))
+		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0o700))
 	}
 	source := fmt.Sprintf(`{"providers":{"checked":{"type":"openai-compat","base_url":%q,"models":[{"id":"main"},{"id":"small"}],"extra_headers":{"X-Checked":"literal"}},"unrelated":{"type":"openai-compat","base_url":"https://example.invalid/v1","api_key":"synthetic-other","models":[{"id":"other"}]}},"models":{"large":{"provider":"checked","model":"main","max_tokens":123},"small":{"provider":"checked","model":"small","max_tokens":45}}}`, endpoint)
-	require.NoError(t, os.WriteFile(filepath.Join(root, "config", "crux.json"), []byte(source), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "config", "crux.json"), []byte(source), 0o600))
 	path := filepath.Join(root, "data", "crux.json")
 	if scope == ScopeWorkspace {
 		path = filepath.Join(root, "workspace-data", "crux.json")
 	}
-	require.NoError(t, os.WriteFile(path, []byte(`{"providers":{"checked":{"api_key":"synthetic-old"}},"unknown":{"number":9007199254740993}}`), 0600))
+	require.NoError(t, os.WriteFile(path, []byte(`{"providers":{"checked":{"api_key":"synthetic-old"}},"unknown":{"number":9007199254740993}}`), 0o600))
 	store, err := LoadIsolated(root, filepath.Join(root, "workspace-data"), false, env.NewFromMap(values))
 	require.NoError(t, err)
 	owner, ok := store.RuntimeSnapshot().ProviderOwner("checked")
 	require.True(t, ok)
 	return checkedAPIKeyFixture{store, owner, root, path}
 }
+
 func (f checkedAPIKeyFixture) capture(t *testing.T) AuthenticationCapture {
 	t.Helper()
 	c, err := f.store.CaptureAuthentication(t.Context())
 	require.NoError(t, err)
 	return c
 }
+
 func checkedAPIKeyHTTP(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	t.Helper()
 	host := httptest.NewTLSServer(handler)
@@ -160,7 +162,7 @@ func TestCheckedAPIKeyRejectsStaleInputWithoutWrites(t *testing.T) {
 				if change == "oauth-inheritance" {
 					data = `{"providers":{"checked":{"oauth":{"access_token":"old-oauth"}}}}`
 				}
-				require.NoError(t, os.WriteFile(filepath.Join(f.root, "workspace-data", "crux.json"), []byte(data), 0600))
+				require.NoError(t, os.WriteFile(filepath.Join(f.root, "workspace-data", "crux.json"), []byte(data), 0o600))
 				require.NoError(t, f.store.ReloadFromDisk(t.Context()))
 			}
 			before := f.capture(t)
@@ -172,7 +174,7 @@ func TestCheckedAPIKeyRejectsStaleInputWithoutWrites(t *testing.T) {
 			case "inactive-account-addition":
 				require.NoError(t, accounts.SaveWithoutActivating(t.Context(), "test", accounts.Entry{ID: "other", AccessToken: "other"}))
 			case "source-file":
-				file, err := os.OpenFile(f.path, os.O_APPEND|os.O_WRONLY, 0600)
+				file, err := os.OpenFile(f.path, os.O_APPEND|os.O_WRONLY, 0o600)
 				require.NoError(t, err)
 				_, err = file.WriteString("\n")
 				require.NoError(t, err)
@@ -252,7 +254,7 @@ func TestCheckedAPIKeyLatePublicationKeepsProgressWithoutAfter(t *testing.T) {
 	require.NoError(t, err)
 	f.store.SetRuntimeGenerationPreparer(func(context.Context, RuntimeSnapshot) (RuntimeGenerationCandidate, error) {
 		return RuntimeGenerationCandidate{Commit: func() {
-			file, err := os.OpenFile(f.path, os.O_APPEND|os.O_WRONLY, 0600)
+			file, err := os.OpenFile(f.path, os.O_APPEND|os.O_WRONLY, 0o600)
 			require.NoError(t, err)
 			_, err = file.WriteString("\n")
 			require.NoError(t, err)
@@ -305,7 +307,7 @@ func TestCheckedAPIKeyReusesAcceptedShellConfiguration(t *testing.T) {
 	host := checkedAPIKeyHTTP(t, func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{}`)) })
 	f := newCheckedAPIKeyFixture(t, host.URL, ScopeGlobal)
 	marker := filepath.Join(f.root, "shell-count")
-	require.NoError(t, os.WriteFile(filepath.Join(f.root, ".cruxrc"), []byte(fmt.Sprintf("printf x >> '%s'\noption notifications bell\n", marker)), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(f.root, ".cruxrc"), []byte(fmt.Sprintf("printf x >> '%s'\noption notifications bell\n", marker)), 0o600))
 	require.NoError(t, f.store.ReloadFromDisk(t.Context()))
 	initial, err := os.ReadFile(marker)
 	require.NoError(t, err)
@@ -332,7 +334,7 @@ func TestCheckedAPIKeyPreparesAcceptedUnconfiguredPreset(t *testing.T) {
 	require.NoError(t, err)
 	data, err = sjson.SetBytes(data, "providers.deepseek", map[string]any{"base_url": host.URL, "preset": map[string]string{"id": "crux.catwalk.deepseek"}})
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(f.path, data, 0600))
+	require.NoError(t, os.WriteFile(f.path, data, 0o600))
 	require.NoError(t, f.store.ReloadFromDisk(t.Context()))
 	_, configured := f.store.Config().Providers.Get("deepseek")
 	require.False(t, configured)
@@ -364,13 +366,13 @@ func TestCheckedAPIKeyNativeProbeUnsupportedBeforeExpressions(t *testing.T) {
 	declaration.Capabilities.Credentials = append(declaration.Capabilities.Credentials, manifest.Credential{ID: "key", Kind: "api-key", Audience: []string{"api"}})
 	data, err = json.Marshal(declaration)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0o600))
 	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginNative), "CRUX_PROVIDER_PLUGINS": "example-responses"}
 	installTrustedProviderBundle(t, values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"], bundle)
 	marker := filepath.Join(root, "must-not-evaluate")
 	endpoint := fmt.Sprintf("$(printf x >> '%s'; printf '%%s' '%s')", marker, host.URL)
 	document := fmt.Sprintf(`{"providers":{"example-responses":{"plugin":{"id":"example.responses-oauth"},"api_key":"synthetic-old","base_url":%q,"configuration":{"oauth_client_id":"synthetic-client"}},"other":{"type":"openai-compat","api_key":"synthetic-other","base_url":"https://example.invalid","models":[{"id":"main"}]}},"models":{"large":{"provider":"other","model":"main"},"small":{"provider":"other","model":"main"}}}`, endpoint)
-	require.NoError(t, os.WriteFile(filepath.Join(root, "crux.json"), []byte(document), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "crux.json"), []byte(document), 0o600))
 	store, err := LoadIsolated(root, filepath.Join(root, "workspace"), false, env.NewFromMap(values))
 	require.NoError(t, err)
 	_ = os.Remove(marker)

@@ -41,12 +41,15 @@ func (o OAuthLoginAbandonOutcome) Validate(request OAuthLoginAbandonRequest) err
 	}
 	return nil
 }
+
 func (s *Service) AbandonOAuthLoginResult(ctx context.Context, request OAuthLoginAbandonRequest) (OAuthLoginAbandonOutcome, error) {
 	return s.abandonOAuthLoginResult(ctx, request, nil, nil)
 }
+
 func (s *Service) AbandonOAuthLoginResultForAccepted(ctx context.Context, request OAuthLoginAbandonRequest, accepted config.RemoteRuntimeProposal, view *config.Config) (OAuthLoginAbandonOutcome, error) {
 	return s.abandonOAuthLoginResult(ctx, request, &accepted, view)
 }
+
 func (s *Service) abandonOAuthLoginResult(ctx context.Context, request OAuthLoginAbandonRequest, accepted *config.RemoteRuntimeProposal, view *config.Config) (OAuthLoginAbandonOutcome, error) {
 	outcome := OAuthLoginAbandonOutcome{Request: request}
 	if err := request.Validate(); err != nil {

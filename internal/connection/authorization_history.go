@@ -13,8 +13,10 @@ import (
 	"github.com/google/uuid"
 )
 
-const authorizationReservationLimit = 256
-const authorizationHistoryLimit = 256
+const (
+	authorizationReservationLimit = 256
+	authorizationHistoryLimit     = 256
+)
 
 // Kept separately so the original exact revocation receipt never changes.
 // Missing legacy metadata is unknown, never evidence that work drained.
@@ -44,6 +46,7 @@ func resolvedRevocation(value RevocationResolution) bool {
 		return false
 	}
 }
+
 func unresolvedRevocations(data *store) int {
 	count := 0
 	for operation := range data.Revocations {
@@ -53,6 +56,7 @@ func unresolvedRevocations(data *store) int {
 	}
 	return count
 }
+
 func admitAuthorizationHistory(data *store, name string) error {
 	if len(name) > 256 || !utf8.ValidString(name) || strings.ContainsAny(name, "\x00\r\n\t") {
 		return errors.New("client name must be valid text of at most 256 bytes without control separators")
@@ -145,6 +149,7 @@ func ListRevocationHistory(ctx context.Context) (AuthorizationHistory, error) {
 	})
 	return result, nil
 }
+
 func exactRevocation(data *store, receipt RevocationRecord) error {
 	if stored, found := data.Revocations[receipt.OperationID]; !found || stored != receipt {
 		return errors.New("the exact revocation receipt is unavailable or changed")
@@ -193,6 +198,7 @@ func prepareRevocationResolution(ctx context.Context, path string, receipt Revoc
 	}, nil)
 	return result, err
 }
+
 func saveRevocationResolution(ctx context.Context, path string, receipt RevocationRecord, observed []DaemonRevocation) (RevocationResolution, error) {
 	var result RevocationResolution
 	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
@@ -227,6 +233,7 @@ func saveRevocationResolution(ctx context.Context, path string, receipt Revocati
 	}, nil)
 	return result, err
 }
+
 func AbandonRevocationAcknowledgement(ctx context.Context, name, operationID string) error {
 	if _, err := uuid.Parse(operationID); err != nil || strings.TrimSpace(name) == "" {
 		return errors.New("an exact client name and revocation operation are required")
@@ -248,9 +255,11 @@ func AbandonRevocationAcknowledgement(ctx context.Context, name, operationID str
 		return nil
 	})
 }
+
 func PruneAuthorizationHistory(ctx context.Context) error {
 	return update(ctx, func(data *store) error { pruneAuthorizationHistory(data, 0); return nil })
 }
+
 func revocationResolutionError(value RevocationResolution) error {
 	if value.State == "abandoned" {
 		return errors.New("acknowledgement of this historical revocation was explicitly abandoned; no live drain is asserted")
@@ -260,6 +269,7 @@ func revocationResolutionError(value RevocationResolution) error {
 	}
 	return nil
 }
+
 func revocationDaemonPath(path, id string) (string, error) {
 	if _, err := uuid.Parse(id); err != nil {
 		return "", errors.New("invalid captured daemon identity")

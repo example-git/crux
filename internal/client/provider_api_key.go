@@ -69,9 +69,16 @@ func (c *Client) SaveCheckedProviderAPIKey(ctx context.Context, id string, reque
 // must never replay secret source to a new endpoint. Copy rather than mutate the
 // shared HTTP client, preserving its existing transport and TLS authority.
 func (c *Client) fixedAPIKeyRouteClient() *Client {
-	copy := *c
 	httpClient := *c.h
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	copy.h = &httpClient
-	return &copy
+	return &Client{
+		h:                      &httpClient,
+		path:                   c.path,
+		network:                c.network,
+		addr:                   c.addr,
+		clientID:               c.clientID,
+		localRuntimeStore:      c.localRuntimeStore,
+		secure:                 c.secure,
+		authenticationIdentity: c.authenticationIdentity,
+	}
 }

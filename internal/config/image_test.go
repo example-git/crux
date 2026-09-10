@@ -43,7 +43,8 @@ func TestRemoteImageDependencyStaysUnloadedDuringStartup(t *testing.T) {
 	bundles, err := manager.ExportRegisteredBundles(manager.Snapshot().Revision, map[string]string{owner.PluginID: owner.Digest})
 	require.NoError(t, err)
 	credential := providerregistry.RegistrationOwner{ProviderID: "codex", Construction: providerregistry.ConstructionCodex}
-	proposal := RemoteRuntimeProposal{Version: RemoteRuntimeVersion, Revision: 1, Bundles: bundles,
+	proposal := RemoteRuntimeProposal{
+		Version: RemoteRuntimeVersion, Revision: 1, Bundles: bundles,
 		Providers: []RemoteProviderDefinition{{Config: ProviderConfig{ID: "codex"}, Unloaded: &ProviderLoadIssue{ProviderID: "codex", Message: "Provider bundle requires an update."}}},
 		Images:    &ImageConfiguration{Preferred: []providerplugin.ImageOwner{owner}, Providers: map[string]ImageProviderConfiguration{owner.Backend: {Owner: owner, Credentials: map[string]providerregistry.RegistrationOwner{"access": credential}}}},
 	}

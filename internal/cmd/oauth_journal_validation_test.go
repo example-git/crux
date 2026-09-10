@@ -118,8 +118,8 @@ func TestOAuthJournalValidationCLIRealProducerRemovedProvider(t *testing.T) {
 			// No currently loadable provider survives. The command must not read
 			// malformed config or execute a shell config to find journal scope.
 			marker := filepath.Join(root, "must-not-execute")
-			require.NoError(t, os.WriteFile(global, []byte("not valid configuration"), 0600))
-			require.NoError(t, os.WriteFile(filepath.Join(root, ".cruxrc"), []byte("#!/bin/sh\ntouch "+marker+"\n"), 0700))
+			require.NoError(t, os.WriteFile(global, []byte("not valid configuration"), 0o600))
+			require.NoError(t, os.WriteFile(filepath.Join(root, ".cruxrc"), []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o700))
 			require.NoError(t, os.RemoveAll(providerplugin.DefaultPaths(values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"]).Bundles))
 			flags := []string{"--cwd", root, "--global-config-data", global, "--workspace-config", workspacePath}
 			args := append([]string{"accounts", "pending-oauth", "--json"}, flags...)
@@ -138,6 +138,7 @@ func TestOAuthJournalValidationCLIRealProducerRemovedProvider(t *testing.T) {
 			require.NotContains(t, output, owner.AccountNamespace)
 			retire := append([]string{"accounts", "retire-oauth", key.WorkspaceID, key.OperationID}, flags...)
 			output, err = executeOAuthJournalValidationCLI(t, retire...)
+			require.NotContains(t, output, owner.AccountNamespace)
 			if state == "token-result-recorded" {
 				require.Error(t, err)
 				retire = append(retire, "--discard-recorded-token")

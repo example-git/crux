@@ -26,6 +26,7 @@ type authenticationScopeTopology struct {
 func (authenticationScopeTopology) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication scope topology is private")
 }
+
 func (authenticationScopeTopology) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication scope topology]"))
 }

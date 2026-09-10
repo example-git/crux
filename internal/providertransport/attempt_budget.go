@@ -8,8 +8,10 @@ import (
 
 var ErrAttemptBudgetExhausted = errors.New("provider operation attempt budget exhausted")
 
-type attemptBudgetKey struct{}
-type AttemptBudget struct{ remaining atomic.Int64 }
+type (
+	attemptBudgetKey struct{}
+	AttemptBudget    struct{ remaining atomic.Int64 }
+)
 
 // ContextWithAttemptBudget shares a single dispatch budget across transport and
 // authentication retries. Calls without this context retain existing behavior.

@@ -83,7 +83,7 @@ func TestEnrollmentAdmissionRejectsSocketsBeforeTLSAndRecovers(t *testing.T) {
 			})
 			if refusal == "concurrency" {
 				for range enrollmentMaxConnections {
-					conn, err := net.DialTimeout("tcp", address, time.Second)
+					conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(t.Context(), "tcp", address)
 					require.NoError(t, err)
 					stalled = append(stalled, conn)
 				}
@@ -92,7 +92,7 @@ func TestEnrollmentAdmissionRejectsSocketsBeforeTLSAndRecovers(t *testing.T) {
 				e.admission.connectionRate.SetLimit(0)
 				require.True(t, e.admission.connectionRate.AllowN(time.Now(), enrollmentConnectionBurst))
 			}
-			rejected, err := net.DialTimeout("tcp", address, time.Second)
+			rejected, err := (&net.Dialer{Timeout: time.Second}).DialContext(t.Context(), "tcp", address)
 			require.NoError(t, err)
 			defer rejected.Close()
 			require.NoError(t, rejected.SetReadDeadline(time.Now().Add(time.Second)))
@@ -229,7 +229,7 @@ func TestEnrollmentFailureBudgetsAreSeparateAndPreserveAuthorizationStore(t *tes
 			case <-time.After(2 * time.Second):
 				t.Fatal("exhausted enrollment did not close its listener")
 			}
-			conn, dialErr := net.DialTimeout("tcp", strings.TrimPrefix(e.Address(), "tcp://"), time.Second)
+			conn, dialErr := (&net.Dialer{Timeout: time.Second}).DialContext(t.Context(), "tcp", strings.TrimPrefix(e.Address(), "tcp://"))
 			if conn != nil {
 				_ = conn.Close()
 			}

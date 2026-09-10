@@ -107,7 +107,7 @@ func TestValueSoftWrap(t *testing.T) {
 
 	input := "Testing Testing Testing Testing Testing Testing Testing Testing"
 
-	for _, k := range []rune(input) {
+	for _, k := range input {
 		textarea, _ = textarea.Update(keyPress(k))
 		textarea.View()
 	}
@@ -149,7 +149,7 @@ func TestInsertString(t *testing.T) {
 	// Insert some text
 	input := "foo baz"
 
-	for _, k := range []rune(input) {
+	for _, k := range input {
 		textarea, _ = textarea.Update(keyPress(k))
 	}
 
@@ -169,7 +169,7 @@ func TestCanHandleEmoji(t *testing.T) {
 	textarea := newTextArea()
 	input := "🧋"
 
-	for _, k := range []rune(input) {
+	for _, k := range input {
 		textarea, _ = textarea.Update(keyPress(k))
 	}
 
@@ -2408,7 +2408,7 @@ func keyPress(key rune) tea.Msg {
 }
 
 func sendString(m Model, str string) Model {
-	for _, k := range []rune(str) {
+	for _, k := range str {
 		m, _ = m.Update(keyPress(k))
 	}
 

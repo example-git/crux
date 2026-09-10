@@ -35,6 +35,7 @@ func checkedAPIKeyFields(provider ProviderConfig, slots ...ProviderCredentialSlo
 	}
 	return fields, nil
 }
+
 func applyCheckedAPIKeyFields(data []byte, providerID string, fields map[string]any) ([]byte, error) {
 	if len(data) == 0 {
 		data = []byte("{}")
@@ -64,6 +65,7 @@ func applyCheckedAPIKeyFields(data []byte, providerID string, fields map[string]
 	}
 	return data, nil
 }
+
 func (layers authenticationLayers) stageCheckedAPIKey(ctx context.Context, path string, provider ProviderConfig, writtenPaths []string, slots ...ProviderCredentialSlot) (authenticationCredentialEdit, error) {
 	if err := ctx.Err(); err != nil {
 		return authenticationCredentialEdit{}, err
@@ -112,6 +114,7 @@ func (layers authenticationLayers) stageCheckedAPIKey(ctx context.Context, path 
 	}
 	return authenticationCredentialEdit{path: path, data: bytes.Clone(data), before: before, after: after}, ctx.Err()
 }
+
 func (c *Config) advanceAuthenticationBasisCheckedAPIKey(path string, provider ProviderConfig, slots ...ProviderCredentialSlot) {
 	basis := c.authenticationBasis.clone()
 	if basis == nil {

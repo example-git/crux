@@ -30,15 +30,19 @@ func (m unavailableClientModel) Model() string    { return m.model }
 func (m unavailableClientModel) Generate(context.Context, fantasy.Call) (*fantasy.Response, error) {
 	return nil, m.err
 }
+
 func (m unavailableClientModel) Stream(context.Context, fantasy.Call) (fantasy.StreamResponse, error) {
 	return nil, m.err
 }
+
 func (m unavailableClientModel) GenerateObject(context.Context, fantasy.ObjectCall) (*fantasy.ObjectResponse, error) {
 	return nil, m.err
 }
+
 func (m unavailableClientModel) StreamObject(context.Context, fantasy.ObjectCall) (fantasy.ObjectStreamResponse, error) {
 	return nil, m.err
 }
+
 func (m unavailableClientModel) Compact(context.Context, fantasy.Call) (*codexresponses.CompactionResult, error) {
 	return nil, m.err
 }

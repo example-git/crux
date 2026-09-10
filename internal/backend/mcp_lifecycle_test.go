@@ -80,9 +80,11 @@ func TestMCPWorkspaceAppTeardownIsolation(t *testing.T) {
 	// Client-owned Apps have no MCP declarations in the current proposal schema.
 	// Their shutdown must nevertheless never touch a host workspace's clients.
 	owner := providerregistry.RegistrationOwner{ProviderID: "fixture"}
-	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+	proposal := config.RemoteRuntimeProposal{
+		Version: config.RemoteRuntimeVersion, Revision: 1,
 		Providers: []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: "fixture", Name: "Fixture", Type: catalog.TypeOpenAICompat, BaseURL: "http://127.0.0.1:1/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model", Name: "Model", ContextWindow: 8192, DefaultMaxTokens: 128}}}}},
-		Models:    map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "fixture", Model: "model"}, config.SelectedModelTypeSmall: {Provider: "fixture", Model: "model"}}, Credentials: []config.RemoteCredentialBinding{{Owner: owner, Generation: 1, APIKey: "synthetic-fixture"}}}
+		Models:    map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "fixture", Model: "model"}, config.SelectedModelTypeSmall: {Provider: "fixture", Model: "model"}}, Credentials: []config.RemoteCredentialBinding{{Owner: owner, Generation: 1, APIKey: "synthetic-fixture"}},
+	}
 	var err error
 	proposal.Digest, err = config.RemoteRuntimeDigest(proposal)
 	require.NoError(t, err)

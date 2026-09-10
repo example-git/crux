@@ -146,7 +146,7 @@ func TestSelectedSnapshotReportsSavedRotationAfterFinalOwnerFailure(t *testing.T
 func TestSelectedSnapshotFilesystemErrorsKeepCapturedPathsPrivate(t *testing.T) {
 	entry, before := selectedSnapshotFixture(t)
 	root := filepath.Dir(before.path)
-	require.NoError(t, os.WriteFile(filepath.Join(root, "locks"), []byte("blocked"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "locks"), []byte("blocked"), 0o600))
 	_, err := before.RefreshSelectedForOwner(t.Context(), "rotation", &entry, nil, inactiveOwnerValid, true)
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), root)
@@ -172,7 +172,7 @@ func TestSelectedSnapshotRejectsUnwritableStructureBeforeExchange(t *testing.T) 
 				document, err = sjson.SetBytes(document, "accounts.rotation.0.AccessToken", entry.AccessToken)
 			}
 			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(before.path, document, 0600))
+			require.NoError(t, os.WriteFile(before.path, document, 0o600))
 			calls := 0
 			fresh, err := before.RefreshSelectedForOwner(t.Context(), "rotation", &entry, func(context.Context, string) (*oauth.Token, error) {
 				calls++

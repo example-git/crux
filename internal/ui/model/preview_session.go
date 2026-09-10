@@ -37,13 +37,13 @@ func NewPreviewSession(ctx context.Context, dbPath, workingDir, sessionID string
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 	hasUnseen := false
 	for rows.Next() {
 		var cid, notnull, pk int
 		var name, typ string
 		var defaultValue any
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &defaultValue, &pk); err != nil {
-			rows.Close()
 			return nil, err
 		}
 		if name == "unseen_local_tokens" {
@@ -101,12 +101,15 @@ func NewPreviewSession(ctx context.Context, dbPath, workingDir, sessionID string
 	p.itemsKey = ""
 	return p, nil
 }
+
 func (p *Preview) FixtureData() *PreviewData {
 	return clonePreviewValue(reflect.ValueOf(p.base)).Interface().(*PreviewData)
 }
+
 func (w *previewWorkspace) ListSessionHistory(context.Context, string) ([]history.File, error) {
 	return w.history, nil
 }
+
 func clonePreviewValue(v reflect.Value) reflect.Value {
 	if !v.IsValid() {
 		return v
@@ -147,6 +150,7 @@ func clonePreviewValue(v reflect.Value) reflect.Value {
 	}
 	return out
 }
+
 func (p *Preview) importedItems(o PreviewOptions) []chat.MessageItem {
 	messages := p.data.Messages
 	results := chat.BuildToolResultMap(messages)

@@ -63,7 +63,7 @@ func TestShellCompletionMainSkipsApplicationStartup(t *testing.T) {
 			require.NoError(t, os.Unsetenv("CRUX_TEST_DOTENV_LOADED"))
 			require.NoError(t, os.WriteFile(filepath.Join(home, ".env"), []byte("CRUX_TEST_DOTENV_LOADED=1\n"), 0o600))
 			args := append([]string{"-test.run=^TestShellCompletionMainProcess$", "--"}, tc.args...)
-			command := exec.Command(executable, args...)
+			command := exec.CommandContext(t.Context(), executable, args...)
 			command.Dir = home
 			var out, diagnostic bytes.Buffer
 			command.Stdout, command.Stderr = &out, &diagnostic
@@ -99,7 +99,7 @@ func TestShellCompletionBashWithoutCompletionPackage(t *testing.T) {
 	t.Setenv("CRUX_TEST_BINARY", executable)
 	// The shell wrapper invokes the real main/command tree in a fresh process
 	// for generation and every completion request, using the renamed command.
-	command := exec.Command(bash, "--noprofile", "--norc", "-c", `
+	command := exec.CommandContext(t.Context(), bash, "--noprofile", "--norc", "-c", `
 crux-dev() { "$CRUX_TEST_BINARY" -test.run='^TestShellCompletionMainProcess$' -- "$@"; }
 eval "$(crux-dev completion bash)"
 COMP_WORDS=(crux-dev --cont); COMP_CWORD=1

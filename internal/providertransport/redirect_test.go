@@ -18,17 +18,17 @@ func TestEndpointRedirectPolicyCapturesDeclarationAndComposesClient(t *testing.T
 	endpoint.BaseURL = "https://elsewhere.invalid"
 	endpoint.AllowedHosts[0] = "elsewhere.invalid"
 	endpoint.AllowedSchemes[0] = "http"
-	request, err := http.NewRequest(http.MethodPost, "https://api.example.invalid/next?retained=yes", nil)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://api.example.invalid/next?retained=yes", nil)
 	require.NoError(t, err)
 	require.NoError(t, client.CheckRedirect(request, []*http.Request{request}))
-	request, err = http.NewRequest(http.MethodPost, "https://cdn.example.invalid:8443/other", nil)
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, "https://cdn.example.invalid:8443/other", nil)
 	require.NoError(t, err)
 	require.NoError(t, client.CheckRedirect(request, []*http.Request{request}), "allowed-hosts retains its explicitly wider origin scope")
 	// Use an accepting callback for destination validation; a refusal from
 	// the supplied callback remains authoritative without any dispatch.
 	strict := EndpointHTTPClient(&http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return nil }}, manifest.Endpoint{BaseURL: "https://api.example.invalid", AllowedSchemes: []string{"https"}, AllowedHosts: []string{"api.example.invalid"}, Override: "same-origin", FollowRedirects: true})
 	for _, target := range []string{"http://api.example.invalid/next", "https://elsewhere.invalid/next", "https://user:pass@api.example.invalid/next", "https://api.example.invalid/next#fragment"} {
-		request, err := http.NewRequest(http.MethodPost, target, nil)
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, target, nil)
 		require.NoError(t, err)
 		refused := strict.CheckRedirect(request, []*http.Request{request})
 		require.True(t, isEndpointRedirectError(refused), "target must fail before dispatch")
@@ -50,7 +50,7 @@ func TestEndpointRedirectPolicyChecksCallerURLMutation(t *testing.T) {
 		request.URL.Host = "outside.example.invalid"
 		return nil
 	}}, endpoint)
-	request, err := http.NewRequest(http.MethodPost, "https://api.example.invalid/next", nil)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://api.example.invalid/next", nil)
 	require.NoError(t, err)
 	require.True(t, isEndpointRedirectError(client.CheckRedirect(request, []*http.Request{request})))
 }

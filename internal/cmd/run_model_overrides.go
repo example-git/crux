@@ -2,9 +2,10 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/example-git/crux/internal/config"
 	"github.com/spf13/cobra"
-	"strings"
 )
 
 // Run flags affect the very first private proposal. Otherwise an unrelated

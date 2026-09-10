@@ -34,7 +34,7 @@ func TestModelOverridesRejectMalformedRequestsBeforeBackend(t *testing.T) {
 		string(valid) + ` {}`, strings.Repeat("[", 66) + strings.Repeat("]", 66),
 		`{"state":"` + strings.Repeat("x", 64<<10) + `"}`,
 	} {
-		r := httptest.NewRequest(http.MethodPost, "/v1/workspaces/fixture/config/model-overrides", strings.NewReader(body))
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/workspaces/fixture/config/model-overrides", strings.NewReader(body))
 		response := httptest.NewRecorder()
 		// Dispatch against a nil backend makes a validation bypass observable.
 		(&controllerV1{}).handlePostWorkspaceModelOverrides(response, r)

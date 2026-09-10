@@ -21,8 +21,10 @@ import (
 	"github.com/example-git/crux/internal/redact"
 )
 
-const pendingPairingLimit = 64
-const pendingPairingBytes = 4 << 20
+const (
+	pendingPairingLimit = 64
+	pendingPairingBytes = 4 << 20
+)
 
 // PendingPairing contains only public recovery information. Pending private
 // identities never appear in listing, errors, or authorization request bodies.
@@ -163,7 +165,7 @@ func readPendingPairings(path string) (pendingPairings, pendingImage, error) {
 }
 
 func samePendingFile(a, b os.FileInfo) bool {
-	return a != nil && b != nil && b.Mode().IsRegular() && os.SameFile(a, b) && a.Mode() == b.Mode() && a.Size() == b.Size() && a.ModTime() == b.ModTime()
+	return a != nil && b != nil && b.Mode().IsRegular() && os.SameFile(a, b) && a.Mode() == b.Mode() && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
 }
 
 func writePendingPairings(path string, data pendingPairings, before pendingImage) error {

@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestPreviewEmbeddedAssetsAndControlBoundary(t *testing.T) {
@@ -21,7 +23,7 @@ func TestPreviewEmbeddedAssetsAndControlBoundary(t *testing.T) {
 	}
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	request, err := http.NewRequest(http.MethodGet, server.URL+"/", nil)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+"/", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +38,9 @@ func TestPreviewEmbeddedAssetsAndControlBoundary(t *testing.T) {
 	if len(asset) != 2 {
 		t.Fatal("embedded HTML has no bundled script")
 	}
-	response, err = http.Get(server.URL + asset[1])
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+asset[1], nil)
+	require.NoError(t, err)
+	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +49,10 @@ func TestPreviewEmbeddedAssetsAndControlBoundary(t *testing.T) {
 	if response.StatusCode != 200 || !strings.Contains(string(body), "cruxPreview") {
 		t.Fatal("embedded control client missing")
 	}
-	response, err = http.Post(server.URL+"/api/control", "application/json", strings.NewReader(`{"action":"screenshot"}`))
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/api/control", strings.NewReader(`{"action":"screenshot"}`))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	response, err = http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +64,10 @@ func TestPreviewEmbeddedAssetsAndControlBoundary(t *testing.T) {
 	}
 	for index, dimensions := range [][2]int{{160, 45}, {65, 25}} {
 		if index > 0 {
-			response, err = http.Post(server.URL+"/api/control", "application/json", strings.NewReader(`{"action":"set","state":{"cols":65,"rows":25,"modal":"instructions"},"screenshot":true}`))
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/api/control", strings.NewReader(`{"action":"set","state":{"cols":65,"rows":25,"modal":"instructions"},"screenshot":true}`))
+			require.NoError(t, err)
+			request.Header.Set("Content-Type", "application/json")
+			response, err = http.DefaultClient.Do(request)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -70,7 +80,9 @@ func TestPreviewEmbeddedAssetsAndControlBoundary(t *testing.T) {
 			}
 		}
 		screenshot := result["screenshot"].(map[string]any)
-		imageResponse, err := http.Get(server.URL + screenshot["url"].(string))
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+screenshot["url"].(string), nil)
+		require.NoError(t, err)
+		imageResponse, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -88,13 +100,16 @@ func TestPreviewEmbeddedAssetsAndControlBoundary(t *testing.T) {
 		}
 		t.Logf("capture %d: %v ms, %d PNG bytes", index, result["elapsedMs"], len(data))
 		if directory := os.Getenv("CRUX_PREVIEW_TEST_ARTIFACTS"); directory != "" {
-			if err := os.WriteFile(filepath.Join(directory, fmt.Sprintf("capture-%d.png", index)), data, 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(directory, fmt.Sprintf("capture-%d.png", index)), data, 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
 	for _, command := range []string{`{"action":"screenshot","clientId":"missing"}`, `{"action":"screenshot","state":{"cols":0}}`, `{"action":"screenshot","state":{"bogus":1}}`, `{"action":"screenshot","fontSize":99}`} {
-		response, err := http.Post(server.URL+"/api/control", "application/json", strings.NewReader(command))
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/api/control", strings.NewReader(command))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}

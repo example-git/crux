@@ -8,12 +8,12 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/ui/model"
-	"path/filepath"
 )
 
 //go:generate npm --prefix ../../../tools/tui-mock run build:web
@@ -24,6 +24,7 @@ func NewHandler() (http.Handler, error) { return NewHandlerWithProject("", "") }
 func NewHandlerWithProject(project, initialSession string) (http.Handler, error) {
 	return newHandler(project, initialSession, true)
 }
+
 func newHandler(project, initialSession string, loadRuntime bool) (http.Handler, error) {
 	source, err := newSessionSource(project, initialSession)
 	if err != nil {

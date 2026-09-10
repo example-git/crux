@@ -18,8 +18,10 @@ import (
 )
 
 func connectionProbeProvider() ProviderConfig {
-	return ProviderConfig{ID: "probe-fixture", APIKey: "synthetic-entered", Type: catalog.TypeOpenAICompat,
-		Owner: &ProviderOwnerReference{Type: ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}}
+	return ProviderConfig{
+		ID: "probe-fixture", APIKey: "synthetic-entered", Type: catalog.TypeOpenAICompat,
+		Owner: &ProviderOwnerReference{Type: ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat},
+	}
 }
 
 func connectionProbePreset(provider *ProviderConfig, id catalog.ProviderID) {

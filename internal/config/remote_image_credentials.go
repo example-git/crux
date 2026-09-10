@@ -26,7 +26,8 @@ type RemoteImageBrowserCredential struct {
 	Cookies      []cookieutil.BrowserCookie `json:"cookies"`
 }
 
-func (RemoteImageBrowserCredential) String() string   { return "[private image browser credential]" }
+func (RemoteImageBrowserCredential) String() string { return "[private image browser credential]" }
+
 func (RemoteImageBrowserCredential) GoString() string { return "[private image browser credential]" }
 
 type imageRuntimeCapture struct {
@@ -43,6 +44,7 @@ func newImageRuntimeCapture(cfg *Config, environment []string) *imageRuntimeCapt
 	slices.Sort(environment)
 	return &imageRuntimeCapture{config: cfg, environment: environment, values: map[string][]cookieutil.BrowserCookie{}, running: map[string]chan struct{}{}, identities: map[string]RemoteImageClientIdentity{}}
 }
+
 func (c *imageRuntimeCapture) matches(cfg *Config, environment []string) bool {
 	if c == nil || c.config != cfg {
 		return false

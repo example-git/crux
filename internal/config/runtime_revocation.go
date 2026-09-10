@@ -19,7 +19,7 @@ func (s *ConfigStore) RevokeRuntime() {
 	s.ensureRuntimeLifetime()
 	s.runtimeCancel()
 	s.writeMu.Lock()
-	s.writeMu.Unlock()
+	s.writeMu.Unlock() //nolint:staticcheck // Empty section is a deliberate barrier that joins any in-flight publication before revocation completes.
 	s.clientRefreshMu.Lock()
 	s.clientRefreshPublisher = nil
 	for _, call := range s.clientRefreshes {

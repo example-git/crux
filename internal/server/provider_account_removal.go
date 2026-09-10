@@ -1,9 +1,10 @@
 package server
 
 import (
-	"github.com/example-git/crux/internal/proto"
 	"io"
 	"net/http"
+
+	"github.com/example-git/crux/internal/proto"
 )
 
 // handlePostWorkspaceProviderRemove documents the workspace authority contract.

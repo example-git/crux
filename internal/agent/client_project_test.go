@@ -104,7 +104,8 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 			registration, ok := registry.Lookup(gemini.ID)
 			require.True(t, ok)
 			selected := config.SelectedModel{Provider: gemini.ID, Model: "fixture"}
-			proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+			proposal := config.RemoteRuntimeProposal{
+				Version: config.RemoteRuntimeVersion, Revision: 1,
 				Providers:   []config.RemoteProviderDefinition{{NativeIdentity: &identity, GeminiProjectID: &project, Config: config.ProviderConfig{ID: gemini.ID, Type: catalog.TypeOpenAICompat, BaseURL: host.URL, Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionGeminiAntigravity}, Models: []catalog.Model{{ID: selected.Model, Name: "Fixture"}}}}},
 				Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: selected, config.SelectedModelTypeSmall: selected},
 				Credentials: []config.RemoteCredentialBinding{{Owner: registration.Owner(), Generation: 1, Account: &accounts.Entry{ID: "selected", AccessToken: "synthetic-client-token", RefreshToken: "synthetic-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}}},
@@ -164,11 +165,12 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 				expectedInferences = 3
 			}
 			require.EqualValues(t, expectedInferences, inferences.Load())
-			if mode == "credential-lookup" || mode == "captured-default" || mode == "explicit-provider-header" {
+			switch mode {
+			case "credential-lookup", "captured-default", "explicit-provider-header":
 				require.EqualValues(t, 3, lookups.Load())
-			} else if mode == "missing-metadata" {
+			case "missing-metadata":
 				require.EqualValues(t, 1, lookups.Load())
-			} else {
+			default:
 				require.Zero(t, lookups.Load())
 			}
 		})

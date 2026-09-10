@@ -51,6 +51,7 @@ func (m *UI) prepareHistoricalPublicationAbandon(s *authenticationHistoryUI, e *
 		return authenticationHistoryAbandonPreparedMsg{s, e, attempt, generation, request, err}
 	}
 }
+
 func (m *UI) completeHistoricalPublicationAbandonPreparation(msg authenticationHistoryAbandonPreparedMsg) tea.Cmd {
 	s, e := msg.state, msg.entry
 	if s == nil || e == nil || m.authenticationHistories[s.workspace] != s || s.entries[e.key] != e || !e.preparing || e.attempt != msg.attempt {
@@ -72,6 +73,7 @@ func (m *UI) completeHistoricalPublicationAbandonPreparation(msg authenticationH
 	}
 	return m.dispatchHistoricalPublicationAbandon(s, e, msg.request)
 }
+
 func (m *UI) dispatchHistoricalPublicationAbandon(s *authenticationHistoryUI, e *authenticationHistoryEntry, request workspace.ProviderAuthenticationAbandonRequest) tea.Cmd {
 	if !m.authenticationHistoryCurrent(s) || e.operation == nil || request.WorkspaceID != s.sourceID || request.Target != e.operation.Target || request.OperationID != e.operation.OperationID {
 		return util.ReportError(providerauth.ErrStale)
@@ -97,6 +99,7 @@ func (m *UI) dispatchHistoricalPublicationAbandon(s *authenticationHistoryUI, e 
 		return authenticationHistoryAbandonedMsg{s, e, attempt, request, outcome, err}
 	}
 }
+
 func (m *UI) completeHistoricalPublicationAbandon(msg authenticationHistoryAbandonedMsg) tea.Cmd {
 	s, e := msg.state, msg.entry
 	if s == nil || e == nil || m.authenticationHistories[s.workspace] != s || s.entries[e.key] != e || !e.pending || e.attempt != msg.attempt || e.publicationAbandon == nil || *e.publicationAbandon != msg.request {

@@ -24,6 +24,7 @@ type authenticationRuntimeAccounts struct {
 func (authenticationRuntimeAccounts) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("runtime authentication accounts are private")
 }
+
 func (authenticationRuntimeAccounts) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private runtime authentication accounts]"))
 }

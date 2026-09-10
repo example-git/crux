@@ -9,16 +9,19 @@ import (
 
 // Reconciliation publishes separately reviewed, already coherent saved state.
 // It never repairs, reloads, or repeats the original authentication mutation.
-type ProviderAuthenticationReviewChoice = clientAuthenticationReviewChoice
-type ProviderAuthenticationReviewModel = clientAuthenticationReviewModel
-type ProviderAuthenticationReviewSummary = clientAuthenticationReviewSummary
-type ProviderAuthenticationReconciliationOutcome = clientAuthenticationReconciliationOutcome
-type ProviderAuthenticationReviewRequest clientAuthenticationReviewRequest
-type ProviderAuthenticationApplyRequest clientAuthenticationApplyRequest
+type (
+	ProviderAuthenticationReviewChoice          = clientAuthenticationReviewChoice
+	ProviderAuthenticationReviewModel           = clientAuthenticationReviewModel
+	ProviderAuthenticationReviewSummary         = clientAuthenticationReviewSummary
+	ProviderAuthenticationReconciliationOutcome = clientAuthenticationReconciliationOutcome
+	ProviderAuthenticationReviewRequest         clientAuthenticationReviewRequest
+	ProviderAuthenticationApplyRequest          clientAuthenticationApplyRequest
+)
 
 func (r ProviderAuthenticationReviewRequest) Validate() error {
 	return clientAuthenticationReviewRequest(r).validate()
 }
+
 func (r ProviderAuthenticationApplyRequest) Validate() error {
 	return clientAuthenticationApplyRequest(r).validate()
 }
@@ -41,6 +44,7 @@ func (s clientAuthenticationReviewSummary) Validate(r ProviderAuthenticationRevi
 	}
 	return nil
 }
+
 func (o clientAuthenticationReconciliationOutcome) Validate(r ProviderAuthenticationApplyRequest) error {
 	if err := r.Validate(); err != nil {
 		return err
@@ -89,6 +93,7 @@ func (w *ClientWorkspace) ReviewProviderAuthentication(ctx context.Context, requ
 	}
 	return summary, err
 }
+
 func (w *ClientWorkspace) ApplyProviderAuthenticationReview(ctx context.Context, request ProviderAuthenticationApplyRequest) (ProviderAuthenticationReconciliationOutcome, error) {
 	if err := request.Validate(); err != nil {
 		return ProviderAuthenticationReconciliationOutcome{}, err

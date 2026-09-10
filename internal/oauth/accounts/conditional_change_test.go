@@ -442,11 +442,12 @@ func TestConditionalAccountRejectsInvalidTargetsAndOverflowBeforeWrite(t *testin
 			case "mutation overflow":
 				state.Mutations[snapshotNamespace]["second"] = math.MaxUint64
 			}
-			if mode == "duplicate target" || mode == "selection overflow" || mode == "mutation overflow" {
+			switch mode {
+			case "duplicate target", "selection overflow", "mutation overflow":
 				data, _ = json.Marshal(state)
-			} else if mode == "duplicate field" {
+			case "duplicate field":
 				data = append([]byte(`{"active":{},`), bytes.TrimSpace(data)[1:]...)
-			} else if mode == "case collision" {
+			case "case collision":
 				data = append([]byte(`{"ACTIVE":{},`), bytes.TrimSpace(data)[1:]...)
 			}
 			require.NoError(t, os.WriteFile(path, data, 0o600))
@@ -498,12 +499,13 @@ func TestConditionalAccountCancellationAndCapturedPath(t *testing.T) {
 				assertConditionalLeaseHeld(t, path)
 				return
 			}
-			if boundary == "before" {
+			switch boundary {
+			case "before":
 				cancel()
-			} else if boundary == "mutex" {
+			case "mutex":
 				mu.Lock()
 				defer mu.Unlock()
-			} else {
+			default:
 				release, err := lock.File(t.Context(), path+".lock")
 				require.NoError(t, err)
 				defer release()

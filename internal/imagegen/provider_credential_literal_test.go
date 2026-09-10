@@ -1,12 +1,13 @@
 package imagegen
 
 import (
-	"github.com/example-git/crux/foundation/catalog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/example-git/crux/foundation/catalog"
 
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"

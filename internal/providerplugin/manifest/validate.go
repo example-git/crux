@@ -1050,11 +1050,11 @@ func runtimeDefaultMatches(kind string, value any) bool {
 			return runtimeNumericDefaultMatches(value, true)
 		}
 	case "number":
-		switch value.(type) {
+		switch value := value.(type) {
 		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 			return true
 		case json.Number:
-			return runtimeNumericDefaultMatches(value.(json.Number), false)
+			return runtimeNumericDefaultMatches(value, false)
 		}
 	}
 	return false

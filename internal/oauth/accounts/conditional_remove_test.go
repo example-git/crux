@@ -59,6 +59,7 @@ func TestConditionalAccountRemoveExactSuccessorAndTombstone(t *testing.T) {
 		})
 	}
 }
+
 func TestConditionalAccountRemoveLastAndCapturedPath(t *testing.T) {
 	path, first := accountSnapshotFixture(t)
 	before := captureAccountSnapshot(t, path)
@@ -75,6 +76,7 @@ func TestConditionalAccountRemoveLastAndCapturedPath(t *testing.T) {
 	require.False(t, ok)
 	require.NoDirExists(t, other)
 }
+
 func TestConditionalAccountRemoveRejectsMissingChangedAndCanceled(t *testing.T) {
 	path, first, before := conditionalAccountFixture(t)
 	original := readConditionalDocument(t, path)
@@ -92,7 +94,7 @@ func TestConditionalAccountRemoveRejectsMissingChangedAndCanceled(t *testing.T) 
 	require.False(t, result.Written)
 	change.Close()
 	require.Equal(t, original, readConditionalDocument(t, path))
-	require.NoError(t, os.WriteFile(path, append(original, ' '), 0600))
+	require.NoError(t, os.WriteFile(path, append(original, ' '), 0o600))
 	_, err = before.BeginRemove(t.Context(), snapshotNamespace, first.ID)
 	require.ErrorIs(t, err, ErrStateChanged)
 }
@@ -102,7 +104,7 @@ func TestConditionalAccountRemoveRejectsAmbiguousIdentityFields(t *testing.T) {
 		t.Run(entry, func(t *testing.T) {
 			path, _ := accountSnapshotFixture(t)
 			document := []byte(`{"active":{"plugin:exact-snapshot-owner":"other"},"accounts":{"plugin:exact-snapshot-owner":[` + entry + `]}}`)
-			require.NoError(t, os.WriteFile(path, document, 0600))
+			require.NoError(t, os.WriteFile(path, document, 0o600))
 			before, err := CaptureStateAt(t.Context(), path, []string{snapshotNamespace})
 			require.NoError(t, err)
 			_, err = before.BeginRemove(t.Context(), snapshotNamespace, "other")

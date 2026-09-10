@@ -76,12 +76,17 @@ func newRemoteAuthorityTLSHarness(t *testing.T, configure ...func(*tls.Config)) 
 
 func TestRemoteTLSAdmissionBaseline(t *testing.T) {
 	hs, clients := newRemoteAuthorityTLSHarness(t)
-	response, err := clients["unauthorized"].Get(hs.URL + "/v1/workspaces")
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+	require.NoError(t, err)
+	response, err := clients["unauthorized"].Do(request)
 	if response != nil {
 		response.Body.Close()
 	}
 	require.Error(t, err, "an unapproved actual TLS certificate must not reach the API")
-	response, err = clients["retained"].Post(hs.URL+"/v1/enroll", "application/json", bytes.NewBufferString(`{}`))
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/enroll", bytes.NewBufferString(`{}`))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	response, err = clients["retained"].Do(request)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusNotFound, response.StatusCode)
 	require.NoError(t, response.Body.Close())
@@ -227,7 +232,9 @@ func TestRemoteTLSRevocationDuringResumedHandshake(t *testing.T) {
 	})
 	client := clients["revoked"]
 	for attempt := range 2 {
-		response, err := client.Get(hs.URL + "/v1/workspaces")
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+		require.NoError(t, err)
+		response, err := client.Do(request)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, response.StatusCode)
 		require.Equal(t, attempt > 0, response.TLS.DidResume)
@@ -237,7 +244,9 @@ func TestRemoteTLSRevocationDuringResumedHandshake(t *testing.T) {
 		client.Transport.(*http.Transport).CloseIdleConnections()
 	}
 	revokeAfterClientHello.Store(true)
-	response, err := client.Get(hs.URL + "/v1/workspaces")
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+	require.NoError(t, err)
+	response, err := client.Do(request)
 	if response != nil {
 		response.Body.Close()
 	}
@@ -250,7 +259,9 @@ func TestRemoteTLSAuthorizationUsesCapturedStore(t *testing.T) {
 	originalPath := filepath.Join(config.GlobalWorkspaceDir(), "connections.json")
 	get := func(client *http.Client, want int) {
 		t.Helper()
-		response, err := client.Get(hs.URL + "/v1/workspaces")
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+		require.NoError(t, err)
+		response, err := client.Do(request)
 		require.NoError(t, err)
 		defer response.Body.Close()
 		require.Equal(t, want, response.StatusCode)
@@ -281,7 +292,9 @@ func TestRemoteTLSAuthorizationUsesCapturedStore(t *testing.T) {
 	require.NoError(t, os.WriteFile(originalPath, data, 0o600))
 	get(clients["revoked"], http.StatusForbidden)
 	clients["revoked"].Transport.(*http.Transport).CloseIdleConnections()
-	response, err := clients["revoked"].Get(hs.URL + "/v1/workspaces")
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+	require.NoError(t, err)
+	response, err := clients["revoked"].Do(request)
 	if response != nil {
 		response.Body.Close()
 	}
@@ -295,7 +308,9 @@ func TestRemoteTLSAuthorizationMalformedStoreFailsClosed(t *testing.T) {
 	require.NoError(t, err)
 	for _, damage := range []string{"invalid-json", "trailing-json", "duplicate-key", "case-alias-clients", "invalid-utf8", "invalid-server-key", "invalid-client-certificate", "directory", "missing"} {
 		t.Run(damage, func(t *testing.T) {
-			response, err := clients["retained"].Get(hs.URL + "/v1/workspaces")
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+			require.NoError(t, err)
+			response, err := clients["retained"].Do(request)
 			require.NoError(t, err)
 			require.Equal(t, http.StatusOK, response.StatusCode)
 			_, err = io.Copy(io.Discard, response.Body)
@@ -313,13 +328,14 @@ func TestRemoteTLSAuthorizationMalformedStoreFailsClosed(t *testing.T) {
 			case "case-alias-clients", "invalid-server-key", "invalid-client-certificate":
 				var damaged map[string]any
 				require.NoError(t, json.Unmarshal(original, &damaged))
-				if damage == "case-alias-clients" {
+				switch damage {
+				case "case-alias-clients":
 					clients := damaged["authorized_clients"].(map[string]any)
 					damaged["AUTHORIZED_CLIENTS"] = map[string]any{"revoked": clients["revoked"]}
 					delete(clients, "revoked")
-				} else if damage == "invalid-server-key" {
+				case "invalid-server-key":
 					damaged["server"].(map[string]any)["private_key"] = "synthetic-private-data"
-				} else {
+				default:
 					damaged["authorized_clients"].(map[string]any)["secret-client"] = "synthetic-private-data"
 				}
 				data, err := json.Marshal(damaged)
@@ -331,7 +347,9 @@ func TestRemoteTLSAuthorizationMalformedStoreFailsClosed(t *testing.T) {
 					require.NoError(t, os.Mkdir(path, 0o700))
 				}
 			}
-			response, err = clients["retained"].Get(hs.URL + "/v1/workspaces")
+			request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+			require.NoError(t, err)
+			response, err = clients["retained"].Do(request)
 			require.NoError(t, err)
 			require.Equal(t, http.StatusForbidden, response.StatusCode)
 			body, err := io.ReadAll(response.Body)
@@ -342,13 +360,17 @@ func TestRemoteTLSAuthorizationMalformedStoreFailsClosed(t *testing.T) {
 			require.NotContains(t, string(body), "secret-client")
 			require.NotContains(t, string(body), "synthetic-private-data")
 			clients["retained"].Transport.(*http.Transport).CloseIdleConnections()
-			response, err = clients["retained"].Get(hs.URL + "/v1/workspaces")
+			request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+			require.NoError(t, err)
+			response, err = clients["retained"].Do(request)
 			if response != nil {
 				response.Body.Close()
 			}
 			require.Error(t, err, "malformed state must also deny a new TLS handshake")
 			if damage == "case-alias-clients" {
-				response, err = clients["revoked"].Get(hs.URL + "/v1/workspaces")
+				request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+				require.NoError(t, err)
+				response, err = clients["revoked"].Do(request)
 				if response != nil {
 					response.Body.Close()
 				}
@@ -364,7 +386,9 @@ func TestRemoteTLSAuthorizationMalformedStoreFailsClosed(t *testing.T) {
 
 func TestRemoteTLSNewAuthorizationUsesCurrentTrust(t *testing.T) {
 	hs, clients := newRemoteAuthorityTLSHarness(t)
-	response, err := clients["unauthorized"].Get(hs.URL + "/v1/workspaces")
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+	require.NoError(t, err)
+	response, err := clients["unauthorized"].Do(request)
 	if response != nil {
 		response.Body.Close()
 	}
@@ -373,7 +397,9 @@ func TestRemoteTLSNewAuthorizationUsesCurrentTrust(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, exists)
 	require.NoError(t, connection.AuthorizeClient(t.Context(), "now-authorized", saved.Client.Certificate))
-	response, err = clients["unauthorized"].Get(hs.URL + "/v1/workspaces")
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
+	require.NoError(t, err)
+	response, err = clients["unauthorized"].Do(request)
 	require.NoError(t, err)
 	defer response.Body.Close()
 	require.Equal(t, http.StatusOK, response.StatusCode)

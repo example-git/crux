@@ -42,12 +42,15 @@ type authenticationCredentialEdit struct {
 func (authenticationLayers) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication layers are private")
 }
+
 func (authenticationLayers) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication layers]"))
 }
+
 func (authenticationCredentialEdit) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication credential edits are private")
 }
+
 func (authenticationCredentialEdit) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication credential edit]"))
 }

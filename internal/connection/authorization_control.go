@@ -24,8 +24,10 @@ import (
 	"github.com/google/uuid"
 )
 
-const authorizationControlPath = "/v1/reconcile-authorization"
-const maxAuthorizationDaemons = 32
+const (
+	authorizationControlPath = "/v1/reconcile-authorization"
+	maxAuthorizationDaemons  = 32
+)
 
 // This file is a private local control capability, never an API discovery DTO.
 // Network peers cannot reach the loopback-only listener without its random key.
@@ -60,10 +62,10 @@ func startAuthorizationControl(l *liveAuthorization) (*authorizationControl, err
 	}
 	defer release()
 	dir := authorizationDaemonDir(l.authorization.path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(dir, 0700); err != nil {
+	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, err
 	}
 	entries, err := os.ReadDir(dir)
@@ -90,7 +92,7 @@ func startAuthorizationControl(l *liveAuthorization) (*authorizationControl, err
 		listener.Close()
 		return nil, err
 	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		listener.Close()
 		return nil, err

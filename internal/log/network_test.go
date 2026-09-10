@@ -95,12 +95,12 @@ func TestNetworkTraceFullQueueDoesNotBlockDelivery(t *testing.T) {
 	client := &http.Client{Transport: WrapHTTPTransport(server.Client().Transport), Timeout: time.Second}
 	response, err := client.Do(request)
 	require.NoError(t, err)
+	defer response.Body.Close()
 	bodyDone := make(chan string, 1)
-	go func() {
-		body, _ := io.ReadAll(response.Body)
-		_ = response.Body.Close()
+	go func(reader io.Reader) {
+		body, _ := io.ReadAll(reader)
 		bodyDone <- string(body)
-	}()
+	}(response.Body)
 	select {
 	case body := <-bodyDone:
 		require.Equal(t, "delivered", body)

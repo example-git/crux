@@ -34,6 +34,7 @@ func (w *checkedKeyUIWorkspace) ProviderAuthentication(ctx context.Context) (pro
 	require.True(w.t, w.allowIO, "status I/O outside Cmd")
 	return w.snapshot, ctx.Err()
 }
+
 func (w *checkedKeyUIWorkspace) CheckProviderAPIKey(ctx context.Context, r providerauth.APIKeyCheckRequest) (providerauth.APIKeyCheckOutcome, error) {
 	require.True(w.t, w.allowIO, "check I/O outside Cmd")
 	w.checks = append(w.checks, r)
@@ -53,11 +54,13 @@ func (w *checkedKeyUIWorkspace) CheckProviderAPIKey(ctx context.Context, r provi
 	}
 	return out, nil
 }
+
 func (w *checkedKeyUIWorkspace) SaveCheckedProviderAPIKey(_ context.Context, r providerauth.APIKeySaveRequest) (providerauth.MutationOutcome, error) {
 	require.True(w.t, w.allowIO, "save I/O outside Cmd")
 	w.saves = append(w.saves, r)
 	return w.result(r)
 }
+
 func (w *checkedKeyUIWorkspace) result(r providerauth.APIKeySaveRequest) (providerauth.MutationOutcome, error) {
 	out := providerauth.MutationOutcome{OperationID: r.OperationID, CheckID: r.CheckID, Previous: r.Target, Progress: providerauth.MutationProgress{ConfigSaved: true, RuntimePublished: true}}
 	for _, check := range w.checks {
@@ -96,10 +99,12 @@ func (w *checkedKeyUIWorkspace) PermissionSkipRequests() bool {
 	require.True(w.t, w.allowIO)
 	return false
 }
+
 func (w *checkedKeyUIWorkspace) LSPGetStates() map[string]workspace.LSPClientInfo {
 	require.True(w.t, w.allowIO)
 	return nil
 }
+
 func newCheckedKeyUI(t *testing.T) (*UI, *checkedKeyUIWorkspace, dialog.ActionSelectModel) {
 	ui, base, selection, _ := modelSelectionTestUI(t, true)
 	owner := providerauth.PublicOwner(selection.ProviderOwner)
@@ -128,16 +133,19 @@ func newCheckedKeyUI(t *testing.T) (*UI, *checkedKeyUIWorkspace, dialog.ActionSe
 	ui.lspCheckedAt = time.Now()
 	return ui, ws, selection
 }
+
 func runCheckedKeyCmd(w *checkedKeyUIWorkspace, cmd tea.Cmd) []tea.Msg {
 	w.allowIO = true
 	defer func() { w.allowIO = false }()
 	return collectCommandMessages(cmd)
 }
+
 func updateCheckedKey(t *testing.T, ui *UI, ws *checkedKeyUIWorkspace, msg tea.Msg) []tea.Msg {
 	t.Helper()
 	_, cmd := ui.Update(msg)
 	return runCheckedKeyCmd(ws, cmd)
 }
+
 func openCheckedKey(t *testing.T, ui *UI, ws *checkedKeyUIWorkspace, selection dialog.ActionSelectModel) *dialog.APIKeyInput {
 	t.Helper()
 	messages := runCheckedKeyCmd(ws, ui.openAuthenticationDialog(selection))
@@ -155,6 +163,7 @@ func openCheckedKey(t *testing.T, ui *UI, ws *checkedKeyUIWorkspace, selection d
 	ui.lspCheckedAt = time.Now()
 	return ui.dialog.Dialog(dialog.APIKeyInputID).(*dialog.APIKeyInput)
 }
+
 func checkKeyInput(t *testing.T, ui *UI, ws *checkedKeyUIWorkspace, d *dialog.APIKeyInput, source string) apiKeyCheckMsg {
 	t.Helper()
 	require.Same(t, d, ui.dialog.Dialog(dialog.APIKeyInputID))
@@ -168,6 +177,7 @@ func checkKeyInput(t *testing.T, ui *UI, ws *checkedKeyUIWorkspace, d *dialog.AP
 	require.Len(t, results, 1)
 	return results[0].(apiKeyCheckMsg)
 }
+
 func saveKeyInput(t *testing.T, ui *UI, ws *checkedKeyUIWorkspace, d *dialog.APIKeyInput) apiKeySaveMsg {
 	t.Helper()
 	require.Same(t, d, ui.dialog.Dialog(dialog.APIKeyInputID))
@@ -175,6 +185,7 @@ func saveKeyInput(t *testing.T, ui *UI, ws *checkedKeyUIWorkspace, d *dialog.API
 	require.Len(t, messages, 1)
 	return messages[0].(apiKeySaveMsg)
 }
+
 func TestCheckedKeyUIFreezesInputAndContinuesAfterClosedSave(t *testing.T) {
 	ui, ws, selection := newCheckedKeyUI(t)
 	d := openCheckedKey(t, ui, ws, selection)
@@ -195,6 +206,7 @@ func TestCheckedKeyUIFreezesInputAndContinuesAfterClosedSave(t *testing.T) {
 	updateCheckedKey(t, ui, ws, saved)
 	require.Equal(t, 1, ws.preferredModelCalls, "duplicate completion must not repeat continuation")
 }
+
 func TestCheckedKeyUINoContinuationFromUnacknowledgedOrStaleResults(t *testing.T) {
 	for _, mode := range []string{"partial", "lost", "wrong-save", "historical", "new-selection", "new-workspace", "owner-changed"} {
 		t.Run(mode, func(t *testing.T) {
@@ -222,6 +234,7 @@ func TestCheckedKeyUINoContinuationFromUnacknowledgedOrStaleResults(t *testing.T
 		})
 	}
 }
+
 func TestCheckedKeyUIRetainsPartialOriginalAcrossReopenAndRecovery(t *testing.T) {
 	ui, ws, selection := newCheckedKeyUI(t)
 	d := openCheckedKey(t, ui, ws, selection)
@@ -256,6 +269,7 @@ func TestCheckedKeyUIRetainsPartialOriginalAcrossReopenAndRecovery(t *testing.T)
 	require.Len(t, ws.saves, 2)
 	require.Zero(t, ws.preferredModelCalls, "original selection generation is stale")
 }
+
 func TestCheckedKeyUICancelAndWrongCheckCannotSave(t *testing.T) {
 	for _, mode := range []string{"close-before-ID", "close-before-check", "wrong-check", "check-error"} {
 		t.Run(mode, func(t *testing.T) {
@@ -289,10 +303,12 @@ func (w *checkedKeyUIWorkspace) UpdatePreferredModel(scope config.Scope, typ con
 	require.True(w.t, w.allowIO, "model persistence outside Cmd")
 	return w.testWorkspace.UpdatePreferredModel(scope, typ, model, owner)
 }
+
 func (w *checkedKeyUIWorkspace) UpdateAgentModel(ctx context.Context, state config.AgentModelState) error {
 	require.True(w.t, w.allowIO, "agent update outside Cmd")
 	return w.testWorkspace.UpdateAgentModel(ctx, state)
 }
+
 func TestCheckedKeyUIHostOAuthNeverBecomesKeyFallback(t *testing.T) {
 	ui, ws, selection := newCheckedKeyUI(t)
 	owner := selection.ProviderOwner
@@ -313,6 +329,7 @@ func TestCheckedKeyUIHostOAuthNeverBecomesKeyFallback(t *testing.T) {
 	require.Empty(t, ws.checks)
 	require.Empty(t, ws.saves)
 }
+
 func TestCheckedKeyUIExactCheckRetryAndReplacementDialog(t *testing.T) {
 	ui, ws, selection := newCheckedKeyUI(t)
 	d := openCheckedKey(t, ui, ws, selection)
@@ -353,6 +370,7 @@ func TestCheckedKeyUIInitialAdmissionFencesNewerInvalidSelection(t *testing.T) {
 	require.Len(t, ws.checks, 1, "explicit original retry is allowed")
 	require.Equal(t, "source-A", ws.checks[0].Source)
 }
+
 func TestCheckedKeyUIResolvedReceiptDoesNotBlockNewOAuthRoute(t *testing.T) {
 	ui, ws, selection := newCheckedKeyUI(t)
 	owner := selection.ProviderOwner

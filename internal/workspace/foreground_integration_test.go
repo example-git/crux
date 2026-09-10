@@ -1,10 +1,11 @@
 package workspace_test
 
 import (
+	"testing"
+
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 func TestForegroundControlRemoteSessionIsolation(t *testing.T) {

@@ -170,7 +170,7 @@ func newPendingPairingValidationFixture(t *testing.T) *pendingPairingValidationF
 		_ = json.NewEncoder(w).Encode(proof)
 	}))
 	require.NoError(t, daemon.Listener.Close())
-	daemon.Listener, err = net.Listen("tcp", strings.TrimPrefix(address, "tcp://"))
+	daemon.Listener, err = (&net.ListenConfig{}).Listen(t.Context(), "tcp", strings.TrimPrefix(address, "tcp://"))
 	require.NoError(t, err)
 	daemon.TLS = serverTLS
 	daemon.StartTLS()

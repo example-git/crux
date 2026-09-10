@@ -100,6 +100,7 @@ func (s *oauthFlowState) current() error {
 	defer s.mu.Unlock()
 	return s.refusal
 }
+
 func (s *oauthFlowState) record(err error) {
 	if s == nil || !nonRetryableOAuthHTTPError(err) {
 		return
@@ -110,10 +111,12 @@ func (s *oauthFlowState) record(err error) {
 		s.refusal = err
 	}
 }
+
 func nonRetryableOAuthHTTPError(err error) bool {
 	var refusal interface{ NonRetryable() bool }
 	return errors.As(err, &refusal) && refusal.NonRetryable()
 }
+
 func oauthFlowFrom(ctx context.Context) *oauthFlowState {
 	state, _ := ctx.Value(oauthFlowKey{}).(*oauthFlowState)
 	return state

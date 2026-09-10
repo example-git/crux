@@ -22,6 +22,7 @@ func localValidationOperation(ctx context.Context, digit string) (context.Contex
 	key := AuthenticationJournalKey{Kind: AuthenticationJournalLocal, WorkspaceID: "local-validation", OperationID: strings.Repeat(digit, 32)}
 	return ContextWithAuthenticationOperation(ctx, key), key
 }
+
 func loadLocalValidation(t *testing.T, store *ConfigStore, key AuthenticationJournalKey) LocalAuthenticationChange {
 	t.Helper()
 	value, found, err := store.LoadAuthenticationLocalChange(t.Context(), key)
@@ -30,6 +31,7 @@ func loadLocalValidation(t *testing.T, store *ConfigStore, key AuthenticationJou
 	require.NoError(t, value.Summary().Validate())
 	return value
 }
+
 func TestAuthenticationLocalValidationCoherentAndNoEffects(t *testing.T) {
 	for _, fail := range []bool{false, true} {
 		t.Run(map[bool]string{false: "coherent", true: "before-stage"}[fail], func(t *testing.T) {
@@ -176,7 +178,7 @@ func TestAuthenticationLocalValidationObservedRefreshRepairsExactOriginal(t *tes
 		// Deny only the disposable directory write. This leaves the complete
 		// original account inode, timestamps and bytes untouched. The returned
 		// token and fixed successor are journaled before account staging fails.
-		if err := os.Chmod(filepath.Dir(accountPath), 0500); err != nil {
+		if err := os.Chmod(filepath.Dir(accountPath), 0o500); err != nil {
 			t.Error(err)
 			http.Error(w, "fixture permission change failed", 500)
 			return
@@ -190,7 +192,7 @@ func TestAuthenticationLocalValidationObservedRefreshRepairsExactOriginal(t *tes
 	defer func() { http.DefaultTransport = prior }()
 	f := newAuthenticationCandidateFixture(t, "example-responses", false, false, endpoint.URL+"/token")
 	accountPath = filepath.Join(f.root, "accounts", "accounts.json")
-	defer func() { _ = os.Chmod(filepath.Dir(accountPath), 0700) }()
+	defer func() { _ = os.Chmod(filepath.Dir(accountPath), 0o700) }()
 	t.Setenv("AI_CLI_DIR", filepath.Dir(accountPath))
 	require.NoError(t, accounts.Save(t.Context(), f.owner.AccountNamespace, accounts.Entry{ID: "active", AccessToken: "synthetic-active", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}))
 	require.NoError(t, accounts.SaveWithoutActivating(t.Context(), f.owner.AccountNamespace, accounts.Entry{ID: "inactive", AccessToken: "synthetic-expired", RefreshToken: "synthetic-refresh", ExpiresAt: time.Now().Add(-time.Hour).UnixMilli()}))
@@ -205,7 +207,7 @@ func TestAuthenticationLocalValidationObservedRefreshRepairsExactOriginal(t *tes
 	require.True(t, record.Summary().RefreshObserved)
 	require.True(t, record.Summary().RepairReady)
 	require.False(t, record.Summary().NoEffects)
-	require.NoError(t, os.Chmod(filepath.Dir(accountPath), 0700))
+	require.NoError(t, os.Chmod(filepath.Dir(accountPath), 0o700))
 	revision := record.Summary().Revision
 	repaired, err := f.store.RepairAuthenticationLocalChange(t.Context(), record, revision)
 	require.NoError(t, err)

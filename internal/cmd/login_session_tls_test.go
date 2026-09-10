@@ -57,6 +57,7 @@ func (w *lostCLIReplyWorkspace) BeginProviderOAuthLogin(ctx context.Context, r p
 	}
 	return state, err
 }
+
 func (w *lostCLIReplyWorkspace) SubmitProviderOAuthLoginCode(ctx context.Context, r providerauth.OAuthLoginCodeRequest) (providerauth.OAuthLoginState, error) {
 	if w.submit > 0 && r != w.submission {
 		return providerauth.OAuthLoginState{}, fmt.Errorf("CLI replaced original submission")
@@ -69,6 +70,7 @@ func (w *lostCLIReplyWorkspace) SubmitProviderOAuthLoginCode(ctx context.Context
 	}
 	return state, err
 }
+
 func (w *lostCLIReplyWorkspace) CompleteProviderOAuthLogin(ctx context.Context, r providerauth.OAuthLoginRef) (providerauth.MutationOutcome, error) {
 	if r != w.ref {
 		return providerauth.MutationOutcome{}, fmt.Errorf("CLI replaced original completion")
@@ -80,10 +82,12 @@ func (w *lostCLIReplyWorkspace) CompleteProviderOAuthLogin(ctx context.Context, 
 	}
 	return outcome, err
 }
+
 func (w *lostCLIReplyWorkspace) CanRecoverProviderAuthentication() bool {
 	capability, ok := w.Workspace.(workspace.ProviderAuthenticationRecoverer)
 	return ok && capability.CanRecoverProviderAuthentication()
 }
+
 func (w *lostCLIReplyWorkspace) RecoverProviderAuthentication(ctx context.Context, r workspace.ProviderAuthenticationRecoveryRequest) (providerauth.MutationOutcome, error) {
 	return w.Workspace.(workspace.ProviderAuthenticationRecoverer).RecoverProviderAuthentication(ctx, r)
 }
@@ -100,6 +104,7 @@ func (w *lostCLIReplyWorkspace) SwitchProviderAccount(ctx context.Context, r pro
 	}
 	return outcome, err
 }
+
 func (w *lostCLIReplyWorkspace) LogoutProvider(ctx context.Context, r providerauth.LogoutRequest) (providerauth.MutationOutcome, error) {
 	if w.logoutCalls > 0 && r != w.logoutRequest {
 		return providerauth.MutationOutcome{}, fmt.Errorf("logout changed its original request")
@@ -174,7 +179,7 @@ func testCLIWorkspaceSession(t *testing.T, accountCommands bool) {
 			serverRoot := t.TempDir()
 			for _, key := range []string{"HOME", "USERPROFILE", "AI_CLI_DIR", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "CRUX_GLOBAL_CONFIG", "CRUX_GLOBAL_DATA", "CRUX_CACHE_DIR"} {
 				value := filepath.Join(serverRoot, key)
-				require.NoError(t, os.MkdirAll(value, 0700))
+				require.NoError(t, os.MkdirAll(value, 0o700))
 				t.Setenv(key, value)
 			}
 			t.Setenv("CRUX_PROVIDER_PROFILE", "integrated")
@@ -254,7 +259,9 @@ func testCLIWorkspaceSession(t *testing.T, accountCommands bool) {
 					require.NoError(t, err)
 					callback.RawQuery = code
 					callbackURL = callback.String()
-					response, err := (&http.Client{Transport: oldTransport}).Get(callbackURL)
+					request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callbackURL, nil)
+					require.NoError(t, err)
+					response, err := (&http.Client{Transport: oldTransport}).Do(request)
 					require.NoError(t, err)
 					require.Equal(t, http.StatusOK, response.StatusCode)
 					response.Body.Close()
@@ -306,7 +313,7 @@ func testCLIWorkspaceSession(t *testing.T, accountCommands bool) {
 			require.Equal(t, beforeBegin, wrapped.begin)
 			require.EqualValues(t, 1, exchanges.Load())
 			require.NoError(t, retained.InitCoderAgentNonInteractive(ctx))
-			response, err := remote.App.CurrentAgentCoordinator().Model().Model.Generate(ctx, fantasy.Call{Headers: map[string]string{"x-session-id": "cli-oauth-acceptance"}, Prompt: fantasy.Prompt{fantasy.NewUserMessage("Use the CLI's acknowledged credential")}})
+			response, err := remote.CurrentAgentCoordinator().Model().Model.Generate(ctx, fantasy.Call{Headers: map[string]string{"x-session-id": "cli-oauth-acceptance"}, Prompt: fantasy.Prompt{fantasy.NewUserMessage("Use the CLI's acknowledged credential")}})
 			require.NoError(t, err)
 			require.Equal(t, "cli accepted", response.Content[0].(fantasy.TextContent).Text)
 			require.EqualValues(t, 1, inferences.Load())
@@ -388,7 +395,12 @@ func testCLIWorkspaceSession(t *testing.T, accountCommands bool) {
 				}
 			}
 			if callbackURL != "" {
-				_, err := (&http.Client{Transport: oldTransport, Timeout: time.Second}).Get(callbackURL)
+				request, err := http.NewRequestWithContext(ctx, http.MethodGet, callbackURL, nil)
+				require.NoError(t, err)
+				response, err := (&http.Client{Transport: oldTransport, Timeout: time.Second}).Do(request)
+				if response != nil {
+					require.NoError(t, response.Body.Close())
+				}
 				require.Error(t, err, "command must close its callback listener")
 			}
 		})
@@ -426,17 +438,17 @@ func newCLIOAuthStore(t *testing.T, host *httptest.Server, mode string) (*config
 	}
 	data, err = json.Marshal(declaration)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0o600))
 	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfilePluginNative), "CRUX_PROVIDER_PLUGINS": "example-responses"}
 	manager, err := providerplugin.NewManager(t.Context(), providerplugin.DefaultPaths(values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"]))
 	require.NoError(t, err)
 	_, err = manager.Install(t.Context(), providerplugin.InstallRequest{Source: bundle, Trust: true, ExpectedRevision: manager.Snapshot().Revision})
 	require.NoError(t, err)
 	manager.Close()
-	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_CONFIG"], 0700))
+	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_CONFIG"], 0o700))
 	path := filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json")
 	document := `{"providers":{"example-responses":{"plugin":{"id":"example.responses-oauth"},"configuration":{"oauth_client_id":"synthetic-client"}}},"models":{"large":{"provider":"example-responses","model":"example-reasoner"},"small":{"provider":"example-responses","model":"example-small"}}}`
-	require.NoError(t, os.WriteFile(path, []byte(document), 0600))
+	require.NoError(t, os.WriteFile(path, []byte(document), 0o600))
 	store, err := config.LoadIsolated(root, filepath.Join(root, "workspace"), false, env.NewFromMap(values))
 	require.NoError(t, err)
 	return store, root, values

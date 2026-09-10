@@ -37,7 +37,8 @@ func TestRemoteRuntimeTLSAdmissionAndOwnership(t *testing.T) {
 	path, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	owner := providerregistry.RegistrationOwner{ProviderID: "client-only"}
-	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+	proposal := config.RemoteRuntimeProposal{
+		Version: config.RemoteRuntimeVersion, Revision: 1,
 		Providers:   []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: owner.ProviderID, Name: "Client", Type: catalog.TypeOpenAICompat, BaseURL: "https://client.invalid/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "client-model", Name: "Client model", ContextWindow: 8192, DefaultMaxTokens: 1024}}}}},
 		Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: owner.ProviderID, Model: "client-model"}, config.SelectedModelTypeSmall: {Provider: owner.ProviderID, Model: "client-model"}},
 		Credentials: []config.RemoteCredentialBinding{{Owner: owner, Generation: 1, APIKey: "synthetic-private-client-key"}},
@@ -154,15 +155,15 @@ func remoteServerState(t *testing.T) map[string]string {
 
 func TestRemoteRuntimePrivateDecodeRejectsAmbiguityAndBounds(t *testing.T) {
 	for _, value := range []string{`{"authority_mode":"client","authority_mode":"server"}`, `{"runtime":{"version":1,"version":2}}`, `{} {}`, strings.Repeat("[", 66) + strings.Repeat("]", 66), `{"unknown_private":"synthetic-private-secret"}`} {
-		r := httptest.NewRequest(http.MethodPost, "/v1/workspaces", strings.NewReader(value))
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/workspaces", strings.NewReader(value))
 		var request proto.CreateWorkspaceRequest
 		err := decodeRuntimeRequest(httptest.NewRecorder(), r, &request)
 		require.Error(t, err)
 		require.NotContains(t, err.Error(), "synthetic-private")
 	}
-	r := httptest.NewRequest(http.MethodPost, "/v1/workspaces", strings.NewReader(`{}`))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/workspaces", strings.NewReader(`{}`))
 	r.ContentLength = maxRemoteRequestBytes + 1
 	require.ErrorContains(t, decodeRuntimeRequest(httptest.NewRecorder(), r, &proto.CreateWorkspaceRequest{}), "byte limit")
-	r = httptest.NewRequest(http.MethodPost, "/v1/workspaces", strings.NewReader(`{"authority_mode":"server","path":"/workspace"}`))
+	r = httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/workspaces", strings.NewReader(`{"authority_mode":"server","path":"/workspace"}`))
 	require.NoError(t, decodeRuntimeRequest(httptest.NewRecorder(), r, &proto.CreateWorkspaceRequest{}))
 }

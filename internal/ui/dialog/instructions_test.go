@@ -110,8 +110,10 @@ func (w *instructionsTestWorkspace) RuntimeControlState(_ context.Context, scope
 	for _, control := range surface.RuntimeControls {
 		if control.ID == target.ControlID && control.Binding != nil {
 			target.DescriptorDigest = control.DescriptorDigest
-			return config.RuntimeControlState{Scope: scope, Target: target, Binding: *control.Binding,
-				ScopedKnown: true, Source: config.RuntimeControlSource{Kind: "absent"}, Models: w.cfg.AgentModelState()}, nil
+			return config.RuntimeControlState{
+				Scope: scope, Target: target, Binding: *control.Binding,
+				ScopedKnown: true, Source: config.RuntimeControlSource{Kind: "absent"}, Models: w.cfg.AgentModelState(),
+			}, nil
 		}
 	}
 	return config.RuntimeControlState{}, errors.New("synthetic unresolved control")

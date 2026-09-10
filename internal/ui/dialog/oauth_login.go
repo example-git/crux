@@ -46,15 +46,17 @@ type ActionOAuthLoginResult struct {
 	OriginalOperationID string
 }
 
-type ActionOAuthLoginSubmit struct{ Dialog *OAuthLogin }
-type ActionOAuthLoginRetry struct{ Dialog *OAuthLogin }
-type ActionOAuthLoginOpen struct{ Dialog *OAuthLogin }
-type ActionOAuthLoginReload struct{ Dialog *OAuthLogin }
-type ActionOAuthLoginReview struct{ Dialog *OAuthLogin }
-type ActionOAuthLoginRecover struct {
-	Dialog *OAuthLogin
-	Retry  bool
-}
+type (
+	ActionOAuthLoginSubmit  struct{ Dialog *OAuthLogin }
+	ActionOAuthLoginRetry   struct{ Dialog *OAuthLogin }
+	ActionOAuthLoginOpen    struct{ Dialog *OAuthLogin }
+	ActionOAuthLoginReload  struct{ Dialog *OAuthLogin }
+	ActionOAuthLoginReview  struct{ Dialog *OAuthLogin }
+	ActionOAuthLoginRecover struct {
+		Dialog *OAuthLogin
+		Retry  bool
+	}
+)
 
 // OAuthLogin owns presentation and private input. The main model owns login
 // requests, browser opening, callback listeners, retries and retained receipts.

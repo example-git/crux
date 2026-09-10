@@ -63,6 +63,7 @@ type pendingAccountChange struct {
 func (*pendingAccountChange) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "accounts.pendingAccountChange(private)")
 }
+
 func (*pendingAccountChange) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("pending account state is private and cannot be serialized")
 }
@@ -91,6 +92,7 @@ func (PendingChange) GoString() string { return "accounts.PendingChange(private)
 func (PendingChange) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "accounts.PendingChange(private)")
 }
+
 func (PendingChange) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("pending account changes are private and cannot be serialized")
 }
@@ -99,6 +101,7 @@ func (CommitResult) GoString() string { return "accounts.CommitResult(private)" 
 func (CommitResult) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "accounts.CommitResult(private)")
 }
+
 func (CommitResult) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("account commit results are private and cannot be serialized")
 }
@@ -454,7 +457,8 @@ func stageAccountChange(document []byte, kind accountChangeKind, namespace, acco
 		return err
 	}
 	var selected *Entry
-	if kind == accountSwitch {
+	switch kind {
+	case accountSwitch:
 		for _, entry := range state.Accounts[namespace] {
 			if entry.ID == accountID {
 				if selected != nil {
@@ -481,7 +485,7 @@ func stageAccountChange(document []byte, kind accountChangeKind, namespace, acco
 		if err := set([]string{names["active"], namespace}, accountID); err != nil {
 			return nil, nil, errors.New("cannot stage account selection")
 		}
-	} else if kind == accountRemove {
+	case accountRemove:
 		if _, err := accountObject(objects["mutations"][namespace]); err != nil {
 			return nil, nil, err
 		}
@@ -564,7 +568,7 @@ func stageAccountChange(document []byte, kind accountChangeKind, namespace, acco
 				selected = &copy
 			}
 		}
-	} else {
+	default:
 		if state.Selections[namespace] == math.MaxUint64 {
 			return nil, nil, errors.New("account selection counter exhausted")
 		}

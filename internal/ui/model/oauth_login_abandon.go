@@ -2,7 +2,6 @@ package model
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	tea "github.com/example-git/crux/foundation/bubbletea"
@@ -23,7 +22,7 @@ type oauthLoginAbandonMsg struct {
 func (m *UI) abandonOAuthLoginRecorded(action dialog.ActionOAuthLoginResult, r *oauthLoginRead) tea.Cmd {
 	capability, ok := r.workspace.(workspace.ProviderOAuthAbandoner)
 	if !ok {
-		return util.ReportError(errors.New("OAuth abandonment is unavailable in this workspace."))
+		return util.CmdHandler(util.InfoMsg{Type: util.InfoTypeError, Msg: "OAuth abandonment is unavailable in this workspace."})
 	}
 	found := false
 	for _, result := range r.recorded {
@@ -33,7 +32,7 @@ func (m *UI) abandonOAuthLoginRecorded(action dialog.ActionOAuthLoginResult, r *
 		}
 	}
 	if !found {
-		return util.ReportError(errors.New("Only the selected preparation or unknown exchange without a recorded token can be abandoned."))
+		return util.CmdHandler(util.InfoMsg{Type: util.InfoTypeError, Msg: "Only the selected preparation or unknown exchange without a recorded token can be abandoned."})
 	}
 	request := providerauth.OAuthLoginAbandonRequest{Target: providerauth.Target{WorkspaceID: r.snapshot.WorkspaceID, Generation: r.snapshot.Generation, Owner: r.recordedOwner}, OriginalWorkspaceID: action.OriginalWorkspaceID, OriginalOperationID: action.OriginalOperationID}
 	if err := request.Validate(); err != nil {

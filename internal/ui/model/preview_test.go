@@ -1,9 +1,10 @@
 package model
 
 import (
-	"github.com/charmbracelet/x/ansi"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestPreviewUsesProductionViewWithDummyModels(t *testing.T) {
@@ -27,6 +28,7 @@ func TestPreviewUsesProductionViewWithDummyModels(t *testing.T) {
 		}
 	}
 }
+
 func TestPreviewTodoStatusPreservesPinnedList(t *testing.T) {
 	for _, width := range []int{65, 120} {
 		for _, expanded := range []bool{false, true} {

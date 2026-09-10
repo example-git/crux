@@ -55,6 +55,7 @@ func (d *AuthenticationHistory) SelectedKey() string {
 	}
 	return d.rows[d.selected].Key
 }
+
 func (d *AuthenticationHistory) SetRows(rows []AuthenticationHistoryRow) {
 	selected := d.SelectedKey()
 	d.rows = append([]AuthenticationHistoryRow(nil), rows...)
@@ -70,6 +71,7 @@ func (d *AuthenticationHistory) SetRows(rows []AuthenticationHistoryRow) {
 		d.scroll = 0
 	}
 }
+
 func (d *AuthenticationHistory) SetState(message string, pending bool) {
 	d.message, d.pending = message, pending
 }
@@ -233,6 +235,7 @@ func (d *AuthenticationHistory) actionChoices() []authenticationHistoryAction {
 	result = append(result, authenticationHistoryAction{"ctrl+l", "Open saved authentication", "saved"}, authenticationHistoryAction{"ctrl+r", "Refresh history", "refresh"})
 	return result
 }
+
 func (d *AuthenticationHistory) ShortHelp() []key.Binding {
 	add := func(k, label string) key.Binding { return key.NewBinding(key.WithKeys(k), key.WithHelp(k, label)) }
 	if d.pending {

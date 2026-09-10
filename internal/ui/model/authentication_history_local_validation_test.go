@@ -23,10 +23,12 @@ func (w *historyLocalValidationWorkspace) historyValidationAllowIO(v bool) { w.a
 func (w *historyLocalValidationWorkspace) AuthenticationWorkspaceID() string {
 	return w.snapshot.WorkspaceID
 }
+
 func (w *historyLocalValidationWorkspace) ProviderAuthenticationHistory(ctx context.Context) (workspace.ProviderAuthenticationHistory, error) {
 	require.True(w.t, w.allowIO, "history IO ran outside Cmd")
 	return workspace.ProviderAuthenticationHistory{Operations: []workspace.ProviderAuthenticationHistoryOperation{w.operation}}, ctx.Err()
 }
+
 func (w *historyLocalValidationWorkspace) RepairLocalAuthentication(ctx context.Context, r providerauth.LocalRepairRequest) (config.LocalAuthenticationRepairResult, error) {
 	require.True(w.t, w.allowIO, "local recovery IO ran outside Cmd")
 	require.NoError(w.t, r.Validate())
@@ -41,6 +43,7 @@ func (w *historyLocalValidationWorkspace) RepairLocalAuthentication(ctx context.
 	}
 	return result, ctx.Err()
 }
+
 func TestAuthenticationHistoryValidationLocalRevisionAndUnknown(t *testing.T) {
 	for _, noEffects := range []bool{false, true} {
 		t.Run(map[bool]string{false: "unknown", true: "no-effects"}[noEffects], func(t *testing.T) {
@@ -48,9 +51,10 @@ func TestAuthenticationHistoryValidationLocalRevisionAndUnknown(t *testing.T) {
 			base.cfg.Options.TUI = &config.TUIOptions{}
 			target := base.accounts.Target
 			id := strings.Repeat("b", 32)
-			ws := &historyLocalValidationWorkspace{authenticationUIWorkspace: base,
-				operation: workspace.ProviderAuthenticationHistoryOperation{OperationID: id, Target: target, Outcome: providerauth.MutationOutcome{OperationID: id, Previous: target}, LocalFinished: true, JournalRevision: 4},
-				local:     config.LocalAuthenticationRepairResult{Summary: config.LocalAuthenticationSummary{WorkspaceID: target.WorkspaceID, OperationID: id, ProviderID: target.Owner.ProviderID, Action: "switch", AccountID: "second", Revision: 7, Finished: true, RefreshStarted: !noEffects, NoEffects: noEffects}},
+			ws := &historyLocalValidationWorkspace{
+				authenticationUIWorkspace: base,
+				operation:                 workspace.ProviderAuthenticationHistoryOperation{OperationID: id, Target: target, Outcome: providerauth.MutationOutcome{OperationID: id, Previous: target}, LocalFinished: true, JournalRevision: 4},
+				local:                     config.LocalAuthenticationRepairResult{Summary: config.LocalAuthenticationSummary{WorkspaceID: target.WorkspaceID, OperationID: id, ProviderID: target.Owner.ProviderID, Action: "switch", AccountID: "second", Revision: 7, Finished: true, RefreshStarted: !noEffects, NoEffects: noEffects}},
 			}
 			ui.com.Workspace = ws
 			historyValidationDrive(t, ui, historyValidationCommand(t, ui, "authentication_history"))

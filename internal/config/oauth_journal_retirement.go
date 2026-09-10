@@ -18,6 +18,7 @@ type OAuthLoginJournalScope struct{ journal AuthenticationJournal }
 func (OAuthLoginJournalScope) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth journal scopes are private")
 }
+
 func (OAuthLoginJournalScope) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private OAuth journal scope]"))
 }
@@ -118,6 +119,7 @@ type OAuthLoginJournalRetirement struct {
 func (OAuthLoginJournalRetirement) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth journal retirement captures are private")
 }
+
 func (OAuthLoginJournalRetirement) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private OAuth journal retirement capture]"))
 }

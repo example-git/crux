@@ -58,7 +58,7 @@ func (runtime *Manager) ListResources(ctx context.Context, cfg *config.ConfigSto
 		return nil, err
 	}
 
-	ctx, release, err := runtime.serverOperation(ctx, name)
+	_, release, err := runtime.serverOperation(ctx, name)
 	if err != nil {
 		return nil, err
 	}

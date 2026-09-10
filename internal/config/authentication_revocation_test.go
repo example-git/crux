@@ -17,8 +17,10 @@ import (
 
 func authenticationRevocationConfig() *Config {
 	return &Config{Providers: csync.NewMapFrom(map[string]ProviderConfig{
-		"copilot": {ID: "copilot", Type: catalog.TypeOpenAICompat,
-			Owner: &ProviderOwnerReference{Type: ProviderOwnerCore, Construction: providerregistry.ConstructionCopilot}},
+		"copilot": {
+			ID: "copilot", Type: catalog.TypeOpenAICompat,
+			Owner: &ProviderOwnerReference{Type: ProviderOwnerCore, Construction: providerregistry.ConstructionCopilot},
+		},
 	})}
 }
 

@@ -71,7 +71,8 @@ func TestIntegratedClientExpiryRetainsAdmittedRuntime(t *testing.T) {
 			require.True(t, ok)
 			selected := config.SelectedModel{Provider: gemini.ID, Model: "fixture", MaxTokens: 1024}
 			small := config.SelectedModel{Provider: gemini.ID, Model: "fixture-small", MaxTokens: 128}
-			proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+			proposal := config.RemoteRuntimeProposal{
+				Version: config.RemoteRuntimeVersion, Revision: 1,
 				Providers:   []config.RemoteProviderDefinition{{NativeIdentity: &config.NativeIdentity{UserAgent: "antigravity/cli/captured-version client-os/client-arch"}, GeminiProjectID: new("synthetic-project"), Config: config.ProviderConfig{ID: gemini.ID, Type: catalog.TypeOpenAICompat, BaseURL: host.URL, Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionGeminiAntigravity}, Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}, {ID: "fixture-small", Name: "Small"}, {ID: "new-model", Name: "New"}}}}},
 				Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: selected, config.SelectedModelTypeSmall: small},
 				Controls:    config.RemoteRuntimeControls{AnalysisEffort: "high", DisableAutoSummarize: true, SummarizationMaxTokens: 1024},

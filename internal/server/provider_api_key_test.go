@@ -25,7 +25,7 @@ func TestProviderAPIKeyRoutesRejectMalformedBeforeBackend(t *testing.T) {
 		require.NoError(t, err)
 		valid := string(encoded)
 		for _, body := range []string{`null`, `{}`, valid + `{}`, strings.Replace(valid, `"check_id":`, `"Check_ID":`, 1), strings.Replace(valid, `"target":{`, `"target":{"unknown":"synthetic-private",`, 1), strings.Replace(valid, `"workspace_id":"workspace"`, `"workspace_id":"other"`, 1), strings.Repeat(" ", maximum) + valid} {
-			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
 			r.SetPathValue("id", "workspace")
 			w := httptest.NewRecorder()
 			c := &controllerV1{}

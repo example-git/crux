@@ -133,7 +133,9 @@ func TestClientAuthorizationPreservesTLSVerifyConnection(t *testing.T) {
 	require.NoError(t, err)
 	transport := &http.Transport{TLSClientConfig: clientTLS}
 	t.Cleanup(transport.CloseIdleConnections)
-	response, err := (&http.Client{Transport: transport, Timeout: 5 * time.Second}).Get(srv.URL)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	require.NoError(t, err)
+	response, err := (&http.Client{Transport: transport, Timeout: 5 * time.Second}).Do(request)
 	if response != nil {
 		response.Body.Close()
 	}

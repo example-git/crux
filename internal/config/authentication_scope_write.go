@@ -28,6 +28,7 @@ type authenticationScopeWrite struct {
 func (authenticationScopeWrite) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication scope writes are private")
 }
+
 func (authenticationScopeWrite) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private authentication scope write]"))
 }

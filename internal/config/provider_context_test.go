@@ -21,10 +21,10 @@ func TestProviderContextCollectionUsesCapturedClientDirectory(t *testing.T) {
 	t.Setenv("HOME", clientHome)
 	t.Setenv("USERPROFILE", clientHome)
 	directory := filepath.Join(clientHome, ".ai-cli", "instructions")
-	require.NoError(t, os.MkdirAll(directory, 0700))
+	require.NoError(t, os.MkdirAll(directory, 0o700))
 	path := filepath.Join(directory, "fixture.txt")
-	require.NoError(t, os.WriteFile(path, []byte("exact client context\n"), 0600))
-	require.NoError(t, os.Mkdir(filepath.Join(directory, "unselected.txt"), 0700))
+	require.NoError(t, os.WriteFile(path, []byte("exact client context\n"), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(directory, "unselected.txt"), 0o700))
 	cfg := &Config{Providers: csync.NewMapFrom(map[string]ProviderConfig{
 		"fixture": {ID: "fixture", Owner: &ProviderOwnerReference{Type: ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Type: catalog.TypeOpenAICompat, APIKey: "synthetic-context-key", BaseURL: "https://fixture.invalid/v1", Models: []catalog.Model{{ID: "model"}}},
 	}), Models: map[SelectedModelType]SelectedModel{SelectedModelTypeLarge: {Provider: "fixture", Model: "model"}}, Options: &Options{}}
@@ -33,12 +33,12 @@ func TestProviderContextCollectionUsesCapturedClientDirectory(t *testing.T) {
 	t.Setenv("HOME", hostHome)
 	t.Setenv("USERPROFILE", hostHome)
 	hostDirectory := filepath.Join(hostHome, ".ai-cli", "instructions")
-	require.NoError(t, os.MkdirAll(hostDirectory, 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(hostDirectory, "fixture.txt"), []byte("wrong later host context"), 0600))
+	require.NoError(t, os.MkdirAll(hostDirectory, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(hostDirectory, "fixture.txt"), []byte("wrong later host context"), 0o600))
 	first, err := store.CollectRemoteRuntime(t.Context(), 1)
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{"fixture": "exact client context\n"}, first.ProviderContextInstructions)
-	require.NoError(t, os.WriteFile(path, []byte("edited client context"), 0600))
+	require.NoError(t, os.WriteFile(path, []byte("edited client context"), 0o600))
 	second, err := store.CollectRemoteRuntime(t.Context(), 2)
 	require.NoError(t, err)
 	require.Equal(t, "edited client context", second.ProviderContextInstructions["fixture"])
@@ -60,11 +60,11 @@ func TestProviderContextReadsAreBoundedAndExplicit(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "fixture.txt")
 			switch mode {
 			case "oversized":
-				require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("x", MaxProviderContextInstructionBytes+1)), 0600))
+				require.NoError(t, os.WriteFile(path, []byte(strings.Repeat("x", MaxProviderContextInstructionBytes+1)), 0o600))
 			case "directory":
-				require.NoError(t, os.Mkdir(path, 0700))
+				require.NoError(t, os.Mkdir(path, 0o700))
 			case "invalid-utf8":
-				require.NoError(t, os.WriteFile(path, []byte{0xff}, 0600))
+				require.NoError(t, os.WriteFile(path, []byte{0xff}, 0o600))
 			}
 			_, err := readProviderContextInstructions(path)
 			require.Error(t, err)

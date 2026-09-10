@@ -85,6 +85,7 @@ type apiKeySaveMsg struct {
 func (m *UI) apiKeyDialogOpen(d *dialog.APIKeyInput) bool {
 	return d != nil && m.dialog != nil && m.dialog.Dialog(dialog.APIKeyInputID) == d
 }
+
 func (m *UI) pruneAPIKeySessions() {
 	for d, s := range m.apiKeySessions {
 		if s.workspace != m.com.Workspace || !m.apiKeyDialogOpen(d) {
@@ -101,6 +102,7 @@ func (m *UI) pruneAPIKeySessions() {
 		}
 	}
 }
+
 func (m *UI) openAPIKeyAuthentication(selection dialog.ActionSelectModel) tea.Cmd {
 	selection.Model = selection.Model.Clone()
 	if previous := m.apiKeyOperations[m.com.Workspace]; previous != nil && previous.resolved {
@@ -124,6 +126,7 @@ func (m *UI) openAPIKeyAuthentication(selection dialog.ActionSelectModel) tea.Cm
 		return apiKeyStatusMsg{s, snapshot, err}
 	}
 }
+
 func (m *UI) completeAPIKeyStatus(msg apiKeyStatusMsg) tea.Cmd {
 	s := msg.session
 	if s == nil || m.apiKeySessions[s.dialog] != s || s.workspace != m.com.Workspace || !m.apiKeyDialogOpen(s.dialog) {
@@ -231,6 +234,7 @@ func (m *UI) selectAPIKeyCredential(action dialog.ActionAPIKeySelectCredential) 
 	}
 	return util.ReportError(errors.New("The selected credential is not declared by this owner; reload status"))
 }
+
 func (m *UI) showAPIKeyOperation(d *dialog.APIKeyInput) {
 	s := m.apiKeySessions[d]
 	if s == nil || !m.apiKeyDialogOpen(d) {
@@ -251,11 +255,13 @@ func (m *UI) showAPIKeyOperation(d *dialog.APIKeyInput) {
 	}
 	d.SetPresentation(p)
 }
+
 func (m *UI) updateAPIKeyDialogs() {
 	for d := range m.apiKeySessions {
 		m.showAPIKeyOperation(d)
 	}
 }
+
 func (m *UI) beginAPIKeyCheck(d *dialog.APIKeyInput) tea.Cmd {
 	s := m.apiKeySessions[d]
 	if s == nil || !s.ready || !m.apiKeyDialogOpen(d) || s.workspace != m.com.Workspace || s.selection.Model.Model != "" && s.generation != m.modelSelectionGen {
@@ -286,6 +292,7 @@ func (m *UI) beginAPIKeyCheck(d *dialog.APIKeyInput) tea.Cmd {
 	m.updateAPIKeyDialogs()
 	return prepareAPIKeyIDs(op, op.attempt, false)
 }
+
 func prepareAPIKeyIDs(op *apiKeyOperation, attempt uint64, recovery bool) tea.Cmd {
 	return func() tea.Msg {
 		var first, second [16]byte
@@ -296,6 +303,7 @@ func prepareAPIKeyIDs(op *apiKeyOperation, attempt uint64, recovery bool) tea.Cm
 		return apiKeyIDsMsg{operation: op, attempt: attempt, checkID: hex.EncodeToString(first[:]), saveID: hex.EncodeToString(second[:]), recovery: recovery, err: err}
 	}
 }
+
 func (m *UI) completeAPIKeyIDs(msg apiKeyIDsMsg) tea.Cmd {
 	op := msg.operation
 	if op == nil || m.apiKeyOperations[op.workspace] != op || !op.preparing || op.attempt != msg.attempt {
@@ -327,6 +335,7 @@ func (m *UI) completeAPIKeyIDs(msg apiKeyIDsMsg) tea.Cmd {
 	}
 	return m.dispatchAPIKeyCheck(op)
 }
+
 func (m *UI) dispatchAPIKeyCheck(op *apiKeyOperation) tea.Cmd {
 	op.busy = true
 	op.kind = "check"
@@ -342,6 +351,7 @@ func (m *UI) dispatchAPIKeyCheck(op *apiKeyOperation) tea.Cmd {
 		return apiKeyCheckMsg{op, attempt, outcome, err}
 	}
 }
+
 func (m *UI) completeAPIKeyCheck(msg apiKeyCheckMsg) tea.Cmd {
 	op := msg.operation
 	if op == nil || m.apiKeyOperations[op.workspace] != op || !op.busy || op.kind != "check" || op.attempt != msg.attempt {
@@ -377,6 +387,7 @@ func (m *UI) completeAPIKeyCheck(msg apiKeyCheckMsg) tea.Cmd {
 	m.updateAPIKeyDialogs()
 	return nil
 }
+
 func (m *UI) beginAPIKeySave(d *dialog.APIKeyInput) tea.Cmd {
 	s := m.apiKeySessions[d]
 	if s == nil || !m.apiKeyDialogOpen(d) || s.workspace != m.com.Workspace {
@@ -392,6 +403,7 @@ func (m *UI) beginAPIKeySave(d *dialog.APIKeyInput) tea.Cmd {
 	op.dialog = d
 	return m.dispatchAPIKeySave(op, false)
 }
+
 func (m *UI) retryAPIKeyOperation(d *dialog.APIKeyInput) tea.Cmd {
 	s := m.apiKeySessions[d]
 	if s == nil || s.workspace != m.com.Workspace || !m.apiKeyDialogOpen(d) {
@@ -414,6 +426,7 @@ func (m *UI) retryAPIKeyOperation(d *dialog.APIKeyInput) tea.Cmd {
 	}
 	return m.dispatchAPIKeyCheck(op)
 }
+
 func (m *UI) recoverAPIKeyOperation(action dialog.ActionAPIKeyRecover) tea.Cmd {
 	s := m.apiKeySessions[action.Dialog]
 	if s == nil || s.workspace != m.com.Workspace || !m.apiKeyDialogOpen(action.Dialog) {
@@ -436,6 +449,7 @@ func (m *UI) recoverAPIKeyOperation(action dialog.ActionAPIKeyRecover) tea.Cmd {
 	m.updateAPIKeyDialogs()
 	return prepareAPIKeyIDs(op, op.attempt, true)
 }
+
 func (m *UI) dispatchAPIKeySave(op *apiKeyOperation, recovery bool) tea.Cmd {
 	op.busy = true
 	op.attemptedSave = true
@@ -464,6 +478,7 @@ func (m *UI) dispatchAPIKeySave(op *apiKeyOperation, recovery bool) tea.Cmd {
 		return apiKeySaveMsg{op, attempt, outcome, recoveryRequest, err}
 	}
 }
+
 func (m *UI) completeAPIKeySave(msg apiKeySaveMsg) tea.Cmd {
 	op := msg.operation
 	if op == nil || m.apiKeyOperations[op.workspace] != op || !op.busy || op.attempt != msg.attempt || op.kind == "check" {
@@ -529,6 +544,7 @@ func (m *UI) completeAPIKeySave(msg apiKeySaveMsg) tea.Cmd {
 	selection.ReAuthenticate = false
 	return m.handleSelectModelAfterImport(selection, false)
 }
+
 func (m *UI) reloadAPIKeyInput(d *dialog.APIKeyInput) tea.Cmd {
 	s := m.apiKeySessions[d]
 	if s == nil || s.workspace != m.com.Workspace || !m.apiKeyDialogOpen(d) {
@@ -542,6 +558,7 @@ func (m *UI) reloadAPIKeyInput(d *dialog.APIKeyInput) tea.Cmd {
 	}
 	return m.openAPIKeyAuthentication(s.selection)
 }
+
 func apiKeyProgress(p providerauth.MutationProgress) string {
 	var parts []string
 	if p.AccountRefreshed {
@@ -558,6 +575,7 @@ func apiKeyProgress(p providerauth.MutationProgress) string {
 	}
 	return strings.Join(parts, " ")
 }
+
 func safeAPIKeyError(err error) string {
 	switch {
 	case errors.Is(err, context.Canceled):

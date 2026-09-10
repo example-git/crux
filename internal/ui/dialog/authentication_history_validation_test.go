@@ -18,6 +18,7 @@ func historyValidationScreen(d Dialog, w, h int) string {
 	d.Draw(screen, uv.Rect(0, 0, w, h))
 	return ansi.Strip(screen.String())
 }
+
 func TestAuthenticationHistoryValidationActionsFitAndDispatch(t *testing.T) {
 	theme := styles.ThemeForProvider("")
 	for _, size := range [][2]int{{40, 12}, {100, 32}} {
@@ -59,6 +60,7 @@ func TestAuthenticationHistoryValidationActionsFitAndDispatch(t *testing.T) {
 		})
 	}
 }
+
 func TestAuthenticationHistoryValidationRetiredReviewIsNotSuccess(t *testing.T) {
 	theme := styles.ThemeForProvider("")
 	d := NewAuthenticationReconciliation(&common.Common{Styles: &theme}, "original unknown acknowledgement", nil)

@@ -101,36 +101,47 @@ func (p *oauthLoginPreparation) claimRoute(route string) error {
 func (OAuthLoginPreparation) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth login preparations are private")
 }
+
 func (OAuthLoginPreparation) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private OAuth login preparation]"))
 }
+
 func (AuthorizedOAuthPreparation) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authorized OAuth preparations are private")
 }
+
 func (AuthorizedOAuthPreparation) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private authorized OAuth preparation]"))
 }
+
 func (OAuthDeviceLogin) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth device logins are private")
 }
+
 func (OAuthDeviceLogin) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private OAuth device login]"))
 }
+
 func (*oauthLoginPreparation) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private OAuth login state]"))
 }
+
 func (*authorizedOAuthPreparation) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private authorized OAuth state]"))
 }
+
 func (*oauthDeviceLogin) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private OAuth device state]"))
 }
+
 func (*oauthLoginPreparation) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth login state is private")
 }
+
 func (*authorizedOAuthPreparation) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authorized OAuth state is private")
 }
+
 func (*oauthDeviceLogin) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth device state is private")
 }

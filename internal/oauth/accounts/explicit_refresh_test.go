@@ -189,11 +189,12 @@ func TestExplicitRefresherSuccessorStillRequiresUnchangedCommitTarget(t *testing
 			require.ErrorIs(t, err, ErrCredentialChanged)
 			stored, err := Active(t.Context(), "rotation")
 			require.NoError(t, err)
-			if change == "logout" {
+			switch change {
+			case "logout":
 				require.Nil(t, stored)
-			} else if change == "manual" {
+			case "manual":
 				require.Equal(t, "manual", stored.AccessToken)
-			} else {
+			default:
 				require.Equal(t, successor, stored)
 			}
 		})

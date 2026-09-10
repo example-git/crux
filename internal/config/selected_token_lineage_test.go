@@ -101,13 +101,13 @@ func newInstalledLineageFixture(t *testing.T) *installedLineageFixture {
 	}
 	data, err = json.Marshal(declaration)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(source, "manifest.json"), data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "manifest.json"), data, 0o600))
 	f.values = map[string]string{"HOME": f.root, "USERPROFILE": f.root, "AI_CLI_DIR": filepath.Join(f.root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(f.root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(f.root, "data"), "CRUX_CACHE_DIR": filepath.Join(f.root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginNative), "CRUX_PROVIDER_PLUGINS": declaration.Provider.ID}
 	installTrustedProviderBundle(t, f.values["CRUX_GLOBAL_DATA"], f.values["CRUX_CACHE_DIR"], source)
 	data, err = json.Marshal(map[string]any{"providers": map[string]any{declaration.Provider.ID: map[string]any{"plugin": map[string]string{"id": declaration.ID}, "api_key": f.original.AccessToken, "oauth": f.original, "configuration": map[string]string{"oauth_client_id": "captured-client"}}}, "models": map[string]any{"large": map[string]string{"provider": declaration.Provider.ID, "model": "example-reasoner"}, "small": map[string]string{"provider": declaration.Provider.ID, "model": "example-small"}}, "foreign": json.RawMessage(`{"number":1.0,"large":9007199254740993}`)})
 	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(f.values["CRUX_GLOBAL_CONFIG"], 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(f.values["CRUX_GLOBAL_DATA"], "crux.json"), data, 0600))
+	require.NoError(t, os.MkdirAll(f.values["CRUX_GLOBAL_CONFIG"], 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(f.values["CRUX_GLOBAL_DATA"], "crux.json"), data, 0o600))
 	t.Setenv("AI_CLI_DIR", filepath.Join(f.root, "ambient-accounts"))
 	t.Setenv("OAUTH_CLIENT_ID", "ambient-client")
 	return f
@@ -209,7 +209,7 @@ func TestSelectedTokenDurableInstalledRestartKnownSuccessor(t *testing.T) {
 			require.NoError(t, restarted.validateSelectedTokenSources(t.Context(), restarted.Config()))
 			info, err := os.Stat(selectedTokenLineagePath(path, f.owner.ProviderID))
 			require.NoError(t, err)
-			require.Equal(t, os.FileMode(0600), info.Mode().Perm())
+			require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 			f.noAccounts(t)
 		})
 	}
@@ -235,7 +235,7 @@ func TestSelectedTokenDurableRestartRejectsUnknownAndDifferentCredentials(t *tes
 				}
 				data, err = json.Marshal(journal)
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(path, data, 0600))
+				require.NoError(t, os.WriteFile(path, data, 0o600))
 			}
 			if mode == "different-disk-token" {
 				authenticationBasisWriteField(t, store.globalDataPath, []string{"providers", f.owner.ProviderID, "oauth", "access_token"}, `"unrelated-newer-token"`)
@@ -266,17 +266,17 @@ func TestSelectedTokenDurablePreflightRejectsInvalidJournal(t *testing.T) {
 			token := cloneOAuthToken(f.original)
 			switch mode {
 			case "public-permissions":
-				require.NoError(t, os.WriteFile(path, data, 0644))
+				require.NoError(t, os.WriteFile(path, data, 0o644))
 			case "symlink":
 				require.NoError(t, os.Symlink(store.globalDataPath, path))
 			case "duplicate-field":
-				require.NoError(t, os.WriteFile(path, []byte(`{"version":1,"version":1,"sequence":0,"records":{}}`), 0600))
+				require.NoError(t, os.WriteFile(path, []byte(`{"version":1,"version":1,"sequence":0,"records":{}}`), 0o600))
 			case "case-alias":
-				require.NoError(t, os.WriteFile(path, []byte(`{"version":1,"Version":1,"sequence":0,"records":{}}`), 0600))
+				require.NoError(t, os.WriteFile(path, []byte(`{"version":1,"Version":1,"sequence":0,"records":{}}`), 0o600))
 			case "unknown-version":
-				require.NoError(t, os.WriteFile(path, []byte(`{"version":2,"sequence":0,"records":{}}`), 0600))
+				require.NoError(t, os.WriteFile(path, []byte(`{"version":2,"sequence":0,"records":{}}`), 0o600))
 			case "oversized":
-				file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+				file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 				require.NoError(t, err)
 				require.NoError(t, file.Truncate(maxSelectedTokenLineageBytes+1))
 				require.NoError(t, file.Close())
@@ -332,7 +332,7 @@ func TestSelectedTokenDurableCapacityPreservesUnresolvedAndCurrentPredecessor(t 
 			journal.Sequence = selectedTokenRotationLimit
 			data, err = json.Marshal(journal)
 			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(path, data, 0600))
+			require.NoError(t, os.WriteFile(path, data, 0o600))
 			next, err := store.RefreshProviderOAuthTokenForRuntime(t.Context(), ScopeGlobal, f.owner, fresh, store.RuntimeSnapshot())
 			if !committed {
 				require.ErrorContains(t, err, "unresolved")

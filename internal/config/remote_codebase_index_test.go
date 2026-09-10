@@ -15,9 +15,9 @@ import (
 func TestRemoteCodebaseIndexCredentialAndPathOwnership(t *testing.T) {
 	store, _, _, _ := setupReloadPluginStore(t)
 	clientDir, serverDir := os.Getenv("AI_CLI_DIR"), t.TempDir()
-	require.NoError(t, os.MkdirAll(clientDir, 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(clientDir, "codebase-index-auth.json"), []byte(`{"accessToken":"synthetic-client-codebase","authMode":"vscode"}`), 0600))
-	require.NoError(t, os.WriteFile(filepath.Join(serverDir, "codebase-index-auth.json"), []byte(`{"accessToken":"synthetic-server-codebase","authMode":"vscode"}`), 0600))
+	require.NoError(t, os.MkdirAll(clientDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(clientDir, "codebase-index-auth.json"), []byte(`{"accessToken":"synthetic-client-codebase","authMode":"vscode"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(serverDir, "codebase-index-auth.json"), []byte(`{"accessToken":"synthetic-server-codebase","authMode":"vscode"}`), 0o600))
 	require.NoError(t, store.SetConfigFields(ScopeWorkspace, map[string]any{"tools.codebase_search.enabled": true, "tools.codebase_search.database_path": "/client/source.db", "tools.codebase_search.store_directory": "/client/store"}))
 	proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
 	require.NoError(t, err)

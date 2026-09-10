@@ -3,14 +3,15 @@ package config
 import (
 	"context"
 	"fmt"
-	"github.com/example-git/crux/internal/oauth/accounts"
-	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/stretchr/testify/require"
 )
 
 func TestAuthenticationRemoveRefreshesExactSuccessorOverHTTPS(t *testing.T) {

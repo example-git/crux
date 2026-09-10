@@ -75,13 +75,18 @@ func TestSessionHTTPClientRejectsDetachedRequestsAfterClose(t *testing.T) {
 	defer server.Close()
 	ctx, cancel := context.WithCancel(t.Context())
 	client := NewSessionHTTPClient(ctx)
-	response, err := client.Get(server.URL)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	response, err := client.Do(request)
 	require.NoError(t, err)
 	require.NoError(t, response.Body.Close())
 	cancel()
-	request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, nil)
+	request, err = http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, nil)
 	require.NoError(t, err)
-	_, err = client.Do(request)
+	response, err = client.Do(request)
+	if response != nil {
+		require.NoError(t, response.Body.Close())
+	}
 	require.ErrorIs(t, err, context.Canceled)
 	require.EqualValues(t, 1, requests.Load())
 }
@@ -104,7 +109,9 @@ func TestSessionHTTPClientCustomTransportResponses(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			client := &http.Client{Transport: &lifetimeTransport{ctx: ctx, base: sessionTestTransport(func(*http.Request) (*http.Response, error) { return test.response, nil })}}
-			response, err := client.Get("http://fixture.invalid")
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://fixture.invalid", nil)
+			require.NoError(t, err)
+			response, err := client.Do(request)
 			if test.wantError {
 				require.Error(t, err)
 				return

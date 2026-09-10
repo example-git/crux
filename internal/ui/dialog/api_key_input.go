@@ -19,15 +19,18 @@ import (
 
 const APIKeyInputID = "api_key_input"
 
-type ActionAPIKeyCheck struct{ Dialog *APIKeyInput }
-type ActionAPIKeySave struct{ Dialog *APIKeyInput }
-type ActionAPIKeyRetry struct{ Dialog *APIKeyInput }
-type ActionAPIKeyReload struct{ Dialog *APIKeyInput }
-type ActionAPIKeySelectCredential struct {
-	Dialog       *APIKeyInput
-	CredentialID string
-	OAuth        bool
-}
+type (
+	ActionAPIKeyCheck            struct{ Dialog *APIKeyInput }
+	ActionAPIKeySave             struct{ Dialog *APIKeyInput }
+	ActionAPIKeyRetry            struct{ Dialog *APIKeyInput }
+	ActionAPIKeyReload           struct{ Dialog *APIKeyInput }
+	ActionAPIKeySelectCredential struct {
+		Dialog       *APIKeyInput
+		CredentialID string
+		OAuth        bool
+	}
+)
+
 type ActionAPIKeyRecover struct {
 	Dialog *APIKeyInput
 	Retry  bool
@@ -104,6 +107,7 @@ func (m *APIKeyInput) SetChoices(choices []APIKeyCredentialChoice) {
 	m.details.GotoTop()
 	m.setBindings()
 }
+
 func (m *APIKeyInput) SetPresentation(p APIKeyPresentation) {
 	if p.Message != m.presentation.Message || p.Evidence != m.presentation.Evidence {
 		m.details.GotoTop()
@@ -111,6 +115,7 @@ func (m *APIKeyInput) SetPresentation(p APIKeyPresentation) {
 	m.presentation = p
 	m.setBindings()
 }
+
 func (m *APIKeyInput) setBindings() {
 	p := m.presentation
 	if p.SaveDispatched {
@@ -147,6 +152,7 @@ func (m *APIKeyInput) TakeSource() string {
 	m.input.Blur()
 	return value
 }
+
 func (m *APIKeyInput) HandleMsg(msg tea.Msg) Action {
 	if press, ok := msg.(tea.KeyPressMsg); ok {
 		switch {
@@ -197,6 +203,7 @@ func (m *APIKeyInput) HandleMsg(msg tea.Msg) Action {
 	}
 	return nil
 }
+
 func (m *APIKeyInput) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	t := m.com.Styles
 	m.width = max(0, min(72, area.Dx()-t.Dialog.View.GetHorizontalBorderSize()))
@@ -353,11 +360,12 @@ func APIKeyProbeDescription(p config.ConnectionProbeResult) string {
 		text = "HTTP request attempted; no response was observed."
 	case config.ConnectionProbeHTTPResponse:
 		text = fmt.Sprintf("HTTP %d observed", p.HTTPStatus)
-		if p.Policy == config.ConnectionProbePolicyManifestHTTP200 {
+		switch p.Policy {
+		case config.ConnectionProbePolicyManifestHTTP200:
 			text += " from the declared model-catalog operation; its policy requires HTTP 200 and successful JSON processing."
-		} else if p.Policy == config.ConnectionProbePolicyNon401 {
+		case config.ConnectionProbePolicyNon401:
 			text += " under the provider's non-401 policy."
-		} else {
+		default:
 			text += " from the models probe (HTTP 200 policy)."
 		}
 	case config.ConnectionProbeUnsupported:

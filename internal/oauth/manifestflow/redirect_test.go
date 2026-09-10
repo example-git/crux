@@ -3,10 +3,6 @@ package manifestflow
 import (
 	"errors"
 	"fmt"
-	"github.com/example-git/crux/internal/providerplugin/manifest"
-	"github.com/example-git/crux/internal/providertransport"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providertransport"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestOAuthRefreshRedirectsKeepCapturedCredentialDestinations(t *testing.T) {

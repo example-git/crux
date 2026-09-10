@@ -84,9 +84,11 @@ func TestAuthenticationRevocationRuntimeDeniesFreshAndRetainedRequests(t *testin
 	current := testSessionAgent(environment, nil, nil, "initial")
 	backgroundContext, stopBackground := context.WithCancel(t.Context())
 	stopBackground()
-	coord := &coordinator{cfg: initial, currentAgent: current, sessions: environment.sessions,
+	coord := &coordinator{
+		cfg: initial, currentAgent: current, sessions: environment.sessions,
 		messages: environment.messages, permissions: environment.permissions, history: environment.history,
-		filetracker: *environment.filetracker, skillTracker: skills.NewTracker(nil), codebaseIndexLifecycleCtx: backgroundContext}
+		filetracker: *environment.filetracker, skillTracker: skills.NewTracker(nil), codebaseIndexLifecycleCtx: backgroundContext,
+	}
 	require.NoError(t, coord.UpdateModels(t.Context()))
 	retained := current.Runtime()
 	call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("before logout")}}
@@ -198,7 +200,6 @@ func TestAuthenticationRevocationNativeResponsesAndRemoteCompaction(t *testing.T
 				var ok bool
 				registration, ok = integratedRegistration(t, "codex")
 				require.True(t, ok)
-
 			}
 			_, err := providerregistry.New(registration)
 			require.NoError(t, err)
@@ -223,10 +224,12 @@ func TestAuthenticationRevocationNativeResponsesAndRemoteCompaction(t *testing.T
 			environment := testEnv(t)
 			backgroundContext, stopBackground := context.WithCancel(t.Context())
 			stopBackground()
-			coord := &coordinator{cfg: store, currentAgent: testSessionAgent(environment, nil, nil, "initial"),
+			coord := &coordinator{
+				cfg: store, currentAgent: testSessionAgent(environment, nil, nil, "initial"),
 				sessions: environment.sessions, messages: environment.messages, permissions: environment.permissions,
 				history: environment.history, filetracker: *environment.filetracker, skillTracker: skills.NewTracker(nil),
-				responsesContinuations: openairesponsestransport.NewContinuationStore(), codebaseIndexLifecycleCtx: backgroundContext}
+				responsesContinuations: openairesponsestransport.NewContinuationStore(), codebaseIndexLifecycleCtx: backgroundContext,
+			}
 			candidate, err := coord.prepareRuntimeGeneration(t.Context(), store.RuntimeSnapshot())
 			require.NoError(t, err, "logout must pass the real runtime preparer, including continuation and compaction gates")
 			defer candidate.Abort()

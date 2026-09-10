@@ -2,6 +2,7 @@ package model
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -74,7 +75,7 @@ func (p *Preview) defaultData() *PreviewData {
 	p.initialize(PreviewModels[0])
 	u := p.ui
 	ws := u.com.Workspace.(*previewWorkspace)
-	sessions, _ := ws.ListSessions(nil)
+	sessions, _ := ws.ListSessions(context.Background())
 	d := &PreviewData{Session: *u.session, Provider: ws.surface, Models: append([]catalog.Model(nil), PreviewModels...), Files: u.sessionFiles, Usage: u.providerUsage, MCP: u.mcpStates, LSP: u.lspStates, Sessions: sessions, Tasks: previewTasks(), Examples: map[string]PreviewExampleData{}, ReadyPlaceholder: u.readyPlaceholder, WorkingPlaceholder: u.workingPlaceholder}
 	d.Permission = permission.PermissionRequest{ID: "fixture-permission", SessionID: d.Session.ID, ToolName: tools.BashToolName, Description: "Run the local fixture checks", Action: "execute", Path: "/preview/crush", Params: tools.BashPermissionsParams{Command: "go test ./fixture -v"}}
 	d.Settings.InstructionMode = "all"

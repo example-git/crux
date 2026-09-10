@@ -35,17 +35,22 @@ type instructionMutationWorkspace struct {
 func (w *instructionMutationWorkspace) ProviderSurfaces() []providerregistry.Surface {
 	return w.surfaces
 }
-func (w *instructionMutationWorkspace) PermissionSkipRequests() bool                     { return false }
+
+func (w *instructionMutationWorkspace) PermissionSkipRequests() bool { return false }
+
 func (w *instructionMutationWorkspace) LSPGetStates() map[string]workspace.LSPClientInfo { return nil }
+
 func (w *instructionMutationWorkspace) SetConfigField(config.Scope, string, any) error {
 	w.mutationCalls++
 	return w.mutationErr
 }
+
 func (w *instructionMutationWorkspace) SetProviderToolingInstructions(_ config.Scope, owner providerregistry.RegistrationOwner, profile string) error {
 	w.mutationCalls++
 	w.toolingOwner = owner
 	return w.mutationErr
 }
+
 func (w *instructionMutationWorkspace) ReloadProviderContextInstructions(_ context.Context, owner providerregistry.RegistrationOwner) error {
 	w.reloadCalls++
 	w.toolingOwner = owner
@@ -55,13 +60,17 @@ func (w *instructionMutationWorkspace) ReloadProviderContextInstructions(_ conte
 func instructionUISnapshot(t *testing.T, profile string) proto.Workspace {
 	t.Helper()
 	owner := providerregistry.RegistrationOwner{ProviderID: "synthetic", Construction: providerregistry.ConstructionGenericJSON, HasManifest: true, ManifestID: "plugin.synthetic", ManifestVersion: "1.0.0"}
-	surfaces := []providerregistry.Surface{{ID: owner.ProviderID, Name: "Synthetic", Owner: &owner, Available: true,
-		Instructions: &providerregistry.InstructionSurface{Default: "stock", Profiles: map[string]string{"stock": "Synthetic native tooling instructions"}}}}
-	cfg := &config.Config{Options: &config.Options{}, Providers: csync.NewMapFrom(map[string]config.ProviderConfig{owner.ProviderID: {ID: owner.ProviderID, ToolingInstructions: profile}}),
+	surfaces := []providerregistry.Surface{{
+		ID: owner.ProviderID, Name: "Synthetic", Owner: &owner, Available: true,
+		Instructions: &providerregistry.InstructionSurface{Default: "stock", Profiles: map[string]string{"stock": "Synthetic native tooling instructions"}},
+	}}
+	cfg := &config.Config{
+		Options: &config.Options{}, Providers: csync.NewMapFrom(map[string]config.ProviderConfig{owner.ProviderID: {ID: owner.ProviderID, ToolingInstructions: profile}}),
 		Models: map[config.SelectedModelType]config.SelectedModel{
 			config.SelectedModelTypeLarge: {Provider: owner.ProviderID, Model: "fixture"},
 			config.SelectedModelTypeSmall: {Provider: owner.ProviderID, Model: "fixture"},
-		}}
+		},
+	}
 	require.NoError(t, cfg.BindProviderSurfaceOwners(surfaces))
 	return proto.Workspace{ID: "instructions", Path: t.TempDir(), Config: cfg, ProviderSurfaces: surfaces}
 }

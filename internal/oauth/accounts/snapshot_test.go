@@ -56,6 +56,7 @@ func TestAccountSnapshotStablePrivateAndCloned(t *testing.T) {
 	cloned[0].AccessToken = "changed"
 	cloned[0].Raw[0] = '['
 	cloned = append(cloned, Entry{ID: "added"})
+	require.Len(t, cloned, 2)
 	require.Equal(t, []Entry{entry}, before.Entries(snapshotNamespace))
 	_, err = json.Marshal(before)
 	require.Error(t, err)

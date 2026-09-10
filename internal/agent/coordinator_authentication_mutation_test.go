@@ -84,8 +84,10 @@ func newCoordinatorAuthenticationFixture(t *testing.T, providerID, endpoint stri
 	}
 	if disabled {
 		selectedProvider = "unrelated"
-		providers[selectedProvider] = map[string]any{"type": "openai-compat", "base_url": endpoint, "api_key": "unrelated-retained-key",
-			"models": []map[string]any{{"id": "fixture-main", "context_window": 32000}, {"id": "fixture-small", "context_window": 16000}}}
+		providers[selectedProvider] = map[string]any{
+			"type": "openai-compat", "base_url": endpoint, "api_key": "unrelated-retained-key",
+			"models": []map[string]any{{"id": "fixture-main", "context_window": 32000}, {"id": "fixture-small", "context_window": 16000}},
+		}
 	}
 	source, err := json.Marshal(map[string]any{
 		"providers": providers,

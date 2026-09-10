@@ -84,7 +84,7 @@ func TestNativeMuslProbeUsesCapturedExecutableAndCancellation(t *testing.T) {
 	}
 	bin, ambient := t.TempDir(), t.TempDir()
 	for _, directory := range []string{bin, ambient} {
-		require.NoError(t, os.WriteFile(filepath.Join(directory, "ldd"), []byte("#!/bin/sh\nprintf 'musl 1.2.3\\n' >&2\n"), 0700))
+		require.NoError(t, os.WriteFile(filepath.Join(directory, "ldd"), []byte("#!/bin/sh\nprintf 'musl 1.2.3\\n' >&2\n"), 0o700))
 	}
 	t.Setenv("PATH", ambient)
 	ctx := oauth.ContextWithEnvironment(t.Context(), []string{"PATH=" + bin})
@@ -92,7 +92,7 @@ func TestNativeMuslProbeUsesCapturedExecutableAndCancellation(t *testing.T) {
 	require.False(t, isMuslLinuxForContext(oauth.ContextWithEnvironment(t.Context(), nil)))
 	require.True(t, isMuslLinuxForContext(t.Context()))
 	ready := filepath.Join(t.TempDir(), "ready")
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "ldd"), []byte("#!/bin/sh\nprintf started > \"$PROBE_READY\"\nexec /bin/sleep 60\n"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "ldd"), []byte("#!/bin/sh\nprintf started > \"$PROBE_READY\"\nexec /bin/sleep 60\n"), 0o700))
 	ctx, cancel := context.WithCancel(oauth.ContextWithEnvironment(t.Context(), []string{"PATH=" + bin, "PROBE_READY=" + ready}))
 	defer cancel()
 	done := make(chan bool, 1)

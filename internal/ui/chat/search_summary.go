@@ -14,8 +14,10 @@ import (
 	"github.com/example-git/crux/internal/ui/styles"
 )
 
-var searchSummaryLine = regexp.MustCompile(`^  Line (\d+)(?:, Char (\d+))?: (.*)$`)
-var directorySummaryDepth = regexp.MustCompile(`^The directory tree is shown up to a depth of (\d+)\.`)
+var (
+	searchSummaryLine     = regexp.MustCompile(`^  Line (\d+)(?:, Char (\d+))?: (.*)$`)
+	directorySummaryDepth = regexp.MustCompile(`^The directory tree is shown up to a depth of (\d+)\.`)
+)
 
 type searchSummaryMatch struct {
 	path, line, column, text string

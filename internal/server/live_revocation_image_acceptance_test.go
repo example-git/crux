@@ -151,7 +151,7 @@ func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
 	require.NoError(t, srv.EnableNetworkAuth(t.Context()))
 	tlsConfig, err := connection.ServerTLSConfig(t.Context())
 	require.NoError(t, err)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(tls.NewListener(listener, tlsConfig)) }()

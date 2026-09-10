@@ -35,7 +35,7 @@ func ValidateProviderToolingRequest(scope *config.Scope, owner providerregistry.
 	if owner.ProviderID == "" {
 		return fmt.Errorf("provider tooling owner is required")
 	}
-	if profile != config.ToolingInstructionsCrux && profile != config.ToolingInstructionsNative && !(remove && profile == "") {
+	if profile != config.ToolingInstructionsCrux && profile != config.ToolingInstructionsNative && (!remove || profile != "") {
 		return fmt.Errorf("provider tooling profile must be crux or native")
 	}
 	return nil

@@ -107,7 +107,8 @@ func TestClientCodexNativeIdentityWSS(t *testing.T) {
 			require.True(t, ok)
 			largeSelection := config.SelectedModel{Provider: "codex", Model: "fixture-large", MaxTokens: 512}
 			smallSelection := config.SelectedModel{Provider: "codex", Model: "fixture-small", MaxTokens: 128}
-			proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+			proposal := config.RemoteRuntimeProposal{
+				Version: config.RemoteRuntimeVersion, Revision: 1,
 				Providers: []config.RemoteProviderDefinition{{NativeIdentity: &identity, Config: config.ProviderConfig{
 					ID: "codex", Type: catalog.TypeOpenAICompat, BaseURL: strings.Replace(host.URL, "https://", "wss://", 1) + "/responses",
 					Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: providerregistry.ConstructionCodex},

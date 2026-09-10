@@ -154,7 +154,7 @@ func TestClientCopilotLogoutImportThroughTLS(t *testing.T) {
 			require.NoError(t, f.w.InitCoderAgentNonInteractive(t.Context()))
 			receiver, err := f.s.Backend().GetWorkspace(f.w.workspaceID())
 			require.NoError(t, err)
-			coordinator := receiver.App.CurrentAgentCoordinator()
+			coordinator := receiver.CurrentAgentCoordinator()
 			retained := coordinator.Model()
 			call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("use the imported account")}}
 			_, err = retained.Model.Generate(t.Context(), call)

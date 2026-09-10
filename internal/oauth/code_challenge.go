@@ -95,21 +95,25 @@ func NewCodeChallenge(ctx context.Context, authorizationURL string, expiresAt ti
 }
 
 func (CodeChallenge) Format(s fmt.State, verb rune) { fmt.Fprint(s, "[private OAuth code challenge]") }
+
 func (CodeChallenge) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth code challenge is private")
 }
+
 func (c *CodeChallenge) AuthorizationURL() string {
 	if c == nil || c.state == nil {
 		return ""
 	}
 	return c.state.url
 }
+
 func (c *CodeChallenge) ExpiresAt() time.Time {
 	if c == nil || c.state == nil {
 		return time.Time{}
 	}
 	return c.state.expiresAt
 }
+
 func (c *CodeChallenge) Close() {
 	if c != nil && c.state != nil {
 		c.state.cancel()

@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/providerauth"
 )
@@ -15,6 +16,7 @@ func (w *AppWorkspace) RepairLocalAuthentication(ctx context.Context, request pr
 	}
 	return w.providerAuth.RepairLocalAuthentication(ctx, request)
 }
+
 func (w *ClientWorkspace) RepairLocalAuthentication(ctx context.Context, request providerauth.LocalRepairRequest) (config.LocalAuthenticationRepairResult, error) {
 	if err := request.Validate(); err != nil {
 		return config.LocalAuthenticationRepairResult{}, err

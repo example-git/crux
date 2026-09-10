@@ -74,6 +74,7 @@ func TestAuthenticationRemoveActiveInactiveAndLast(t *testing.T) {
 		})
 	}
 }
+
 func TestAuthenticationRemovePreparationFailurePreservesAccounts(t *testing.T) {
 	f := newAuthenticationMutationFixture(t, ScopeGlobal, false)
 	before := f.capture(t)
@@ -100,7 +101,7 @@ func TestAuthenticationRemoveRejectsPrecommitDrift(t *testing.T) {
 			case "config":
 				data, err := os.ReadFile(f.path)
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(f.path, append(data, ' '), 0600))
+				require.NoError(t, os.WriteFile(f.path, append(data, ' '), 0o600))
 			case "publication":
 				f.store.setConfig(f.store.Config())
 			case "canceled":
@@ -132,7 +133,7 @@ func TestAuthenticationRemoveLateProgressAndCancellation(t *testing.T) {
 					path := filepath.Join(f.root, "accounts", "accounts.json")
 					data, err := os.ReadFile(path)
 					require.NoError(t, err)
-					require.NoError(t, os.WriteFile(path, append(data, ' '), 0600))
+					require.NoError(t, os.WriteFile(path, append(data, ' '), 0o600))
 				}, Abort: func() {}}, nil
 			})
 			result, err := f.store.RemoveAuthenticationAccount(ctx, ScopeGlobal, before, f.owner, f.first.ID)

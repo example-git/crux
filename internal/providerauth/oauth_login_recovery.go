@@ -31,6 +31,7 @@ func (r OAuthLoginRecoveryRequest) Validate() error {
 	}
 	return nil
 }
+
 func sameOAuthRecovery(a, b *OAuthLoginRecovery) bool {
 	return a == nil && b == nil || a != nil && b != nil && *a == *b
 }
@@ -82,24 +83,29 @@ func (r OAuthLoginRecoveryList) Validate() error {
 	}
 	return nil
 }
+
 func (s *Service) RecoverOAuthLogin(ctx context.Context, request OAuthLoginRecoveryRequest) (OAuthLoginState, error) {
 	if err := request.Validate(); err != nil {
 		return OAuthLoginState{}, err
 	}
 	return s.beginOAuthLogin(ctx, request.Login, nil, nil, &OAuthLoginRecovery{OriginalWorkspaceID: request.OriginalWorkspaceID, OriginalOperationID: request.OriginalOperationID})
 }
+
 func (s *Service) RecoverOAuthLoginForAccepted(ctx context.Context, request OAuthLoginRecoveryRequest, accepted config.RemoteRuntimeProposal, view *config.Config) (OAuthLoginState, error) {
 	if err := request.Validate(); err != nil {
 		return OAuthLoginState{}, err
 	}
 	return s.beginOAuthLogin(ctx, request.Login, &accepted, view, &OAuthLoginRecovery{OriginalWorkspaceID: request.OriginalWorkspaceID, OriginalOperationID: request.OriginalOperationID})
 }
+
 func (s *Service) ListOAuthLoginResults(ctx context.Context, target Target) (OAuthLoginRecoveryList, error) {
 	return s.listOAuthLoginResults(ctx, target, nil, nil)
 }
+
 func (s *Service) ListOAuthLoginResultsForAccepted(ctx context.Context, target Target, accepted config.RemoteRuntimeProposal, view *config.Config) (OAuthLoginRecoveryList, error) {
 	return s.listOAuthLoginResults(ctx, target, &accepted, view)
 }
+
 func (s *Service) listOAuthLoginResults(ctx context.Context, target Target, accepted *config.RemoteRuntimeProposal, view *config.Config) (OAuthLoginRecoveryList, error) {
 	result := OAuthLoginRecoveryList{Target: target, Results: []OAuthLoginRecordedResult{}}
 	if err := target.Validate(); err != nil {

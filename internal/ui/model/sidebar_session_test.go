@@ -237,7 +237,7 @@ func TestSidebarResumeStartsAdaptive(t *testing.T) {
 				wide := m.View()
 				require.Equal(t, uiChat, m.state)
 				require.Equal(t, savedCompact && mode == "fresh", m.isCompact)
-				require.Equal(t, !(savedCompact && mode == "fresh"), strings.Contains(ansi.Strip(wide.Content), "▾ Session"))
+				require.Equal(t, !savedCompact || mode != "fresh", strings.Contains(ansi.Strip(wide.Content), "▾ Session"))
 				require.Equal(t, savedCompact, ws.cfg.Options.TUI.CompactMode, "startup must not rewrite the saved setting")
 				if mode == "fresh" {
 					return

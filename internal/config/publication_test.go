@@ -31,7 +31,7 @@ func TestPublicationFenceStableReadsAndStoreIdentity(t *testing.T) {
 	require.False(t, (RuntimeSnapshot{}).SamePublication(RuntimeSnapshot{}))
 	require.False(t, first.SamePublication(RuntimeSnapshot{config: cfg}))
 	require.False(t, (&ConfigStore{}).RuntimeSnapshot().SamePublication((&ConfigStore{}).RuntimeSnapshot()))
-	encoded, err := json.Marshal(first)
+	encoded, err := json.Marshal(first) //nolint:staticcheck // The empty JSON result is the assertion: no snapshot identity is exported.
 	require.NoError(t, err)
 	require.JSONEq(t, `{}`, string(encoded), "private publication identity never enters JSON")
 

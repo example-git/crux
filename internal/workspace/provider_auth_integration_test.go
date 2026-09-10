@@ -2,7 +2,6 @@ package workspace_test
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -288,6 +287,6 @@ func providerAuthenticationStatus(t *testing.T, snapshot providerauth.Snapshot, 
 			return status
 		}
 	}
-	t.Fatal(fmt.Sprintf("provider %s absent from authentication snapshot", id))
+	t.Fatalf("provider %s absent from authentication snapshot", id)
 	return providerauth.Status{}
 }

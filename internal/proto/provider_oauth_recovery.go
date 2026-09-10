@@ -30,9 +30,11 @@ func (r ProviderOAuthLoginRecoveryListResponse) Validate(target providerauth.Tar
 	}
 	return nil
 }
+
 func DecodeProviderOAuthLoginRecoveryListRequest(body []byte) (providerauth.Target, error) {
 	return decodeProviderOAuthRequest[providerauth.Target](body, MaxProviderAuthRequestBytes)
 }
+
 func DecodeProviderOAuthLoginRecoveryListResponse(body []byte, target providerauth.Target) (ProviderOAuthLoginRecoveryListResponse, error) {
 	var response ProviderOAuthLoginRecoveryListResponse
 	if err := decodeProviderAuthJSON(body, MaxProviderAuthResponseBytes, &response); err != nil {
@@ -43,6 +45,7 @@ func DecodeProviderOAuthLoginRecoveryListResponse(body []byte, target providerau
 	}
 	return response, nil
 }
+
 func (r ProviderOAuthLoginResponse) ValidateRecover(request providerauth.OAuthLoginRecoveryRequest) error {
 	if err := request.Validate(); err != nil {
 		return err
@@ -52,9 +55,11 @@ func (r ProviderOAuthLoginResponse) ValidateRecover(request providerauth.OAuthLo
 	}
 	return r.validate(request.Login, "", 0, "")
 }
+
 func DecodeProviderOAuthLoginRecoverRequest(body []byte) (providerauth.OAuthLoginRecoveryRequest, error) {
 	return decodeProviderOAuthRequest[providerauth.OAuthLoginRecoveryRequest](body, MaxProviderAuthRequestBytes)
 }
+
 func DecodeProviderOAuthLoginRecoverResponse(body []byte, request providerauth.OAuthLoginRecoveryRequest) (ProviderOAuthLoginResponse, error) {
 	return decodeProviderOAuthResponse(body, func(r ProviderOAuthLoginResponse) error { return r.ValidateRecover(request) })
 }

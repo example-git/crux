@@ -41,15 +41,19 @@ type AccountAuthentication struct {
 	review                       bool
 }
 
-type AccountSwitcher struct{ *AccountAuthentication }
-type Logout struct{ *AccountAuthentication }
+type (
+	AccountSwitcher struct{ *AccountAuthentication }
+	Logout          struct{ *AccountAuthentication }
+)
 
 func NewAccountSwitcher(com *common.Common) *AccountSwitcher {
 	return &AccountSwitcher{newAccountAuthentication(com, AccountSwitcherID)}
 }
+
 func NewLogout(com *common.Common) *Logout {
 	return &Logout{newAccountAuthentication(com, LogoutID)}
 }
+
 func newAccountAuthentication(com *common.Common, id string) *AccountAuthentication {
 	d := &AccountAuthentication{accountsPicker: newAccountsPicker(com), id: id, loading: true, readNotice: "Loading authentication status…"}
 	d.reloadKey = key.NewBinding(key.WithKeys("ctrl+r"), key.WithHelp("ctrl+r", "reload"))
@@ -72,6 +76,7 @@ func (d *AccountAuthentication) BeginRead() uint64 {
 	d.updateNotice()
 	return d.generation
 }
+
 func (d *AccountAuthentication) CompleteRead(generation uint64, rows []AuthenticationRow, err error) bool {
 	if generation != d.generation {
 		return false
@@ -100,10 +105,12 @@ func (d *AccountAuthentication) CompleteRead(generation uint64, rows []Authentic
 	d.updateNotice()
 	return true
 }
+
 func (d *AccountAuthentication) SetOperation(message string, pending, retry bool) {
 	d.operationNotice, d.pending, d.retry = message, pending, retry
 	d.updateNotice()
 }
+
 func (d *AccountAuthentication) SetRecovery(available, retry bool) {
 	d.recover, d.retryRecovery = available, retry
 	d.updateNotice()
@@ -133,12 +140,14 @@ type ActionAuthenticationSelect struct {
 	Generation uint64
 	Row        AuthenticationRow
 }
-type ActionAuthenticationReload struct{ Dialog *AccountAuthentication }
-type ActionAuthenticationRetry struct{ Dialog *AccountAuthentication }
-type ActionAuthenticationRecover struct {
-	Dialog *AccountAuthentication
-	Retry  bool
-}
+type (
+	ActionAuthenticationReload  struct{ Dialog *AccountAuthentication }
+	ActionAuthenticationRetry   struct{ Dialog *AccountAuthentication }
+	ActionAuthenticationRecover struct {
+		Dialog *AccountAuthentication
+		Retry  bool
+	}
+)
 
 func (d *AccountAuthentication) HandleMsg(msg tea.Msg) Action {
 	kp, ok := msg.(tea.KeyPressMsg)
@@ -176,9 +185,11 @@ func (d *AccountAuthentication) HandleMsg(msg tea.Msg) Action {
 	}
 	return d.handleFilter(kp)
 }
+
 func (d *AccountAuthentication) Cursor() *tea.Cursor {
 	return InputCursor(d.com.Styles, d.input.Cursor())
 }
+
 func (d *AccountAuthentication) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	title := "Switch Account"
 	if d.id == LogoutID {
@@ -186,6 +197,7 @@ func (d *AccountAuthentication) Draw(scr uv.Screen, area uv.Rectangle) *tea.Curs
 	}
 	return d.draw(scr, area, title, d)
 }
+
 func (d *AccountAuthentication) ShortHelp() []key.Binding {
 	if d.pending {
 		return []key.Binding{d.keyMap.Close}
@@ -280,6 +292,7 @@ func LoadAuthenticationRows(ctx context.Context, ws workspace.Workspace, logout 
 	}
 	return rows, nil
 }
+
 func logoutEligible(status providerauth.Status) bool {
 	if !status.Configured {
 		return false

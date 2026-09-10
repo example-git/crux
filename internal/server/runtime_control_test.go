@@ -23,7 +23,8 @@ func TestRuntimeControlRejectsMalformedBeforeBackend(t *testing.T) {
 		if operation == "set" {
 			valid = strings.TrimSuffix(valid, "}") + `,"value":false}`
 		}
-		bodies := []string{`null`, `{}`, valid + ` {}`, strings.Repeat("[", 66) + strings.Repeat("]", 66),
+		bodies := []string{
+			`null`, `{}`, valid + ` {}`, strings.Repeat("[", 66) + strings.Repeat("]", 66),
 			strings.Replace(valid, `"scope":0,`, ``, 1), strings.Replace(valid, `"scope":0`, `"scope":null`, 1),
 			strings.Replace(valid, `"scope":0`, `"scope":0,"scope":1`, 1),
 			strings.Replace(valid, `"scope":0`, `"scope":0,"unknown":true`, 1),
@@ -44,7 +45,7 @@ func TestRuntimeControlRejectsMalformedBeforeBackend(t *testing.T) {
 			bodies = append(bodies, strings.Replace(valid, `,"descriptor_digest":"digest"`, ``, 1))
 		}
 		for _, body := range bodies {
-			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
 			response := httptest.NewRecorder()
 			(&controllerV1{}).handleWorkspaceRuntimeControl(response, r, operation != "resolve", operation == "set")
 			require.Equal(t, http.StatusBadRequest, response.Code, operation+" "+body[:min(100, len(body))])
@@ -56,7 +57,8 @@ func TestRuntimeControlRejectsMalformedBeforeBackend(t *testing.T) {
 func TestRuntimeControlDetachedReceiverRejectsResolveAndMutationsBeforeIO(t *testing.T) {
 	root := t.TempDir()
 	owner := providerregistry.RegistrationOwner{ProviderID: "client-only"}
-	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+	proposal := config.RemoteRuntimeProposal{
+		Version: config.RemoteRuntimeVersion, Revision: 1,
 		Providers:   []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: owner.ProviderID, Type: catalog.TypeOpenAICompat, BaseURL: "https://client.invalid/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model", Name: "Model", ContextWindow: 8192, DefaultMaxTokens: 1024}}}}},
 		Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: owner.ProviderID, Model: "model"}, config.SelectedModelTypeSmall: {Provider: owner.ProviderID, Model: "model"}},
 		Credentials: []config.RemoteCredentialBinding{{Owner: owner, Generation: 1, APIKey: "synthetic-client-secret"}},
@@ -78,7 +80,7 @@ func TestRuntimeControlDetachedReceiverRejectsResolveAndMutationsBeforeIO(t *tes
 		}
 		body, err := json.Marshal(request)
 		require.NoError(t, err)
-		r := httptest.NewRequest(method, "/", strings.NewReader(string(body)))
+		r := httptest.NewRequestWithContext(t.Context(), method, "/", strings.NewReader(string(body)))
 		r.SetPathValue("id", harness.workspace.ID)
 		response := httptest.NewRecorder()
 		(&controllerV1{backend: harness.backend}).handleWorkspaceRuntimeControl(response, r, method != http.MethodPost, method == http.MethodPut)
@@ -92,7 +94,7 @@ func TestRuntimeControlDetachedReceiverRejectsResolveAndMutationsBeforeIO(t *tes
 }
 
 func TestRuntimeControlPrivateRequestPreservesExactNumbers(t *testing.T) {
-	r := httptest.NewRequest(http.MethodPut, "/", strings.NewReader(`{"values":{"vendor.control":9007199254740993}}`))
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/", strings.NewReader(`{"values":{"vendor.control":9007199254740993}}`))
 	var request struct {
 		Values map[string]any `json:"values"`
 	}

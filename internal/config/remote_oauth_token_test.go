@@ -29,15 +29,15 @@ func namespaceFreeOAuthStore(t *testing.T) (*ConfigStore, RemoteRuntimeProposal,
 	declaration.Provider.AccountNamespace = ""
 	data, err = json.Marshal(declaration)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(source, "manifest.json"), data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "manifest.json"), data, 0o600))
 	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginNative), "CRUX_PROVIDER_PLUGINS": declaration.Provider.ID}
 	installTrustedProviderBundle(t, values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"], source)
 	require.NoDirExists(t, values["AI_CLI_DIR"], "namespace-free installation must not access accounts")
 	token := &oauth.Token{AccessToken: "namespace-access-$LITERAL", RefreshToken: "namespace-refresh-secret", ExpiresIn: 3600, ExpiresAt: time.Now().Add(time.Hour).Unix(), Client: &oauth.OAuthClient{ClientID: "namespace-client-id", ClientSecret: "namespace-client-secret", AuthURL: "https://auth.example/authorize", TokenURL: "https://auth.example/token", AuthStyle: 2}}
 	data, err = json.Marshal(map[string]any{"providers": map[string]any{declaration.Provider.ID: map[string]any{"plugin": map[string]string{"id": declaration.ID}, "api_key": token.AccessToken, "oauth": token, "configuration": map[string]string{"oauth_client_id": "captured-client"}}}, "models": map[string]any{"large": map[string]string{"provider": declaration.Provider.ID, "model": "example-reasoner"}, "small": map[string]string{"provider": declaration.Provider.ID, "model": "example-small"}}})
 	require.NoError(t, err)
-	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_CONFIG"], 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json"), data, 0600))
+	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_CONFIG"], 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json"), data, 0o600))
 	store, err := LoadIsolated(root, filepath.Join(root, "workspace"), false, env.NewFromMap(values))
 	require.NoError(t, err)
 	require.NoDirExists(t, values["AI_CLI_DIR"], "namespace-free loading must not access accounts")

@@ -346,7 +346,8 @@ func (d *Tasks) DrawPanel(scr uv.Screen, area uv.Rectangle, accent color.Color) 
 		body.Min.Y = min(body.Max.Y, body.Min.Y+1)
 	}
 	var cursor *tea.Cursor
-	if d.mode == taskDialogList {
+	switch d.mode {
+	case taskDialogList:
 		visible := max(0, body.Dy())
 		d.panelListStart = min(max(0, d.selected-visible/2), max(0, len(d.tasks)-visible))
 		if body.Dy() > 0 && len(d.tasks) == 0 && !d.loading {
@@ -359,7 +360,7 @@ func (d *Tasks) DrawPanel(scr uv.Screen, area uv.Rectangle, accent color.Color) 
 			uv.NewStyledString(line).Draw(scr, image.Rect(body.Min.X, y, body.Max.X, y+1))
 		}
 		d.terminalRect = body
-	} else if d.mode == taskDialogContinue {
+	case taskDialogContinue:
 		d.input.SetWidth(max(1, body.Dx()-2))
 		uv.NewStyledString(base.Render(d.input.View())).Draw(scr, body)
 		cursor = d.input.Cursor()
@@ -367,7 +368,7 @@ func (d *Tasks) DrawPanel(scr uv.Screen, area uv.Rectangle, accent color.Color) 
 			cursor.X += body.Min.X
 			cursor.Y += body.Min.Y
 		}
-	} else {
+	default:
 		d.terminalRect = body
 		d.terminalContentWidth = max(1, body.Dx())
 		d.terminalViewportHeight = max(1, body.Dy())

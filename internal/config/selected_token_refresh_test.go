@@ -107,7 +107,7 @@ func newSelectedTokenFixture(t *testing.T, clientPresent bool) *selectedTokenFix
 	require.Empty(t, f.owner.AccountNamespace)
 	document, err := json.Marshal(map[string]any{"providers": map[string]any{"codex": provider}, "foreign": json.RawMessage(`{"decimal":1.0,"large":9007199254740993}`)})
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(f.store.globalDataPath, document, 0600))
+	require.NoError(t, os.WriteFile(f.store.globalDataPath, document, 0o600))
 	t.Setenv("AI_CLI_DIR", f.ambientDir)
 	t.Setenv("TOKEN_REFRESH_CLIENT_ID", "ambient-client")
 	return f
@@ -183,12 +183,12 @@ func TestSelectedTokenRefreshRejectsChangedAdmissionBeforeHTTPS(t *testing.T) {
 				require.NoError(t, err)
 				data, err = sjson.SetBytes(data, "providers.codex.oauth.client.client_id", "manual-registration")
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(f.store.globalDataPath, data, 0600))
+				require.NoError(t, os.WriteFile(f.store.globalDataPath, data, 0o600))
 			case "duplicate-json":
 				data, err := os.ReadFile(f.store.globalDataPath)
 				require.NoError(t, err)
 				data = []byte(strings.Replace(string(data), `"foreign":`, `"duplicate":1,"duplicate":2,"foreign":`, 1))
-				require.NoError(t, os.WriteFile(f.store.globalDataPath, data, 0600))
+				require.NoError(t, os.WriteFile(f.store.globalDataPath, data, 0o600))
 			case "aliased-root", "aliased-oauth":
 				data, err := os.ReadFile(f.store.globalDataPath)
 				require.NoError(t, err)
@@ -198,7 +198,7 @@ func TestSelectedTokenRefreshRejectsChangedAdmissionBeforeHTTPS(t *testing.T) {
 				}
 				data, err = sjson.SetBytes(data, path, value)
 				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(f.store.globalDataPath, data, 0600))
+				require.NoError(t, os.WriteFile(f.store.globalDataPath, data, 0o600))
 			case "captured-environment":
 				f.store.effectiveEnvironment = env.NewFromMap(map[string]string{"TOKEN_REFRESH_CLIENT_ID": "different"})
 			case "canceled":
@@ -225,7 +225,7 @@ func TestSelectedTokenRefreshRetainsRotationAcrossConfigWriteFailure(t *testing.
 	admitted := f.store.RuntimeSnapshot()
 	before, err := os.ReadFile(f.store.globalDataPath)
 	require.NoError(t, err)
-	f.afterRead = func() { require.NoError(t, os.Mkdir(f.store.globalDataPath+".lock", 0700)) }
+	f.afterRead = func() { require.NoError(t, os.Mkdir(f.store.globalDataPath+".lock", 0o700)) }
 	fresh, err := f.store.RefreshProviderOAuthTokenForRuntime(t.Context(), ScopeGlobal, f.owner, f.original, admitted)
 	require.ErrorContains(t, err, "rotated and retained")
 	require.Equal(t, f.successor.AccessToken, fresh.AccessToken)

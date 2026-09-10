@@ -126,8 +126,10 @@ func TestAuthenticationAcceptancePreservesAccountMetadataSemantics(t *testing.T)
 			require.NoError(t, err)
 			// This trusted host-only fixture isolates account metadata from the
 			// production collector's separate definition/provenance checks.
-			accepted := RemoteRuntimeProposal{Revision: 1, Digest: "synthetic-accepted-runtime", Models: store.Config().Models,
-				Credentials: []RemoteCredentialBinding{{Owner: owner, Generation: 1, Account: &acceptedEntry}}}
+			accepted := RemoteRuntimeProposal{
+				Revision: 1, Digest: "synthetic-accepted-runtime", Models: store.Config().Models,
+				Credentials: []RemoteCredentialBinding{{Owner: owner, Generation: 1, Account: &acceptedEntry}},
+			}
 			err = capture.ValidateAcceptedAuthentication(accepted, store.Config())
 			if test.wantOK {
 				require.NoError(t, err)

@@ -322,7 +322,7 @@ func (s *ConfigStore) runtimeControlSourceLocked(ctx context.Context, state *Run
 	if !state.Effective.Present || state.Source.Kind == "catalog" || state.Source.Kind == "manifest" || s.workingDir == "" {
 		return ctx.Err()
 	}
-	keys := []string{}
+	var keys []string
 	switch state.Source.Kind {
 	case "host-option":
 		keys = strings.Split(state.Source.Key, ".")
@@ -367,10 +367,11 @@ func (s *ConfigStore) runtimeControlSourceLocked(ctx context.Context, state *Run
 			continue
 		}
 		if runtimeControlValuesEqual(value, state.Effective) {
-			if path == s.globalDataPath {
+			switch path {
+			case s.globalDataPath:
 				scope := ScopeGlobal
 				state.Source.Scope = &scope
-			} else if path == s.workspacePath {
+			case s.workspacePath:
 				scope := ScopeWorkspace
 				state.Source.Scope = &scope
 			}

@@ -19,9 +19,11 @@ type resolvedReloadInputs struct {
 func (resolvedReloadInputs) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("resolved reload inputs are private")
 }
+
 func (resolvedReloadInputs) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private resolved reload inputs]"))
 }
+
 func configHasResolvedInputs(cfg *Config) bool {
 	for _, provider := range resolvedInputProviders(cfg) {
 		if provider.resolvedAPIKey != nil || provider.resolvedEndpoint != nil || len(provider.resolvedCredentials) > 0 {

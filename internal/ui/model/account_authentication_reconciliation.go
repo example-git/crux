@@ -69,12 +69,15 @@ func (m *UI) authenticationReconciliationBusy(operation *authenticationOperation
 	s := m.authenticationReconciliations[operation]
 	return s != nil && (s.preparing != nil || s.pending != "")
 }
+
 func (m *UI) authenticationReconciliationOpen(s *authenticationReconciliation) bool {
 	return s != nil && s.dialog != nil && m.dialog.Dialog(dialog.AuthenticationReconciliationID) == s.dialog
 }
+
 func (m *UI) authenticationReconciliationCurrent(s *authenticationReconciliation) bool {
 	return s != nil && s.operation.workspace == m.com.Workspace && (s.historySourceID == "" || s.operation.workspace.AuthenticationWorkspaceID() == s.historySourceID)
 }
+
 func (m *UI) pruneAuthenticationReconciliations() {
 	for _, s := range m.authenticationReconciliations {
 		if !m.authenticationReconciliationCurrent(s) && m.authenticationReconciliationOpen(s) {
@@ -87,6 +90,7 @@ func (m *UI) pruneAuthenticationReconciliations() {
 		}
 	}
 }
+
 func (m *UI) openAuthenticationReconciliation(action dialog.ActionAuthenticationReviewOpen) tea.Cmd {
 	if !m.authenticationDialogOpen(action.Dialog) {
 		return nil
@@ -127,7 +131,7 @@ func (m *UI) openOAuthLoginReconciliation(action dialog.ActionOAuthLoginReview) 
 func (m *UI) openAuthenticationReconciliationOperation(operation *authenticationOperation) tea.Cmd {
 	capability, ok := operation.workspace.(workspace.ProviderAuthenticationReconciler)
 	if !ok || !capability.CanReconcileProviderAuthentication() {
-		return util.ReportError(errors.New("Saved authentication review/apply is available only in the owning client workspace. Server-owned and local workspaces are not supported; no alternative action was run."))
+		return util.CmdHandler(util.InfoMsg{Type: util.InfoTypeError, Msg: "Saved authentication review/apply is available only in the owning client workspace. Server-owned and local workspaces are not supported; no alternative action was run."})
 	}
 	if m.authenticationReconciliations == nil {
 		m.authenticationReconciliations = map[*authenticationOperation]*authenticationReconciliation{}
@@ -149,6 +153,7 @@ func (m *UI) openAuthenticationReconciliationOperation(operation *authentication
 	m.showAuthenticationReconciliation(s)
 	return nil
 }
+
 func (m *UI) showAuthenticationReconciliation(s *authenticationReconciliation) {
 	if s == nil || s.dialog == nil {
 		return
@@ -174,6 +179,7 @@ func (m *UI) showAuthenticationReconciliation(s *authenticationReconciliation) {
 		}
 	}
 }
+
 func authenticationReviewSummaryText(s workspace.ProviderAuthenticationReviewSummary) string {
 	choice := "original intent"
 	if s.Choice.Kind == "saved-account" {
@@ -208,6 +214,7 @@ func authenticationReviewSummaryText(s workspace.ProviderAuthenticationReviewSum
 	}
 	return fmt.Sprintf("Preview %s\nProvider: %s\nExplicit choice: %s\n%s; configured: %t; disabled: %t\nModels: %s\nChanged sections: %s\nReceiver: %s, revision %d\nCtrl+Y applies only this preview. The original operation result remains unchanged.", s.PreviewID, s.Owner.ProviderID, choice, credential, s.Configured, s.Disabled, strings.Join(models, "; "), changed, s.Receiver.Principal, s.Receiver.Revision)
 }
+
 func (m *UI) handleAuthenticationReconciliation(action dialog.ActionAuthenticationReconciliation) tea.Cmd {
 	var s *authenticationReconciliation
 	for _, candidate := range m.authenticationReconciliations {
@@ -283,6 +290,7 @@ func (m *UI) handleAuthenticationReconciliation(action dialog.ActionAuthenticati
 		return authenticationReconciliationPreparedMsg{s, p, hex.EncodeToString(id[:]), err}
 	}
 }
+
 func (m *UI) completeAuthenticationReconciliationPreparation(msg authenticationReconciliationPreparedMsg) tea.Cmd {
 	s, p := msg.state, msg.preparation
 	if s == nil || p == nil || m.authenticationReconciliations[s.operation] != s || s.preparing != p {
@@ -329,6 +337,7 @@ func (m *UI) completeAuthenticationReconciliationPreparation(msg authenticationR
 	s.apply = &request
 	return m.dispatchAuthenticationReviewedApply(s, request, false)
 }
+
 func (m *UI) dispatchAuthenticationReview(s *authenticationReconciliation, request workspace.ProviderAuthenticationReviewRequest, retry bool) tea.Cmd {
 	if !m.authenticationReconciliationCurrent(s) || s.historyRetired {
 		return util.ReportError(providerauth.ErrStale)
@@ -350,6 +359,7 @@ func (m *UI) dispatchAuthenticationReview(s *authenticationReconciliation, reque
 		return authenticationReviewCompletedMsg{s, attempt, request, summary, err}
 	}
 }
+
 func (m *UI) dispatchAuthenticationReviewedApply(s *authenticationReconciliation, request workspace.ProviderAuthenticationApplyRequest, retry bool) tea.Cmd {
 	if !m.authenticationReconciliationCurrent(s) || s.historyRetired {
 		return util.ReportError(providerauth.ErrStale)
@@ -372,6 +382,7 @@ func (m *UI) dispatchAuthenticationReviewedApply(s *authenticationReconciliation
 		return authenticationApplyCompletedMsg{s, attempt, request, outcome, err}
 	}
 }
+
 func (m *UI) completeAuthenticationReview(msg authenticationReviewCompletedMsg) tea.Cmd {
 	s := msg.state
 	if s == nil || m.authenticationReconciliations[s.operation] != s || s.request == nil || *s.request != msg.request || s.pending != "review" || s.attempt != msg.attempt || s.delivered {
@@ -396,6 +407,7 @@ func (m *UI) completeAuthenticationReview(msg authenticationReviewCompletedMsg) 
 	}
 	return nil
 }
+
 func (m *UI) completeAuthenticationReviewedApply(msg authenticationApplyCompletedMsg) tea.Cmd {
 	s := msg.state
 	if s == nil || m.authenticationReconciliations[s.operation] != s || s.apply == nil || *s.apply != msg.request || s.pending != "apply" || s.attempt != msg.attempt || s.delivered {

@@ -73,7 +73,8 @@ func (s *Service) saveAPIKey(ctx context.Context, request APIKeySaveRequest, acc
 		OperationID: request.OperationID, CheckID: request.CheckID, CredentialID: check.outcome.CredentialID, Previous: request.Target, Progress: MutationProgress{
 			AccountRefreshed: transaction.AccountRefreshed, AccountsSaved: transaction.AccountsSaved,
 			ConfigSaved: transaction.ConfigSaved, RuntimePublished: transaction.RuntimePublished,
-		}}}
+		},
+	}}
 	if effectErr == nil {
 		receipt.credentialEffectID = effectID
 	}

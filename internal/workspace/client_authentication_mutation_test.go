@@ -209,6 +209,7 @@ func (f *clientAuthenticationFixture) target(t *testing.T) providerauth.Target {
 	require.NoError(t, err)
 	return providerauth.Target{WorkspaceID: status.WorkspaceID, Generation: status.Generation, Owner: providerauth.PublicOwner(f.owner)}
 }
+
 func (f *clientAuthenticationFixture) observed() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -253,6 +254,7 @@ func clientAuthenticationFiles(t *testing.T, paths ...string) ([]os.FileInfo, []
 	}
 	return infos, bodies
 }
+
 func requireClientAuthenticationFilesUnchanged(t *testing.T, paths []string, infos []os.FileInfo, bodies [][]byte) {
 	t.Helper()
 	afterInfos, afterBodies := clientAuthenticationFiles(t, paths...)
@@ -268,7 +270,7 @@ func TestClientAuthenticationMutationTLSAcknowledgedSwitchLogout(t *testing.T) {
 	require.NoError(t, f.w.InitCoderAgentNonInteractive(t.Context()))
 	receiver, err := f.s.Backend().GetWorkspace(f.w.workspaceID())
 	require.NoError(t, err)
-	coordinator := receiver.App.CurrentAgentCoordinator()
+	coordinator := receiver.CurrentAgentCoordinator()
 	old := coordinator.Model()
 	call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("authentication adapter")}}
 	_, err = old.Model.Generate(t.Context(), call)

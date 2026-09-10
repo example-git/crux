@@ -83,9 +83,11 @@ func (clientAuthenticationJournalRecord) Format(s fmt.State, _ rune) {
 func clientAuthenticationStored(r clientAuthenticationRequest) clientAuthenticationStoredRequest {
 	return clientAuthenticationStoredRequest{r.operationID, r.target, r.accountID, r.removedAccountID, r.checkID, r.loginID, r.logout}
 }
+
 func (r clientAuthenticationStoredRequest) original() clientAuthenticationRequest {
 	return clientAuthenticationRequest{operationID: r.OperationID, target: r.Target, accountID: r.AccountID, removedAccountID: r.RemovedAccountID, checkID: r.CheckID, loginID: r.LoginID, logout: r.Logout}
 }
+
 func (r clientAuthenticationStoredRequest) validate() error {
 	// Removal retains its account in both fields, matching the original
 	// mutation request. Equal IDs describe one removal, not a second switch.
@@ -115,6 +117,7 @@ func (r clientAuthenticationStoredRequest) validate() error {
 		return (providerauth.SwitchRequest{OperationID: r.OperationID, Target: r.Target, AccountID: r.AccountID}).Validate()
 	}
 }
+
 func journalOwners(values map[providerregistry.RegistrationOwner]bool) []providerregistry.RegistrationOwner {
 	var result []providerregistry.RegistrationOwner
 	for owner, removed := range values {
@@ -129,6 +132,7 @@ func journalOwners(values map[providerregistry.RegistrationOwner]bool) []provide
 	})
 	return result
 }
+
 func journalOwnerMap(values []providerregistry.RegistrationOwner) map[providerregistry.RegistrationOwner]bool {
 	result := map[providerregistry.RegistrationOwner]bool{}
 	for _, owner := range values {
@@ -136,6 +140,7 @@ func journalOwnerMap(values []providerregistry.RegistrationOwner) map[providerre
 	}
 	return result
 }
+
 func (a *clientAuthority) authenticationJournalKey(workspace, kind, id string) config.AuthenticationJournalKey {
 	data, _ := json.Marshal([]string{a.authenticationConnection, a.principal, a.authenticationScope, kind, id})
 	digest := sha256.Sum256(data)
@@ -285,6 +290,7 @@ func (a *clientAuthority) loadAuthenticationJournal(ctx context.Context, workspa
 
 	return nil
 }
+
 func validateJournalProposal(p config.RemoteRuntimeProposal) error {
 	digest, err := config.RemoteRuntimeDigest(p)
 	if err != nil || p.Version != config.RemoteRuntimeVersion || p.Revision == 0 || digest != p.Digest {
@@ -293,6 +299,7 @@ func validateJournalProposal(p config.RemoteRuntimeProposal) error {
 	config.RegisterAuthenticationProposalSecrets(p)
 	return nil
 }
+
 func (a *clientAuthority) storeAuthenticationJournal(ctx context.Context, key config.AuthenticationJournalKey, revision uint64, value clientAuthenticationJournalRecord, completed bool, reserved int) (uint64, error) {
 	if a.authenticationJournal == nil {
 		return revision, nil
@@ -311,6 +318,7 @@ func (a *clientAuthority) storeAuthenticationJournal(ctx context.Context, key co
 	}
 	return entry.Revision(), nil
 }
+
 func (a *clientAuthority) persistAuthenticationReceipt(ctx context.Context, r *clientAuthenticationReceipt) error {
 	if a.authenticationJournal == nil || r.journalCompleted {
 		return nil
@@ -339,6 +347,7 @@ func (a *clientAuthority) persistAuthenticationReceipt(ctx context.Context, r *c
 	}
 	return err
 }
+
 func (a *clientAuthority) persistAuthenticationReview(ctx context.Context, r *clientAuthenticationReviewReceipt) error {
 	if a.authenticationJournal == nil || r.journalCompleted {
 		return nil
@@ -361,6 +370,7 @@ func (a *clientAuthority) persistAuthenticationReview(ctx context.Context, r *cl
 	}
 	return err
 }
+
 func (a *clientAuthority) finishAuthenticationJournal(ctx context.Context) error {
 	finish, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
@@ -399,6 +409,7 @@ func (w *ClientWorkspace) restoreAuthenticationReceipt(ctx context.Context, a *c
 	r.after, r.proposal = capture, &proposal
 	return nil
 }
+
 func (w *ClientWorkspace) restoreAuthenticationReview(ctx context.Context, a *clientAuthority, r *clientAuthenticationReviewReceipt) error {
 	if !r.restored || r.capture.SameObservation(r.capture) {
 		return nil
@@ -465,6 +476,7 @@ func (a *clientAuthority) acquireAuthenticationPublication(ctx context.Context, 
 	}
 	return a.authenticationJournal.AcquireOperation(ctx, a.authenticationJournalKey(workspace, "publication-lane", "authority"))
 }
+
 func shareAuthenticationLease(release func()) (func(), func()) {
 	var remaining atomic.Int32
 	remaining.Store(2)

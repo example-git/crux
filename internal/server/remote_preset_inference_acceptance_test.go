@@ -265,7 +265,7 @@ func newRemoteOwnershipAcceptanceServer(t *testing.T, root string) *remoteOwners
 	require.NoError(t, srv.EnableNetworkAuth(t.Context()))
 	tlsConfig, err := connection.ServerTLSConfig(t.Context())
 	require.NoError(t, err)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	h.address = "tcp://" + listener.Addr().String()
 	served := make(chan error, 1)

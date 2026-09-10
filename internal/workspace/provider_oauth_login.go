@@ -9,8 +9,10 @@ import (
 	"github.com/example-git/crux/internal/providerauth"
 )
 
-type oauthSessionCall func(context.Context, *providerauth.Service) (providerauth.OAuthLoginState, error)
-type oauthRemoteCall func(context.Context, string) (proto.ProviderOAuthLoginResponse, error)
+type (
+	oauthSessionCall func(context.Context, *providerauth.Service) (providerauth.OAuthLoginState, error)
+	oauthRemoteCall  func(context.Context, string) (proto.ProviderOAuthLoginResponse, error)
+)
 
 func (w *AppWorkspace) localOAuthSession(ctx context.Context, ref providerauth.OAuthLoginRef, call oauthSessionCall) (providerauth.OAuthLoginState, error) {
 	if err := ref.Validate(); err != nil {
@@ -83,12 +85,14 @@ func (w *AppWorkspace) CompleteProviderOAuthLogin(ctx context.Context, ref provi
 func (w *ClientWorkspace) BeginProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRequest) (providerauth.OAuthLoginState, error) {
 	return w.beginProviderOAuthLogin(ctx, request, "", "")
 }
+
 func (w *ClientWorkspace) RecoverProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRecoveryRequest) (providerauth.OAuthLoginState, error) {
 	if err := request.Validate(); err != nil {
 		return providerauth.OAuthLoginState{}, err
 	}
 	return w.beginProviderOAuthLogin(ctx, request.Login, request.OriginalWorkspaceID, request.OriginalOperationID)
 }
+
 func (w *ClientWorkspace) beginProviderOAuthLogin(ctx context.Context, request providerauth.OAuthLoginRequest, originalWorkspaceID, originalOperationID string) (providerauth.OAuthLoginState, error) {
 	if err := request.Validate(); err != nil {
 		return providerauth.OAuthLoginState{}, err
@@ -306,6 +310,7 @@ func (w *AppWorkspace) RecoverProviderOAuthLogin(ctx context.Context, request pr
 		return service.RecoverOAuthLogin(ctx, request)
 	})
 }
+
 func (w *AppWorkspace) ListProviderOAuthLoginResults(ctx context.Context, target providerauth.Target) (providerauth.OAuthLoginRecoveryList, error) {
 	ctx, done := providerAuthContext(ctx, w.providerAuthCtx)
 	defer done()
@@ -317,6 +322,7 @@ func (w *AppWorkspace) ListProviderOAuthLoginResults(ctx context.Context, target
 	}
 	return w.providerAuth.ListOAuthLoginResults(ctx, target)
 }
+
 func (w *ClientWorkspace) ListProviderOAuthLoginResults(ctx context.Context, target providerauth.Target) (providerauth.OAuthLoginRecoveryList, error) {
 	if err := target.Validate(); err != nil {
 		return providerauth.OAuthLoginRecoveryList{}, err
@@ -391,6 +397,7 @@ func (w *AppWorkspace) AbandonProviderOAuthLoginResult(ctx context.Context, requ
 	}
 	return w.providerAuth.AbandonOAuthLoginResult(ctx, request)
 }
+
 func (w *ClientWorkspace) AbandonProviderOAuthLoginResult(ctx context.Context, request providerauth.OAuthLoginAbandonRequest) (providerauth.OAuthLoginAbandonOutcome, error) {
 	initial := providerauth.OAuthLoginAbandonOutcome{Request: request}
 	if err := request.Validate(); err != nil {

@@ -62,6 +62,7 @@ func newSessionSource(project, initial string) (*sessionSource, error) {
 
 	return s, nil
 }
+
 func (s *sessionSource) preview(id string) (*model.Preview, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -71,6 +72,7 @@ func (s *sessionSource) preview(id string) (*model.Preview, error) {
 	}
 	return p, nil
 }
+
 func (s *sessionSource) register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

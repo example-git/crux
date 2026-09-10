@@ -58,6 +58,7 @@ type authenticationReloadResolver struct {
 func (r authenticationReloadResolver) ResolveValue(source string) (string, error) {
 	return r.ResolveValueContext(r.ctx, source)
 }
+
 func (r authenticationReloadResolver) ResolveValueContext(ctx context.Context, source string) (string, error) {
 	if err := r.ctx.Err(); err != nil {
 		return "", err

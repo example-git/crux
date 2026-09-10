@@ -47,9 +47,9 @@ func TestFetchBrowserConsentAndCopiedCookies(t *testing.T) {
 	databasePath := filepath.Join(profileDir, "cookies.sqlite")
 	database, err := sql.Open("sqlite", databasePath)
 	require.NoError(t, err)
-	_, err = database.Exec(`CREATE TABLE moz_cookies (host TEXT, path TEXT, isSecure INTEGER, expiry INTEGER, name TEXT, value TEXT, isHttpOnly INTEGER)`)
+	_, err = database.ExecContext(t.Context(), `CREATE TABLE moz_cookies (host TEXT, path TEXT, isSecure INTEGER, expiry INTEGER, name TEXT, value TEXT, isHttpOnly INTEGER)`)
 	require.NoError(t, err)
-	_, err = database.Exec(`INSERT INTO moz_cookies VALUES ('127.0.0.1', '/', 1, 0, 'session', ?, 1)`, initial)
+	_, err = database.ExecContext(t.Context(), `INSERT INTO moz_cookies VALUES ('127.0.0.1', '/', 1, 0, 'session', ?, 1)`, initial)
 	require.NoError(t, err)
 	require.NoError(t, database.Close())
 	before, err := os.ReadFile(databasePath)
@@ -264,6 +264,9 @@ func TestFetchBrowserRedirectCookieIsolationAndImportFailure(t *testing.T) {
 	require.Equal(t, []string{"first.test", "second.test"}, loaded)
 	req, err = http.NewRequestWithContext(t.Context(), http.MethodGet, "https://unavailable.test", nil)
 	require.NoError(t, err)
-	_, err = client.Do(req)
+	response, err = client.Do(req)
+	if response != nil {
+		require.NoError(t, response.Body.Close())
+	}
 	require.ErrorContains(t, err, "cookie copy failed")
 }

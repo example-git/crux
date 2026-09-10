@@ -59,6 +59,7 @@ type clientAuthenticationReceipt struct {
 func (clientAuthenticationReceipt) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("client authentication receipts are private")
 }
+
 func (clientAuthenticationReceipt) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private client authentication receipt]"))
 }

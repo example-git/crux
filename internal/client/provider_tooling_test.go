@@ -88,6 +88,7 @@ func TestProviderToolingSDKRejectsMalformedOrChangedAcknowledgement(t *testing.T
 		"oversize":        strings.Replace(valid, `"fixture"`, `"`+strings.Repeat("x", 16<<10)+`"`, 1),
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
 			defer srv.Close()
 			_, err := captureClient(t, srv).SetProviderToolingInstructions(t.Context(), "fixture", config.ScopeGlobal, owner, config.ToolingInstructionsCrux)

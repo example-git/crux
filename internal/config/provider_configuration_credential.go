@@ -26,6 +26,7 @@ type resolvedProviderConfigurationCredential struct {
 func (resolvedProviderConfigurationCredential) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("resolved configuration credentials are private")
 }
+
 func (resolvedProviderConfigurationCredential) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private resolved configuration credential]"))
 }

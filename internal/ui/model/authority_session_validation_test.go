@@ -28,45 +28,55 @@ type authoritySessionWorkspace struct {
 
 func (w *authoritySessionWorkspace) AuthenticationWorkspaceID() string          { return w.id }
 func (w *authoritySessionWorkspace) AcceptedAuthority() *config.RemoteAuthority { return w.authority }
+
 func (w *authoritySessionWorkspace) Config() *config.Config {
 	return &config.Config{Options: &config.Options{TUI: &config.TUIOptions{}}, Models: map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "exact-provider"}}}
 }
+
 func (w *authoritySessionWorkspace) GetSession(_ context.Context, id string) (session.Session, error) {
 	require.True(w.t, w.io, "session IO outside Cmd")
 	w.reads = append(w.reads, "session:"+id)
 	return session.Session{ID: id, Title: w.id}, nil
 }
+
 func (w *authoritySessionWorkspace) ListSessionHistory(context.Context, string) ([]history.File, error) {
 	require.True(w.t, w.io, "file IO outside Cmd")
 	return nil, nil
 }
+
 func (w *authoritySessionWorkspace) FileTrackerListReadFiles(context.Context, string) ([]string, error) {
 	require.True(w.t, w.io, "read-file IO outside Cmd")
 	return nil, nil
 }
+
 func (w *authoritySessionWorkspace) ListMessages(_ context.Context, id string) ([]message.Message, error) {
 	require.True(w.t, w.io, "message IO outside Cmd")
 	w.reads = append(w.reads, "messages:"+id)
 	return w.messages[id], nil
 }
+
 func (w *authoritySessionWorkspace) ListUserMessages(_ context.Context, id string) ([]message.Message, error) {
 	require.True(w.t, w.io, "prompt-history IO outside Cmd")
 	w.reads = append(w.reads, "prompts:"+id)
 	return w.messages[id], nil
 }
+
 func (w *authoritySessionWorkspace) ListAllUserMessages(context.Context) ([]message.Message, error) {
 	require.True(w.t, w.io, "prompt-history IO outside Cmd")
 	w.reads = append(w.reads, "prompts:all")
 	return nil, nil
 }
+
 func (w *authoritySessionWorkspace) SetCurrentSession(_ context.Context, id string) error {
 	require.True(w.t, w.io, "presence IO outside Cmd")
 	w.presence = append(w.presence, id)
 	return nil
 }
+
 func (w *authoritySessionWorkspace) CreateAgentToolSessionID(messageID, callID string) string {
 	return messageID + "$$" + callID
 }
+
 func newAuthoritySessionUI(t *testing.T, id string) (*UI, *authoritySessionWorkspace) {
 	t.Helper()
 	base := &countingWorkspace{}
@@ -77,6 +87,7 @@ func newAuthoritySessionUI(t *testing.T, id string) (*UI, *authoritySessionWorks
 	warmCaches(ui, false)
 	return ui, ws
 }
+
 func authoritySessionLoad(t *testing.T, ws *authoritySessionWorkspace, command tea.Cmd) loadSessionMsg {
 	t.Helper()
 	ws.io = true
@@ -85,6 +96,7 @@ func authoritySessionLoad(t *testing.T, ws *authoritySessionWorkspace, command t
 	require.True(t, ok)
 	return value
 }
+
 func TestAuthoritySessionValidationConnectionSource(t *testing.T) {
 	ui, current := newAuthoritySessionUI(t, "new-id")
 	_, previous := newAuthoritySessionUI(t, "new-id")
@@ -110,6 +122,7 @@ func TestAuthoritySessionValidationConnectionSource(t *testing.T) {
 	require.Len(t, commands, 2)
 	require.Contains(t, ui.status.msg.Msg, "Reattached to the existing workspace")
 }
+
 func TestAuthoritySessionValidationCapturedLoadAndStaleReply(t *testing.T) {
 	ui, original := newAuthoritySessionUI(t, "original-id")
 	oldSession := ui.session
@@ -140,6 +153,7 @@ func TestAuthoritySessionValidationCapturedLoadAndStaleReply(t *testing.T) {
 	original.io = false
 	require.Equal(t, []string{"new-session"}, original.presence)
 }
+
 func TestAuthoritySessionValidationNestedReadsStayInCommand(t *testing.T) {
 	ui, ws := newAuthoritySessionUI(t, "captured-id")
 	parent := message.Message{ID: "parent", Role: message.Assistant}
@@ -154,6 +168,7 @@ func TestAuthoritySessionValidationNestedReadsStayInCommand(t *testing.T) {
 	require.Same(t, before, ui.session, "Cmd must not mutate UI model")
 	require.Empty(t, ws.presence)
 }
+
 func TestAuthoritySessionValidationAcceptedLabels(t *testing.T) {
 	ui, ws := newAuthoritySessionUI(t, "display-id")
 	ws.authority = &config.RemoteAuthority{Mode: "client", Principal: "synthetic-principal", Revision: 7, Digest: "not-a-credential", Accounts: []config.RemoteAccountIdentity{{ProviderID: "other", AccountID: "wrong-account"}, {ProviderID: "exact-provider", AccountID: "chosen\x1b[31m-account\n", Generation: 3}}}
@@ -204,6 +219,7 @@ func TestAuthoritySessionValidationPromptHistoryScope(t *testing.T) {
 	_, _ = ui.Update(current)
 	require.Equal(t, []string{"original prompt"}, ui.promptHistory.messages)
 }
+
 func TestAuthoritySessionValidationInitialAndFileReplies(t *testing.T) {
 	ui, current := newAuthoritySessionUI(t, "current-id")
 	_, old := newAuthoritySessionUI(t, "current-id")
