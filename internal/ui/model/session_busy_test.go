@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/bubbles/v2/textarea"
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/foundation/bubbles/textarea"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/stretchr/testify/require"
 
 	"github.com/example-git/crux/internal/agent"
@@ -415,11 +415,12 @@ func TestArrowDownDoesNotOpenTasksWhileDialogIsOpen(t *testing.T) {
 }
 
 func TestTaskAvailabilityDoesNotOverrideNewDialog(t *testing.T) {
-	workspace := &countingWorkspace{ready: true}
+	workspace := &countingWorkspace{ready: true, tasks: []managedtask.View{{ID: "shell-one"}}}
 	model := newBusyUI(workspace)
+	lookup := model.openTasksIfPresent()
 	model.openNotificationsDialog()
 
-	model.Update(tasksAvailabilityMsg{available: true})
+	model.Update(lookup())
 
 	require.True(t, model.dialog.ContainsDialog(dialog.NotificationsID))
 	require.False(t, model.dialog.ContainsDialog(dialog.TasksID))

@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	fantasy "github.com/example-git/crux/foundation"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/connection"

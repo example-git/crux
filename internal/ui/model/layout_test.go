@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/bubbles/v2/textarea"
-	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/foundation/bubbles/textarea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/ui/chat"

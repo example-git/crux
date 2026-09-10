@@ -151,12 +151,14 @@ func (s *ConfigStore) authenticationInputPathsLocked(ctx context.Context, snapsh
 		if cached, ok := worktreeRootCache.Load(s.workingDir); ok && cached.(string) != "" {
 			boundary = cached.(string)
 		}
-		found, err := fsext.LookupBounded(s.workingDir, boundary, "."+appName+"rc", appName+"rc", "."+appName+".json", appName+".json")
-		if err != nil {
-			return nil, nil, err
+		if !s.globalOnly {
+			found, err := fsext.LookupBounded(s.workingDir, boundary, "."+appName+"rc", appName+"rc", "."+appName+".json", appName+".json")
+			if err != nil {
+				return nil, nil, err
+			}
+			slices.Reverse(found)
+			order = append(order, found...)
 		}
-		slices.Reverse(found)
-		order = append(order, found...)
 	}
 	if workspacePath != "" {
 		order = append(order, workspacePath)

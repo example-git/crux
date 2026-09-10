@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/bubbles/v2/textinput"
-	tea "charm.land/bubbletea/v2"
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/example-git/crux/foundation/bubbles/textinput"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/styles"

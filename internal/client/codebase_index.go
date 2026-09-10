@@ -26,7 +26,15 @@ func (c *Client) CodebaseIndexStatus(ctx context.Context, workspaceID string) (p
 }
 
 func (c *Client) UpdateCodebaseIndex(ctx context.Context, workspaceID string, update proto.CodebaseIndexUpdate) (proto.CodebaseIndexStatus, error) {
-	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/codebase-index", workspaceID), nil, jsonBody(update), http.Header{"Content-Type": []string{"application/json"}})
+	headers := http.Header{"Content-Type": []string{"application/json"}}
+	accepted, err := c.workspaceAttachment(workspaceID, nil)
+	if err != nil {
+		return proto.CodebaseIndexStatus{}, err
+	}
+	if accepted != nil {
+		accepted.SetHeaders(headers)
+	}
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/codebase-index", workspaceID), nil, jsonBody(update), headers)
 	if err != nil {
 		return proto.CodebaseIndexStatus{}, fmt.Errorf("failed to update codebase index: %w", err)
 	}

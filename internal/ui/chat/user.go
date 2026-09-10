@@ -4,8 +4,8 @@ import (
 	"encoding/xml"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/ui/attachments"
 	"github.com/example-git/crux/internal/ui/common"

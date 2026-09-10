@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/agent/tools"
 	"github.com/example-git/crux/internal/message"

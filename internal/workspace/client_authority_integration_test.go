@@ -1,10 +1,10 @@
 package workspace_test
 
 import (
-	tea "charm.land/bubbletea/v2"
 	"context"
 	"encoding/json"
 	"fmt"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"net/http"
 	"net/http/httptest"
 	"net/url"

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/ui/diffview"
 	"github.com/stretchr/testify/require"
 )

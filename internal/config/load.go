@@ -72,21 +72,33 @@ func (c *Config) restoreDeliveryPreference(path string, bases ...*authentication
 // depend on rewriting them to an unrelated available provider; retain them and
 // let construction report the unavailable selected integration clearly.
 func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
-	return loadWithEnvironment(workingDir, dataDir, debug, snapshotEnvironment(), true)
+	return loadWithEnvironment(workingDir, dataDir, debug, snapshotEnvironment(), true, configLoadOptions{})
 }
 
 func LoadIsolated(workingDir, dataDir string, debug bool, baseEnvironment env.Env) (*ConfigStore, error) {
 	if baseEnvironment == nil {
 		return nil, errors.New("isolated config load requires a base environment")
 	}
-	return loadWithEnvironment(workingDir, dataDir, debug, cloneEnvironment(baseEnvironment), false)
+	return loadWithEnvironment(workingDir, dataDir, debug, cloneEnvironment(baseEnvironment), false, configLoadOptions{})
 }
 
 func SnapshotEnvironment() env.Env {
 	return snapshotEnvironment()
 }
 
-func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment env.Env, publishProcessState bool, previewReadOnly ...bool) (*ConfigStore, error) {
+// LoadRemoteClient loads the owning client's global configuration. The launch
+// project and the remote workspace path are not client model configuration.
+func LoadRemoteClient(debug bool) (*ConfigStore, error) {
+	base := snapshotEnvironment()
+	return loadWithEnvironment(globalWorkspaceDirFromEnvironment(base), "", debug, base, true, configLoadOptions{globalOnly: true})
+}
+
+type configLoadOptions struct {
+	previewReadOnly bool
+	globalOnly      bool
+}
+
+func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment env.Env, publishProcessState bool, options configLoadOptions) (*ConfigStore, error) {
 	globalConfigPath := globalConfigFromEnvironment(baseEnvironment)
 	globalDataPath := globalConfigDataFromEnvironment(appName, baseEnvironment)
 	notificationMigration := prepareDisableNotificationsMigration(globalConfigPath, globalDataPath)
@@ -97,7 +109,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 	if err := notificationMigration.validatePreimages(preimages); err != nil {
 		return nil, err
 	}
-	configPaths := lookupConfigsFromEnvironment(workingDir, baseEnvironment)
+	configPaths := lookupConfigsFromEnvironment(workingDir, baseEnvironment, options.globalOnly)
 
 	basis := newAuthenticationLoadBasis()
 	cfg, loadedPaths, err := loadFromConfigPathsObserved(context.Background(), configPaths, notificationMigration.overrides, baseEnvironment, basis)
@@ -113,6 +125,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		config:              cfg,
 		publicationSequence: 1,
 		workingDir:          workingDir,
+		globalOnly:          options.globalOnly,
 		baseEnvironment:     baseEnvironment,
 		publishProcessState: publishProcessState,
 		globalDataPath:      globalDataPath,
@@ -226,7 +239,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		}
 	}
 	cfg.SetupAgents()
-	if len(previewReadOnly) > 0 && previewReadOnly[0] {
+	if options.previewReadOnly {
 		store.effectiveEnvironment = cloneEnvironment(candidateEnv)
 		registerConfigSecrets(cfg)
 		return store, nil
@@ -234,7 +247,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 	correctedBasis := basis.startupCorrections(notificationMigration, pendingModelFields, store.globalDataPath)
 	migrationSource := correctedBasis.sources[filepath.Clean(store.globalDataPath)]
 	expectedMigrationFields, _ := selectProviderReferenceMigrationFields(migrationSource.raw, pendingOwners, pendingPlugins, pendingPresets)
-	basis, authoredPaths, err := prepareAuthenticationLoadTopology(context.Background(), basis, notificationMigration, pendingModelFields, expectedMigrationFields, store.globalDataPath, workingDir, store.workspacePath, baseEnvironment)
+	basis, authoredPaths, err := prepareAuthenticationLoadTopology(context.Background(), basis, notificationMigration, pendingModelFields, expectedMigrationFields, store.globalDataPath, workingDir, store.workspacePath, baseEnvironment, store.globalOnly)
 	if err != nil {
 		return nil, fmt.Errorf("prepare startup authentication input topology: %w", err)
 	}
@@ -279,7 +292,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		return nil, errors.Join(fmt.Errorf("inspect provider ownership migration: %w", err), migrationRollbackErr, rollbackErr)
 	}
 	publish := func(published ProviderScan) error {
-		if err := verifyAuthenticationWriteTopology(context.Background(), basis, authoredPaths, workingDir, store.workspacePath, baseEnvironment); err != nil {
+		if err := verifyAuthenticationWriteTopology(context.Background(), basis, authoredPaths, workingDir, store.workspacePath, baseEnvironment, store.globalOnly); err != nil {
 			return err
 		}
 		if publishProcessState {
@@ -1425,7 +1438,7 @@ func lookupConfigs(cwd string) []string {
 	return lookupConfigsFromEnvironment(cwd, env.New())
 }
 
-func lookupConfigsFromEnvironment(cwd string, environment env.Env) []string {
+func lookupConfigsFromEnvironment(cwd string, environment env.Env, globalOnly ...bool) []string {
 	globalConfigPath := globalConfigFromEnvironment(environment)
 	// Prepend global user config and machine-owned data JSON. Only the user
 	// config directory contributes a cruxrc; the data directory is writable
@@ -1436,6 +1449,9 @@ func lookupConfigsFromEnvironment(cwd string, environment env.Env) []string {
 		globalConfigPath,
 		shellConfigSibling(globalConfigPath),
 		globalConfigDataFromEnvironment(appName, environment),
+	}
+	if len(globalOnly) > 0 && globalOnly[0] {
+		return configPaths
 	}
 
 	// Ordered high-to-low priority within a directory. LookupBounded returns

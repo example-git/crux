@@ -4,8 +4,8 @@ import (
 	"image/color"
 	"strings"
 
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/styles"
 )

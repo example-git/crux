@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/stretchr/testify/require"
 )
 

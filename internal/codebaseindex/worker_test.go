@@ -24,7 +24,7 @@ func TestStartProjectIndexingIsNonblockingAndDeduplicated(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	calls := 0
-	runProjectIndexing = func(_ context.Context, _ string, _ string, _ string, _ ProjectFilters, report func(IndexProgress)) error {
+	runProjectIndexing = func(_ context.Context, _ string, _ string, _ string, _ ProjectFilters, _ TokenSource, report func(IndexProgress)) error {
 		calls++
 		report(IndexProgress{
 			Stage:          "Indexing files",
@@ -89,7 +89,7 @@ func TestOpenReadyProjectServesActiveGenerationDuringRefresh(t *testing.T) {
 
 	started := make(chan struct{})
 	release := make(chan struct{})
-	runProjectIndexing = func(context.Context, string, string, string, ProjectFilters, func(IndexProgress)) error {
+	runProjectIndexing = func(context.Context, string, string, string, ProjectFilters, TokenSource, func(IndexProgress)) error {
 		close(started)
 		<-release
 		return nil
@@ -145,7 +145,7 @@ func TestReconcileRestoresDurableProgressAfterProcessRestart(t *testing.T) {
 	}))
 
 	release := make(chan struct{})
-	runProjectIndexing = func(context.Context, string, string, string, ProjectFilters, func(IndexProgress)) error {
+	runProjectIndexing = func(context.Context, string, string, string, ProjectFilters, TokenSource, func(IndexProgress)) error {
 		<-release
 		return errors.New("stop test worker")
 	}
@@ -180,7 +180,7 @@ func TestCompleteStatusCountsSkippedFilesAsProcessed(t *testing.T) {
 
 func TestStartProjectIndexingTransitionsToFailed(t *testing.T) {
 	resetBackgroundIndexes(t)
-	runProjectIndexing = func(context.Context, string, string, string, ProjectFilters, func(IndexProgress)) error {
+	runProjectIndexing = func(context.Context, string, string, string, ProjectFilters, TokenSource, func(IndexProgress)) error {
 		return errors.New("migration failed")
 	}
 	storeDirectory := t.TempDir()
@@ -250,7 +250,7 @@ func TestReconcileProjectIndexingDisablesAndCancelsWorker(t *testing.T) {
 	resetBackgroundIndexes(t)
 	started := make(chan struct{})
 	canceled := make(chan struct{})
-	runProjectIndexing = func(ctx context.Context, _ string, _ string, _ string, _ ProjectFilters, _ func(IndexProgress)) error {
+	runProjectIndexing = func(ctx context.Context, _ string, _ string, _ string, _ ProjectFilters, _ TokenSource, _ func(IndexProgress)) error {
 		close(started)
 		<-ctx.Done()
 		close(canceled)
@@ -329,4 +329,36 @@ func resetBackgroundIndexes(t *testing.T) {
 		backgroundIndexes.nextID = originalNextID
 		backgroundIndexes.Unlock()
 	})
+}
+
+func TestRemoteIndexWorkerUsesOwnerAndStopsWithLifetime(t *testing.T) {
+	resetBackgroundIndexes(t)
+	lifetime, cancelLifetime := context.WithCancel(t.Context())
+	defer cancelLifetime()
+	started, stopped := make(chan string, 1), make(chan struct{})
+	runProjectIndexing = func(ctx context.Context, _, _, _ string, _ ProjectFilters, tokenSource TokenSource, _ func(IndexProgress)) error {
+		token, err := tokenSource(ctx)
+		if err != nil {
+			return err
+		}
+		started <- token
+		<-ctx.Done()
+		close(stopped)
+		return ctx.Err()
+	}
+	options := ProjectIndexOptions{ProjectRoot: t.TempDir(), StoreDirectory: t.TempDir(), Enabled: true, RuntimeIdentity: "client-runtime-a", TokenSource: func(context.Context) (string, error) { return "client-token", nil }, BindContext: func(context.Context) (context.Context, context.CancelFunc) { return context.WithCancel(lifetime) }}
+	require.Equal(t, StoreStateIndexing, ReconcileProjectIndexing(t.Context(), options).State)
+	select {
+	case token := <-started:
+		require.Equal(t, "client-token", token)
+	case <-time.After(time.Second):
+		t.Fatal("remote worker did not start")
+	}
+	cancelLifetime()
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("remote worker survived its lifetime")
+	}
+	require.Eventually(t, func() bool { return InspectProjectIndexStatus(options).State == StoreStateFailed }, time.Second, 10*time.Millisecond)
 }

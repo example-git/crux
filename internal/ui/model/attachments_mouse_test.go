@@ -3,8 +3,8 @@ package model
 import (
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/question"
 	"github.com/example-git/crux/internal/ui/attachments"

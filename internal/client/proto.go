@@ -112,8 +112,10 @@ func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*prot
 	if err := bindWorkspaceProviderOwners(&created); err != nil {
 		return nil, fmt.Errorf("failed to bind workspace provider owners: %w", err)
 	}
-	if capabilities != nil && (created.Authority == nil || created.Authority.Mode != "client" || created.Authority.Principal != capabilities.Principal || created.Authority.Revision != ws.Runtime.Revision || created.Authority.Digest != ws.Runtime.Digest) {
-		return nil, errors.New("remote workspace acknowledgement does not match submitted client authority")
+	if capabilities != nil {
+		if mismatch := remoteAuthorityMismatch(created.Authority, capabilities.Principal, ws.Runtime); mismatch != "" {
+			return nil, fmt.Errorf("remote workspace acknowledgement does not match submitted client authority: %s", mismatch)
+		}
 	}
 	if mode == "client" {
 		created.Creation = &proto.Workspace{Path: created.Path, DataDir: created.RequestedDataDir, Debug: created.Debug, YOLO: created.YOLO, Channels: append([]string(nil), created.Channels...), Version: ws.Version}

@@ -21,15 +21,15 @@ import (
 	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	fang "charm.land/fang/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/colorprofile"
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/exp/charmtone"
 	xstrings "github.com/charmbracelet/x/exp/strings"
 	"github.com/charmbracelet/x/term"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/app"
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
@@ -226,7 +226,7 @@ func printSessionResume(model *ui.UI) {
 			title = ansi.Truncate(title, titleWidth, "…")
 		}
 
-		hash := session.HashID(sess.ID)[:7]
+		hash := session.ShortID(sess.ID)
 		sessionLine, continueLine := sessionResumeLines(t, title, hash)
 		info += "\n\n" + sessionLine + "\n" + continueLine
 	}
@@ -622,7 +622,7 @@ func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection,
 		}
 	}
 	if request.AuthorityMode == "client" {
-		request.Runtime, err = collectRemoteProviderStateForClient(cmd.Context(), workspaceClient, localCwd, "", debug, revision)
+		request.Runtime, err = collectRemoteProviderStateForClient(cmd.Context(), workspaceClient, debug, revision, request.Path)
 		if err != nil {
 			return err
 		}
@@ -647,18 +647,24 @@ func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection,
 	return runWorkspaceTUI(cmd.Context(), clientWorkspace, "", false, false)
 }
 
-func collectRemoteProviderState(ctx context.Context, cwd, dataDir string, debug bool, revision uint64) (*config.RemoteRuntimeProposal, error) {
-	return collectRemoteProviderStateForClient(ctx, nil, cwd, dataDir, debug, revision)
+func collectRemoteProviderState(ctx context.Context, debug bool, revision uint64) (*config.RemoteRuntimeProposal, error) {
+	return collectRemoteProviderStateForClient(ctx, nil, debug, revision)
 }
 
-func collectRemoteProviderStateForClient(ctx context.Context, c *client.Client, cwd, dataDir string, debug bool, revision uint64) (*config.RemoteRuntimeProposal, error) {
-	return collectRemoteProviderStatePrepared(ctx, c, cwd, dataDir, debug, revision, nil)
+func collectRemoteProviderStateForClient(ctx context.Context, c *client.Client, debug bool, revision uint64, remotePaths ...string) (*config.RemoteRuntimeProposal, error) {
+	return collectRemoteProviderStatePrepared(ctx, c, debug, revision, nil, remotePaths...)
 }
 
-func collectRemoteProviderStatePrepared(ctx context.Context, c *client.Client, cwd, dataDir string, debug bool, revision uint64, prepare func(*config.ConfigStore) error) (*config.RemoteRuntimeProposal, error) {
-	store, err := config.Load(cwd, dataDir, debug)
+func collectRemoteProviderStatePrepared(ctx context.Context, c *client.Client, debug bool, revision uint64, prepare func(*config.ConfigStore) error, remotePaths ...string) (*config.RemoteRuntimeProposal, error) {
+	// A remote workspace is not the local launch project. Keep the owning
+	// client's configuration anchored at its global workspace, including on
+	// later reloads; --cwd and --data-dir belong to the remote workspace.
+	store, err := config.LoadRemoteClient(debug)
 	if err != nil {
 		return nil, fmt.Errorf("load selected client runtime: %w", err)
+	}
+	if c != nil && len(remotePaths) > 0 {
+		store.BindRemoteCodebaseIndexScope(c.AuthenticationJournalIdentity(), remotePaths[0])
 	}
 	if prepare != nil {
 		if err := prepare(store); err != nil {
@@ -739,7 +745,7 @@ func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func
 			return nil, nil, nil, err
 		}
 		wsReq.AuthorityMode = "client"
-		wsReq.Runtime, err = collectRemoteProviderStatePrepared(cmd.Context(), c, localCwd, "", debug, 1, prepareRunModelOverrides(cmd))
+		wsReq.Runtime, err = collectRemoteProviderStatePrepared(cmd.Context(), c, debug, 1, prepareRunModelOverrides(cmd), wsReq.Path)
 		if err != nil {
 			return nil, nil, nil, err
 		}

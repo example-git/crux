@@ -4,7 +4,7 @@ import (
 	"image"
 
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/ultraviolet/layout"
+	"github.com/example-git/crux/foundation/ultraviolet/layout"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/workspace"
 )

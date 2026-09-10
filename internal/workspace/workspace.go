@@ -10,7 +10,7 @@ import (
 	"errors"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/agent"
 	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"

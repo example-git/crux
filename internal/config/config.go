@@ -792,6 +792,8 @@ type Config struct {
 
 	Tools Tools `json:"tools,omitzero" jsonschema:"description=Tool configurations"`
 
+	RemoteCodebaseIndexes map[string]ToolCodebaseSearch `json:"remote_codebase_indexes,omitempty" jsonschema:"description=Client-owned codebase index settings by remote workspace identity"`
+
 	Hooks map[string][]HookConfig `json:"hooks,omitempty" jsonschema:"description=User-defined shell commands that fire on hook events (e.g. PreToolUse)"`
 
 	// Env is a map of environment variables set on startup.
@@ -823,6 +825,10 @@ type Config struct {
 // and are shared.
 func (c *Config) cloneForWrite() *Config {
 	nc := *c
+	nc.RemoteCodebaseIndexes = maps.Clone(c.RemoteCodebaseIndexes)
+	for key, settings := range nc.RemoteCodebaseIndexes {
+		nc.RemoteCodebaseIndexes[key] = cloneCodebaseSettings(settings)
+	}
 	// Preserve absence: durable runtime fingerprints distinguish nil from an
 	// explicitly retained candidate map across a credential-only write.
 	nc.authenticationCandidates = maps.Clone(c.authenticationCandidates)
@@ -963,6 +969,7 @@ func (c *Config) RedactedForTransport() *Config {
 		return nil
 	}
 	result := *c
+	result.RemoteCodebaseIndexes = nil
 	result.authenticationAccounts = nil
 	result.authenticationCandidates = nil
 	result.Images = cloneImageConfiguration(c.Images)

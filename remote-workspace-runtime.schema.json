@@ -490,6 +490,24 @@
         "provider_id"
       ]
     },
+    "RemoteCodebaseIndex": {
+      "properties": {
+        "settings": {
+          "$ref": "#/$defs/ToolCodebaseSearch"
+        },
+        "access_token": {
+          "type": "string"
+        },
+        "credential_invalid": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "settings"
+      ]
+    },
     "RemoteCredentialBinding": {
       "properties": {
         "owner": {
@@ -636,6 +654,9 @@
     },
     "RemoteRuntimeProposal": {
       "properties": {
+        "codebase_index": {
+          "$ref": "#/$defs/RemoteCodebaseIndex"
+        },
         "version": {
           "type": "integer"
         },
@@ -817,6 +838,43 @@
         "expires_in",
         "expires_at"
       ]
+    },
+    "ToolCodebaseSearch": {
+      "properties": {
+        "database_path": {
+          "type": "string",
+          "description": "Path to a tui-files codebase index database or directory containing project databases"
+        },
+        "store_directory": {
+          "type": "string",
+          "description": "Directory containing standalone partitioned codebase search stores"
+        },
+        "ann_directory": {
+          "type": "string",
+          "description": "Deprecated alias for store_directory"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether background semantic indexing and codebase search are enabled",
+          "default": false
+        },
+        "include_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Project-relative path prefixes to include in the semantic index"
+        },
+        "exclude_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "Project-relative path prefixes to exclude from the semantic index"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
     },
     "TransportBundle": {
       "properties": {

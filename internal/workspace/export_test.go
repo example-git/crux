@@ -3,7 +3,7 @@ package workspace
 import (
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 )
 
 // ConsumeEventsForTest runs the event-handling loop on the given

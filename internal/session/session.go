@@ -45,6 +45,15 @@ func HashID(id string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+// ShortID is the session identifier displayed in resume commands and the UI.
+// An unassigned session must never acquire a display ID by hashing a blank.
+func ShortID(id string) string {
+	if strings.TrimSpace(id) == "" {
+		return ""
+	}
+	return HashID(id)[:7]
+}
+
 type Todo struct {
 	Content    string     `json:"content"`
 	Status     TodoStatus `json:"status"`

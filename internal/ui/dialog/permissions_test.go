@@ -3,7 +3,7 @@ package dialog
 import (
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/styles"

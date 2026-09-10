@@ -11,9 +11,9 @@ import (
 	"strings"
 	"sync"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/imageutil"
 	"github.com/example-git/crux/internal/ui/util"
 	paintbrush "github.com/jordanella/go-ansi-paintbrush"

@@ -11,5 +11,5 @@ func (c *Config) BindPreviewProviders(providers []catalog.Provider) {
 // LoadPreview resolves the normal launch configuration/catalog, stopping before
 // configuration persistence, ownership migrations, and process-state publication.
 func LoadPreview(workingDir, dataDir string) (*ConfigStore, error) {
-	return loadWithEnvironment(workingDir, dataDir, false, snapshotEnvironment(), false, true)
+	return loadWithEnvironment(workingDir, dataDir, false, snapshotEnvironment(), false, configLoadOptions{previewReadOnly: true})
 }

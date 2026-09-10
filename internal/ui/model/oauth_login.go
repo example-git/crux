@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/callbackrelay"
 	"github.com/example-git/crux/internal/proto"

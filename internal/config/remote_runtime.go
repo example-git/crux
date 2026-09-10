@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
-	"path/filepath"
 	"reflect"
 	"slices"
 
@@ -36,6 +35,9 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 		return
 	}
 	registerConfigSecrets(snapshot.Config())
+	if index := snapshot.clientRuntime.proposal.CodebaseIndex; index != nil {
+		redact.Register(index.AccessToken)
+	}
 	registerImageBrowserSecrets(snapshot.clientRuntime.proposal.ImageBrowserCredentials)
 	for _, identity := range snapshot.clientRuntime.proposal.ImageClientIdentities {
 		redact.Register(identity.Version, identity.UserAgent)
@@ -75,6 +77,7 @@ const (
 // Definitions, credential bindings, and image credentials can all contain
 // private resolved client inputs. Bundles retain original bytes and digests.
 type RemoteRuntimeProposal struct {
+	CodebaseIndex               *RemoteCodebaseIndex `json:"codebase_index,omitempty"`
 	collectionSource            *runtimeCollectionSource
 	Version                     int                                 `json:"version"`
 	Revision                    uint64                              `json:"revision"`
@@ -228,6 +231,7 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 	next.Providers = candidate.config.Providers
 	next.Models = candidate.config.Models
 	next.Images = candidate.config.Images
+	next.Tools.CodebaseSearch = cloneCodebaseSettings(candidate.config.Tools.CodebaseSearch)
 	proposal.Controls.apply(next.Options)
 	next.bindProviderScan(*candidate.config.providerScan)
 	next.captureExplicitModels()
@@ -251,6 +255,9 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 		return nil, err
 	}
 	registerConfigSecrets(next)
+	if index := candidate.clientRuntime.proposal.CodebaseIndex; index != nil {
+		redact.Register(index.AccessToken)
+	}
 	redact.RegisterJSONValue(candidate.clientRuntime.proposal.CredentialEnvironment)
 	for _, definition := range candidate.clientRuntime.proposal.Providers {
 		if definition.NativeIdentity != nil {
@@ -515,7 +522,13 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	if err := cfg.setDefaultsFromEnvironment(workingDir, dataDir, baseEnvironment); err != nil {
 		return nil, errors.New("client runtime defaults are invalid")
 	}
-	cfg.Tools.CodebaseSearch.StoreDirectory = filepath.Join(cfg.Options.DataDirectory, "codebase-index")
+	if err := proposal.CodebaseIndex.validate(); err != nil {
+		return nil, err
+	}
+	if proposal.CodebaseIndex != nil {
+		cfg.Tools.CodebaseSearch = cloneCodebaseSettings(proposal.CodebaseIndex.Settings)
+	}
+	cfg.Tools.CodebaseSearch = ResolveRemoteCodebaseIndexSettings(cfg.Tools.CodebaseSearch, workingDir, cfg.Options.DataDirectory)
 	cfg.Options.Debug = debug
 	cfg.captureExplicitModels()
 	cfg.bindProviderScan(scan)

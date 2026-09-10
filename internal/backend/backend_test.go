@@ -84,12 +84,15 @@ func TestResolveWorkspaceKey_AbsoluteAndSymlink(t *testing.T) {
 func TestResolveWorkspaceKey_NonExistentFallback(t *testing.T) {
 	t.Parallel()
 
-	missing := filepath.Join(t.TempDir(), "does", "not", "exist")
+	parent := t.TempDir()
+	missing := filepath.Join(parent, "does", "not", "exist")
 	got, err := resolveWorkspaceKey(missing)
 	require.NoError(t, err)
-	abs, err := filepath.Abs(missing)
+	// Missing suffixes still inherit the canonical existing parent (including
+	// macOS's /var -> /private/var temporary-directory symlink).
+	realParent, err := filepath.EvalSymlinks(parent)
 	require.NoError(t, err)
-	require.Equal(t, abs, got)
+	require.Equal(t, filepath.Join(realParent, "does", "not", "exist"), got)
 }
 
 func TestValidateClientID(t *testing.T) {

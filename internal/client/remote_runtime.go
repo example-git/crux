@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/example-git/crux/internal/config"
 	cruxlog "github.com/example-git/crux/internal/log"
@@ -25,7 +27,14 @@ func (c *Client) NegotiateRemoteRuntime(ctx context.Context) (*proto.RemoteRunti
 	}
 	defer rsp.Body.Close()
 	if err := checkStatus(rsp); err != nil {
-		return nil, errors.New("remote server does not support authenticated client runtimes; upgrade the server")
+		switch rsp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return nil, fmt.Errorf("remote runtime authorization failed (GET /v1/runtime-capabilities); verify the saved connection is still authorized: %w", err)
+		case http.StatusNotFound, http.StatusMethodNotAllowed:
+			return nil, fmt.Errorf("remote runtime capability endpoint is unavailable (GET /v1/runtime-capabilities): %w", err)
+		default:
+			return nil, fmt.Errorf("remote runtime capability negotiation failed (GET /v1/runtime-capabilities): %w", err)
+		}
 	}
 	var value proto.RemoteRuntimeCapabilities
 	if err := json.NewDecoder(io.LimitReader(rsp.Body, 64<<10)).Decode(&value); err != nil {
@@ -40,6 +49,9 @@ func (c *Client) NegotiateRemoteRuntime(ctx context.Context) (*proto.RemoteRunti
 func validateRemoteRuntimeCapabilities(value *proto.RemoteRuntimeCapabilities, proposal *config.RemoteRuntimeProposal) error {
 	if proposal == nil {
 		return errors.New("client runtime proposal is required")
+	}
+	if proposal.CodebaseIndex != nil && !value.CodebaseIndex {
+		return errors.New("remote server does not advertise client-owned codebase indexing support")
 	}
 	if len(proposal.Bundles) > value.MaxBundles || len(proposal.Providers) > value.MaxProviders {
 		return errors.New("client runtime exceeds remote receiver limits")
@@ -84,11 +96,35 @@ func (c *Client) ReplaceRemoteRuntime(ctx context.Context, id string, expected u
 	if err := json.NewDecoder(rsp.Body).Decode(&ack); err != nil {
 		return nil, err
 	}
-	if ack.Mode != "client" || ack.Principal != capabilities.Principal || ack.Revision != proposal.Revision || ack.Digest != proposal.Digest {
-		return nil, errors.New("remote runtime acknowledgement does not match the submitted authority")
+	if mismatch := remoteAuthorityMismatch(&ack, capabilities.Principal, &proposal); mismatch != "" {
+		return nil, fmt.Errorf("remote runtime acknowledgement does not match the submitted authority: %s", mismatch)
 	}
 	c.retainWorkspaceAttachment(id, &ack)
 	return &ack, nil
+}
+
+// Report the failed contract without echoing received or private runtime data.
+func remoteAuthorityMismatch(ack *config.RemoteAuthority, principal string, proposal *config.RemoteRuntimeProposal) string {
+	if ack == nil {
+		return "authority missing"
+	}
+	var fields []string
+	if ack.Mode != "client" {
+		fields = append(fields, "mode")
+	}
+	if ack.Principal != principal {
+		fields = append(fields, "principal")
+	}
+	if ack.Revision != proposal.Revision {
+		fields = append(fields, "revision")
+	}
+	if ack.Digest != proposal.Digest {
+		fields = append(fields, "digest")
+	}
+	if len(fields) == 0 {
+		return ""
+	}
+	return "mismatched fields: " + strings.Join(fields, ", ")
 }
 
 func (c *Client) CompleteClientRefresh(ctx context.Context, id string, result config.ClientRefreshCompletion) error {

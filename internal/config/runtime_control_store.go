@@ -346,7 +346,7 @@ func (s *ConfigStore) runtimeControlSourceLocked(ctx context.Context, state *Run
 	if base == nil {
 		base = snapshotEnvironment()
 	}
-	paths := append(lookupConfigsFromEnvironment(s.workingDir, base), s.workspacePath)
+	paths := append(lookupConfigsFromEnvironment(s.workingDir, base, s.globalOnly), s.workspacePath)
 	slices.Reverse(paths)
 	for _, path := range paths {
 		if err := ctx.Err(); err != nil {

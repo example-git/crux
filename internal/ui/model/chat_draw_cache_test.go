@@ -4,8 +4,8 @@ import (
 	"strconv"
 	"testing"
 
-	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/charmbracelet/x/ansi"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/ui/chat"
 	"github.com/stretchr/testify/require"
 )

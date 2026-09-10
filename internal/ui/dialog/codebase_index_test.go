@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/ui/common"
@@ -34,12 +34,14 @@ func (w *codebaseIndexTestWorkspace) CodebaseIndexStatus(context.Context) (proto
 func (w *codebaseIndexTestWorkspace) UpdateCodebaseIndex(_ context.Context, update proto.CodebaseIndexUpdate) (proto.CodebaseIndexStatus, error) {
 	w.updates = append(w.updates, update)
 	w.status = proto.CodebaseIndexStatus{
-		Enabled:        update.Enabled,
-		State:          "indexing",
-		DatabasePath:   update.DatabasePath,
-		StoreDirectory: update.StoreDirectory,
-		IncludePaths:   update.IncludePaths,
-		ExcludePaths:   update.ExcludePaths,
+		Enabled:                  update.Enabled,
+		State:                    "indexing",
+		ConfiguredDatabasePath:   update.DatabasePath,
+		ConfiguredStoreDirectory: update.StoreDirectory,
+		DatabasePath:             update.DatabasePath,
+		StoreDirectory:           update.StoreDirectory,
+		IncludePaths:             update.IncludePaths,
+		ExcludePaths:             update.ExcludePaths,
 	}
 	return w.status, nil
 }
@@ -56,48 +58,40 @@ func newCodebaseIndexTestDialog(t *testing.T, settings config.ToolCodebaseSearch
 }
 
 func TestCodebaseIndexLoadsSettingsAndStatus(t *testing.T) {
-	disabled := false
-	dialog, cmd, ws := newCodebaseIndexTestDialog(t, config.ToolCodebaseSearch{
-		Enabled:        &disabled,
-		DatabasePath:   "/indexes/source.db",
-		StoreDirectory: "/indexes/store",
-		IncludePaths:   []string{"src", "internal"},
-		ExcludePaths:   []string{"src/generated"},
-	}, proto.CodebaseIndexStatus{Enabled: false, State: "indexing"})
-
-	if dialog.enabled {
-		t.Fatal("dialog enabled indexing despite disabled configuration")
-	}
-	if got := dialog.database.Value(); got != "/indexes/source.db" {
-		t.Fatalf("database input = %q", got)
-	}
-	if got := dialog.store.Value(); got != "/indexes/store" {
-		t.Fatalf("store input = %q", got)
-	}
-	if got := dialog.include.Value(); got != "src, internal" {
-		t.Fatalf("include input = %q", got)
-	}
-	if got := dialog.exclude.Value(); got != "src/generated" {
-		t.Fatalf("exclude input = %q", got)
-	}
+	enabled := true
+	dialog, cmd, ws := newCodebaseIndexTestDialog(t, config.ToolCodebaseSearch{Enabled: &enabled, DatabasePath: "/client/source.db", StoreDirectory: "/client/store"}, proto.CodebaseIndexStatus{Enabled: false, State: "indexing", DatabasePath: "/server/derived.db", ConfiguredStoreDirectory: "/server/store", IncludePaths: []string{"src", "internal"}, ExcludePaths: []string{"src/generated"}})
 	if ws.statusCalls != 0 {
-		t.Fatal("constructor performed status I/O synchronously")
+		t.Fatal("constructor performed status I/O")
 	}
-
+	if dialog.database.Value() != "" || dialog.store.Value() != "" {
+		t.Fatal("dialog copied client-local paths before receiving server settings")
+	}
 	action := dialog.HandleMsg(cmd())
-	if ws.statusCalls != 1 {
-		t.Fatalf("status calls = %d, want 1", ws.statusCalls)
+	if dialog.enabled {
+		t.Fatal("client enabled choice overrode accepted server status")
 	}
-	if dialog.status.State != "indexing" {
-		t.Fatalf("status state = %q", dialog.status.State)
+	if dialog.database.Value() != "" {
+		t.Fatal("derived database became an explicit import path")
+	}
+	if dialog.store.Value() != "/server/store" {
+		t.Fatalf("store = %q", dialog.store.Value())
+	}
+	if dialog.include.Value() != "src, internal" || dialog.exclude.Value() != "src/generated" {
+		t.Fatal("server filters not loaded")
 	}
 	if _, ok := action.(ActionCmd); !ok {
-		t.Fatalf("indexing result action = %T, want ActionCmd poll", action)
+		t.Fatal("indexing status did not schedule poll")
+	}
+	dialog.database.SetValue("unsaved.db")
+	dialog.HandleMsg(codebaseIndexResultMsg{status: ws.status})
+	if dialog.database.Value() != "unsaved.db" {
+		t.Fatal("status poll overwrote unsaved input")
 	}
 }
 
 func TestCodebaseIndexSaveRunsAsynchronously(t *testing.T) {
-	dialog, _, ws := newCodebaseIndexTestDialog(t, config.ToolCodebaseSearch{}, proto.CodebaseIndexStatus{})
+	dialog, initial, ws := newCodebaseIndexTestDialog(t, config.ToolCodebaseSearch{}, proto.CodebaseIndexStatus{})
+	dialog.HandleMsg(initial())
 	dialog.enabled = true
 	dialog.database.SetValue(" /indexes/source.db ")
 	dialog.store.SetValue(" /indexes/store ")
@@ -143,7 +137,8 @@ func TestCodebaseIndexSaveRunsAsynchronously(t *testing.T) {
 }
 
 func TestCodebaseIndexNowRequestsReindexAsynchronously(t *testing.T) {
-	dialog, _, ws := newCodebaseIndexTestDialog(t, config.ToolCodebaseSearch{}, proto.CodebaseIndexStatus{State: "failed"})
+	dialog, initial, ws := newCodebaseIndexTestDialog(t, config.ToolCodebaseSearch{}, proto.CodebaseIndexStatus{State: "failed"})
+	dialog.HandleMsg(initial())
 	action, ok := dialog.save(true).(ActionCmd)
 	if !ok || action.Cmd == nil {
 		t.Fatalf("index action = %#v", action)

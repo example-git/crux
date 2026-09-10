@@ -652,7 +652,7 @@ func walkProjectFiles(ctx context.Context, projectRoot string) ([]string, error)
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if entry.IsDir() && path != projectRoot && (entry.Name() == ".git" || entry.Name() == "node_modules") {
+		if entry.IsDir() && path != projectRoot && (entry.Name() == ".git" || entry.Name() == ".crux" || entry.Name() == "node_modules") {
 			return filepath.SkipDir
 		}
 		if entry.Type().IsRegular() {
@@ -668,6 +668,11 @@ func walkProjectFiles(ctx context.Context, projectRoot string) ([]string, error)
 }
 
 func validNativeProjectPath(path string) bool {
+	// Workspace databases, generated index generations and their checkpoints
+	// are runtime state, not source input to their own index.
+	if strings.Contains("/"+path+"/", "/.crux/") {
+		return false
+	}
 	if path == "" || path == "." || filepath.IsAbs(path) {
 		return false
 	}

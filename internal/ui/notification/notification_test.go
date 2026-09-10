@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/ui/notification"
 	"github.com/stretchr/testify/require"
 )

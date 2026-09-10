@@ -1,6 +1,6 @@
 package notification
 
-import tea "charm.land/bubbletea/v2"
+import tea "github.com/example-git/crux/foundation/bubbletea"
 
 // NoopBackend is a no-op notification backend that does nothing.
 // This is the default backend used when notifications are not supported.

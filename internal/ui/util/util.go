@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"mvdan.cc/sh/v3/shell"
 )
 

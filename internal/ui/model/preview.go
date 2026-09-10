@@ -13,9 +13,9 @@ import (
 	"reflect"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/foundation/catalog"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	mcptools "github.com/example-git/crux/internal/agent/tools/mcp"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/csync"
@@ -59,6 +59,13 @@ type PreviewOptions struct {
 	Scroll        int             `json:"scroll"`
 	Submitted     []string        `json:"submitted"`
 	Click         *PreviewPoint   `json:"click,omitempty"`
+	Hover         *PreviewPoint   `json:"hover,omitempty"`
+	Drag          *PreviewDrag    `json:"drag,omitempty"`
+	SidebarTicks  int             `json:"sidebarTicks,omitempty"`
+}
+type PreviewDrag struct {
+	From PreviewPoint `json:"from"`
+	To   PreviewPoint `json:"to"`
 }
 type PreviewPoint struct {
 	X int `json:"x"`
@@ -101,11 +108,27 @@ type previewWorkspace struct {
 }
 
 func (w *previewWorkspace) Config() *config.Config { return w.cfg }
+func (w *previewWorkspace) AcceptedAuthority() *config.RemoteAuthority {
+	if w.taskData == nil {
+		return nil
+	}
+	return w.taskData.Authority
+}
 func (w *previewWorkspace) WorkingDir() string {
+	if w.taskData != nil && w.taskData.Directory != "" {
+		return w.taskData.Directory
+	}
 	if w.workingDir != "" {
 		return w.workingDir
 	}
 	return "/preview/crush"
+}
+
+func (w *previewWorkspace) RemoteAddress() string {
+	if w.taskData != nil {
+		return w.taskData.RemoteAddress
+	}
+	return ""
 }
 func (w *previewWorkspace) ProviderSurfaces() []providerregistry.Surface {
 	if w.surfaces != nil {
@@ -165,6 +188,7 @@ func (p *Preview) initialize(model catalog.Model) {
 	cfg.MCP["dummy-devtools"] = config.MCPConfig{}
 	ws := &previewWorkspace{workingDir: p.workingDir, cfg: cfg, model: workspace.AgentModel{CatalogModel: model, ModelCfg: selected}, surface: providerregistry.Surface{ID: "dummy-preview", Name: "Dummy Provider", Available: true, FlatRate: true, Models: PreviewModels, DefaultLargeModel: "dummy-coder", DefaultSmallModel: "dummy-fast", Brand: &providerregistry.Brand{Label: "Dummy Provider", ShortName: "DUMMYAI", Color: "#7FC4FF", GradientA: "#1B3B8B", GradientB: "#7FC4FF"}}}
 	if p.data != nil {
+		cfg.Options.Debug = p.data.Settings.Debug
 		cfg.Options.InstructionMode = p.data.Settings.InstructionMode
 		cfg.Options.DisabledInstructionSections = p.data.Settings.DisabledInstructionSections
 		cfg.Options.DisableAutoSummarize = p.data.Settings.DisableAutoSummarize
@@ -188,6 +212,7 @@ func (p *Preview) initialize(model catalog.Model) {
 		runtime.Agents = maps.Clone(p.runtimeConfig.Agents)
 		options := *p.runtimeConfig.Options
 		runtime.Options = &options
+		runtime.Options.Debug = p.data.Settings.Debug
 		runtime.Models[config.SelectedModelTypeLarge] = selected
 		runtime.Options.InstructionMode = p.data.Settings.InstructionMode
 		runtime.Options.DisabledInstructionSections = p.data.Settings.DisabledInstructionSections
@@ -249,6 +274,9 @@ func (p *Preview) initialize(model catalog.Model) {
 }
 
 func (p *Preview) Render(o PreviewOptions) (PreviewFrame, error) {
+	if o.SidebarTicks < 0 || o.SidebarTicks > 1000 {
+		return PreviewFrame{}, fmt.Errorf("sidebar ticks must be between 0 and 1000")
+	}
 	if o.Example == "" {
 		o.Example = "all"
 	}
@@ -431,6 +459,25 @@ func (p *Preview) Render(o PreviewOptions) (PreviewFrame, error) {
 		return PreviewFrame{}, err
 	}
 	view := u.View()
+	if o.Hover != nil {
+		u.Update(tea.MouseMotionMsg{X: o.Hover.X, Y: o.Hover.Y, Button: uv.MouseNone})
+		view = u.View()
+	}
+	// Drive production updates deterministically without running async fixture
+	// commands or copying fixture selections to the system clipboard.
+	if o.SidebarTicks > 0 {
+		u.syncSidebarDirectoryTicker()
+		for range o.SidebarTicks {
+			u.Update(sidebarDirectoryTickMsg{u.sidebarSession.tickGeneration})
+		}
+		view = u.View()
+	}
+	if o.Drag != nil {
+		u.Update(tea.MouseClickMsg{X: o.Drag.From.X, Y: o.Drag.From.Y, Button: uv.MouseLeft})
+		u.Update(tea.MouseMotionMsg{X: o.Drag.To.X, Y: o.Drag.To.Y, Button: uv.MouseLeft})
+		u.Update(tea.MouseReleaseMsg{X: o.Drag.To.X, Y: o.Drag.To.Y, Button: uv.MouseLeft})
+		view = u.View()
+	}
 	if panelClick != nil && u.taskPanel != nil {
 		p.clickTaskPanel(*panelClick, o.Modal == "tasks")
 		view = u.View()

@@ -96,17 +96,18 @@ type ForwardedAccount struct {
 }
 
 type RuntimeSnapshot struct {
-	lifetimeStore       *ConfigStore
-	publicationStore    *ConfigStore
-	publicationSequence uint64
-	config              *Config
-	resolver            VariableResolver
-	registry            *providerregistry.Registry
-	environment         env.Env
-	ephemeralAccounts   map[string]ForwardedAccount
-	clientRuntime       *clientRuntimeState
-	nativeIdentities    *nativeIdentityCapture
-	imageInputs         *imageRuntimeCapture
+	remoteCodebaseIndexScope string
+	lifetimeStore            *ConfigStore
+	publicationStore         *ConfigStore
+	publicationSequence      uint64
+	config                   *Config
+	resolver                 VariableResolver
+	registry                 *providerregistry.Registry
+	environment              env.Env
+	ephemeralAccounts        map[string]ForwardedAccount
+	clientRuntime            *clientRuntimeState
+	nativeIdentities         *nativeIdentityCapture
+	imageInputs              *imageRuntimeCapture
 }
 
 type RuntimeGenerationCandidate struct {
@@ -348,6 +349,7 @@ func (s RuntimeSnapshot) EphemeralAccount(expected providerregistry.Registration
 }
 
 type ConfigStore struct {
+	remoteCodebaseIndexScope string
 	runtimeParent            *ConfigStore
 	runtimeRevoked           atomic.Bool
 	runtimeLifetimeOnce      sync.Once
@@ -362,6 +364,7 @@ type ConfigStore struct {
 	ephemeralProviderConfigs map[string]ProviderConfig
 	ephemeralProviders       map[string]struct{}
 	workingDir               string
+	globalOnly               bool // exclude project discovery for an owning remote client
 	resolver                 VariableResolver
 	baseEnvironment          env.Env
 	effectiveEnvironment     env.Env
@@ -475,14 +478,15 @@ func (s *ConfigStore) runtimeSnapshotLocked(cfg *Config, resolver VariableResolv
 		}
 	}
 	snapshot := RuntimeSnapshot{
-		lifetimeStore:     s,
-		nativeIdentities:  capture,
-		imageInputs:       browsers,
-		config:            cfg,
-		resolver:          resolver,
-		environment:       cloneEnvironment(environment),
-		ephemeralAccounts: make(map[string]ForwardedAccount, len(s.ephemeralAccounts)),
-		clientRuntime:     s.clientRuntime,
+		remoteCodebaseIndexScope: s.remoteCodebaseIndexScope,
+		lifetimeStore:            s,
+		nativeIdentities:         capture,
+		imageInputs:              browsers,
+		config:                   cfg,
+		resolver:                 resolver,
+		environment:              cloneEnvironment(environment),
+		ephemeralAccounts:        make(map[string]ForwardedAccount, len(s.ephemeralAccounts)),
+		clientRuntime:            s.clientRuntime,
 	}
 	if cfg != nil && cfg == s.config {
 		s.ensurePublicationLocked()
@@ -2631,7 +2635,7 @@ func (s *ConfigStore) revalidateReloadGeneration(
 	expectedOwners reloadProviderOwners,
 	expectedScan ProviderScan,
 ) error {
-	currentPaths := lookupConfigsFromEnvironment(s.workingDir, baseEnvironment)
+	currentPaths := lookupConfigsFromEnvironment(s.workingDir, baseEnvironment, s.globalOnly)
 	if !slices.Equal(configPaths, currentPaths) {
 		return errors.New("configuration sources changed before publication")
 	}
@@ -2680,7 +2684,7 @@ func (s *ConfigStore) reloadFromDiskWithCredentialCaptureLocked(ctx context.Cont
 	if err := notificationMigration.validatePreimages(preimages); err != nil {
 		return err
 	}
-	configPaths := lookupConfigsFromEnvironment(s.workingDir, baseEnvironment)
+	configPaths := lookupConfigsFromEnvironment(s.workingDir, baseEnvironment, s.globalOnly)
 	var dataDir string
 	if current := s.Config(); current != nil && current.Options != nil {
 		dataDir = current.Options.DataDirectory
@@ -2762,7 +2766,7 @@ func (s *ConfigStore) reloadFromDiskWithCredentialCaptureLocked(ctx context.Cont
 	correctedBasis := basis.startupCorrections(notificationMigration, nil, globalDataPath)
 	migrationSource := correctedBasis.sources[filepath.Clean(globalDataPath)]
 	expectedMigrationFields, _ := selectProviderReferenceMigrationFields(migrationSource.raw, pendingOwners, pendingPlugins, pendingPresets)
-	basis, authoredPaths, err := prepareAuthenticationLoadTopology(ctx, basis, notificationMigration, nil, expectedMigrationFields, globalDataPath, s.workingDir, workspacePath, baseEnvironment)
+	basis, authoredPaths, err := prepareAuthenticationLoadTopology(ctx, basis, notificationMigration, nil, expectedMigrationFields, globalDataPath, s.workingDir, workspacePath, baseEnvironment, s.globalOnly)
 	if err != nil {
 		return fmt.Errorf("prepare reload authentication input topology: %w", err)
 	}
@@ -2838,7 +2842,7 @@ func (s *ConfigStore) reloadFromDiskWithCredentialCaptureLocked(ctx context.Cont
 		); err != nil {
 			return fmt.Errorf("revalidate reloaded configuration generation: %w", err)
 		}
-		if err := verifyAuthenticationWriteTopology(ctx, basis, authoredPaths, s.workingDir, workspacePath, baseEnvironment); err != nil {
+		if err := verifyAuthenticationWriteTopology(ctx, basis, authoredPaths, s.workingDir, workspacePath, baseEnvironment, s.globalOnly); err != nil {
 			return fmt.Errorf("revalidate reloaded configuration generation: %w", err)
 		}
 		if resolvedInputs != nil {

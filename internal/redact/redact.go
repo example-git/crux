@@ -161,6 +161,12 @@ func String(value string) string {
 				if candidate.length > len(value)-start || candidate.length <= end-start {
 					continue
 				}
+				// Low-entropy values (notably browser flag cookies such as "1")
+				// must not match inside unrelated IDs, hashes or version labels.
+				// They still redact as standalone values and in name=value text.
+				if candidate.length < 8 && !completeShortToken(value, start, start+candidate.length) {
+					continue
+				}
 				if previousLength != candidate.length {
 					digest = fingerprint(value[start : start+candidate.length])
 					previousLength = candidate.length
@@ -194,6 +200,13 @@ func String(value string) string {
 	}
 	result.WriteString(value[last:])
 	return result.String()
+}
+
+func completeShortToken(value string, start, end int) bool {
+	part := func(b byte) bool {
+		return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_' || b == '-' || b == '.'
+	}
+	return (start == 0 || !part(value[start-1])) && (end == len(value) || !part(value[end]))
 }
 
 func Bytes(value []byte) []byte {

@@ -1,14 +1,158 @@
 package model
 
 import (
+	"fmt"
 	"image/color"
+	"strings"
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/charmbracelet/x/ansi"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
+	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/stretchr/testify/require"
 )
+
+func taskPanelFrame(m *UI) string {
+	frame := m.View()
+	area := m.layout.editor
+	lines := strings.Split(frame.Content, "\n")
+	var panel []string
+	for y := area.Min.Y; y < area.Max.Y && y < len(lines); y++ {
+		panel = append(panel, ansi.Cut(lines[y], area.Min.X, area.Max.X))
+	}
+	return strings.Join(panel, "\n")
+}
+
+func TestControlDownRestoresTaskPanelView(t *testing.T) {
+	for _, width := range []int{65, 120} {
+		for _, view := range []string{"list", "detail", "continue"} {
+			t.Run(fmt.Sprintf("%d/%s", width, view), func(t *testing.T) {
+				p, err := NewPreview()
+				require.NoError(t, err)
+				modal := "task-detail"
+				if view == "list" {
+					modal = "tasks"
+				}
+				_, err = p.Render(PreviewOptions{Example: "tool-bash", Model: "dummy-coder", Scenario: "working", Cols: width, Rows: 45, Modal: modal})
+				require.NoError(t, err)
+				m := p.ui
+				panel := m.taskPanel
+				t.Cleanup(panel.ClosePanel)
+				m.textarea.SetValue("preserved chat draft")
+				press := func(code rune, mod tea.KeyMod, text string) {
+					m.Update(tea.KeyPressMsg{Code: code, Mod: mod, Text: text})
+				}
+				initial := taskPanelFrame(m)
+				switch view {
+				case "list":
+					press(tea.KeyDown, 0, "")
+					press(tea.KeyDown, 0, "")
+				case "detail":
+					press(tea.KeyPgUp, 0, "")
+					press(tea.KeyRight, 0, "")
+				case "continue":
+					press('c', 0, "c")
+					press('p', 0, "preserved continuation draft")
+					press(tea.KeyLeft, 0, "")
+				}
+				before := taskPanelFrame(m)
+				require.NotEqual(t, initial, before, "fixture must exercise changed panel state")
+				info := append([]string(nil), panel.PanelInfoLines()...)
+				press(tea.KeyDown, tea.ModCtrl, "")
+				require.False(t, m.taskPanelVisible())
+				require.Same(t, panel, m.taskPanel)
+				require.True(t, m.textarea.Focused())
+				require.NotContains(t, ansi.Strip(m.View().Content), "Background Tasks")
+				require.NotEmpty(t, m.ShortHelp(), "hidden panel must restore normal help")
+				handled, _ := m.routeTaskPanelInput(tea.PasteMsg{Content: "hidden"})
+				require.False(t, handled, "hidden panel must not intercept editor input")
+				press('!', 0, "!")
+				require.Contains(t, m.textarea.Value(), "!")
+				press(tea.KeyDown, tea.ModCtrl, "")
+				require.True(t, m.taskPanelVisible())
+				require.Same(t, panel, m.taskPanel)
+				require.False(t, m.textarea.Focused())
+				require.Equal(t, info, panel.PanelInfoLines())
+				require.Equal(t, before, taskPanelFrame(m), "reopen must restore the rendered selection, output position and continuation draft")
+				if view == "continue" {
+					press('!', 0, "!")
+					require.Contains(t, ansi.Strip(taskPanelFrame(m)), "preserved continuation draf!t", "continuation cursor position must survive hiding")
+					press(tea.KeyEscape, 0, "")
+					require.True(t, m.taskPanelVisible())
+				}
+				if view != "list" {
+					press(tea.KeyEscape, 0, "")
+					require.True(t, m.taskPanelVisible(), "Escape from detail returns to the list")
+					require.Empty(t, panel.PanelInfoLines())
+				}
+				press(tea.KeyEscape, 0, "")
+				require.Nil(t, m.taskPanel, "Escape from the list discards the saved view")
+				require.False(t, m.taskPanelHidden)
+				m.openTasksDialog()
+				require.NotSame(t, panel, m.taskPanel)
+				t.Cleanup(m.taskPanel.ClosePanel)
+				require.Empty(t, m.taskPanel.PanelInfoLines(), "opening after Escape starts at the list")
+			})
+		}
+	}
+}
+
+func TestHiddenTaskPanelReceivesPendingOutput(t *testing.T) {
+	p, err := NewPreview()
+	require.NoError(t, err)
+	_, err = p.Render(PreviewOptions{Example: "tool-bash", Model: "dummy-coder", Scenario: "working", Cols: 120, Rows: 45, Modal: "task-detail"})
+	require.NoError(t, err)
+	m := p.ui
+	panel := m.taskPanel
+	t.Cleanup(panel.ClosePanel)
+	refresh := m.handleTaskPanelMsg(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	require.NotNil(t, refresh)
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
+	require.False(t, m.taskPanelVisible())
+	w := m.com.Workspace.(*previewWorkspace)
+	w.taskData.Tasks[0].FinalOutput = "Output completed while the task panel was hidden"
+	// Deliver the real output command's replies through Update, leaving the
+	// subsequent notification/timer commands to the ordinary runtime.
+	var deliver func(tea.Cmd)
+	deliver = func(cmd tea.Cmd) {
+		if cmd == nil {
+			return
+		}
+		switch msg := cmd().(type) {
+		case tea.BatchMsg:
+			for _, child := range msg {
+				deliver(child)
+			}
+		default:
+			m.Update(msg)
+		}
+	}
+	deliver(refresh)
+	require.False(t, m.taskPanelVisible(), "a pending reply must not reopen the panel")
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
+	require.Same(t, panel, m.taskPanel)
+	require.Contains(t, ansi.Strip(taskPanelFrame(m)), w.taskData.Tasks[0].FinalOutput)
+}
+
+func TestControlDownCancelsPendingTaskPanelOpen(t *testing.T) {
+	m := newBusyUI(&countingWorkspace{ready: true, tasks: []managedtask.View{{ID: "shell-one"}}})
+	lookup := m.openTasksIfPresent()
+	require.True(t, m.taskPanelOpenPending)
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
+	require.False(t, m.taskPanelOpenPending)
+	m.Update(lookup())
+	require.Nil(t, m.taskPanel, "a cancelled lookup must not open the panel")
+
+	lookup = m.openTasksIfPresent()
+	m.openTasksDialog()
+	t.Cleanup(m.taskPanel.ClosePanel)
+	m.Update(tea.KeyPressMsg{Code: tea.KeyDown, Mod: tea.ModCtrl})
+	require.False(t, m.taskPanelVisible())
+	m.Update(lookup())
+	require.False(t, m.taskPanelVisible(), "a superseded lookup must not reopen a hidden panel")
+}
 
 func TestTaskPanelRestoresDraftAndRejectsClosedReplies(t *testing.T) {
 	m := newBusyUI(&countingWorkspace{ready: true})

@@ -1,7 +1,7 @@
 package completions
 
 import (
-	"charm.land/bubbles/v2/key"
+	"github.com/example-git/crux/foundation/bubbles/key"
 )
 
 // KeyMap defines the key bindings for the completions component.

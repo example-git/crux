@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/tree"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/ui/anim"

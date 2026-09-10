@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
+	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/agent/tools/mcp"
@@ -819,6 +819,16 @@ func (w *ClientWorkspace) CodebaseIndexStatus(ctx context.Context) (proto.Codeba
 }
 
 func (w *ClientWorkspace) UpdateCodebaseIndex(ctx context.Context, update proto.CodebaseIndexUpdate) (proto.CodebaseIndexStatus, error) {
+	if w.clientOwned() {
+		settings := config.ToolCodebaseSearch{Enabled: &update.Enabled, DatabasePath: strings.TrimSpace(update.DatabasePath), StoreDirectory: strings.TrimSpace(update.StoreDirectory), IncludePaths: update.IncludePaths, ExcludePaths: update.ExcludePaths}
+		key := config.RemoteCodebaseIndexScope(w.client.AuthenticationJournalIdentity(), w.cached().Path)
+		if err := w.mutateClientAuthority(ctx, func(store *config.ConfigStore) error {
+			return store.SetConfigFields(config.ScopeGlobal, map[string]any{"remote_codebase_indexes." + key: settings})
+		}); err != nil {
+			return proto.CodebaseIndexStatus{}, err
+		}
+	}
+
 	status, err := w.client.UpdateCodebaseIndex(ctx, w.workspaceID(), update)
 	if err == nil {
 		w.refreshWorkspace()

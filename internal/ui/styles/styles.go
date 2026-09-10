@@ -6,14 +6,14 @@ import (
 	"image/color"
 	"strings"
 
-	"charm.land/bubbles/v2/filepicker"
-	"charm.land/bubbles/v2/help"
-	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/textinput"
 	"charm.land/glamour/v2/ansi"
 	"charm.land/lipgloss/v2"
 	"github.com/alecthomas/chroma/v2"
-	uv "github.com/charmbracelet/ultraviolet"
+	"github.com/example-git/crux/foundation/bubbles/filepicker"
+	"github.com/example-git/crux/foundation/bubbles/help"
+	"github.com/example-git/crux/foundation/bubbles/textarea"
+	"github.com/example-git/crux/foundation/bubbles/textinput"
+	uv "github.com/example-git/crux/foundation/ultraviolet"
 	"github.com/example-git/crux/internal/ui/diffview"
 )
 
@@ -132,8 +132,8 @@ type Styles struct {
 
 	// Editor
 	Editor struct {
-		Textarea   textarea.Styles
-		Background color.Color
+		Textarea       textarea.Styles
+		Background     color.Color
 		DeliveryBadges map[string]lipgloss.Style
 
 		// Normal mode prompt (default "::: ").
@@ -242,6 +242,7 @@ type Styles struct {
 		Background   color.Color
 		SessionTitle lipgloss.Style // Current session title at top of sidebar
 		WorkingDir   lipgloss.Style // Working directory path (PrettyPath)
+		Directory    lipgloss.Style // Highlighted, single-row session directory
 	}
 
 	// ModelInfo (model name, provider, reasoning, token/cost summary)

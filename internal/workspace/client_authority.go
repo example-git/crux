@@ -60,6 +60,7 @@ func newClientAuthority(c *client.Client, ws proto.Workspace) *clientAuthority {
 	if c == nil || c.LocalRuntimeStore() == nil || ws.Authority == nil || ws.Authority.Mode != "client" || ws.Runtime == nil || ws.Creation == nil {
 		return nil
 	}
+	c.LocalRuntimeStore().BindRemoteCodebaseIndexScope(c.AuthenticationJournalIdentity(), ws.Path)
 	a := &clientAuthority{authenticationConnection: c.AuthenticationJournalIdentity(), store: c.LocalRuntimeStore(), accepted: *ws.Runtime, principal: ws.Authority.Principal, creation: *ws.Creation, removed: map[providerregistry.RegistrationOwner]bool{}}
 	a.view.Store(clientCollectionConfig(*ws.Runtime, c.LocalRuntimeStore()))
 	for _, credential := range a.accepted.Credentials {
