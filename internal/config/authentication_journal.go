@@ -15,6 +15,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/lock"
 	"github.com/tidwall/gjson"
 )
@@ -402,7 +403,7 @@ func readAuthenticationJournal(ctx context.Context, path string) (authentication
 	}
 	defer file.Close()
 	before.info, err = observeAuthenticationInput(file)
-	if err != nil || before.info.size > maxAuthenticationJournalBytes || before.info.mode.Perm()&0o077 != 0 {
+	if err != nil || before.info.size > maxAuthenticationJournalBytes || fsext.ValidatePrivateFile(file) != nil {
 		return before, data, errors.New("authentication journal has invalid size or permissions")
 	}
 	before.data, err = io.ReadAll(io.LimitReader(authenticationInputReader{ctx: ctx, reader: file}, maxAuthenticationJournalBytes+1))

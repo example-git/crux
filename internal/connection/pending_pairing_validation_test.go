@@ -129,13 +129,13 @@ func newPendingPairingValidationFixture(t *testing.T) *pendingPairingValidationF
 	require.Equal(t, result.Fingerprint, listed[0].ClientFingerprint)
 	// Read the serialized sidecar anew; no retained client process object is
 	// supplied to RecoverPairing, which must independently load this identity.
-	disk, image, err := readPendingPairings(f.clientPath)
+	disk, _, err := readPendingPairings(f.clientPath)
 	require.NoError(t, err)
 	f.retained = disk.Entries[pendingErr.OperationID]
 	require.NotEmpty(t, f.retained.Connection.Client.PrivateKey)
 	require.Equal(t, serverCode, f.retained.Connection.ServerCertificate)
 	require.Equal(t, address, f.retained.Connection.Address)
-	require.Equal(t, os.FileMode(0o600), image.info.Mode().Perm())
+	requirePrivatePairingFile(t, pendingPairingPath(f.clientPath))
 	_, exists, err := Get(ctx, f.retained.Connection.Name)
 	require.NoError(t, err)
 	require.False(t, exists)

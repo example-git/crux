@@ -75,6 +75,8 @@ func projectAuthenticationBasisWrites(ctx context.Context, original *authenticat
 	slices.Reverse(projected)
 	current = append(append(slices.Clone(globals), current...), workspacePath)
 	projected = append(append(slices.Clone(globals), projected...), workspacePath)
+	current = slices.DeleteFunc(current, func(path string) bool { return path == "" })
+	projected = slices.DeleteFunc(projected, func(path string) bool { return path == "" })
 	for i := range current {
 		current[i] = filepath.Clean(current[i])
 	}
@@ -130,6 +132,7 @@ func verifyAuthenticationWriteTopology(ctx context.Context, basis *authenticatio
 		return nil
 	}
 	order := append(lookupConfigsFromEnvironment(workingDir, base, globalOnly...), workspacePath)
+	order = slices.DeleteFunc(order, func(path string) bool { return path == "" })
 	for i := range order {
 		order[i] = filepath.Clean(order[i])
 	}

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/redact"
 )
@@ -125,7 +126,7 @@ func readPendingPairings(path string) (pendingPairings, pendingImage, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		return data, image, nil
 	}
-	if err != nil || !before.Mode().IsRegular() || before.Mode().Perm()&0o077 != 0 || before.Size() > pendingPairingBytes {
+	if err != nil || !before.Mode().IsRegular() || before.Size() > pendingPairingBytes {
 		return data, image, errors.New("pending pairing store is not a bounded private regular file")
 	}
 	file, err := os.Open(path)
@@ -136,6 +137,9 @@ func readPendingPairings(path string) (pendingPairings, pendingImage, error) {
 	opened, err := file.Stat()
 	if err != nil || !os.SameFile(before, opened) {
 		return data, image, errors.New("pending pairing store changed while opening")
+	}
+	if err := fsext.ValidatePrivateFile(file); err != nil {
+		return data, image, errors.New("pending pairing store is not private")
 	}
 	content, err := io.ReadAll(io.LimitReader(file, pendingPairingBytes+1))
 	if err != nil || len(content) > pendingPairingBytes {

@@ -11,6 +11,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestAuthenticationBasisProjectionOmitsAbsentPaths(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	base := env.NewFromMap(map[string]string{
+		"HOME": root, "USERPROFILE": root,
+		"CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"),
+		"CRUX_GLOBAL_DATA":   filepath.Join(root, "data"),
+	})
+	basis := newAuthenticationLoadBasis()
+	for _, path := range lookupConfigsFromEnvironment(root, base, true) {
+		basis.source(path, nil, nil, false)
+	}
+	target := filepath.Join(root, "data", "crux.json")
+	next, written, err := projectAuthenticationBasisWrites(t.Context(), basis, []authenticationConfigWrite{{path: target, fields: map[string]any{"options.notifications": "disabled"}}}, root, "", base, true)
+	require.NoError(t, err)
+	require.Equal(t, basis.order, next.order)
+	require.NotContains(t, next.order, ".")
+	require.Contains(t, written, target)
+	require.NoError(t, os.MkdirAll(filepath.Dir(target), 0o700))
+	require.NoError(t, os.WriteFile(target, next.sources[target].raw, 0o600))
+	require.NoError(t, verifyAuthenticationWriteTopology(t.Context(), next, written, root, "", base, true))
+	require.ErrorIs(t, verifyAuthenticationWriteTopology(t.Context(), next, written, root, filepath.Join(root, "other.json"), base, true), errAuthenticationInputsChanged)
+}
+
 func TestAuthenticationBasisStartupAndReloadAuthoredTopology(t *testing.T) {
 	for _, mode := range []string{"startup", "reload"} {
 		for _, topology := range []string{"parent alias", "created project occurrence", "authored leaf chain"} {

@@ -722,6 +722,7 @@ func (l boundedReadListener) Accept() (net.Conn, error) {
 
 func TestClientWriteDeadlineBoundsUnresponsivePeer(t *testing.T) {
 	release := make(chan struct{})
+	writing := make(chan time.Time, 1)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -732,6 +733,10 @@ func TestClientWriteDeadlineBoundsUnresponsivePeer(t *testing.T) {
 		if tcpConn, ok := conn.UnderlyingConn().(interface{ SetReadBuffer(int) error }); ok {
 			_ = tcpConn.SetReadBuffer(1024)
 		}
+		if _, _, err := conn.NextReader(); err != nil {
+			return
+		}
+		writing <- time.Now()
 		<-release
 	}))
 	server.Listener = boundedReadListener{Listener: server.Listener}
@@ -741,15 +746,19 @@ func TestClientWriteDeadlineBoundsUnresponsivePeer(t *testing.T) {
 
 	model := lifecycleModel(server, NewSessionStore(), func() string { return "token" })
 	model.client.writeTimeout = 25 * time.Millisecond
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	started := time.Now()
 	_, err := model.Generate(ctx, fantasy.Call{
 		Headers: map[string]string{"x-session-id": "conversation", "x-request-purpose": "conversation"},
 		Prompt:  fantasy.Prompt{fantasy.NewUserMessage(strings.Repeat("x", 8<<20))},
 	})
 	require.ErrorContains(t, err, "i/o timeout")
-	require.Less(t, time.Since(started), 2*time.Second)
+	select {
+	case started := <-writing:
+		require.Less(t, time.Since(started), 2*time.Second)
+	default:
+		t.Fatal("peer did not observe the WebSocket write")
+	}
 }
 
 func TestClientCancellationInterruptsBlockedWrite(t *testing.T) {

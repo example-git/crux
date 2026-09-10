@@ -8,12 +8,27 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/stretchr/testify/require"
 )
+
+func requirePrivatePairingFile(t *testing.T, path string) {
+	t.Helper()
+	file, err := os.Open(path)
+	require.NoError(t, err)
+	defer file.Close()
+	require.NoError(t, fsext.ValidatePrivateFile(file))
+	if runtime.GOOS != "windows" {
+		info, err := file.Stat()
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+}
 
 // G1: terminal cancellation fences the persisted authorization, including a
 // request that already reserved the token before cancellation.
@@ -105,9 +120,7 @@ func TestEnrollmentClientSaveFailureRecovery(t *testing.T) {
 	require.Equal(t, result.Fingerprint, pending[0].ClientFingerprint)
 	retained, err := pendingPairingAt(t.Context(), storePath(), pendingError.OperationID)
 	require.NoError(t, err)
-	info, err := os.Stat(pendingPairingPath(storePath()))
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	requirePrivatePairingFile(t, pendingPairingPath(storePath()))
 	_, err = Pair(t.Context(), "unsaved-client", enrollment.SetupCode())
 	require.ErrorContains(t, err, "pending")
 	require.NoError(t, enrollment.Close())

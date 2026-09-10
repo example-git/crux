@@ -192,8 +192,8 @@ func retainedTerminalCapture(t *testing.T, renderer *headlessRenderer, cols, row
 	js, err := assets.ReadFile("web/capture.js")
 	require.NoError(t, err)
 	source := strings.Replace(string(js), "function captureFrame(", "function captureDelta(", 1)
-	require.Contains(t, source, "  terminal.reset();\n")
-	source = strings.Replace(source, "  terminal.reset();\n", "", 1)
+	require.Contains(t, source, "  terminal.reset();")
+	source = strings.Replace(source, "  terminal.reset();", "", 1)
 	const fullFrameWrite = `'\x1b[?25l\x1b[?7l\x1b[0m\x1b[2J\x1b[H'+content.replace(/\r?\n/g,'\r\n')+'\x1b[0m'`
 	require.Contains(t, source, fullFrameWrite)
 	source = strings.Replace(source, fullFrameWrite, "content", 1)
