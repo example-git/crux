@@ -246,7 +246,7 @@ func TestAuthenticationUIReconciliationThroughTLS(t *testing.T) {
 					return config.RuntimeGenerationCandidate{Abort: func() {}, Commit: func() {
 						data, err := os.ReadFile(f.path)
 						require.NoError(t, err)
-						require.NoError(t, os.WriteFile(f.path, append(data, '\n'), 0600))
+						require.NoError(t, os.WriteFile(f.path, append(data, '\n'), 0o600))
 					}}, nil
 				})
 			} else {
@@ -392,9 +392,10 @@ func TestAuthenticationUIReconciliationThroughTLS(t *testing.T) {
 			observed := append([]string(nil), f.credentials...)
 			f.mu.Unlock()
 			want := []string{"Bearer " + f.first.AccessToken}
-			if effect == "switch" || effect == "lost-apply" {
+			switch effect {
+			case "switch", "lost-apply":
 				want = append(want, "Bearer "+f.second.AccessToken)
-			} else if effect == "saved-account" {
+			case "saved-account":
 				want = append(want, "Bearer "+f.first.AccessToken)
 			}
 			require.Equal(t, want, observed)

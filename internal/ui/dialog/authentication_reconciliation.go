@@ -37,12 +37,14 @@ type AuthenticationReconciliation struct {
 	scroll                                  int
 }
 
-type ActionAuthenticationReviewOpen struct{ Dialog *AccountAuthentication }
-type ActionAuthenticationReconciliation struct {
-	Dialog *AuthenticationReconciliation
-	Kind   string // choice, review, retry-review, apply, retry-apply, cancel
-	Choice workspace.ProviderAuthenticationReviewChoice
-}
+type (
+	ActionAuthenticationReviewOpen     struct{ Dialog *AccountAuthentication }
+	ActionAuthenticationReconciliation struct {
+		Dialog *AuthenticationReconciliation
+		Kind   string // choice, review, retry-review, apply, retry-apply, cancel
+		Choice workspace.ProviderAuthenticationReviewChoice
+	}
+)
 
 func NewAuthenticationReconciliation(com *common.Common, original string, accounts []AuthenticationRow) *AuthenticationReconciliation {
 	d := &AuthenticationReconciliation{com: com, original: original, accounts: append([]AuthenticationRow(nil), accounts...), accountIndex: -1}
@@ -56,6 +58,7 @@ func NewAuthenticationReconciliation(com *common.Common, original string, accoun
 	d.help.Styles = com.Styles.DialogHelpStyles()
 	return d
 }
+
 func (d *AuthenticationReconciliation) SetFreshSaved(slots []providerauth.CredentialSlot) {
 	d.fresh = true
 	d.slots = append([]providerauth.CredentialSlot(nil), slots...)
@@ -66,6 +69,7 @@ func (d *AuthenticationReconciliation) Generation() uint64 { return d.generation
 func (d *AuthenticationReconciliation) Choice() workspace.ProviderAuthenticationReviewChoice {
 	return d.choice
 }
+
 func (d *AuthenticationReconciliation) SetChoice(choice workspace.ProviderAuthenticationReviewChoice) {
 	d.choice = choice
 	for i, slot := range d.slots {
@@ -78,6 +82,7 @@ func (d *AuthenticationReconciliation) SetChoice(choice workspace.ProviderAuthen
 	d.generation++
 	d.preview, d.apply, d.retryApply = "", false, false
 }
+
 func (d *AuthenticationReconciliation) SetState(message, preview string, pending, retryReview, apply, retryApply bool) {
 	d.message, d.preview = message, preview
 	d.pending, d.retryReview, d.apply, d.retryApply = pending, retryReview, apply, retryApply
@@ -169,6 +174,7 @@ func (d *AuthenticationReconciliation) HandleMsg(msg tea.Msg) Action {
 	}
 	return nil
 }
+
 func (d *AuthenticationReconciliation) ShortHelp() []key.Binding {
 	bindings := []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close"))}
 	if d.finished || d.retired {
@@ -189,21 +195,24 @@ func (d *AuthenticationReconciliation) ShortHelp() []key.Binding {
 	}
 	return bindings
 }
+
 func (d *AuthenticationReconciliation) FullHelp() [][]key.Binding {
 	return [][]key.Binding{d.ShortHelp()}
 }
+
 func (d *AuthenticationReconciliation) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 	t := d.com.Styles
 	width := max(0, min(76, area.Dx()-t.Dialog.View.GetHorizontalBorderSize()))
 	inner := max(0, width-t.Dialog.View.GetHorizontalFrameSize())
 	choice := "Original request"
-	if d.choice.Kind == "saved-account" {
+	switch d.choice.Kind {
+	case "saved-account":
 		choice = "Saved account: " + d.choice.AccountID
-	} else if d.choice.Kind == "saved-logout" {
+	case "saved-logout":
 		choice = "Saved logout"
-	} else if d.choice.Kind == "saved-oauth-token" {
+	case "saved-oauth-token":
 		choice = "Saved OAuth credential"
-	} else if d.choice.Kind == "saved-credential" {
+	case "saved-credential":
 		choice = "Saved credential slot: " + d.choice.CredentialID
 	}
 	text := "Publish reviewed saved state; the original operation is not repeated.\nAlt+1 original intent · Alt+2 saved account · Alt+3 saved logout · Alt+4 saved OAuth credential\nChoice: " + choice

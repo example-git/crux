@@ -2,13 +2,14 @@ package model
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/agent/tools"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/example-git/crux/internal/ui/chat"
-	"strings"
 )
 
 // PreviewExample describes a selectable fixture. All output goes through the

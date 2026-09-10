@@ -45,12 +45,15 @@ type authenticationInputFileInfo struct {
 func (authenticationInputFile) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication configuration preimages are private")
 }
+
 func (authenticationInputFile) String() string {
 	return "[private authentication configuration preimage]"
 }
+
 func (authenticationInputFile) GoString() string {
 	return "[private authentication configuration preimage]"
 }
+
 func (authenticationInputFile) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication configuration preimage]"))
 }
@@ -58,12 +61,15 @@ func (authenticationInputFile) Format(state fmt.State, _ rune) {
 func (authenticationConfigInputs) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication configuration inputs are private")
 }
+
 func (authenticationConfigInputs) String() string {
 	return "[private authentication configuration inputs]"
 }
+
 func (authenticationConfigInputs) GoString() string {
 	return "[private authentication configuration inputs]"
 }
+
 func (authenticationConfigInputs) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication configuration inputs]"))
 }

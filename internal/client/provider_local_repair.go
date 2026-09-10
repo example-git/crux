@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/example-git/crux/internal/proto"
-	"github.com/example-git/crux/internal/providerauth"
 	"io"
 	"net/http"
 	"net/url"
+
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 )
 
 func (c *Client) RepairLocalAuthentication(ctx context.Context, id string, request providerauth.LocalRepairRequest) (proto.ProviderLocalRepairResponse, error) {

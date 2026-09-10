@@ -8,8 +8,10 @@ import (
 	"strings"
 )
 
-type environmentContextKey struct{}
-type capturedEnvironment struct{ values map[string]string }
+type (
+	environmentContextKey struct{}
+	capturedEnvironment   struct{ values map[string]string }
+)
 
 func (*capturedEnvironment) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private OAuth environment]"))

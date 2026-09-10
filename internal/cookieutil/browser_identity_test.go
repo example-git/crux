@@ -55,7 +55,7 @@ func TestBrowserCookieCopyPreservesScopeAndRedactsValues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cookies.sqlite")
 	database, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
-	_, err = database.Exec(`CREATE TABLE moz_cookies (host TEXT, path TEXT, isSecure INTEGER, expiry INTEGER, name TEXT, value TEXT, isHttpOnly INTEGER)`)
+	_, err = database.ExecContext(t.Context(), `CREATE TABLE moz_cookies (host TEXT, path TEXT, isSecure INTEGER, expiry INTEGER, name TEXT, value TEXT, isHttpOnly INTEGER)`)
 	require.NoError(t, err)
 	for _, row := range []struct {
 		host, path, name, value string
@@ -67,7 +67,7 @@ func TestBrowserCookieCopyPreservesScopeAndRedactsValues(t *testing.T) {
 		{".example.test", "/", "expired", "synthetic-expired-cookie-3918", 0, time.Now().Add(-time.Hour).Unix()},
 		{".different.test", "/", "unrelated", "synthetic-unrelated-cookie-8428", 0, 0},
 	} {
-		_, err = database.Exec(`INSERT INTO moz_cookies VALUES (?, ?, ?, ?, ?, ?, 1)`, row.host, row.path, row.secure, row.expiry, row.name, row.value)
+		_, err = database.ExecContext(t.Context(), `INSERT INTO moz_cookies VALUES (?, ?, ?, ?, ?, ?, 1)`, row.host, row.path, row.secure, row.expiry, row.name, row.value)
 		require.NoError(t, err)
 	}
 	require.NoError(t, database.Close())
@@ -115,7 +115,7 @@ func TestBrowserCookieCopyFailsOnUnavailableDecryption(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "Cookies")
 	database, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
-	_, err = database.Exec(`CREATE TABLE meta (key TEXT, value INTEGER); CREATE TABLE cookies (host_key TEXT, path TEXT, is_secure INTEGER, expires_utc INTEGER, name TEXT, value TEXT, encrypted_value BLOB, is_httponly INTEGER); INSERT INTO cookies VALUES ('.example.test', '/', 1, 0, 'session', '', X'76323000000000', 1)`)
+	_, err = database.ExecContext(t.Context(), `CREATE TABLE meta (key TEXT, value INTEGER); CREATE TABLE cookies (host_key TEXT, path TEXT, is_secure INTEGER, expires_utc INTEGER, name TEXT, value TEXT, encrypted_value BLOB, is_httponly INTEGER); INSERT INTO cookies VALUES ('.example.test', '/', 1, 0, 'session', '', X'76323000000000', 1)`)
 	require.NoError(t, err)
 	require.NoError(t, database.Close())
 	profile := BrowserProfile{ID: "synthetic", profile: browserProfile{kind: browserProfileChromium, cookiesPath: path}}

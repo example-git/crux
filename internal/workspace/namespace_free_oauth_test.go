@@ -78,8 +78,8 @@ func TestNamespaceFreeWorkspaceOAuthThroughTLS(t *testing.T) {
 			require.Empty(t, f.namespace)
 			accountPath := filepath.Join(f.root, "accounts", "accounts.json")
 			unrelated := []byte(`{"active":{"unrelated":"kept"},"accounts":{"unrelated":[{"id":"kept","accessToken":"unrelated-private","vendor":{"number":1.0}}]},"foreign":{"large":9007199254740993}}`)
-			require.NoError(t, os.MkdirAll(filepath.Dir(accountPath), 0700))
-			require.NoError(t, os.WriteFile(accountPath, unrelated, 0600))
+			require.NoError(t, os.MkdirAll(filepath.Dir(accountPath), 0o700))
+			require.NoError(t, os.WriteFile(accountPath, unrelated, 0o600))
 			state, err := f.w.ProviderAuthentication(t.Context())
 			require.NoError(t, err)
 			f.ref.Target.Generation = state.Generation
@@ -144,7 +144,7 @@ func TestNamespaceFreeWorkspaceOAuthThroughTLS(t *testing.T) {
 			}
 			receiver, err := f.transport.s.Backend().GetWorkspace(f.w.workspaceID())
 			require.NoError(t, err)
-			result, err := receiver.App.CurrentAgentCoordinator().Model().Model.Generate(ctx, fantasy.Call{Headers: map[string]string{"x-session-id": "namespace-acceptance"}, Prompt: fantasy.Prompt{fantasy.NewUserMessage("Namespace-free accepted OAuth")}})
+			result, err := receiver.CurrentAgentCoordinator().Model().Model.Generate(ctx, fantasy.Call{Headers: map[string]string{"x-session-id": "namespace-acceptance"}, Prompt: fantasy.Prompt{fantasy.NewUserMessage("Namespace-free accepted OAuth")}})
 			require.NoError(t, err)
 			require.Equal(t, "namespace accepted", result.Content[0].(fantasy.TextContent).Text)
 			require.EqualValues(t, 1, logins.Load())

@@ -88,7 +88,7 @@ func TestAuthenticationJournalEntriesRejectInvalidScopeCancellationAndForeignCor
 	require.NoError(t, err)
 	invalid, err := sjson.SetBytes(before, "records."+foreign.id()+".revision", 0)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(journal.path, invalid, 0600))
+	require.NoError(t, os.WriteFile(journal.path, invalid, 0o600))
 	_, err = journal.Entries(t.Context(), key.Kind, key.WorkspaceID)
 	require.ErrorContains(t, err, "record is invalid", "scope filtering must not bypass whole-journal validation")
 	after, err := os.ReadFile(journal.path)

@@ -78,6 +78,7 @@ func (selectedTokenLineage) Format(state fmt.State, _ rune) {
 func (selectedTokenLineageRecord) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private OAuth token lineage]"))
 }
+
 func (selectedTokenLineageJournal) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private OAuth token lineage journal]"))
 }
@@ -113,7 +114,7 @@ func readSelectedTokenLineage(ctx context.Context, path string) (authenticationI
 	}
 	defer file.Close()
 	before.info, err = observeAuthenticationInput(file)
-	if err != nil || before.info.size > maxSelectedTokenLineageBytes || before.info.mode.Perm()&0077 != 0 {
+	if err != nil || before.info.size > maxSelectedTokenLineageBytes || before.info.mode.Perm()&0o077 != 0 {
 		return before, journal, errors.New("OAuth token lineage has invalid size or permissions")
 	}
 	before.data, err = io.ReadAll(io.LimitReader(authenticationInputReader{ctx: ctx, reader: file}, maxSelectedTokenLineageBytes+1))
@@ -402,7 +403,7 @@ func verifySelectedTokenLineageInputs(inputs authenticationConfigInputs, record 
 		}
 		// Only the target and its already captured inode aliases may carry the
 		// exact recorded successor write. Unrelated inputs require exact proof.
-		if input.path == proof.Path && proof.Exists && proof.Identity == record.Before.Identity && input.info.exists && input.info.mode.Perm() == 0600 && bytes.Equal(input.data, planned) {
+		if input.path == proof.Path && proof.Exists && proof.Identity == record.Before.Identity && input.info.exists && input.info.mode.Perm() == 0o600 && bytes.Equal(input.data, planned) {
 			continue
 		}
 		return errors.New("OAuth token lineage captured inputs changed")
@@ -442,7 +443,7 @@ func (l *selectedTokenLineage) persist(ctx context.Context, successor *oauth.Tok
 			// retry may stage the identical known bytes from that observed
 			// preimage, but never claim that the failed write was durable.
 			observed, readErr := readAuthenticationInput(ctx, l.path)
-			if readErr == nil && observed.info.exists && observed.info.mode.Perm() == 0600 && bytes.Equal(observed.data, data) {
+			if readErr == nil && observed.info.exists && observed.info.mode.Perm() == 0o600 && bytes.Equal(observed.data, data) {
 				l.file = observed
 			}
 		}

@@ -35,6 +35,7 @@ func (InactiveRefreshResult) GoString() string { return "accounts.InactiveRefres
 func (InactiveRefreshResult) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "accounts.InactiveRefreshResult(private)")
 }
+
 func (InactiveRefreshResult) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("inactive account refresh results are private and cannot be serialized")
 }
@@ -208,6 +209,7 @@ func (target inactiveRefreshTarget) sameTarget(other inactiveRefreshTarget) bool
 func (inactiveRefreshTarget) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "accounts.inactiveRefreshTarget(private)")
 }
+
 func (inactiveRefreshTarget) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("inactive refresh targets are private and cannot be serialized")
 }

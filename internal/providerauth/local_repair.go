@@ -32,6 +32,7 @@ func (r LocalRepairRequest) Validate() error {
 	}
 	return nil
 }
+
 func (s *Service) RepairLocalAuthentication(ctx context.Context, request LocalRepairRequest) (config.LocalAuthenticationRepairResult, error) {
 	if err := request.Validate(); err != nil {
 		return config.LocalAuthenticationRepairResult{}, err

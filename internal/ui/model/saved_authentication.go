@@ -44,6 +44,7 @@ type savedAuthenticationReloadMsg struct {
 func (m *UI) savedAuthenticationOpen(s *savedAuthenticationUI) bool {
 	return s != nil && s.workspace == m.com.Workspace && m.dialog.Dialog(dialog.SavedAuthenticationID) == s.dialog
 }
+
 func (m *UI) openSavedAuthentication() tea.Cmd {
 	capability, ok := m.com.Workspace.(workspace.ProviderAuthenticationSavedState)
 	if !ok || !capability.CanReconcileProviderAuthentication() {
@@ -66,11 +67,13 @@ func (m *UI) openSavedAuthentication() tea.Cmd {
 	m.dialog.OpenDialog(s.dialog)
 	return m.readSavedAuthentication(s)
 }
+
 func (m *UI) showSavedAuthentication(s *savedAuthenticationUI) {
 	if s != nil && s.dialog != nil {
 		s.dialog.SetState(s.message, s.pending, s.reload != nil)
 	}
 }
+
 func savedAuthenticationRows(snapshot providerauth.Snapshot) []dialog.SavedAuthenticationChoice {
 	var rows []dialog.SavedAuthenticationChoice
 	for _, provider := range snapshot.Providers {
@@ -82,7 +85,7 @@ func savedAuthenticationRows(snapshot providerauth.Snapshot) []dialog.SavedAuthe
 		}
 		var slots []providerauth.CredentialSlot
 		for _, slot := range provider.CredentialSlots {
-			if slot.Configured && !(slot.Property == "" && hasOAuth) {
+			if slot.Configured && (slot.Property != "" || !hasOAuth) {
 				slots = append(slots, slot)
 			}
 		}
@@ -110,6 +113,7 @@ func savedAuthenticationRows(snapshot providerauth.Snapshot) []dialog.SavedAuthe
 	}
 	return rows
 }
+
 func (m *UI) readSavedAuthentication(s *savedAuthenticationUI) tea.Cmd {
 	if s.pending {
 		return nil
@@ -127,6 +131,7 @@ func (m *UI) readSavedAuthentication(s *savedAuthenticationUI) tea.Cmd {
 		return savedAuthenticationReadMsg{s, attempt, snapshot, err}
 	}
 }
+
 func (m *UI) completeSavedAuthenticationRead(msg savedAuthenticationReadMsg) tea.Cmd {
 	s := msg.state
 	if s == nil || m.savedAuthentications[s.workspace] != s || !s.pending || s.attempt != msg.attempt {
@@ -149,6 +154,7 @@ func (m *UI) completeSavedAuthenticationRead(msg savedAuthenticationReadMsg) tea
 	m.showSavedAuthentication(s)
 	return nil
 }
+
 func (m *UI) handleSavedAuthentication(action dialog.ActionSavedAuthentication) tea.Cmd {
 	s := m.savedAuthentication
 	if !m.savedAuthenticationOpen(s) || action.Dialog != s.dialog {
@@ -214,6 +220,7 @@ func (m *UI) handleSavedAuthentication(action dialog.ActionSavedAuthentication) 
 	}
 	return nil
 }
+
 func (m *UI) dispatchSavedAuthenticationReload(s *savedAuthenticationUI, retained *providerauth.ReloadRequest, target providerauth.Target) tea.Cmd {
 	s.pending = true
 	s.attempt++
@@ -239,6 +246,7 @@ func (m *UI) dispatchSavedAuthenticationReload(s *savedAuthenticationUI, retaine
 		return savedAuthenticationReloadMsg{s, attempt, request, outcome, err}
 	}
 }
+
 func (m *UI) completeSavedAuthenticationReload(msg savedAuthenticationReloadMsg) tea.Cmd {
 	s := msg.state
 	if s == nil || m.savedAuthentications[s.workspace] != s || !s.pending || s.attempt != msg.attempt {

@@ -16,11 +16,12 @@ import (
 func TestClientProviderContextUsesCapturedTextWithoutHostFallback(t *testing.T) {
 	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "true")
 	directory := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(directory, "fixture.txt"), []byte("execution-host context"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "fixture.txt"), []byte("execution-host context"), 0o600))
 	builder, err := NewPrompt("coder", "generated prompt", withProviderInstructionsDir(directory), WithWorkingDir(t.TempDir()))
 	require.NoError(t, err)
 	owner := providerregistry.RegistrationOwner{ProviderID: "fixture"}
-	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+	proposal := config.RemoteRuntimeProposal{
+		Version: config.RemoteRuntimeVersion, Revision: 1,
 		Providers:                   []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: "fixture", Type: catalog.TypeOpenAICompat, BaseURL: "https://fixture.invalid/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model"}}}}},
 		Models:                      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: "fixture", Model: "model"}},
 		Credentials:                 []config.RemoteCredentialBinding{{Owner: owner, Generation: 1, APIKey: "synthetic-context-key"}},

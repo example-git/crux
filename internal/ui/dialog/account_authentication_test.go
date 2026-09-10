@@ -37,13 +37,16 @@ type authenticationRowsWorkspace struct {
 func (w *authenticationRowsWorkspace) ProviderAuthentication(context.Context) (providerauth.Snapshot, error) {
 	return w.snapshot, nil
 }
+
 func (w *authenticationRowsWorkspace) ProviderAccounts(_ context.Context, target providerauth.Target) (providerauth.AccountsState, error) {
 	w.targets = append(w.targets, target)
 	return w.accounts, w.err
 }
+
 func (w *authenticationRowsWorkspace) ProviderSurfaces() []providerregistry.Surface {
 	return w.surfaces
 }
+
 func authenticationRowsFixture() *authenticationRowsWorkspace {
 	owner := providerregistry.RegistrationOwner{ProviderID: "host-only", Construction: providerregistry.ConstructionCopilot, HasOAuth: true, AccountNamespace: "must-not-route-locally", HasManifest: true, ManifestID: "host.plugin", ManifestVersion: "1"}
 	public := providerauth.PublicOwner(owner)
@@ -51,6 +54,7 @@ func authenticationRowsFixture() *authenticationRowsWorkspace {
 	status := providerauth.Status{Owner: public, Configured: false, AccountState: "out-of-sync", ActiveAccountID: "opaque-account", Credentials: []providerauth.CredentialStatus{{Kind: "api-key", State: "absent"}, {Kind: "oauth", State: "absent"}}}
 	return &authenticationRowsWorkspace{snapshot: providerauth.Snapshot{WorkspaceID: target.WorkspaceID, Generation: target.Generation, Providers: []providerauth.Status{status}}, accounts: providerauth.AccountsState{Target: target, Status: status, Accounts: []providerauth.AccountSummary{{ID: "opaque-account", DisplayName: "Host Account", Active: true, CredentialState: "refresh-only", Refreshable: true}}}, surfaces: []providerregistry.Surface{{ID: owner.ProviderID, Name: "Host Provider", Owner: &owner}}}
 }
+
 func TestAuthenticationPickerConstructionAndInputArePure(t *testing.T) {
 	theme := styles.ThemeForProvider("")
 	com := &common.Common{Workspace: &struct{ workspace.Workspace }{}, Styles: &theme}
@@ -75,6 +79,7 @@ func TestAuthenticationPickerConstructionAndInputArePure(t *testing.T) {
 		require.Nil(t, d.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter}))
 	}
 }
+
 func TestAuthenticationRowsUseHostPublicOwnerAndStatus(t *testing.T) {
 	fixture := authenticationRowsFixture()
 	rows, err := LoadAuthenticationRows(t.Context(), fixture, false)
@@ -102,6 +107,7 @@ func TestAuthenticationRowsUseHostPublicOwnerAndStatus(t *testing.T) {
 	require.ErrorContains(t, err, "target changed")
 	require.Nil(t, rows)
 }
+
 func TestAuthenticationLogoutEligibilityAndReadErrors(t *testing.T) {
 	fixture := authenticationRowsFixture()
 	rows, err := LoadAuthenticationRows(t.Context(), fixture, true)
@@ -129,6 +135,7 @@ func TestAuthenticationLogoutEligibilityAndReadErrors(t *testing.T) {
 	d.CompleteRead(gen, nil, nil)
 	require.Contains(t, d.notice, "No configured")
 }
+
 func TestAuthenticationRowsThroughWorkspaceSDK(t *testing.T) {
 	fixture := authenticationRowsFixture()
 	var calls atomic.Int64

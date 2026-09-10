@@ -55,6 +55,7 @@ func TestCheckedAPIKeyGenericSettingsRetainResolvedInputs(t *testing.T) {
 	_, err = result.After.runtime.ResolveProviderAPIKey(old)
 	require.NoError(t, err)
 }
+
 func TestResolvedInputsRecognizeExactGenericFieldWrites(t *testing.T) {
 	for _, test := range []struct {
 		key       string
@@ -87,7 +88,7 @@ func TestCheckedAPIKeyGenericSettingRejectsPeerCredentialBeforeExecution(t *test
 	require.NoError(t, err)
 	data, err = sjson.SetBytes(data, "providers.checked.api_key", fmt.Sprintf("$(printf x > '%s'; printf synthetic-peer)", marker))
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(f.path, data, 0600))
+	require.NoError(t, os.WriteFile(f.path, data, 0o600))
 	err = f.store.SetConfigField(ScopeGlobal, "options.disable_auto_summarize", true)
 	require.ErrorIs(t, err, errResolvedProviderAPIKeyStale)
 	require.NoFileExists(t, marker)
@@ -128,7 +129,7 @@ func TestCheckedAPIKeyGenericSettingRejectsPreparerSourceChanges(t *testing.T) {
 				}
 				require.NoError(t, err)
 				if change != "unchanged" {
-					require.NoError(t, os.WriteFile(path, data, 0600))
+					require.NoError(t, os.WriteFile(path, data, 0o600))
 					peer = data
 				}
 				return RuntimeGenerationCandidate{Commit: func() { commits++ }, Abort: func() {

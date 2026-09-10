@@ -19,8 +19,10 @@ type PreviewMenu struct {
 	Label string `json:"label"`
 }
 
-var PreviewModals = previewModalMenus()
-var PreviewPopovers = []PreviewMenu{{"none", "None"}, {"files", "File mentions"}, {"resources", "MCP resources"}, {"commands", "Slash commands"}}
+var (
+	PreviewModals   = previewModalMenus()
+	PreviewPopovers = []PreviewMenu{{"none", "None"}, {"files", "File mentions"}, {"resources", "MCP resources"}, {"commands", "Slash commands"}}
+)
 
 func (w *previewWorkspace) ListSessions(context.Context) ([]session.Session, error) {
 	if w.sessions != nil {
@@ -33,6 +35,7 @@ func (w *previewWorkspace) ListSessions(context.Context) ([]session.Session, err
 	}
 	return sessions, nil
 }
+
 func (w *previewWorkspace) ListTasks(context.Context) ([]managedtask.View, error) {
 	return append([]managedtask.View(nil), w.taskData.Tasks...), nil
 }
@@ -76,6 +79,7 @@ func previewTasks() []managedtask.View {
 	}
 	return rows
 }
+
 func previewMenuValid(value string, menus []PreviewMenu) bool {
 	if value == "" {
 		return true

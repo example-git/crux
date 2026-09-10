@@ -63,13 +63,13 @@ func TestCheckedKeyUIThroughWorkspaceSDK(t *testing.T) {
 	t.Cleanup(func() { http.DefaultClient = previous })
 	dataDir, settings, project := filepath.Join(root, "data"), filepath.Join(root, "settings"), filepath.Join(root, "project")
 	for _, dir := range []string{dataDir, settings, project} {
-		require.NoError(t, os.MkdirAll(dir, 0700))
+		require.NoError(t, os.MkdirAll(dir, 0o700))
 	}
 	document := map[string]any{"providers": map[string]any{"checked": map[string]any{"name": "Checked Provider", "type": "openai-compat", "base_url": provider.URL + "/configured/v1", "api_key": "synthetic-old", "owner": map[string]any{"type": "custom", "construction": "openai-compat"}, "extra_headers": map[string]string{"X-Owner": "selected"}, "models": []map[string]any{{"id": "current", "name": "Current", "context_window": 8192, "default_max_tokens": 1024}, {"id": "next", "name": "Next", "context_window": 8192, "default_max_tokens": 1024}}}}, "models": map[string]any{"large": map[string]any{"provider": "checked", "model": "current"}, "small": map[string]any{"provider": "checked", "model": "current"}}}
 	data, err := json.Marshal(document)
 	require.NoError(t, err)
 	path := filepath.Join(dataDir, "crux.json")
-	require.NoError(t, os.WriteFile(path, data, 0600))
+	require.NoError(t, os.WriteFile(path, data, 0o600))
 	store, err := config.LoadIsolated(project, filepath.Join(root, "workspace"), false, env.NewFromMap(map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": root, "CRUX_GLOBAL_CONFIG": settings, "CRUX_GLOBAL_DATA": dataDir, "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": "integrated"}))
 	require.NoError(t, err)
 	store.SetRuntimeGenerationPreparer(func(_ context.Context, snapshot config.RuntimeSnapshot) (config.RuntimeGenerationCandidate, error) {

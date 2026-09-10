@@ -17,7 +17,7 @@ func TestProviderUsageRejectsMalformedRequestsBeforeBackend(t *testing.T) {
 		`{} {}`, strings.Repeat("[", 66) + strings.Repeat("]", 66),
 		`{"digest":"` + strings.Repeat("x", 16<<10) + `"}`,
 	} {
-		r := httptest.NewRequest(http.MethodPost, "/v1/workspaces/fixture/providers/usage", strings.NewReader(body))
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/workspaces/fixture/providers/usage", strings.NewReader(body))
 		response := httptest.NewRecorder()
 		// A nil backend makes an accidental dispatch observable as a panic.
 		(&controllerV1{}).handlePostWorkspaceProviderUsage(response, r)

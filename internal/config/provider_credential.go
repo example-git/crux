@@ -9,8 +9,10 @@ import (
 	"github.com/example-git/crux/internal/providerregistry"
 )
 
-var errResolvedProviderAPIKeyStale = errors.New("resolved provider credential no longer matches its owner or source")
-var errProviderAPIKeySlotUnsupported = errors.New("provider does not support the provider.api_key credential slot")
+var (
+	errResolvedProviderAPIKeyStale   = errors.New("resolved provider credential no longer matches its owner or source")
+	errProviderAPIKeySlotUnsupported = errors.New("provider does not support the provider.api_key credential slot")
+)
 
 // This proves literal-byte provenance, not a successful connection probe.
 // Only a retained check receipt can prove what definition and policy was probed.

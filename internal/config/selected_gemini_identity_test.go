@@ -46,7 +46,8 @@ func selectedGeminiIdentityStore(t *testing.T, project string) (*ConfigStore, pr
 	expired := &oauth.Token{AccessToken: "selected-old-access", RefreshToken: "selected-old-refresh", ExpiresIn: 3600, ExpiresAt: time.Now().Add(-time.Hour).Unix()}
 	entry := accounts.FromToken("selected-gemini", "Selected Gemini", expired, nil)
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderGemini, entry))
-	provider := ProviderConfig{ID: gemini.ID, Name: "Selected Gemini", APIKey: expired.AccessToken, OAuthToken: expired,
+	provider := ProviderConfig{
+		ID: gemini.ID, Name: "Selected Gemini", APIKey: expired.AccessToken, OAuthToken: expired,
 		BaseURL: "https://gemini-ag-cloud-code.example.invalid/cloud-code", Type: catalog.TypeOpenAICompat,
 		Owner:  &ProviderOwnerReference{Type: ProviderOwnerCore, Construction: providerregistry.ConstructionGeminiAntigravity},
 		Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}},
@@ -134,7 +135,7 @@ func TestSelectedGeminiRefreshUsesCapturedEnvironmentAndPersists(t *testing.T) {
 			require.NoError(t, err)
 			previous, previousTransport := http.DefaultClient, http.DefaultTransport
 			http.DefaultClient = &http.Client{Transport: selectedGeminiIdentityTransport(func(r *http.Request) (*http.Response, error) {
-				if !(r.URL.Scheme == "https" && (r.URL.Host == "gemini-ag-token.example.invalid" && r.URL.Path == "/token" || r.URL.Host == "gemini-ag-project.example.invalid" && r.URL.Path == "/project")) {
+				if r.URL.Scheme != "https" || (r.URL.Host != "gemini-ag-token.example.invalid" || r.URL.Path != "/token") && (r.URL.Host != "gemini-ag-project.example.invalid" || r.URL.Path != "/project") {
 					return nil, fmt.Errorf("unexpected outbound request %s", r.URL.Redacted())
 				}
 				copy := r.Clone(r.Context())

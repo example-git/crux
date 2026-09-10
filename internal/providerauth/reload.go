@@ -27,6 +27,7 @@ type ReloadOutcome struct {
 func (r ReloadRequest) Validate() error {
 	return (LogoutRequest{OperationID: r.ReloadID, Target: r.Target}).Validate()
 }
+
 func (o ReloadOutcome) Validate(r ReloadRequest) error {
 	if err := r.Validate(); err != nil {
 		return err

@@ -43,7 +43,7 @@ func TestClientAuthenticationReviewApplyPartialLogoutTLS(t *testing.T) {
 	require.NoError(t, f.w.InitCoderAgentNonInteractive(t.Context()))
 	receiver, err := f.s.Backend().GetWorkspace(f.w.workspaceID())
 	require.NoError(t, err)
-	coordinator := receiver.App.CurrentAgentCoordinator()
+	coordinator := receiver.CurrentAgentCoordinator()
 	old := coordinator.Model()
 	call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("reviewed logout")}}
 	_, err = old.Model.Generate(t.Context(), call)
@@ -147,7 +147,7 @@ func TestClientAuthenticationReviewApplySwitchChoiceTLS(t *testing.T) {
 			require.True(t, outcome.Adopted)
 			receiver, err := f.s.Backend().GetWorkspace(f.w.workspaceID())
 			require.NoError(t, err)
-			_, err = receiver.App.CurrentAgentCoordinator().Model().Model.Generate(t.Context(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("reviewed switch")}})
+			_, err = receiver.CurrentAgentCoordinator().Model().Model.Generate(t.Context(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("reviewed switch")}})
 			require.NoError(t, err)
 			require.Equal(t, []string{"Bearer " + want.AccessToken}, f.observed())
 			require.NoFileExists(t, f.marker)

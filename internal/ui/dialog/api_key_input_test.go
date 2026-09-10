@@ -59,12 +59,12 @@ func TestAPIKeyShortTerminalRetainsActionsAndScrollableEvidence(t *testing.T) {
 			d.Draw(screen, image.Rect(0, 0, 40, 12))
 			return ansi.Strip(screen.Render())
 		}
-		text := render()
+		render()
 		require.Positive(t, d.details.Height())
 		require.Greater(t, d.details.TotalLineCount(), d.details.Height())
 		seen := false
 		for i := 0; i < 200; i++ {
-			text = render()
+			text := render()
 			for _, hint := range []string{"esc", "ctrl+t", "alt+r", "alt+t", "pgup/pgdn"} {
 				require.Contains(t, text, hint, "action clipped at40x12: %s", text)
 			}

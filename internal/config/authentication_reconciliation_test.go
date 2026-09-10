@@ -48,10 +48,11 @@ func TestAuthenticationReconciliationCurrentSwitchLogout(t *testing.T) {
 		t.Run(fmt.Sprint(disabled), func(t *testing.T) {
 			f := newAuthenticationMutationFixture(t, ScopeWorkspace, disabled)
 			for _, accountID := range []string{"first", "second", ""} {
-				if accountID == "second" {
+				switch accountID {
+				case "second":
 					_, err := f.store.SwitchAuthenticationAccount(t.Context(), f.scope, f.capture(t), f.owner, accountID)
 					require.NoError(t, err)
-				} else if accountID == "" {
+				case "":
 					_, err := f.store.LogoutAuthentication(t.Context(), f.scope, f.capture(t), f.owner)
 					require.NoError(t, err)
 				}

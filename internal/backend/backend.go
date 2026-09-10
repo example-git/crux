@@ -311,7 +311,7 @@ func (w *Workspace) shutdown() {
 	// A lost task label or elapsed grace is not evidence that execution ended.
 	// HTTP/admin callers bound their own waits while this cleanup keeps joining.
 	if w.App != nil {
-		if err := w.App.DrainCredentialWork(context.Background()); err != nil {
+		if err := w.DrainCredentialWork(context.Background()); err != nil {
 			w.shutdownErr = err
 			return
 		}

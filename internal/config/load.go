@@ -890,6 +890,7 @@ func (c *Config) buildEnvironment() (env.Env, VariableResolver, map[string]strin
 func (c *Config) buildEnvironmentFrom(base env.Env) (env.Env, VariableResolver, map[string]string, error) {
 	return c.buildEnvironmentFromContext(context.Background(), base)
 }
+
 func (c *Config) buildEnvironmentFromContext(ctx context.Context, base env.Env) (env.Env, VariableResolver, map[string]string, error) {
 	values := environmentValues(base)
 	candidate := env.NewFromMap(values)

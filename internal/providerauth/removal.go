@@ -26,6 +26,7 @@ func (r RemoveRequest) Validate() error {
 	}
 	return nil
 }
+
 func (o MutationOutcome) ValidateRemove(r RemoveRequest) error {
 	if err := r.Validate(); err != nil {
 		return err
@@ -40,15 +41,18 @@ type authenticationRemover interface {
 func (s *Service) Remove(ctx context.Context, request RemoveRequest) (MutationResult, error) {
 	return s.remove(ctx, request, nil, nil)
 }
+
 func (s *Service) RemoveForAccepted(ctx context.Context, request RemoveRequest, accepted config.RemoteRuntimeProposal, view *config.Config) (MutationResult, error) {
 	return s.remove(ctx, request, &accepted, view)
 }
+
 func (s *Service) remove(ctx context.Context, request RemoveRequest, accepted *config.RemoteRuntimeProposal, view *config.Config) (MutationResult, error) {
 	if err := request.Validate(); err != nil {
 		return MutationResult{}, err
 	}
 	return s.mutate(ctx, mutationRequest{operationID: request.OperationID, target: request.Target, accountID: request.AccountID, removedAccountID: request.AccountID}, accepted, view)
 }
+
 func validateRemovalEffect(outcome MutationOutcome) error {
 	current := outcome.Change.Current
 	if !outcome.Progress.AccountsSaved || current.Status.ActiveAccountID == outcome.RemovedAccountID {

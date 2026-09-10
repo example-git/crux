@@ -90,7 +90,7 @@ func (s *ConfigStore) removeInactiveAuthenticationAccount(ctx context.Context, b
 	}
 	digest := sha256.Sum256([]byte(owner.ProviderID))
 	refreshPath := filepath.Join(filepath.Dir(globalPath), "locks", fmt.Sprintf("%x.refresh.lock", digest))
-	if err := os.MkdirAll(filepath.Dir(refreshPath), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(refreshPath), 0o700); err != nil {
 		return result, authenticationInputError(err)
 	}
 	lockCtx, cancelLock := context.WithTimeout(ctx, refreshLockDeadline)

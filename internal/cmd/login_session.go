@@ -171,7 +171,7 @@ func (c *oauthLoginConsole) readLine(ctx context.Context) (string, error) {
 	if errors.Is(err, bufio.ErrBufferFull) {
 		return "", errors.New("OAuth input exceeds the allowed size")
 	}
-	if err != nil && !(errors.Is(err, io.EOF) && len(data) > 0) {
+	if err != nil && (!errors.Is(err, io.EOF) || len(data) <= 0) {
 		return "", err
 	}
 	line := strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r")

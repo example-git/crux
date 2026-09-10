@@ -30,9 +30,12 @@ type authenticationSDKUIWorkspace struct {
 	publications int
 }
 
-func (w *authenticationSDKUIWorkspace) AgentIsReady() bool                               { return false }
-func (w *authenticationSDKUIWorkspace) PermissionSkipRequests() bool                     { return false }
+func (w *authenticationSDKUIWorkspace) AgentIsReady() bool { return false }
+
+func (w *authenticationSDKUIWorkspace) PermissionSkipRequests() bool { return false }
+
 func (w *authenticationSDKUIWorkspace) LSPGetStates() map[string]workspace.LSPClientInfo { return nil }
+
 func (w *authenticationSDKUIWorkspace) UpdateAgentModel(context.Context, config.AgentModelState) error {
 	w.publications++
 	return nil
@@ -46,7 +49,7 @@ func TestAuthenticationUIThroughWorkspaceSDKSwitchAndLogout(t *testing.T) {
 	root := t.TempDir()
 	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": "plugin-compat", "CRUX_DISABLE_AUTO_MEMORY": "true"}
 	t.Setenv("AI_CLI_DIR", values["AI_CLI_DIR"])
-	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_DATA"], 0700))
+	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_DATA"], 0o700))
 	first := accounts.Entry{ID: "first", DisplayName: "First", AccessToken: "synthetic-first", RefreshToken: "synthetic-refresh-first", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
 	second := accounts.Entry{ID: "second", DisplayName: "Second", AccessToken: "synthetic-second", RefreshToken: "synthetic-refresh-second", ExpiresAt: first.ExpiresAt}
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, first))
@@ -60,7 +63,7 @@ func TestAuthenticationUIThroughWorkspaceSDKSwitchAndLogout(t *testing.T) {
 	provider["owner"] = &config.ProviderOwnerReference{Type: config.ProviderOwnerPlugin, Construction: registration.Construction, CompatibilityAdapter: registration.CompatibilityAdapter}
 	data, err := json.Marshal(document)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json"), data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json"), data, 0o600))
 	store, err := config.LoadIsolated(root, filepath.Join(root, "workspace"), false, env.NewFromMap(values))
 	require.NoError(t, err)
 	selected := store.Config().Models

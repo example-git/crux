@@ -1,10 +1,11 @@
 package discover
 
 import (
-	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 type literalEndpointResolver struct {
@@ -19,6 +20,7 @@ func (r *literalEndpointResolver) ResolveValue(value string) (string, error) {
 	}
 	return value, nil
 }
+
 func TestDiscoverCheckedEndpointUsesOriginalDestination(t *testing.T) {
 	var first, second int
 	original := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

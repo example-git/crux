@@ -35,6 +35,7 @@ func historyValidationDrive(t *testing.T, ui *UI, cmd tea.Cmd) []tea.Msg {
 	}
 	return seen
 }
+
 func historyValidationCommand(t *testing.T, ui *UI, id string) tea.Cmd {
 	t.Helper()
 	commands, err := dialog.NewCommands(ui.com, "", false, false, false, nil, nil)
@@ -47,6 +48,7 @@ func historyValidationCommand(t *testing.T, ui *UI, id string) tea.Cmd {
 	t.Fatalf("registered command %q absent", id)
 	return nil
 }
+
 func historyValidationUI(f *authenticationReconciliationTLSFixture) (*UI, *authenticationReconciliationTLSWorkspace) {
 	ws := &authenticationReconciliationTLSWorkspace{authenticationSDKUIWorkspace: &authenticationSDKUIWorkspace{ClientWorkspace: f.w}}
 	ui := newTestUI()
@@ -58,6 +60,7 @@ func historyValidationUI(f *authenticationReconciliationTLSFixture) (*UI, *authe
 	ui.dialog = dialog.NewOverlay()
 	return ui, ws
 }
+
 func historyValidationSwitch(t *testing.T, ui *UI, f *authenticationReconciliationTLSFixture) authenticationCompletedMsg {
 	t.Helper()
 	historyValidationDrive(t, ui, ui.openAuthenticationAccounts(false))
@@ -79,12 +82,14 @@ func historyValidationSwitch(t *testing.T, ui *UI, f *authenticationReconciliati
 	t.Fatal("second account absent")
 	return authenticationCompletedMsg{}
 }
+
 func historyValidationKey(t *testing.T, ui *UI, d dialog.Dialog, key tea.KeyPressMsg) []tea.Msg {
 	t.Helper()
 	action := d.HandleMsg(key)
 	require.NotNil(t, action)
 	return historyValidationDrive(t, ui, ui.handleDialogAction(action))
 }
+
 func TestAuthenticationHistoryValidationTLSRecoveryAndRetirement(t *testing.T) {
 	for _, retire := range []bool{false, true} {
 		t.Run(map[bool]string{false: "recover", true: "retire"}[retire], func(t *testing.T) {
@@ -191,7 +196,7 @@ func TestAuthenticationHistoryValidationSavedReloadTLS(t *testing.T) {
 	document["providers"].(map[string]any)["copilot"].(map[string]any)["extra_headers"] = map[string]string{"X-Reloaded": "synthetic-disk-only"}
 	raw, err = json.Marshal(document)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(f.path, raw, 0600))
+	require.NoError(t, os.WriteFile(f.path, raw, 0o600))
 	historyValidationDrive(t, ui, historyValidationCommand(t, ui, "review_saved_authentication"))
 	state := ui.savedAuthentication
 	require.NotNil(t, state)

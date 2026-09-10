@@ -40,7 +40,10 @@ func TestOwnerValidationRefusalSkipsNetworkRetryAndAuthRefresh(t *testing.T) {
 				attempts++
 				request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://example.invalid", nil)
 				require.NoError(t, err)
-				_, err = client.Do(request)
+				response, err := client.Do(request)
+				if response != nil {
+					require.NoError(t, response.Body.Close())
+				}
 				require.ErrorIs(t, err, refusal)
 				var networkError net.Error
 				require.ErrorAs(t, err, &networkError, "net/http wrapping must reproduce the original retry misclassification")

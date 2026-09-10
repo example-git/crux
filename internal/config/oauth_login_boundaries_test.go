@@ -175,7 +175,7 @@ func TestOAuthLoginFreshCaptureCannotBlessUnacceptedSource(t *testing.T) {
 		return oauthLoginToken(), nil
 	})
 	marker := filepath.Join(f.root, "must-not-run")
-	require.NoError(t, os.WriteFile(filepath.Join(f.root, ".cruxrc"), []byte(fmt.Sprintf("touch '%s'; printf '{}'", marker)), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(f.root, ".cruxrc"), []byte(fmt.Sprintf("touch '%s'; printf '{}'", marker)), 0o600))
 	prep, err := f.store.PrepareOAuthLogin(t.Context(), f.capture(t), f.owner)
 	require.Error(t, err)
 	require.Nil(t, prep.state)
@@ -320,7 +320,7 @@ func TestOAuthLoginCommitCancellationAndPartialReceipt(t *testing.T) {
 						commits++
 						data, err := os.ReadFile(f.path)
 						require.NoError(t, err)
-						require.NoError(t, os.WriteFile(f.path, append(data, '\n'), 0600))
+						require.NoError(t, os.WriteFile(f.path, append(data, '\n'), 0o600))
 					}}, nil
 				})
 			}

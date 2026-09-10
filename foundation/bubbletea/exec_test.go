@@ -2,6 +2,7 @@ package tea
 
 import (
 	"bytes"
+	"context"
 	"os/exec"
 	"runtime"
 	"testing"
@@ -10,6 +11,7 @@ import (
 type execFinishedMsg struct{ err error }
 
 type testExecModel struct {
+	ctx context.Context
 	cmd string
 	err error
 }
@@ -17,14 +19,14 @@ type testExecModel struct {
 type testExecNoInputModel struct{ testExecModel }
 
 func (m *testExecModel) Init() Cmd {
-	c := exec.Command(m.cmd) //nolint:gosec
+	c := exec.CommandContext(m.ctx, m.cmd) //nolint:gosec
 	return ExecProcess(c, func(err error) Msg {
 		return execFinishedMsg{err}
 	})
 }
 
 func (m *testExecNoInputModel) Init() Cmd {
-	return ExecProcess(successExecCommand(), func(err error) Msg {
+	return ExecProcess(successExecCommand(m.ctx), func(err error) Msg {
 		return execFinishedMsg{err}
 	})
 }
@@ -50,14 +52,15 @@ type spyRenderer struct {
 	calledReset bool
 }
 
-func successExecCommand() *exec.Cmd {
+func successExecCommand(ctx context.Context) *exec.Cmd {
 	if runtime.GOOS == "windows" {
-		return exec.Command("cmd", "/c", "exit 0")
+		return exec.CommandContext(ctx, "cmd", "/c", "exit 0")
 	}
-	return exec.Command("true")
+	return exec.CommandContext(ctx, "true")
 }
 
 func TestTeaExec(t *testing.T) {
+	t.Parallel()
 	type test struct {
 		name      string
 		cmd       string
@@ -94,7 +97,7 @@ func TestTeaExec(t *testing.T) {
 			var buf bytes.Buffer
 			var in bytes.Buffer
 
-			m := &testExecModel{cmd: test.cmd}
+			m := &testExecModel{ctx: t.Context(), cmd: test.cmd}
 			p := NewProgram(m,
 				WithInput(&in),
 				WithOutput(&buf),
@@ -122,7 +125,7 @@ func TestTeaExecWithNilInput(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 
-	m := &testExecNoInputModel{}
+	m := &testExecNoInputModel{testExecModel{ctx: t.Context()}}
 	p := NewProgram(m,
 		WithInput(nil),
 		WithOutput(&buf),

@@ -147,7 +147,7 @@ var (
 )
 
 func validOperationID(id string) bool {
-	return len(id) == 32 && strings.IndexFunc(id, func(r rune) bool { return !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') }) < 0
+	return len(id) == 32 && strings.IndexFunc(id, func(r rune) bool { return (r < '0' || r > '9') && (r < 'a' || r > 'f') }) < 0
 }
 
 func (r SwitchRequest) Validate() error {
@@ -231,7 +231,7 @@ func (o MutationOutcome) Validate() error {
 		}
 		return nil // Partial publication may have no coherent post-observation.
 	}
-	if !o.Progress.RuntimePublished && !(o.RemovedAccountID != "" && o.Progress.AccountsSaved && !o.Progress.AccountRefreshed && !o.Progress.ConfigSaved) {
+	if !o.Progress.RuntimePublished && (o.RemovedAccountID == "" || !o.Progress.AccountsSaved || o.Progress.AccountRefreshed || o.Progress.ConfigSaved) {
 		return errors.New("authentication change has no completed local publication")
 	}
 	if o.Change.OperationID != o.OperationID || o.Change.Previous != o.Previous {

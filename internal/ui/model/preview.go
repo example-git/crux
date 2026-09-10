@@ -114,6 +114,7 @@ func (w *previewWorkspace) AcceptedAuthority() *config.RemoteAuthority {
 	}
 	return w.taskData.Authority
 }
+
 func (w *previewWorkspace) WorkingDir() string {
 	if w.taskData != nil && w.taskData.Directory != "" {
 		return w.taskData.Directory
@@ -130,6 +131,7 @@ func (w *previewWorkspace) RemoteAddress() string {
 	}
 	return ""
 }
+
 func (w *previewWorkspace) ProviderSurfaces() []providerregistry.Surface {
 	if w.surfaces != nil {
 		return w.surfaces
@@ -164,6 +166,7 @@ func NewPreview() (*Preview, error) {
 	p.base = clonePreviewValue(reflect.ValueOf(p.data)).Interface().(*PreviewData)
 	return p, nil
 }
+
 func previewJSON(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -484,6 +487,7 @@ func (p *Preview) Render(o PreviewOptions) (PreviewFrame, error) {
 	}
 	return p.frame(o, view.Content), nil
 }
+
 func (p *Preview) frame(o PreviewOptions, content string) PreviewFrame {
 	items := make([]PreviewItem, p.ui.chat.Len())
 	for id, index := range p.ui.chat.idInxMap {

@@ -43,7 +43,7 @@ func testRuntimeControlsThroughTLS(t *testing.T, adapter string) {
 	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "true")
 	serverConfig := filepath.Join(os.Getenv("CRUX_GLOBAL_CONFIG"), "crux.json")
 	serverBytes := []byte(`{"options":{"analysis_effort":"high"}}`)
-	require.NoError(t, os.WriteFile(serverConfig, serverBytes, 0600))
+	require.NoError(t, os.WriteFile(serverConfig, serverBytes, 0o600))
 	serverCode, err := connection.EnsureServerIdentity(t.Context())
 	require.NoError(t, err)
 	identity, err := connection.NewClientIdentity("controls-client")
@@ -142,7 +142,7 @@ func testRuntimeControlsThroughTLS(t *testing.T, adapter string) {
 	})
 	require.NoError(t, err)
 	clientConfig := filepath.Join(configDir, "crux.json")
-	require.NoError(t, os.WriteFile(clientConfig, encoded, 0600))
+	require.NoError(t, os.WriteFile(clientConfig, encoded, 0o600))
 	local, err := config.Load(t.TempDir(), t.TempDir(), false)
 	require.NoError(t, err)
 	owner, ok := local.Config().ProviderOwner(fixture.Provider.ID)
@@ -333,7 +333,7 @@ func installRuntimeControlsFixture(t *testing.T, adapter, endpoint, dataDir, cac
 		example = "responses-oauth.plugin"
 	}
 	source := filepath.Join(t.TempDir(), "controls.plugin")
-	require.NoError(t, os.MkdirAll(source, 0700))
+	require.NoError(t, os.MkdirAll(source, 0o700))
 	require.NoError(t, os.CopyFS(source, os.DirFS(filepath.Join("..", "..", "docs", "provider-plugins", "examples", example))))
 	data, err := os.ReadFile(filepath.Join(source, "manifest.json"))
 	require.NoError(t, err)
@@ -375,7 +375,7 @@ func installRuntimeControlsFixture(t *testing.T, adapter, endpoint, dataDir, cac
 	}
 	data, err = json.Marshal(value)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(source, "manifest.json"), data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "manifest.json"), data, 0o600))
 	manager, err := providerplugin.NewManager(t.Context(), providerplugin.DefaultPaths(dataDir, cacheDir))
 	require.NoError(t, err)
 	defer manager.Close()

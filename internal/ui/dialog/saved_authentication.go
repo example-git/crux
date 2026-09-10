@@ -51,9 +51,11 @@ func (d *SavedAuthentication) SetRows(rows []SavedAuthenticationChoice) {
 	d.rows = rows
 	d.selected = 0
 }
+
 func (d *SavedAuthentication) SetState(message string, pending, retry bool) {
 	d.message, d.pending, d.retryReload = message, pending, retry
 }
+
 func (d *SavedAuthentication) HandleMsg(msg tea.Msg) Action {
 	kp, ok := msg.(tea.KeyPressMsg)
 	if !ok {
@@ -98,6 +100,7 @@ func (d *SavedAuthentication) HandleMsg(msg tea.Msg) Action {
 	}
 	return nil
 }
+
 func (d *SavedAuthentication) ShortHelp() []key.Binding {
 	result := []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "close"))}
 	if d.pending {

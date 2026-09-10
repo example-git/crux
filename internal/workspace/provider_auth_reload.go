@@ -59,6 +59,7 @@ func (w *ClientWorkspace) lockSavedAuthentication(ctx context.Context, id string
 	}
 	return a, nil
 }
+
 func (w *ClientWorkspace) SavedProviderAuthentication(ctx context.Context) (providerauth.Snapshot, error) {
 	ctx, done := providerAuthContext(ctx, w.subCtx)
 	defer done()
@@ -70,6 +71,7 @@ func (w *ClientWorkspace) SavedProviderAuthentication(ctx context.Context) (prov
 	defer a.mu.Unlock()
 	return a.providerAuth.Status(ctx)
 }
+
 func (w *ClientWorkspace) ReloadProviderAuthentication(ctx context.Context, request providerauth.ReloadRequest) (providerauth.ReloadOutcome, error) {
 	initial := providerauth.ReloadOutcome{ReloadID: request.ReloadID, Previous: request.Target}
 	if err := request.Validate(); err != nil {

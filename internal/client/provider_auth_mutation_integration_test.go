@@ -39,7 +39,7 @@ func authMutationServerFixture(t *testing.T) (*authMutationRouteHarness, *Client
 	project := filepath.Join(root, "project")
 	globalConfig := filepath.Join(root, "config")
 	for _, path := range []string{global, project, globalConfig} {
-		require.NoError(t, os.MkdirAll(path, 0700))
+		require.NoError(t, os.MkdirAll(path, 0o700))
 	}
 	t.Setenv("HOME", root)
 	t.Setenv("USERPROFILE", root)
@@ -57,7 +57,7 @@ func authMutationServerFixture(t *testing.T) (*authMutationRouteHarness, *Client
 	bytes, err := json.Marshal(document)
 	require.NoError(t, err)
 	configPath := filepath.Join(global, "crux.json")
-	require.NoError(t, os.WriteFile(configPath, bytes, 0600))
+	require.NoError(t, os.WriteFile(configPath, bytes, 0o600))
 	store, err := config.LoadIsolated(project, filepath.Join(root, "workspace-data"), false, env.NewFromMap(map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": accountDir, "CRUX_GLOBAL_CONFIG": globalConfig, "CRUX_GLOBAL_DATA": global, "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfilePluginCompat)}))
 	require.NoError(t, err)
 	appCtx, cancel := context.WithCancel(t.Context())
@@ -153,7 +153,7 @@ func TestProviderAuthMutationRegisteredRouteKeepsPublishedPartial(t *testing.T) 
 			commits++
 			data, err := os.ReadFile(configPath)
 			require.NoError(t, err)
-			require.NoError(t, os.WriteFile(configPath, append(data, '\n'), 0600))
+			require.NoError(t, os.WriteFile(configPath, append(data, '\n'), 0o600))
 		}}, nil
 	})
 	partial, err := sdk.SwitchProviderAccount(t.Context(), h.workspace.ID, request)

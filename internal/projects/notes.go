@@ -8,8 +8,10 @@ import (
 	"time"
 )
 
-const noteIndexPageSize = 50
-const noteReadPageSize = 6000
+const (
+	noteIndexPageSize = 50
+	noteReadPageSize  = 6000
+)
 
 type Note struct {
 	ID      string `json:"id"`
@@ -72,9 +74,10 @@ func (d Document) noteEntries() []Note {
 		}
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			marker := trimmed[:3]
-			if fence == "" {
+			switch fence {
+			case "":
 				fence = marker
-			} else if fence == marker {
+			case marker:
 				fence = ""
 			}
 		}

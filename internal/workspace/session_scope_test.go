@@ -33,6 +33,7 @@ func TestSessionScopeRejectsRecreatedIDBeforeRPC(t *testing.T) {
 	require.Error(t, w.SetCurrentSession(ctx, "session"))
 	require.Equal(t, "new-id", w.workspaceID())
 }
+
 func TestSessionScopeSubscriptionReportsExactIncarnation(t *testing.T) {
 	for _, recreate := range []bool{false, true} {
 		t.Run(map[bool]string{false: "reattach", true: "recreate"}[recreate], func(t *testing.T) {
@@ -85,6 +86,7 @@ func TestSessionScopeSubscriptionReportsExactIncarnation(t *testing.T) {
 		})
 	}
 }
+
 func TestSessionScopeAcceptedAuthorityIsDetachedMetadata(t *testing.T) {
 	w := NewClientWorkspace(nil, proto.Workspace{ID: "display", Authority: &config.RemoteAuthority{Mode: "client", Principal: "owner", Revision: 4, Accounts: []config.RemoteAccountIdentity{{ProviderID: "provider", AccountID: "selected"}}}})
 	defer w.subCancel()

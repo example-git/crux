@@ -26,12 +26,16 @@ func TestImageProviderClientResolvedAPIKeyHTTPS(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[{"b64_json":"aW1hZ2U="}]}`))
 	}))
 	t.Cleanup(host.Close)
-	provider := config.ProviderConfig{ID: "openai", Type: catalog.TypeOpenAICompat, BaseURL: host.URL,
-		Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model"}}}
-	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+	provider := config.ProviderConfig{
+		ID: "openai", Type: catalog.TypeOpenAICompat, BaseURL: host.URL,
+		Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model"}},
+	}
+	proposal := config.RemoteRuntimeProposal{
+		Version: config.RemoteRuntimeVersion, Revision: 1,
 		Providers:   []config.RemoteProviderDefinition{{Config: provider}},
 		Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: provider.ID, Model: "model"}, config.SelectedModelTypeSmall: {Provider: provider.ID, Model: "model"}},
-		Credentials: []config.RemoteCredentialBinding{{Owner: providerregistry.RegistrationOwner{ProviderID: provider.ID}, Generation: 1, APIKey: literal}}}
+		Credentials: []config.RemoteCredentialBinding{{Owner: providerregistry.RegistrationOwner{ProviderID: provider.ID}, Generation: 1, APIKey: literal}},
+	}
 	compile := func() *config.ConfigStore {
 		var err error
 		proposal.Digest, err = config.RemoteRuntimeDigest(proposal)

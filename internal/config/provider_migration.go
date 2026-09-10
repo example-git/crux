@@ -586,7 +586,7 @@ func rollbackProviderMigration(configPath string, expected *providerMigrationRec
 	if expected != nil && !reflect.DeepEqual(journal, expected.journal) {
 		return errors.New("refusing provider migration rollback: journal belongs to a different transaction")
 	}
-	if journal.Version != providerOwnershipMigrationVersion || journal.State != "completed" && !(expected != nil && journal.State == "prepared") {
+	if journal.Version != providerOwnershipMigrationVersion || journal.State != "completed" && (expected == nil || journal.State != "prepared") {
 		return fmt.Errorf("provider migration is not rollbackable (version=%d state=%q)", journal.Version, journal.State)
 	}
 	if err := validateProviderMigrationMetadata(configPath, journal); err != nil {

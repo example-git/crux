@@ -108,7 +108,7 @@ func validText(value string, max int, required bool) bool {
 }
 
 func (g Generation) Validate() error {
-	if len(g.Epoch) != 32 || g.Sequence == 0 || strings.IndexFunc(g.Epoch, func(r rune) bool { return !(r >= 'a' && r <= 'f' || r >= '0' && r <= '9') }) >= 0 {
+	if len(g.Epoch) != 32 || g.Sequence == 0 || strings.IndexFunc(g.Epoch, func(r rune) bool { return (r < 'a' || r > 'f') && (r < '0' || r > '9') }) >= 0 {
 		return errors.New("invalid provider authentication generation")
 	}
 	return nil

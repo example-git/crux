@@ -273,13 +273,17 @@ func TestResolvedProviderCredentialOptionalOAuthBundleUsesAPIKey(t *testing.T) {
 	require.NoError(t, err)
 	registration, err := providerregistry.FromManifest(bundle.Provider().Manifest, bundle.Provider().StaticText)
 	require.NoError(t, err)
-	provider := ProviderConfig{ID: registration.ProviderID, Type: catalogue.Type, BaseURL: catalogue.APIEndpoint, Models: catalogue.Models,
-		Owner: providerOwnerReferenceForRegistration(registration), Plugin: &ProviderPluginReference{ID: bundle.ID(), Version: bundle.Version()}, Configuration: map[string]any{"oauth_client_id": "synthetic-client"}}
+	provider := ProviderConfig{
+		ID: registration.ProviderID, Type: catalogue.Type, BaseURL: catalogue.APIEndpoint, Models: catalogue.Models,
+		Owner: providerOwnerReferenceForRegistration(registration), Plugin: &ProviderPluginReference{ID: bundle.ID(), Version: bundle.Version()}, Configuration: map[string]any{"oauth_client_id": "synthetic-client"},
+	}
 	literal := "explicit-$LITERAL-key"
-	proposal := sealRemoteRuntime(t, RemoteRuntimeProposal{Version: RemoteRuntimeVersion, Revision: 1, Bundles: bundles,
+	proposal := sealRemoteRuntime(t, RemoteRuntimeProposal{
+		Version: RemoteRuntimeVersion, Revision: 1, Bundles: bundles,
 		Providers:   []RemoteProviderDefinition{{Config: provider, BundleDigest: bundle.Digest()}},
 		Models:      map[SelectedModelType]SelectedModel{SelectedModelTypeLarge: {Provider: provider.ID, Model: provider.Models[0].ID}, SelectedModelTypeSmall: {Provider: provider.ID, Model: provider.Models[1].ID}},
-		Credentials: []RemoteCredentialBinding{{Owner: registration.Owner(), Generation: 1, APIKey: literal}}})
+		Credentials: []RemoteCredentialBinding{{Owner: registration.Owner(), Generation: 1, APIKey: literal}},
+	})
 	receiver, err := CompileRemoteRuntime(root, filepath.Join(root, "workspace"), false, proposal, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", env.NewFromMap(map[string]string{"HOME": root}))
 	require.NoError(t, err, "optional OAuth cannot replace the declared inference API-key slot")
 	apiKey, err := receiver.RuntimeSnapshot().UsesResolvedProviderAPIKey(provider.ID)

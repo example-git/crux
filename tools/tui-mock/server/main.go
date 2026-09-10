@@ -1,10 +1,11 @@
 package main
 
 import (
-	"github.com/example-git/crux/internal/ui/demo"
 	"log"
 	"net/http"
 	"time"
+
+	"github.com/example-git/crux/internal/ui/demo"
 )
 
 func main() {

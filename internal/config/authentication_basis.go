@@ -14,8 +14,10 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-var errAuthenticationBasisUnavailable = errors.New("authentication configuration has no accepted input basis; reload configuration before changing authentication")
-var errAuthenticationBasisChanged = errors.New("saved configuration differs from the accepted runtime; reload configuration before changing authentication")
+var (
+	errAuthenticationBasisUnavailable = errors.New("authentication configuration has no accepted input basis; reload configuration before changing authentication")
+	errAuthenticationBasisChanged     = errors.New("saved configuration differs from the accepted runtime; reload configuration before changing authentication")
+)
 
 // authenticationLoadBasis records inputs at the reads/evaluations that actually
 // produced an accepted configuration. Status must never manufacture this proof
@@ -39,12 +41,15 @@ type authenticationBasisSource struct {
 func (authenticationLoadBasis) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("accepted authentication inputs are private")
 }
+
 func (authenticationLoadBasis) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private accepted authentication inputs]"))
 }
+
 func (authenticationBasisSource) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("accepted authentication source is private")
 }
+
 func (authenticationBasisSource) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private accepted authentication source]"))
 }

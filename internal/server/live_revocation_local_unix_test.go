@@ -26,7 +26,7 @@ func TestLiveAuthorizationPreservesLocalUnixSocket(t *testing.T) {
 	malformed := []byte(`{"invalid-network-authorization"`)
 	require.NoError(t, os.WriteFile(path, malformed, 0o600))
 	socket := filepath.Join(root, "server.sock")
-	listener, err := net.Listen("unix", socket)
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socket)
 	require.NoError(t, err)
 	srv := NewServer(nil, "unix", socket)
 	finished := make(chan error, 1)
@@ -43,7 +43,9 @@ func TestLiveAuthorizationPreservesLocalUnixSocket(t *testing.T) {
 	t.Cleanup(transport.CloseIdleConnections)
 	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 	for _, route := range []string{"/v1/health", "/v1/workspaces"} {
-		response, err := client.Get("http://local" + route)
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://local"+route, nil)
+		require.NoError(t, err)
+		response, err := client.Do(request)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, response.StatusCode)
 		_, err = io.Copy(io.Discard, response.Body)

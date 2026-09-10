@@ -1,12 +1,13 @@
 package dialog
 
 import (
+	"strings"
+	"time"
+
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/example-git/crux/internal/ui/common"
-	"strings"
-	"time"
 )
 
 // NewPreviewTasks uses the real task dialog with already-loaded fixture data.

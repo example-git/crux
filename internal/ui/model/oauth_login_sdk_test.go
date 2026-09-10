@@ -57,7 +57,7 @@ func newOAuthUIStore(t *testing.T, host *httptest.Server, mode string) (string, 
 		flow.Redirect.CallbackPath = "/ui/oauth/callback"
 	}
 	if mode == "loopback-fixed" {
-		available, err := net.Listen("tcp", "127.0.0.1:0")
+		available, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 		require.NoError(t, err)
 		flow.Redirect.Port = available.Addr().(*net.TCPAddr).Port
 		require.NoError(t, available.Close())
@@ -74,7 +74,7 @@ func newOAuthUIStore(t *testing.T, host *httptest.Server, mode string) (string, 
 	}
 	data, err = json.Marshal(declaration)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0o600))
 	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfilePluginNative), "CRUX_PROVIDER_PLUGINS": "example-responses"}
 	for _, key := range []string{"HOME", "USERPROFILE", "AI_CLI_DIR"} {
 		t.Setenv(key, values[key])
@@ -84,10 +84,10 @@ func newOAuthUIStore(t *testing.T, host *httptest.Server, mode string) (string, 
 	_, err = manager.Install(t.Context(), providerplugin.InstallRequest{Source: bundle, Trust: true, ExpectedRevision: manager.Snapshot().Revision})
 	require.NoError(t, err)
 	manager.Close()
-	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_CONFIG"], 0700))
+	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_CONFIG"], 0o700))
 	path := filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json")
 	document := `{"providers":{"example-responses":{"plugin":{"id":"example.responses-oauth"},"api_key":"","configuration":{"oauth_client_id":"synthetic-client"}}},"models":{"large":{"provider":"example-responses","model":"example-reasoner"},"small":{"provider":"example-responses","model":"example-small"}}}`
-	require.NoError(t, os.WriteFile(path, []byte(document), 0600))
+	require.NoError(t, os.WriteFile(path, []byte(document), 0o600))
 	previous := http.DefaultClient
 	previousTransport := http.DefaultTransport
 	http.DefaultClient = host.Client()
@@ -116,6 +116,7 @@ func (w *oauthSDKUIWorkspace) UpdateAgentModel(ctx context.Context, state config
 	}
 	return err
 }
+
 func (w *oauthSDKUIWorkspace) InitCoderAgent(ctx context.Context) error {
 	err := w.ClientWorkspace.InitCoderAgent(ctx)
 	if err == nil {
@@ -328,7 +329,9 @@ func TestOAuthUIThroughWorkspaceTLSAndActualCallback(t *testing.T) {
 					}
 					require.Equal(t, "/ui/oauth/callback", callback.EscapedPath())
 					callback.RawQuery = input
-					response, err := (&http.Client{Timeout: 3 * time.Second}).Get(callback.String())
+					request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callback.String(), nil)
+					require.NoError(t, err)
+					response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
 					if err != nil {
 						return err
 					}
@@ -420,7 +423,7 @@ func TestOAuthUIThroughWorkspaceTLSAndActualCallback(t *testing.T) {
 				account, err := accounts.Active(t.Context(), namespace)
 				require.NoError(t, err)
 				require.Equal(t, "synthetic-ui-$LITERAL", account.AccessToken)
-				result, err := receiver.App.CurrentAgentCoordinator().Model().Model.Generate(t.Context(), fantasy.Call{Headers: map[string]string{"x-session-id": "oauth-ui-acceptance"}, Prompt: fantasy.Prompt{fantasy.NewUserMessage("Use the UI-authorized account")}})
+				result, err := receiver.CurrentAgentCoordinator().Model().Model.Generate(t.Context(), fantasy.Call{Headers: map[string]string{"x-session-id": "oauth-ui-acceptance"}, Prompt: fantasy.Prompt{fantasy.NewUserMessage("Use the UI-authorized account")}})
 				require.NoError(t, err)
 				require.Equal(t, "oauth UI accepted", result.Content[0].(fantasy.TextContent).Text)
 				require.EqualValues(t, 1, inferences.Load())

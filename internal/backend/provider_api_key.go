@@ -10,8 +10,10 @@ import (
 )
 
 func (b *Backend) CheckProviderAPIKey(ctx context.Context, id string, request providerauth.APIKeyCheckRequest) (proto.ProviderAPIKeyCheckResponse, error) {
-	response := proto.ProviderAPIKeyCheckResponse{Outcome: providerauth.APIKeyCheckOutcome{CheckID: request.CheckID, Previous: request.Target, CredentialID: request.CredentialID,
-		Probe: config.ConnectionProbeResult{Kind: config.ConnectionProbeNotProbed, Policy: config.ConnectionProbePolicyNone}}}
+	response := proto.ProviderAPIKeyCheckResponse{Outcome: providerauth.APIKeyCheckOutcome{
+		CheckID: request.CheckID, Previous: request.Target, CredentialID: request.CredentialID,
+		Probe: config.ConnectionProbeResult{Kind: config.ConnectionProbeNotProbed, Policy: config.ConnectionProbePolicyNone},
+	}}
 	fail := func(err error) (proto.ProviderAPIKeyCheckResponse, error) {
 		response.Outcome.CheckedTarget = nil
 		response.Error = proto.NewProviderAuthenticationError(err)

@@ -95,7 +95,9 @@ func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, s
 			_ = json.NewDecoder(r.Body).Decode(&request)
 			model, _ := request["model"].(map[string]any)
 			owner, _ := request["owner"].(map[string]any)
-			if !(model["provider"] == "anthropic" && model["model"] == "claude-sonnet") && !(model["provider"] == "openai" && (model["model"] == "gpt-5" || model["model"] == "gpt-4.1")) {
+			anthropicModel := model["provider"] == "anthropic" && model["model"] == "claude-sonnet"
+			openAIModel := model["provider"] == "openai" && (model["model"] == "gpt-5" || model["model"] == "gpt-4.1")
+			if !anthropicModel && !openAIModel {
 				http.Error(w, "compatibility model was not translated", http.StatusBadRequest)
 				return
 			}

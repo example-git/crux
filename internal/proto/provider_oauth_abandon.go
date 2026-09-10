@@ -6,11 +6,13 @@ import (
 	"github.com/example-git/crux/internal/providerauth"
 )
 
-type ProviderOAuthLoginAbandonRequest = providerauth.OAuthLoginAbandonRequest
-type ProviderOAuthLoginAbandonResponse struct {
-	Outcome providerauth.OAuthLoginAbandonOutcome `json:"outcome"`
-	Error   *ProviderAuthenticationError          `json:"error,omitempty"`
-}
+type (
+	ProviderOAuthLoginAbandonRequest  = providerauth.OAuthLoginAbandonRequest
+	ProviderOAuthLoginAbandonResponse struct {
+		Outcome providerauth.OAuthLoginAbandonOutcome `json:"outcome"`
+		Error   *ProviderAuthenticationError          `json:"error,omitempty"`
+	}
+)
 
 func (r ProviderOAuthLoginAbandonResponse) Validate(request providerauth.OAuthLoginAbandonRequest) error {
 	if err := r.Outcome.Validate(request); err != nil {
@@ -24,9 +26,11 @@ func (r ProviderOAuthLoginAbandonResponse) Validate(request providerauth.OAuthLo
 	}
 	return nil
 }
+
 func DecodeProviderOAuthLoginAbandonRequest(body []byte) (providerauth.OAuthLoginAbandonRequest, error) {
 	return decodeProviderOAuthRequest[providerauth.OAuthLoginAbandonRequest](body, MaxProviderAuthRequestBytes)
 }
+
 func DecodeProviderOAuthLoginAbandonResponse(body []byte, request providerauth.OAuthLoginAbandonRequest) (ProviderOAuthLoginAbandonResponse, error) {
 	var response ProviderOAuthLoginAbandonResponse
 	if err := decodeProviderAuthJSON(body, MaxProviderAuthResponseBytes, &response); err != nil {

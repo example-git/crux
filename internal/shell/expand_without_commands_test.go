@@ -33,8 +33,10 @@ func TestExpandValueWithoutCommandsMatchesVariableSemantics(t *testing.T) {
 func TestExpandValueWithoutCommandsRejectsHiddenCommands(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "must-not-exist")
 	command := "$(printf x >> '" + marker + "')"
-	for _, value := range []string{command, "${SET:-" + command + "}", "${ABSENT:+" + command + "}",
-		"${SET:-${ABSENT:-" + command + "}}", "`printf x >> '" + marker + "'`", "$(< '" + marker + "')"} {
+	for _, value := range []string{
+		command, "${SET:-" + command + "}", "${ABSENT:+" + command + "}",
+		"${SET:-${ABSENT:-" + command + "}}", "`printf x >> '" + marker + "'`", "$(< '" + marker + "')",
+	} {
 		_, err := ExpandValueWithoutCommands(t.Context(), value, []string{"SET=present"}, false)
 		require.ErrorContains(t, err, "command substitution")
 		require.NotContains(t, err.Error(), marker)

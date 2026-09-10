@@ -34,7 +34,8 @@ func TestClientProviderCapturedGenerationRefusesNewRequestsAfterRemoval(t *testi
 	defer func() { http.DefaultClient = oldHTTP }()
 	owner := providerregistry.RegistrationOwner{ProviderID: "client-only"}
 	selected := config.SelectedModel{Provider: owner.ProviderID, Model: "client-model"}
-	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+	proposal := config.RemoteRuntimeProposal{
+		Version: config.RemoteRuntimeVersion, Revision: 1,
 		Providers:   []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: owner.ProviderID, Type: catalog.TypeOpenAICompat, BaseURL: host.URL + "/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: selected.Model, Name: "Client model", ContextWindow: 8192, DefaultMaxTokens: 1024}}}}},
 		Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: selected, config.SelectedModelTypeSmall: selected},
 		Credentials: []config.RemoteCredentialBinding{{Owner: owner, Generation: 1, APIKey: "synthetic-first"}},

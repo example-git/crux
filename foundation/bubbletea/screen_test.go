@@ -59,6 +59,7 @@ func (m *testViewModel) View() View {
 }
 
 func TestViewModel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		opts []testViewOpts
@@ -162,6 +163,7 @@ func TestViewModel(t *testing.T) {
 }
 
 func TestClearMsg(t *testing.T) {
+	t.Parallel()
 	type test struct {
 		name string
 		cmds sequenceMsg

@@ -39,7 +39,7 @@ func TestProviderOAuthRoutesRejectMalformedBeforeBackend(t *testing.T) {
 			require.NoError(t, err)
 			valid := string(encoded)
 			for _, body := range []string{`null`, `{}`, valid + `{}`, strings.Replace(valid, `"login_id":`, `"Login_ID":`, 1), strings.Replace(valid, `"workspace_id":"workspace"`, `"workspace_id":"other"`, 1), strings.Replace(valid, `"target":{`, `"target":{"private":"synthetic-private",`, 1), strings.Repeat(" ", test.maximum) + valid} {
-				r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
 				r.SetPathValue("id", "workspace")
 				w := httptest.NewRecorder()
 				test.handler(w, r)
@@ -55,12 +55,18 @@ func TestProviderOAuthRegisteredTLSRoutesRetainAuthenticationBoundary(t *testing
 	host, clients := newRemoteAuthorityTLSHarness(t)
 	for _, action := range []string{"begin", "bind", "code", "wait", "cancel", "complete"} {
 		path := host.URL + "/v1/workspaces/missing/auth/oauth/" + action
-		response, err := clients["unauthorized"].Post(path, "application/json", strings.NewReader(`{"input":"synthetic-private"}`))
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(`{"input":"synthetic-private"}`))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := clients["unauthorized"].Do(request)
 		if response != nil {
 			response.Body.Close()
 		}
 		require.Error(t, err, "unapproved actual TLS client cannot reach OAuth")
-		response, err = clients["retained"].Post(path, "application/json", strings.NewReader(`{"input":"synthetic-private"}`))
+		request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, path, strings.NewReader(`{"input":"synthetic-private"}`))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/json")
+		response, err = clients["retained"].Do(request)
 		require.NoError(t, err)
 		body, err := io.ReadAll(response.Body)
 		require.NoError(t, err)

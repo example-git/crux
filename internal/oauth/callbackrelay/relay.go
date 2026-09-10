@@ -36,6 +36,7 @@ type relayState struct {
 }
 
 func (Relay) Format(s fmt.State, _ rune) { _, _ = s.Write([]byte("[private OAuth callback relay]")) }
+
 func (Relay) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth callback relays are private")
 }
@@ -52,7 +53,7 @@ func Start(ctx context.Context, requirement oauth.CallbackRequirement) (*Relay, 
 	if requirement.Mode != "loopback-fixed" && requirement.Mode != "loopback-dynamic" {
 		return nil, errors.New("OAuth callback requires a loopback declaration")
 	}
-	listener, err := net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(int(requirement.Port))))
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", net.JoinHostPort("localhost", strconv.Itoa(int(requirement.Port))))
 	if err != nil {
 		return nil, fmt.Errorf("bind OAuth callback: %w", err)
 	}

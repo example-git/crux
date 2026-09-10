@@ -537,7 +537,6 @@ func quickStyle(o quickStyleOpts) Styles {
 				BackgroundColor: plainBg,
 			},
 		}
-
 	}
 	s.QuietMarkdown = quietMarkdown(panelBackground)
 	s.ThinkingMarkdown = quietMarkdown(o.bgBase)

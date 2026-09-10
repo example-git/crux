@@ -1,15 +1,17 @@
 package providerregistry
 
 import (
+	"testing"
+
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 func TestModelCatalogActivationMatchesExecutor(t *testing.T) {
 	base := manifest.Manifest{Provider: manifest.Provider{ID: "catalog", Name: "Catalog"}, Capabilities: manifest.Capabilities{
 		Endpoints:  []manifest.Endpoint{{ID: "api", BaseURL: "https://example.invalid", AllowedSchemes: []string{"https"}, AllowedHosts: []string{"example.invalid"}, Override: "forbidden"}},
-		Operations: []manifest.Operation{{ID: "inference", Kind: "inference", Protocol: "openai-responses", Transport: "sse", Endpoint: "api", Method: "POST", Path: "/response"}, {ID: "catalog", Kind: "model-catalog", Protocol: "generic-json", Transport: "http-json", Endpoint: "api", Method: "GET", Path: "/catalog"}}}}
+		Operations: []manifest.Operation{{ID: "inference", Kind: "inference", Protocol: "openai-responses", Transport: "sse", Endpoint: "api", Method: "POST", Path: "/response"}, {ID: "catalog", Kind: "model-catalog", Protocol: "generic-json", Transport: "http-json", Endpoint: "api", Method: "GET", Path: "/catalog"}},
+	}}
 	for _, test := range []struct {
 		name  string
 		edit  func(*manifest.Operation)

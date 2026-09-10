@@ -3,11 +3,6 @@ package declarative
 import (
 	"errors"
 	"fmt"
-	fantasy "github.com/example-git/crux/foundation"
-	"github.com/example-git/crux/internal/providerplugin/manifest"
-	"github.com/example-git/crux/internal/providertransport"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +10,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providertransport"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInferenceRedirectsKeepCapturedCredentialDestinations(t *testing.T) {
@@ -79,10 +80,14 @@ func TestInferenceRedirectsKeepCapturedCredentialDestinations(t *testing.T) {
 				if strings.HasPrefix(mode, "forbidden-") {
 					endpoint.Override = "forbidden"
 				}
-				provider := &Provider{ID: "synthetic", HTTPClient: providertransport.ClientWithOwnerValidator(server.Client(), validate),
+				provider := &Provider{
+					ID: "synthetic", HTTPClient: providertransport.ClientWithOwnerValidator(server.Client(), validate),
 					Headers: map[string]string{"Authorization": "Bearer synthetic-access", "X-Private": "synthetic-private"},
-					Operation: &providertransport.Operation{ID: "inference", Key: providertransport.Key{Protocol: "generic-json", Transport: "http-json"}, Endpoint: endpoint, Method: http.MethodPost, Path: "/start", RequestTimeout: time.Second,
-						Retry: manifest.RetryPolicy{MaxAttempts: 2, TransportErrors: true, InitialDelayMS: 1, Authentication: "never", ReplayRequirement: "before-first-event"}}}
+					Operation: &providertransport.Operation{
+						ID: "inference", Key: providertransport.Key{Protocol: "generic-json", Transport: "http-json"}, Endpoint: endpoint, Method: http.MethodPost, Path: "/start", RequestTimeout: time.Second,
+						Retry: manifest.RetryPolicy{MaxAttempts: 2, TransportErrors: true, InitialDelayMS: 1, Authentication: "never", ReplayRequirement: "before-first-event"},
+					},
+				}
 				model, err := provider.LanguageModel(t.Context(), "synthetic-model")
 				require.NoError(t, err)
 				result, err := model.Generate(t.Context(), fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("captured prompt")}})

@@ -44,13 +44,13 @@ func TestPreviewFlagScopedSessionReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest("POST", "/api/sessions/load", strings.NewReader(`{"sessionId":"saved-session","project":"/elsewhere"}`))
+	req := httptest.NewRequestWithContext(t.Context(), "POST", "/api/sessions/load", strings.NewReader(`{"sessionId":"saved-session","project":"/elsewhere"}`))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != 400 {
 		t.Fatal("API accepted a filesystem target")
 	}
-	req = httptest.NewRequest("POST", "/api/sessions/load", strings.NewReader(`{"sessionId":"saved-session"}`))
+	req = httptest.NewRequestWithContext(t.Context(), "POST", "/api/sessions/load", strings.NewReader(`{"sessionId":"saved-session"}`))
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != 200 {
@@ -60,7 +60,7 @@ func TestPreviewFlagScopedSessionReplay(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &loaded)
 	options := model.PreviewOptions{ImportID: loaded["importId"], Cols: 180, Rows: 60, Example: "all", Model: "dummy-coder", Scenario: "idle", Modal: "none", Popover: "none", MessageNumber: 3}
 	raw, _ := json.Marshal(options)
-	req = httptest.NewRequest("POST", "/api/preview", strings.NewReader(string(raw)))
+	req = httptest.NewRequestWithContext(t.Context(), "POST", "/api/preview", strings.NewReader(string(raw)))
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != 200 {

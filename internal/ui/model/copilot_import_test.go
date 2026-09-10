@@ -35,6 +35,7 @@ func (w *importingTestWorkspace) ProviderAuthentication(ctx context.Context) (pr
 	_, configured := w.cfg.Providers.Get("copilot")
 	return providerauth.Snapshot{WorkspaceID: "copilot-ui", Generation: providerauth.Generation{Epoch: strings.Repeat("a", 32), Sequence: 1}, Providers: []providerauth.Status{{Owner: providerauth.PublicOwner(owner), Configured: configured, AccountState: "none", Credentials: []providerauth.CredentialStatus{{Kind: "api-key", State: "absent"}, {Kind: "oauth", State: "absent"}}}}}, ctx.Err()
 }
+
 func deliverImportAuthenticationStatus(t *testing.T, ui *UI, cmd tea.Cmd) {
 	t.Helper()
 	found := false

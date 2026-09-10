@@ -74,6 +74,7 @@ func (m *UI) authenticationDialogOpen(d *dialog.AccountAuthentication) bool {
 	})
 	return ok && current.AuthenticationState() == d
 }
+
 func (m *UI) pruneAuthenticationReads() {
 	m.pruneAuthenticationHistory()
 	m.pruneAuthenticationReconciliations()
@@ -102,6 +103,7 @@ func (m *UI) pruneAuthenticationReads() {
 		}
 	}
 }
+
 func (m *UI) openAuthenticationAccounts(logout bool) tea.Cmd {
 	var d *dialog.AccountAuthentication
 	if logout {
@@ -119,6 +121,7 @@ func (m *UI) openAuthenticationAccounts(logout bool) tea.Cmd {
 	m.showAuthenticationOperation(d)
 	return m.loadAuthenticationAccounts(d)
 }
+
 func (m *UI) showAuthenticationOperation(d *dialog.AccountAuthentication) {
 	if operation := m.authenticationOperations[m.com.Workspace]; operation != nil {
 		message := operation.message
@@ -134,6 +137,7 @@ func (m *UI) showAuthenticationOperation(d *dialog.AccountAuthentication) {
 		d.SetReview(false)
 	}
 }
+
 func (m *UI) loadAuthenticationAccounts(d *dialog.AccountAuthentication) tea.Cmd {
 	if !m.authenticationDialogOpen(d) {
 		return nil
@@ -154,6 +158,7 @@ func (m *UI) loadAuthenticationAccounts(d *dialog.AccountAuthentication) tea.Cmd
 		return authenticationLoadedMsg{read: read, rows: rows, err: err}
 	}
 }
+
 func (m *UI) completeAuthenticationRead(msg authenticationLoadedMsg) {
 	read := msg.read
 	if read == nil || m.authenticationReads[read.dialog] != read || read.completed {
@@ -168,6 +173,7 @@ func (m *UI) completeAuthenticationRead(msg authenticationLoadedMsg) {
 		read.dialog.CompleteRead(read.generation, msg.rows, msg.err)
 	}
 }
+
 func (m *UI) beginAuthenticationOperation(action dialog.ActionAuthenticationSelect) tea.Cmd {
 	if !m.authenticationDialogOpen(action.Dialog) || action.Dialog.Generation() != action.Generation {
 		return nil
@@ -204,6 +210,7 @@ func (m *UI) beginAuthenticationOperation(action dialog.ActionAuthenticationSele
 	m.updateAuthenticationDialogs()
 	return prepareAuthenticationOperation(operation)
 }
+
 func prepareAuthenticationOperation(operation *authenticationOperation) tea.Cmd {
 	return func() tea.Msg {
 		var id [16]byte
@@ -211,6 +218,7 @@ func prepareAuthenticationOperation(operation *authenticationOperation) tea.Cmd 
 		return authenticationPreparedMsg{operation: operation, id: hex.EncodeToString(id[:]), err: err}
 	}
 }
+
 func (m *UI) completeAuthenticationPreparation(msg authenticationPreparedMsg) tea.Cmd {
 	operation := msg.operation
 	if operation == nil || m.authenticationOperations[operation.workspace] != operation || !operation.preparing {
@@ -230,6 +238,7 @@ func (m *UI) completeAuthenticationPreparation(msg authenticationPreparedMsg) te
 	operation.id = msg.id
 	return m.dispatchAuthenticationOperation(operation)
 }
+
 func (m *UI) retryAuthenticationOperation(action dialog.ActionAuthenticationRetry) tea.Cmd {
 	if !m.authenticationDialogOpen(action.Dialog) {
 		return nil
@@ -240,6 +249,7 @@ func (m *UI) retryAuthenticationOperation(action dialog.ActionAuthenticationRetr
 	}
 	return m.dispatchAuthenticationOperation(operation)
 }
+
 func (m *UI) dispatchAuthenticationOperation(operation *authenticationOperation) tea.Cmd {
 	operation.pending, operation.delivered = true, false
 	operation.attempt++
@@ -270,6 +280,7 @@ func (m *UI) dispatchAuthenticationOperation(operation *authenticationOperation)
 		return authenticationCompletedMsg{operation: operation, attempt: attempt, outcome: outcome, err: err}
 	}
 }
+
 func (m *UI) updateAuthenticationDialogs() {
 	for _, id := range []string{dialog.AccountSwitcherID, dialog.LogoutID} {
 		if current, ok := m.dialog.Dialog(id).(interface {
@@ -279,6 +290,7 @@ func (m *UI) updateAuthenticationDialogs() {
 		}
 	}
 }
+
 func (m *UI) completeAuthenticationOperation(msg authenticationCompletedMsg) tea.Cmd {
 	operation := msg.operation
 	if operation == nil || m.authenticationOperations[operation.workspace] != operation || operation.attempt != msg.attempt || operation.delivered {
@@ -366,6 +378,7 @@ func (m *UI) completeAuthenticationOperation(msg authenticationCompletedMsg) tea
 	}
 	return tea.Batch(cmds...)
 }
+
 func (operation *authenticationOperation) description() string {
 	if operation.logout {
 		return "logout from " + operation.row.Label
@@ -392,6 +405,7 @@ func authenticationProgressText(progress providerauth.MutationProgress) string {
 	}
 	return " Confirmed local effects: " + strings.Join(effects, ", ") + "."
 }
+
 func authenticationUsageCommand(ws workspace.Workspace, generation uint64) tea.Cmd {
 	return func() tea.Msg {
 		result := authenticationUsageMsg{workspace: ws, generation: generation}

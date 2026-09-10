@@ -34,6 +34,7 @@ type oauthLoginSession struct {
 func (*oauthLoginSession) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private OAuth login session]"))
 }
+
 func (*oauthLoginSession) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth login sessions are private")
 }

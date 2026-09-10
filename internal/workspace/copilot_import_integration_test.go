@@ -180,7 +180,8 @@ func TestCopilotImportThroughTLS(t *testing.T) {
 			}
 			importsBefore := receiverImports.Load()
 			found, importErr := w.ImportCopilot(ctx, owner)
-			if mode == "no-source" {
+			switch mode {
+			case "no-source":
 				require.NoError(t, importErr)
 				require.False(t, found)
 				require.Zero(t, exchanges.Load())
@@ -188,7 +189,7 @@ func TestCopilotImportThroughTLS(t *testing.T) {
 				entries, err := accounts.List(t.Context(), owner.AccountNamespace)
 				require.NoError(t, err)
 				require.Empty(t, entries)
-			} else if mode == "client" || mode == "server-owned" {
+			case "client", "server-owned":
 				require.NoError(t, importErr)
 				require.True(t, found)
 				require.EqualValues(t, 1, exchanges.Load())
@@ -232,7 +233,7 @@ func TestCopilotImportThroughTLS(t *testing.T) {
 				_, err = w.ImportCopilot(t.Context(), owner)
 				require.NoError(t, err)
 				require.EqualValues(t, 1, exchanges.Load(), "configured credentials must not be overwritten by automatic import")
-			} else {
+			default:
 				require.Error(t, importErr)
 				require.False(t, found)
 				require.NotContains(t, importErr.Error(), "synthetic-provider-secret")

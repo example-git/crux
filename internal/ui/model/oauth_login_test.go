@@ -44,6 +44,7 @@ func (w *oauthUIWorkspace) BeginProviderOAuthLogin(ctx context.Context, ref prov
 	}
 	return w.state, ctx.Err()
 }
+
 func (w *oauthUIWorkspace) WaitProviderOAuthLogin(ctx context.Context, ref providerauth.OAuthLoginRef, after uint64) (providerauth.OAuthLoginState, error) {
 	require.True(w.t, w.allowIO, "Wait outside Cmd")
 	require.Equal(w.t, w.state.Login, ref)
@@ -52,6 +53,7 @@ func (w *oauthUIWorkspace) WaitProviderOAuthLogin(ctx context.Context, ref provi
 	}
 	return w.state, ctx.Err()
 }
+
 func (w *oauthUIWorkspace) SubmitProviderOAuthLoginCode(ctx context.Context, request providerauth.OAuthLoginCodeRequest) (providerauth.OAuthLoginState, error) {
 	require.True(w.t, w.allowIO, "Submit outside Cmd")
 	w.submissions = append(w.submissions, request)
@@ -61,17 +63,20 @@ func (w *oauthUIWorkspace) SubmitProviderOAuthLoginCode(ctx context.Context, req
 	}
 	return w.state, ctx.Err()
 }
+
 func (w *oauthUIWorkspace) CancelProviderOAuthLogin(_ context.Context, ref providerauth.OAuthLoginRef) (providerauth.OAuthLoginState, error) {
 	require.True(w.t, w.allowIO, "Cancel outside Cmd")
 	w.cancels = append(w.cancels, ref)
 	w.state = providerauth.OAuthLoginState{Login: ref, Sequence: 3, Phase: providerauth.OAuthLoginCanceled}
 	return w.state, providerauth.ErrOAuthLogin
 }
+
 func (w *oauthUIWorkspace) CompleteProviderOAuthLogin(_ context.Context, ref providerauth.OAuthLoginRef) (providerauth.MutationOutcome, error) {
 	require.True(w.t, w.allowIO, "Complete outside Cmd")
 	w.completes = append(w.completes, ref)
 	return w.loginOutcome(ref)
 }
+
 func (w *oauthUIWorkspace) loginOutcome(ref providerauth.OAuthLoginRef) (providerauth.MutationOutcome, error) {
 	out := providerauth.MutationOutcome{OperationID: ref.OperationID, LoginID: ref.LoginID, Previous: ref.Target, Progress: providerauth.MutationProgress{ConfigSaved: true, RuntimePublished: true}}
 	if w.failure == "complete-lost" {
@@ -92,11 +97,13 @@ func (w *oauthUIWorkspace) loginOutcome(ref providerauth.OAuthLoginRef) (provide
 	}
 	return out, nil
 }
+
 func (w *oauthUIWorkspace) RecoverProviderAuthentication(_ context.Context, request workspace.ProviderAuthenticationRecoveryRequest) (providerauth.MutationOutcome, error) {
 	require.True(w.t, w.allowIO, "Recover outside Cmd")
 	w.loginRecoveries = append(w.loginRecoveries, request)
 	return w.loginOutcome(w.completes[0])
 }
+
 func newOAuthUI(t *testing.T) (*UI, *oauthUIWorkspace, dialog.ActionSelectModel) {
 	ui, key, selection := newCheckedKeyUI(t)
 	owner := selection.ProviderOwner
@@ -118,6 +125,7 @@ func newOAuthUI(t *testing.T) (*UI, *oauthUIWorkspace, dialog.ActionSelectModel)
 	}
 	return ui, ws, selection
 }
+
 func oauthUICommand(ws *oauthUIWorkspace, cmd tea.Cmd) []tea.Msg {
 	messages := runCheckedKeyCmd(ws.checkedKeyUIWorkspace, cmd)
 	var relevant []tea.Msg
@@ -132,6 +140,7 @@ func oauthUICommand(ws *oauthUIWorkspace, cmd tea.Cmd) []tea.Msg {
 	}
 	return relevant
 }
+
 func oauthUIUpdate(ui *UI, ws *oauthUIWorkspace, msg tea.Msg) []tea.Msg {
 	// Status-dismissal timers are unrelated to login state transitions.
 	if _, ok := msg.(util.InfoMsg); ok {
@@ -143,6 +152,7 @@ func oauthUIUpdate(ui *UI, ws *oauthUIWorkspace, msg tea.Msg) []tea.Msg {
 	_, cmd := ui.Update(msg)
 	return oauthUICommand(ws, cmd)
 }
+
 func openOAuthUI(t *testing.T, ui *UI, ws *oauthUIWorkspace, selection dialog.ActionSelectModel) (*dialog.OAuthLogin, []tea.Msg) {
 	t.Helper()
 	owner := providerauth.PublicOwner(selection.ProviderOwner)
@@ -155,6 +165,7 @@ func openOAuthUI(t *testing.T, ui *UI, ws *oauthUIWorkspace, selection dialog.Ac
 	d := ui.dialog.Dialog(dialog.LoginID).(*dialog.OAuthLogin)
 	return d, messages
 }
+
 func settleOAuthUI(t *testing.T, ui *UI, ws *oauthUIWorkspace, messages []tea.Msg) {
 	t.Helper()
 	for steps := 0; len(messages) > 0; steps++ {
@@ -164,6 +175,7 @@ func settleOAuthUI(t *testing.T, ui *UI, ws *oauthUIWorkspace, messages []tea.Ms
 		messages = append(messages, oauthUIUpdate(ui, ws, msg)...)
 	}
 }
+
 func submitOAuthUI(t *testing.T, ui *UI, ws *oauthUIWorkspace, d *dialog.OAuthLogin, input string) []tea.Msg {
 	t.Helper()
 	d.HandleMsg(tea.PasteMsg{Content: input})
@@ -171,6 +183,7 @@ func submitOAuthUI(t *testing.T, ui *UI, ws *oauthUIWorkspace, d *dialog.OAuthLo
 	require.IsType(t, dialog.ActionOAuthLoginSubmit{}, action)
 	return oauthUICommand(ws, ui.handleDialogAction(action))
 }
+
 func TestOAuthUIHostedOriginalInputAndAcknowledgedContinuation(t *testing.T) {
 	ui, ws, selection := newOAuthUI(t)
 	d, messages := openOAuthUI(t, ui, ws, selection)
@@ -190,6 +203,7 @@ func TestOAuthUIHostedOriginalInputAndAcknowledgedContinuation(t *testing.T) {
 	require.Equal(t, 1, ws.updateAgentCalls)
 	require.NotContains(t, fmt.Sprintf("%#v", ui.oauthLogins[ws]), "synthetic-private")
 }
+
 func TestOAuthUIExactRetriesDoNotMintNewLoginOrCode(t *testing.T) {
 	for _, failure := range []string{"begin-lost", "submit-lost", "complete-lost", "partial"} {
 		t.Run(failure, func(t *testing.T) {
@@ -224,6 +238,7 @@ func TestOAuthUIExactRetriesDoNotMintNewLoginOrCode(t *testing.T) {
 		})
 	}
 }
+
 func TestOAuthUIUnacknowledgedClosedOrStaleCompletionNeverContinues(t *testing.T) {
 	for _, mode := range []string{"wrong-receipt", "partial", "historical", "closed", "new-workspace", "new-selection"} {
 		t.Run(mode, func(t *testing.T) {
@@ -257,6 +272,7 @@ func TestOAuthUIUnacknowledgedClosedOrStaleCompletionNeverContinues(t *testing.T
 		})
 	}
 }
+
 func TestOAuthUICloseCancelsOriginalAndLegacyTokenCannotPersist(t *testing.T) {
 	ui, ws, selection := newOAuthUI(t)
 	d, messages := openOAuthUI(t, ui, ws, selection)

@@ -40,7 +40,9 @@ func TestDeclarativeCallbackExchangeIsClaimedOnce(t *testing.T) {
 	callbackURL := callbackURLForTest(t, <-opened)
 	first := make(chan error, 1)
 	go func() {
-		response, err := http.Get(callbackURL)
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callbackURL, nil)
+		require.NoError(t, err)
+		response, err := http.DefaultClient.Do(request)
 		if response != nil {
 			response.Body.Close()
 		}
@@ -52,7 +54,9 @@ func TestDeclarativeCallbackExchangeIsClaimedOnce(t *testing.T) {
 		t.Fatal("first exchange did not start")
 	}
 	client := &http.Client{Timeout: time.Second}
-	second, err := client.Get(callbackURL)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callbackURL, nil)
+	require.NoError(t, err)
+	second, err := client.Do(request)
 	if err == nil {
 		require.Equal(t, http.StatusConflict, second.StatusCode)
 		second.Body.Close()
@@ -86,8 +90,10 @@ func TestDeclarativeCallbackTimeoutCancelsExchange(t *testing.T) {
 		done <- err
 	}()
 	callbackURL := callbackURLForTest(t, <-opened)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callbackURL, nil)
+	require.NoError(t, err)
 	go func() {
-		response, _ := http.Get(callbackURL)
+		response, _ := http.DefaultClient.Do(request)
 		if response != nil {
 			response.Body.Close()
 		}

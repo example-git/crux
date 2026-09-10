@@ -51,7 +51,8 @@ func newAuthenticationCandidateFixture(t *testing.T, id string, configured, disa
 		require.NoError(t, registrytest.Install(t.Context(), values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"], manifesttest.Delegated(id)))
 	}
 	marker := filepath.Join(root, "header-count")
-	provider := ProviderConfig{ID: id, Disable: disabled,
+	provider := ProviderConfig{
+		ID: id, Disable: disabled,
 		BaseURL: "https://api.example.invalid/custom", SystemPromptPrefix: "preserve prompt", ToolingInstructions: "crux",
 		ExtraHeaders:    map[string]string{"X-Captured": "$CAPTURED_HEADER", "X-Once": fmt.Sprintf("$(printf x >> '%s'; printf command-header)", filepath.ToSlash(marker)), "X-Empty": "${ABSENT_CANDIDATE_HEADER:-}"},
 		ExtraBody:       map[string]any{"precise": json.Number("37"), "nested": map[string]any{"keep": false}},

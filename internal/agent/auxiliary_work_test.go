@@ -52,8 +52,10 @@ func TestCoordinatorAuxiliaryHTTPSRequestsCancelAndJoin(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(environment.workingDir, "crux.json"), []byte(configuration), 0o600))
 			store := initTestConfig(t, environment.workingDir)
 			store.SetupAgents()
-			coord := &coordinator{cfg: store, sessions: environment.sessions, messages: environment.messages,
-				permissions: environment.permissions, history: environment.history, filetracker: *environment.filetracker}
+			coord := &coordinator{
+				cfg: store, sessions: environment.sessions, messages: environment.messages,
+				permissions: environment.permissions, history: environment.history, filetracker: *environment.filetracker,
+			}
 			t.Cleanup(func() {
 				host.CloseClientConnections()
 				coord.CloseContext(context.Background())

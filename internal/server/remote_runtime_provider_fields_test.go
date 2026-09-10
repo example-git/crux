@@ -57,7 +57,7 @@ func TestRemoteRuntimeProviderFieldsDecode(t *testing.T) {
 					if requestType == "update" {
 						result = &proto.UpdateRemoteRuntimeRequest{}
 					}
-					r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(test.data))
+					r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(test.data))
 					err := decodeRuntimeRequest(httptest.NewRecorder(), r, result)
 					if test.err == "" {
 						require.NoError(t, err)

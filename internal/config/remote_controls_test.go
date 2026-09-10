@@ -65,8 +65,11 @@ func TestRemoteRuntimeControlsRejectInvalidReplacement(t *testing.T) {
 	require.NoError(t, err)
 	before := store.RuntimeSnapshot()
 	for _, invalid := range []RemoteRuntimeControls{
-		{InstructionMode: "hidden"}, {AnalysisEffort: "unlimited"}, {ResponseVerbosity: "verbose"},
-		{SummarizationMaxTokens: -1}, {SummarizationContextCap: -1},
+		{InstructionMode: "hidden"},
+		{AnalysisEffort: "unlimited"},
+		{ResponseVerbosity: "verbose"},
+		{SummarizationMaxTokens: -1},
+		{SummarizationContextCap: -1},
 	} {
 		candidate := proposal
 		candidate.Revision, candidate.Controls = 2, invalid

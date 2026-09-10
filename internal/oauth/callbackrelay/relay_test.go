@@ -18,7 +18,7 @@ import (
 func callbackRequest(t *testing.T, relay *Relay, method, path string) (int, string) {
 	t.Helper()
 	client := &http.Client{Timeout: 2 * time.Second}
-	req, err := http.NewRequest(method, fmt.Sprintf("http://localhost:%d%s", relay.Port(), path), nil)
+	req, err := http.NewRequestWithContext(t.Context(), method, fmt.Sprintf("http://localhost:%d%s", relay.Port(), path), nil)
 	require.NoError(t, err)
 	response, err := client.Do(req)
 	require.NoError(t, err)
@@ -72,7 +72,7 @@ func TestCallbackRelayExactEscapedPathOneQueryAndPrivateCopies(t *testing.T) {
 }
 
 func TestCallbackRelayFixedPortConflictDoesNotChooseAnotherPort(t *testing.T) {
-	occupied, err := net.Listen("tcp", "localhost:0")
+	occupied, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "localhost:0")
 	require.NoError(t, err)
 	port := uint16(occupied.Addr().(*net.TCPAddr).Port)
 	descriptor := oauth.CallbackRequirement{Mode: "loopback-fixed", Port: port, Path: "/callback"}

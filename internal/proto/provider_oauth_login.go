@@ -87,6 +87,7 @@ func (r ProviderOAuthLoginResponse) ValidateBegin(request providerauth.OAuthLogi
 	}
 	return r.validate(request, "", 0, "")
 }
+
 func (r ProviderOAuthLoginResponse) ValidateBind(request providerauth.OAuthLoginBindRequest) error {
 	if err := request.Validate(); err != nil {
 		return err
@@ -103,6 +104,7 @@ func (r ProviderOAuthLoginResponse) ValidateBind(request providerauth.OAuthLogin
 	}
 	return nil
 }
+
 func (r ProviderOAuthLoginResponse) ValidateCode(request providerauth.OAuthLoginCodeRequest) error {
 	if err := request.Validate(); err != nil {
 		return err
@@ -119,6 +121,7 @@ func (r ProviderOAuthLoginResponse) ValidateCode(request providerauth.OAuthLogin
 	}
 	return nil
 }
+
 func (r ProviderOAuthLoginResponse) ValidateWait(ref providerauth.OAuthLoginRef, after uint64) error {
 	if err := r.validate(ref, "", 0, ""); err != nil {
 		return err
@@ -128,6 +131,7 @@ func (r ProviderOAuthLoginResponse) ValidateWait(ref providerauth.OAuthLoginRef,
 	}
 	return nil
 }
+
 func (r ProviderOAuthLoginResponse) ValidateCancel(ref providerauth.OAuthLoginRef) error {
 	if err := r.validate(ref, "", 0, ""); err != nil {
 		return err
@@ -137,6 +141,7 @@ func (r ProviderOAuthLoginResponse) ValidateCancel(ref providerauth.OAuthLoginRe
 	}
 	return nil
 }
+
 func (r ProviderAuthenticationMutationResponse) ValidateOAuthLogin(ref providerauth.OAuthLoginRef) error {
 	if err := r.Outcome.ValidateOAuthLogin(ref); err != nil {
 		return err
@@ -159,18 +164,23 @@ func decodeProviderOAuthRequest[T interface{ Validate() error }](body []byte, ma
 func DecodeProviderOAuthLoginBeginRequest(body []byte) (providerauth.OAuthLoginRequest, error) {
 	return decodeProviderOAuthRequest[providerauth.OAuthLoginRequest](body, MaxProviderAuthRequestBytes)
 }
+
 func DecodeProviderOAuthLoginBindRequest(body []byte) (providerauth.OAuthLoginBindRequest, error) {
 	return decodeProviderOAuthRequest[providerauth.OAuthLoginBindRequest](body, MaxProviderAuthRequestBytes)
 }
+
 func DecodeProviderOAuthLoginCodeRequest(body []byte) (providerauth.OAuthLoginCodeRequest, error) {
 	return decodeProviderOAuthRequest[providerauth.OAuthLoginCodeRequest](body, MaxProviderOAuthCodeRequestBytes)
 }
+
 func DecodeProviderOAuthLoginWaitRequest(body []byte) (ProviderOAuthLoginWaitRequest, error) {
 	return decodeProviderOAuthRequest[ProviderOAuthLoginWaitRequest](body, MaxProviderAuthRequestBytes)
 }
+
 func DecodeProviderOAuthLoginCancelRequest(body []byte) (providerauth.OAuthLoginRef, error) {
 	return decodeProviderOAuthRequest[providerauth.OAuthLoginRef](body, MaxProviderAuthRequestBytes)
 }
+
 func DecodeProviderOAuthLoginCompleteRequest(body []byte) (providerauth.OAuthLoginRef, error) {
 	return decodeProviderOAuthRequest[providerauth.OAuthLoginRef](body, MaxProviderAuthRequestBytes)
 }
@@ -189,18 +199,23 @@ func decodeProviderOAuthResponse(body []byte, validate func(ProviderOAuthLoginRe
 func DecodeProviderOAuthLoginBeginResponse(body []byte, request providerauth.OAuthLoginRequest) (ProviderOAuthLoginResponse, error) {
 	return decodeProviderOAuthResponse(body, func(r ProviderOAuthLoginResponse) error { return r.ValidateBegin(request) })
 }
+
 func DecodeProviderOAuthLoginBindResponse(body []byte, request providerauth.OAuthLoginBindRequest) (ProviderOAuthLoginResponse, error) {
 	return decodeProviderOAuthResponse(body, func(r ProviderOAuthLoginResponse) error { return r.ValidateBind(request) })
 }
+
 func DecodeProviderOAuthLoginCodeResponse(body []byte, request providerauth.OAuthLoginCodeRequest) (ProviderOAuthLoginResponse, error) {
 	return decodeProviderOAuthResponse(body, func(r ProviderOAuthLoginResponse) error { return r.ValidateCode(request) })
 }
+
 func DecodeProviderOAuthLoginWaitResponse(body []byte, ref providerauth.OAuthLoginRef, after uint64) (ProviderOAuthLoginResponse, error) {
 	return decodeProviderOAuthResponse(body, func(r ProviderOAuthLoginResponse) error { return r.ValidateWait(ref, after) })
 }
+
 func DecodeProviderOAuthLoginCancelResponse(body []byte, ref providerauth.OAuthLoginRef) (ProviderOAuthLoginResponse, error) {
 	return decodeProviderOAuthResponse(body, func(r ProviderOAuthLoginResponse) error { return r.ValidateCancel(ref) })
 }
+
 func DecodeProviderOAuthLoginCompleteResponse(body []byte, ref providerauth.OAuthLoginRef) (ProviderAuthenticationMutationResponse, error) {
 	var response ProviderAuthenticationMutationResponse
 	if err := decodeProviderAuthJSON(body, MaxProviderAuthResponseBytes, &response); err != nil {

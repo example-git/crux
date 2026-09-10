@@ -40,9 +40,11 @@ func (w *commandLoginStatusWorkspace) Config() *config.Config { return nil }
 func (w *commandLoginStatusWorkspace) ProviderSurfaces() []providerregistry.Surface {
 	return []providerregistry.Surface{w.surface.Clone()}
 }
+
 func (w *commandLoginStatusWorkspace) ProviderAuthentication(context.Context) (providerauth.Snapshot, error) {
 	return w.status, nil
 }
+
 func (w *commandLoginStatusWorkspace) ImportCopilot(context.Context, providerregistry.RegistrationOwner) (bool, error) {
 	w.imports++
 	if w.changeOwner {
@@ -54,6 +56,7 @@ func (w *commandLoginStatusWorkspace) ImportCopilot(context.Context, providerreg
 	}
 	return true, nil
 }
+
 func newCommandLoginStatusWorkspace(t *testing.T) *commandLoginStatusWorkspace {
 	t.Helper()
 	var owner providerregistry.RegistrationOwner
@@ -70,6 +73,7 @@ func newCommandLoginStatusWorkspace(t *testing.T) *commandLoginStatusWorkspace {
 	surface := providerregistry.Surface{ID: owner.ProviderID, Name: "Copilot", Owner: &owner, Available: true, Authentication: []providerregistry.Authentication{{Kind: "oauth2", Adapter: owner.OAuthAdapter, FlowID: owner.OAuthFlowID, Available: true}}}
 	return &commandLoginStatusWorkspace{status: snapshot, surface: surface}
 }
+
 func TestCLILoginRejectsOwnerReplacementAfterImport(t *testing.T) {
 	ws := newCommandLoginStatusWorkspace(t)
 	ws.changeOwner = true
@@ -79,6 +83,7 @@ func TestCLILoginRejectsOwnerReplacementAfterImport(t *testing.T) {
 	require.Equal(t, 1, ws.imports)
 	require.NotContains(t, output.String(), "Authenticated with")
 }
+
 func TestCLILoginExistingCredentialDoesNotBegin(t *testing.T) {
 	ws := newCommandLoginStatusWorkspace(t)
 	var output bytes.Buffer

@@ -32,9 +32,11 @@ type CheckedAPIKeyPreparation struct {
 func (CheckedAPIKeyPreparation) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("checked API key preparations are private")
 }
+
 func (CheckedAPIKeyPreparation) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private checked API key preparation]"))
 }
+
 func (p CheckedAPIKeyPreparation) ProbeResult() ConnectionProbeResult {
 	if p.probe.Kind == "" {
 		return ConnectionProbeResult{Kind: ConnectionProbeNotProbed, Policy: ConnectionProbePolicyNone}
@@ -55,9 +57,11 @@ type checkedAPIKeySettings struct {
 func (checkedAPIKeySettings) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("checked API key settings are private")
 }
+
 func (checkedAPIKeySettings) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private checked API key settings]"))
 }
+
 func (s *ConfigStore) checkedAPIKeySettingsLocked(before AuthenticationCapture) checkedAPIKeySettings {
 	base := s.baseEnvironment
 	if base == nil {
@@ -69,6 +73,7 @@ func (s *ConfigStore) checkedAPIKeySettingsLocked(before AuthenticationCapture) 
 	}
 	return settings
 }
+
 func (s *ConfigStore) validateCheckedAPIKeyCapture(ctx context.Context, before AuthenticationCapture, owner providerregistry.RegistrationOwner) error {
 	if before.runtime.IsClientOwned() {
 		return ErrClientRuntimeManaged

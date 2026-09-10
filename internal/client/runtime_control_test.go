@@ -3,13 +3,14 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/proto"
@@ -35,12 +36,14 @@ func TestRuntimeControlSDKExactValuesAndRoutes(t *testing.T) {
 	for _, raw := range []string{`false`, `0`, `""`, `9007199254740993`, `1.2500`} {
 		for _, operation := range []string{"resolve", "set", "remove"} {
 			t.Run(raw+"/"+operation, func(t *testing.T) {
+				t.Parallel()
 				state := clientRuntimeControlState(json.RawMessage(raw))
 				target := state.Target
 				method, path := http.MethodPut, "/v1/workspaces/fixture/config/runtime-control"
-				if operation == "resolve" {
+				switch operation {
+				case "resolve":
 					method, path, target.DescriptorDigest = http.MethodPost, path+"/resolve", ""
-				} else if operation == "remove" {
+				case "remove":
 					method, state.Scoped = http.MethodDelete, config.RuntimeControlValue{}
 				}
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +83,7 @@ func TestRuntimeControlSDKAllowsRequestDependentAbsenceOnReadAndRemove(t *testin
 	t.Parallel()
 	for _, operation := range []string{"resolve", "remove", "set"} {
 		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
 			state := clientRuntimeControlState(json.RawMessage(`false`))
 			state.Binding.FallbackMode = "if-absent"
 			state.RuntimeDependent = true
@@ -138,6 +142,7 @@ func TestRuntimeControlSDKRejectsMalformedAndChangedAcknowledgement(t *testing.T
 		"oversized":           strings.Repeat(" ", proto.MaxRuntimeControlResponseBytes) + valid,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
 			defer srv.Close()
 			_, err := captureClient(t, srv).SetRuntimeControl(t.Context(), "fixture", state.Scope, state.Target, state.Effective.Value)

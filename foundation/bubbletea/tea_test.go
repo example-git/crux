@@ -223,6 +223,7 @@ func TestTeaWaitKill(t *testing.T) {
 }
 
 func TestTeaWithFilter(t *testing.T) {
+	t.Parallel()
 	for _, preventCount := range []uint32{0, 1, 2} {
 		t.Run(fmt.Sprintf("prevent_%d", preventCount), func(t *testing.T) {
 			t.Parallel()

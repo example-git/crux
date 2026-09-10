@@ -62,7 +62,7 @@ func newOAuthServiceFixture(t *testing.T, host *httptest.Server, mode string) oa
 	}
 	data, err = json.Marshal(declaration)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0o600))
 	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfilePluginNative), "CRUX_PROVIDER_PLUGINS": "example-responses"}
 	for _, key := range []string{"HOME", "USERPROFILE", "AI_CLI_DIR"} {
 		t.Setenv(key, values[key])
@@ -72,10 +72,10 @@ func newOAuthServiceFixture(t *testing.T, host *httptest.Server, mode string) oa
 	_, err = manager.Install(t.Context(), providerplugin.InstallRequest{Source: bundle, Trust: true, ExpectedRevision: manager.Snapshot().Revision})
 	require.NoError(t, err)
 	manager.Close()
-	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_CONFIG"], 0700))
+	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_CONFIG"], 0o700))
 	path := filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json")
 	document := `{"providers":{"example-responses":{"plugin":{"id":"example.responses-oauth"},"api_key":"synthetic-old","configuration":{"oauth_client_id":"synthetic-client"}}},"models":{"large":{"provider":"example-responses","model":"example-reasoner"},"small":{"provider":"example-responses","model":"example-small"}}}`
-	require.NoError(t, os.WriteFile(path, []byte(document), 0600))
+	require.NoError(t, os.WriteFile(path, []byte(document), 0o600))
 	previous := http.DefaultClient
 	previousTransport := http.DefaultTransport
 	http.DefaultClient = host.Client()
@@ -114,7 +114,7 @@ func submitOAuthServiceCode(t *testing.T, f oauthServiceFixture, mode string) OA
 	var state OAuthLoginState
 	if mode == "loopback-dynamic" {
 		awaitOAuthServicePhase(t, f, OAuthLoginWaitingLoopback)
-		listener, err := net.Listen("tcp", "localhost:0")
+		listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "localhost:0")
 		require.NoError(t, err)
 		defer listener.Close()
 		port := uint16(listener.Addr().(*net.TCPAddr).Port)

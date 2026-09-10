@@ -1,9 +1,10 @@
 package backend
 
 import (
+	"path/filepath"
+
 	"github.com/example-git/crux/internal/projects"
 	"github.com/example-git/crux/internal/proto"
-	"path/filepath"
 )
 
 func (b *Backend) ListProjects(workspaceID string) ([]proto.ProjectInfo, error) {

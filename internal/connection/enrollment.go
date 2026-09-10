@@ -452,10 +452,12 @@ func (e *EnrollmentListener) publishLocked(outcome enrollmentOutcome) {
 	}()
 }
 
-var errEnrollmentExpired = errors.New("enrollment code expired")
-var errEnrollmentClosed = errors.New("enrollment closed")
-var errEnrollmentMalformedLimit = errors.New("enrollment malformed submission limit exceeded")
-var errEnrollmentAuthorizationLimit = errors.New("enrollment authorization failure limit exceeded")
+var (
+	errEnrollmentExpired            = errors.New("enrollment code expired")
+	errEnrollmentClosed             = errors.New("enrollment closed")
+	errEnrollmentMalformedLimit     = errors.New("enrollment malformed submission limit exceeded")
+	errEnrollmentAuthorizationLimit = errors.New("enrollment authorization failure limit exceeded")
+)
 
 func enrollmentExpiredError() error {
 	return fmt.Errorf("%w; rerun `crux server setup` to generate a new code", errEnrollmentExpired)

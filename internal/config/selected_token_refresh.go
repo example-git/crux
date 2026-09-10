@@ -62,6 +62,7 @@ func (r *selectedTokenRotation) retain(token *oauth.Token) {
 func (selectedTokenRotation) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private OAuth rotation receipt]"))
 }
+
 func (selectedTokenRotation) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("OAuth rotation receipts are private")
 }

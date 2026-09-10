@@ -493,9 +493,11 @@ func (d *Instructions) beginOperation(mutation instructionMutation) (Instruction
 	if d.operationPending {
 		return InstructionOperation{}, fmt.Errorf("an instruction change is still pending")
 	}
-	op := InstructionOperation{Dialog: d, generation: d.operationGeneration + 1,
+	op := InstructionOperation{
+		Dialog: d, generation: d.operationGeneration + 1,
 		providerID: d.providerID, modelID: d.providerModel, owner: d.providerOwner,
-		ownerSet: d.providerOwnerSet, mutation: mutation}
+		ownerSet: d.providerOwnerSet, mutation: mutation,
+	}
 	if err := op.validateSelection(d.com.Workspace); err != nil {
 		return InstructionOperation{}, err
 	}
@@ -731,14 +733,15 @@ func (d *Instructions) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 
 	rowCount := 0
 	for index, item := range d.items {
-		if item.kind == instrHeader {
+		switch item.kind {
+		case instrHeader:
 			rowCount += 2
-		} else if item.kind == instrMetadataValue {
+		case instrMetadataValue:
 			rowCount += 2
 			if d.editingMetadata && index == d.cursor {
 				rowCount++
 			}
-		} else {
+		default:
 			rowCount++
 		}
 	}

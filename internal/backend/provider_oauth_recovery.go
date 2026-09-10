@@ -15,6 +15,7 @@ func (b *Backend) RecoverProviderOAuthLogin(ctx context.Context, id string, requ
 		},
 		func(r proto.ProviderOAuthLoginResponse) error { return r.ValidateRecover(request) })
 }
+
 func (b *Backend) ListProviderOAuthLoginResults(ctx context.Context, id string, target providerauth.Target) (proto.ProviderOAuthLoginRecoveryListResponse, error) {
 	response := proto.ProviderOAuthLoginRecoveryListResponse{List: providerauth.OAuthLoginRecoveryList{Target: target, Results: []providerauth.OAuthLoginRecordedResult{}}}
 	fail := func(err error) (proto.ProviderOAuthLoginRecoveryListResponse, error) {

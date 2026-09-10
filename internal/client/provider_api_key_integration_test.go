@@ -43,13 +43,13 @@ func TestProviderAPIKeyRegisteredRoutesCheckSaveAndReplay(t *testing.T) {
 	t.Cleanup(func() { http.DefaultClient = oldClient })
 	global, project, settings := filepath.Join(root, "global"), filepath.Join(root, "project"), filepath.Join(root, "settings")
 	for _, path := range []string{global, project, settings} {
-		require.NoError(t, os.MkdirAll(path, 0700))
+		require.NoError(t, os.MkdirAll(path, 0o700))
 	}
 	document := map[string]any{"providers": map[string]any{"checked": map[string]any{"type": "openai-compat", "base_url": provider.URL + "/configured/v1", "api_key": "synthetic-old-key", "owner": map[string]any{"type": "custom", "construction": "openai-compat"}, "extra_headers": map[string]string{"X-Configured": "captured"}, "models": []map[string]any{{"id": "model", "name": "Model", "context_window": 8192, "default_max_tokens": 1024}}}}, "models": map[string]any{"large": map[string]any{"provider": "checked", "model": "model", "max_tokens": 1024, "provider_options": map[string]any{"zero": 0, "false": false, "empty": ""}}, "small": map[string]any{"provider": "checked", "model": "model", "max_tokens": 512}}}
 	data, err := json.Marshal(document)
 	require.NoError(t, err)
 	configPath := filepath.Join(global, "crux.json")
-	require.NoError(t, os.WriteFile(configPath, data, 0600))
+	require.NoError(t, os.WriteFile(configPath, data, 0o600))
 	store, err := config.LoadIsolated(project, filepath.Join(root, "workspace-data"), false, env.NewFromMap(map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": root, "CRUX_GLOBAL_CONFIG": settings, "CRUX_GLOBAL_DATA": global, "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfileIntegrated)}))
 	require.NoError(t, err)
 	modelsBefore, err := json.Marshal(store.Config().Models)

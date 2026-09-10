@@ -44,7 +44,10 @@ func TestDemoSidebarIncrementalRedraw(t *testing.T) {
 		t.Helper()
 		data, err := json.Marshal(options)
 		require.NoError(t, err)
-		response, err := client.Post(strings.TrimRight(baseURL, "/")+"/api/preview", "application/json", bytes.NewReader(data))
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/preview", bytes.NewReader(data))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request)
 		require.NoError(t, err)
 		defer response.Body.Close()
 		require.Equal(t, http.StatusOK, response.StatusCode)
@@ -55,8 +58,14 @@ func TestDemoSidebarIncrementalRedraw(t *testing.T) {
 	}
 	for _, cols := range []int{100, 160, 230} {
 		for _, scenario := range []struct{ name, glyph string }{
-			{"scroll", ""}, {"ascii", "plain"}, {"cjk", "界"}, {"emoji", "😀"},
-			{"variation", "⚙️"}, {"joined", "👩‍💻"}, {"joined_variation", "⛓️‍💥"}, {"joined_initial", "👩‍💻"},
+			{"scroll", ""},
+			{"ascii", "plain"},
+			{"cjk", "界"},
+			{"emoji", "😀"},
+			{"variation", "⚙️"},
+			{"joined", "👩‍💻"},
+			{"joined_variation", "⛓️‍💥"},
+			{"joined_initial", "👩‍💻"},
 		} {
 			t.Run(fmt.Sprintf("%d/%s", cols, scenario.name), func(t *testing.T) {
 				capture := retainedTerminalCapture(t, &incremental, cols, 45)
@@ -137,10 +146,10 @@ func TestDemoSidebarIncrementalRedraw(t *testing.T) {
 					if mismatchCount != 0 || (strings.HasPrefix(scenario.name, "joined") && i <= 3) {
 						out := os.Getenv("CRUX_SIDEBAR_PROBE_OUTPUT_DIR")
 						if out != "" {
-							require.NoError(t, os.MkdirAll(out, 0700))
+							require.NoError(t, os.MkdirAll(out, 0o700))
 							png, err := incremental.raster.Render(terminalSVG(got.Cells, cols, 45, incremental.font))
 							require.NoError(t, err)
-							require.NoError(t, os.WriteFile(filepath.Join(out, fmt.Sprintf("incremental-%s-%d-%d.png", scenario.name, cols, i)), png, 0600))
+							require.NoError(t, os.WriteFile(filepath.Join(out, fmt.Sprintf("incremental-%s-%d-%d.png", scenario.name, cols, i)), png, 0o600))
 							// Anchor each composed row/cell explicitly to avoid using the suspect
 							// terminal width behavior to place the reference sidebar.
 							var reference []terminalCell
@@ -155,10 +164,10 @@ func TestDemoSidebarIncrementalRedraw(t *testing.T) {
 							}
 							refPNG, err := incremental.raster.Render(terminalSVG(reference, cols, 45, incremental.font))
 							require.NoError(t, err)
-							require.NoError(t, os.WriteFile(filepath.Join(out, fmt.Sprintf("composed-%s-%d-%d.png", scenario.name, cols, i)), refPNG, 0600))
+							require.NoError(t, os.WriteFile(filepath.Join(out, fmt.Sprintf("composed-%s-%d-%d.png", scenario.name, cols, i)), refPNG, 0o600))
 							data, err := json.MarshalIndent(map[string]any{"frame": frame, "delta": delta, "actual": got, "expected": canvas.Buffer, "mismatches": mismatchCount, "source": baseURL, "options": options}, "", "  ")
 							require.NoError(t, err)
-							require.NoError(t, os.WriteFile(filepath.Join(out, fmt.Sprintf("snapshot-%s-%d-%d.json", scenario.name, cols, i)), data, 0600))
+							require.NoError(t, os.WriteFile(filepath.Join(out, fmt.Sprintf("snapshot-%s-%d-%d.json", scenario.name, cols, i)), data, 0o600))
 						}
 						if mismatchCount > 0 {
 							t.Errorf("frame=%d sidebar mismatches=%d first=%s", i, mismatchCount, firstMismatch)

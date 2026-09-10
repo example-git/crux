@@ -46,8 +46,10 @@ func identityHeader(value string, maximum int) bool {
 	return true
 }
 
-type codexIdentityKey struct{}
-type geminiIdentityKey struct{}
+type (
+	codexIdentityKey  struct{}
+	geminiIdentityKey struct{}
+)
 
 // ContextWithCodexIdentity binds an already resolved identity, including the
 // absence of all execution-host overrides. Request cancellation is unchanged.

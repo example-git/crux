@@ -19,12 +19,16 @@ import (
 )
 
 func clientProviderAuthFixture() (providerauth.Snapshot, providerauth.AccountsState) {
-	status := providerauth.Status{Owner: providerauth.Owner{ProviderID: "fixture"}, Configured: true,
+	status := providerauth.Status{
+		Owner: providerauth.Owner{ProviderID: "fixture"}, Configured: true,
 		Credentials:  []providerauth.CredentialStatus{{Kind: "api-key", State: "absent"}, {Kind: "oauth", State: "refresh-only", Refreshable: true}},
-		AccountState: "in-sync", ActiveAccountID: "account"}
+		AccountState: "in-sync", ActiveAccountID: "account",
+	}
 	snapshot := providerauth.Snapshot{WorkspaceID: "workspace", Generation: providerauth.Generation{Epoch: strings.Repeat("a", 32), Sequence: 3}, Providers: []providerauth.Status{status}}
-	accounts := providerauth.AccountsState{Target: providerauth.Target{WorkspaceID: snapshot.WorkspaceID, Owner: status.Owner, Generation: snapshot.Generation}, Status: status,
-		Accounts: []providerauth.AccountSummary{{ID: "account", DisplayName: "Fixture account", Active: true, CredentialState: "refresh-only", Refreshable: true}}}
+	accounts := providerauth.AccountsState{
+		Target: providerauth.Target{WorkspaceID: snapshot.WorkspaceID, Owner: status.Owner, Generation: snapshot.Generation}, Status: status,
+		Accounts: []providerauth.AccountSummary{{ID: "account", DisplayName: "Fixture account", Active: true, CredentialState: "refresh-only", Refreshable: true}},
+	}
 	return snapshot, accounts
 }
 
@@ -35,6 +39,7 @@ func TestProviderAuthSDKExactRoutesAndSafeState(t *testing.T) {
 	require.NoError(t, accounts.Validate())
 	for _, operation := range []string{"status", "accounts"} {
 		t.Run(operation, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if operation == "status" {
 					require.Equal(t, http.MethodGet, r.Method)
@@ -105,9 +110,11 @@ func TestProviderAuthSDKRejectsMalformedAndChangedResponses(t *testing.T) {
 		}
 		for name, body := range bodies {
 			t.Run(operation+"/"+name, func(t *testing.T) {
+				t.Parallel()
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, body) }))
 				defer srv.Close()
 				c := captureClient(t, srv)
+				var err error
 				if operation == "status" {
 					_, err = c.ProviderAuthentication(t.Context(), snapshot.WorkspaceID)
 				} else {
@@ -125,7 +132,7 @@ func TestProviderAuthSDKRejectsInputBeforeHTTPAndPreservesErrors(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("invalid or canceled input reached HTTP") }))
 	defer srv.Close()
 	c := captureClient(t, srv)
-	for _, id := range []string{"", "workspace/other", "workspace\\other", " workspace"} {
+	for _, id := range []string{"", "workspace/other", "workspace" + `\` + "other", " workspace"} {
 		_, err := c.ProviderAuthentication(t.Context(), id)
 		require.Error(t, err)
 	}

@@ -23,7 +23,7 @@ func TestCatalogBrandingReachesDetachedProviderSurface(t *testing.T) {
 	require.NoError(t, err)
 	cfg := &Config{Options: &Options{}, Providers: csync.NewMap[string, ProviderConfig]()}
 	cfg.bindProviderScan(ProviderScan{
-		Registry: registry,
+		Registry:  registry,
 		Providers: []catalog.Provider{{ID: "branded-preset", Name: "Branded Preset", Brand: &catalog.Brand{ShortName: "BRAND", Color: "#123456"}}},
 	})
 	surface, ok := lookupTestSurface(ProviderSurfaces(cfg), "branded-preset")

@@ -31,9 +31,11 @@ type AuthenticationMutationResult struct {
 func (AuthenticationMutationResult) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication mutation results are private")
 }
+
 func (AuthenticationMutationResult) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private authentication mutation result]"))
 }
+
 func (r AuthenticationMutationResult) RuntimeSnapshot() (RuntimeSnapshot, bool) {
 	return r.After.runtime, (r.RuntimePublished || r.accountOnly && r.AccountsSaved) && r.After.inputs.valid && r.After.runtime.publicationStore != nil
 }
@@ -49,6 +51,7 @@ type authenticationAdmission struct {
 func (authenticationAdmission) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication admission is private")
 }
+
 func (authenticationAdmission) Format(s fmt.State, _ rune) {
 	_, _ = s.Write([]byte("[private authentication admission]"))
 }
@@ -67,6 +70,7 @@ func (s *ConfigStore) LogoutAuthentication(ctx context.Context, scope Scope, bef
 func (s *ConfigStore) lockAuthenticationWrite(ctx context.Context) error {
 	return lockAuthenticationMutex(ctx, s.writeMu.TryLock, s.writeMu.Unlock)
 }
+
 func lockAuthenticationMutex(ctx context.Context, try func() bool, unlock func()) error {
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()

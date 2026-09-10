@@ -155,7 +155,7 @@ func TestConditionalAccountCommitCancellationBoundary(t *testing.T) {
 			defer change.Close()
 			base, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			var ctx context.Context = base
+			ctx := base
 			switch boundary {
 			case "staging":
 				ctx = &duringAccountStagingContext{Context: base, path: path, action: cancel}

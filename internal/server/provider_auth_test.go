@@ -33,7 +33,7 @@ func TestProviderAuthRejectsMalformedBeforeBackend(t *testing.T) {
 		"depth":             strings.Repeat("[", 66) + strings.Repeat("]", 66),
 	} {
 		t.Run(name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
 			r.SetPathValue("id", "fixture")
 			response := httptest.NewRecorder()
 			(&controllerV1{}).handlePostWorkspaceProviderAccounts(response, r)
@@ -42,7 +42,7 @@ func TestProviderAuthRejectsMalformedBeforeBackend(t *testing.T) {
 		})
 	}
 	for _, body := range []string{`{}`, " ", strings.Repeat(" ", proto.MaxProviderAuthRequestBytes+1)} {
-		r := httptest.NewRequest(http.MethodGet, "/", strings.NewReader(body))
+		r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", strings.NewReader(body))
 		response := httptest.NewRecorder()
 		(&controllerV1{}).handleGetWorkspaceProviderAuthentication(response, r)
 		require.Equal(t, http.StatusBadRequest, response.Code)
@@ -52,7 +52,8 @@ func TestProviderAuthRejectsMalformedBeforeBackend(t *testing.T) {
 func TestProviderAuthDetachedReceiverRejectsReadsBeforeIO(t *testing.T) {
 	root := t.TempDir()
 	owner := providerregistry.RegistrationOwner{ProviderID: "client-only"}
-	proposal := config.RemoteRuntimeProposal{Version: config.RemoteRuntimeVersion, Revision: 1,
+	proposal := config.RemoteRuntimeProposal{
+		Version: config.RemoteRuntimeVersion, Revision: 1,
 		Providers:   []config.RemoteProviderDefinition{{Config: config.ProviderConfig{ID: owner.ProviderID, Type: catalog.TypeOpenAICompat, BaseURL: "https://client.invalid/v1", Owner: &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat}, Models: []catalog.Model{{ID: "model", Name: "Model", ContextWindow: 8192, DefaultMaxTokens: 1024}}}}},
 		Models:      map[config.SelectedModelType]config.SelectedModel{config.SelectedModelTypeLarge: {Provider: owner.ProviderID, Model: "model"}, config.SelectedModelTypeSmall: {Provider: owner.ProviderID, Model: "model"}},
 		Credentials: []config.RemoteCredentialBinding{{Owner: owner, Generation: 1, APIKey: "synthetic-client-secret"}},
@@ -73,41 +74,44 @@ func TestProviderAuthDetachedReceiverRejectsReadsBeforeIO(t *testing.T) {
 		if operation == "accounts" {
 			body, method = string(encoded), http.MethodPost
 		}
-		if operation == "switch" {
+		switch operation {
+		case "switch":
 			selected := target
 			selected.Owner.HasOAuth = true
 			data, err := json.Marshal(providerauth.SwitchRequest{OperationID: strings.Repeat("b", 32), Target: selected, AccountID: "selected"})
 			require.NoError(t, err)
 			body, method = string(data), http.MethodPost
-		} else if operation == "logout" {
+		case "logout":
 			data, err := json.Marshal(providerauth.LogoutRequest{OperationID: strings.Repeat("c", 32), Target: target})
 			require.NoError(t, err)
 			body, method = string(data), http.MethodPost
 		}
-		if operation == "key-check" {
+		switch operation {
+		case "key-check":
 			data, err := json.Marshal(providerauth.APIKeyCheckRequest{CheckID: strings.Repeat("d", 32), Target: target, CredentialID: "provider.api_key", Source: "$(touch '" + filepath.Join(root, "must-not-resolve") + "')"})
 			require.NoError(t, err)
 			body, method = string(data), http.MethodPost
-		} else if operation == "key-save" {
+		case "key-save":
 			data, err := json.Marshal(providerauth.APIKeySaveRequest{OperationID: strings.Repeat("e", 32), CheckID: strings.Repeat("d", 32), Target: target})
 			require.NoError(t, err)
 			body, method = string(data), http.MethodPost
 		}
-		r := httptest.NewRequest(method, "/", strings.NewReader(body))
+		r := httptest.NewRequestWithContext(t.Context(), method, "/", strings.NewReader(body))
 		r.SetPathValue("id", harness.workspace.ID)
 		response := httptest.NewRecorder()
 		controller := &controllerV1{backend: harness.backend}
-		if operation == "status" {
+		switch operation {
+		case "status":
 			controller.handleGetWorkspaceProviderAuthentication(response, r)
-		} else if operation == "switch" {
+		case "switch":
 			controller.handlePostWorkspaceProviderSwitch(response, r)
-		} else if operation == "key-check" {
+		case "key-check":
 			controller.handlePostWorkspaceAPIKeyCheck(response, r)
-		} else if operation == "key-save" {
+		case "key-save":
 			controller.handlePostWorkspaceAPIKeySave(response, r)
-		} else if operation == "logout" {
+		case "logout":
 			controller.handlePostWorkspaceProviderLogout(response, r)
-		} else {
+		default:
 			controller.handlePostWorkspaceProviderAccounts(response, r)
 		}
 		require.Equal(t, http.StatusBadRequest, response.Code)

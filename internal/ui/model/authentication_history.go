@@ -85,9 +85,11 @@ type authenticationHistoryRepairedMsg struct {
 func (m *UI) authenticationHistoryOpen(s *authenticationHistoryUI) bool {
 	return s != nil && s.workspace == m.com.Workspace && m.dialog.Dialog(dialog.AuthenticationHistoryID) == s.dialog
 }
+
 func (m *UI) authenticationHistoryCurrent(s *authenticationHistoryUI) bool {
 	return m.authenticationHistoryOpen(s) && s.sourceID != "" && s.workspace.AuthenticationWorkspaceID() == s.sourceID
 }
+
 func (m *UI) openAuthenticationHistory() tea.Cmd {
 	historian, ok := m.com.Workspace.(workspace.ProviderAuthenticationHistorian)
 	if !ok {
@@ -109,6 +111,7 @@ func (m *UI) openAuthenticationHistory() tea.Cmd {
 	}
 	return m.readAuthenticationHistory(s)
 }
+
 func (m *UI) pruneAuthenticationHistory() {
 	for _, s := range m.authenticationHistories {
 		if !m.authenticationHistoryOpen(s) {
@@ -124,6 +127,7 @@ func (m *UI) pruneAuthenticationHistory() {
 		}
 	}
 }
+
 func (m *UI) readAuthenticationHistory(s *authenticationHistoryUI) tea.Cmd {
 	if s.loading {
 		return nil
@@ -146,6 +150,7 @@ func (m *UI) readAuthenticationHistory(s *authenticationHistoryUI) tea.Cmd {
 		return authenticationHistoryLoadedMsg{s, attempt, id, history, err}
 	}
 }
+
 func (m *UI) completeAuthenticationHistory(msg authenticationHistoryLoadedMsg) tea.Cmd {
 	s := msg.state
 	if s == nil || m.authenticationHistories[s.workspace] != s || !s.loading || s.attempt != msg.attempt {
@@ -230,12 +235,15 @@ func (m *UI) completeAuthenticationHistory(msg authenticationHistoryLoadedMsg) t
 	m.showAuthenticationHistory(s)
 	return nil
 }
+
 func historyOperationKey(workspaceID, id string) string {
 	return fmt.Sprintf("operation:%q:%q", workspaceID, id)
 }
+
 func historyReviewKey(workspaceID, id string) string {
 	return fmt.Sprintf("review:%q:%q", workspaceID, id)
 }
+
 func validateAuthenticationHistory(history workspace.ProviderAuthenticationHistory, sourceID string) error {
 	seen := map[string]bool{}
 	for _, entry := range history.Operations {
@@ -299,6 +307,7 @@ func validateAuthenticationHistory(history workspace.ProviderAuthenticationHisto
 	}
 	return nil
 }
+
 func validateHistoricalAuthenticationOutcome(original workspace.ProviderAuthenticationHistoryOperation, outcome providerauth.MutationOutcome) error {
 	if err := outcome.Validate(); err != nil {
 		return err
@@ -308,12 +317,14 @@ func validateHistoricalAuthenticationOutcome(original workspace.ProviderAuthenti
 	}
 	return nil
 }
+
 func historyReviewTarget(r workspace.ProviderAuthenticationReviewRequest) providerauth.Target {
 	if r.FreshSaved {
 		return r.SavedTarget
 	}
 	return r.OriginalTarget
 }
+
 func (e *authenticationHistoryEntry) target() providerauth.Target {
 	if e.operation != nil {
 		return e.operation.Target
@@ -323,12 +334,15 @@ func (e *authenticationHistoryEntry) target() providerauth.Target {
 	}
 	return providerauth.Target{}
 }
+
 func (e *authenticationHistoryEntry) historical(sourceID string) bool {
 	return e.target().WorkspaceID != sourceID || e.operation != nil && e.operation.HistoricalWorkspace || e.review != nil && e.review.HistoricalWorkspace
 }
+
 func (e *authenticationHistoryEntry) superseded() bool {
 	return e.operation != nil && (e.operation.Abandoned || e.operation.ReconciledBy != "" || e.operation.SavedStateSupersededBy != "") || e.review != nil && (e.review.Abandoned || e.review.SavedStateSupersededBy != "" || e.review.SupersededByReview != "" || e.review.OriginalAbandonedBy != "")
 }
+
 func (s *authenticationHistoryUI) retired(e *authenticationHistoryEntry) bool {
 	if e.superseded() {
 		return true
@@ -339,6 +353,7 @@ func (s *authenticationHistoryUI) retired(e *authenticationHistoryEntry) bool {
 	}
 	return false
 }
+
 func (e *authenticationHistoryEntry) operationID() string {
 	if e.operation != nil {
 		return e.operation.OperationID
@@ -348,6 +363,7 @@ func (e *authenticationHistoryEntry) operationID() string {
 	}
 	return ""
 }
+
 func (m *UI) showAuthenticationHistory(s *authenticationHistoryUI) {
 	if s == nil || s.dialog == nil {
 		return
@@ -436,7 +452,7 @@ func (m *UI) showAuthenticationHistory(s *authenticationHistoryUI) {
 			repairable = !summary.Abandoned && !summary.NoEffects && (summary.Coherent || summary.NeedsReload || summary.RepairReady && (!summary.RefreshStarted || summary.RefreshObserved))
 			abandonable = !summary.Abandoned && !summary.NoEffects && !summary.Coherent && !summary.NeedsReload
 		}
-		rows = append(rows, dialog.AuthenticationHistoryRow{Key: key, Label: label, Details: details, Review: !old && !s.retired(e) && !(e.operation != nil && e.operation.Adopted) && !busy, Recover: recover && !busy, RetryRecovery: recover && e.recovery != nil && !busy, Repair: e.operationID() != "" && !busy, ApplyRepair: e.repair != nil && repairable && !busy, AbandonLocal: abandonable && !busy, RetryAbandonLocal: e.localAbandon != nil && e.localAbandon.WorkspaceID == s.sourceID && !busy, AbandonPublication: e.operation != nil && !e.operation.Adopted && !e.superseded() && e.operation.JournalRevision != 0 && !busy, RetryAbandonPublication: e.publicationAbandon != nil && e.publicationAbandon.WorkspaceID == s.sourceID && !busy, AbandonReview: e.review != nil && e.review.ApplyAttempted && e.review.ApplyRequest != nil && e.review.JournalRevision != 0 && !(e.review.ApplyOutcome != nil && e.review.ApplyOutcome.Adopted) && !s.retired(e) && !busy, RetryAbandonReview: e.reviewAbandon != nil && e.reviewAbandon.WorkspaceID == s.sourceID && !busy})
+		rows = append(rows, dialog.AuthenticationHistoryRow{Key: key, Label: label, Details: details, Review: !old && !s.retired(e) && (e.operation == nil || !e.operation.Adopted) && !busy, Recover: recover && !busy, RetryRecovery: recover && e.recovery != nil && !busy, Repair: e.operationID() != "" && !busy, ApplyRepair: e.repair != nil && repairable && !busy, AbandonLocal: abandonable && !busy, RetryAbandonLocal: e.localAbandon != nil && e.localAbandon.WorkspaceID == s.sourceID && !busy, AbandonPublication: e.operation != nil && !e.operation.Adopted && !e.superseded() && e.operation.JournalRevision != 0 && !busy, RetryAbandonPublication: e.publicationAbandon != nil && e.publicationAbandon.WorkspaceID == s.sourceID && !busy, AbandonReview: e.review != nil && e.review.ApplyAttempted && e.review.ApplyRequest != nil && e.review.JournalRevision != 0 && (e.review.ApplyOutcome == nil || !e.review.ApplyOutcome.Adopted) && !s.retired(e) && !busy, RetryAbandonReview: e.reviewAbandon != nil && e.reviewAbandon.WorkspaceID == s.sourceID && !busy})
 		if key == s.dialog.SelectedKey() {
 			selectedBusy = busy
 		}
@@ -444,6 +460,7 @@ func (m *UI) showAuthenticationHistory(s *authenticationHistoryUI) {
 	s.dialog.SetRows(rows)
 	s.dialog.SetState(s.message, s.loading || selectedBusy)
 }
+
 func (m *UI) handleAuthenticationHistory(action dialog.ActionAuthenticationHistory) tea.Cmd {
 	s := m.authenticationHistories[m.com.Workspace]
 	if !m.authenticationHistoryOpen(s) || s.dialog != action.Dialog || s.dialog.Generation() != action.Generation {
@@ -515,6 +532,7 @@ func (m *UI) handleAuthenticationHistory(action dialog.ActionAuthenticationHisto
 	}
 	return nil
 }
+
 func (m *UI) openHistoricalAuthenticationReview(s *authenticationHistoryUI, e *authenticationHistoryEntry) tea.Cmd {
 	if e.historical(s.sourceID) {
 		return util.ReportError(errors.New("the retained review belongs to the previous workspace; choose fresh saved authentication"))
@@ -618,6 +636,7 @@ func (m *UI) openHistoricalAuthenticationReview(s *authenticationHistoryUI, e *a
 	m.showAuthenticationReconciliation(state)
 	return nil
 }
+
 func (m *UI) prepareHistoricalAuthenticationRecovery(s *authenticationHistoryUI, e *authenticationHistoryEntry) tea.Cmd {
 	if e.operation == nil || e.historical(s.sourceID) || e.superseded() {
 		return util.ReportError(providerauth.ErrStale)
@@ -640,6 +659,7 @@ func (m *UI) prepareHistoricalAuthenticationRecovery(s *authenticationHistoryUI,
 		return authenticationHistoryPreparedMsg{s, e, attempt, generation, sequence, hex.EncodeToString(id[:]), err}
 	}
 }
+
 func (m *UI) completeHistoricalAuthenticationPreparation(msg authenticationHistoryPreparedMsg) tea.Cmd {
 	s, e := msg.state, msg.entry
 	if s == nil || e == nil || m.authenticationHistories[s.workspace] != s || s.entries[e.key] != e || !e.preparing || e.attempt != msg.attempt {
@@ -664,6 +684,7 @@ func (m *UI) completeHistoricalAuthenticationPreparation(msg authenticationHisto
 	e.recoverySequence = request.RecoverySequence
 	return m.dispatchHistoricalAuthenticationRecovery(s, e, request)
 }
+
 func (m *UI) dispatchHistoricalAuthenticationRecovery(s *authenticationHistoryUI, e *authenticationHistoryEntry, request workspace.ProviderAuthenticationRecoveryRequest) tea.Cmd {
 	capability, ok := s.workspace.(workspace.ProviderAuthenticationRecoverer)
 	if !ok || !capability.CanRecoverProviderAuthentication() {
@@ -685,6 +706,7 @@ func (m *UI) dispatchHistoricalAuthenticationRecovery(s *authenticationHistoryUI
 		return authenticationHistoryRecoveredMsg{s, e, attempt, request, outcome, err}
 	}
 }
+
 func (m *UI) completeHistoricalAuthenticationRecovery(msg authenticationHistoryRecoveredMsg) tea.Cmd {
 	s, e := msg.state, msg.entry
 	if s == nil || e == nil || m.authenticationHistories[s.workspace] != s || s.entries[e.key] != e || !e.pending || e.attempt != msg.attempt || e.recovery == nil || *e.recovery != msg.request {
@@ -720,6 +742,7 @@ func (m *UI) completeHistoricalAuthenticationRecovery(msg authenticationHistoryR
 	}
 	return util.CmdHandler(util.NewInfoMsg(e.message))
 }
+
 func (m *UI) dispatchHistoricalAuthenticationRepair(s *authenticationHistoryUI, e *authenticationHistoryEntry, apply bool) tea.Cmd {
 	if e.operationID() == "" {
 		return util.ReportError(errors.New("fresh saved reviews have no original local operation to repair"))
@@ -763,6 +786,7 @@ func (m *UI) dispatchHistoricalAuthenticationRepair(s *authenticationHistoryUI, 
 		return authenticationHistoryRepairedMsg{s, e, attempt, request, result, err}
 	}
 }
+
 func (m *UI) completeHistoricalAuthenticationRepair(msg authenticationHistoryRepairedMsg) tea.Cmd {
 	s, e := msg.state, msg.entry
 	if s == nil || e == nil || m.authenticationHistories[s.workspace] != s || s.entries[e.key] != e || !e.pending || e.attempt != msg.attempt {
@@ -821,6 +845,7 @@ func (m *UI) completeHistoricalAuthenticationRepair(msg authenticationHistoryRep
 	}
 	return util.CmdHandler(util.NewInfoMsg(historyAuthenticationNotice(s, m.com.Workspace, msg.request.WorkspaceID, e.message)))
 }
+
 func historyAuthenticationNotice(s *authenticationHistoryUI, current workspace.Workspace, sourceID, message string) string {
 	if s.workspace != current || s.workspace.AuthenticationWorkspaceID() != sourceID {
 		return "Previous workspace: " + message

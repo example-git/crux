@@ -30,8 +30,10 @@ func runtimeControlUISnapshot(t *testing.T, kind string, inherited any) proto.Wo
 	snapshot := instructionUISnapshot(t, config.ToolingInstructionsCrux)
 	control := manifest.RuntimeControl{ID: "vendor.mode", Label: "Vendor mode", Type: kind, Scope: "model", RequestPath: "/vendor/mode"}
 	binding := providerregistry.RuntimeControlBinding{Kind: providerregistry.RuntimeControlModelOption}
-	snapshot.ProviderSurfaces[0].RuntimeControls = []providerregistry.RuntimeControlSurface{{RuntimeControl: control, Available: true, AvailableModels: []string{"fixture"},
-		Binding: &binding, DescriptorDigest: providerregistry.RuntimeControlDescriptorDigest(control, binding)}}
+	snapshot.ProviderSurfaces[0].RuntimeControls = []providerregistry.RuntimeControlSurface{{
+		RuntimeControl: control, Available: true, AvailableModels: []string{"fixture"},
+		Binding: &binding, DescriptorDigest: providerregistry.RuntimeControlDescriptorDigest(control, binding),
+	}}
 	provider, _ := snapshot.Config.Providers.Get("synthetic")
 	provider.Models = []catalog.Model{{ID: "fixture", Name: "Fixture"}}
 	provider.ProviderOptions = map[string]any{control.ID: inherited}

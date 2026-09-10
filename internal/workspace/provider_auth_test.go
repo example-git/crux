@@ -23,8 +23,10 @@ import (
 )
 
 func workspaceProviderAuthFixture() (providerauth.Snapshot, providerauth.AccountsState) {
-	status := providerauth.Status{Owner: providerauth.Owner{ProviderID: "fixture"}, Configured: true,
-		Credentials: []providerauth.CredentialStatus{{Kind: "api-key", State: "configured"}, {Kind: "oauth", State: "absent"}}, AccountState: "none"}
+	status := providerauth.Status{
+		Owner: providerauth.Owner{ProviderID: "fixture"}, Configured: true,
+		Credentials: []providerauth.CredentialStatus{{Kind: "api-key", State: "configured"}, {Kind: "oauth", State: "absent"}}, AccountState: "none",
+	}
 	snapshot := providerauth.Snapshot{WorkspaceID: "fixture", Generation: providerauth.Generation{Epoch: strings.Repeat("a", 32), Sequence: 2}, Providers: []providerauth.Status{status}}
 	return snapshot, providerauth.AccountsState{Target: providerauth.Target{WorkspaceID: snapshot.WorkspaceID, Owner: status.Owner, Generation: snapshot.Generation}, Status: status, Accounts: []providerauth.AccountSummary{}}
 }
@@ -75,6 +77,7 @@ func TestProviderAuthWorkspaceRejectsRegressedAndSupersededReads(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"generation regressed", "read superseded", "workspace replaced"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
 			first, _ := workspaceProviderAuthFixture()
 			second := first
 			second.Generation.Sequence++
@@ -173,6 +176,7 @@ func TestProviderAuthOwningReadsCancelWhileAuthorityIsLocked(t *testing.T) {
 	for _, operation := range []string{"status", "accounts"} {
 		for _, mode := range []string{"request", "shutdown"} {
 			t.Run(operation+"/"+mode, func(t *testing.T) {
+				t.Parallel()
 				_, accounts := workspaceProviderAuthFixture()
 				w := NewClientWorkspace(nil, proto.Workspace{ID: "fixture", Authority: &config.RemoteAuthority{Mode: "client"}})
 				defer w.subCancel()

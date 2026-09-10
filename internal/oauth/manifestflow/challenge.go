@@ -99,8 +99,12 @@ func (e *Executor) PrepareCode(ctx context.Context, port uint16) (*oauth.CodeCha
 		return nil, errors.New("OAuth authorization parameters are invalid")
 	}
 	for _, field := range []struct{ name, value string }{
-		{"client_id", clientID}, {"state", state}, {"code_challenge", challenge},
-		{"code_challenge_method", method}, {"response_type", "code"}, {"redirect_uri", redirectURI},
+		{"client_id", clientID},
+		{"state", state},
+		{"code_challenge", challenge},
+		{"code_challenge_method", method},
+		{"response_type", "code"},
+		{"redirect_uri", redirectURI},
 	} {
 		if len(query[field.name]) > 1 || query.Get(field.name) != field.value {
 			return nil, fmt.Errorf("OAuth authorization parameter %q conflicts with the captured challenge", field.name)

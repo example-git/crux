@@ -44,7 +44,7 @@ func TestProviderToolingRejectsMalformedBeforeBackend(t *testing.T) {
 			bodies = append(bodies, `{"scope":0,"owner":{"provider_id":"fixture"},"profile":""}`)
 		}
 		for _, body := range bodies {
-			r := httptest.NewRequest(method, "/v1/workspaces/fixture/config/provider-tooling", strings.NewReader(body))
+			r := httptest.NewRequestWithContext(t.Context(), method, "/v1/workspaces/fixture/config/provider-tooling", strings.NewReader(body))
 			response := httptest.NewRecorder()
 			// A malformed request must not dispatch through this nil backend.
 			(&controllerV1{}).handleWorkspaceProviderTooling(response, r, method == http.MethodDelete)

@@ -60,7 +60,7 @@ func namespaceDiagnosticStore(t *testing.T, server *httptest.Server, accepted, n
 	f := namespaceDiagnosticFixture{accountRoot: filepath.Join(root, "captured-accounts"), ambientRoot: filepath.Join(root, "ambient-accounts"), marker: []byte("not an account directory")}
 	// A directory lookup here would fail. The marker and missing ambient root
 	// prove that diagnostics did not need account storage to reach HTTPS.
-	require.NoError(t, os.WriteFile(f.accountRoot, f.marker, 0600))
+	require.NoError(t, os.WriteFile(f.accountRoot, f.marker, 0o600))
 	t.Setenv("AI_CLI_DIR", f.accountRoot)
 	t.Setenv("DIAGNOSTIC_CAPTURED", "accepted-environment")
 	t.Setenv("CODEX_CLI_VERSION", "1.2.3")
@@ -110,7 +110,7 @@ func namespaceDiagnosticStore(t *testing.T, server *httptest.Server, accepted, n
 	}
 	data, err = json.Marshal(declaration)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(source, "manifest.json"), data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "manifest.json"), data, 0o600))
 	f.registration, err = providerregistry.FromManifest(declaration)
 	require.NoError(t, err)
 	_, err = providerregistry.New(f.registration)

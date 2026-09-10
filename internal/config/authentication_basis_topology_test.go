@@ -27,17 +27,19 @@ func TestAuthenticationBasisStartupAndReloadAuthoredTopology(t *testing.T) {
 				source := []byte(`{"options":{"disable_default_providers":true},"providers":{"fixture":{"type":"openai-compat","base_url":"https://example.invalid/v1","api_key":"synthetic","models":[{"id":"main"}]}},"models":{"large":{"provider":"fixture","model":"main"},"small":{"provider":"fixture","model":"main"}}}`)
 				require.NoError(t, os.WriteFile(filepath.Join(root, "config", "crux.json"), source, 0o600))
 				workspace := filepath.Join(root, "workspace")
-				if topology == "parent alias" {
+				switch topology {
+				case "parent alias":
 					workspace = filepath.Join(root, "linked-data")
 					if err := os.Symlink(filepath.Join(root, "data"), workspace); err != nil {
 						t.Skipf("symlink unavailable: %v", err)
 					}
-				} else if topology == "created project occurrence" {
+				case "created project occurrence":
 					values["CRUX_GLOBAL_DATA"] = root
 				}
 				global := filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json")
 				reset := func() {
-					if topology == "authored leaf chain" {
+					switch topology {
+					case "authored leaf chain":
 						data, err := runtimeControlChangeField(source, []string{"options", "disable_notifications"}, []byte(`true`), false)
 						require.NoError(t, err)
 						require.NoError(t, os.WriteFile(global, data, 0o600))
@@ -49,9 +51,9 @@ func TestAuthenticationBasisStartupAndReloadAuthoredTopology(t *testing.T) {
 						workspacePath := filepath.Join(workspace, "crux.json")
 						_ = os.Remove(workspacePath)
 						require.NoError(t, os.Symlink(configPath, workspacePath))
-					} else if topology == "parent alias" {
+					case "parent alias":
 						require.NoError(t, os.WriteFile(global, []byte(`{"foreign":{"precise":9007199254740993}}`), 0o600))
-					} else {
+					default:
 						err := os.Remove(global)
 						require.True(t, err == nil || os.IsNotExist(err))
 					}
@@ -78,10 +80,11 @@ func TestAuthenticationBasisStartupAndReloadAuthoredTopology(t *testing.T) {
 				data, err := os.ReadFile(global)
 				require.NoError(t, err)
 				require.Contains(t, string(data), `"owner"`)
-				if topology == "parent alias" {
+				switch topology {
+				case "parent alias":
 					require.Contains(t, string(data), "9007199254740993")
 					require.True(t, RuntimeControlJSONEqual(store.Config().authenticationBasis.sources[global].raw, store.Config().authenticationBasis.sources[store.workspacePath].raw))
-				} else if topology == "created project occurrence" {
+				case "created project occurrence":
 					count := 0
 					for _, path := range store.Config().authenticationBasis.order {
 						if path == global {
@@ -89,7 +92,7 @@ func TestAuthenticationBasisStartupAndReloadAuthoredTopology(t *testing.T) {
 						}
 					}
 					require.Equal(t, 2, count, "the created global file is also a project layer")
-				} else {
+				default:
 					configData, err := os.ReadFile(filepath.Join(root, "config", "crux.json"))
 					require.NoError(t, err)
 					require.NotContains(t, string(configData), `"owner"`, "replaced config leaf no longer reads later data-file owner migration")

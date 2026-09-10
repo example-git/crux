@@ -146,12 +146,14 @@ func (r ProviderAuthenticationMutationResponse) ValidateSwitch(request providera
 	}
 	return r.validate()
 }
+
 func (r ProviderAuthenticationMutationResponse) ValidateLogout(request providerauth.LogoutRequest) error {
 	if err := r.Outcome.ValidateLogout(request); err != nil {
 		return err
 	}
 	return r.validate()
 }
+
 func (r ProviderAuthenticationMutationResponse) validate() error {
 	if r.Error != nil {
 		if err := r.Error.Validate(); err != nil {
@@ -276,6 +278,7 @@ func DecodeProviderAuthSwitchRequest(body []byte) (providerauth.SwitchRequest, e
 	}
 	return request, request.Validate()
 }
+
 func DecodeProviderAuthLogoutRequest(body []byte) (providerauth.LogoutRequest, error) {
 	var request providerauth.LogoutRequest
 	if err := decodeProviderAuthJSON(body, MaxProviderAuthRequestBytes, &request); err != nil {
@@ -283,6 +286,7 @@ func DecodeProviderAuthLogoutRequest(body []byte) (providerauth.LogoutRequest, e
 	}
 	return request, request.Validate()
 }
+
 func DecodeProviderAuthSwitchResponse(body []byte, request providerauth.SwitchRequest) (ProviderAuthenticationMutationResponse, error) {
 	var response ProviderAuthenticationMutationResponse
 	if err := decodeProviderAuthJSON(body, MaxProviderAuthResponseBytes, &response); err != nil {
@@ -293,6 +297,7 @@ func DecodeProviderAuthSwitchResponse(body []byte, request providerauth.SwitchRe
 	}
 	return response, nil
 }
+
 func DecodeProviderAuthLogoutResponse(body []byte, request providerauth.LogoutRequest) (ProviderAuthenticationMutationResponse, error) {
 	var response ProviderAuthenticationMutationResponse
 	if err := decodeProviderAuthJSON(body, MaxProviderAuthResponseBytes, &response); err != nil {

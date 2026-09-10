@@ -38,35 +38,43 @@ func (w *authenticationUIWorkspace) ProviderAuthentication(ctx context.Context) 
 	w.readContext = ctx
 	return w.snapshot, ctx.Err()
 }
+
 func (w *authenticationUIWorkspace) ProviderAccounts(ctx context.Context, target providerauth.Target) (providerauth.AccountsState, error) {
 	require.True(w.t, w.allowIO, "accounts read ran outside a command")
 	require.Equal(w.t, w.accounts.Target, target)
 	return w.accounts, ctx.Err()
 }
+
 func (w *authenticationUIWorkspace) ProviderSurfaces() []providerregistry.Surface { return w.surfaces }
+
 func (w *authenticationUIWorkspace) SwitchProviderAccount(_ context.Context, request providerauth.SwitchRequest) (providerauth.MutationOutcome, error) {
 	require.True(w.t, w.allowIO, "switch ran outside a command")
 	w.switches = append(w.switches, request)
 	return w.result(request.OperationID, request.Target, request.AccountID, false)
 }
+
 func (w *authenticationUIWorkspace) LogoutProvider(_ context.Context, request providerauth.LogoutRequest) (providerauth.MutationOutcome, error) {
 	require.True(w.t, w.allowIO, "logout ran outside a command")
 	w.logouts = append(w.logouts, request)
 	return w.result(request.OperationID, request.Target, "", true)
 }
+
 func (w *authenticationUIWorkspace) AgentIsReady() bool {
 	require.True(w.t, w.allowIO, "model probe ran outside a command")
 	w.probes++
 	return false
 }
+
 func (w *authenticationUIWorkspace) PermissionSkipRequests() bool {
 	require.True(w.t, w.allowIO)
 	return false
 }
+
 func (w *authenticationUIWorkspace) LSPGetStates() map[string]workspace.LSPClientInfo {
 	require.True(w.t, w.allowIO)
 	return nil
 }
+
 func (w *authenticationUIWorkspace) result(id string, target providerauth.Target, accountID string, logout bool) (providerauth.MutationOutcome, error) {
 	if w.mode == "prewrite" {
 		return providerauth.MutationOutcome{OperationID: id, Previous: target}, providerauth.ErrStale
@@ -102,6 +110,7 @@ func (w *authenticationUIWorkspace) result(id string, target providerauth.Target
 	}
 	return outcome, nil
 }
+
 func newAuthenticationUI(t *testing.T) (*UI, *authenticationUIWorkspace) {
 	t.Helper()
 	owner := providerregistry.RegistrationOwner{ProviderID: "host-only", Construction: providerregistry.ConstructionCopilot, HasOAuth: true, AccountNamespace: "not-on-client"}
@@ -117,11 +126,13 @@ func newAuthenticationUI(t *testing.T) (*UI, *authenticationUIWorkspace) {
 	ui.dialog = dialog.NewOverlay()
 	return ui, ws
 }
+
 func runAuthenticationCmd(ws *authenticationUIWorkspace, cmd tea.Cmd) []tea.Msg {
 	ws.allowIO = true
 	defer func() { ws.allowIO = false }()
 	return collectCommandMessages(cmd)
 }
+
 func openLoadedAuthentication(t *testing.T, ui *UI, ws *authenticationUIWorkspace, logout bool) *dialog.AccountAuthentication {
 	t.Helper()
 	cmd := ui.openAuthenticationAccounts(logout)
@@ -138,6 +149,7 @@ func openLoadedAuthentication(t *testing.T, ui *UI, ws *authenticationUIWorkspac
 		AuthenticationState() *dialog.AccountAuthentication
 	}).AuthenticationState()
 }
+
 func prepareAndDispatchAuthentication(t *testing.T, ui *UI, ws *authenticationUIWorkspace, d *dialog.AccountAuthentication) authenticationCompletedMsg {
 	t.Helper()
 	action := d.HandleMsg(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -156,6 +168,7 @@ func prepareAndDispatchAuthentication(t *testing.T, ui *UI, ws *authenticationUI
 	t.Fatal("no mutation completion")
 	return authenticationCompletedMsg{}
 }
+
 func authenticationInfo(messages []tea.Msg) string {
 	var text []string
 	for _, message := range messages {
@@ -165,6 +178,7 @@ func authenticationInfo(messages []tea.Msg) string {
 	}
 	return strings.Join(text, "\n")
 }
+
 func TestAuthenticationUICompletionAfterClosurePreservesModels(t *testing.T) {
 	for _, logout := range []bool{false, true} {
 		t.Run(map[bool]string{false: "switch", true: "logout"}[logout], func(t *testing.T) {
@@ -206,6 +220,7 @@ func TestAuthenticationUICompletionAfterClosurePreservesModels(t *testing.T) {
 		})
 	}
 }
+
 func TestAuthenticationUIExactRequestRetryAndPartialStatus(t *testing.T) {
 	for _, logout := range []bool{false, true} {
 		ui, ws := newAuthenticationUI(t)
@@ -238,6 +253,7 @@ func TestAuthenticationUIExactRequestRetryAndPartialStatus(t *testing.T) {
 		require.Zero(t, ws.updateAgentCalls)
 	}
 }
+
 func TestAuthenticationUIRejectsUncertainHistoricalAndForeignCompletion(t *testing.T) {
 	for _, mode := range []string{"lost", "historical", "wrong-target", "published-error", "workspace changed"} {
 		t.Run(mode, func(t *testing.T) {
@@ -274,6 +290,7 @@ func TestAuthenticationUIRejectsUncertainHistoricalAndForeignCompletion(t *testi
 		})
 	}
 }
+
 func TestAuthenticationUIReadAndPreparationLifecycle(t *testing.T) {
 	for _, mode := range []string{"closed", "replaced", "reloaded", "workspace changed"} {
 		t.Run(mode, func(t *testing.T) {
@@ -318,6 +335,7 @@ func (w *authenticationBlockingReadWorkspace) ProviderAuthentication(ctx context
 	<-ctx.Done()
 	return providerauth.Snapshot{}, ctx.Err()
 }
+
 func TestAuthenticationUICloseCancelsReadBeforeItReturns(t *testing.T) {
 	ui, base := newAuthenticationUI(t)
 	ws := &authenticationBlockingReadWorkspace{authenticationUIWorkspace: base, started: make(chan context.Context, 1)}

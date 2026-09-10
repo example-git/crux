@@ -3,10 +3,6 @@ package usage
 import (
 	"errors"
 	"fmt"
-	"github.com/example-git/crux/internal/providerplugin/manifest"
-	"github.com/example-git/crux/internal/providertransport"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providertransport"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNormalizedUsageRedirectsKeepCapturedCredentialDestinations(t *testing.T) {
@@ -82,9 +83,11 @@ func TestNormalizedUsageRedirectsKeepCapturedCredentialDestinations(t *testing.T
 				http.DefaultTransport = server.Client().Transport
 				defer func() { http.DefaultTransport = previous }()
 				endpoint.Credential = "key"
-				operation := &providertransport.Operation{ID: "quota", Endpoint: endpoint, Method: http.MethodPost, Path: "/start", RequestTimeout: time.Second,
+				operation := &providertransport.Operation{
+					ID: "quota", Endpoint: endpoint, Method: http.MethodPost, Path: "/start", RequestTimeout: time.Second,
 					Headers:          []manifest.HeaderRule{{Operation: "set", Name: "X-Private", Value: &manifest.Template{Kind: "literal", Value: "synthetic-private"}}},
-					RequestTransform: &manifest.JSONPipeline{MaxOperations: 1, Operations: []manifest.JSONOperation{{Operation: "set", Path: "/credential", Value: &manifest.Template{Kind: "credential", Ref: "key"}}}}}
+					RequestTransform: &manifest.JSONPipeline{MaxOperations: 1, Operations: []manifest.JSONOperation{{Operation: "set", Path: "/credential", Value: &manifest.Template{Kind: "credential", Ref: "key"}}}},
+				}
 				fetch, err := ManifestFetcher(map[string]*providertransport.Operation{"quota": operation}, manifest.UsagePolicy{Operation: "quota", Source: "operation", Fallback: "unavailable", Windows: []manifest.WindowMap{{ID: "quota", UsedPointer: "/used"}}})
 				require.NoError(t, err)
 				result, err := FetchWithTokenForOwner(t.Context(), "synthetic", "synthetic-access", fetch, validate)

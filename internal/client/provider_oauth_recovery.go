@@ -22,6 +22,7 @@ func (c *Client) RecoverProviderOAuthLogin(ctx context.Context, id string, reque
 		return proto.DecodeProviderOAuthLoginRecoverResponse(body, request)
 	})
 }
+
 func (c *Client) ListProviderOAuthLoginResults(ctx context.Context, id string, target providerauth.Target) (proto.ProviderOAuthLoginRecoveryListResponse, error) {
 	if err := target.Validate(); err != nil {
 		return proto.ProviderOAuthLoginRecoveryListResponse{}, err

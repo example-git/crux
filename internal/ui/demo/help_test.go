@@ -34,7 +34,7 @@ func TestPreviewHelpAndGeneratedSchemas(t *testing.T) {
 		{"/help/frame.md", "", "text/markdown", "`renderer`", 200},
 	} {
 		t.Run(test.path+test.accept, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, test.path, nil)
+			request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, test.path, nil)
 			request.Header.Set("Accept", test.accept)
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
@@ -47,7 +47,7 @@ func TestPreviewHelpAndGeneratedSchemas(t *testing.T) {
 			if test.contentType == "text/markdown" {
 				for _, match := range regexp.MustCompile(`\]\((/help/[^)]+)\)`).FindAllStringSubmatch(response.Body.String(), -1) {
 					linked := httptest.NewRecorder()
-					handler.ServeHTTP(linked, httptest.NewRequest(http.MethodGet, match[1], nil))
+					handler.ServeHTTP(linked, httptest.NewRequestWithContext(t.Context(), http.MethodGet, match[1], nil))
 					if linked.Code != 200 {
 						t.Fatalf("broken guide link %s: %d", match[1], linked.Code)
 					}
@@ -57,7 +57,7 @@ func TestPreviewHelpAndGeneratedSchemas(t *testing.T) {
 	}
 	for _, name := range []string{"options", "fixture", "frame"} {
 		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/help/"+name+".schema.json", nil))
+		handler.ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/help/"+name+".schema.json", nil))
 		var document map[string]any
 		if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &document) != nil {
 			t.Fatalf("invalid %s schema: %s", name, response.Body.String())

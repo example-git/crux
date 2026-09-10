@@ -10,8 +10,10 @@ import (
 )
 
 func initialAPIKeyCheckOutcome(request providerauth.APIKeyCheckRequest) providerauth.APIKeyCheckOutcome {
-	return providerauth.APIKeyCheckOutcome{CheckID: request.CheckID, Previous: request.Target, CredentialID: request.CredentialID,
-		Probe: config.ConnectionProbeResult{Kind: config.ConnectionProbeNotProbed, Policy: config.ConnectionProbePolicyNone}}
+	return providerauth.APIKeyCheckOutcome{
+		CheckID: request.CheckID, Previous: request.Target, CredentialID: request.CredentialID,
+		Probe: config.ConnectionProbeResult{Kind: config.ConnectionProbeNotProbed, Policy: config.ConnectionProbePolicyNone},
+	}
 }
 
 func (w *AppWorkspace) CheckProviderAPIKey(ctx context.Context, request providerauth.APIKeyCheckRequest) (providerauth.APIKeyCheckOutcome, error) {

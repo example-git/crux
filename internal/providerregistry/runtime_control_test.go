@@ -41,8 +41,10 @@ func TestRuntimeControlBindingRequiresActualDeclaration(t *testing.T) {
 		})
 	}
 	for _, conflict := range []string{"/vendor/mode", "/vendor", "/vendor/mode/nested"} {
-		registration := Registration{Construction: ConstructionOpenAIResponses, RuntimeControls: []manifest.RuntimeControl{control,
-			{ID: "another", Type: "string", Scope: "model", RequestPath: conflict}}}
+		registration := Registration{Construction: ConstructionOpenAIResponses, RuntimeControls: []manifest.RuntimeControl{
+			control,
+			{ID: "another", Type: "string", Scope: "model", RequestPath: conflict},
+		}}
 		_, err := ResolveRuntimeControlBinding(registration, control)
 		require.ErrorContains(t, err, "overlapping request paths")
 	}
@@ -129,18 +131,36 @@ func TestRuntimeControlValuesPreservePrimitiveMeaning(t *testing.T) {
 		kind, raw string
 		valid     bool
 	}{
-		{"boolean", "false", true}, {"boolean", "true", true}, {"boolean", `"false"`, false},
-		{"integer", "0", true}, {"integer", "9007199254740993", true}, {"integer", "1.0", true},
-		{"integer", "0.5", false}, {"number", "0.5", true}, {"number", "-2.25e3", true},
-		{"number", "1e1000000000", false}, {"number", "1e-1000000000", false},
-		{"number", "1e309", false}, {"number", "1e-1000", false}, {"number", "NaN", false},
-		{"string", `""`, true}, {"string", `"literal \\ud800"`, true},
-		{"string", `"\ud83d\ude00"`, true}, {"string", `"\ufffd"`, true},
-		{"string", `"\ud800"`, false}, {"string", `"\udc00"`, false},
-		{"string", `"\ud800x"`, false}, {"string", `"\ud800\ud800"`, false},
-		{"enum", `"selected"`, true}, {"enum", `"unknown"`, false},
-		{"string", `null`, false}, {"number", `null`, false}, {"boolean", `null`, false},
-		{"string", `{}`, false}, {"string", `[]`, false}, {"integer", `1 2`, false},
+		{"boolean", "false", true},
+		{"boolean", "true", true},
+		{"boolean", `"false"`, false},
+		{"integer", "0", true},
+		{"integer", "9007199254740993", true},
+		{"integer", "1.0", true},
+		{"integer", "0.5", false},
+		{"number", "0.5", true},
+		{"number", "-2.25e3", true},
+		{"number", "1e1000000000", false},
+		{"number", "1e-1000000000", false},
+		{"number", "1e309", false},
+		{"number", "1e-1000", false},
+		{"number", "NaN", false},
+		{"string", `""`, true},
+		{"string", `"literal \\ud800"`, true},
+		{"string", `"\ud83d\ude00"`, true},
+		{"string", `"\ufffd"`, true},
+		{"string", `"\ud800"`, false},
+		{"string", `"\udc00"`, false},
+		{"string", `"\ud800x"`, false},
+		{"string", `"\ud800\ud800"`, false},
+		{"enum", `"selected"`, true},
+		{"enum", `"unknown"`, false},
+		{"string", `null`, false},
+		{"number", `null`, false},
+		{"boolean", `null`, false},
+		{"string", `{}`, false},
+		{"string", `[]`, false},
+		{"integer", `1 2`, false},
 	} {
 		t.Run(test.kind+"/"+test.raw, func(t *testing.T) {
 			control := manifest.RuntimeControl{ID: "fixture", Type: test.kind, Values: []string{"base", "selected"}}

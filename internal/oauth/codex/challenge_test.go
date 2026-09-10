@@ -40,7 +40,7 @@ func TestPrepareCodeCapturedClientPKCEAndSingleExchange(t *testing.T) {
 	})}
 	defer func() { http.DefaultClient = original }()
 	// A bound fixed port proves preparation does not try to listen on the owner.
-	listener, err := net.Listen("tcp", "localhost:1455")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "localhost:1455")
 	require.NoError(t, err)
 	defer listener.Close()
 	ctx := oauth.ContextWithEnvironment(t.Context(), []string{"CODEX_OAUTH_CLIENT_ID=captured-client"})

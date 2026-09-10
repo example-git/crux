@@ -130,7 +130,7 @@ func TestProviderUsageThroughTLS(t *testing.T) {
 			require.NoError(t, err)
 			// Copilot retains its core URL; bundle usage uses the declared TLS URL.
 			http.DefaultClient = &http.Client{Transport: refreshFixtureTransport(func(r *http.Request) (*http.Response, error) {
-				if !(r.URL.Host == "api.github.com" && r.URL.Path == "/copilot_internal/user") {
+				if r.URL.Host != "api.github.com" || r.URL.Path != "/copilot_internal/user" {
 					return nil, fmt.Errorf("unexpected isolated quota destination %s", r.URL.Host)
 				}
 				clone := r.Clone(r.Context())

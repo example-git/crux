@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	tea "github.com/example-git/crux/foundation/bubbletea"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +13,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	tea "github.com/example-git/crux/foundation/bubbletea"
 
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
@@ -447,5 +448,4 @@ waitingForRefresh:
 	case <-time.After(5 * time.Second):
 		t.Fatal("recovery subscription did not stop")
 	}
-
 }

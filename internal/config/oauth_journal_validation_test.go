@@ -212,7 +212,7 @@ func oauthValidationNearFull(t *testing.T, j AuthenticationJournal, selected aut
 	}
 	encoded, err := json.Marshal(disk)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(j.path, encoded, 0600))
+	require.NoError(t, os.WriteFile(j.path, encoded, 0o600))
 	_, _, err = readAuthenticationJournal(t.Context(), j.path)
 	require.NoError(t, err)
 }
@@ -260,7 +260,7 @@ func TestOAuthJournalValidationTerminalRoomAndBytePressure(t *testing.T) {
 		disk.Records[filler.id()] = record
 		data, err = json.Marshal(disk)
 		require.NoError(t, err)
-		require.NoError(t, os.WriteFile(j.path, data, 0600))
+		require.NoError(t, os.WriteFile(j.path, data, 0o600))
 		_, _, err = j.Load(t.Context(), key)
 		require.ErrorContains(t, err, "oversubscribed")
 		after, err := os.ReadFile(j.path)
@@ -309,7 +309,7 @@ func TestOAuthJournalValidationLeaseProcessExit(t *testing.T) {
 		return
 	}
 	root := t.TempDir()
-	child := exec.Command(os.Args[0], "-test.run=^TestOAuthJournalValidationLeaseProcessExit$")
+	child := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestOAuthJournalValidationLeaseProcessExit$")
 	child.Env = append(os.Environ(), "CRUX_OAUTH_JOURNAL_LEASE_HELPER="+root)
 	stdout, err := child.StdoutPipe()
 	require.NoError(t, err)

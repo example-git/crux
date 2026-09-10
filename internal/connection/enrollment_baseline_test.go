@@ -127,7 +127,7 @@ func TestEnrollmentClientSaveFailureRecovery(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(proof)
 	}))
 	require.NoError(t, server.Listener.Close())
-	server.Listener, err = net.Listen("tcp", strings.TrimPrefix(enrollment.Address(), "tcp://"))
+	server.Listener, err = (&net.ListenConfig{}).Listen(t.Context(), "tcp", strings.TrimPrefix(enrollment.Address(), "tcp://"))
 	require.NoError(t, err)
 	server.TLS = serverTLS
 	server.StartTLS()

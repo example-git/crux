@@ -42,7 +42,7 @@ type oauthLoginJournal struct {
 	completed bool
 }
 
-func (oauthLoginJournal) Format(state fmt.State, _ rune) {
+func (*oauthLoginJournal) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private OAuth login journal handle]"))
 }
 
@@ -314,6 +314,7 @@ func (s *ConfigStore) PendingOAuthLoginResults(ctx context.Context, workspaceID 
 func (s *ConfigStore) PendingOAuthLoginResultsForScope(ctx context.Context) ([]OAuthRecoverySummary, error) {
 	return s.pendingOAuthLoginResults(ctx, "", true)
 }
+
 func (s *ConfigStore) pendingOAuthLoginResults(ctx context.Context, workspaceID string, all bool) ([]OAuthRecoverySummary, error) {
 	journal, err := s.CaptureAuthenticationJournal(ctx)
 	if err != nil {

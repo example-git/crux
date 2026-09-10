@@ -25,6 +25,7 @@ type authenticationReconciliationUIWorkspace struct {
 func (w *authenticationReconciliationUIWorkspace) CanReconcileProviderAuthentication() bool {
 	return true
 }
+
 func (w *authenticationReconciliationUIWorkspace) ReviewProviderAuthentication(ctx context.Context, r workspace.ProviderAuthenticationReviewRequest) (workspace.ProviderAuthenticationReviewSummary, error) {
 	require.True(w.t, w.allowIO, "review ran outside a command")
 	w.reviews = append(w.reviews, r)
@@ -42,6 +43,7 @@ func (w *authenticationReconciliationUIWorkspace) ReviewProviderAuthentication(c
 	}
 	return s, nil
 }
+
 func (w *authenticationReconciliationUIWorkspace) ApplyProviderAuthenticationReview(ctx context.Context, r workspace.ProviderAuthenticationApplyRequest) (workspace.ProviderAuthenticationReconciliationOutcome, error) {
 	require.True(w.t, w.allowIO, "apply ran outside a command")
 	w.applies = append(w.applies, r)
@@ -55,6 +57,7 @@ func (w *authenticationReconciliationUIWorkspace) ApplyProviderAuthenticationRev
 	}
 	return o, ctx.Err()
 }
+
 func newAuthenticationReconciliationUI(t *testing.T) (*UI, *authenticationReconciliationUIWorkspace, *authenticationOperation, *dialog.AccountAuthentication) {
 	t.Helper()
 	ui, recovery := newAuthenticationRecoveryUI(t)
@@ -67,6 +70,7 @@ func newAuthenticationReconciliationUI(t *testing.T) (*UI, *authenticationReconc
 	runAuthenticationCmd(w.authenticationUIWorkspace, cmd)
 	return ui, w, completed.operation, d
 }
+
 func openAuthenticationReviewUI(t *testing.T, ui *UI, d *dialog.AccountAuthentication) *dialog.AuthenticationReconciliation {
 	t.Helper()
 	action := d.HandleMsg(tea.KeyPressMsg{Code: 'v', Mod: tea.ModAlt})
@@ -76,6 +80,7 @@ func openAuthenticationReviewUI(t *testing.T, ui *UI, d *dialog.AccountAuthentic
 	require.True(t, ok)
 	return review
 }
+
 func runAuthenticationReconciliationKey(t *testing.T, ui *UI, w *authenticationUIWorkspace, d *dialog.AuthenticationReconciliation, key tea.KeyPressMsg) []tea.Msg {
 	t.Helper()
 	action := d.HandleMsg(key)

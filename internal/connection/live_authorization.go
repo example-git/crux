@@ -265,10 +265,9 @@ func (l *liveAuthorization) watch() {
 			return
 		case <-ticker.C:
 			l.mu.Lock()
-			data, err := readClientAuthorization(l.ctx, l.authorization.path)
 			var grants map[string]string
-			if err == nil {
-				grants, err = l.authorization.grants(data)
+			if data, err := readClientAuthorization(l.ctx, l.authorization.path); err == nil {
+				grants, _ = l.authorization.grants(data) // Nil grants on any failure.
 			}
 			l.reconcileLocked(grants) // Unreadable or replaced authority fails closed.
 			l.mu.Unlock()

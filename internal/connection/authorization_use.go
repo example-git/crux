@@ -19,9 +19,11 @@ import (
 	"github.com/google/uuid"
 )
 
-const authorizationUsePath = "/v1/authorization-use"
-const maxAuthorizationUseBytes = 128 << 10
-const authorizationUseTimeout = 2 * time.Second
+const (
+	authorizationUsePath     = "/v1/authorization-use"
+	maxAuthorizationUseBytes = 128 << 10
+	authorizationUseTimeout  = 2 * time.Second
+)
 
 type authorizationUseRequest struct {
 	Version           int    `json:"version"`

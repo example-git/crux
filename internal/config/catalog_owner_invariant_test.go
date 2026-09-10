@@ -40,9 +40,11 @@ func newCatalogOwnerFixture(t *testing.T, profile config.ProviderProfile, allowl
 	for key, value := range values {
 		t.Setenv(key, value)
 	}
-	f := catalogOwnerFixture{root: root, workspace: filepath.Join(root, "workspace"),
+	f := catalogOwnerFixture{
+		root: root, workspace: filepath.Join(root, "workspace"),
 		sourceConfig: filepath.Join(root, "workspace", "crux.json"), workspaceConfig: filepath.Join(root, "workspace-data", "crux.json"),
-		globalConfig: filepath.Join(root, "data", "crux.json"), base: env.NewFromMap(values)}
+		globalConfig: filepath.Join(root, "data", "crux.json"), base: env.NewFromMap(values),
+	}
 	require.NoError(t, os.MkdirAll(f.workspace, 0o700))
 	require.NoError(t, os.MkdirAll(filepath.Dir(f.workspaceConfig), 0o700))
 	require.NoError(t, os.WriteFile(f.workspaceConfig, []byte("{}"), 0o600))

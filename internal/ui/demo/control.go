@@ -5,13 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/example-git/crux/internal/ui/model"
-	"github.com/google/uuid"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/example-git/crux/internal/ui/model"
+	"github.com/google/uuid"
 )
 
 type controlClient struct {

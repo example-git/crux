@@ -79,7 +79,6 @@ func resolvedInputProviders(cfg *Config) map[string]ProviderConfig {
 // This recognizes parent replacement and escaped provider IDs, including an
 // explicit same-value credential write, without inventing a second path parser.
 func resolvedInputFieldsUntouched(id string, fields map[string]any) (map[string]bool, error) {
-
 	names := []string{"api_key", "oauth", "base_url", "owner", "plugin", "preset", "id"}
 	unchanged := map[string]bool{}
 	for _, name := range names {

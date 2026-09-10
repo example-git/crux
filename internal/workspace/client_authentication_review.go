@@ -109,12 +109,15 @@ type clientAuthenticationReviewReceipt struct {
 func (clientAuthenticationReviewReceipt) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication review receipts are private")
 }
+
 func (clientAuthenticationReviewReceipt) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication review receipt]"))
 }
+
 func (clientAuthenticationApplyReceipt) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("authentication apply receipts are private")
 }
+
 func (clientAuthenticationApplyReceipt) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private authentication apply receipt]"))
 }
@@ -134,12 +137,14 @@ func (r clientAuthenticationReviewRequest) target() providerauth.Target {
 	}
 	return r.OriginalTarget
 }
+
 func (r clientAuthenticationApplyRequest) target() providerauth.Target {
 	if r.FreshSaved {
 		return r.SavedTarget
 	}
 	return r.OriginalTarget
 }
+
 func validateAuthenticationReviewMode(fresh bool, operation string, original, saved providerauth.Target, ids ...string) error {
 	if fresh {
 		if operation != "" || original != (providerauth.Target{}) {
@@ -152,9 +157,11 @@ func validateAuthenticationReviewMode(fresh bool, operation string, original, sa
 	}
 	return validateAuthenticationReviewIDs(original, append([]string{operation}, ids...)...)
 }
+
 func (r clientAuthenticationApplyRequest) validate() error {
 	return validateAuthenticationReviewMode(r.FreshSaved, r.OperationID, r.OriginalTarget, r.SavedTarget, r.ReviewID, r.PreviewID, r.ApplyID)
 }
+
 func (r clientAuthenticationReviewRequest) validate() error {
 	if err := validateAuthenticationReviewMode(r.FreshSaved, r.OperationID, r.OriginalTarget, r.SavedTarget, r.ReviewID); err != nil {
 		return err
@@ -187,6 +194,7 @@ func (r clientAuthenticationReviewRequest) validate() error {
 	}
 	return nil
 }
+
 func (a *clientAuthority) freshAuthenticationReviewCurrent(review *clientAuthenticationReviewReceipt) bool {
 	for _, other := range a.authenticationReviews {
 		if other.request.FreshSaved && other.request.SavedTarget == review.request.SavedTarget && other.request.ReviewSequence > review.request.ReviewSequence {
@@ -195,6 +203,7 @@ func (a *clientAuthority) freshAuthenticationReviewCurrent(review *clientAuthent
 	}
 	return true
 }
+
 func authenticationReviewOriginalCurrent(a *clientAuthority, original *clientAuthenticationReceipt, review *clientAuthenticationReviewReceipt) bool {
 	if review.request.FreshSaved {
 		return original == nil && review.abandon == nil && review.supersededByReview == "" && review.originalAbandonedBy == "" && review.savedStateSupersededBy == "" && a.freshAuthenticationReviewCurrent(review)
@@ -542,12 +551,14 @@ func cloneAuthenticationReviewAuthority(value config.RemoteAuthority) config.Rem
 	value.Accounts = slices.Clone(value.Accounts)
 	return value
 }
+
 func cloneAuthenticationReviewSummary(value clientAuthenticationReviewSummary) clientAuthenticationReviewSummary {
 	value.Models = slices.Clone(value.Models)
 	value.ChangedCategories = slices.Clone(value.ChangedCategories)
 	value.Receiver = cloneAuthenticationReviewAuthority(value.Receiver)
 	return value
 }
+
 func authenticationReviewAuthorityEqual(left, right config.RemoteAuthority) bool {
 	return left.Mode == right.Mode && left.Principal == right.Principal && left.Revision == right.Revision && left.Digest == right.Digest && slices.Equal(left.Accounts, right.Accounts)
 }

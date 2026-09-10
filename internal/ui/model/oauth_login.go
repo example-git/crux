@@ -69,6 +69,7 @@ func (*oauthLoginOperation) Format(s fmt.State, _ rune) {
 func oauthLoginReviewBusy(op *oauthLoginOperation) bool {
 	return op != nil && op.review != nil && (op.review.preparing != nil || op.review.pending != "")
 }
+
 func oauthLoginReviewResolved(op *oauthLoginOperation) bool {
 	return op != nil && op.review != nil && op.review.resolved
 }
@@ -129,12 +130,14 @@ func (oauthLoginOpenMsg) Format(s fmt.State, _ rune) {
 func (m *UI) oauthDialogOpen(d *dialog.OAuthLogin) bool {
 	return d != nil && m.dialog != nil && m.dialog.Dialog(dialog.LoginID) == d
 }
+
 func closeOAuthRelay(relay *callbackrelay.Relay) tea.Cmd {
 	if relay == nil {
 		return nil
 	}
 	return func() tea.Msg { _ = relay.Close(); return nil }
 }
+
 func (m *UI) pruneOAuthLogins() tea.Cmd {
 	var cmds []tea.Cmd
 	for d, read := range m.oauthLoginReads {
@@ -223,6 +226,7 @@ func (m *UI) openOAuthAuthentication(selection *dialog.ActionSelectModel, expect
 		return oauthLoginStatusMsg{read, snapshot, err}
 	}
 }
+
 func (m *UI) completeOAuthLoginStatus(msg oauthLoginStatusMsg) tea.Cmd {
 	r := msg.read
 	if r == nil || m.oauthLoginReads[r.dialog] != r || r.workspace != m.com.Workspace || !m.oauthDialogOpen(r.dialog) {
@@ -265,7 +269,7 @@ func (m *UI) completeOAuthLoginStatus(msg oauthLoginStatusMsg) tea.Cmd {
 		}
 		message := "The requested provider is no longer available under its original owner. Reload workspace sign-in status."
 		r.dialog.SetPresentation(dialog.OAuthLoginPresentation{Message: message, Reload: true})
-		return util.ReportError(errors.New(message))
+		return util.CmdHandler(util.InfoMsg{Type: util.InfoTypeError, Msg: message})
 	}
 	r.dialog.SetProviders(choices)
 	message := "Choose the workspace provider to sign in. Login saves the authorized account on its credential owner."
@@ -275,6 +279,7 @@ func (m *UI) completeOAuthLoginStatus(msg oauthLoginStatusMsg) tea.Cmd {
 	r.dialog.SetPresentation(dialog.OAuthLoginPresentation{Message: message, Reload: true})
 	return nil
 }
+
 func (m *UI) startOAuthLogin(d *dialog.OAuthLogin, owner providerauth.Owner, originalWorkspaceID, originalOperationID string) tea.Cmd {
 	r := m.oauthLoginReads[d]
 	if r == nil || r.workspace != m.com.Workspace || !m.oauthDialogOpen(d) {
@@ -317,6 +322,7 @@ func (m *UI) startOAuthLogin(d *dialog.OAuthLogin, owner providerauth.Owner, ori
 	m.showOAuthLogin(op)
 	return prepareOAuthLoginIDs(op, false)
 }
+
 func prepareOAuthLoginIDs(op *oauthLoginOperation, recovery bool) tea.Cmd {
 	attempt := op.attempt
 	return func() tea.Msg {
@@ -335,6 +341,7 @@ func prepareOAuthLoginIDs(op *oauthLoginOperation, recovery bool) tea.Cmd {
 		return oauthLoginIDsMsg{op, attempt, ids, recovery, err}
 	}
 }
+
 func (m *UI) completeOAuthLoginIDs(msg oauthLoginIDsMsg) tea.Cmd {
 	op := msg.operation
 	if op == nil || m.oauthLogins[op.workspace] != op || !op.preparing || op.attempt != msg.attempt {
@@ -439,6 +446,7 @@ func (m *UI) dispatchOAuthLogin(op *oauthLoginOperation, kind string) tea.Cmd {
 		return result
 	}
 }
+
 func (m *UI) completeOAuthLoginResult(msg oauthLoginResultMsg) tea.Cmd {
 	op := msg.operation
 	if op == nil || m.oauthLogins[op.workspace] != op || !op.busy || op.attempt != msg.attempt || op.kind != msg.kind || op.ref != msg.ref {
@@ -507,9 +515,11 @@ func (m *UI) completeOAuthLoginResult(msg oauthLoginResultMsg) tea.Cmd {
 	}
 	return m.advanceOAuthLogin(op)
 }
+
 func oauthLoginEnded(phase providerauth.OAuthLoginPhase) bool {
 	return phase == providerauth.OAuthLoginCanceled || phase == providerauth.OAuthLoginExpired || phase == providerauth.OAuthLoginFailed
 }
+
 func (m *UI) advanceOAuthLogin(op *oauthLoginOperation) tea.Cmd {
 	if op.closed && !op.completeSent && op.state.Phase != providerauth.OAuthLoginComplete && op.state.Phase != providerauth.OAuthLoginCommitting {
 		return m.dispatchOAuthLogin(op, "cancel")
@@ -547,6 +557,7 @@ func (m *UI) advanceOAuthLogin(op *oauthLoginOperation) tea.Cmd {
 	commands = append(commands, m.dispatchOAuthLogin(op, "wait"))
 	return tea.Batch(commands...)
 }
+
 func (m *UI) startOAuthRelay(op *oauthLoginOperation) tea.Cmd {
 	if op.relayBusy {
 		return nil
@@ -562,6 +573,7 @@ func (m *UI) startOAuthRelay(op *oauthLoginOperation) tea.Cmd {
 		return oauthLoginRelayMsg{operation: op, attempt: attempt, ref: ref, relay: relay, started: true, err: err}
 	}
 }
+
 func (m *UI) waitOAuthRelay(op *oauthLoginOperation) tea.Cmd {
 	op.relayBusy = true
 	op.relayAttempt++
@@ -571,6 +583,7 @@ func (m *UI) waitOAuthRelay(op *oauthLoginOperation) tea.Cmd {
 		return oauthLoginRelayMsg{operation: op, attempt: attempt, ref: ref, relay: relay, input: input, err: err}
 	}
 }
+
 func (m *UI) completeOAuthRelay(msg oauthLoginRelayMsg) tea.Cmd {
 	op := msg.operation
 	if op == nil || m.oauthLogins[op.workspace] != op || msg.ref != op.ref || msg.attempt != op.relayAttempt || !op.relayBusy {
@@ -596,6 +609,7 @@ func (m *UI) completeOAuthRelay(msg oauthLoginRelayMsg) tea.Cmd {
 	}
 	return m.submitOAuthInput(op, msg.input)
 }
+
 func (m *UI) submitOAuthLogin(d *dialog.OAuthLogin) tea.Cmd {
 	op := m.oauthLogins[m.com.Workspace]
 	if op == nil || op.dialog != d || !m.oauthDialogOpen(d) || op.closed || op.completeSent || op.state.Phase != providerauth.OAuthLoginWaitingCode || op.submission.Input != "" {
@@ -603,6 +617,7 @@ func (m *UI) submitOAuthLogin(d *dialog.OAuthLogin) tea.Cmd {
 	}
 	return m.submitOAuthInput(op, d.TakeSource())
 }
+
 func (m *UI) submitOAuthInput(op *oauthLoginOperation, input string) tea.Cmd {
 	if op.submission.Input != "" {
 		return nil
@@ -618,6 +633,7 @@ func (m *UI) submitOAuthInput(op *oauthLoginOperation, input string) tea.Cmd {
 	op.message = "Submitting the original authorization response to its workspace owner…"
 	return m.dispatchOAuthLogin(op, "code")
 }
+
 func (m *UI) openOAuthBrowser(op *oauthLoginOperation) tea.Cmd {
 	if op.closed || op.ended || op.state.AuthorizationURL == "" {
 		return nil
@@ -630,6 +646,7 @@ func (m *UI) openOAuthBrowser(op *oauthLoginOperation) tea.Cmd {
 	op.openedURL = rawURL
 	return func() tea.Msg { return oauthLoginOpenMsg{operation: op, ref: ref, url: rawURL, err: opener(rawURL)} }
 }
+
 func (m *UI) completeOAuthBrowser(msg oauthLoginOpenMsg) tea.Cmd {
 	op := msg.operation
 	if op == nil || m.oauthLogins[op.workspace] != op || op.ref != msg.ref || op.closed || op.state.AuthorizationURL != msg.url || msg.err == nil {
@@ -639,6 +656,7 @@ func (m *UI) completeOAuthBrowser(msg oauthLoginOpenMsg) tea.Cmd {
 	m.showOAuthLogin(op)
 	return util.ReportWarn(op.message)
 }
+
 func (m *UI) retryOAuthLogin(d *dialog.OAuthLogin) tea.Cmd {
 	op := m.oauthLogins[m.com.Workspace]
 	if op == nil || op.dialog != d || !m.oauthDialogOpen(d) || op.busy || op.preparing || op.resolved || oauthLoginReviewBusy(op) || oauthLoginReviewResolved(op) {
@@ -661,6 +679,7 @@ func (m *UI) retryOAuthLogin(d *dialog.OAuthLogin) tea.Cmd {
 	}
 	return m.dispatchOAuthLogin(op, op.kind)
 }
+
 func (m *UI) reloadOAuthLogin(d *dialog.OAuthLogin) tea.Cmd {
 	if !m.oauthDialogOpen(d) {
 		return nil
@@ -687,6 +706,7 @@ func (m *UI) reloadOAuthLogin(d *dialog.OAuthLogin) tea.Cmd {
 	cleanup := m.pruneOAuthLogins()
 	return tea.Batch(cleanup, m.openOAuthAuthentication(selection, expected))
 }
+
 func (m *UI) recoverOAuthLogin(action dialog.ActionOAuthLoginRecover) tea.Cmd {
 	op := m.oauthLogins[m.com.Workspace]
 	if op == nil || op.dialog != action.Dialog || !m.oauthDialogOpen(action.Dialog) || op.busy || op.preparing || op.resolved || !op.completeSent || op.recoverer == nil || oauthLoginReviewBusy(op) || oauthLoginReviewResolved(op) {
@@ -704,6 +724,7 @@ func (m *UI) recoverOAuthLogin(action dialog.ActionOAuthLoginRecover) tea.Cmd {
 	m.showOAuthLogin(op)
 	return prepareOAuthLoginIDs(op, true)
 }
+
 func (m *UI) completeOAuthLoginReceipt(msg oauthLoginResultMsg) tea.Cmd {
 	op := msg.operation
 	if (msg.recovery == nil) != (msg.kind != "recovery") || msg.recovery != nil && (op.recovery == nil || *op.recovery != *msg.recovery) {
@@ -747,6 +768,7 @@ func (m *UI) completeOAuthLoginReceipt(msg oauthLoginResultMsg) tea.Cmd {
 	selection.ReAuthenticate = false
 	return m.handleSelectModelAfterImport(selection, false)
 }
+
 func (m *UI) showOAuthLogin(op *oauthLoginOperation) {
 	if !m.oauthDialogOpen(op.dialog) {
 		return
@@ -772,6 +794,7 @@ func (m *UI) showOAuthLogin(op *oauthLoginOperation) {
 	}
 	op.dialog.SetPresentation(p)
 }
+
 func safeOAuthLoginError(err error) string {
 	switch {
 	case errors.Is(err, providerauth.ErrOAuthLoginUnavailable):

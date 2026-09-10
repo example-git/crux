@@ -3,12 +3,12 @@ package model
 import (
 	"context"
 	"errors"
+	"image/color"
+	"testing"
 	"time"
 
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/ui/dialog"
-	"image/color"
-	"testing"
 
 	"github.com/charmbracelet/x/ansi"
 	tea "github.com/example-git/crux/foundation/bubbletea"

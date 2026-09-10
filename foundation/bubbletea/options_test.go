@@ -9,6 +9,7 @@ import (
 )
 
 func TestOptions(t *testing.T) {
+	t.Parallel()
 	t.Run("output", func(t *testing.T) {
 		t.Parallel()
 		var b bytes.Buffer

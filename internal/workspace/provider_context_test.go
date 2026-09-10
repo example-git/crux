@@ -103,7 +103,8 @@ func TestProviderContextReloadRejectsUnselectedOwningClientProviderBeforeCollect
 	owner := providerregistry.RegistrationOwner{ProviderID: "unselected", Construction: providerregistry.ConstructionOpenAICompat}
 	providers := csync.NewMap[string, config.ProviderConfig]()
 	for _, id := range []string{"selected", "unselected"} {
-		providers.Set(id, config.ProviderConfig{ID: id, Type: catalog.TypeOpenAICompat,
+		providers.Set(id, config.ProviderConfig{
+			ID: id, Type: catalog.TypeOpenAICompat,
 			Owner:  &config.ProviderOwnerReference{Type: config.ProviderOwnerCustom, Construction: providerregistry.ConstructionOpenAICompat},
 			Models: []catalog.Model{{ID: "model", Name: "Model"}},
 		})

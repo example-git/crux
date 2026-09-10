@@ -19,16 +19,22 @@ import (
 func newDeclaredControlDialog(t *testing.T, kind string, effective json.RawMessage) (*Instructions, *instructionsTestWorkspace) {
 	t.Helper()
 	d, ws := newInstructionsTestDialog(t, "synthetic", config.ToolingInstructionsCrux)
-	owner := providerregistry.RegistrationOwner{ProviderID: "synthetic", Construction: providerregistry.ConstructionGenericJSON,
-		HasManifest: true, ManifestID: "plugin.synthetic", ManifestVersion: "1.0.0"}
+	owner := providerregistry.RegistrationOwner{
+		ProviderID: "synthetic", Construction: providerregistry.ConstructionGenericJSON,
+		HasManifest: true, ManifestID: "plugin.synthetic", ManifestVersion: "1.0.0",
+	}
 	control := manifest.RuntimeControl{ID: "vendor.mode", Label: "Vendor mode", Type: kind, Scope: "model", RequestPath: "/vendor/mode"}
 	binding := providerregistry.RuntimeControlBinding{Kind: providerregistry.RuntimeControlModelOption}
 	digest := providerregistry.RuntimeControlDescriptorDigest(control, binding)
-	ws.surfaces = []providerregistry.Surface{{ID: owner.ProviderID, Owner: &owner, Available: true,
-		RuntimeControls: []providerregistry.RuntimeControlSurface{{RuntimeControl: control, Available: true, AvailableModels: []string{"test-model"}, Binding: &binding, DescriptorDigest: digest}}}}
+	ws.surfaces = []providerregistry.Surface{{
+		ID: owner.ProviderID, Owner: &owner, Available: true,
+		RuntimeControls: []providerregistry.RuntimeControlSurface{{RuntimeControl: control, Available: true, AvailableModels: []string{"test-model"}, Binding: &binding, DescriptorDigest: digest}},
+	}}
 	require.NoError(t, ws.cfg.BindProviderSurfaceOwners(ws.surfaces))
-	target := config.RuntimeControlTarget{Owner: owner, ControlID: control.ID, DescriptorDigest: digest,
-		Selection: config.RuntimeControlSelection{ModelType: config.SelectedModelTypeLarge, ModelID: "test-model"}}
+	target := config.RuntimeControlTarget{
+		Owner: owner, ControlID: control.ID, DescriptorDigest: digest,
+		Selection: config.RuntimeControlSelection{ModelType: config.SelectedModelTypeLarge, ModelID: "test-model"},
+	}
 	ws.controlStates = map[string]config.RuntimeControlState{control.ID: {
 		Scope: config.ScopeGlobal, Target: target, Binding: binding, ScopedKnown: true,
 		Effective: config.RuntimeControlValue{Present: true, Value: effective},

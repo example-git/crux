@@ -13,6 +13,7 @@ func TestRuntimeControlManifestDefaultsPreserveExactNumbers(t *testing.T) {
 	for _, literal := range []string{"9007199254740993", "1e3", "0", "18446744073709551616"} {
 		for _, caseFold := range []bool{false, true} {
 			t.Run(literal+"/"+map[bool]string{false: "lower", true: "upper"}[caseFold], func(t *testing.T) {
+				t.Parallel()
 				var document map[string]any
 				require.NoError(t, json.Unmarshal(readRepoFile(t, "docs", "provider-plugins", "examples", "minimal.plugin", "manifest.json"), &document))
 				document["capabilities"].(map[string]any)["runtime_controls"] = []RuntimeControl{{ID: "vendor.count", Label: "Count", Type: "integer", Scope: "model", RequestPath: "/count", Default: json.Number(literal)}}

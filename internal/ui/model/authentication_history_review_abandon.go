@@ -51,6 +51,7 @@ func (m *UI) prepareHistoricalReviewAbandon(s *authenticationHistoryUI, e *authe
 		return authenticationHistoryReviewAbandonPreparedMsg{s, e, attempt, generation, request, err}
 	}
 }
+
 func (m *UI) completeHistoricalReviewAbandonPreparation(msg authenticationHistoryReviewAbandonPreparedMsg) tea.Cmd {
 	s, e := msg.state, msg.entry
 	if s == nil || e == nil || m.authenticationHistories[s.workspace] != s || s.entries[e.key] != e || !e.preparing || e.attempt != msg.attempt {
@@ -72,6 +73,7 @@ func (m *UI) completeHistoricalReviewAbandonPreparation(msg authenticationHistor
 	}
 	return m.dispatchHistoricalReviewAbandon(s, e, msg.request)
 }
+
 func (m *UI) dispatchHistoricalReviewAbandon(s *authenticationHistoryUI, e *authenticationHistoryEntry, request workspace.ProviderAuthenticationReviewAbandonRequest) tea.Cmd {
 	if !m.authenticationHistoryCurrent(s) || e.review == nil || e.review.ApplyRequest == nil || request.WorkspaceID != s.sourceID || request.Review != e.review.Request || request.PreviewID != e.review.ApplyRequest.PreviewID {
 		return util.ReportError(providerauth.ErrStale)
@@ -97,6 +99,7 @@ func (m *UI) dispatchHistoricalReviewAbandon(s *authenticationHistoryUI, e *auth
 		return authenticationHistoryReviewAbandonedMsg{s, e, attempt, request, outcome, err}
 	}
 }
+
 func (m *UI) completeHistoricalReviewAbandon(msg authenticationHistoryReviewAbandonedMsg) tea.Cmd {
 	s, e := msg.state, msg.entry
 	if s == nil || e == nil || m.authenticationHistories[s.workspace] != s || s.entries[e.key] != e || !e.pending || e.attempt != msg.attempt || e.reviewAbandon == nil || *e.reviewAbandon != msg.request {

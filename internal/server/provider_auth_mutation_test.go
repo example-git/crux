@@ -1,14 +1,15 @@
 package server
 
 import (
-	"github.com/example-git/crux/internal/proto"
-	"github.com/example-git/crux/internal/providerauth"
-	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
+	"github.com/stretchr/testify/require"
 )
 
 func TestProviderAuthMutationRoutesRejectMalformedBeforeBackend(t *testing.T) {
@@ -20,7 +21,7 @@ func TestProviderAuthMutationRoutesRejectMalformedBeforeBackend(t *testing.T) {
 		}
 		valid += `}`
 		for _, body := range []string{`null`, `{}`, valid + `{}`, strings.Replace(valid, `"target":{`, `"target":{"unknown":1,`, 1), strings.Replace(valid, `"operation_id"`, `"Operation_ID"`, 1), strings.Replace(valid, `"workspace_id":"workspace"`, `"workspace_id":"other"`, 1), strings.Repeat(" ", proto.MaxProviderAuthRequestBytes) + valid} {
-			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/", strings.NewReader(body))
 			r.SetPathValue("id", "workspace")
 			w := httptest.NewRecorder()
 			controller := &controllerV1{}

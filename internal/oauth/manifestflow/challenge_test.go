@@ -42,7 +42,7 @@ func TestPrepareCodeCapturesManifestAndClientBoundCallback(t *testing.T) {
 	headerValue := manifest.Template{Kind: "config", Ref: "header"}
 	executor.flow.TokenRequest.Headers = []manifest.HeaderRule{{Operation: "set", Name: "X-Captured", Value: &headerValue}}
 	executor.bindings = Bindings{Configuration: map[string]any{"client_id": "captured-client", "header": "captured-header"}, Credentials: map[string]string{"client_secret": "captured-secret"}}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp4", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer listener.Close()
 	port := uint16(listener.Addr().(*net.TCPAddr).Port)
@@ -263,7 +263,9 @@ func TestManifestLegacyCallbackMatchesExactEscapedPath(t *testing.T) {
 			browser := &http.Client{Timeout: 3 * time.Second}
 			wrong := *callback
 			wrong.RawPath = ""
-			response, err := browser.Get(wrong.String())
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, wrong.String(), nil)
+			require.NoError(t, err)
+			response, err := browser.Do(request)
 			if err != nil {
 				callbacks <- err
 				return
@@ -274,7 +276,9 @@ func TestManifestLegacyCallbackMatchesExactEscapedPath(t *testing.T) {
 				callbacks <- errors.New("decoded callback path was accepted")
 				return
 			}
-			response, err = browser.Get(callback.String())
+			request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, callback.String(), nil)
+			require.NoError(t, err)
+			response, err = browser.Do(request)
 			if response != nil {
 				response.Body.Close()
 			}

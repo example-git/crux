@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"errors"
+
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerauth"
 )

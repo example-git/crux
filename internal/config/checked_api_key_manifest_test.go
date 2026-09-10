@@ -48,14 +48,14 @@ func newCheckedManifestFixture(t *testing.T, endpoint string, edit func(*manifes
 	}
 	data, err = json.Marshal(declaration)
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(bundle, "manifest.json"), data, 0o600))
 	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginNative), "CRUX_PROVIDER_PLUGINS": "example-responses"}
 	installTrustedProviderBundle(t, values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"], bundle)
-	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_CONFIG"], 0700))
+	require.NoError(t, os.MkdirAll(values["CRUX_GLOBAL_CONFIG"], 0o700))
 	document := fmt.Sprintf(`{"providers":{"example-responses":{"plugin":{"id":"example.responses-oauth"},"base_url":%q,"extra_headers":{"X-Configured":"kept","X-Declared-Key":"shadowed"},"configuration":{"oauth_client_id":"synthetic-client"}}},"models":{"large":{"provider":"example-responses","model":"example-reasoner"},"small":{"provider":"example-responses","model":"example-small"}}}`, endpoint)
-	require.NoError(t, os.WriteFile(filepath.Join(values["CRUX_GLOBAL_CONFIG"], "crux.json"), []byte(document), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(values["CRUX_GLOBAL_CONFIG"], "crux.json"), []byte(document), 0o600))
 	path := filepath.Join(values["CRUX_GLOBAL_DATA"], "crux.json")
-	require.NoError(t, os.WriteFile(path, []byte(`{"providers":{"example-responses":{"api_key":"synthetic-old"}}}`), 0600))
+	require.NoError(t, os.WriteFile(path, []byte(`{"providers":{"example-responses":{"api_key":"synthetic-old"}}}`), 0o600))
 	store, err := LoadIsolated(root, filepath.Join(root, "workspace"), false, env.NewFromMap(values))
 	require.NoError(t, err)
 	owner, ok := store.RuntimeSnapshot().ProviderOwner("example-responses")
@@ -129,7 +129,7 @@ func TestCheckedAPIKeyManifestFailuresNeverSave(t *testing.T) {
 				case "oversized":
 					_, _ = w.Write(make([]byte, (1<<20)+1))
 				case "redirect denied":
-					http.Redirect(w, r, "/redirected", 307)
+					http.Redirect(w, r, "/redirected", http.StatusTemporaryRedirect)
 				default:
 					_, _ = w.Write([]byte(`{}`))
 				}
@@ -344,7 +344,7 @@ func TestCheckedAPIKeyManifestAllowedAndForbiddenRedirects(t *testing.T) {
 					if mode == "undeclared host" {
 						destination = "https://localhost:" + strings.Split(r.Host, ":")[1] + "/final"
 					}
-					http.Redirect(w, r, destination, 307)
+					http.Redirect(w, r, destination, http.StatusTemporaryRedirect)
 					return
 				}
 				final.Add(1)

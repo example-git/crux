@@ -2,8 +2,10 @@ package providerauth
 
 import "context"
 
-type oauthCompletionAdmissionKey struct{}
-type oauthCompletionAdmission func(context.Context) (func(), error)
+type (
+	oauthCompletionAdmissionKey struct{}
+	oauthCompletionAdmission    func(context.Context) (func(), error)
+)
 
 // WithOAuthCompletionAdmission lets the owning Workspace durably record an
 // intent only after the service's normal capture/owner/generation preflight.

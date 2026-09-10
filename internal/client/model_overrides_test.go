@@ -45,11 +45,14 @@ func TestOverrideModelsSDKChecksNumericWireMeaning(t *testing.T) {
 		number  json.Number
 		changed bool
 	}{
-		{number: "1.0"}, {number: "1e3"}, {number: "0.50"},
+		{number: "1.0"},
+		{number: "1e3"},
+		{number: "0.50"},
 		{number: "9007199254740993", changed: true},
 		{number: "1.00000000000000000000000000001", changed: true},
 	} {
 		t.Run(string(test.number), func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var request proto.ModelOverridesRequest
 				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
@@ -99,6 +102,7 @@ func TestOverrideModelsSDKRejectsMalformedOrChangedReply(t *testing.T) {
 		"oversize":               `{"unknown":"` + strings.Repeat("x", 1<<20) + `"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
 			defer srv.Close()
 			_, err := captureClient(t, srv).OverrideModels(t.Context(), "workspace", requested)

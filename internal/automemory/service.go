@@ -3,12 +3,13 @@ package automemory
 import (
 	"context"
 	"fmt"
-	"github.com/example-git/crux/internal/config"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/example-git/crux/internal/config"
 
 	"github.com/example-git/crux/internal/lock"
 )

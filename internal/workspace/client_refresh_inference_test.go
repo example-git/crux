@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	tea "github.com/example-git/crux/foundation/bubbletea"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	tea "github.com/example-git/crux/foundation/bubbletea"
 
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
@@ -490,7 +491,8 @@ func installRefreshFixture(t *testing.T, endpoint, dataDir, cacheDir, mode strin
 		value.Capabilities.Operations = append(value.Capabilities.Operations, manifest.Operation{
 			ID: "quota", Kind: "usage", Protocol: "generic-json", Transport: "http-json", Endpoint: "api", Method: http.MethodGet, Path: "/quota",
 		})
-		value.Capabilities.Usage = &manifest.UsagePolicy{Source: "operation", Operation: "quota", Fallback: "unavailable",
+		value.Capabilities.Usage = &manifest.UsagePolicy{
+			Source: "operation", Operation: "quota", Fallback: "unavailable",
 			PlanPointers: []string{"/plan"}, Windows: []manifest.WindowMap{{ID: "weekly", RemainingFractionPointer: "/remaining"}},
 		}
 	}

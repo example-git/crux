@@ -28,17 +28,20 @@ type imageCredentialRefresh struct {
 func newImageCredentialRefresh(store *config.ConfigStore) *imageCredentialRefresh {
 	return &imageCredentialRefresh{store: store, bindings: map[string]providerregistry.RegistrationOwner{}, owners: map[providerregistry.RegistrationOwner]*imageRefreshOwner{}}
 }
+
 func (s *imageCredentialRefresh) bind(id string, owner providerregistry.RegistrationOwner, snapshot config.RuntimeSnapshot, spent bool) {
 	s.bindings[id] = owner
 	if existing := s.owners[owner]; existing == nil || spent {
 		s.owners[owner] = &imageRefreshOwner{snapshot: snapshot, spent: spent}
 	}
 }
+
 func (s *imageCredentialRefresh) read() (map[string]any, uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return maps.Clone(s.values), s.epoch
 }
+
 func (s *imageCredentialRefresh) refresh(ctx context.Context, ids []string, attempt uint64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

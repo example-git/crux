@@ -108,8 +108,12 @@ func stageAccountImport(document []byte, namespace string, entry Entry) ([]byte,
 		value  any
 		remove bool
 	}{
-		{"id", entry.ID, false}, {"displayName", entry.DisplayName, false}, {"accessToken", entry.AccessToken, false},
-		{"refreshToken", entry.RefreshToken, entry.RefreshToken == ""}, {"expiresAt", entry.ExpiresAt, entry.ExpiresAt == 0}, {"raw", entry.Raw, len(entry.Raw) == 0},
+		{"id", entry.ID, false},
+		{"displayName", entry.DisplayName, false},
+		{"accessToken", entry.AccessToken, false},
+		{"refreshToken", entry.RefreshToken, entry.RefreshToken == ""},
+		{"expiresAt", entry.ExpiresAt, entry.ExpiresAt == 0},
+		{"raw", entry.Raw, len(entry.Raw) == 0},
 	} {
 		path := accountChangePath(entryNames[field.name])
 		if field.remove {

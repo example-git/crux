@@ -27,7 +27,7 @@ func TestPluginsTestNamespaceOAuthRunsActualHTTPSDiagnostics(t *testing.T) {
 	const providerID = "namespace-cli"
 	const token = "cli-selected-oauth-token"
 	accountRoot := filepath.Join(t.TempDir(), "account-storage")
-	require.NoError(t, os.WriteFile(accountRoot, []byte("must not be read as accounts"), 0600))
+	require.NoError(t, os.WriteFile(accountRoot, []byte("must not be read as accounts"), 0o600))
 	t.Setenv("AI_CLI_DIR", accountRoot)
 	var requests atomic.Int32
 	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

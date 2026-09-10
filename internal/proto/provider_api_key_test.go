@@ -11,8 +11,10 @@ import (
 )
 
 func keyCheckRequestFixture() providerauth.APIKeyCheckRequest {
-	return providerauth.APIKeyCheckRequest{CheckID: strings.Repeat("a", 32), CredentialID: "provider.api_key", Source: "synthetic-secret",
-		Target: providerauth.Target{WorkspaceID: "workspace", Owner: providerauth.Owner{ProviderID: "provider"}, Generation: providerauth.Generation{Epoch: strings.Repeat("b", 32), Sequence: 1}}}
+	return providerauth.APIKeyCheckRequest{
+		CheckID: strings.Repeat("a", 32), CredentialID: "provider.api_key", Source: "synthetic-secret",
+		Target: providerauth.Target{WorkspaceID: "workspace", Owner: providerauth.Owner{ProviderID: "provider"}, Generation: providerauth.Generation{Epoch: strings.Repeat("b", 32), Sequence: 1}},
+	}
 }
 
 func TestProviderAPIKeyCheckStrictSecretRequest(t *testing.T) {
@@ -38,8 +40,10 @@ func TestProviderAPIKeyCheckStrictSecretRequest(t *testing.T) {
 
 func TestProviderAPIKeyResponsesBindCheckAndPreserveEvidence(t *testing.T) {
 	request := keyCheckRequestFixture()
-	outcome := providerauth.APIKeyCheckOutcome{CheckID: request.CheckID, Previous: request.Target, CredentialID: request.CredentialID,
-		Probe: config.ConnectionProbeResult{Kind: config.ConnectionProbeHTTPResponse, Policy: config.ConnectionProbePolicyHTTP200, HTTPStatus: 401, EnteredKeyInAuthorization: true}}
+	outcome := providerauth.APIKeyCheckOutcome{
+		CheckID: request.CheckID, Previous: request.Target, CredentialID: request.CredentialID,
+		Probe: config.ConnectionProbeResult{Kind: config.ConnectionProbeHTTPResponse, Policy: config.ConnectionProbePolicyHTTP200, HTTPStatus: 401, EnteredKeyInAuthorization: true},
+	}
 	response := ProviderAPIKeyCheckResponse{Outcome: outcome, Error: NewProviderAuthenticationError(providerauth.ErrAPIKeyCheck)}
 	encoded, err := json.Marshal(response)
 	require.NoError(t, err)

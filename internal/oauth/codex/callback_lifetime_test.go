@@ -69,7 +69,12 @@ func TestAuthorizeCallbackRetainsOwnerAndClientID(t *testing.T) {
 				q.Set("code", "synthetic-code")
 				callback.RawQuery = q.Encode()
 				go func() {
-					response, e := (&http.Client{Timeout: 3 * time.Second}).Get(callback.String())
+					request, e := http.NewRequestWithContext(t.Context(), http.MethodGet, callback.String(), nil)
+					if e != nil {
+						callbacks <- e
+						return
+					}
+					response, e := (&http.Client{Timeout: 3 * time.Second}).Do(request)
 					if response != nil {
 						response.Body.Close()
 					}
@@ -157,7 +162,9 @@ func TestAuthorizeCallbackDuplicateAndCancellation(t *testing.T) {
 			browser := &http.Client{Timeout: 3 * time.Second}
 			first := make(chan error, 1)
 			go func() {
-				response, err := browser.Get(callback.String())
+				request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callback.String(), nil)
+				require.NoError(t, err)
+				response, err := browser.Do(request)
 				if response != nil {
 					response.Body.Close()
 				}
@@ -177,7 +184,9 @@ func TestAuthorizeCallbackDuplicateAndCancellation(t *testing.T) {
 				}
 				require.ErrorIs(t, <-done, context.Canceled)
 			} else {
-				duplicate, err := (&http.Client{Timeout: time.Second}).Get(callback.String())
+				request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callback.String(), nil)
+				require.NoError(t, err)
+				duplicate, err := (&http.Client{Timeout: time.Second}).Do(request)
 				once.Do(func() { close(release) })
 				require.NoError(t, err)
 				require.Equal(t, http.StatusConflict, duplicate.StatusCode)

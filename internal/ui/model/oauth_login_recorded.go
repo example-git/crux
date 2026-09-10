@@ -2,7 +2,6 @@ package model
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
@@ -68,6 +67,7 @@ func (m *UI) beginOAuthLogin(d *dialog.OAuthLogin, owner providerauth.Owner) tea
 		return oauthLoginRecordedMsg{read: r, sequence: sequence, target: target, list: list, err: err}
 	}
 }
+
 func (m *UI) completeOAuthLoginRecorded(msg oauthLoginRecordedMsg) tea.Cmd {
 	r := msg.read
 	if r == nil || m.oauthLoginReads[r.dialog] != r || r.workspace != m.com.Workspace || !m.oauthDialogOpen(r.dialog) || r.recordedSequence != msg.sequence || r.recordedOwner != msg.target.Owner {
@@ -119,13 +119,14 @@ func (m *UI) completeOAuthLoginRecorded(msg oauthLoginRecordedMsg) tea.Cmd {
 	r.dialog.SetPresentation(dialog.OAuthLoginPresentation{Message: strings.Join(lines, "\n"), Reload: true})
 	return nil
 }
+
 func (m *UI) chooseOAuthLoginRecorded(action dialog.ActionOAuthLoginResult) tea.Cmd {
 	r := m.oauthLoginReads[action.Dialog]
 	if r == nil || r.workspace != m.com.Workspace || !m.oauthDialogOpen(action.Dialog) || !r.recordedLoaded {
 		return nil
 	}
 	if (action.OriginalWorkspaceID == "") != (action.OriginalOperationID == "") {
-		return util.ReportError(errors.New("The recorded OAuth identity is incomplete."))
+		return util.CmdHandler(util.InfoMsg{Type: util.InfoTypeError, Msg: "The recorded OAuth identity is incomplete."})
 	}
 	if action.Abandon {
 		return m.abandonOAuthLoginRecorded(action, r)
@@ -139,7 +140,7 @@ func (m *UI) chooseOAuthLoginRecorded(action dialog.ActionOAuthLoginResult) tea.
 			}
 		}
 		if !found {
-			return util.ReportError(errors.New("The selected operation has no observed OAuth result to recover."))
+			return util.CmdHandler(util.InfoMsg{Type: util.InfoTypeError, Msg: "The selected operation has no observed OAuth result to recover."})
 		}
 	}
 	return m.startOAuthLogin(action.Dialog, r.recordedOwner, action.OriginalWorkspaceID, action.OriginalOperationID)

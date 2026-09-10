@@ -73,8 +73,8 @@ func TestCopilotCapturedVersionFallbackFiles(t *testing.T) {
 	defer func() { http.DefaultClient = original }()
 	ambient, captured := t.TempDir(), t.TempDir()
 	write := func(home, path, data string) {
-		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(home, path)), 0700))
-		require.NoError(t, os.WriteFile(filepath.Join(home, path), []byte(data), 0600))
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(home, path)), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(home, path), []byte(data), 0o600))
 	}
 	write(ambient, ".config/github-copilot/versions.json", `{"version":"9.8.7"}`)
 	write(ambient, ".ai-cli/useragent-versions.json", `{"copilot-cli":"9.8.7","copilot-extension":"9.8.7"}`)
@@ -114,14 +114,14 @@ func TestCopilotCapturedProbePathAndChildEnvironment(t *testing.T) {
 	}
 	bin := t.TempDir()
 	ambient := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "github-copilot-cli"), []byte("#!/bin/sh\nprintf '%s\\n' \"$SYNTHETIC_PROBE_VERSION\"\n"), 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(ambient, "github-copilot-cli"), []byte("#!/bin/sh\nprintf '9.9.9\\n'\n"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "github-copilot-cli"), []byte("#!/bin/sh\nprintf '%s\\n' \"$SYNTHETIC_PROBE_VERSION\"\n"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(ambient, "github-copilot-cli"), []byte("#!/bin/sh\nprintf '9.9.9\\n'\n"), 0o700))
 	t.Setenv("PATH", ambient)
 	t.Setenv("SYNTHETIC_PROBE_VERSION", "9.8.7")
 	ctx := oauth.ContextWithEnvironment(t.Context(), []string{"PATH=" + bin, "SYNTHETIC_PROBE_VERSION=5.6.7"})
 	require.Equal(t, "5.6.7", runToolVersionForContext(ctx, "github-copilot-cli"))
 	require.Empty(t, runToolVersionForContext(oauth.ContextWithEnvironment(t.Context(), nil), "github-copilot-cli"))
-	require.NoError(t, os.WriteFile(filepath.Join(bin, "github-copilot-cli"), []byte("#!/bin/sh\nexec /bin/sleep 60\n"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "github-copilot-cli"), []byte("#!/bin/sh\nexec /bin/sleep 60\n"), 0o700))
 	canceled, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 	start := time.Now()
