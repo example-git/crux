@@ -14,6 +14,7 @@ import (
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,6 +50,11 @@ func loadedAuthenticationInputs(t *testing.T) loadedAuthenticationInputsFixture 
 			"small": map[string]any{"provider": "codex", "model": "auth-fixture", "max_tokens": 512},
 		},
 	}
+	registration := registrytest.Provider("codex")
+	require.NoError(t, registrytest.Install(t.Context(), globalData, filepath.Join(root, "cache"), *registration.Manifest))
+	provider := document["providers"].(map[string]any)["codex"].(map[string]any)
+	provider["plugin"] = &config.ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+	provider["owner"] = &config.ProviderOwnerReference{Type: config.ProviderOwnerPlugin, Construction: registration.Construction, CompatibilityAdapter: registration.CompatibilityAdapter}
 	data, err := json.Marshal(document)
 	require.NoError(t, err)
 	path := filepath.Join(configDir, "crux.json")
@@ -56,7 +62,7 @@ func loadedAuthenticationInputs(t *testing.T) loadedAuthenticationInputsFixture 
 	base := env.NewFromMap(map[string]string{
 		"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": accountDir,
 		"CRUX_GLOBAL_CONFIG": configDir, "CRUX_GLOBAL_DATA": globalData,
-		"CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfileIntegrated),
+		"CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfilePluginCompat),
 	})
 	store, err := config.LoadIsolated(project, filepath.Join(root, "workspace-data"), false, base)
 	require.NoError(t, err)

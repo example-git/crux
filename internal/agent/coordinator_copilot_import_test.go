@@ -18,6 +18,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/oauth/copilot"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -74,7 +75,7 @@ func TestCoordinatorCopilotLogoutImportHTTPS(t *testing.T) {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, directory), 0o700))
 	}
 	require.NoError(t, os.WriteFile(filepath.Join(root, ".config/github-copilot/apps.json"), []byte(`{"github.com:Iv1.b507a08c87ecfe98":{"oauth_token":"synthetic-github-import"}}`), 0o600))
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("copilot")
 	require.True(t, ok)

@@ -24,6 +24,7 @@ import (
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/oauth/codex"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/example-git/crux/internal/ui/util"
@@ -221,12 +222,12 @@ func newInstructionsTestDialogForModel(t *testing.T, providerID, modelID, profil
 		fields:     make(map[string]any),
 	}
 	if providerID == codex.ID {
-		registry, err := providerregistry.New(providerregistry.Integrated()...)
+		registry, err := providerregistry.New(registrytest.Registrations()...)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ws.surfaces = registry.Surfaces(
-			[]catalog.Provider{codex.CatalogProvider()},
+			[]catalog.Provider{{ID: catalog.ProviderID(codex.ID), Models: registrytest.Models(codex.ID)}},
 			map[string]string{providerID: modelID},
 		)
 		if err := ws.cfg.BindProviderSurfaceOwners(ws.surfaces); err != nil {
@@ -338,7 +339,7 @@ func TestInstructionsNativeToggleMarksReplacedSections(t *testing.T) {
 	if dialog.items[nativeIndex].disabled {
 		t.Fatal("native toggle is not selected")
 	}
-	if dialog.items[nativeIndex].label != "Use "+codex.Name+" native tooling instructions" {
+	if dialog.items[nativeIndex].label != "Use "+registrytest.Provider(codex.ID).Name+" native tooling instructions" {
 		t.Fatalf("native toggle label = %q", dialog.items[nativeIndex].label)
 	}
 	for _, item := range dialog.items {

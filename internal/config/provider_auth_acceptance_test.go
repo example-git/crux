@@ -9,7 +9,7 @@ import (
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/oauth/accounts"
-	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -73,10 +73,10 @@ func TestAuthenticationAcceptanceCollectedOAuthMetadata(t *testing.T) {
 	t.Setenv("AI_CLI_DIR", root)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USERPROFILE", t.TempDir())
-	registration := providerregistry.Registration{ProviderID: "codex", AccountNamespace: "collected-auth-metadata", Construction: providerregistry.ConstructionCodex, OAuth: &providerregistry.OAuthCapability{}}
+	registration := registrytest.Provider("codex")
 	entry := accounts.Entry{ID: "selected", AccessToken: "synthetic-collected-access", RefreshToken: "synthetic-collected-refresh", Raw: json.RawMessage(`{"number":1,"nested":{"value":"same"}}`)}
 	require.NoError(t, accounts.Save(t.Context(), registration.AccountNamespace, entry))
-	provider := ProviderConfig{ID: registration.ProviderID, APIKey: entry.AccessToken, OAuthToken: entry.Token(), Owner: providerOwnerReferenceForRegistration(registration), Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}}}
+	provider := ProviderConfig{ID: registration.ProviderID, Plugin: &ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}, APIKey: entry.AccessToken, OAuthToken: entry.Token(), Owner: providerOwnerReferenceForRegistration(registration), Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}}}
 	store := NewTestStoreWithRegistrations(&Config{
 		Providers: csync.NewMapFrom(map[string]ProviderConfig{provider.ID: provider}),
 		Models:    map[SelectedModelType]SelectedModel{SelectedModelTypeLarge: {Provider: provider.ID, Model: "fixture"}, SelectedModelTypeSmall: {Provider: provider.ID, Model: "fixture"}},

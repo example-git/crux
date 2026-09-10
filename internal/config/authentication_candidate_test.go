@@ -23,7 +23,9 @@ import (
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/copilot"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providerplugin/manifest/manifesttest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -43,6 +45,10 @@ func newAuthenticationCandidateFixture(t *testing.T, id string, configured, disa
 		"CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfileIntegrated),
 		"CRUX_DISABLE_AUTO_MEMORY": "true",
 		"CAPTURED_HEADER":          "accepted-header", "PATH": os.Getenv("PATH"),
+	}
+	if id == "codex" {
+		values["CRUX_PROVIDER_PROFILE"] = string(ProviderProfilePluginCompat)
+		require.NoError(t, registrytest.Install(t.Context(), values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"], manifesttest.Delegated(id)))
 	}
 	marker := filepath.Join(root, "header-count")
 	provider := ProviderConfig{ID: id, Disable: disabled,

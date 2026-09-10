@@ -1,17 +1,20 @@
 package codex
 
 import (
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/example-git/crux/internal/providerplugin/manifest/manifesttest"
 )
 
 func TestModelsSupportImages(t *testing.T) {
-	models := Models()
+	models := manifesttest.Delegated("codex").Models
 	if len(models) == 0 {
 		t.Fatal("Codex model catalog is empty")
 	}
 	for _, model := range models {
-		if !model.SupportsImages {
+		if !slices.Contains(model.Modalities.Input, "image") {
 			t.Fatalf("model %q does not advertise image support", model.ID)
 		}
 	}

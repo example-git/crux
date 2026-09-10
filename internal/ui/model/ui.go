@@ -237,7 +237,8 @@ type UI struct {
 	sessionFileReads []string
 
 	// initialSessionID is set when loading a specific session on startup.
-	initialSessionID string
+	initialSessionID       string
+	providerStartupPending bool
 	// continueLastSession is set to continue the most recent session on startup.
 	continueLastSession bool
 	initialPrompt       string
@@ -644,7 +645,11 @@ func New(com *common.Common, initialSessionID string, continueLast bool, initial
 // Init initializes the UI model.
 func (m *UI) Init() tea.Cmd {
 	var cmds []tea.Cmd
-	if m.state == uiOnboarding {
+	issues := m.com.ProviderLoadIssues()
+	if len(issues) > 0 {
+		m.providerStartupPending = true
+		m.dialog.OpenDialog(dialog.NewProviderLoadIssues(m.com, issues))
+	} else if m.state == uiOnboarding {
 		if cmd := m.openModelsDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
@@ -680,6 +685,8 @@ func (m *UI) Init() tea.Cmd {
 // loadInitialSession loads the initial session if one was specified on startup.
 func (m *UI) loadInitialSession() tea.Cmd {
 	switch {
+	case m.providerStartupPending:
+		return nil
 	case m.state != uiLanding:
 		// Only load if we're in landing state (i.e., fully configured)
 		return nil
@@ -2367,6 +2374,17 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 
 	switch msg := action.(type) {
 	// Generic dialog messages
+	case dialog.ActionContinueProviderStartup:
+		if !m.providerStartupPending {
+			break
+		}
+		m.dialog.CloseFrontDialog()
+		m.providerStartupPending = false
+		if isOnboarding {
+			cmds = append(cmds, m.openModelsDialog())
+		} else {
+			cmds = append(cmds, m.continueStartup())
+		}
 	case dialog.ActionClose:
 		if isOnboarding && m.dialog.ContainsDialog(dialog.ModelsID) && !msg.Dismiss {
 			break
@@ -5059,7 +5077,7 @@ func (m *UI) attachSkill(skillID, name string) tea.Cmd {
 
 // sendMessage sends a message with the given content and attachments.
 func (m *UI) sendInitialPrompt() tea.Cmd {
-	if m.initialPrompt == "" || m.state == uiOnboarding || m.state == uiInitialize {
+	if m.initialPrompt == "" || m.providerStartupPending || m.state == uiOnboarding || m.state == uiInitialize {
 		return nil
 	}
 	prompt := m.initialPrompt

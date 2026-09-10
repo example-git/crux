@@ -15,6 +15,7 @@ import (
 )
 
 var ErrNoConfiguredCredentials = errors.New("no usable configured Codex or OpenAI API account; sign in to Codex or configure an OpenAI API account")
+var errUnsupportedCodexBundle = errors.New("unsupported provider: Codex requires an active provider bundle with an image endpoint")
 
 func NewProviderClient(store *config.ConfigStore) *Client {
 	client := NewClient()
@@ -31,6 +32,9 @@ func resolveConfiguredAuth(ctx context.Context, store *config.ConfigStore) (reso
 	codexAuth, codexConfigured, codexErr := configuredCodexAuth(ctx, store, snapshot)
 	if codexConfigured && codexErr == nil {
 		return codexAuth, nil
+	}
+	if errors.Is(codexErr, errUnsupportedCodexBundle) {
+		return resolvedAuth{}, codexErr
 	}
 	openAIAuth, openAIConfigured, openAIErr := configuredOpenAIAuth(store, snapshot)
 	if openAIConfigured && openAIErr == nil {
@@ -56,7 +60,10 @@ func configuredCodexAuth(ctx context.Context, store *config.ConfigStore, snapsho
 	}
 	registration, ok := snapshot.ProviderRegistrationFor(codex.ID, provider)
 	if !ok || registration.ProviderID != codex.ID || registration.AccountNamespace != accounts.ProviderCodex || registration.Construction != providerregistry.ConstructionCodex {
-		return resolvedAuth{}, false, nil
+		return resolvedAuth{}, true, errUnsupportedCodexBundle
+	}
+	if registration.ImageEndpoint == nil {
+		return resolvedAuth{}, true, errUnsupportedCodexBundle
 	}
 	owner := registration.Owner()
 	var refreshedToken string
@@ -99,6 +106,8 @@ func configuredCodexAuth(ctx context.Context, store *config.ConfigStore, snapsho
 	}
 	return resolvedAuth{
 		nativeIdentity: identity,
+		baseURL:        registration.ImageEndpoint.BaseURL,
+		endpoint:       registration.ImageEndpoint,
 		mode:           AuthCodex,
 		token:          token,
 		accountID:      accountID,

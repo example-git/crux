@@ -13,12 +13,13 @@ import (
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
 func testRegistration(t *testing.T, providerID string) providerregistry.Registration {
 	t.Helper()
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup(providerID)
 	require.True(t, ok)

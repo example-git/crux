@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/example-git/crux/internal/oauth/codex"
-	"github.com/example-git/crux/internal/oauth/gemini"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerregistry"
 )
@@ -40,14 +38,6 @@ func (snapshot RuntimeSnapshot) clientProviderDefinition(ctx context.Context, id
 	definition.Config.BaseURL, err = ResolveProviderEndpoint(provider, resolve)
 	if err != nil {
 		return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, errors.New("selected client endpoint cannot be resolved")
-	}
-	if definition.Config.BaseURL == "" && definition.Config.Owner.Type == ProviderOwnerCore {
-		switch owner.Construction {
-		case providerregistry.ConstructionCodex:
-			definition.Config.BaseURL = codex.APIEndpoint
-		case providerregistry.ConstructionGeminiAntigravity:
-			definition.Config.BaseURL = gemini.APIEndpoint
-		}
 	}
 	return definition, owner, nil
 }

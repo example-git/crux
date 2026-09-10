@@ -39,6 +39,7 @@ type Workspace struct {
 	// ProviderSurfaces is the execution host's redacted registry-generated
 	// provider presentation metadata.
 	ProviderSurfaces      []ProviderSurface                  `json:"provider_surfaces,omitempty"`
+	ProviderLoadIssues    []config.ProviderLoadIssue         `json:"provider_load_issues,omitempty"`
 	ForwardedProviders    map[string]config.ProviderConfig   `json:"forwarded_providers,omitempty"`
 	ForwardedAccounts     map[string]config.ForwardedAccount `json:"forwarded_accounts,omitempty"`
 	AllowedWorkspaceRoots []string                           `json:"-"`

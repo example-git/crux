@@ -95,10 +95,11 @@ type RemoteRuntimeProposal struct {
 }
 
 type RemoteProviderDefinition struct {
-	Config          ProviderConfig  `json:"config"`
-	BundleDigest    string          `json:"bundle_digest,omitempty"`
-	GeminiProjectID *string         `json:"gemini_project_id,omitempty"`
-	NativeIdentity  *NativeIdentity `json:"native_identity,omitempty"`
+	Unloaded        *ProviderLoadIssue `json:"unloaded,omitempty"`
+	Config          ProviderConfig     `json:"config"`
+	BundleDigest    string             `json:"bundle_digest,omitempty"`
+	GeminiProjectID *string            `json:"gemini_project_id,omitempty"`
+	NativeIdentity  *NativeIdentity    `json:"native_identity,omitempty"`
 }
 
 type RemoteCredentialBinding struct {
@@ -180,6 +181,18 @@ func (s RuntimeSnapshot) ClientImageBundle(owner providerplugin.ImageOwner) (bun
 	}
 	if s.clientRuntime == nil {
 		return bundle, false, nil
+	}
+	if s.config.Images != nil {
+		for _, configured := range s.config.Images.Providers {
+			if configured.Owner != owner {
+				continue
+			}
+			for _, credential := range configured.Credentials {
+				if s.config.providerLoadIssue(credential.ProviderID) != nil {
+					return bundle, true, fmt.Errorf("image provider requires unloaded provider %q", credential.ProviderID)
+				}
+			}
+		}
 	}
 	value, ok := s.clientRuntime.bundles[owner.Digest]
 	if !ok || value.ID() != owner.PluginID || value.Version() != owner.Version || value.ProviderID() != owner.Backend {
@@ -370,6 +383,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	// for owner-side setup. Its full binding is validated below; the marker
 	// never permits construction or substitutes a receiver credential.
 	declaredUnavailable := map[string]bool{}
+	unloaded := map[string]bool{}
 	for _, binding := range proposal.Credentials {
 		if binding.Unavailable {
 			declaredUnavailable[binding.Owner.ProviderID] = true
@@ -386,6 +400,17 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		}
 		if provider.APIKey != "" || provider.APIKeyTemplate != "" || provider.OAuthToken != nil {
 			return nil, errors.New("provider tokens must use separate credential bindings")
+		}
+		if issue := definition.Unloaded; issue != nil {
+			if issue.ProviderID != id || issue.Message == "" || len(issue.Message) > 8192 ||
+				definition.BundleDigest != "" || definition.NativeIdentity != nil || definition.GeminiProjectID != nil ||
+				!reflect.DeepEqual(provider, unloadedProviderConfig(provider)) {
+				return nil, errors.New("invalid unloaded client provider definition")
+			}
+			unloaded[id] = true
+			scan.LoadIssues = append(scan.LoadIssues, *issue)
+			providers.Set(id, provider)
+			continue
 		}
 		if err := validateCompleteProviderOwner(id, provider); err != nil {
 			return nil, errors.New("client provider owner reference is invalid")
@@ -458,6 +483,9 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 				scan.presetReferences[id] = *provider.Preset
 			}
 		case ProviderOwnerCore:
+			if provider.Owner.Construction == providerregistry.ConstructionCodex || provider.Owner.Construction == providerregistry.ConstructionGeminiAntigravity {
+				return nil, errors.New("unsupported provider: delegated construction requires a provider bundle")
+			}
 			if definition.BundleDigest != "" {
 				return nil, errors.New("core provider cannot bind a plugin bundle")
 			}
@@ -536,6 +564,9 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		return nil, errors.New("client provider tooling instruction profile is invalid")
 	}
 	for id, provider := range providers.Seq2() {
+		if unloaded[id] {
+			continue
+		}
 		if _, ok := providerOwnerForProvider(cfg, registry, id, provider); !ok {
 			return nil, errors.New("client provider owner cannot be activated")
 		}
@@ -625,6 +656,9 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 				return nil, err
 			}
 			for _, owner := range image.Credentials {
+				if unloaded[owner.ProviderID] {
+					continue
+				}
 				actual, ok := providerOwnerForConfig(cfg, registry, owner.ProviderID)
 				if !ok || actual != owner || !credentialProviders[owner.ProviderID] {
 					return nil, errors.New("client image credential requires its exact received provider binding")
@@ -646,7 +680,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			return nil, errors.New("undeclared or oversized client image environment credential")
 		}
 	}
-	if len(cfg.Models) == 0 {
+	if len(cfg.Models) == 0 && len(unloaded) == 0 {
 		return nil, errors.New("client selected models are required")
 	}
 	for kind, selected := range cfg.Models {
@@ -656,6 +690,9 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		provider, ok := providers.Get(selected.Provider)
 		if !ok {
 			return nil, fmt.Errorf("selected %s client provider is missing", kind)
+		}
+		if unloaded[selected.Provider] {
+			continue
 		}
 		if !slices.ContainsFunc(provider.Models, func(model catalog.Model) bool { return model.ID == selected.Model }) {
 			return nil, fmt.Errorf("selected %s client model is unavailable", kind)
@@ -691,6 +728,9 @@ func (s RuntimeSnapshot) ClientProviderUnavailable(id string) error {
 	}
 	if !s.IsClientOwned() {
 		return nil
+	}
+	if issue := s.config.providerLoadIssue(id); issue != nil {
+		return fmt.Errorf("client provider %s was not loaded: %s", id, issue.Message)
 	}
 	if provider, ok := s.config.Providers.Get(id); ok && provider.Disable {
 		return fmt.Errorf("client provider %s is disabled", id)

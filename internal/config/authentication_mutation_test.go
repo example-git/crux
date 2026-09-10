@@ -18,7 +18,9 @@ import (
 	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/sjson"
 )
 
 type authenticationMutationFixture struct {
@@ -32,7 +34,7 @@ type authenticationMutationFixture struct {
 func newAuthenticationMutationFixture(t *testing.T, scope Scope, disabled bool) authenticationMutationFixture {
 	t.Helper()
 	root := t.TempDir()
-	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfileIntegrated), "CRUX_DISABLE_AUTO_MEMORY": "true"}
+	values := map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(root, "data"), "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginCompat), "CRUX_DISABLE_AUTO_MEMORY": "true"}
 	t.Setenv("AI_CLI_DIR", values["AI_CLI_DIR"])
 	for _, dir := range []string{"config", "data", "workspace-data"} {
 		require.NoError(t, os.MkdirAll(filepath.Join(root, dir), 0o700))
@@ -41,13 +43,18 @@ func newAuthenticationMutationFixture(t *testing.T, scope Scope, disabled bool) 
 	second := accounts.Entry{ID: "second", DisplayName: "Second", AccessToken: "synthetic-second-access", RefreshToken: "synthetic-second-refresh", ExpiresAt: first.ExpiresAt, Raw: json.RawMessage(`{"account_id":"synthetic-account-b"}`)}
 	// The integrated registry owns this exact namespace; account saves precede
 	// loading so normal loader adoption is also part of the fixture.
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("codex")
 	require.True(t, ok)
+	require.NoError(t, registrytest.Install(t.Context(), values["CRUX_GLOBAL_DATA"], values["CRUX_CACHE_DIR"], *registration.Manifest))
 	require.NoError(t, accounts.Save(t.Context(), registration.AccountNamespace, first))
 	require.NoError(t, accounts.SaveWithoutActivating(t.Context(), registration.AccountNamespace, second))
-	source := fmt.Sprintf(`{"providers":{"codex":{"disable":%t,"base_url":"https://example.invalid/v1","models":[{"id":"main","default_max_tokens":100},{"id":"small","default_max_tokens":50}],"extra_headers":{"X-Keep":"accepted"},"provider_options":{"keep":false}},"unrelated":{"type":"openai-compat","base_url":"https://other.example.invalid/v1","api_key":"synthetic-unrelated","models":[{"id":"other"}]}},"models":{"large":{"provider":"codex","model":"main","max_tokens":71},"small":{"provider":"codex","model":"small","max_tokens":33}}}`, false)
+	source := fmt.Sprintf(`{"providers":{"codex":{"disable":%t,"base_url":"wss://codex-inference.example.invalid/inference","models":[{"id":"main","default_max_tokens":100},{"id":"small","default_max_tokens":50}],"extra_headers":{"X-Keep":"accepted"},"provider_options":{"keep":false}},"unrelated":{"type":"openai-compat","base_url":"https://other.example.invalid/v1","api_key":"synthetic-unrelated","models":[{"id":"other"}]}},"models":{"large":{"provider":"codex","model":"main","max_tokens":71},"small":{"provider":"codex","model":"small","max_tokens":33}}}`, false)
+	source, err = sjson.Set(source, "providers.codex.plugin", ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version})
+	require.NoError(t, err)
+	source, err = sjson.Set(source, "providers.codex.owner", providerOwnerReferenceForRegistration(registration))
+	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(root, "crux.json"), []byte(source), 0o600))
 	path := filepath.Join(root, "workspace-data", "crux.json")
 	if scope == ScopeGlobal {
@@ -333,7 +340,7 @@ func TestAuthenticationMutationCreatedScopesAndAliases(t *testing.T) {
 			sourcePath := filepath.Join(f.root, "config", "crux.json")
 			source, err := os.ReadFile(sourcePath)
 			require.NoError(t, err)
-			for id, owner := range map[string]string{"codex": `{"type":"core","construction":"integrated-codex"}`, "unrelated": `{"type":"custom","construction":"openai-compat"}`} {
+			for id, owner := range map[string]string{"codex": `{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"}`, "unrelated": `{"type":"custom","construction":"openai-compat"}`} {
 				source, err = runtimeControlChangeField(source, []string{"providers", id, "owner"}, json.RawMessage(owner), false)
 				require.NoError(t, err)
 			}
@@ -345,6 +352,7 @@ func TestAuthenticationMutationCreatedScopesAndAliases(t *testing.T) {
 			switch topology {
 			case "global at cwd":
 				base["CRUX_GLOBAL_DATA"] = f.root
+				require.NoError(t, registrytest.Install(t.Context(), f.root, base["CRUX_CACHE_DIR"], *registrytest.Provider("codex").Manifest))
 				workspace = filepath.Join(f.root, "new-workspace")
 				f.scope = ScopeGlobal
 				// A configured provider is pinned into global data at startup.

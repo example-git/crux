@@ -4,20 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	fantasy "github.com/example-git/crux/foundation"
-	tea "github.com/example-git/crux/foundation/bubbletea"
-	"github.com/example-git/crux/internal/client"
-	"github.com/example-git/crux/internal/config"
-	"github.com/example-git/crux/internal/connection"
-	"github.com/example-git/crux/internal/env"
-	"github.com/example-git/crux/internal/oauth/accounts"
-	oauthusage "github.com/example-git/crux/internal/oauth/usage"
-	"github.com/example-git/crux/internal/proto"
-	"github.com/example-git/crux/internal/providerregistry"
-	"github.com/example-git/crux/internal/server"
-	"github.com/example-git/crux/internal/ui/dialog"
-	"github.com/example-git/crux/internal/workspace"
-	"github.com/stretchr/testify/require"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +14,22 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	fantasy "github.com/example-git/crux/foundation"
+	tea "github.com/example-git/crux/foundation/bubbletea"
+	"github.com/example-git/crux/internal/client"
+	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/connection"
+	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/oauth/accounts"
+	oauthusage "github.com/example-git/crux/internal/oauth/usage"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
+	"github.com/example-git/crux/internal/server"
+	"github.com/example-git/crux/internal/ui/dialog"
+	"github.com/example-git/crux/internal/workspace"
+	"github.com/stretchr/testify/require"
 )
 
 type authenticationReconciliationTLSFixture struct {
@@ -159,7 +161,7 @@ func newAuthenticationReconciliationTLSFixture(t *testing.T, barrier bool) *auth
 	f.marker = filepath.Join(f.root, "token-must-not-execute")
 	f.first = accounts.Entry{ID: "first", AccessToken: "synthetic-first", RefreshToken: "synthetic-refresh-first", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
 	f.second = accounts.Entry{ID: "second", AccessToken: "literal-$(touch '" + f.marker + "')-$AUTH_LITERAL", RefreshToken: "synthetic-refresh-second", ExpiresAt: f.first.ExpiresAt}
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("copilot")
 	require.True(t, ok)

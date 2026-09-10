@@ -1,8 +1,5 @@
-// Package codex implements the OpenAI Codex OAuth flow and provider
-// definition. Codex authenticates with a ChatGPT-account OAuth token
-// (PKCE authorization-code flow against auth.openai.com) and serves models
-// over the Responses API on a WebSocket endpoint; see the responses
-// subpackage for the native adapter.
+// Package codex implements native OAuth mechanics for a manifest-bound Codex client.
+// Endpoints and scopes are supplied by the registered provider bundle.
 package codex
 
 import (
@@ -17,13 +14,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/callback"
 	"github.com/example-git/crux/internal/oauth/useragent"
@@ -36,14 +31,6 @@ const (
 	// Name is the human-readable provider name.
 	Name = "Codex (ChatGPT)"
 
-	authBase     = "https://auth.openai.com"
-	authorizeURL = authBase + "/oauth/authorize"
-	tokenURL     = authBase + "/oauth/token"
-	whoamiURL    = authBase + "/api/accounts/v1/user-auth-credential/whoami"
-
-	// APIEndpoint is the Codex Responses WebSocket endpoint.
-	APIEndpoint = "wss://chatgpt.com/backend-api/codex/responses"
-
 	// redirectPort is the fixed loopback port the OAuth client registration
 	// expects for its redirect URI.
 	redirectPort = 1455
@@ -54,11 +41,6 @@ const (
 	maxResponseBytes = 1 << 20
 )
 
-var scopes = []string{
-	"openid", "profile", "email", "offline_access",
-	"api.connectors.read", "api.connectors.invoke",
-}
-
 func oauthClientID(ctx context.Context) (string, error) {
 	clientID, _ := oauth.LookupEnvironment(ctx, "CODEX_OAUTH_CLIENT_ID")
 	clientID = strings.TrimSpace(clientID)
@@ -66,72 +48,6 @@ func oauthClientID(ctx context.Context) (string, error) {
 		return "", errors.New("Codex OAuth client ID is not configured; set CODEX_OAUTH_CLIENT_ID")
 	}
 	return clientID, nil
-}
-
-// modelSpec describes a single model exposed by the provider.
-type modelSpec struct {
-	name    string
-	context int64
-	output  int64
-}
-
-// codexModels is the model catalog served over the Codex endpoint.
-var codexModels = map[string]modelSpec{
-	"gpt-5.6-sol":         {name: "GPT-5.6 Sol", context: 272_000, output: 128_000},
-	"gpt-5.6-terra":       {name: "GPT-5.6 Terra", context: 272_000, output: 128_000},
-	"gpt-5.6-luna":        {name: "GPT-5.6 Luna", context: 272_000, output: 128_000},
-	"gpt-5.5":             {name: "GPT-5.5", context: 272_000, output: 128_000},
-	"gpt-5.4":             {name: "GPT-5.4", context: 272_000, output: 128_000},
-	"gpt-5.3-codex-spark": {name: "GPT-5.3 Codex Spark", context: 272_000, output: 128_000},
-	"gpt-5.3-codex":       {name: "GPT-5.3 Codex", context: 272_000, output: 128_000},
-	"gpt-5.2-codex":       {name: "GPT-5.2 Codex", context: 272_000, output: 128_000},
-	"gpt-5.2":             {name: "GPT-5.2", context: 272_000, output: 128_000},
-	"gpt-5.1-codex-max":   {name: "GPT-5.1 Codex Max", context: 272_000, output: 128_000},
-	"gpt-5.1-codex":       {name: "GPT-5.1 Codex", context: 272_000, output: 128_000},
-	"gpt-5-codex":         {name: "GPT-5 Codex", context: 272_000, output: 128_000},
-	"gpt-5.1":             {name: "GPT-5.1", context: 272_000, output: 128_000},
-	"gpt-5":               {name: "GPT-5", context: 272_000, output: 128_000},
-	"gpt-5.1-codex-mini": {
-		name: "GPT-5.1 Codex Mini", context: 272_000, output: 128_000,
-	},
-}
-
-// Models returns the Codex lineup as catalog models.
-func Models() []catalog.Model {
-	ids := make([]string, 0, len(codexModels))
-	for id := range codexModels {
-		ids = append(ids, id)
-	}
-	slices.Sort(ids)
-
-	models := make([]catalog.Model, 0, len(ids))
-	for _, id := range ids {
-		spec := codexModels[id]
-		models = append(models, catalog.Model{
-			ID:                     id,
-			Name:                   spec.name,
-			ContextWindow:          spec.context,
-			DefaultMaxTokens:       spec.output,
-			CanReason:              true,
-			ReasoningLevels:        []string{"low", "medium", "high", "xhigh"},
-			DefaultReasoningEffort: "medium",
-			SupportsImages:         true,
-		})
-	}
-	return models
-}
-
-// CatalogProvider returns the built-in "codex" provider definition.
-func CatalogProvider() catalog.Provider {
-	return catalog.Provider{
-		Name:                Name,
-		ID:                  catalog.ProviderID(ID),
-		APIEndpoint:         APIEndpoint,
-		Type:                catalog.TypeOpenAI,
-		DefaultLargeModelID: "gpt-5.5",
-		DefaultSmallModelID: "gpt-5.6-luna",
-		Models:              Models(),
-	}
 }
 
 // tokenResponse is the subset of the OpenAI token response we use.
@@ -142,14 +58,14 @@ type tokenResponse struct {
 	ExpiresIn    int    `json:"expires_in,omitempty"`
 }
 
-func tokenRequest(ctx context.Context, form url.Values) (tokenResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+func (client Client) tokenRequest(ctx context.Context, form url.Values) (tokenResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, client.Token.BaseURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return tokenResponse{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
-	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(http.DefaultClient, req.URL.String())).Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.EndpointHTTPClient(http.DefaultClient, client.Token)).Do(req)
 	if err != nil {
 		return tokenResponse{}, err
 	}
@@ -176,16 +92,16 @@ func tokenRequest(ctx context.Context, form url.Values) (tokenResponse, error) {
 }
 
 // ExchangeCode exchanges an authorization code for tokens.
-func ExchangeCode(ctx context.Context, code, verifier, redirectURI string) (*oauth.Token, error) {
+func (client Client) ExchangeCode(ctx context.Context, code, verifier, redirectURI string) (*oauth.Token, error) {
 	clientID, err := oauthClientID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return exchangeCodeWithClientID(ctx, code, verifier, redirectURI, clientID)
+	return client.exchangeCodeWithClientID(ctx, code, verifier, redirectURI, clientID)
 }
 
-func exchangeCodeWithClientID(ctx context.Context, code, verifier, redirectURI, clientID string) (*oauth.Token, error) {
-	res, err := tokenRequest(ctx, url.Values{
+func (client Client) exchangeCodeWithClientID(ctx context.Context, code, verifier, redirectURI, clientID string) (*oauth.Token, error) {
+	res, err := client.tokenRequest(ctx, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
 		"client_id":     {clientID},
@@ -205,12 +121,12 @@ func exchangeCodeWithClientID(ctx context.Context, code, verifier, redirectURI, 
 }
 
 // RefreshToken refreshes an expired access token.
-func RefreshToken(ctx context.Context, refreshToken string) (*oauth.Token, error) {
+func (client Client) RefreshToken(ctx context.Context, refreshToken string) (*oauth.Token, error) {
 	clientID, err := oauthClientID(ctx)
 	if err != nil {
 		return nil, err
 	}
-	res, err := tokenRequest(ctx, url.Values{
+	res, err := client.tokenRequest(ctx, url.Values{
 		"grant_type":    {"refresh_token"},
 		"client_id":     {clientID},
 		"refresh_token": {refreshToken},
@@ -234,8 +150,8 @@ func RefreshToken(ctx context.Context, refreshToken string) (*oauth.Token, error
 // Authorize runs the browser-based OAuth authorization-code flow with PKCE.
 // It binds the fixed loopback port the Codex client registration requires
 // and blocks until the browser completes the callback or ctx is cancelled.
-func Authorize(ctx context.Context, open func(string) error) (*oauth.Token, error) {
-	challenge, err := PrepareCode(ctx, redirectPort)
+func (client Client) Authorize(ctx context.Context, open func(string) error) (*oauth.Token, error) {
+	challenge, err := client.PrepareCode(ctx, redirectPort)
 	if err != nil {
 		return nil, err
 	}
@@ -316,12 +232,12 @@ func Authorize(ctx context.Context, open func(string) error) (*oauth.Token, erro
 	}
 }
 
-func buildAuthorizeURL(redirectURI, challenge, state, clientID string) string {
+func (client Client) buildAuthorizeURL(redirectURI, challenge, state, clientID string) string {
 	q := url.Values{
 		"client_id":             {clientID},
 		"redirect_uri":          {redirectURI},
 		"response_type":         {"code"},
-		"scope":                 {strings.Join(scopes, " ")},
+		"scope":                 {strings.Join(client.Scopes, " ")},
 		"code_challenge":        {challenge},
 		"code_challenge_method": {"S256"},
 		"state":                 {state},
@@ -329,7 +245,7 @@ func buildAuthorizeURL(redirectURI, challenge, state, clientID string) string {
 		"id_token_add_organizations": {"true"},
 		"codex_cli_simplified_flow":  {"true"},
 	}
-	return authorizeURL + "?" + q.Encode()
+	return client.Authorization.BaseURL + "?" + q.Encode()
 }
 
 // AccountID extracts the ChatGPT account id from the JWT access token's
@@ -356,8 +272,8 @@ func AccountID(accessToken string) string {
 
 // AccountEmail returns the email associated with the credential via the
 // whoami endpoint. Errors are non-fatal and yield an empty string.
-func AccountEmail(ctx context.Context, accessToken string) string {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, whoamiURL, nil)
+func (client Client) AccountEmail(ctx context.Context, accessToken string) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.Identity.BaseURL, nil)
 	if err != nil {
 		return ""
 	}
@@ -370,7 +286,7 @@ func AccountEmail(ctx context.Context, accessToken string) string {
 	}
 	req.Header.Set("User-Agent", userAgent)
 
-	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(http.DefaultClient, req.URL.String())).Do(req)
+	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.EndpointHTTPClient(http.DefaultClient, client.Identity)).Do(req)
 	if err != nil {
 		return ""
 	}

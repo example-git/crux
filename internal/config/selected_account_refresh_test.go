@@ -11,6 +11,7 @@ import (
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -20,7 +21,7 @@ func selectedRefreshFixture(t *testing.T) (*ConfigStore, providerregistry.Regist
 	t.Helper()
 	t.Setenv("AI_CLI_DIR", t.TempDir())
 	store := newRefreshTestStore(t, filepath.Join(t.TempDir(), "config.json"), nil)
-	store.config.bindProviderScan(ProviderScan{Registry: store.providerRegistry})
+	store.config.bindProviderScan(testProviderScan(store.config, registrytest.Registrations()))
 	owner := refreshTestOwner(t, store)
 	provider, _ := store.Config().Providers.Get(owner.ProviderID)
 	entry := accounts.FromToken("selected", "Selected", provider.OAuthToken, nil)
@@ -35,7 +36,7 @@ func selectedRefreshToken() *oauth.Token {
 func TestSelectedOAuthRefreshPersistsAndAdoptsPeerRotation(t *testing.T) {
 	first, owner, entry := selectedRefreshFixture(t)
 	second := newRefreshTestStore(t, first.globalDataPath, nil)
-	second.config.bindProviderScan(ProviderScan{Registry: second.providerRegistry})
+	second.config.bindProviderScan(testProviderScan(second.config, registrytest.Registrations()))
 	var calls atomic.Int32
 	exchange := func(context.Context, string, string) (*oauth.Token, error) {
 		calls.Add(1)

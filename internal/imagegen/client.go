@@ -23,12 +23,10 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/oauth/codex"
 	"github.com/example-git/crux/internal/oauth/useragent"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providertransport"
 )
-
-// CodexBaseURL is the ChatGPT backend base used for Codex account requests,
-// matching the base Codex CLI uses for its own image_gen extension.
-const CodexBaseURL = "https://chatgpt.com/backend-api/codex"
 
 // OpenAIBaseURL is the standard OpenAI API base used for OPENAI_API_KEY
 // requests.
@@ -395,6 +393,7 @@ func imageVariantFailuresError(failures []ImageVariantFailure) error {
 
 // resolvedAuth is the credential selected for a request.
 type resolvedAuth struct {
+	endpoint       *manifest.Endpoint
 	nativeIdentity *useragent.NativeIdentity
 	mode           AuthMode
 	token          string
@@ -442,20 +441,7 @@ func (c *Client) resolveCredential(ctx context.Context) (resolvedAuth, error) {
 func resolveAuth(ctx context.Context) (resolvedAuth, error) {
 	entry, accountErr := accounts.Active(ctx, accountProvider)
 	if accountErr == nil && entry != nil && entry.AccessToken != "" {
-		if entry.Expired() {
-			if entry.RefreshToken == "" {
-				accountErr = errors.New("signed-in Codex account is expired and has no refresh token")
-			} else {
-				entry, accountErr = accounts.EnsureFreshWithRefresher(ctx, accountProvider, entry, codex.RefreshToken)
-			}
-		}
-		if accountErr == nil && entry != nil && entry.AccessToken != "" && !entry.Expired() {
-			return resolvedAuth{
-				mode:      AuthCodex,
-				token:     entry.AccessToken,
-				accountID: accountIDFor(ctx, entry.AccessToken),
-			}, nil
-		}
+		return resolvedAuth{}, errors.New("unsupported provider: Codex images require a configured provider bundle")
 	}
 
 	if key := strings.TrimSpace(os.Getenv(openAIAPIKeyEnv)); key != "" {
@@ -592,7 +578,7 @@ func baseURLFor(auth resolvedAuth) string {
 		if codexBaseURLOverride != "" {
 			return codexBaseURLOverride
 		}
-		return CodexBaseURL
+		return strings.TrimRight(auth.baseURL, "/")
 	}
 	if openAIBaseURLOverride != "" {
 		return openAIBaseURLOverride
@@ -741,6 +727,9 @@ func (c *Client) send(httpReq *http.Request, auth resolvedAuth) (*Response, erro
 	httpClient := c.HTTPClient
 	if httpClient == nil {
 		httpClient = http.DefaultClient
+	}
+	if auth.endpoint != nil {
+		httpClient = providertransport.EndpointHTTPClient(httpClient, *auth.endpoint)
 	}
 	requestClient := *httpClient
 	transport := requestClient.Transport

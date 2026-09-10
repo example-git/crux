@@ -15,6 +15,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/oauth/copilot"
 	"github.com/example-git/crux/internal/oauth/useragent"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providertransport"
 )
 
@@ -127,19 +128,42 @@ func getJSON(ctx context.Context, method, url, token string, body io.Reader, hea
 
 // --- Codex ---
 
-var codexUsageURL = "https://chatgpt.com/backend-api/wham/usage"
-
 type codexWindow struct {
 	UsedPercent        *float64 `json:"used_percent"`
 	LimitWindowSeconds *int64   `json:"limit_window_seconds"`
 	ResetAt            *int64   `json:"reset_at"` // unix seconds
 }
 
-func FetchCodex(ctx context.Context, token string) (*Usage, error) {
-	userAgent, err := useragent.CodexRequestUserAgent(ctx)
+// CodexFetcher preserves Codex window decoding while executing the declared
+// usage operation, including its endpoint, headers and transport policy.
+func CodexFetcher(operation *providertransport.Operation) (Fetcher, error) {
+	if operation == nil {
+		return nil, fmt.Errorf("Codex usage operation is required")
+	}
+	operation = operation.Clone()
+	operation.Headers = append([]manifest.HeaderRule{{Name: "User-Agent", Operation: "set", Value: &manifest.Template{Kind: "context", Ref: "client.user_agent"}}}, operation.Headers...)
+	compiled, err := compileManifestUsageOperation(operation)
 	if err != nil {
 		return nil, err
 	}
+	return func(ctx context.Context, token string) (*Usage, error) {
+		userAgent, err := useragent.CodexRequestUserAgent(ctx)
+		if err != nil {
+			return nil, err
+		}
+		document, err := compiled.execute(ctx, token, providertransport.TemplateValues{Context: map[string]string{"client.user_agent": userAgent}})
+		if err != nil {
+			return nil, err
+		}
+		data, err := json.Marshal(document)
+		if err != nil {
+			return nil, err
+		}
+		return decodeCodexUsage(data)
+	}, nil
+}
+
+func decodeCodexUsage(data []byte) (*Usage, error) {
 	var payload struct {
 		PlanType  string `json:"plan_type"`
 		RateLimit *struct {
@@ -147,12 +171,7 @@ func FetchCodex(ctx context.Context, token string) (*Usage, error) {
 			Secondary *codexWindow `json:"secondary_window"`
 		} `json:"rate_limit"`
 	}
-	err = getJSON(ctx, http.MethodGet, codexUsageURL, token, nil, map[string]string{
-		"Origin":     "https://chatgpt.com",
-		"Referer":    "https://chatgpt.com/",
-		"User-Agent": userAgent,
-	}, &payload)
-	if err != nil {
+	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, err
 	}
 	u := &Usage{Plan: payload.PlanType}

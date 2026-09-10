@@ -26,6 +26,9 @@ func ValidateActivation(registration Registration) error {
 		return activationError(registration, fmt.Errorf("quota credential %q is unsupported", registration.QuotaCredential))
 	}
 	if registration.Manifest == nil {
+		if registration.Construction == ConstructionCodex || registration.Construction == ConstructionGeminiAntigravity {
+			return activationError(registration, fmt.Errorf("unsupported provider: a manifest bundle is required"))
+		}
 		return nil
 	}
 	if err := validateManifestErrorBindings(registration); err != nil {
@@ -537,6 +540,9 @@ func validateDelegatedConstruction(registration Registration) error {
 		transport = "sse"
 	default:
 		return fmt.Errorf("compatibility construction %q is unsupported", registration.Construction)
+	}
+	if err := validateCompatibilityEndpoints(registration); err != nil {
+		return err
 	}
 	if err := operation.ValidateSelection(protocol, transport); err != nil {
 		return err

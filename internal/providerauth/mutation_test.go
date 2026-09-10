@@ -16,6 +16,7 @@ import (
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,6 +54,11 @@ func newMutationFixture(t *testing.T, configure ...func(map[string]any)) mutatio
 		},
 		"foreign": map[string]any{"number": json.Number("9007199254740993")},
 	}
+	registration := registrytest.Provider("codex")
+	require.NoError(t, registrytest.Install(t.Context(), dataDir, filepath.Join(root, "cache"), *registration.Manifest))
+	provider := document["providers"].(map[string]any)["codex"].(map[string]any)
+	provider["plugin"] = &config.ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+	provider["owner"] = &config.ProviderOwnerReference{Type: config.ProviderOwnerPlugin, Construction: registration.Construction, CompatibilityAdapter: registration.CompatibilityAdapter}
 	for _, apply := range configure {
 		apply(document)
 	}
@@ -64,7 +70,7 @@ func newMutationFixture(t *testing.T, configure ...func(map[string]any)) mutatio
 	base := env.NewFromMap(map[string]string{
 		"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": accountDir,
 		"CRUX_GLOBAL_CONFIG": configDir, "CRUX_GLOBAL_DATA": dataDir,
-		"CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfileIntegrated),
+		"CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfilePluginCompat),
 	})
 	store, err := config.LoadIsolated(project, filepath.Join(root, "workspace-data"), false, base)
 	require.NoError(t, err)

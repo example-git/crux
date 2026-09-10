@@ -27,8 +27,7 @@ crux login copilot
 # Force re-authentication even if already logged in
 crux login --force copilot
   `,
-	ValidArgs: oauthProviderCompletions(),
-	Args:      cobra.MaximumNArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ws, cleanup, err := setupWorkspaceWithProgressBar(cmd)
 		if err != nil {

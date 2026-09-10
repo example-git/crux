@@ -31,7 +31,7 @@ func TestPrepareCodeCapturedClientPKCEAndSingleExchange(t *testing.T) {
 	target, err := url.Parse(server.URL)
 	require.NoError(t, err)
 	http.DefaultClient = &http.Client{Transport: codexRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		require.Equal(t, tokenURL, r.URL.String())
+		require.Equal(t, testClient().Token.BaseURL, r.URL.String())
 		copy := r.Clone(r.Context())
 		address := *r.URL
 		address.Scheme, address.Host = target.Scheme, target.Host
@@ -44,9 +44,9 @@ func TestPrepareCodeCapturedClientPKCEAndSingleExchange(t *testing.T) {
 	require.NoError(t, err)
 	defer listener.Close()
 	ctx := oauth.ContextWithEnvironment(t.Context(), []string{"CODEX_OAUTH_CLIENT_ID=captured-client"})
-	_, err = PrepareCode(ctx, 1456)
+	_, err = testClient().PrepareCode(ctx, 1456)
 	require.Error(t, err)
-	challenge, err := PrepareCode(ctx, 1455)
+	challenge, err := testClient().PrepareCode(ctx, 1455)
 	require.NoError(t, err)
 	defer challenge.Close()
 	require.Zero(t, calls.Load())
@@ -85,7 +85,7 @@ func TestPrepareCodeInvalidStateAndReplacedOwnerDoNotDispatch(t *testing.T) {
 				}
 				return nil
 			})
-			challenge, err := PrepareCode(ctx, 1455)
+			challenge, err := testClient().PrepareCode(ctx, 1455)
 			require.NoError(t, err)
 			defer challenge.Close()
 			u, err := url.Parse(challenge.AuthorizationURL())

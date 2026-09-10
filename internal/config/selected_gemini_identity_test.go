@@ -47,7 +47,7 @@ func selectedGeminiIdentityStore(t *testing.T, project string) (*ConfigStore, pr
 	entry := accounts.FromToken("selected-gemini", "Selected Gemini", expired, nil)
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderGemini, entry))
 	provider := ProviderConfig{ID: gemini.ID, Name: "Selected Gemini", APIKey: expired.AccessToken, OAuthToken: expired,
-		BaseURL: gemini.APIEndpoint, Type: catalog.TypeOpenAICompat,
+		BaseURL: "https://gemini-ag-cloud-code.example.invalid/cloud-code", Type: catalog.TypeOpenAICompat,
 		Owner:  &ProviderOwnerReference{Type: ProviderOwnerCore, Construction: providerregistry.ConstructionGeminiAntigravity},
 		Models: []catalog.Model{{ID: "fixture", Name: "Fixture"}},
 	}
@@ -61,6 +61,7 @@ func selectedGeminiIdentityStore(t *testing.T, project string) (*ConfigStore, pr
 	store.baseEnvironment = env.NewFromMap(values)
 	store.effectiveEnvironment = cloneEnvironment(store.baseEnvironment)
 	store.resolver = IdentityResolver()
+	provider, _ = store.Config().Providers.Get(gemini.ID)
 	data, err := json.Marshal(map[string]any{"providers": map[string]any{gemini.ID: provider}})
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(store.globalDataPath, data, 0o600))
@@ -70,14 +71,14 @@ func selectedGeminiIdentityStore(t *testing.T, project string) (*ConfigStore, pr
 }
 
 func TestSelectedGeminiRefreshUsesCapturedEnvironmentAndPersists(t *testing.T) {
-	for _, name := range []string{"nonempty-project", "blank-project", "changed-project", "changed-client-id", "changed-version", "missing-client-credentials", "project-changed-during-exchange"} {
+	for _, name := range []string{"nonempty-project", "blank-project", "changed-project", "changed-client-id", "changed-version", "missing-environment-client-credentials", "project-changed-during-exchange"} {
 		t.Run(name, func(t *testing.T) {
 			project := "captured-project"
-			if name == "blank-project" || name == "missing-client-credentials" {
+			if name == "blank-project" || name == "missing-environment-client-credentials" {
 				project = ""
 			}
 			store, owner, original, values := selectedGeminiIdentityStore(t, project)
-			if name == "missing-client-credentials" {
+			if name == "missing-environment-client-credentials" {
 				delete(values, "GEMINI_OAUTH_CLIENT_ID")
 				delete(values, "GEMINI_OAUTH_CLIENT_SECRET")
 				store.baseEnvironment = env.NewFromMap(values)
@@ -112,13 +113,13 @@ func TestSelectedGeminiRefreshUsesCapturedEnvironmentAndPersists(t *testing.T) {
 				case "/token":
 					exchanges.Add(1)
 					require.NoError(t, r.ParseForm())
-					assert.Equal(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {original.RefreshToken}, "client_id": {"captured-gemini-client"}, "client_secret": {"captured-gemini-secret"}}, r.PostForm)
+					assert.Equal(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {original.RefreshToken}, "client_id": {"synthetic-client"}, "client_secret": {"synthetic-secret"}}, r.PostForm)
 					assert.True(t, strings.HasPrefix(r.Header.Get("User-Agent"), "Go-http-client/"))
 					if name == "project-changed-during-exchange" {
 						changeCaptured("GEMINI_PROJECT_ID")
 					}
 					_, _ = io.WriteString(w, `{"access_token":"selected-fresh-access","refresh_token":"selected-rotated-refresh","expires_in":3600}`)
-				case "/v1internal:loadCodeAssist":
+				case "/project":
 					metadata.Add(1)
 					assert.Equal(t, "Bearer selected-fresh-access", r.Header.Get("Authorization"))
 					assert.Equal(t, definition.NativeIdentity.UserAgent, r.Header.Get("User-Agent"))
@@ -131,9 +132,9 @@ func TestSelectedGeminiRefreshUsesCapturedEnvironmentAndPersists(t *testing.T) {
 			defer host.Close()
 			target, err := url.Parse(host.URL)
 			require.NoError(t, err)
-			previous := http.DefaultClient
+			previous, previousTransport := http.DefaultClient, http.DefaultTransport
 			http.DefaultClient = &http.Client{Transport: selectedGeminiIdentityTransport(func(r *http.Request) (*http.Response, error) {
-				if !(r.URL.Scheme == "https" && (r.URL.Host == "oauth2.googleapis.com" && r.URL.Path == "/token" || r.URL.Host == "daily-cloudcode-pa.googleapis.com" && r.URL.Path == "/v1internal:loadCodeAssist")) {
+				if !(r.URL.Scheme == "https" && (r.URL.Host == "gemini-ag-token.example.invalid" && r.URL.Path == "/token" || r.URL.Host == "gemini-ag-project.example.invalid" && r.URL.Path == "/project")) {
 					return nil, fmt.Errorf("unexpected outbound request %s", r.URL.Redacted())
 				}
 				copy := r.Clone(r.Context())
@@ -142,22 +143,19 @@ func TestSelectedGeminiRefreshUsesCapturedEnvironmentAndPersists(t *testing.T) {
 				copy.URL, copy.Host = &address, target.Host
 				return host.Client().Transport.RoundTrip(copy)
 			})}
-			defer func() { http.DefaultClient = previous }()
+			http.DefaultTransport = http.DefaultClient.Transport
+			defer func() { http.DefaultClient, http.DefaultTransport = previous, previousTransport }()
 			for key, value := range map[string]string{"GEMINI_PROJECT_ID": "ambient-project", "GEMINI_OAUTH_CLIENT_ID": "ambient-client", "GEMINI_OAUTH_CLIENT_SECRET": "ambient-secret", "ANTIGRAVITY_CLI_VERSION": "ambient-version"} {
 				t.Setenv(key, value)
 			}
-			rejected := strings.HasPrefix(name, "changed-") || name == "missing-client-credentials"
+			rejected := strings.HasPrefix(name, "changed-")
 			if strings.HasPrefix(name, "changed-") {
 				key := map[string]string{"changed-project": "GEMINI_PROJECT_ID", "changed-client-id": "GEMINI_OAUTH_CLIENT_ID", "changed-version": "ANTIGRAVITY_CLI_VERSION"}[name]
 				changeCaptured(key)
 			}
 			fresh, err := store.RefreshSelectedOAuthAccountForRuntime(t.Context(), ScopeGlobal, owner, original, true, admitted)
 			if rejected {
-				if name == "missing-client-credentials" {
-					require.ErrorContains(t, err, "Gemini OAuth client credentials are not configured")
-				} else {
-					require.ErrorContains(t, err, "changed")
-				}
+				require.ErrorContains(t, err, "changed")
 				require.Nil(t, fresh)
 				require.Zero(t, exchanges.Load())
 			} else if name == "project-changed-during-exchange" {
@@ -173,7 +171,11 @@ func TestSelectedGeminiRefreshUsesCapturedEnvironmentAndPersists(t *testing.T) {
 				require.EqualValues(t, 1, exchanges.Load())
 				bound, err := useragent.ContextWithGeminiIdentity(t.Context(), *definition.NativeIdentity)
 				require.NoError(t, err)
-				require.Equal(t, "credential-project", gemini.ProjectForCredential(bound, fresh.AccessToken))
+				require.Equal(t, "credential-project", func() string {
+					registration, ok := store.RuntimeSnapshot().ProviderRegistration("gemini-ag")
+					require.True(t, ok)
+					return registration.Gemini.ProjectForCredential(bound, fresh.AccessToken)
+				}())
 				require.EqualValues(t, 1, metadata.Load())
 			}
 			stored, readErr := accounts.Active(t.Context(), owner.AccountNamespace)

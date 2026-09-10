@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"maps"
-	"slices"
 
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/manifestflow"
@@ -14,9 +13,6 @@ import (
 func BindRegistrationConfiguration(registration Registration, configuration map[string]any) (Registration, error) {
 	registration = registration.Clone()
 	if registration.Manifest == nil || registration.OAuth == nil || len(registration.Manifest.Capabilities.OAuth) == 0 {
-		return registration, nil
-	}
-	if compatibility := registration.Manifest.Capabilities.Compatibility; compatibility != nil && slices.Contains(compatibility.Delegates, "oauth") {
 		return registration, nil
 	}
 	var flow *manifest.OAuthFlow
@@ -47,6 +43,11 @@ func BindRegistrationConfiguration(registration Registration, configuration map[
 	}
 	if err := validateOAuthBindings(registration.ProviderID, *flow, configuration, credentials); err != nil {
 		return Registration{}, err
+	}
+	// A literal flow was already fully compiled from the manifest. Only rebuild
+	// when there are actual configuration/credential bindings to capture.
+	if len(configuration) == 0 && len(credentials) == 0 {
+		return registration, nil
 	}
 	capability, err := manifestOAuthCapability(*registration.Manifest, *flow, manifestflow.Bindings{
 		Configuration: maps.Clone(configuration),

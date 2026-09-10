@@ -26,6 +26,7 @@ import (
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/server"
 	"github.com/stretchr/testify/require"
 )
@@ -165,7 +166,7 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 	f.marker = filepath.Join(f.root, "token-must-not-execute")
 	f.first = accounts.Entry{ID: "first", AccessToken: "synthetic-first", RefreshToken: "synthetic-refresh-first", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}
 	f.second = accounts.Entry{ID: "second", AccessToken: "literal-$(touch '" + f.marker + "')-$AUTH_LITERAL", RefreshToken: "synthetic-refresh-second", ExpiresAt: f.first.ExpiresAt}
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("copilot")
 	require.True(t, ok)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -671,6 +672,13 @@ func (w *ClientWorkspace) Config() *config.Config {
 		return w.authority.configView()
 	}
 	return w.cached().Config
+}
+
+func (w *ClientWorkspace) ProviderLoadIssues() []config.ProviderLoadIssue {
+	if w.authority != nil {
+		return w.authority.configView().ProviderLoadIssues()
+	}
+	return slices.Clone(w.cached().ProviderLoadIssues)
 }
 
 func (w *ClientWorkspace) ProviderSurfaces() []providerregistry.Surface {

@@ -34,7 +34,7 @@ func TestNewProviderExecutesOperationMaxEventBytes(t *testing.T) {
 	defer server.Close()
 
 	operation := &providertransport.Operation{Streaming: &manifest.StreamingPolicy{MaxEventBytes: 32}}
-	provider, err := NewProvider(server.URL, func() string { return "" }, nil, operation, func() error { return nil })
+	provider, err := testClient().NewProvider(server.URL, func() string { return "" }, nil, operation, func() error { return nil })
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestNewProviderExecutesOperationRetryPolicy(t *testing.T) {
 		Authentication:    "never",
 		ReplayRequirement: "before-first-event",
 	}}
-	provider, err := NewProvider(server.URL, func() string { return "" }, nil, operation, func() error { return nil })
+	provider, err := testClient().NewProvider(server.URL, func() string { return "" }, nil, operation, func() error { return nil })
 	if err != nil {
 		t.Fatalf("NewProvider: %v", err)
 	}
@@ -151,15 +151,15 @@ func TestOAuthIdentityAndProjectRejectOwnerReplacementBeforeDispatch(t *testing.
 		return errors.New("owner changed")
 	})
 
-	_, err := tokenRequest(ctx, url.Values{})
+	_, err := testClient().tokenRequest(ctx, url.Values{})
 	if err == nil || !strings.Contains(err.Error(), "owner changed") {
-		t.Fatalf("tokenRequest() error = %v", err)
+		t.Fatalf("testClient().tokenRequest() error = %v", err)
 	}
-	if project := fetchProject(ctx, "token"); project != "" {
-		t.Fatalf("fetchProject() = %q", project)
+	if project := testClient().fetchProject(ctx, "token"); project != "" {
+		t.Fatalf("testClient().fetchProject() = %q", project)
 	}
-	if email := AccountEmail(ctx, "token"); email != "" {
-		t.Fatalf("AccountEmail() = %q", email)
+	if email := testClient().AccountEmail(ctx, "token"); email != "" {
+		t.Fatalf("testClient().AccountEmail() = %q", email)
 	}
 	if dispatched.Load() != 0 {
 		t.Fatalf("dispatched = %d", dispatched.Load())
@@ -171,17 +171,17 @@ func TestOAuthClientCredentialsRequired(t *testing.T) {
 	t.Setenv("GEMINI_OAUTH_CLIENT_SECRET", "")
 
 	opened := false
-	_, err := Authorize(context.Background(), func(string) error {
+	_, err := testClient().Authorize(context.Background(), func(string) error {
 		opened = true
 		return nil
 	}, func() (string, error) {
 		return "", nil
 	})
 	if err == nil || !strings.Contains(err.Error(), "GEMINI_OAUTH_CLIENT_ID") || !strings.Contains(err.Error(), "GEMINI_OAUTH_CLIENT_SECRET") {
-		t.Fatalf("Authorize() error = %v, want missing credential guidance", err)
+		t.Fatalf("testClient().Authorize() error = %v, want missing credential guidance", err)
 	}
 	if opened {
-		t.Fatal("Authorize() opened a browser without configured OAuth credentials")
+		t.Fatal("testClient().Authorize() opened a browser without configured OAuth credentials")
 	}
 
 	t.Setenv("GEMINI_OAUTH_CLIENT_ID", "client-id")

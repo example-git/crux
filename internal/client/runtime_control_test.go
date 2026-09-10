@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -201,11 +202,12 @@ func TestRuntimeControlSDKThroughRegisteredRoute(t *testing.T) {
 		require.NoError(t, os.MkdirAll(dir, 0o700))
 		t.Setenv(name, dir)
 	}
-	t.Setenv("CRUX_PROVIDER_PROFILE", string(config.ProviderProfileIntegrated))
+	t.Setenv("CRUX_PROVIDER_PROFILE", string(config.ProviderProfilePluginCompat))
+	require.NoError(t, registrytest.Install(t.Context(), os.Getenv("CRUX_GLOBAL_DATA"), os.Getenv("CRUX_CACHE_DIR"), *registrytest.Provider("codex").Manifest))
 	path := filepath.Join(root, "project")
 	require.NoError(t, os.MkdirAll(path, 0o700))
 	configPath := filepath.Join(os.Getenv("CRUX_GLOBAL_DATA"), "crux.json")
-	require.NoError(t, os.WriteFile(configPath, []byte(`{"providers":{"codex":{"api_key":"synthetic-receiver-key","models":[{"id":"gpt-5.6","name":"Fixture","context_window":8192,"default_max_tokens":1024,"can_reason":true,"reasoning_levels":["low","medium","high"],"default_reasoning_effort":"medium"}]}},"models":{"large":{"provider":"codex","model":"gpt-5.6"},"small":{"provider":"codex","model":"gpt-5.6"}}}`), 0o600))
+	require.NoError(t, os.WriteFile(configPath, []byte(`{"providers":{"codex":{"plugin":{"id":"test.codex","version":"1.1.0"},"owner":{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"},"api_key":"synthetic-receiver-key","models":[{"id":"gpt-5.6","name":"Fixture","context_window":8192,"default_max_tokens":1024,"can_reason":true,"reasoning_levels":["low","medium","high"],"default_reasoning_effort":"medium"}]}},"models":{"large":{"provider":"codex","model":"gpt-5.6"},"small":{"provider":"codex","model":"gpt-5.6"}}}`), 0o600))
 	srv := server.NewServer(nil, "tcp", "127.0.0.1:0")
 	t.Cleanup(srv.Backend().Shutdown)
 	hs := httptest.NewServer(srv.Handler())

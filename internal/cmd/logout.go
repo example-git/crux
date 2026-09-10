@@ -31,8 +31,7 @@ credential and stored accounts. With no argument, choose a logged-in platform.`,
 # Sign out from GitHub Copilot
 crux logout copilot
   `,
-	ValidArgs: oauthProviderCompletions(),
-	Args:      cobra.MaximumNArgs(1),
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		client, ws, cleanup, err := connectToServer(cmd)
 		if err != nil {

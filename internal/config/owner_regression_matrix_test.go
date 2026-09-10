@@ -7,9 +7,9 @@ import (
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/oauth"
-	"github.com/example-git/crux/internal/oauth/codex"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/sjson"
 )
@@ -60,13 +60,13 @@ func TestSameIDOwnerTupleMaskingMatrix(t *testing.T) {
 	}
 
 	var core providerregistry.Registration
-	for _, registration := range providerregistry.Integrated() {
-		if registration.ProviderID == codex.ID {
+	for _, registration := range registrytest.Registrations() {
+		if registration.ProviderID == string(catalog.ProviderCopilot) {
 			core = registration
 			break
 		}
 	}
-	require.Equal(t, codex.ID, core.ProviderID)
+	require.Equal(t, string(catalog.ProviderCopilot), core.ProviderID)
 	coreProvider := ProviderConfig{
 		ID:    core.ProviderID,
 		Owner: &ProviderOwnerReference{Type: ProviderOwnerCore, Construction: core.Construction},

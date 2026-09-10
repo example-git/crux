@@ -13,6 +13,7 @@ import (
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,6 +25,8 @@ func writeTokenToDisk(t *testing.T, path string, token *oauth.Token) {
 	configContent := fmt.Sprintf(`{
 		"providers": {
 			"codex": {
+				"plugin":{"id":"test.codex","version":"1.1.0"},
+				"owner":{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"},
 				"api_key": %q,
 				"oauth": {
 					"access_token": %q,
@@ -58,15 +61,17 @@ func newRefreshTestStore(t *testing.T, configPath string, exchange func(ctx cont
 	providers.Set("codex", ProviderConfig{
 		ID:         "codex",
 		Name:       "Codex",
+		Plugin:     &ProviderPluginReference{ID: "test.codex", Version: "1.1.0"},
 		APIKey:     expired.AccessToken,
 		OAuthToken: expired,
 		Owner: &ProviderOwnerReference{
-			Type:         ProviderOwnerCore,
-			Construction: providerregistry.ConstructionCodex,
+			Type:                 ProviderOwnerPlugin,
+			Construction:         providerregistry.ConstructionCodex,
+			CompatibilityAdapter: providerregistry.ConstructionCodex,
 		},
 	})
 
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	capturedEnvironment := snapshotEnvironment()
 	return &ConfigStore{

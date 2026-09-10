@@ -1,0 +1,662 @@
+{
+  "manifest_version": 1,
+  "id": "test.gemini-ag",
+  "version": "1.1.0",
+  "name": "Synthetic gemini-ag",
+  "description": "Synthetic delegated endpoint fixture",
+  "publisher": {
+    "id": "test",
+    "name": "Test"
+  },
+  "compatibility": {
+    "host_api": {
+      "min": 1,
+      "max": 1
+    }
+  },
+  "provider": {
+    "id": "gemini-ag",
+    "name": "Synthetic gemini-ag",
+    "aliases": [],
+    "account_namespace": "gemini",
+    "default_large_model": "fixture",
+    "default_small_model": "fixture",
+    "login_order": 20,
+    "account_order": 40,
+    "flat_rate": true
+  },
+  "models": [
+    {
+      "id": "fixture",
+      "name": "Fixture",
+      "context_window": 32000,
+      "default_max_tokens": 1024,
+      "modalities": {
+        "input": [
+          "text",
+          "image"
+        ],
+        "output": [
+          "text"
+        ]
+      },
+      "reasoning": {
+        "levels": [
+          "LOW",
+          "MEDIUM",
+          "HIGH"
+        ],
+        "default": "MEDIUM"
+      }
+    }
+  ],
+  "capabilities": {
+    "compatibility_adapter": {
+      "id": "integrated-gemini-antigravity",
+      "delegates": [
+        "construction",
+        "identity",
+        "reasoning"
+      ],
+      "inventory": [
+        {
+          "delegate": "identity",
+          "classification": "finite-core-primitive",
+          "behavior": "account email lookup with bounded response extraction and empty-on-error fallback",
+          "primitive": "declarative account identity operation"
+        },
+        {
+          "delegate": "construction",
+          "classification": "private-stateful",
+          "behavior": "official Antigravity version discovery through network, executable probes and persistent host cache"
+        },
+        {
+          "delegate": "construction",
+          "classification": "private-stateful",
+          "behavior": "project override, access-token-keyed project cache and loadCodeAssist result chaining"
+        },
+        {
+          "delegate": "construction",
+          "classification": "private-stateful",
+          "behavior": "private Cloud Code request envelope with process, session, sequence and request identities"
+        },
+        {
+          "delegate": "construction",
+          "classification": "finite-core-primitive",
+          "behavior": "thought-signature correlation and replay across reasoning, tool calls and tool results",
+          "primitive": "bounded opaque-correlation replay state"
+        },
+        {
+          "delegate": "construction",
+          "classification": "finite-core-primitive",
+          "behavior": "model-role tool-result turns and recursive rejected-schema-key removal",
+          "primitive": "Gemini tool-result dialect and recursive schema sanitizer"
+        },
+        {
+          "delegate": "construction",
+          "classification": "private-stateful",
+          "behavior": "malformed private SSE recovery using balanced JSON framing"
+        },
+        {
+          "delegate": "construction",
+          "classification": "finite-core-primitive",
+          "behavior": "independent network and overload retry budgets with a capacity-exhausted exception",
+          "primitive": "classified retry counters and structured body-code predicates"
+        },
+        {
+          "delegate": "reasoning",
+          "classification": "finite-core-primitive",
+          "behavior": "model-specific thinking level or budget construction, minimum clamp and unsupported-model policy",
+          "primitive": "model predicates and conditional reasoning options"
+        },
+        {
+          "delegate": "reasoning",
+          "classification": "private-stateful",
+          "behavior": "provider/model reasoning disablement learned from unsupported-response failures"
+        },
+        {
+          "delegate": "construction",
+          "classification": "finite-core-primitive",
+          "behavior": "wrapped response, finish reason, usage and structured provider-error normalization",
+          "primitive": "bounded response reducer and structured error extraction"
+        },
+        {
+          "delegate": "construction",
+          "classification": "finite-core-primitive",
+          "behavior": "model-specific output, temperature, top-p and top-k defaults and omissions",
+          "primitive": "model predicates and conditional request defaults"
+        }
+      ],
+      "endpoints": {
+        "identity": "identity",
+        "project": "project"
+      }
+    },
+    "credentials": [
+      {
+        "id": "account",
+        "kind": "oauth2",
+        "audience": [
+          "identity",
+          "cloud-code",
+          "project"
+        ],
+        "scopes": [
+          "fixture.read",
+          "fixture.email"
+        ],
+        "legacy_fields": [
+          "api_key",
+          "oauth"
+        ]
+      }
+    ],
+    "oauth": [
+      {
+        "id": "gemini-antigravity",
+        "credential": "account",
+        "authorization_endpoint": "authorize",
+        "token_endpoint": "token",
+        "client_id": {
+          "kind": "literal",
+          "value": "synthetic-client"
+        },
+        "scopes": [
+          "fixture.read",
+          "fixture.email"
+        ],
+        "refresh_scopes": [],
+        "pkce": "required-s256",
+        "redirect": {
+          "mode": "hosted-paste",
+          "state_required": true,
+          "uri": "https://callback.example.invalid/return"
+        },
+        "authorization_params": [
+          {
+            "name": "access_type",
+            "value": {
+              "kind": "literal",
+              "value": "offline"
+            }
+          },
+          {
+            "name": "prompt",
+            "value": {
+              "kind": "literal",
+              "value": "consent"
+            }
+          }
+        ],
+        "token_request": {
+          "encoding": "form",
+          "auth_style": "params",
+          "authorization_code": [
+            {
+              "name": "grant_type",
+              "value": {
+                "kind": "literal",
+                "value": "authorization_code"
+              }
+            },
+            {
+              "name": "code",
+              "value": {
+                "kind": "context",
+                "ref": "oauth.code"
+              }
+            },
+            {
+              "name": "redirect_uri",
+              "value": {
+                "kind": "literal",
+                "value": "https://callback.example.invalid/return"
+              }
+            },
+            {
+              "name": "client_id",
+              "value": {
+                "kind": "literal",
+                "value": "synthetic-client"
+              }
+            },
+            {
+              "name": "client_secret",
+              "value": {
+                "kind": "literal",
+                "value": "synthetic-secret"
+              }
+            },
+            {
+              "name": "code_verifier",
+              "value": {
+                "kind": "context",
+                "ref": "oauth.pkce_verifier"
+              }
+            }
+          ],
+          "refresh_token": [
+            {
+              "name": "grant_type",
+              "value": {
+                "kind": "literal",
+                "value": "refresh_token"
+              }
+            },
+            {
+              "name": "refresh_token",
+              "value": {
+                "kind": "context",
+                "ref": "oauth.refresh_token"
+              }
+            },
+            {
+              "name": "client_id",
+              "value": {
+                "kind": "literal",
+                "value": "synthetic-client"
+              }
+            },
+            {
+              "name": "client_secret",
+              "value": {
+                "kind": "literal",
+                "value": "synthetic-secret"
+              }
+            }
+          ],
+          "headers": [
+            {
+              "name": "User-Agent",
+              "operation": "set",
+              "value": {
+                "kind": "literal",
+                "value": "Go-http-client/2.0"
+              },
+              "protected": true
+            }
+          ]
+        },
+        "token_response": {
+          "access_token_pointer": "/access_token",
+          "refresh_token_pointer": "/refresh_token",
+          "expires_in_pointer": "/expires_in",
+          "preserve_refresh_token_when_omitted": true,
+          "max_body_bytes": 1048576,
+          "default_expires_in_seconds": 3600
+        },
+        "timeout_seconds": 300,
+        "client_secret": {
+          "kind": "literal",
+          "value": "synthetic-secret"
+        }
+      }
+    ],
+    "endpoints": [
+      {
+        "id": "authorize",
+        "base_url": "https://gemini-ag-authorize.example.invalid/authorize",
+        "allowed_schemes": [
+          "https"
+        ],
+        "allowed_hosts": [
+          "gemini-ag-authorize.example.invalid"
+        ],
+        "override": "forbidden",
+        "follow_redirects": false
+      },
+      {
+        "id": "token",
+        "base_url": "https://gemini-ag-token.example.invalid/token",
+        "allowed_schemes": [
+          "https"
+        ],
+        "allowed_hosts": [
+          "gemini-ag-token.example.invalid"
+        ],
+        "override": "forbidden",
+        "follow_redirects": false
+      },
+      {
+        "id": "identity",
+        "base_url": "https://gemini-ag-identity.example.invalid/identity",
+        "allowed_schemes": [
+          "https"
+        ],
+        "allowed_hosts": [
+          "gemini-ag-identity.example.invalid"
+        ],
+        "override": "forbidden",
+        "follow_redirects": false,
+        "credential": "account"
+      },
+      {
+        "id": "cloud-code",
+        "base_url": "https://gemini-ag-cloud-code.example.invalid/cloud-code",
+        "allowed_schemes": [
+          "https"
+        ],
+        "allowed_hosts": [
+          "gemini-ag-cloud-code.example.invalid"
+        ],
+        "override": "forbidden",
+        "follow_redirects": false,
+        "credential": "account"
+      },
+      {
+        "id": "project",
+        "base_url": "https://gemini-ag-project.example.invalid/project",
+        "allowed_schemes": [
+          "https"
+        ],
+        "allowed_hosts": [
+          "gemini-ag-project.example.invalid"
+        ],
+        "override": "forbidden",
+        "credential": "account",
+        "follow_redirects": false
+      }
+    ],
+    "headers": [
+      {
+        "name": "Content-Type",
+        "operation": "set",
+        "value": {
+          "kind": "literal",
+          "value": "application/json"
+        },
+        "protected": true
+      },
+      {
+        "name": "Accept",
+        "operation": "set",
+        "value": {
+          "kind": "literal",
+          "value": "*/*"
+        },
+        "protected": true
+      }
+    ],
+    "json_transforms": {
+      "unwrap-response": {
+        "max_operations": 1,
+        "operations": [
+          {
+            "operation": "move",
+            "path": "",
+            "from": "/response"
+          }
+        ]
+      },
+      "usage-bootstrap-request": {
+        "max_operations": 1,
+        "operations": [
+          {
+            "operation": "set",
+            "path": "/metadata/ideType",
+            "value": {
+              "kind": "literal",
+              "value": "ANTIGRAVITY"
+            }
+          }
+        ]
+      },
+      "usage-summary-request": {
+        "max_operations": 1,
+        "operations": [
+          {
+            "operation": "set",
+            "path": "/project",
+            "value": {
+              "kind": "context",
+              "ref": "usage.project"
+            }
+          }
+        ]
+      }
+    },
+    "prompt_transforms": {},
+    "role_maps": {
+      "gemini": {
+        "system": "system",
+        "developer": "system",
+        "user": "user",
+        "assistant": "model",
+        "tool": "user",
+        "unknown": "reject"
+      }
+    },
+    "tool_codecs": {},
+    "operations": [
+      {
+        "id": "generate",
+        "kind": "inference",
+        "protocol": "gemini-generate-content",
+        "transport": "sse",
+        "endpoint": "cloud-code",
+        "method": "POST",
+        "path": "/v1internal:streamGenerateContent?alt=sse",
+        "response_transform": "unwrap-response",
+        "role_map": "gemini",
+        "streaming": {
+          "event_source": "sse-data-json",
+          "done_marker": "[DONE]",
+          "event_type_pointer": "/type",
+          "mappings": [
+            {
+              "source": "candidate.content.text",
+              "event": "text-delta"
+            },
+            {
+              "source": "candidate.content.thought",
+              "event": "reasoning-delta",
+              "metadata_namespace": "antigravity"
+            },
+            {
+              "source": "candidate.content.functionCall",
+              "event": "tool-call",
+              "metadata_namespace": "antigravity"
+            },
+            {
+              "source": "usageMetadata",
+              "event": "usage"
+            },
+            {
+              "source": "finishReason",
+              "event": "finish"
+            },
+            {
+              "source": "error",
+              "event": "error"
+            }
+          ],
+          "require_terminal": true,
+          "unknown_event": "warn",
+          "max_event_bytes": 1048576
+        },
+        "retry": {
+          "max_attempts": 7,
+          "initial_delay_ms": 2000,
+          "max_delay_ms": 30000,
+          "factor": 2,
+          "jitter": false,
+          "retry_after": false,
+          "statuses": [
+            429,
+            503
+          ],
+          "codes": [],
+          "transport_errors": true,
+          "unexpected_eof": true,
+          "authentication": "refresh-once",
+          "replay_requirement": "before-first-event"
+        },
+        "continuation": {
+          "mode": "none",
+          "store": "forbidden",
+          "fallback": "full-replay"
+        },
+        "compaction": {
+          "mode": "local-summary"
+        },
+        "timeouts": {
+          "connect_seconds": 30,
+          "request_seconds": 300,
+          "idle_seconds": 60
+        },
+        "headers": []
+      },
+      {
+        "id": "load-project",
+        "kind": "account",
+        "protocol": "generic-json",
+        "transport": "http-json",
+        "endpoint": "cloud-code",
+        "method": "POST",
+        "path": "/v1internal:loadCodeAssist",
+        "headers": [],
+        "request_transform": "usage-bootstrap-request",
+        "retry": {
+          "max_attempts": 1,
+          "initial_delay_ms": 0,
+          "max_delay_ms": 0,
+          "factor": 1,
+          "jitter": false,
+          "retry_after": false,
+          "statuses": [],
+          "codes": [],
+          "transport_errors": false,
+          "unexpected_eof": false,
+          "authentication": "never",
+          "replay_requirement": "never"
+        },
+        "timeouts": {
+          "connect_seconds": 30,
+          "request_seconds": 300,
+          "idle_seconds": 60
+        }
+      },
+      {
+        "id": "quota",
+        "kind": "usage",
+        "protocol": "generic-json",
+        "transport": "http-json",
+        "endpoint": "cloud-code",
+        "method": "POST",
+        "path": "/v1internal:retrieveUserQuotaSummary",
+        "headers": [],
+        "request_transform": "usage-summary-request",
+        "retry": {
+          "max_attempts": 1,
+          "initial_delay_ms": 0,
+          "max_delay_ms": 0,
+          "factor": 1,
+          "jitter": false,
+          "retry_after": false,
+          "statuses": [],
+          "codes": [],
+          "transport_errors": false,
+          "unexpected_eof": false,
+          "authentication": "never",
+          "replay_requirement": "never"
+        },
+        "timeouts": {
+          "connect_seconds": 30,
+          "request_seconds": 300,
+          "idle_seconds": 60
+        }
+      }
+    ],
+    "usage": {
+      "setup": [
+        {
+          "operation": "load-project",
+          "extract": [
+            {
+              "context": "usage.project",
+              "pointer": "/cloudaicompanionProject"
+            }
+          ],
+          "plan_pointers": [
+            "/paidTier/name",
+            "/currentTier/name"
+          ]
+        }
+      ],
+      "operation": "quota",
+      "source": "operation",
+      "windows": [
+        {
+          "id": "Gemini weekly",
+          "remaining_fraction_pointer": "/groups/0/buckets/0/remainingFraction",
+          "reset_pointer": "/groups/0/buckets/0/resetTime",
+          "reset_format": "rfc3339"
+        },
+        {
+          "id": "Gemini 5h",
+          "remaining_fraction_pointer": "/groups/0/buckets/1/remainingFraction",
+          "reset_pointer": "/groups/0/buckets/1/resetTime",
+          "reset_format": "rfc3339"
+        },
+        {
+          "id": "Claude/GPT weekly",
+          "remaining_fraction_pointer": "/groups/1/buckets/0/remainingFraction",
+          "reset_pointer": "/groups/1/buckets/0/resetTime",
+          "reset_format": "rfc3339"
+        },
+        {
+          "id": "Claude/GPT 5h",
+          "remaining_fraction_pointer": "/groups/1/buckets/1/remainingFraction",
+          "reset_pointer": "/groups/1/buckets/1/resetTime",
+          "reset_format": "rfc3339"
+        }
+      ],
+      "fallback": "unavailable"
+    },
+    "images": {
+      "accepted_media_types": [
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp"
+      ],
+      "max_source_bytes": 26214400,
+      "flatten_alpha": "none"
+    },
+    "runtime_controls": [],
+    "metadata": [
+      {
+        "namespace": "antigravity",
+        "version": 1,
+        "scope": "reasoning",
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "required_for_replay": true
+      },
+      {
+        "namespace": "google",
+        "version": 1,
+        "scope": "reasoning",
+        "schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "additionalProperties": true
+        },
+        "legacy_projection": "gemini-thought-signature"
+      }
+    ],
+    "errors": []
+  },
+  "configuration": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {},
+      "$schema": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "fields": {}
+  }
+}

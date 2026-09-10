@@ -21,6 +21,8 @@ import (
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/foundation/providers/anthropic"
+	"github.com/example-git/crux/foundation/providers/openai"
+	"github.com/example-git/crux/foundation/providers/openaicompat"
 	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/agent/prompt"
 	"github.com/example-git/crux/internal/agent/tools"
@@ -57,12 +59,9 @@ import (
 	"github.com/example-git/crux/internal/shell"
 	"github.com/example-git/crux/internal/skills"
 	"github.com/google/uuid"
-	"golang.org/x/sync/errgroup"
-
-	"github.com/example-git/crux/foundation/providers/openai"
-	"github.com/example-git/crux/foundation/providers/openaicompat"
 	openaisdk "github.com/openai/openai-go/v3/option"
 	"github.com/qjebbs/go-jsons"
+	"golang.org/x/sync/errgroup"
 )
 
 // Coordinator errors.
@@ -1915,7 +1914,10 @@ func (c *coordinator) buildCodexProvider(snapshot config.RuntimeSnapshot, regist
 // Antigravity-dialect provider pointed at the Cloud Code v1internal endpoint,
 // authenticating with an OAuth Bearer token.
 func (c *coordinator) buildGeminiAntigravityProvider(registration providerregistry.Registration, baseURL, apiKey string, headers map[string]string, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
-	return gemini.NewProvider(baseURL, func() string { return apiKey }, headers, registration.Operation, validate)
+	if registration.Gemini == nil {
+		return nil, fmt.Errorf("unsupported provider: Gemini manifest endpoints are required")
+	}
+	return registration.Gemini.NewProvider(baseURL, func() string { return apiKey }, headers, registration.Operation, validate)
 }
 
 func (c *coordinator) buildDeclarativeProvider(debug bool, options *config.Options, registration providerregistry.Registration, baseURL string, headers map[string]string, values providertransport.TemplateValues, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
@@ -2150,7 +2152,10 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 					if project != "" {
 						return project
 					}
-					return gemini.ProjectForCredential(ctx, token)
+					if registration.Gemini == nil {
+						return ""
+					}
+					return registration.Gemini.ProjectForCredential(ctx, token)
 				}, identity)
 			}
 			return c.buildGeminiAntigravityProvider(registration, baseURL, apiKey, headers, validateOwner)

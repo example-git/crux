@@ -19,6 +19,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
@@ -62,7 +63,7 @@ func TestClientCodexContinuationBelongsToAcceptedGeneration(t *testing.T) {
 		}
 	}))
 	defer host.Close()
-	registry, err := providerregistry.New(providerregistry.Integrated()...)
+	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
 	registration, ok := registry.Lookup("codex")
 	require.True(t, ok)

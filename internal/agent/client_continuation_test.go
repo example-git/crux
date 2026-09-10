@@ -20,6 +20,7 @@ import (
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	openairesponsestransport "github.com/example-git/crux/internal/providertransport/openairesponses"
 	"github.com/stretchr/testify/require"
 )
@@ -107,6 +108,7 @@ func TestClientResponsesContinuationBelongsToAcceptedGeneration(t *testing.T) {
 }
 
 func sealClientResponsesProposal(t *testing.T, proposal *config.RemoteRuntimeProposal) {
+	bindNativeTestBundles(t, proposal)
 	t.Helper()
 	var err error
 	proposal.Digest, err = config.RemoteRuntimeDigest(*proposal)
@@ -166,4 +168,28 @@ func clientResponsesProposalWithAPIKey(t *testing.T, endpoint, apiKey string) co
 	}
 	sealClientResponsesProposal(t, &proposal)
 	return proposal
+}
+
+// bindNativeTestBundles makes the fixture's provider authority explicit before
+// sealing its remote digest. Existing plugin/custom proposals are unchanged.
+func bindNativeTestBundles(t *testing.T, proposal *config.RemoteRuntimeProposal) {
+	t.Helper()
+	for i := range proposal.Providers {
+		definition := &proposal.Providers[i]
+		p := &definition.Config
+		if p.Owner == nil || p.Owner.Type != config.ProviderOwnerCore || (p.ID != "codex" && p.ID != "gemini-ag") {
+			continue
+		}
+		registration, bundle, err := registrytest.BundleFor(p.ID, p.BaseURL, p.Models)
+		require.NoError(t, err)
+		p.Plugin = &config.ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+		p.Owner = &config.ProviderOwnerReference{Type: config.ProviderOwnerPlugin, Construction: registration.Construction, CompatibilityAdapter: registration.CompatibilityAdapter}
+		definition.BundleDigest = bundle.Digest
+		proposal.Bundles = append(proposal.Bundles, bundle)
+		for j := range proposal.Credentials {
+			if proposal.Credentials[j].Owner.ProviderID == p.ID {
+				proposal.Credentials[j].Owner = registration.Owner()
+			}
+		}
+	}
 }

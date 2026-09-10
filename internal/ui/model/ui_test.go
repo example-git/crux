@@ -19,7 +19,9 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providerplugin/manifest/manifesttest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/ui/common"
 	"github.com/example-git/crux/internal/ui/dialog"
@@ -41,11 +43,14 @@ func TestProviderUsageUsesExactConfigurationToken(t *testing.T) {
 	}{
 		{name: "claude plugin", providerID: "claude-ai", construction: providerregistry.ConstructionAnthropicMessages, ownerType: config.ProviderOwnerPlugin, wantToken: "configuration-access-token"},
 		{name: "gemini plugin", providerID: "gemini-ag", construction: providerregistry.ConstructionGeminiContent, ownerType: config.ProviderOwnerPlugin, wantToken: "configuration-access-token"},
-		{name: "codex core", providerID: "codex", construction: providerregistry.ConstructionCodex, ownerType: config.ProviderOwnerCore, wantToken: "configuration-access-token"},
+		{name: "codex compatibility plugin", providerID: "codex", construction: providerregistry.ConstructionCodex, ownerType: config.ProviderOwnerCore, wantToken: "configuration-access-token"},
 		{name: "copilot core", providerID: "copilot", construction: providerregistry.ConstructionCopilot, ownerType: config.ProviderOwnerCore, quotaCredential: providerregistry.QuotaCredentialRefreshToken, wantToken: "configuration-refresh-token"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			accountNamespace := test.providerID + "-account"
+			if test.construction == providerregistry.ConstructionCodex {
+				accountNamespace = "codex"
+			}
 			require.NoError(t, accounts.Save(t.Context(), accountNamespace, accounts.Entry{
 				ID:          "stale-account",
 				AccessToken: "stale-account-token",
@@ -77,6 +82,17 @@ func TestProviderUsageUsesExactConfigurationToken(t *testing.T) {
 			if test.ownerType == config.ProviderOwnerPlugin {
 				registration.Manifest = &manifest.Manifest{ID: test.providerID, Version: "1.0.0"}
 				provider.Plugin = &config.ProviderPluginReference{ID: test.providerID, Version: registration.Manifest.Version}
+			}
+			if test.construction == providerregistry.ConstructionCodex {
+				quota := registration.Quota
+				value := manifesttest.Delegated("codex")
+				value.Provider.AccountNamespace = accountNamespace
+				var err error
+				registration, err = providerregistry.FromManifest(value, manifesttest.StaticText())
+				require.NoError(t, err)
+				registration.Quota = quota
+				provider.Plugin = &config.ProviderPluginReference{ID: value.ID, Version: value.Version}
+				provider.Owner = &config.ProviderOwnerReference{Type: config.ProviderOwnerPlugin, Construction: registration.Construction, CompatibilityAdapter: registration.CompatibilityAdapter}
 			}
 			providers := csync.NewMap[string, config.ProviderConfig]()
 			providers.Set(test.providerID, provider)
@@ -930,7 +946,7 @@ func TestChatHighlightCopiedClearsMouseStateInUpdate(t *testing.T) {
 func newTestUIWithConfig(t *testing.T, cfg *config.Config) *UI {
 	t.Helper()
 
-	bound := config.NewTestStoreWithRegistrations(cfg, providerregistry.Integrated()...).RuntimeSnapshot().Config()
+	bound := config.NewTestStoreWithRegistrations(cfg, registrytest.Registrations()...).RuntimeSnapshot().Config()
 	return &UI{
 		com: &common.Common{
 			Workspace: &testWorkspace{cfg: bound},

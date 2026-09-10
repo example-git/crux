@@ -70,8 +70,8 @@ func TestSelectedRefreshUsesCapturedAccountDatabase(t *testing.T) {
 				assert.NotNil(t, r.TLS)
 				assert.Equal(t, "/token", r.URL.Path)
 				require.NoError(t, r.ParseForm())
-				assert.Equal(t, "captured-gemini-client", r.PostForm.Get("client_id"))
-				assert.Equal(t, "captured-gemini-secret", r.PostForm.Get("client_secret"))
+				assert.Equal(t, "synthetic-client", r.PostForm.Get("client_id"))
+				assert.Equal(t, "synthetic-secret", r.PostForm.Get("client_secret"))
 				assert.Equal(t, original.RefreshToken, r.PostForm.Get("refresh_token"))
 				if mode == "ambient-changed-during-exchange" {
 					// The initial Setenv cleanup restores every process variable after this
@@ -85,16 +85,17 @@ func TestSelectedRefreshUsesCapturedAccountDatabase(t *testing.T) {
 			defer server.Close()
 			endpoint, err := url.Parse(server.URL)
 			require.NoError(t, err)
-			priorClient := http.DefaultClient
+			priorClient, priorTransport := http.DefaultClient, http.DefaultTransport
 			http.DefaultClient = &http.Client{Transport: selectedGeminiIdentityTransport(func(r *http.Request) (*http.Response, error) {
-				assert.Equal(t, "oauth2.googleapis.com", r.URL.Host)
+				assert.Equal(t, "gemini-ag-token.example.invalid", r.URL.Host)
 				request := r.Clone(r.Context())
 				address := *r.URL
 				address.Scheme, address.Host = endpoint.Scheme, endpoint.Host
 				request.URL = &address
 				return server.Client().Transport.RoundTrip(request)
 			})}
-			defer func() { http.DefaultClient = priorClient }()
+			http.DefaultTransport = http.DefaultClient.Transport
+			defer func() { http.DefaultClient, http.DefaultTransport = priorClient, priorTransport }()
 			fresh, err := store.RefreshSelectedOAuthAccountForRuntime(t.Context(), ScopeGlobal, owner, original, true, admitted)
 			if mode == "captured-absence" {
 				require.ErrorContains(t, err, "captured account home")

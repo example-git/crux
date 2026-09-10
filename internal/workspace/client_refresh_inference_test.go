@@ -36,6 +36,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 	for _, mode := range []string{"refresh-once", "expired", "never", "changed-definition", "changed-bundle", "definition-during-exchange", "bundle-during-exchange", "rejected-completion", "account-replacement-during-exchange", "account-identical-during-exchange", "account-switchback-during-exchange", "account-logout-during-exchange", "recovery-after-rotation", "runtime-controls", "controls-during-expiry", "controls-during-refresh", "expired-fresh-rejected"} {
 		t.Run(mode, func(t *testing.T) {
 			xdgIsolate(t)
+			t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "true") // Keep background extraction outside the foreground control transaction.
 			t.Setenv("AI_CLI_DIR", t.TempDir())
 			serverCode, err := connection.EnsureServerIdentity(t.Context())
 			require.NoError(t, err)

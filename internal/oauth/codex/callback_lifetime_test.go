@@ -34,7 +34,7 @@ func TestAuthorizeCallbackRetainsOwnerAndClientID(t *testing.T) {
 			target, err := url.Parse(host.URL)
 			require.NoError(t, err)
 			http.DefaultClient = &http.Client{Transport: codexRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-				require.Equal(t, tokenURL, r.URL.String())
+				require.Equal(t, testClient().Token.BaseURL, r.URL.String())
 				copy := r.Clone(r.Context())
 				address := *r.URL
 				address.Scheme, address.Host = target.Scheme, target.Host
@@ -51,7 +51,7 @@ func TestAuthorizeCallbackRetainsOwnerAndClientID(t *testing.T) {
 			})
 			callbacks := make(chan error, 1)
 			opened := false
-			token, err := Authorize(ctx, func(raw string) error {
+			token, err := testClient().Authorize(ctx, func(raw string) error {
 				opened = true
 				authorization, parseErr := url.Parse(raw)
 				if parseErr != nil {
@@ -95,7 +95,7 @@ func TestAuthorizeCallbackRetainsOwnerAndClientID(t *testing.T) {
 
 func TestAuthorizeBoundEnvironmentDoesNotUseAmbient(t *testing.T) {
 	t.Setenv("CODEX_OAUTH_CLIENT_ID", "ambient-client")
-	_, err := Authorize(oauth.ContextWithEnvironment(t.Context(), nil), func(string) error { t.Fatal("absent captured client ID opened authorization"); return nil })
+	_, err := testClient().Authorize(oauth.ContextWithEnvironment(t.Context(), nil), func(string) error { t.Fatal("absent captured client ID opened authorization"); return nil })
 	require.ErrorContains(t, err, "not configured")
 }
 
@@ -124,7 +124,7 @@ func TestAuthorizeCallbackDuplicateAndCancellation(t *testing.T) {
 			target, err := url.Parse(host.URL)
 			require.NoError(t, err)
 			http.DefaultClient = &http.Client{Transport: codexRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-				require.Equal(t, tokenURL, r.URL.String())
+				require.Equal(t, testClient().Token.BaseURL, r.URL.String())
 				copy := r.Clone(r.Context())
 				address := *r.URL
 				address.Scheme, address.Host = target.Scheme, target.Host
@@ -134,7 +134,10 @@ func TestAuthorizeCallbackDuplicateAndCancellation(t *testing.T) {
 			defer func() { http.DefaultClient = original }()
 			opened := make(chan string, 1)
 			done := make(chan error, 1)
-			go func() { _, err := Authorize(ctx, func(raw string) error { opened <- raw; return nil }); done <- err }()
+			go func() {
+				_, err := testClient().Authorize(ctx, func(raw string) error { opened <- raw; return nil })
+				done <- err
+			}()
 			var raw string
 			select {
 			case raw = <-opened:

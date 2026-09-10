@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,7 +22,9 @@ import (
 	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/providertransport"
 	"github.com/example-git/crux/internal/redact"
 	"github.com/tidwall/gjson"
@@ -2260,12 +2263,34 @@ func nextRecentModels(cfg *Config, modelType SelectedModelType, model SelectedMo
 
 // NewTestStore creates a ConfigStore for testing purposes.
 func NewTestStore(cfg *Config, loadedPaths ...string) *ConfigStore {
-	registry, _ := providerregistry.New(providerregistry.Integrated()...)
-	if cfg != nil {
-		if cfg.providerScan != nil {
-			registry = cfg.providerScan.Registry.Clone()
-		} else {
-			cfg.bindProviderScan(ProviderScan{Registry: registry})
+	var registry *providerregistry.Registry
+	if cfg != nil && cfg.providerScan != nil {
+		registry = cfg.providerScan.Registry.Clone()
+	} else {
+		registrations := registrytest.Registrations()
+		if cfg != nil && cfg.Providers != nil {
+			for i, r := range registrations {
+				if r.Manifest == nil {
+					continue
+				}
+				p, ok := cfg.Providers.Get(r.ProviderID)
+				if !ok || p.BaseURL == "" {
+					continue
+				}
+				if r.Construction == providerregistry.ConstructionCodex && !strings.HasPrefix(p.BaseURL, "wss://") {
+					continue
+				}
+				bound, _, err := registrytest.BundleFor(r.ProviderID, p.BaseURL, p.Models)
+				if err != nil {
+					panic(err)
+				}
+				registrations[i] = bound
+			}
+		}
+		scan := testProviderScan(cfg, registrations)
+		registry = scan.Registry
+		if cfg != nil {
+			cfg.bindProviderScan(scan)
 		}
 	}
 	return newTestStoreWithRegistry(cfg, registry, loadedPaths...)
@@ -2276,11 +2301,44 @@ func NewTestStoreWithRegistrations(cfg *Config, registrations ...providerregistr
 }
 
 func NewTestStoreWithProviderGeneration(cfg *Config, presets map[string]ProviderPresetReference, registrations ...providerregistry.Registration) *ConfigStore {
-	registry, _ := providerregistry.New(registrations...)
+	scan := testProviderScan(cfg, registrations)
+	scan.presetReferences = maps.Clone(presets)
+	registry := scan.Registry
 	if cfg != nil {
-		cfg.bindProviderScan(ProviderScan{Registry: registry, presetReferences: maps.Clone(presets)})
+		cfg.bindProviderScan(scan)
 	}
 	return newTestStoreWithRegistry(cfg, registry)
+}
+
+// testProviderScan supplies exact synthetic bundle bytes to the explicit test
+// constructors. Production scans always discover installed, trusted bundles.
+func testProviderScan(cfg *Config, registrations []providerregistry.Registration) ProviderScan {
+	registry, err := providerregistry.New(registrations...)
+	if err != nil {
+		panic(err)
+	}
+	scan := ProviderScan{Registry: registry, pluginStatuses: map[string]providerplugin.Status{}, bundles: map[string]providerplugin.TransportBundle{}}
+	for _, r := range registrations {
+		if r.Manifest == nil || (r.Manifest.ID != "test.codex" && r.Manifest.ID != "test.gemini-ag") {
+			continue
+		}
+		bundle := registrytest.Bundle(*r.Manifest)
+		scan.bundles[bundle.Digest] = bundle
+		scan.pluginStatuses[r.Manifest.ID] = providerplugin.Status{ID: r.Manifest.ID, ProviderID: r.ProviderID, Version: r.Manifest.Version, Digest: bundle.Digest, State: providerplugin.StateRegistered}
+		if cfg != nil && cfg.Providers != nil {
+			if provider, ok := cfg.Providers.Get(r.ProviderID); ok {
+				if provider.Plugin == nil && (provider.Owner == nil || provider.Owner.Type == ProviderOwnerCore) {
+					provider.Owner = providerOwnerReferenceForRegistration(r)
+					provider.Plugin = &ProviderPluginReference{ID: r.Manifest.ID, Version: r.Manifest.Version}
+				}
+				if provider.BaseURL == "" && r.Operation != nil {
+					provider.BaseURL = r.Operation.Endpoint.BaseURL
+				}
+				cfg.Providers.Set(r.ProviderID, provider)
+			}
+		}
+	}
+	return scan
 }
 
 func newTestStoreWithRegistry(cfg *Config, registry *providerregistry.Registry, loadedPaths ...string) *ConfigStore {

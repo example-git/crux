@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"github.com/example-git/crux/internal/oauth/copilot"
 	"github.com/example-git/crux/internal/oauth/gemini"
 	"github.com/example-git/crux/internal/providerplugin"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providerplugin/manifest/manifesttest"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/sjson"
@@ -213,8 +216,8 @@ func TestFreshProviderScanRejectsPresetClaimsForCoreProviders(t *testing.T) {
 	require.NoError(t, err)
 	coreIDs := []string{
 		string(catalog.ProviderCopilot),
-		string(codex.CatalogProvider().ID),
-		string(gemini.CatalogProvider().ID),
+		codex.ID,
+		gemini.ID,
 	}
 	for index, providerID := range coreIDs {
 		bundle := filepath.Join(root, "claims", providerID+".plugin")
@@ -250,22 +253,18 @@ func TestFreshProviderScanRejectsPresetClaimsForCoreProviders(t *testing.T) {
 	copilotCatalog, ok := lookupProvider(providers, string(catalog.ProviderCopilot))
 	require.True(t, ok)
 	require.Equal(t, copilot.CatalogProvider().Name, copilotCatalog.Name)
-	codexCatalog, ok := lookupProvider(providers, string(codex.CatalogProvider().ID))
-	require.True(t, ok)
-	require.Equal(t, codex.CatalogProvider().Name, codexCatalog.Name)
-	geminiCatalog, ok := lookupProvider(providers, string(gemini.CatalogProvider().ID))
-	require.True(t, ok)
-	require.Equal(t, gemini.CatalogProvider().Name, geminiCatalog.Name)
+	_, ok = lookupProvider(providers, codex.ID)
+	require.False(t, ok)
+	_, ok = lookupProvider(providers, gemini.ID)
+	require.False(t, ok)
 
 	registration, ok := scan.Registry.Lookup(string(catalog.ProviderCopilot))
 	require.True(t, ok)
 	require.Equal(t, providerregistry.ConstructionCopilot, registration.Construction)
-	registration, ok = scan.Registry.Lookup(string(codex.CatalogProvider().ID))
-	require.True(t, ok)
-	require.Equal(t, providerregistry.ConstructionCodex, registration.Construction)
-	registration, ok = scan.Registry.Lookup(string(gemini.CatalogProvider().ID))
-	require.True(t, ok)
-	require.Equal(t, providerregistry.ConstructionGeminiAntigravity, registration.Construction)
+	_, ok = scan.Registry.Lookup(codex.ID)
+	require.False(t, ok)
+	_, ok = scan.Registry.Lookup(gemini.ID)
+	require.False(t, ok)
 }
 
 func TestFreshProviderScanRejectsNoncanonicalMigratedPresetOwner(t *testing.T) {
@@ -418,22 +417,18 @@ func TestFreshProviderScanRejectsReservedFullPluginsAndIgnoresIntegratedAlternat
 	copilotCatalog, ok := lookupProvider(providers, string(catalog.ProviderCopilot))
 	require.True(t, ok)
 	require.Equal(t, copilot.CatalogProvider().Name, copilotCatalog.Name)
-	codexCatalog, ok := lookupProvider(providers, codex.ID)
-	require.True(t, ok)
-	require.Equal(t, codex.CatalogProvider().Name, codexCatalog.Name)
-	geminiCatalog, ok := lookupProvider(providers, gemini.ID)
-	require.True(t, ok)
-	require.Equal(t, gemini.CatalogProvider().Name, geminiCatalog.Name)
+	_, ok = lookupProvider(providers, codex.ID)
+	require.False(t, ok)
+	_, ok = lookupProvider(providers, gemini.ID)
+	require.False(t, ok)
 
 	registration, ok := scan.Registry.Lookup(string(catalog.ProviderCopilot))
 	require.True(t, ok)
 	require.Equal(t, providerregistry.ConstructionCopilot, registration.Construction)
-	registration, ok = scan.Registry.Lookup(codex.ID)
-	require.True(t, ok)
-	require.Equal(t, providerregistry.ConstructionCodex, registration.Construction)
-	registration, ok = scan.Registry.Lookup(gemini.ID)
-	require.True(t, ok)
-	require.Equal(t, providerregistry.ConstructionGeminiAntigravity, registration.Construction)
+	_, ok = scan.Registry.Lookup(codex.ID)
+	require.False(t, ok)
+	_, ok = scan.Registry.Lookup(gemini.ID)
+	require.False(t, ok)
 }
 
 func TestFreshProviderScanPreservesExplicitCustomOwnerAgainstSameIDPlugin(t *testing.T) {
@@ -519,9 +514,16 @@ func TestFreshProviderScanRejectsGenericCoreClaimsWhenCoreIsDisabled(t *testing.
 				}),
 			}
 			scan, err := FreshProviderScan(t.Context(), cfg)
-			require.ErrorContains(t, err, `provider "`+test.providerID+`" is reserved for its core catalog and registration`)
-			require.Empty(t, scan.Providers)
-			require.Nil(t, scan.Registry)
+			if test.providerID == string(catalog.ProviderCopilot) {
+				require.ErrorContains(t, err, `provider "`+test.providerID+`" is reserved for its core catalog and registration`)
+				require.Empty(t, scan.Providers)
+				require.Nil(t, scan.Registry)
+			} else {
+				require.NoError(t, err)
+				require.Len(t, scan.LoadIssues, 1)
+				_, registered := scan.Registry.Lookup(test.providerID)
+				require.False(t, registered)
+			}
 		})
 	}
 }
@@ -560,39 +562,29 @@ func providerClaimBundle(t *testing.T, root, providerID string) string {
 
 func providerCompatibilityClaimBundle(t *testing.T, bundle, namespace string, construction providerregistry.Construction) string {
 	t.Helper()
-	manifestPath := filepath.Join(bundle, "manifest.json")
-	value, err := os.ReadFile(manifestPath)
+	path := filepath.Join(bundle, "manifest.json")
+	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	value, err = sjson.SetBytes(value, "provider.account_namespace", namespace)
-	require.NoError(t, err)
-	protocol, transport, operationPath := "", "", ""
-	switch construction {
-	case providerregistry.ConstructionCodex:
-		protocol, transport, operationPath = string(providerregistry.ConstructionOpenAIResponses), "websocket-json", "/"
-	case providerregistry.ConstructionGeminiAntigravity:
-		protocol, transport = string(providerregistry.ConstructionGeminiContent), "sse"
-	default:
-		t.Fatalf("unsupported compatibility construction %q", construction)
+	var old manifest.Manifest
+	require.NoError(t, json.Unmarshal(data, &old))
+	id := "codex"
+	if construction == providerregistry.ConstructionGeminiAntigravity {
+		id = "gemini-ag"
 	}
-	value, err = sjson.SetBytes(value, "capabilities.operations.0.protocol", protocol)
+	value := manifesttest.Delegated(id)
+	value.ID = old.ID
+	value.Provider.Name = old.Provider.Name
+	value.Provider.AccountNamespace = namespace
+	data, err = json.Marshal(value)
 	require.NoError(t, err)
-	value, err = sjson.SetBytes(value, "capabilities.operations.0.transport", transport)
-	require.NoError(t, err)
-	if operationPath != "" {
-		value, err = sjson.SetBytes(value, "capabilities.operations.0.path", operationPath)
-		require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	for path, text := range manifesttest.StaticText() {
+		if value.Capabilities.Instructions == nil {
+			continue
+		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(bundle, path)), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(bundle, path), []byte(text), 0o600))
 	}
-	value, err = sjson.SetBytes(value, "capabilities.compatibility_adapter", map[string]any{
-		"id":        construction,
-		"delegates": []string{"construction"},
-		"inventory": []map[string]any{{
-			"delegate":       "construction",
-			"classification": "private-stateful",
-			"behavior":       "Synthetic compatibility construction",
-		}},
-	})
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(manifestPath, value, 0o600))
 	return bundle
 }
 

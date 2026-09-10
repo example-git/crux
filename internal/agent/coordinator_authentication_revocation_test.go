@@ -198,8 +198,7 @@ func TestAuthenticationRevocationNativeResponsesAndRemoteCompaction(t *testing.T
 				var ok bool
 				registration, ok = integratedRegistration(t, "codex")
 				require.True(t, ok)
-				registration.Operation = &providertransport.Operation{Compaction: &manifest.CompactionPolicy{Mode: mode, Operation: "remote-compact"}}
-				registration.Operations = map[string]*providertransport.Operation{"remote-compact": {Retry: manifest.RetryPolicy{MaxAttempts: 1, Authentication: "never", ReplayRequirement: "before-first-event"}}}
+
 			}
 			_, err := providerregistry.New(registration)
 			require.NoError(t, err)
@@ -208,6 +207,7 @@ func TestAuthenticationRevocationNativeResponsesAndRemoteCompaction(t *testing.T
 			provider.Owner = &config.ProviderOwnerReference{Type: config.ProviderOwnerCore, Construction: registration.Construction}
 			if registration.Manifest != nil {
 				provider.Owner.Type = config.ProviderOwnerPlugin
+				provider.Owner.CompatibilityAdapter = registration.CompatibilityAdapter
 				provider.Plugin = &config.ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
 			}
 			provider.ID = registration.ProviderID
@@ -241,11 +241,8 @@ func TestAuthenticationRevocationNativeResponsesAndRemoteCompaction(t *testing.T
 			}
 			if mode == "remote-operation" {
 				registration.Operation.Compaction = &manifest.CompactionPolicy{Mode: "invalid"}
-				invalid, err := marked.WithAuthenticationRevocation(registration.Owner())
-				require.NoError(t, err)
-				coord.cfg = config.NewTestStoreWithRegistrations(invalid, registration)
-				_, err = coord.prepareRuntimeGeneration(t.Context(), coord.cfg.RuntimeSnapshot())
-				require.ErrorContains(t, err, `mode "invalid" is unsupported`, "logout must not bypass invalid compaction configuration")
+				_, err = providerregistry.New(registration)
+				require.Error(t, err, "logout must not bypass activation of invalid compaction configuration")
 			} else {
 				invalid, err := marked.WithAuthenticationRevocation(registration.Owner())
 				require.NoError(t, err)

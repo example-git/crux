@@ -50,7 +50,7 @@ func TestDialAdvertisesRemoteCompactionV2(t *testing.T) {
 	require.Equal(t, "/responses", request.path)
 	require.Equal(t, "Bearer test-token", request.header.Get("Authorization"))
 	require.Equal(t, "crux-test", request.header.Get("User-Agent"))
-	require.Equal(t, "https://chatgpt.com", request.header.Get("Origin"))
+	require.Equal(t, server.URL, request.header.Get("Origin"))
 	require.Equal(t, openaiBeta, request.header.Get("OpenAI-Beta"))
 	require.Equal(t, compatibility, request.header.Get("session_id"))
 	require.Equal(t, compatibility, request.header.Get("thread-id"))

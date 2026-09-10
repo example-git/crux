@@ -21,6 +21,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerauth"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/workspace"
@@ -36,7 +37,7 @@ func TestClientAuthorityTransactionsThroughTLS(t *testing.T) {
 	t.Setenv("AI_CLI_DIR", t.TempDir())
 	t.Setenv("CODEX_OAUTH_CLIENT_ID", "synthetic-client-id")
 	var exchanges atomic.Int32
-	tokenEndpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tokenEndpoint := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.NoError(t, r.ParseForm())
 		require.Equal(t, "refresh_token", r.Form.Get("grant_type"))
 		exchange := exchanges.Add(1)
@@ -53,9 +54,9 @@ func TestClientAuthorityTransactionsThroughTLS(t *testing.T) {
 	t.Cleanup(tokenEndpoint.Close)
 	tokenURL, err := url.Parse(tokenEndpoint.URL)
 	require.NoError(t, err)
-	priorHTTPClient := http.DefaultClient
+	priorHTTPClient, priorTransport := http.DefaultClient, http.DefaultTransport
 	http.DefaultClient = &http.Client{Transport: refreshFixtureTransport(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Host != "auth.openai.com" || r.URL.Path != "/oauth/token" {
+		if r.URL.Host != "codex-token.example.invalid" || r.URL.Path != "/token" {
 			return nil, fmt.Errorf("unexpected HTTP destination in isolated refresh fixture: %s", r.URL.Host)
 		}
 		clone := r.Clone(r.Context())
@@ -63,7 +64,8 @@ func TestClientAuthorityTransactionsThroughTLS(t *testing.T) {
 		clone.Host = tokenURL.Host
 		return tokenEndpoint.Client().Transport.RoundTrip(clone)
 	})}
-	t.Cleanup(func() { http.DefaultClient = priorHTTPClient })
+	http.DefaultTransport = http.DefaultClient.Transport
+	t.Cleanup(func() { http.DefaultClient, http.DefaultTransport = priorHTTPClient, priorTransport })
 	serverCode, err := connection.EnsureServerIdentity(t.Context())
 	require.NoError(t, err)
 	identity, err := connection.NewClientIdentity("transaction-client")
@@ -233,18 +235,18 @@ assertNoChange:
 	require.True(t, found)
 	require.Equal(t, "synthetic-unselected", added.APIKey)
 
-	// Core Codex is used only as a synthetic account-capable fixture. No real
-	// OAuth or provider endpoint is called by these account transactions.
-	t.Setenv("CRUX_PROVIDER_PROFILE", "integrated")
+	// A synthetic Codex bundle supplies the account and OAuth endpoint policy.
+	t.Setenv("CRUX_PROVIDER_PROFILE", "plugin-compat")
 	oauthConfig := t.TempDir()
 	oauthData := t.TempDir()
 	t.Setenv("CRUX_GLOBAL_CONFIG", oauthConfig)
 	t.Setenv("CRUX_GLOBAL_DATA", oauthData)
+	require.NoError(t, registrytest.Install(t.Context(), oauthData, os.Getenv("CRUX_CACHE_DIR"), *registrytest.Provider("codex").Manifest))
 	firstAccount := accounts.Entry{ID: "first", AccessToken: "synthetic-first-account", RefreshToken: "synthetic-first-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Raw: json.RawMessage(`{"account_id":"first-remote"}`)}
 	secondAccount := accounts.Entry{ID: "second", AccessToken: "synthetic-second-account", RefreshToken: "synthetic-second-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(), Raw: json.RawMessage(`{"account_id":"second-remote"}`)}
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, secondAccount))
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, firstAccount))
-	require.NoError(t, os.WriteFile(filepath.Join(oauthConfig, "crux.json"), []byte(`{"providers":{"codex":{"owner":{"type":"core","construction":"integrated-codex"},"models":[{"id":"fixture-model","name":"Fixture"}]}},"models":{"large":{"provider":"codex","model":"fixture-model"},"small":{"provider":"codex","model":"fixture-model"}}}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(oauthConfig, "crux.json"), []byte(`{"providers":{"codex":{"plugin":{"id":"test.codex","version":"1.1.0"},"owner":{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"},"models":[{"id":"fixture-model","name":"Fixture"}]}},"models":{"large":{"provider":"codex","model":"fixture-model"},"small":{"provider":"codex","model":"fixture-model"}}}`), 0o600))
 	// ScopeGlobal mutations write the data overlay. Keep the initial credential
 	// there too, so logout removes it without exposing a lower-layer key.
 	require.NoError(t, os.WriteFile(filepath.Join(oauthData, "crux.json"), []byte(`{"providers":{"codex":{"api_key":"synthetic-first-account"}}}`), 0o600))

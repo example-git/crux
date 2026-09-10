@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,6 +30,9 @@ func oauthLoginRegistration(t *testing.T, store *ConfigStore, id string, change 
 	for i := range registrations {
 		if registrations[i].ProviderID == id {
 			change(&registrations[i])
+			if registrations[i].Identity == nil && registrations[i].Manifest != nil && registrations[i].Manifest.Capabilities.Compatibility != nil {
+				registrations[i].Manifest.Capabilities.Compatibility.Delegates = slices.DeleteFunc(registrations[i].Manifest.Capabilities.Compatibility.Delegates, func(value string) bool { return value == "identity" })
+			}
 		}
 	}
 	registry, err := providerregistry.New(registrations...)

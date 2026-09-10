@@ -14,6 +14,7 @@ import (
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -539,7 +540,7 @@ func TestRuntimeControlDetachedAndCanceledStoreHasNoFilesystemEffects(t *testing
 
 func TestRuntimeControlCodexEffectiveAndSurface(t *testing.T) {
 	var registration providerregistry.Registration
-	for _, candidate := range providerregistry.Integrated() {
+	for _, candidate := range registrytest.Registrations() {
 		if candidate.ProviderID == "codex" {
 			registration = candidate
 		}
@@ -549,7 +550,7 @@ func TestRuntimeControlCodexEffectiveAndSurface(t *testing.T) {
 	require.NoError(t, err)
 	model := catalog.Model{ID: "gpt-5.6", CanReason: true, ReasoningLevels: []string{"low", "high"}, DefaultReasoningEffort: "low"}
 	cfg := &Config{Options: &Options{}, Providers: csync.NewMapFrom(map[string]ProviderConfig{
-		"codex": {ID: "codex", Owner: providerOwnerReferenceForRegistration(registration), Models: []catalog.Model{model}},
+		"codex": {ID: "codex", Plugin: &ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}, Owner: providerOwnerReferenceForRegistration(registration), Models: []catalog.Model{model}},
 	}), Models: map[SelectedModelType]SelectedModel{
 		SelectedModelTypeLarge: {Provider: "codex", Model: model.ID, ReasoningEffort: "high"},
 		SelectedModelTypeSmall: {Provider: "codex", Model: model.ID},

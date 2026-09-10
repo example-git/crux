@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/example-git/crux/internal/config"
@@ -97,12 +98,30 @@ var pluginsInstallCmd = &cobra.Command{
 			return err
 		}
 		defer manager.Close()
-		snapshot, err := manager.Install(cmd.Context(), providerplugin.InstallRequest{
+		request := providerplugin.InstallRequest{
 			Source: args[0],
 			Ref:    pluginInstallRef,
 			Update: pluginInstallUpdate,
 			Trust:  !pluginInstallNoTrust,
-		})
+		}
+		if request.Update {
+			_, err := ResolveCwd(cmd)
+			if err != nil {
+				return err
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			dataDir, err := cmd.Flags().GetString("data-dir")
+			if err != nil {
+				return err
+			}
+			request.AfterCommit = func(installed providerplugin.InstalledBundle) error {
+				return config.UpdateInstalledProviderReferences(cmd.Context(), cwd, dataDir, installed)
+			}
+		}
+		snapshot, err := manager.Install(cmd.Context(), request)
 		if err != nil {
 			return err
 		}

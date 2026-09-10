@@ -48,8 +48,8 @@ func inferenceHTTPClient(baseURL string, operation *providertransport.Operation,
 	return providertransport.ClientWithOwnerValidator(httpClient, validate)
 }
 
-func NewProvider(baseURL string, token TokenSource, headers map[string]string, operation *providertransport.Operation, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
-	return NewProviderWithProjectSource(baseURL, token, headers, operation, validate, Project)
+func (client Client) NewProvider(baseURL string, token TokenSource, headers map[string]string, operation *providertransport.Operation, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
+	return NewProviderWithProjectSource(baseURL, token, headers, operation, validate, client.Project)
 }
 
 // NewProviderWithProjectSource binds project metadata to the caller's authority.
@@ -83,7 +83,7 @@ func newProvider(baseURL string, token TokenSource, headers map[string]string, o
 		return nil, fmt.Errorf("Gemini project source is unavailable")
 	}
 	if baseURL == "" {
-		baseURL = APIEndpoint
+		return nil, fmt.Errorf("unsupported provider: manifest inference endpoint is required")
 	}
 	if identity == nil {
 		identity = &useragent.NativeIdentity{UserAgent: UserAgent()}

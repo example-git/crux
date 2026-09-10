@@ -53,8 +53,9 @@ var (
 const providerScanTimeout = 45 * time.Second
 
 type ProviderScan struct {
-	Providers []catalog.Provider
-	Registry  *providerregistry.Registry
+	Providers  []catalog.Provider
+	Registry   *providerregistry.Registry
+	LoadIssues []ProviderLoadIssue
 
 	pluginStatuses   map[string]providerplugin.Status
 	presetReferences map[string]ProviderPresetReference
@@ -65,6 +66,7 @@ type ProviderScan struct {
 func cloneProviderScan(scan ProviderScan) ProviderScan {
 	result := ProviderScan{
 		Providers:        cloneProviderCatalog(scan.Providers),
+		LoadIssues:       slices.Clone(scan.LoadIssues),
 		pluginStatuses:   cloneProviderStatuses(scan.pluginStatuses),
 		presetReferences: maps.Clone(scan.presetReferences),
 		ownerModes:       maps.Clone(scan.ownerModes),
@@ -335,10 +337,6 @@ func scanProviders(ctx context.Context, cfg *Config, environment env.Env) (Provi
 		protectedProviderIDs[registration.ProviderID] = true
 	}
 	coreCatalog := []catalog.Provider{copilot.CatalogProvider()}
-	integratedCatalog := []catalog.Provider{
-		gemini.CatalogProvider(),
-		codex.CatalogProvider(),
-	}
 	policy, err := parseProviderRolloutPolicyFromEnvironment(environment)
 	if err != nil {
 		return scan, err
@@ -350,19 +348,16 @@ func scanProviders(ctx context.Context, cfg *Config, environment env.Env) (Provi
 		}
 		registry, err := providerregistry.New()
 		scan.Registry = registry
+		scan.collectMissingDelegatedProviders(cfg)
 		return scan, err
 	}
 
 	var catalogErr error
-	registrations := allIntegrated
-	if policy.Profile == ProviderProfileCoreOnly || policy.Profile == ProviderProfilePluginNative {
-		registrations = slices.DeleteFunc(registrations, func(registration providerregistry.Registration) bool {
-			return registration.Construction != providerregistry.ConstructionCopilot
-		})
-		integratedCatalog = nil
-	}
-	activeCoreProviderIDs := make(map[string]bool, len(coreCatalog)+len(integratedCatalog))
-	for _, provider := range append(cloneProviderCatalog(coreCatalog), integratedCatalog...) {
+	registrations := slices.DeleteFunc(slices.Clone(allIntegrated), func(registration providerregistry.Registration) bool {
+		return registration.Construction != providerregistry.ConstructionCopilot
+	})
+	activeCoreProviderIDs := make(map[string]bool, len(coreCatalog))
+	for _, provider := range coreCatalog {
 		activeCoreProviderIDs[string(provider.ID)] = true
 	}
 	if err := rejectGenericReservedProviderClaims(cfg, protectedProviderIDs, activeCoreProviderIDs); err != nil {
@@ -429,6 +424,11 @@ func scanProviders(ctx context.Context, cfg *Config, environment env.Env) (Provi
 				}
 				registration, err := providerregistry.FromManifest(bundle.Manifest, bundle.StaticText)
 				if err != nil {
+					if compatibility := bundle.Manifest.Capabilities.Compatibility; compatibility != nil &&
+						(compatibility.ID == string(providerregistry.ConstructionCodex) || compatibility.ID == string(providerregistry.ConstructionGeminiAntigravity)) {
+						scan.rejectDelegatedBundle(providerID, bundle.Manifest.ID, bundle.Manifest.Version, err)
+						continue
+					}
 					pluginErr = errors.Join(pluginErr, err)
 					continue
 				}
@@ -442,7 +442,7 @@ func scanProviders(ctx context.Context, cfg *Config, environment env.Env) (Provi
 		generation := pluginManager.Snapshot()
 		selected := make(map[string]string)
 		for _, status := range generation.Plugins {
-			if status.State == providerplugin.StateRegistered {
+			if status.State == providerplugin.StateRegistered && scan.pluginStatuses[status.ID].State == providerplugin.StateRegistered {
 				selected[status.ID] = status.Digest
 			}
 		}
@@ -464,7 +464,7 @@ func scanProviders(ctx context.Context, cfg *Config, environment env.Env) (Provi
 	ownerModes := rolloutOwnerModes(policy, registrations, pluginRegistrations)
 	scan.ownerModes = maps.Clone(ownerModes)
 	var registryErr error
-	scan.Providers, registryErr = composeProviderCatalog(scan.Providers, integratedCatalog, pluginProviders, ownerModes)
+	scan.Providers, registryErr = composeProviderCatalog(scan.Providers, nil, pluginProviders, ownerModes)
 	if registryErr != nil {
 		catalogErr = errors.Join(catalogErr, registryErr)
 	}
@@ -489,6 +489,7 @@ func scanProviders(ctx context.Context, cfg *Config, environment env.Env) (Provi
 	if registryErr != nil {
 		catalogErr = errors.Join(catalogErr, fmt.Errorf("build provider capability registry: %w", registryErr))
 	}
+	scan.collectMissingDelegatedProviders(cfg)
 	return scan, catalogErr
 }
 
@@ -600,6 +601,9 @@ func rejectGenericReservedProviderClaims(cfg *Config, reserved, active map[strin
 		}
 		provider, configured := cfg.Providers.Get(providerID)
 		if configured && provider.Plugin == nil && provider.Preset == nil {
+			if providerID == codex.ID || providerID == gemini.ID {
+				continue // Retain the unavailable owner and report it in the startup screen.
+			}
 			return fmt.Errorf("provider %q is reserved for its core catalog and registration, which are disabled by the active provider profile", providerID)
 		}
 	}
@@ -646,13 +650,9 @@ func ProviderCapabilities() *providerregistry.Registry {
 	if registry := ProviderRegistry(); registry != nil {
 		return registry
 	}
-	policy, err := parseProviderRolloutPolicy()
-	registrations := providerregistry.Integrated()
-	if err != nil || policy.Profile != ProviderProfileIntegrated {
-		registrations = slices.DeleteFunc(registrations, func(registration providerregistry.Registration) bool {
-			return registration.Construction != providerregistry.ConstructionCopilot
-		})
-	}
+	registrations := slices.DeleteFunc(providerregistry.Integrated(), func(registration providerregistry.Registration) bool {
+		return registration.Construction != providerregistry.ConstructionCopilot
+	})
 	registry, _ := providerregistry.New(registrations...)
 	return registry
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/providertransport"
 	"github.com/stretchr/testify/require"
 )
@@ -224,8 +225,11 @@ func TestResolvedProviderCredentialSlotAdmission(t *testing.T) {
 			})
 		}
 	}
-	for _, registration := range providerregistry.Integrated() {
+	for _, registration := range registrytest.Registrations() {
 		provider := ProviderConfig{ID: registration.ProviderID, Owner: providerOwnerReferenceForRegistration(registration), APIKey: "old"}
+		if registration.Manifest != nil {
+			provider.Plugin = &ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+		}
 		store := resolvedCredentialStore(t, provider)
 		_, err := bindResolvedProviderAPIKey(store.RuntimeSnapshot(), provider, registration.Owner(), "$SOURCE", "literal")
 		require.ErrorIs(t, err, errProviderAPIKeySlotUnsupported, "integrated OAuth admission must fail before publishing checked bytes")

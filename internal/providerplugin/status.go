@@ -143,8 +143,23 @@ type InstallRequest struct {
 	Trust            bool   `json:"trust,omitempty"`
 	ExpectedRevision uint64 `json:"expected_revision,omitempty"`
 
+	// AfterCommit lets the host persist references to the exact committed
+	// bundle. It runs under the installation lock and must not call Manager
+	// methods. Failure leaves the bundle installed and is reported to the caller.
+	AfterCommit func(InstalledBundle) error `json:"-"`
+
 	sourceKind   string
 	sourceCommit string
+}
+
+// InstalledBundle identifies committed bytes without rereading the source,
+// which may change or disappear after installation (including Git checkouts).
+type InstalledBundle struct {
+	ID         string
+	ProviderID string
+	Version    string
+	Digest     string
+	PluginType string
 }
 
 // TrustRequest approves or revokes one exact digest.

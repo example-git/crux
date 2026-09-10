@@ -17,7 +17,7 @@ func CallbackRequirement() oauth.CallbackRequirement {
 }
 
 // PrepareCode creates owner-side PKCE/state without opening a listener/browser.
-func PrepareCode(ctx context.Context, port uint16) (*oauth.CodeChallenge, error) {
+func (client Client) PrepareCode(ctx context.Context, port uint16) (*oauth.CodeChallenge, error) {
 	expiresAt := time.Now().Add(authorizeTimeout)
 	if err := CallbackRequirement().ValidatePort(port); err != nil {
 		return nil, err
@@ -41,7 +41,7 @@ func PrepareCode(ctx context.Context, port uint16) (*oauth.CodeChallenge, error)
 		return nil, err
 	}
 	redirectURI := fmt.Sprintf("http://localhost:%d%s", port, redirectPath)
-	return oauth.NewCodeChallenge(ctx, buildAuthorizeURL(redirectURI, challenge, state, clientID), expiresAt, func(ctx context.Context, input string) (*oauth.Token, error) {
+	return oauth.NewCodeChallenge(ctx, client.buildAuthorizeURL(redirectURI, challenge, state, clientID), expiresAt, func(ctx context.Context, input string) (*oauth.Token, error) {
 		query, err := url.ParseQuery(strings.TrimPrefix(input, "?"))
 		if err != nil || len(query["state"]) != 1 || len(query["code"]) != 1 || query.Get("state") != state || query.Get("code") == "" {
 			return nil, errors.New("codex OAuth callback validation failed")
@@ -49,7 +49,7 @@ func PrepareCode(ctx context.Context, port uint16) (*oauth.CodeChallenge, error)
 		if err := providertransport.ValidateContextOwner(ctx); err != nil {
 			return nil, err
 		}
-		token, err := exchangeCodeWithClientID(ctx, query.Get("code"), verifier, redirectURI, clientID)
+		token, err := client.exchangeCodeWithClientID(ctx, query.Get("code"), verifier, redirectURI, clientID)
 		if err == nil {
 			err = providertransport.ValidateContextOwner(ctx)
 		}

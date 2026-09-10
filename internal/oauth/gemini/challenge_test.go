@@ -28,7 +28,7 @@ func TestPrepareCodeHostedCapturedCredentialsAndValidation(t *testing.T) {
 	target, err := url.Parse(server.URL)
 	require.NoError(t, err)
 	http.DefaultClient = &http.Client{Transport: geminiRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		require.Equal(t, tokenURL, r.URL.String())
+		require.Equal(t, testClient().Token.BaseURL, r.URL.String())
 		copy := r.Clone(r.Context())
 		address := *r.URL
 		address.Scheme, address.Host = target.Scheme, target.Host
@@ -37,7 +37,7 @@ func TestPrepareCodeHostedCapturedCredentialsAndValidation(t *testing.T) {
 	})}
 	defer func() { http.DefaultClient = original }()
 	ctx := oauth.ContextWithEnvironment(t.Context(), []string{"GEMINI_OAUTH_CLIENT_ID=captured-id", "GEMINI_OAUTH_CLIENT_SECRET=captured-secret"})
-	_, err = PrepareCode(ctx, 1)
+	_, err = testClient().PrepareCode(ctx, 1)
 	require.Error(t, err)
 	for _, mode := range []string{"bare", "callback", "state", "duplicate", "malformed", "owner"} {
 		t.Run(mode, func(t *testing.T) {
@@ -49,13 +49,13 @@ func TestPrepareCodeHostedCapturedCredentialsAndValidation(t *testing.T) {
 				}
 				return nil
 			})
-			challenge, err := PrepareCode(owner, 0)
+			challenge, err := testClient().PrepareCode(owner, 0)
 			require.NoError(t, err)
 			defer challenge.Close()
 			require.Equal(t, before, calls.Load())
 			u, err := url.Parse(challenge.AuthorizationURL())
 			require.NoError(t, err)
-			require.Equal(t, redirectURI, u.Query().Get("redirect_uri"))
+			require.Equal(t, testClient().RedirectURI, u.Query().Get("redirect_uri"))
 			t.Setenv("GEMINI_OAUTH_CLIENT_ID", "ambient-changed")
 			t.Setenv("GEMINI_OAUTH_CLIENT_SECRET", "ambient-secret")
 			q := url.Values{"code": {"synthetic-code"}, "state": {u.Query().Get("state")}}
@@ -64,7 +64,7 @@ func TestPrepareCodeHostedCapturedCredentialsAndValidation(t *testing.T) {
 			case "bare":
 				input = "synthetic-code"
 			case "callback":
-				input = redirectURI + "?" + input
+				input = testClient().RedirectURI + "?" + input
 			case "state":
 				q.Set("state", "wrong")
 				input = q.Encode()
@@ -81,7 +81,7 @@ func TestPrepareCodeHostedCapturedCredentialsAndValidation(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, "captured-id", form.Get("client_id"))
 				require.Equal(t, "captured-secret", form.Get("client_secret"))
-				require.Equal(t, redirectURI, form.Get("redirect_uri"))
+				require.Equal(t, testClient().RedirectURI, form.Get("redirect_uri"))
 				require.Equal(t, "synthetic-access", token.AccessToken)
 				require.Equal(t, before+1, calls.Load())
 			} else {

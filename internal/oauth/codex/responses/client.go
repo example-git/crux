@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -152,7 +153,15 @@ func (c *client) dialWithProfile(ctx context.Context, token, accountID, compatib
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+token)
 	header.Set("User-Agent", c.userAgent)
-	header.Set("Origin", "https://chatgpt.com")
+	target, err := url.Parse(c.url)
+	if err != nil {
+		return nil, err
+	}
+	scheme := "https"
+	if target.Scheme == "ws" {
+		scheme = "http"
+	}
+	header.Set("Origin", scheme+"://"+target.Host)
 	header.Set("openai-beta", openaiBeta)
 	header.Set("session_id", compatibilityID)
 	header.Set("thread-id", compatibilityID)

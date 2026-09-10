@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -21,15 +22,35 @@ import (
 
 type nativeRuntime struct{}
 
-func Register() error {
+func builtinRegistrations() []compatibility.Registration {
 	runtime := nativeRuntime{}
-	registrations := []compatibility.Registration{
+	return []compatibility.Registration{
 		{Name: "codex", Adapter: codexAdapter{}, Runtime: runtime},
 		{Name: "claude", Adapter: claudeAdapter{}, Runtime: runtime},
 		{Name: "agy", Adapter: agyAdapter{}, Runtime: runtime},
 		{Name: "copilot", Adapter: copilotAdapter{}, Runtime: runtime},
 	}
-	for _, registration := range registrations {
+}
+
+// IsCompatibilityExecutable recognizes aliases without registering adapters
+// or reading their installed state. Native shell completion must not replace
+// a compatibility executable's command contract.
+func IsCompatibilityExecutable(executable string) bool {
+	name := filepath.Base(executable)
+	if runtime.GOOS == "windows" && strings.EqualFold(filepath.Ext(name), ".exe") {
+		name = strings.TrimSuffix(name, filepath.Ext(name))
+	}
+	name = strings.TrimSpace(name)
+	for _, registration := range builtinRegistrations() {
+		if name == registration.Name {
+			return true
+		}
+	}
+	return false
+}
+
+func Register() error {
+	for _, registration := range builtinRegistrations() {
 		if err := compatibility.Register(registration); err != nil {
 			return err
 		}

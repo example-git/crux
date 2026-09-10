@@ -110,6 +110,27 @@ crux logs
 
 Crux also includes durable plans, managed background tasks, project records, scoped memory, custom agents, and local traffic diagnostics. These features are exposed through the interactive UI and typed agent tools.
 
+### Shell completions
+
+Load completions directly from the installed executable by adding one line to your shell startup file:
+
+| Shell | Startup file | Loading line |
+| --- | --- | --- |
+| Zsh | `~/.zshrc` | `eval "$(crux completion zsh)"` |
+| Bash | `~/.bashrc` | `eval "$(crux completion bash)"` |
+| Fish | `~/.config/fish/config.fish` (or `$XDG_CONFIG_HOME/fish/config.fish`) | `crux completion fish \| source` |
+
+Or let Crux append the line if it is missing:
+
+```sh
+crux completion --install zsh
+# Also accepts bash or fish.
+```
+
+Installation preserves the file's existing contents and prints the command to load completions into the current shell immediately. No separate completion script needs to be installed. A renamed executable uses its invoked name throughout; for example, `crux-dev completion --install zsh` installs `eval "$(crux-dev completion zsh)"`.
+
+Generation and Tab-completion requests use the current CLI command tree and skip normal application startup, including dotenv loading, compatibility dispatch, profiling, and workspace initialization. Zsh's generated script initializes `compinit` only when completion support has not already been enabled. Add `--no-descriptions` to a generation command to omit completion descriptions.
+
 ### Local CLI compatibility
 
 The built-in, unofficial compatibility layer can expose collision-safe `codex`, `claude`, `agy`, and `copilot` hard links for automation that expects those command contracts. All researched root flags are accepted, with unenforceable options documented as no-ops. Alias installation is explicit, reversible, and toggleable; normal `crux` invocation is unchanged. See [`docs/compatibility/README.md`](docs/compatibility/README.md) for installation, flags and protocols, no-op behavior, PATH management, removal, and non-affiliation terms.

@@ -21,6 +21,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerauth"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/server"
 	"github.com/stretchr/testify/require"
 )
@@ -48,11 +49,16 @@ func authMutationServerFixture(t *testing.T) (*authMutationRouteHarness, *Client
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, selected))
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, old))
 	document := map[string]any{"providers": map[string]any{"codex": map[string]any{"api_key": old.AccessToken, "oauth": old.Token(), "models": []map[string]any{{"id": "user-model", "name": "User model", "context_window": 8192, "default_max_tokens": 1024}}}}, "models": map[string]any{"large": map[string]any{"provider": "codex", "model": "user-model", "max_tokens": 1024, "provider_options": map[string]any{"false": false, "zero": 0, "empty": ""}}, "small": map[string]any{"provider": "codex", "model": "user-model", "max_tokens": 512}}}
+	registration := registrytest.Provider("codex")
+	require.NoError(t, registrytest.Install(t.Context(), global, filepath.Join(root, "cache"), *registration.Manifest))
+	provider := document["providers"].(map[string]any)["codex"].(map[string]any)
+	provider["plugin"] = &config.ProviderPluginReference{ID: registration.Manifest.ID, Version: registration.Manifest.Version}
+	provider["owner"] = &config.ProviderOwnerReference{Type: config.ProviderOwnerPlugin, Construction: registration.Construction, CompatibilityAdapter: registration.CompatibilityAdapter}
 	bytes, err := json.Marshal(document)
 	require.NoError(t, err)
 	configPath := filepath.Join(global, "crux.json")
 	require.NoError(t, os.WriteFile(configPath, bytes, 0600))
-	store, err := config.LoadIsolated(project, filepath.Join(root, "workspace-data"), false, env.NewFromMap(map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": accountDir, "CRUX_GLOBAL_CONFIG": globalConfig, "CRUX_GLOBAL_DATA": global, "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfileIntegrated)}))
+	store, err := config.LoadIsolated(project, filepath.Join(root, "workspace-data"), false, env.NewFromMap(map[string]string{"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": accountDir, "CRUX_GLOBAL_CONFIG": globalConfig, "CRUX_GLOBAL_DATA": global, "CRUX_CACHE_DIR": filepath.Join(root, "cache"), "CRUX_PROVIDER_PROFILE": string(config.ProviderProfilePluginCompat)}))
 	require.NoError(t, err)
 	appCtx, cancel := context.WithCancel(t.Context())
 	a := app.NewForTest(appCtx)

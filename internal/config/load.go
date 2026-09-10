@@ -1405,6 +1405,9 @@ func resolveSelectedModels(cfg *Config, knownProviders []catalog.Provider) (reso
 // weaken it to same-ID registration health alone or remove the durable
 // ownership checks.
 func (c *Config) isUnavailableRegisteredProvider(providerID string) bool {
+	if c.providerLoadIssue(providerID) != nil {
+		return true
+	}
 	provider, ok := c.Providers.Get(providerID)
 	if !ok {
 		return false

@@ -335,11 +335,16 @@ func TestFetchCodexParsesWindows(t *testing.T) {
 		}`))
 	}))
 	defer srv.Close()
-	old := codexUsageURL
-	codexUsageURL = srv.URL
-	defer func() { codexUsageURL = old }()
+	uRL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchCodex, err := CodexFetcher(&providertransport.Operation{ID: "quota", Method: http.MethodGet, Path: "/", Endpoint: manifest.Endpoint{BaseURL: srv.URL, AllowedSchemes: []string{uRL.Scheme}, AllowedHosts: []string{uRL.Hostname()}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	u, err := FetchCodex(context.Background(), "tok")
+	u, err := fetchCodex(context.Background(), "tok")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,11 +468,16 @@ func TestFetchCodexFallbackLabels(t *testing.T) {
 		}`))
 	}))
 	defer srv.Close()
-	old := codexUsageURL
-	codexUsageURL = srv.URL
-	defer func() { codexUsageURL = old }()
+	uRL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetchCodex, err := CodexFetcher(&providertransport.Operation{ID: "quota", Method: http.MethodGet, Path: "/", Endpoint: manifest.Endpoint{BaseURL: srv.URL, AllowedSchemes: []string{uRL.Scheme}, AllowedHosts: []string{uRL.Hostname()}}})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	u, err := FetchCodex(context.Background(), "tok")
+	u, err := fetchCodex(context.Background(), "tok")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -432,6 +432,9 @@
     },
     "CompatibilityAdapter": {
       "properties": {
+        "endpoints": {
+          "$ref": "#/$defs/CompatibilityEndpoints"
+        },
         "id": {
           "type": "string",
           "maxLength": 128,
@@ -470,6 +473,28 @@
         "id",
         "delegates",
         "inventory"
+      ]
+    },
+    "CompatibilityEndpoints": {
+      "properties": {
+        "identity": {
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1
+        },
+        "images": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "project": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "identity"
       ]
     },
     "CompatibilityInventoryItem": {
