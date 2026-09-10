@@ -39,6 +39,7 @@ type codexThreadBinding struct {
 	nativeID  string
 	workspace *codexNativeWorkspace
 	policy    codexExecutionPolicy
+	model     config.SelectedModel
 	ephemeral bool
 }
 
@@ -181,7 +182,7 @@ func (b *codexNativeBridge) bindThread(workspace *codexNativeWorkspace, sess *pr
 	if binding := b.threads[codexID]; binding != nil {
 		return binding
 	}
-	binding := &codexThreadBinding{codexID: codexID, nativeID: sess.ID, workspace: workspace, policy: defaultCodexExecutionPolicy()}
+	binding := &codexThreadBinding{codexID: codexID, nativeID: sess.ID, workspace: workspace, policy: defaultCodexExecutionPolicy(), model: b.selectedModel[workspace]}
 	b.threads[codexID] = binding
 	return binding
 }
@@ -466,6 +467,21 @@ func (b *codexNativeBridge) selectModel(ctx context.Context, workspace *codexNat
 	return selection, nil
 }
 
+func (b *codexNativeBridge) selectThreadModel(ctx context.Context, binding *codexThreadBinding, modelID, providerID string) (config.SelectedModel, error) {
+	if modelID == "" && binding.model.Model != "" {
+		modelID = binding.model.Model
+		if providerID == "" {
+			providerID = binding.model.Provider
+		}
+	}
+	selection, err := b.selectModel(ctx, binding.workspace, modelID, providerID)
+	if err != nil {
+		return config.SelectedModel{}, err
+	}
+	binding.model = selection
+	return selection, nil
+}
+
 func (b *codexNativeBridge) ensureAgent(ctx context.Context, workspace *codexNativeWorkspace) error {
 	if err := workspace.client.InitiateAgentProcessing(ctx, workspace.value.ID, false); err != nil {
 		return err
@@ -737,7 +753,7 @@ func runCodexAppServerNative(ctx context.Context, invocation compatibility.Invoc
 					for i := range sessions {
 						sess := sessions[i]
 						binding := bridge.bindThread(workspace, &sess)
-						data = append(data, codexThread(binding, &sess, bridge.selectedModel[workspace]))
+						data = append(data, codexThread(binding, &sess, binding.model))
 					}
 				}
 				if listFailed {
@@ -759,7 +775,7 @@ func runCodexAppServerNative(ctx context.Context, invocation compatibility.Invoc
 					_ = writeCodexError(output, message.ID, -32002, "Thread not found")
 					continue
 				}
-				selection, selectErr := bridge.selectModel(ctx, binding.workspace, params.Model, params.ModelProvider)
+				selection, selectErr := bridge.selectThreadModel(ctx, binding, params.Model, params.ModelProvider)
 				if selectErr != nil {
 					_ = writeCodexError(output, message.ID, -32602, selectErr.Error())
 					continue
@@ -839,7 +855,7 @@ func runCodexAppServerNative(ctx context.Context, invocation compatibility.Invoc
 					_ = writeCodexError(output, message.ID, -32000, forkErr.Error())
 					continue
 				}
-				selection, selectErr := bridge.selectModel(ctx, binding.workspace, "", "")
+				selection, selectErr := bridge.selectThreadModel(ctx, binding, "", "")
 				if selectErr != nil {
 					_ = writeCodexError(output, message.ID, -32000, selectErr.Error())
 					continue
@@ -884,11 +900,9 @@ func runCodexAppServerNative(ctx context.Context, invocation compatibility.Invoc
 					_ = writeCodexError(output, message.ID, -32602, policyErr.Error())
 					continue
 				}
-				if params.Model != "" {
-					if _, selectErr := bridge.selectModel(ctx, binding.workspace, params.Model, ""); selectErr != nil {
-						_ = writeCodexError(output, message.ID, -32602, selectErr.Error())
-						continue
-					}
+				if _, selectErr := bridge.selectThreadModel(ctx, binding, params.Model, ""); selectErr != nil {
+					_ = writeCodexError(output, message.ID, -32602, selectErr.Error())
+					continue
 				}
 				parts := make([]string, 0, len(params.Input))
 				valid := true

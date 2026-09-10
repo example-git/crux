@@ -117,7 +117,7 @@ func TestNamespaceFreeWorkspaceOAuthThroughTLS(t *testing.T) {
 			}
 			// Use the same accepted-authority attachment path as runSubscription.
 			// Discovery intentionally does not update Client's creation cache.
-			events, err := f.w.subscribeAcceptedEvents()
+			events, err := f.w.subscribeAcceptedEvents(f.w.subCtx)
 			require.NoError(t, err)
 			done := make(chan struct{})
 			go func() {

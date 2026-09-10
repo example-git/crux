@@ -3,6 +3,7 @@ package localaddon
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/example-git/crux/internal/client"
+	"github.com/example-git/crux/internal/compatibility"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
@@ -94,4 +96,76 @@ func TestCodexNativeModelSelectionCachesOnlyAfterAgentUpdate(t *testing.T) {
 	defer mu.Unlock()
 	require.Equal(t, 2, modelCalls)
 	require.Equal(t, 2, updateCalls)
+}
+
+func TestCodexAppServerRetainsThreadModels(t *testing.T) {
+	type submission struct {
+		session, provider, model string
+	}
+	submissions := make(chan submission, 8)
+	workingDir := nativeAPIFixture(t, "done", func(session, provider, model string) {
+		submissions <- submission{session, provider, model}
+	})
+	inputReader, inputWriter := io.Pipe()
+	outputReader, outputWriter := io.Pipe()
+	t.Cleanup(func() {
+		_ = inputWriter.Close()
+		_ = outputReader.Close()
+	})
+	request := compatibility.Request{
+		Source: "codex", Protocol: compatibility.ProtocolCodexAppServer, Style: compatibility.ExecutionHeadless, WorkingDir: workingDir,
+		Prompt:  compatibility.Prompt{Source: compatibility.PromptStreamJSON, Stdin: inputReader},
+		Session: compatibility.Session{Mode: compatibility.SessionNew, Persistent: true},
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- runCodexAppServer(t.Context(), protocolInvocation("unused", workingDir, inputReader, outputWriter), request)
+		_ = outputWriter.Close()
+	}()
+	encoder, decoder := json.NewEncoder(inputWriter), json.NewDecoder(outputReader)
+	read := func() map[string]any {
+		var response map[string]any
+		require.NoError(t, decoder.Decode(&response))
+		return response
+	}
+	send := func(method string, params map[string]any) {
+		require.NoError(t, encoder.Encode(map[string]any{"id": 1, "method": method, "params": params}))
+	}
+	send("initialize", map[string]any{"clientInfo": map[string]any{"name": "test", "version": "1"}})
+	require.NotNil(t, read()["result"])
+	start := func(model string) string {
+		send("thread/start", map[string]any{"cwd": workingDir, "model": model})
+		response := read()
+		require.Nil(t, response["error"])
+		id := response["result"].(map[string]any)["thread"].(map[string]any)["id"].(string)
+		require.Equal(t, "thread/started", read()["method"])
+		return id
+	}
+	first := start("openai/gpt-5")
+	second := start("anthropic/claude-sonnet")
+	turn := func(thread, model string, expected submission) {
+		params := map[string]any{"threadId": thread, "input": []any{map[string]any{"type": "text", "text": "hello"}}}
+		if model != "" {
+			params["model"] = model
+		}
+		send("turn/start", params)
+		for {
+			response := read()
+			require.Nil(t, response["error"])
+			if response["method"] == "turn/completed" {
+				require.Equal(t, "completed", response["params"].(map[string]any)["turn"].(map[string]any)["status"])
+				break
+			}
+		}
+		require.Equal(t, expected, <-submissions)
+	}
+	turn(first, "", submission{"thread-1", "openai", "gpt-5"})
+	turn(second, "", submission{"thread-2", "anthropic", "claude-sonnet"})
+	turn(first, "openai/gpt-4.1", submission{"thread-1", "openai", "gpt-4.1"})
+	turn(second, "", submission{"thread-2", "anthropic", "claude-sonnet"})
+	send("turn/start", map[string]any{"threadId": first, "model": "missing-model"})
+	require.NotNil(t, read()["error"])
+	turn(first, "", submission{"thread-1", "openai", "gpt-4.1"})
+	require.NoError(t, inputWriter.Close())
+	require.NoError(t, <-done)
 }

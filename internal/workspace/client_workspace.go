@@ -110,12 +110,17 @@ func NewClientWorkspace(c *client.Client, ws proto.Workspace) *ClientWorkspace {
 // refreshWorkspace re-fetches the workspace from the server, updating
 // the cached snapshot. Called after config-mutating operations.
 func (w *ClientWorkspace) refreshWorkspace() {
+	if err := w.refreshWorkspaceContext(context.Background()); err != nil {
+		slog.Error("Failed to refresh workspace", "error", err)
+	}
+}
+
+func (w *ClientWorkspace) refreshWorkspaceContext(ctx context.Context) error {
 	workspaceID := w.workspaceID()
 	sequence := w.refreshSequence.Add(1)
-	updated, err := w.client.GetWorkspace(context.Background(), workspaceID)
+	updated, err := w.client.GetWorkspace(ctx, workspaceID)
 	if err != nil {
-		slog.Error("Failed to refresh workspace", "error", err)
-		return
+		return err
 	}
 	if updated.Config != nil {
 		updated.Config.SetupAgents()
@@ -126,6 +131,7 @@ func (w *ClientWorkspace) refreshWorkspace() {
 		w.ws = *updated
 	}
 	w.mu.Unlock()
+	return nil
 }
 
 // cached returns a snapshot of the cached workspace.
@@ -1120,14 +1126,19 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 			return
 		}
 
-		evc, err := w.subscribeAcceptedEvents()
+		attemptCtx, cancelAttempt := context.WithCancel(w.subCtx)
+		evc, err := w.subscribeAcceptedEvents(attemptCtx)
+		if err == nil && degraded {
+			err = w.afterReconnect(send, recreatedFrom)
+		}
 		if err != nil {
+			cancelAttempt()
 			if w.subCtx.Err() != nil {
 				return
 			}
 			markDegraded(err, false)
 			if !errors.Is(err, client.ErrNotFound) {
-				slog.Error("Failed to subscribe to workspace events; retrying",
+				slog.Error("Failed to restore workspace events; retrying",
 					"error", err, "retry_in", backoff)
 			} else if recoverLostWorkspace() {
 				// Re-registered: resubscribe immediately under the fresh
@@ -1150,11 +1161,11 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 		if degraded {
 			degraded = false
 			recoveryFailures = 0
-			w.afterReconnect(send, recreatedFrom)
 			recreatedFrom = ""
 		}
 		backoff = sseReconnectInitialBackoff
 		w.consumeEvents(evc, send)
+		cancelAttempt()
 
 		// The event channel closed: the server restarted, the stream was
 		// interrupted, or the workspace briefly went away. Reconnect
@@ -1259,7 +1270,13 @@ func (w *ClientWorkspace) recreateArgs() proto.Workspace {
 // were away, and tells the UI to resync state published while detached. The
 // SSE handler attaches the client before writing its 200, so the presence
 // call cannot be rejected as not-attached here.
-func (w *ClientWorkspace) afterReconnect(send func(tea.Msg), recreatedFrom ...string) {
+func (w *ClientWorkspace) afterReconnect(send func(tea.Msg), recreatedFrom ...string) error {
+	ctx, cancel := context.WithTimeout(w.subCtx, recoveryCreateTimeout)
+	err := w.refreshWorkspaceContext(ctx)
+	cancel()
+	if err != nil {
+		return err
+	}
 	id := w.workspaceID()
 	previousID := ""
 	if len(recreatedFrom) == 1 {
@@ -1277,6 +1294,7 @@ func (w *ClientWorkspace) afterReconnect(send func(tea.Msg), recreatedFrom ...st
 		event.Recreated, event.PreviousWorkspaceID = true, recreatedFrom[0]
 	}
 	send(event)
+	return nil
 }
 
 // sleepOrDone waits for d or until the subscription context is

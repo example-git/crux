@@ -517,7 +517,7 @@ ORDER BY path, chunk_index, id`,
 	if err := writeJSONAtomically(checkpointPath, catalog); err != nil {
 		return storeCatalog{}, fmt.Errorf("complete standalone migration checkpoint: %w", err)
 	}
-	if err := writeJSONAtomically(catalogPath, catalog); err != nil {
+	if err := activateProjectCatalog(ctx, catalogPath, catalog); err != nil {
 		return storeCatalog{}, fmt.Errorf("activate standalone codebase search catalog: %w", err)
 	}
 	return catalog, nil

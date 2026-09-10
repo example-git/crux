@@ -869,16 +869,21 @@ func stageJobImage(ctx context.Context, outputPath, encoded string) (string, err
 }
 
 func writeStagedImage(ctx context.Context, temporary, path string, force bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if force {
+		if err := os.Rename(temporary, path); err != nil {
+			return fmt.Errorf("replace image %q: %w", path, err)
+		}
+		return nil
+	}
 	input, err := os.Open(temporary)
 	if err != nil {
 		return fmt.Errorf("open staged image for %q: %w", path, err)
 	}
 	defer input.Close()
-	flags := os.O_WRONLY | os.O_CREATE | os.O_EXCL
-	if force {
-		flags = os.O_WRONLY | os.O_CREATE | os.O_TRUNC
-	}
-	output, err := os.OpenFile(path, flags, 0o644)
+	output, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("output already exists: %s", path)
@@ -888,9 +893,7 @@ func writeStagedImage(ctx context.Context, temporary, path string, force bool) e
 	_, writeErr := io.Copy(output, &jobContextReader{ctx: ctx, reader: input})
 	closeErr := output.Close()
 	if writeErr != nil || closeErr != nil {
-		if !force {
-			_ = os.Remove(path)
-		}
+		_ = os.Remove(path)
 		if writeErr != nil {
 			return fmt.Errorf("write image %q: %w", path, writeErr)
 		}

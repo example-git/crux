@@ -118,6 +118,41 @@ func TestOpenReadyProjectServesActiveGenerationDuringRefresh(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+func TestReconcileReadyFiltersRetiresObsoleteWorker(t *testing.T) {
+	resetBackgroundIndexes(t)
+	path := createTestDatabase(t, []testChunk{{projectRoot: "/project", path: "src/main.go", embedding: encodeEmbedding(1, 0), model: "model-a"}})
+	storeDirectory := t.TempDir()
+	reader, err := OpenWithANNDirectory(t.Context(), path, storeDirectory)
+	require.NoError(t, err)
+	_, catalog, err := reader.prepareStore(t.Context(), "/project", "model-a")
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	options := ProjectIndexOptions{ProjectRoot: "/project", ConfiguredDatabasePath: path, StoreDirectory: storeDirectory, Enabled: true}
+	require.Equal(t, StoreStateReady, ReconcileProjectIndexing(t.Context(), options).State)
+	started := make(chan context.Context, 1)
+	release := make(chan struct{})
+	finished := make(chan error, 1)
+	runProjectIndexing = func(ctx context.Context, _, _, _ string, filters ProjectFilters, _ TokenSource, _ func(IndexProgress)) error {
+		started <- ctx
+		<-release
+		catalog.Source.FilterDigest = filterDigest(filters)
+		err := activateProjectCatalog(context.WithoutCancel(ctx), projectCatalogPath(storeDirectory, "/project"), catalog)
+		finished <- err
+		return err
+	}
+	changed := options
+	changed.Filters = ProjectFilters{ExcludePaths: []string{"other/**"}}
+	require.Equal(t, StoreStateIndexing, ReconcileProjectIndexing(t.Context(), changed).State)
+	workerContext := <-started
+	require.Equal(t, StoreStateReady, ReconcileProjectIndexing(t.Context(), options).State)
+	require.ErrorIs(t, workerContext.Err(), context.Canceled)
+	close(release)
+	require.ErrorIs(t, <-finished, context.Canceled)
+	active, err := loadProjectCatalog(storeDirectory, "/project")
+	require.NoError(t, err)
+	require.Equal(t, filterDigest(options.Filters), active.Source.FilterDigest)
+}
+
 func TestReconcileRestoresDurableProgressAfterProcessRestart(t *testing.T) {
 	resetBackgroundIndexes(t)
 	projectRoot := t.TempDir()

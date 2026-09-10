@@ -192,6 +192,27 @@ func StartProjectIndexingWithFilters(ctx context.Context, projectRoot, configure
 	})
 }
 
+type projectIndexActivationKey struct{}
+
+type projectIndexActivation struct {
+	key string
+	id  uint64
+}
+
+func activateProjectCatalog(ctx context.Context, path string, catalog storeCatalog) error {
+	if activation, ok := ctx.Value(projectIndexActivationKey{}).(projectIndexActivation); ok {
+		backgroundIndexes.Lock()
+		defer backgroundIndexes.Unlock()
+		if backgroundIndexes.jobs[activation.key].id != activation.id {
+			return context.Canceled
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return writeJSONAtomically(path, catalog)
+}
+
 func ReconcileProjectIndexing(ctx context.Context, options ProjectIndexOptions) StoreStatus {
 	directory, err := resolveStoreDirectory(options.StoreDirectory)
 	if err != nil {
@@ -215,6 +236,15 @@ func ReconcileProjectIndexing(ctx context.Context, options ProjectIndexOptions) 
 		backgroundIndexes.Unlock()
 		return status
 	}
+
+	backgroundIndexes.Lock()
+	if existing, ok := backgroundIndexes.jobs[key]; ok && existing.digest != digest {
+		if existing.cancel != nil {
+			existing.cancel()
+		}
+		delete(backgroundIndexes.jobs, key)
+	}
+	backgroundIndexes.Unlock()
 
 	current := InspectProjectIndexStatus(options)
 	if current.State == StoreStateReady || current.State == StoreStateIndexing {
@@ -245,6 +275,7 @@ func ReconcileProjectIndexing(ctx context.Context, options ProjectIndexOptions) 
 		cancel()
 		workerContext, cancel = options.BindContext(context.WithoutCancel(ctx))
 	}
+	workerContext = context.WithValue(workerContext, projectIndexActivationKey{}, projectIndexActivation{key: key, id: jobID})
 	backgroundIndexes.jobs[key] = backgroundIndexJob{
 		status: status,
 		digest: digest,
