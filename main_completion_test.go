@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -97,27 +98,29 @@ func TestShellCompletionBashWithoutCompletionPackage(t *testing.T) {
 	t.Setenv("CRUX_TEST_EXPECT_DOTENV", "")
 	t.Setenv("CRUX_TEST_DOTENV_LOADED", "")
 	t.Setenv("CRUX_TEST_BINARY", executable)
-	// The shell wrapper invokes the real main/command tree in a fresh process
-	// for generation and every completion request, using the renamed command.
-	command := exec.CommandContext(t.Context(), bash, "--noprofile", "--norc", "-c", `
-crux-dev() { "$CRUX_TEST_BINARY" -test.run='^TestShellCompletionMainProcess$' -- "$@"; }
+	diagnosticsPath := filepath.Join(home, "completion-errors")
+	t.Setenv("CRUX_TEST_COMPLETION_ERRORS", diagnosticsPath)
+	t.Setenv("PS1", "")
+	t.Setenv("PS2", "")
+	t.Setenv("TERM", "dumb")
+	t.Setenv("BASH_SILENCE_DEPRECATION_WARNING", "1")
+	command := exec.CommandContext(t.Context(), bash, "--noprofile", "--norc", "-i")
+	command.Stdin = strings.NewReader(strings.ReplaceAll(`
+crux-dev() { if [[ $1 == __complete* || ( $1 == completion && $2 == bash ) ]]; then "$CRUX_TEST_BINARY" -test.run='^TestShellCompletionMainProcess$' -- "$@"; else printf '%s\n' "$*"; fi; }
 eval "$(crux-dev completion bash)"
-COMP_WORDS=(crux-dev --cont); COMP_CWORD=1
-COMP_LINE='crux-dev --cont'; COMP_POINT=${#COMP_LINE}
-__start_crux-dev
-[[ ${COMPREPLY[0]} == --continue ]] || exit 10
-COMP_WORDS=(crux-dev completion --install = zs); COMP_CWORD=4
-COMP_LINE='crux-dev completion --install=zs'; COMP_POINT=${#COMP_LINE}
-__start_crux-dev
-[[ ${COMPREPLY[0]} == zsh ]] || exit 11
-COMP_WORDS=(crux-dev --host tcp : //192.168.1.117 : 14995 run --mo); COMP_CWORD=8
-COMP_LINE='crux-dev --host tcp://192.168.1.117:14995 run --mo'; COMP_POINT=${#COMP_LINE}
-__start_crux-dev
-[[ ${COMPREPLY[0]} == --model* ]] || exit 12
-`)
+completion_probe() { __start_crux-dev "$@" 2>>"$CRUX_TEST_COMPLETION_ERRORS"; }
+registration=$(complete -p crux-dev); eval "${registration/__start_crux-dev/completion_probe}"
+crux-dev --cont<TAB>
+crux-dev completion --install=zs<TAB>
+crux-dev --host tcp://192.168.1.117:14995 run --mo<TAB>
+exit
+`, "<TAB>", "\t"))
 	command.Dir = home
 	var out, diagnostic bytes.Buffer
 	command.Stdout, command.Stderr = &out, &diagnostic
 	require.NoError(t, command.Run(), diagnostic.String())
-	require.Empty(t, diagnostic.String())
+	require.Equal(t, "--continue\ncompletion --install=zsh\n--host tcp://192.168.1.117:14995 run --model\n", strings.ReplaceAll(out.String(), "\r\n", "\n"), diagnostic.String())
+	completionErrors, err := os.ReadFile(diagnosticsPath)
+	require.NoError(t, err)
+	require.Empty(t, string(completionErrors))
 }

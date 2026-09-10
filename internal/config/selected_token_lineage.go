@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/tidwall/gjson"
@@ -114,7 +115,7 @@ func readSelectedTokenLineage(ctx context.Context, path string) (authenticationI
 	}
 	defer file.Close()
 	before.info, err = observeAuthenticationInput(file)
-	if err != nil || before.info.size > maxSelectedTokenLineageBytes || before.info.mode.Perm()&0o077 != 0 {
+	if err != nil || before.info.size > maxSelectedTokenLineageBytes || fsext.ValidatePrivateFile(file) != nil {
 		return before, journal, errors.New("OAuth token lineage has invalid size or permissions")
 	}
 	before.data, err = io.ReadAll(io.LimitReader(authenticationInputReader{ctx: ctx, reader: file}, maxSelectedTokenLineageBytes+1))

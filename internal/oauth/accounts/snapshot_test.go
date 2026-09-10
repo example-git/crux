@@ -180,7 +180,7 @@ func TestAccountSnapshotIdenticalReplacementAndPathRecheck(t *testing.T) {
 	require.NoError(t, err)
 	info, err := os.Stat(path)
 	require.NoError(t, err)
-	opened, err := os.Open(path)
+	opened, err := openAccountSnapshotFile(path)
 	require.NoError(t, err)
 	defer opened.Close()
 	observation, err := observeAccountFile(opened)

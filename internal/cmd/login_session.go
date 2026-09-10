@@ -144,7 +144,11 @@ func runWorkspaceLogin(ctx context.Context, ws workspace.Workspace, args []strin
 }
 
 func newAuthenticationConsole(ctx context.Context, input io.Reader, output io.Writer, openURL func(string) error, copyCode func(string)) (*oauthLoginConsole, func(), error) {
-	reader, err := cancelreader.NewReader(input)
+	prepared, err := prepareAuthenticationInput(ctx, input)
+	if err != nil {
+		return nil, nil, fmt.Errorf("prepare authentication input: %w", err)
+	}
+	reader, err := cancelreader.NewReader(prepared)
 	if err != nil {
 		return nil, nil, fmt.Errorf("prepare authentication input: %w", err)
 	}

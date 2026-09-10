@@ -8,10 +8,11 @@ import (
 	"os"
 	"unsafe"
 
+	"github.com/example-git/crux/internal/fsext"
 	"golang.org/x/sys/windows"
 )
 
-func openAuthenticationInput(path string) (*os.File, error) { return os.Open(path) }
+func openAuthenticationInput(path string) (*os.File, error) { return fsext.OpenSharedRead(path) }
 
 func authenticationInputIdentity(file *os.File, _ os.FileInfo) ([sha256.Size]byte, error) {
 	handle := windows.Handle(file.Fd())
