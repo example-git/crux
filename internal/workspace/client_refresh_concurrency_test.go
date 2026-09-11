@@ -140,6 +140,7 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 				c, err := client.NewAuthenticatedClient(t.TempDir(), connection.Connection{Address: "tcp://" + strings.TrimPrefix(remote.URL, "https://"), ServerCertificate: serverCode, Client: selectedIdentity})
 				require.NoError(t, err)
 				c.SetLocalRuntimeStore(local)
+				t.Cleanup(func() { require.NoError(t, s.Backend().RetireClient(c.ClientID())) })
 				created, err := c.CreateWorkspace(t.Context(), proto.Workspace{Path: t.TempDir(), Runtime: &proposal, AuthorityMode: "client"})
 				require.NoError(t, err)
 				w := workspace.NewClientWorkspace(c, *created)
