@@ -25,6 +25,7 @@ const unavailableRetryDelay = 30 * time.Second
 
 // Manager handles lazy initialization of LSP clients based on file types.
 type Manager struct {
+	changes     changeQueue
 	clients     *csync.Map[string, *Client]
 	unavailable *csync.Map[string, time.Time]
 	cfg         *config.ConfigStore
@@ -102,6 +103,7 @@ func (s *Manager) TrackConfigured(ctx context.Context) {
 // Start starts an LSP server that can handle the given file path.
 // If an appropriate LSP is already running, this is a no-op.
 func (s *Manager) Start(ctx context.Context, path string) {
+	s.changes.resume()
 	if abs, err := filepath.Abs(path); err == nil {
 		path = abs
 	}
@@ -387,6 +389,7 @@ func handles(server *powernapconfig.ServerConfig, filePath, workDir string) bool
 // in the middle of writing something.
 // Generally it doesn't matter when shutting down Crux, though.
 func (s *Manager) KillAll(context.Context) {
+	s.changes.stop()
 	var wg sync.WaitGroup
 	for name, client := range s.clients.Seq2() {
 		wg.Go(func() {
@@ -402,6 +405,7 @@ func (s *Manager) KillAll(context.Context) {
 
 // StopAll stops all running LSP clients and clears the client map.
 func (s *Manager) StopAll(ctx context.Context) {
+	s.changes.stop()
 	var wg sync.WaitGroup
 	for name, client := range s.clients.Seq2() {
 		wg.Go(func() {

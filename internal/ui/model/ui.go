@@ -226,6 +226,7 @@ type (
 
 // UI represents the main user interface model.
 type UI struct {
+	animationClock            anim.Clock
 	com                       *common.Common
 	session                   *session.Session
 	sessionFiles              []SessionFile
@@ -1663,14 +1664,22 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 			}
 		}
 	case anim.StepMsg:
+		if cmd := m.animationClock.Add(msg); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+	case anim.FrameMsg:
 		if m.state == uiChat {
-			if cmd := m.chat.Animate(msg); cmd != nil {
+			if cmd := m.animationClock.Advance(msg, m.chat.Animate); cmd != nil {
 				cmds = append(cmds, cmd)
 			}
 			if m.chat.Follow() {
 				if cmd := m.chat.ScrollToBottomAndAnimate(); cmd != nil {
 					cmds = append(cmds, cmd)
 				}
+			}
+		} else {
+			if cmd := m.animationClock.Next(msg); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 		}
 	case scrollbarHideMsg:

@@ -20,7 +20,8 @@ var (
 	initialized atomic.Bool
 )
 
-func Setup(logFile string, debug bool, ws ...io.Writer) {
+func Setup(logFile string, debug bool, ws ...io.Writer) func() error {
+	cleanup := func() error { return nil }
 	initOnce.Do(func() {
 		logRotator := &lumberjack.Logger{
 			Filename:   logFile,
@@ -40,8 +41,9 @@ func Setup(logFile string, debug bool, ws ...io.Writer) {
 			AddSource: true,
 		}
 
+		writer := &ownedLogWriter{writer: logRotator}
 		var handlers []slog.Handler
-		handlers = append(handlers, redactingHandler{handler: slog.NewJSONHandler(logRotator, opts)})
+		handlers = append(handlers, redactingHandler{handler: slog.NewJSONHandler(writer, opts)})
 
 		for _, w := range ws {
 			if w == nil {
@@ -54,9 +56,43 @@ func Setup(logFile string, debug bool, ws ...io.Writer) {
 			}
 		}
 
-		slog.SetDefault(slog.New(slog.NewMultiHandler(handlers...)))
+		previous := slog.Default()
+		logger := slog.New(slog.NewMultiHandler(handlers...))
+		slog.SetDefault(logger)
+		cleanup = sync.OnceValue(func() error {
+			if slog.Default() == logger {
+				slog.SetDefault(previous)
+			}
+			return writer.Close()
+		})
 		initialized.Store(true)
 	})
+	return cleanup
+}
+
+type ownedLogWriter struct {
+	mu     sync.Mutex
+	writer io.WriteCloser
+	closed bool
+}
+
+func (w *ownedLogWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return 0, os.ErrClosed
+	}
+	return w.writer.Write(data)
+}
+
+func (w *ownedLogWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	return w.writer.Close()
 }
 
 func Initialized() bool {

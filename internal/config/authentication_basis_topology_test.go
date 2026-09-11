@@ -20,8 +20,13 @@ func TestAuthenticationBasisProjectionOmitsAbsentPaths(t *testing.T) {
 		"CRUX_GLOBAL_CONFIG": filepath.Join(root, "config"),
 		"CRUX_GLOBAL_DATA":   filepath.Join(root, "data"),
 	})
+	paths := lookupConfigsFromEnvironment(root, base, true)
+	require.NotContains(t, paths, "")
+	globalPaths, err := authenticationGlobalInputPaths(base)
+	require.NoError(t, err)
+	require.Equal(t, paths, globalPaths)
 	basis := newAuthenticationLoadBasis()
-	for _, path := range lookupConfigsFromEnvironment(root, base, true) {
+	for _, path := range paths {
 		basis.source(path, nil, nil, false)
 	}
 	target := filepath.Join(root, "data", "crux.json")

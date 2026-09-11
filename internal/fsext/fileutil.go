@@ -256,6 +256,15 @@ func CanonicalPath(path string) (string, error) {
 	for {
 		resolved, resolveErr := filepath.EvalSymlinks(absolute)
 		if resolveErr == nil {
+			if len(suffix) > 0 {
+				info, err := os.Stat(resolved)
+				if err != nil {
+					return "", err
+				}
+				if !info.IsDir() {
+					return "", fmt.Errorf("resolve path %q: parent is not a directory", path)
+				}
+			}
 			for index := len(suffix) - 1; index >= 0; index-- {
 				resolved = filepath.Join(resolved, suffix[index])
 			}

@@ -111,11 +111,9 @@ func NewMultiEditTool(
 			}
 
 			// Notify LSP clients about the change
-			notifyLSPs(ctx, lspManager, params.FilePath)
+			queueLSPChange(lspManager, params.FilePath)
 
-			// Wait for LSP diagnostics and add them to the response
 			text := fmt.Sprintf("<result>\n%s\n</result>\n", response.Content)
-			text += getDiagnostics(params.FilePath, lspManager)
 			response.Content = text
 			return response, nil
 		},

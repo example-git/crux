@@ -128,6 +128,14 @@ func (m *Map[K, V]) Take(key K) (V, bool) {
 	return v, ok
 }
 
+func (m *Map[K, V]) VisitLocked(visit func(K, V)) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for key, value := range m.inner {
+		visit(key, value)
+	}
+}
+
 // Copy returns a copy of the inner map.
 func (m *Map[K, V]) Copy() map[K]V {
 	m.mu.RLock()

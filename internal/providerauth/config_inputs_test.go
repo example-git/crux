@@ -92,9 +92,12 @@ func authenticationInputsTree(t *testing.T, root string) map[string]authenticati
 		}
 		state := authenticationInputsFileState{mode: info.Mode(), size: info.Size(), mtime: info.ModTime().UnixNano()}
 		if info.Mode().IsRegular() {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return err
+			var data []byte
+			if info.Size() != 0 || filepath.Ext(path) != ".lock" {
+				data, err = os.ReadFile(path)
+				if err != nil {
+					return err
+				}
 			}
 			state.digest = sha256.Sum256(data)
 		}
@@ -228,6 +231,7 @@ func TestAuthenticationConfigInputsCancellationBeforeCoherentCapture(t *testing.
 	f := loadedAuthenticationInputs(t)
 	before, err := f.service.Status(t.Context())
 	require.NoError(t, err)
+	files := authenticationInputsTree(t, f.root)
 	held, release := make(chan struct{}), make(chan struct{})
 	done := make(chan error, 1)
 	guard, cancelGuard := context.WithTimeout(t.Context(), 2*time.Second)
@@ -248,7 +252,6 @@ func TestAuthenticationConfigInputsCancellationBeforeCoherentCapture(t *testing.
 	case <-guard.Done():
 		t.Fatal("account fixture did not acquire its lock")
 	}
-	files := authenticationInputsTree(t, f.root)
 	ctx, cancel := context.WithTimeout(t.Context(), 25*time.Millisecond)
 	defer cancel()
 	failed, err := f.service.Status(ctx)
