@@ -372,7 +372,7 @@ func testLiveCredentialWorkLifetime(t *testing.T, detached, disconnect bool) {
 		// ListTasks deliberately projects state to status only. Inspect the
 		// full retained result for the end timestamp and exact child identity;
 		// this read must not stop, drain, or otherwise finish the task itself.
-		output, err := taskCoordinator.TaskOutput(ctx, detachedTask.ID, false, 0)
+		output, err := taskCoordinator.TaskOutput(ctx, detachedTask.ID, disconnect, 5*time.Second)
 		require.NoError(t, err)
 		require.Equal(t, managedtask.RetrievalReady, output.RetrievalStatus)
 		require.Equal(t, detachedTask.ID, output.Task.ID)
