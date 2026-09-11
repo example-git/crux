@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/stretchr/testify/require"
@@ -88,9 +89,11 @@ func TestConditionalAccountSwitchCommitsExactTargetAndRetainsLease(t *testing.T)
 	_, ok = change.SelectedEntry()
 	require.False(t, ok)
 	require.True(t, result.Snapshot.SameObservation(captureAccountSnapshot(t, path)))
-	info, err := os.Stat(path)
+	file, err := os.Open(path)
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	privacyErr := fsext.ValidatePrivateFile(file)
+	require.NoError(t, file.Close())
+	require.NoError(t, privacyErr)
 	temporary, err := filepath.Glob(filepath.Join(filepath.Dir(path), ".accounts-change-*"))
 	require.NoError(t, err)
 	require.Empty(t, temporary)

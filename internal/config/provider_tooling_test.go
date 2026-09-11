@@ -26,7 +26,7 @@ func providerToolingTestStore(t *testing.T) (*ConfigStore, string) {
 	require.NoError(t, os.MkdirAll(workingDir, 0o700))
 	t.Setenv("AI_CLI_DIR", filepath.Join(root, "accounts"))
 	base := env.NewFromMap(map[string]string{
-		"HOME": root, "CRUX_GLOBAL_CONFIG": configDir,
+		"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"), "CRUX_GLOBAL_CONFIG": configDir,
 		"CRUX_GLOBAL_DATA":      filepath.Join(root, "global-data"),
 		"CRUX_CACHE_DIR":        filepath.Join(root, "cache"),
 		"CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginCompat),

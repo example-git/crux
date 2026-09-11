@@ -259,7 +259,13 @@ func TestCoordinatorAuthenticationMutationCopilotHTTPS(t *testing.T) {
 	require.Equal(t, f.second.ID, active.ID)
 	persisted, err := os.ReadFile(f.scope)
 	require.NoError(t, err)
-	require.Contains(t, string(persisted), f.second.AccessToken)
+	var saved struct {
+		Providers map[string]config.ProviderConfig `json:"providers"`
+	}
+	require.NoError(t, json.Unmarshal(persisted, &saved))
+	require.Equal(t, f.second.AccessToken, saved.Providers[f.owner.ProviderID].APIKey)
+	require.NotNil(t, saved.Providers[f.owner.ProviderID].OAuthToken)
+	require.Equal(t, f.second.AccessToken, saved.Providers[f.owner.ProviderID].OAuthToken.AccessToken)
 
 	loggedOut, err := f.store.LogoutAuthentication(ctx, config.ScopeWorkspace, f.capture(t), f.owner)
 	require.NoError(t, err)

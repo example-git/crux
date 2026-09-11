@@ -53,7 +53,7 @@ func newRefreshTestStore(t *testing.T, configPath string, exchange func(ctx cont
 		AccessToken:  "at0",
 		RefreshToken: "rt0",
 		ExpiresIn:    3600,
-		ExpiresAt:    time.Now().Add(-time.Hour).Unix(),
+		ExpiresAt:    time.Date(2020, time.January, 1, 0, 0, 0, 0, time.UTC).Unix(),
 	}
 	writeTokenToDisk(t, configPath, expired)
 

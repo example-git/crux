@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/redact"
 	"github.com/stretchr/testify/require"
 )
@@ -52,9 +53,11 @@ func TestSetupTrafficIsolatesWorkspacesAndInstances(t *testing.T) {
 		require.Equal(t, filepath.Join(dataDir, "traffic"), filepath.Dir(path))
 		require.False(t, paths[path])
 		paths[path] = true
-		info, err := os.Stat(path)
+		file, err := os.Open(path)
 		require.NoError(t, err)
-		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		privacyErr := fsext.ValidatePrivateFile(file)
+		require.NoError(t, file.Close())
+		require.NoError(t, privacyErr)
 		requestCtx := WithTrafficContext(t.Context(), ctx)
 		TraceWebSocketFrame(requestCtx, "workspace", "inbound", "wss://example.test", index+1, []byte(`{"delta":"hello"}`), nil)
 		trace.flush()
