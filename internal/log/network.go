@@ -86,7 +86,11 @@ func SetupTraffic(ctx context.Context, dataDir string, enabled bool) (context.Co
 	defaultTraceOnce.Do(func() {
 		http.DefaultTransport = WrapHTTPTransport(http.DefaultTransport)
 	})
-	return context.WithValue(ctx, trafficContextKey{}, trace), trace.close, nil
+	cleanup := func() {
+		trace.close()
+		<-trace.done
+	}
+	return context.WithValue(ctx, trafficContextKey{}, trace), cleanup, nil
 }
 
 func trafficFromContext(ctx context.Context) *networkTrace {

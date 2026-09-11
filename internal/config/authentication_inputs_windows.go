@@ -14,6 +14,10 @@ import (
 
 func openAuthenticationInput(path string) (*os.File, error) { return fsext.OpenSharedRead(path) }
 
+func authenticationInputPrivateSuccessor(file *os.File, _ os.FileMode) bool {
+	return fsext.ValidatePrivateFile(file) == nil
+}
+
 func authenticationInputIdentity(file *os.File, _ os.FileInfo) ([sha256.Size]byte, error) {
 	handle := windows.Handle(file.Fd())
 	var info windows.ByHandleFileInformation

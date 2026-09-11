@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
@@ -133,6 +134,32 @@ func (f *installedLineageFixture) noAccounts(t *testing.T) {
 	require.NoDirExists(t, filepath.Join(f.root, "ambient-accounts"))
 }
 
+func TestSelectedTokenDurableInstalledSuccessorPermissions(t *testing.T) {
+	for _, public := range []bool{false, true} {
+		t.Run(fmt.Sprint(public), func(t *testing.T) {
+			f := newInstalledLineageFixture(t)
+			store, peer := f.load(t), f.load(t)
+			admitted := peer.RuntimeSnapshot()
+			fresh, err := store.RefreshProviderOAuthTokenForRuntime(t.Context(), ScopeGlobal, f.owner, f.original, store.RuntimeSnapshot())
+			require.NoError(t, err)
+			input, err := readAuthenticationInput(t.Context(), store.globalDataPath)
+			require.NoError(t, err)
+			require.True(t, input.privateSuccessor)
+			if public {
+				makeAuthenticationJournalPublic(t, store.globalDataPath)
+			}
+			replayed, err := peer.RefreshProviderOAuthTokenForRuntime(t.Context(), ScopeGlobal, f.owner, f.original, admitted)
+			if public {
+				require.ErrorContains(t, err, "OAuth token lineage captured inputs changed")
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, fresh, replayed)
+			}
+			require.EqualValues(t, 1, f.requests.Load())
+		})
+	}
+}
+
 func TestSelectedTokenDurableInstalledConcurrentStores(t *testing.T) {
 	f := newInstalledLineageFixture(t)
 	a, b := f.load(t), f.load(t)
@@ -207,9 +234,11 @@ func TestSelectedTokenDurableInstalledRestartKnownSuccessor(t *testing.T) {
 			require.Equal(t, fresh, provider.OAuthToken)
 			require.NotNil(t, restarted.Config().authenticationBasis)
 			require.NoError(t, restarted.validateSelectedTokenSources(t.Context(), restarted.Config()))
-			info, err := os.Stat(selectedTokenLineagePath(path, f.owner.ProviderID))
+			file, err := openAuthenticationInput(selectedTokenLineagePath(path, f.owner.ProviderID))
 			require.NoError(t, err)
-			require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+			privacyErr := fsext.ValidatePrivateFile(file)
+			require.NoError(t, file.Close())
+			require.NoError(t, privacyErr)
 			f.noAccounts(t)
 		})
 	}

@@ -73,6 +73,28 @@ func TestSetupTrafficIsolatesWorkspacesAndInstances(t *testing.T) {
 	require.ErrorContains(t, err, "requires a project data directory")
 }
 
+func TestSetupTrafficCleanupJoinsWriter(t *testing.T) {
+	ctx, cleanup, err := SetupTraffic(t.Context(), t.TempDir(), true)
+	require.NoError(t, err)
+	trace := trafficFromContext(ctx)
+	t.Cleanup(func() { cleanup(); <-trace.done })
+	TraceWebSocketFrame(ctx, "cleanup", "inbound", "wss://example.test", 1, []byte(`{"delta":"saved"}`), nil)
+	cleanup()
+	select {
+	case <-trace.done:
+	default:
+		t.Fatal("traffic cleanup returned before the writer closed its database")
+	}
+	cleanup()
+	reader, err := OpenTrafficDatabaseReadOnly(ctx)
+	require.NoError(t, err)
+	events, queryErr := QueryTraffic(ctx, reader, TrafficQuery{Limit: 10})
+	require.NoError(t, reader.Close())
+	require.NoError(t, queryErr)
+	require.Len(t, events, 1)
+	require.NoError(t, os.Remove(trace.path))
+}
+
 func TestNetworkTraceFullQueueDoesNotBlockDelivery(t *testing.T) {
 	trace := &networkTrace{entries: make(chan trafficWrite, 1)}
 	trace.entries <- trafficWrite{}

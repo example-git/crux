@@ -29,9 +29,10 @@ type authenticationConfigInputs struct {
 }
 
 type authenticationInputFile struct {
-	path string
-	data []byte
-	info authenticationInputFileInfo
+	path             string
+	data             []byte
+	info             authenticationInputFileInfo
+	privateSuccessor bool
 }
 
 type authenticationInputFileInfo struct {
@@ -268,6 +269,7 @@ func readAuthenticationInput(ctx context.Context, path string) (authenticationIn
 	if err != nil {
 		return authenticationInputFile{}, err
 	}
+	result.privateSuccessor = authenticationInputPrivateSuccessor(file, result.info.mode)
 	if err := verifyAuthenticationInput(ctx, path, file, result.info); err != nil {
 		return authenticationInputFile{}, err
 	}

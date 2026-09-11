@@ -3,7 +3,6 @@ package config
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -155,7 +154,7 @@ func TestNativeIdentityDiscoveryCancellationCanRetryAndDoesNotHoldConfigLocks(t 
 	var calls atomic.Int32
 	entered, canceled := make(chan struct{}), make(chan struct{})
 	nativeIdentityTLS(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/openai/codex/releases" {
+		if r.Method != http.MethodHead || r.URL.Path != "/openai/codex/releases/latest" {
 			t.Errorf("unexpected discovery %s", r.URL.Path)
 			w.WriteHeader(404)
 			return
@@ -166,7 +165,8 @@ func TestNativeIdentityDiscoveryCancellationCanRetryAndDoesNotHoldConfigLocks(t 
 			close(canceled)
 			return
 		}
-		_, _ = io.WriteString(w, `[{"tag_name":"rust-v3.4.5","prerelease":false}]`)
+		w.Header().Set("Location", "https://github.com/openai/codex/releases/tag/rust-v3.4.5")
+		w.WriteHeader(http.StatusFound)
 	})
 	store := nativeIdentityLocalStore(t, map[string]string{})
 	captured := store.RuntimeSnapshot()

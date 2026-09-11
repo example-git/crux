@@ -120,8 +120,8 @@ func (r *shellVariableResolver) ResolveValueContext(ctx context.Context, value s
 	defer cancel()
 
 	out, err := r.expand(ctx, value, r.env.Env())
-	if err == nil {
-		err = ctx.Err()
+	if contextErr := ctx.Err(); contextErr != nil {
+		err = contextErr
 	}
 	if err != nil {
 		return "", sanitizeResolveError(value, err)

@@ -404,7 +404,7 @@ func verifySelectedTokenLineageInputs(inputs authenticationConfigInputs, record 
 		}
 		// Only the target and its already captured inode aliases may carry the
 		// exact recorded successor write. Unrelated inputs require exact proof.
-		if input.path == proof.Path && proof.Exists && proof.Identity == record.Before.Identity && input.info.exists && input.info.mode.Perm() == 0o600 && bytes.Equal(input.data, planned) {
+		if input.path == proof.Path && proof.Exists && proof.Identity == record.Before.Identity && input.info.exists && input.privateSuccessor && bytes.Equal(input.data, planned) {
 			continue
 		}
 		return errors.New("OAuth token lineage captured inputs changed")
@@ -444,7 +444,7 @@ func (l *selectedTokenLineage) persist(ctx context.Context, successor *oauth.Tok
 			// retry may stage the identical known bytes from that observed
 			// preimage, but never claim that the failed write was durable.
 			observed, readErr := readAuthenticationInput(ctx, l.path)
-			if readErr == nil && observed.info.exists && observed.info.mode.Perm() == 0o600 && bytes.Equal(observed.data, data) {
+			if readErr == nil && observed.info.exists && observed.privateSuccessor && bytes.Equal(observed.data, data) {
 				l.file = observed
 			}
 		}

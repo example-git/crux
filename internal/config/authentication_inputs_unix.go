@@ -15,6 +15,10 @@ func openAuthenticationInput(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 }
 
+func authenticationInputPrivateSuccessor(_ *os.File, mode os.FileMode) bool {
+	return mode.IsRegular() && mode.Perm() == 0o600
+}
+
 func authenticationInputIdentity(_ *os.File, info os.FileInfo) ([sha256.Size]byte, error) {
 	stat := reflect.Indirect(reflect.ValueOf(info.Sys()))
 	if !stat.IsValid() || stat.Kind() != reflect.Struct || !stat.FieldByName("Dev").IsValid() || !stat.FieldByName("Ino").IsValid() {
