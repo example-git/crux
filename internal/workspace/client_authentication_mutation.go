@@ -425,6 +425,11 @@ func (w *ClientWorkspace) adoptClientAuthenticationLocked(ctx context.Context, a
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if w.subCtx != nil {
+		if err := w.subCtx.Err(); err != nil {
+			return err
+		}
+	}
 	if w.ws.ID != receipt.request.target.WorkspaceID || (!matchesAuthority(w.ws.Authority, a.principal, a.accepted) && !matchesAuthority(w.ws.Authority, a.principal, *receipt.proposal)) {
 		return errors.New("client authentication workspace or authority changed before acknowledgement adoption")
 	}

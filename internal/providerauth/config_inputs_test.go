@@ -90,7 +90,10 @@ func authenticationInputsTree(t *testing.T, root string) map[string]authenticati
 		if err != nil {
 			return err
 		}
-		state := authenticationInputsFileState{mode: info.Mode(), size: info.Size(), mtime: info.ModTime().UnixNano()}
+		state := authenticationInputsFileState{mode: info.Mode()}
+		if !entry.IsDir() {
+			state.size, state.mtime = info.Size(), info.ModTime().UnixNano()
+		}
 		if info.Mode().IsRegular() {
 			var data []byte
 			if info.Size() != 0 || filepath.Ext(path) != ".lock" {

@@ -73,8 +73,9 @@ func TestConnectionsAuthorizedReportsLiveUseWithoutPersistence(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			value := entry{Mode: info.Mode(), Size: info.Size(), Modified: info.ModTime()}
+			value := entry{Mode: info.Mode()}
 			if !item.IsDir() {
+				value.Size, value.Modified = info.Size(), info.ModTime()
 				contents, err := os.ReadFile(path)
 				if err != nil {
 					return err

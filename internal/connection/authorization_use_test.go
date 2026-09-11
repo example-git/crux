@@ -37,8 +37,9 @@ func authorizationUseTree(t *testing.T, root string) map[string]authorizationTre
 		if err != nil {
 			return err
 		}
-		value := authorizationTreeEntry{Mode: info.Mode(), Size: info.Size(), Modified: info.ModTime()}
+		value := authorizationTreeEntry{Mode: info.Mode()}
 		if !entry.IsDir() {
+			value.Size, value.Modified = info.Size(), info.ModTime()
 			contents, err := os.ReadFile(path)
 			if err != nil {
 				return err

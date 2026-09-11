@@ -218,6 +218,7 @@ func TestRuntimeControlSDKThroughRegisteredRoute(t *testing.T) {
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
 	c := captureClient(t, hs)
+	t.Cleanup(func() { require.NoError(t, c.RetireClient(context.Background())) })
 	created, err := c.CreateWorkspace(t.Context(), proto.Workspace{Path: path, DataDir: filepath.Join(root, "workspace-data"), AuthorityMode: "server"})
 	require.NoError(t, err)
 	require.Equal(t, "gpt-5.6", created.Config.Models[config.SelectedModelTypeLarge].Model)

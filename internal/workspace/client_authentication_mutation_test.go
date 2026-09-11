@@ -53,7 +53,7 @@ type clientAuthenticationFixture struct {
 func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthenticationFixture {
 	t.Helper()
 	f := &clientAuthenticationFixture{root: t.TempDir()}
-	values := map[string]string{"HOME": f.root, "USERPROFILE": f.root, "AI_CLI_DIR": filepath.Join(f.root, "server-auth"), "CRUX_GLOBAL_CONFIG": filepath.Join(f.root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(f.root, "data"), "CRUX_CACHE_DIR": filepath.Join(f.root, "cache"), "CRUX_PROVIDER_PROFILE": "integrated", "CRUX_DISABLE_AUTO_MEMORY": "true", "AUTH_LITERAL": "must-not-expand"}
+	values := map[string]string{"HOME": f.root, "USERPROFILE": f.root, "LOCALAPPDATA": f.root, "AI_CLI_DIR": filepath.Join(f.root, "server-auth"), "CRUX_GLOBAL_CONFIG": filepath.Join(f.root, "config"), "CRUX_GLOBAL_DATA": filepath.Join(f.root, "data"), "CRUX_CACHE_DIR": filepath.Join(f.root, "cache"), "CRUX_PROVIDER_PROFILE": "integrated", "CRUX_DISABLE_AUTO_MEMORY": "true", "AUTH_LITERAL": "must-not-expand"}
 	for name, value := range values {
 		t.Setenv(name, value)
 	}
@@ -536,6 +536,23 @@ func TestClientAuthenticationMutationRejectsChangedAuthorityAfterPut(t *testing.
 			}
 		})
 	}
+}
+
+func TestClientAuthenticationAdoptionRejectsCanceledLifetime(t *testing.T) {
+	f := newClientAuthenticationFixture(t, false)
+	request := providerauth.SwitchRequest{OperationID: strings.Repeat("9", 32), Target: f.target(t), AccountID: f.second.ID}
+	before := f.w.Config()
+	f.putMode.Store(1)
+	_, err := f.w.switchClientAuthentication(t.Context(), request)
+	require.Error(t, err)
+	receipt := f.w.authority.authenticationReceipts[request.OperationID]
+	require.NotNil(t, receipt.proposal)
+	ack := &config.RemoteAuthority{Mode: "client", Principal: receipt.principal, Revision: receipt.proposal.Revision, Digest: receipt.proposal.Digest}
+	f.w.subCancel()
+	err = f.w.adoptClientAuthenticationLocked(t.Context(), f.w.authority, receipt, ack)
+	require.ErrorIs(t, err, context.Canceled)
+	require.Same(t, before, f.w.Config())
+	require.EqualValues(t, 1, f.w.authority.accepted.Revision)
 }
 
 func TestClientAuthenticationMutationGenericReconcileRejectsChangedCache(t *testing.T) {

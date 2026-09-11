@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/providertransport"
+	"golang.org/x/mod/semver"
 )
 
 // Static fallback versions, used when live detection fails and no persisted
@@ -49,7 +50,10 @@ const (
 // "version" field.
 const antigravityManifestBase = "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests"
 
-const probeTimeout = 3 * time.Second
+const (
+	probeTimeout             = 3 * time.Second
+	codexReleaseProbeTimeout = 10 * time.Second
+)
 
 // versionRe extracts the first semver-like token from tool output,
 // matching the reference implementation (`/v?(\d+\.\d+[\w.-]*)/`).
@@ -229,14 +233,40 @@ func fetchAntigravityManifestVersionForContext(ctx context.Context) string {
 // resolve runs the live detector and persists a valid answer; otherwise it
 // returns the last persisted valid answer, then the static fallback.
 func resolve(key, fallback string, detect func() string) string {
-	if v := detect(); fullVersionRe.MatchString(v) {
-		persist(key, v)
-		return v
+	if value := detect(); fullVersionRe.MatchString(value) {
+		persist(key, value)
+		return value
 	}
-	if v := persisted(key); v != "" {
-		return v
+	if value := persisted(key); value != "" {
+		return value
 	}
 	return fallback
+}
+
+func newestVersion(detected, cached string) string {
+	if !fullVersionRe.MatchString(detected) || !semver.IsValid("v"+detected) {
+		detected = ""
+	}
+	if !fullVersionRe.MatchString(cached) || !semver.IsValid("v"+cached) {
+		cached = ""
+	}
+	if detected == "" || cached != "" && semver.Compare("v"+cached, "v"+detected) > 0 {
+		return cached
+	}
+	return detected
+}
+
+func resolveNewest(key, fallback string, detect func() string) string {
+	detected := detect()
+	cached := persisted(key)
+	selected := newestVersion(detected, cached)
+	if selected == "" {
+		return fallback
+	}
+	if selected == detected && selected != cached {
+		persist(key, selected)
+	}
+	return selected
 }
 
 func resolveForContext(ctx context.Context, key, fallback string, detect func(context.Context) string) (string, error) {
@@ -273,6 +303,36 @@ func resolveForContext(ctx context.Context, key, fallback string, detect func(co
 	}
 	if value != "" {
 		return value, nil
+	}
+	return fallback, nil
+}
+
+func resolveNewestForContext(ctx context.Context, key, fallback string, detect func(context.Context) string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	detected := detect(ctx)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	cached := persistedForContext(ctx, key)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := providertransport.ValidateContextOwner(ctx); err != nil {
+		return "", err
+	}
+	if selected := newestVersion(detected, cached); selected != "" {
+		return selected, nil
 	}
 	return fallback, nil
 }
@@ -858,7 +918,7 @@ func CodexVersion() string {
 		return v
 	}
 	codexOnce.Do(func() {
-		codexVersion = resolve("codex", staticCodexVersion, func() string {
+		codexVersion = resolveNewest("codex", staticCodexVersion, func() string {
 			if v := fetchCodexLatest(); v != "" {
 				return v
 			}
@@ -881,7 +941,7 @@ func CodexVersionForContext(ctx context.Context) (string, error) {
 	if value := environmentOrForContext(ctx, "CODEX_VERSION", ""); value != "" {
 		return value, nil
 	}
-	return resolveForContext(ctx, "codex", staticCodexVersion, func(ctx context.Context) string {
+	return resolveNewestForContext(ctx, "codex", staticCodexVersion, func(ctx context.Context) string {
 		if value := fetchCodexLatestForContext(ctx); value != "" {
 			return value
 		}
@@ -889,46 +949,41 @@ func CodexVersionForContext(ctx context.Context) (string, error) {
 	})
 }
 
-// fetchCodexLatest reads the newest non-prerelease tag from the openai/codex
-// release feed (tags look like "rust-v0.148.0"). Returns "" on any failure.
+// fetchCodexLatest reads the newest stable tag from the openai/codex latest
+// release redirect (tags look like "rust-v0.148.0"). Returns "" on any failure.
 func fetchCodexLatest() string {
 	return fetchCodexLatestForContext(context.Background())
 }
 
 func fetchCodexLatestForContext(ctx context.Context) string {
-	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, codexReleaseProbeTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		"https://api.github.com/repos/openai/codex/releases?per_page=10", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead,
+		"https://github.com/openai/codex/releases/latest", nil)
 	if err != nil {
 		return ""
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient).Do(req)
+	baseClient := providertransport.ClientWithContextOwnerValidator(ctx, http.DefaultClient)
+	client := *baseClient
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return ""
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode < http.StatusMultipleChoices || resp.StatusCode >= http.StatusBadRequest {
 		return ""
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
+	target, err := req.URL.Parse(resp.Header.Get("Location"))
+	if err != nil || target.Scheme != "https" || target.Hostname() != "github.com" {
 		return ""
 	}
-	var releases []struct {
-		TagName    string `json:"tag_name"`
-		Prerelease bool   `json:"prerelease"`
-		Draft      bool   `json:"draft"`
-	}
-	if err := json.Unmarshal(data, &releases); err != nil {
+	const tagPrefix = "/openai/codex/releases/tag/rust-v"
+	version, found := strings.CutPrefix(target.Path, tagPrefix)
+	if !found || !fullVersionRe.MatchString(version) {
 		return ""
 	}
-	for _, release := range releases {
-		if release.Prerelease || release.Draft {
-			continue
-		}
-		return strings.TrimPrefix(strings.TrimSpace(release.TagName), "rust-v")
-	}
-	return ""
+	return version
 }
