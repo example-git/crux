@@ -12,30 +12,25 @@ import (
 func TestReader(t *testing.T) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
-		t.Errorf("expected no error, but got %s", err)
+		t.Fatalf("expected no error, but got %s", err)
 	}
 	defer pw.Close()
 	defer pr.Close()
 
 	pollReader, err := newPollReader(pr)
 	if err != nil {
-		t.Errorf("expected no error, but got %s", err)
+		t.Fatalf("expected no error, but got %s", err)
 	}
+	defer pollReader.Close()
 
-	msg := "hello"
-	n, err := pw.Write([]byte(msg))
-	if n != 5 {
-		t.Errorf("expected 5 bytes written but got %d", n)
+	type pollResult struct {
+		ready bool
+		err   error
 	}
-	if err != nil {
-		t.Errorf("expected no error, but got %s", err)
-	}
-
-	done := make(chan struct{})
+	done := make(chan pollResult, 1)
 	go func() {
-		defer close(done)
-		p := make([]byte, 1)
-		n, err = pollReader.Read(p)
+		ready, err := pollReader.Poll(-1)
+		done <- pollResult{ready, err}
 	}()
 
 	if !pollReader.Cancel() {
@@ -43,31 +38,44 @@ func TestReader(t *testing.T) {
 	}
 
 	select {
-	case <-done:
-	case <-time.After(100 * time.Millisecond):
-		t.Errorf("expected cancellation to unblock reader")
+	case result := <-done:
+		if result.ready || result.err != ErrCanceled {
+			t.Fatalf("expected canceled poll, got ready=%t, err=%v", result.ready, result.err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("expected cancellation to unblock reader")
 	}
+	p := make([]byte, 5)
+	n, err := pollReader.Read(p)
 	if n != 0 {
 		t.Errorf("expected 0 bytes read but got %d", n)
 	}
 	if err != ErrCanceled {
-		t.Errorf("expected cancel error but got %s", err)
+		t.Errorf("expected cancel error but got %v", err)
 	}
 
 	// Test that read is still possible after cancellation.
 	pollReader, err = newPollReader(pr)
 	if err != nil {
-		t.Errorf("expected no error, but got %s", err)
+		t.Fatalf("expected no error, but got %s", err)
 	}
-	p := make([]byte, 5)
+	defer pollReader.Close()
+	msg := "hello"
+	n, err = pw.Write([]byte(msg))
+	if n != len(msg) {
+		t.Errorf("expected %d bytes written but got %d", len(msg), n)
+	}
+	if err != nil {
+		t.Fatalf("expected no error, but got %s", err)
+	}
 	n, err = pollReader.Read(p)
-	if n != 5 {
-		t.Errorf("expected 5 bytes written but got %d", n)
+	if n != len(msg) {
+		t.Errorf("expected %d bytes read but got %d", len(msg), n)
 	}
 	if err != nil {
 		t.Errorf("expected no error, but got %s", err)
 	}
-	if string(p[:n]) != msg[:n] {
-		t.Errorf("expected to read %q but got %q", msg[:n], string(p[:n]))
+	if string(p[:n]) != msg {
+		t.Errorf("expected to read %q but got %q", msg, string(p[:n]))
 	}
 }

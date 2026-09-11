@@ -319,6 +319,8 @@ func testCLIWorkspaceSession(t *testing.T, accountCommands bool) {
 			require.EqualValues(t, 1, inferences.Load())
 
 			if accountCommands {
+				ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+				defer cancel()
 				owner, ok := store.RuntimeSnapshot().ProviderOwner("example-responses")
 				require.True(t, ok)
 				previousAccounts := os.Getenv("AI_CLI_DIR")

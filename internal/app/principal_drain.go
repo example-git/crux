@@ -33,6 +33,8 @@ func (app *App) DrainCredentialWork(ctx context.Context) error {
 	if app.BackgroundImages != nil {
 		result = errors.Join(result, app.BackgroundImages.Drain(ctx))
 	}
-	result = errors.Join(result, mcp.For(app.config).Close(ctx))
+	if app.config != nil {
+		result = errors.Join(result, mcp.For(app.config).Close(ctx))
+	}
 	return result
 }
