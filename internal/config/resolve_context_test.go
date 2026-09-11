@@ -51,6 +51,28 @@ func TestShellVariableResolverContextRejectsSuccessAfterCancellation(t *testing.
 	require.NotContains(t, err.Error(), "synthetic-resolved-secret")
 }
 
+func TestShellVariableResolverContextPreservesCancellationAfterCommandError(t *testing.T) {
+	t.Parallel()
+	for _, canceled := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(t.Context())
+		commandErr := errors.New("command exited")
+		resolver := NewShellVariableResolver(env.NewFromMap(nil), WithExpander(func(context.Context, string, []string) (string, error) {
+			if canceled {
+				cancel()
+			}
+			return "", commandErr
+		})).(contextVariableResolver)
+		value, err := resolver.ResolveValueContext(ctx, "template")
+		require.Empty(t, value)
+		if canceled {
+			require.ErrorIs(t, err, context.Canceled)
+		} else {
+			require.ErrorIs(t, err, commandErr)
+		}
+		cancel()
+	}
+}
+
 func TestShellVariableResolverContextCancelsRealCommand(t *testing.T) {
 	t.Parallel()
 	resolver := NewShellVariableResolver(env.NewFromMap(map[string]string{"PATH": os.Getenv("PATH")})).(contextVariableResolver)
