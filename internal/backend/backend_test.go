@@ -207,14 +207,16 @@ func TestDetachClient_LastStreamTearsDown(t *testing.T) {
 
 func TestWorkspaceShutdownJoinsWorkAndIsIdempotent(t *testing.T) {
 	workspaceContext, cancel := context.WithCancel(t.Context())
-	workspace := &Workspace{ctx: workspaceContext, cancel: cancel}
+	var cleanupCalls atomic.Int32
+	workspace := &Workspace{ctx: workspaceContext, cancel: cancel, shutdownFn: func() { cleanupCalls.Add(1) }}
 	workspace.runWG.Add(1)
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(workspace.runWG.Done) }
 	done := make(chan struct{})
 	var callers sync.WaitGroup
-	for range 20 {
+	for range 10 {
 		callers.Go(workspace.Shutdown)
+		callers.Go(workspace.invokeShutdown)
 	}
 	go func() {
 		callers.Wait()
@@ -242,12 +244,14 @@ func TestWorkspaceShutdownJoinsWorkAndIsIdempotent(t *testing.T) {
 		t.Fatal("shutdown returned while execution was still running")
 	case <-time.After(50 * time.Millisecond):
 	}
+	require.Zero(t, cleanupCalls.Load())
 	release()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("workspace shutdown did not join completed execution")
 	}
+	require.EqualValues(t, 1, cleanupCalls.Load())
 
 	var shutdowns atomic.Int32
 	workspace = &Workspace{shutdownFn: func() { shutdowns.Add(1) }}

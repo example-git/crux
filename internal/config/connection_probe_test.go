@@ -166,6 +166,7 @@ func TestConnectionProbeHTTPSOwnerAndCancellation(t *testing.T) {
 			var requests, redirected, validations atomic.Int32
 			var changed atomic.Bool
 			entered := make(chan struct{}, 1)
+			release := make(chan struct{})
 			host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests.Add(1)
 				if r.URL.Path == "/redirected" {
@@ -176,6 +177,7 @@ func TestConnectionProbeHTTPSOwnerAndCancellation(t *testing.T) {
 				if mode == "cancel during request" {
 					entered <- struct{}{}
 					<-r.Context().Done()
+					<-release
 					return
 				}
 				changed.Store(true)
@@ -186,6 +188,7 @@ func TestConnectionProbeHTTPSOwnerAndCancellation(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer host.Close()
+			defer close(release)
 			previous := http.DefaultClient
 			http.DefaultClient = host.Client()
 			defer func() { http.DefaultClient = previous }()

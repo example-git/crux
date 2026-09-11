@@ -251,18 +251,8 @@ type Workspace struct {
 	shutdownFn func()
 }
 
-// invokeShutdown calls the workspace shutdown hook if set, falling
-// back to the workspace [Workspace.Shutdown] wrapper when not.
 func (w *Workspace) invokeShutdown() {
-	w.shutdownOnce.Do(func() {
-		if w.shutdownFn != nil {
-			w.shutdownFn()
-			return
-		}
-		if w.App != nil {
-			w.shutdown()
-		}
-	})
+	w.Shutdown()
 }
 
 // Shutdown tears the workspace down in an order that is safe for
@@ -317,7 +307,9 @@ func (w *Workspace) shutdown() {
 		}
 	}
 	w.runWG.Wait()
-	if w.App != nil {
+	if w.shutdownFn != nil {
+		w.shutdownFn()
+	} else if w.App != nil {
 		w.App.Shutdown()
 	}
 }

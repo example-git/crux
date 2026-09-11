@@ -144,6 +144,7 @@ func TestProviderOAuthRegisteredRoutesManifestRelayAndLostReplies(t *testing.T) 
 			ws := &backend.Workspace{ID: "oauth-workspace", Path: root, App: a, Cfg: store}
 			backend.InsertWorkspaceForTest(ownerServer.Backend(), ws)
 			backend.SetWorkspaceShutdownFnForTest(ws, func() {})
+			t.Cleanup(ws.Shutdown)
 			t.Cleanup(ownerServer.Backend().Shutdown)
 			var lostBegin, lostCode, lostComplete atomic.Bool
 			handler := ownerServer.Handler()
