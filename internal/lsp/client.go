@@ -498,6 +498,17 @@ func (c *Client) GetFileDiagnostics(uri protocol.DocumentURI) []protocol.Diagnos
 	return diags
 }
 
+func (c *Client) RangeDiagnostics(visit func(protocol.DocumentURI, protocol.Diagnostic)) {
+	if c == nil {
+		return
+	}
+	c.diagnostics.VisitLocked(func(uri protocol.DocumentURI, diagnostics []protocol.Diagnostic) {
+		for _, diagnostic := range diagnostics {
+			visit(uri, diagnostic)
+		}
+	})
+}
+
 // GetDiagnostics returns all diagnostics for all files.
 func (c *Client) GetDiagnostics() map[protocol.DocumentURI][]protocol.Diagnostic {
 	if c == nil {

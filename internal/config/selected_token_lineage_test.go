@@ -266,7 +266,8 @@ func TestSelectedTokenDurablePreflightRejectsInvalidJournal(t *testing.T) {
 			token := cloneOAuthToken(f.original)
 			switch mode {
 			case "public-permissions":
-				require.NoError(t, os.WriteFile(path, data, 0o644))
+				require.NoError(t, os.WriteFile(path, data, 0o600))
+				makeAuthenticationJournalPublic(t, path)
 			case "symlink":
 				require.NoError(t, os.Symlink(store.globalDataPath, path))
 			case "duplicate-field":

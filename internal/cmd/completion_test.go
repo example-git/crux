@@ -118,9 +118,13 @@ func TestShellCompletionInstall(t *testing.T) {
 					"newline": "# existing settings\n", "already installed": "# existing settings\n  " + line + " # completions\n",
 					"commented out": "# " + line + "\n",
 				}[existing]
+				var originalMode os.FileMode
 				if existing != "missing" {
 					require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
 					require.NoError(t, os.WriteFile(path, []byte(contents), 0o640))
+					info, err := os.Stat(path)
+					require.NoError(t, err)
+					originalMode = info.Mode().Perm()
 				}
 				runInstall := func() string {
 					var out, diagnostic bytes.Buffer
@@ -150,7 +154,7 @@ func TestShellCompletionInstall(t *testing.T) {
 				if existing != "missing" {
 					info, err := os.Stat(path)
 					require.NoError(t, err)
-					require.Equal(t, os.FileMode(0o640), info.Mode().Perm())
+					require.Equal(t, originalMode, info.Mode().Perm())
 				}
 			})
 		}

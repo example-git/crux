@@ -240,7 +240,8 @@ func authenticationGlobalInputPaths(environment env.Env) ([]string, error) {
 		return nil, errors.New("captured authentication config directories are unavailable or not absolute")
 	}
 	global := filepath.Join(configDir, appName+".json")
-	return []string{systemConfigPath, global, shellConfigSibling(global), filepath.Join(dataDir, appName+".json")}, nil
+	paths := []string{systemConfigPath, global, shellConfigSibling(global), filepath.Join(dataDir, appName+".json")}
+	return slices.DeleteFunc(paths, func(path string) bool { return path == "" }), nil
 }
 
 func readAuthenticationInput(ctx context.Context, path string) (authenticationInputFile, error) {

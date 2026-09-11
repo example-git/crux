@@ -1454,6 +1454,7 @@ func lookupConfigsFromEnvironment(cwd string, environment env.Env, globalOnly ..
 		shellConfigSibling(globalConfigPath),
 		globalConfigDataFromEnvironment(appName, environment),
 	}
+	configPaths = slices.DeleteFunc(configPaths, func(path string) bool { return path == "" })
 	if len(globalOnly) > 0 && globalOnly[0] {
 		return configPaths
 	}

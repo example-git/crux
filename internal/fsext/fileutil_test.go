@@ -22,6 +22,27 @@ func TestHasPrefixResolvesSymlinks(t *testing.T) {
 	require.True(t, HasPrefix(filepath.Join(root, "missing", "file.txt"), root))
 }
 
+func TestCanonicalPathRejectsRegularFileAncestors(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	file := filepath.Join(root, "regular")
+	require.NoError(t, os.WriteFile(file, []byte("file"), 0o600))
+	resolvedFile, err := filepath.EvalSymlinks(file)
+	require.NoError(t, err)
+	resolved, err := CanonicalPath(file)
+	require.NoError(t, err)
+	require.Equal(t, resolvedFile, resolved)
+	for _, suffix := range []string{"child", filepath.Join("missing", "child")} {
+		_, err := CanonicalPath(filepath.Join(file, suffix))
+		require.Error(t, err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	require.NoError(t, err)
+	resolved, err = CanonicalPath(filepath.Join(root, "missing", "child"))
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(resolvedRoot, "missing", "child"), resolved)
+}
+
 func TestCanonicalPathResolvesDanglingSymlinks(t *testing.T) {
 	for _, relative := range []bool{false, true} {
 		t.Run(fmt.Sprint(relative), func(t *testing.T) {

@@ -40,6 +40,10 @@ func (m *VersionedMap[K, V]) Seq2() iter.Seq2[K, V] {
 	return m.m.Seq2()
 }
 
+func (m *VersionedMap[K, V]) VisitLocked(visit func(K, V)) {
+	m.m.VisitLocked(visit)
+}
+
 // Copy returns a copy of the inner map.
 func (m *VersionedMap[K, V]) Copy() map[K]V {
 	return m.m.Copy()

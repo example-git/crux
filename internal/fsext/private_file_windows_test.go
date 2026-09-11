@@ -56,6 +56,7 @@ func TestOpenSharedReadAllowsReplacement(t *testing.T) {
 	before, err := file.Stat()
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path+".new", []byte("new"), 0o600))
+	require.NoError(t, os.Rename(path, path+".previous"))
 	require.NoError(t, os.Rename(path+".new", path))
 	after, err := os.Stat(path)
 	require.NoError(t, err)

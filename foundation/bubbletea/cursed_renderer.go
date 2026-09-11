@@ -16,6 +16,7 @@ import (
 )
 
 type cursedRenderer struct {
+	output        bytes.Buffer
 	w             io.Writer
 	buf           bytes.Buffer // updates buffer to be flushed to [w]
 	scr           *uv.TerminalRenderer
@@ -509,7 +510,8 @@ func (s *cursedRenderer) flush(closing bool) error {
 	//    flickering in some terminals. It's the best effort we can do instead
 	//    of showing the cursor flying around the screen during updates.
 
-	var buf bytes.Buffer
+	buf := &s.output
+	buf.Reset()
 	if shouldUpdateAltScreen {
 		// We always disable keyboard enhancements when switching screens
 		// because the terminal is expected to have two different keyboard
@@ -565,7 +567,7 @@ func (s *cursedRenderer) flush(closing bool) error {
 		if s.logger != nil {
 			s.logger.Printf("output: %q", buf.String())
 		}
-		if _, err := io.Copy(s.w, &buf); err != nil {
+		if _, err := io.Copy(s.w, buf); err != nil {
 			return fmt.Errorf("bubbletea: error flushing update to the writer: %w", err)
 		}
 	}

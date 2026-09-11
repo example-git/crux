@@ -36,53 +36,6 @@ func NewDiagnosticsTool(lspManager *lsp.Manager) fantasy.AgentTool {
 	)
 }
 
-// openInLSPs ensures LSP servers are running and aware of the file, but does
-// not notify changes or wait for fresh diagnostics. Use this for read-only
-// operations like view where the file content hasn't changed.
-func openInLSPs(
-	ctx context.Context,
-	manager *lsp.Manager,
-	filepath string,
-) {
-	if filepath == "" || manager == nil {
-		return
-	}
-
-	manager.Start(ctx, filepath)
-
-	for client := range manager.Clients().Seq() {
-		if !client.HandlesFile(filepath) {
-			continue
-		}
-		_ = client.OpenFileOnDemand(ctx, filepath)
-	}
-}
-
-// waitForLSPDiagnostics waits briefly for diagnostics publication after a file
-// has been opened. Intended for read-only situations where viewing up-to-date
-// files matters but latency should remain low (i.e. when using the view tool).
-func waitForLSPDiagnostics(
-	ctx context.Context,
-	manager *lsp.Manager,
-	filepath string,
-	timeout time.Duration,
-) {
-	if filepath == "" || manager == nil || timeout <= 0 {
-		return
-	}
-
-	var wg sync.WaitGroup
-	for client := range manager.Clients().Seq() {
-		if !client.HandlesFile(filepath) {
-			continue
-		}
-		wg.Go(func() {
-			client.WaitForDiagnostics(ctx, timeout)
-		})
-	}
-	wg.Wait()
-}
-
 // notifyLSPs notifies LSP servers that a file has changed and waits for
 // updated diagnostics. Use this after edit/multiedit operations.
 // When filepath is empty, refreshes all open files across all LSP clients
@@ -127,80 +80,107 @@ func notifyLSPs(
 	wg.Wait()
 }
 
-func getDiagnostics(filePath string, manager *lsp.Manager) string {
-	if manager == nil {
-		return ""
+func queueLSPChange(manager *lsp.Manager, path string) {
+	if manager != nil {
+		manager.QueueChange(path)
 	}
-
-	var fileDiagnostics []string
-	var projectDiagnostics []string
-
-	for lspName, client := range manager.Clients().Seq2() {
-		for location, diags := range client.GetDiagnostics() {
-			path, err := location.Path()
-			if err != nil {
-				slog.Error("Failed to convert diagnostic location URI to path", "uri", location, "error", err)
-				continue
-			}
-			isCurrentFile := path == filePath
-			for _, diag := range diags {
-				formattedDiag := formatDiagnostic(path, diag, lspName)
-				if isCurrentFile {
-					fileDiagnostics = append(fileDiagnostics, formattedDiag)
-				} else {
-					projectDiagnostics = append(projectDiagnostics, formattedDiag)
-				}
-			}
-		}
-	}
-
-	sortDiagnostics(fileDiagnostics)
-	sortDiagnostics(projectDiagnostics)
-
-	var output strings.Builder
-	writeDiagnostics(&output, "file_diagnostics", fileDiagnostics)
-	writeDiagnostics(&output, "project_diagnostics", projectDiagnostics)
-
-	if len(fileDiagnostics) > 0 || len(projectDiagnostics) > 0 {
-		fileErrors := countSeverity(fileDiagnostics, "Error")
-		fileWarnings := countSeverity(fileDiagnostics, "Warn")
-		projectErrors := countSeverity(projectDiagnostics, "Error")
-		projectWarnings := countSeverity(projectDiagnostics, "Warn")
-		output.WriteString("\n<diagnostic_summary>\n")
-		fmt.Fprintf(&output, "Current file: %d errors, %d warnings\n", fileErrors, fileWarnings)
-		fmt.Fprintf(&output, "Project: %d errors, %d warnings\n", projectErrors, projectWarnings)
-		output.WriteString("</diagnostic_summary>\n")
-	}
-
-	out := output.String()
-	slog.Debug("Diagnostics", "output", out)
-	return out
 }
 
-func writeDiagnostics(output *strings.Builder, tag string, in []string) {
-	if len(in) == 0 {
+type diagnosticEntry struct {
+	path       string
+	source     string
+	diagnostic protocol.Diagnostic
+}
+
+type diagnosticWindow struct {
+	entries  []diagnosticEntry
+	total    int
+	errors   int
+	warnings int
+}
+
+func (w *diagnosticWindow) add(entry diagnosticEntry) {
+	w.total++
+	if entry.diagnostic.Severity == protocol.SeverityError {
+		w.errors++
+	}
+	if entry.diagnostic.Severity == protocol.SeverityWarning {
+		w.warnings++
+	}
+	w.entries = append(w.entries, entry)
+	sort.Slice(w.entries, func(i, j int) bool {
+		a, b := w.entries[i], w.entries[j]
+		aError := a.diagnostic.Severity == protocol.SeverityError
+		bError := b.diagnostic.Severity == protocol.SeverityError
+		if aError != bError {
+			return aError
+		}
+		if a.path != b.path {
+			return a.path < b.path
+		}
+		if a.diagnostic.Range.Start.Line != b.diagnostic.Range.Start.Line {
+			return a.diagnostic.Range.Start.Line < b.diagnostic.Range.Start.Line
+		}
+		if a.diagnostic.Range.Start.Character != b.diagnostic.Range.Start.Character {
+			return a.diagnostic.Range.Start.Character < b.diagnostic.Range.Start.Character
+		}
+		if a.source != b.source {
+			return a.source < b.source
+		}
+		return a.diagnostic.Message < b.diagnostic.Message
+	})
+	if len(w.entries) > 10 {
+		w.entries[10] = diagnosticEntry{}
+		w.entries = w.entries[:10]
+	}
+}
+
+func (w *diagnosticWindow) write(output *strings.Builder, tag string) {
+	if w.total == 0 {
 		return
 	}
 	output.WriteString("\n<" + tag + ">\n")
-	if len(in) > 10 {
-		output.WriteString(strings.Join(in[:10], "\n"))
-		fmt.Fprintf(output, "\n... and %d more diagnostics", len(in)-10)
-	} else {
-		output.WriteString(strings.Join(in, "\n"))
+	for i, entry := range w.entries {
+		if i > 0 {
+			output.WriteByte('\n')
+		}
+		output.WriteString(formatDiagnostic(entry.path, entry.diagnostic, entry.source))
+	}
+	if w.total > len(w.entries) {
+		fmt.Fprintf(output, "\n... and %d more diagnostics", w.total-len(w.entries))
 	}
 	output.WriteString("\n</" + tag + ">\n")
 }
 
-func sortDiagnostics(in []string) []string {
-	sort.Slice(in, func(i, j int) bool {
-		iIsError := strings.HasPrefix(in[i], "Error")
-		jIsError := strings.HasPrefix(in[j], "Error")
-		if iIsError != jIsError {
-			return iIsError // Errors come first
-		}
-		return in[i] < in[j] // Then alphabetically
-	})
-	return in
+func getDiagnostics(filePath string, manager *lsp.Manager) string {
+	if manager == nil {
+		return ""
+	}
+	var fileDiagnostics, projectDiagnostics diagnosticWindow
+	for name, client := range manager.Clients().Seq2() {
+		client.RangeDiagnostics(func(location protocol.DocumentURI, diagnostic protocol.Diagnostic) {
+			path, err := location.Path()
+			if err != nil {
+				return
+			}
+			entry := diagnosticEntry{path: path, source: name, diagnostic: diagnostic}
+			if path == filePath {
+				fileDiagnostics.add(entry)
+			} else {
+				projectDiagnostics.add(entry)
+			}
+		})
+	}
+	var output strings.Builder
+	fileDiagnostics.write(&output, "file_diagnostics")
+	projectDiagnostics.write(&output, "project_diagnostics")
+	if fileDiagnostics.total > 0 || projectDiagnostics.total > 0 {
+		output.WriteString("\n<diagnostic_summary>\n")
+		fmt.Fprintf(&output, "Current file: %d errors, %d warnings\n", fileDiagnostics.errors, fileDiagnostics.warnings)
+		fmt.Fprintf(&output, "Project: %d errors, %d warnings\n", projectDiagnostics.errors, projectDiagnostics.warnings)
+		output.WriteString("</diagnostic_summary>\n")
+	}
+	return output.String()
 }
 
 func formatDiagnostic(pth string, diagnostic protocol.Diagnostic, source string) string {
@@ -249,14 +229,4 @@ func formatDiagnostic(pth string, diagnostic protocol.Diagnostic, source string)
 		codeInfo,
 		tagsInfo,
 		diagnostic.Message)
-}
-
-func countSeverity(diagnostics []string, severity string) int {
-	count := 0
-	for _, diag := range diagnostics {
-		if strings.HasPrefix(diag, severity) {
-			count++
-		}
-	}
-	return count
 }

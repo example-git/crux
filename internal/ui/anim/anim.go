@@ -7,7 +7,6 @@ import (
 	"math/rand/v2"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/zeebo/xxh3"
 
@@ -62,6 +61,7 @@ var (
 // Internal ID management. Used during animating to ensure that frame messages
 // are received only by spinner components that sent them.
 var lastID atomic.Int64
+var lastInstance atomic.Uint64
 
 func nextID() int {
 	return int(lastID.Add(1))
@@ -94,8 +94,9 @@ func settingsHash(opts Settings) string {
 // This is what keeps a single spinner from being driven by two concurrent
 // tick chains (which would render as a doubled, double-speed animation).
 type StepMsg struct {
-	ID  string
-	Gen int64
+	instance uint64
+	ID       string
+	Gen      int64
 }
 
 // Settings defines settings for the animation.
@@ -128,6 +129,7 @@ const ()
 
 // Anim is a Bubble for an animated spinner.
 type Anim struct {
+	instance         uint64
 	width            int
 	cyclingCharWidth int
 	label            *csync.Slice[string]
@@ -155,7 +157,7 @@ type Anim struct {
 
 // New creates a new Anim instance with the specified width and label.
 func New(opts Settings) *Anim {
-	a := &Anim{}
+	a := &Anim{instance: lastInstance.Add(1)}
 	// Validate settings.
 	if opts.Size < 1 {
 		opts.Size = defaultNumCyclingChars
@@ -502,9 +504,9 @@ func (a *Anim) Render() string {
 // whether this tick still belongs to the armed chain.
 func (a *Anim) Step() tea.Cmd {
 	gen := a.gen.Load()
-	return tea.Tick(time.Second/time.Duration(fps), func(t time.Time) tea.Msg {
-		return StepMsg{ID: a.id, Gen: gen}
-	})
+	return func() tea.Msg {
+		return StepMsg{ID: a.id, Gen: gen, instance: a.instance}
+	}
 }
 
 // makeGradientRamp() returns a slice of colors blended between the given keys.

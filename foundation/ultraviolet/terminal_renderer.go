@@ -1257,14 +1257,10 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 
 			// Mark line changed successfully.
 			if i < len(newbuf.Touched) && i <= newbuf.Height()-1 {
-				newbuf.Touched[i] = &LineData{
-					FirstCell: -1, LastCell: -1,
-				}
+				newbuf.Touched[i] = resetLineData(newbuf.Touched[i])
 			}
 			if i < len(s.curbuf.Touched) && i < s.curbuf.Height()-1 {
-				s.curbuf.Touched[i] = &LineData{
-					FirstCell: -1, LastCell: -1,
-				}
+				s.curbuf.Touched[i] = resetLineData(s.curbuf.Touched[i])
 			}
 		}
 	}
@@ -1274,16 +1270,16 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 	}
 
 	// Sync windows and screen
-	newbuf.Touched = make([]*LineData, newHeight)
+	if len(newbuf.Touched) < newHeight {
+		newbuf.Touched = append(newbuf.Touched, make([]*LineData, newHeight-len(newbuf.Touched))...)
+	} else {
+		newbuf.Touched = newbuf.Touched[:newHeight]
+	}
 	for i := range newbuf.Touched {
-		newbuf.Touched[i] = &LineData{
-			FirstCell: -1, LastCell: -1,
-		}
+		newbuf.Touched[i] = resetLineData(newbuf.Touched[i])
 	}
 	for i := range s.curbuf.Touched {
-		s.curbuf.Touched[i] = &LineData{
-			FirstCell: -1, LastCell: -1,
-		}
+		s.curbuf.Touched[i] = resetLineData(s.curbuf.Touched[i])
 	}
 
 	if curWidth != newWidth || curHeight != newHeight {
@@ -1644,4 +1640,12 @@ func xtermCaps(termtype string) (v capabilities) {
 	}
 
 	return v
+}
+
+func resetLineData(line *LineData) *LineData {
+	if line == nil {
+		line = new(LineData)
+	}
+	*line = LineData{FirstCell: -1, LastCell: -1}
+	return line
 }

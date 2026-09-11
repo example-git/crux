@@ -188,6 +188,7 @@ func TestAccountSnapshotIdenticalReplacementAndPathRecheck(t *testing.T) {
 	replacement := path + ".identical"
 	require.NoError(t, os.WriteFile(replacement, data, 0o600))
 	require.NoError(t, os.Chtimes(replacement, info.ModTime(), info.ModTime()))
+	require.NoError(t, os.Rename(path, path+".previous"))
 	require.NoError(t, os.Rename(replacement, path))
 	require.ErrorContains(t, verifyAccountFile(t.Context(), path, opened, observation), "changed during capture")
 	after := captureAccountSnapshot(t, path)
