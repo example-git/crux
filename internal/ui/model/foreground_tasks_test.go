@@ -3,6 +3,8 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -26,7 +28,13 @@ func TestForegroundNativeKeyDetachesBash(t *testing.T) {
 	defer application.ShutdownForTest()
 	application.Permissions.SetSkipRequests(true)
 	ui.com.Workspace = workspace.NewAppWorkspace(application, nil)
-	tool := tools.NewBashTool(application.BackgroundShells, application.Permissions, t.TempDir())
+	workingDir := t.TempDir()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		require.NoError(t, application.BackgroundShells.Drain(ctx))
+	})
+	tool := tools.NewBashTool(application.BackgroundShells, application.Permissions, workingDir)
 	parent, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	ctx := context.WithValue(parent, tools.SessionIDContextKey, ui.session.ID)
@@ -36,7 +44,7 @@ func TestForegroundNativeKeyDetachesBash(t *testing.T) {
 	}
 	results := make(chan result, 1)
 	go func() {
-		response, err := tool.Run(ctx, fantasy.ToolCall{ID: "native-detach", Name: tools.BashToolName, Input: `{"command":"sleep 2; echo native-detach-done","description":"native detach","timeout":1}`})
+		response, err := tool.Run(ctx, fantasy.ToolCall{ID: "native-detach", Name: tools.BashToolName, Input: `{"command":"while [ ! -f native-detach-release ]; do :; done; echo native-detach-done","description":"native detach","timeout":30}`})
 		results <- result{response, err}
 	}()
 	require.Eventually(t, func() bool { return application.BackgroundShells.ForegroundWaits.Count(ui.session.ID) == 1 }, time.Second, time.Millisecond)
@@ -65,7 +73,10 @@ func TestForegroundNativeKeyDetachesBash(t *testing.T) {
 	backgroundShell, ok := application.BackgroundShells.Get(metadata.ShellID)
 	require.True(t, ok)
 	cancel()
-	require.Eventually(t, func() bool { return backgroundShell.State().Status.Terminal() }, 4*time.Second, 10*time.Millisecond)
+	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "native-detach-release"), nil, 0o600))
+	completion, cancelCompletion := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancelCompletion()
+	require.True(t, backgroundShell.WaitContext(completion))
 	stdout, _, _, runErr := backgroundShell.GetOutput()
 	require.NoError(t, runErr)
 	require.Contains(t, stdout, "native-detach-done")

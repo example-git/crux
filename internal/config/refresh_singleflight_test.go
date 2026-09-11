@@ -321,7 +321,7 @@ func TestRefreshOAuthToken_IgnoresOlderDiskToken(t *testing.T) {
 		AccessToken:  "ancient",
 		RefreshToken: "ancient-rt",
 		ExpiresIn:    3600,
-		ExpiresAt:    time.Now().Add(-24 * time.Hour).Unix(),
+		ExpiresAt:    time.Date(2019, time.December, 31, 0, 0, 0, 0, time.UTC).Unix(),
 	})
 
 	require.NoError(t, refreshOAuthTokenForTest(context.Background(), store, ScopeGlobal, owner))

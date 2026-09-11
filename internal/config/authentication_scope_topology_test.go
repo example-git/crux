@@ -107,7 +107,12 @@ func TestAuthenticationScopeTopologyCreationMatchesCapture(t *testing.T) {
 			if test.location != "outside/nested" {
 				require.Equal(t, len(inputs.order)+1, len(topology.inputs.order))
 				// Reverse lookup order: crux.json precedes the existing siblings.
-				discovered := slices.Index(topology.inputs.order[4:], path) + 4
+				globals, err := authenticationGlobalInputPaths(store.baseEnvironment)
+				require.NoError(t, err)
+				discovered := slices.Index(topology.inputs.order[len(globals):], path)
+				require.NotEqual(t, -1, discovered)
+				discovered += len(globals)
+				require.Less(t, discovered+1, len(topology.inputs.order))
 				require.Equal(t, filepath.Join(location, ".crux.json"), topology.inputs.order[discovered+1])
 			} else {
 				require.Equal(t, inputs.order, topology.inputs.order)

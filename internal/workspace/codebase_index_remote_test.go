@@ -169,8 +169,10 @@ func TestLocalCodebaseIndexPreservesConfiguredPaths(t *testing.T) {
 	require.NoError(t, os.WriteFile(config.GlobalConfigData(), []byte(`{"providers":{"fixture":{"type":"openai-compat","api_key":"synthetic-model-token","base_url":"https://fixture.invalid/v1","models":[{"id":"fixture","name":"Fixture"}]}},"models":{"large":{"provider":"fixture","model":"fixture"},"small":{"provider":"fixture","model":"fixture"}}}`), 0o600))
 	s := server.NewServer(nil, "unix", filepath.Join(t.TempDir(), "server.sock"))
 	t.Cleanup(func() { _ = s.Close() })
-	host, _, err := s.Backend().CreateWorkspace(proto.Workspace{Path: t.TempDir(), ClientID: uuid.NewString()})
+	clientID := uuid.NewString()
+	host, _, err := s.Backend().CreateWorkspace(proto.Workspace{Path: t.TempDir(), ClientID: clientID})
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, s.Backend().DeleteWorkspace(host.ID, clientID)) })
 	local := workspace.NewAppWorkspace(host.App, host.Cfg)
 	update := proto.CodebaseIndexUpdate{Enabled: false, DatabasePath: filepath.Join(host.Path, "chosen.db"), StoreDirectory: filepath.Join(host.Path, "chosen-store"), IncludePaths: []string{"src"}}
 	status, err := local.UpdateCodebaseIndex(t.Context(), update)

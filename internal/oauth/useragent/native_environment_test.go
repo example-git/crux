@@ -73,6 +73,87 @@ func TestNativeContextVersionsBoundAbsenceAndCancellation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestCodexVersionNeverDowngradesPersistedVersion(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		cached   string
+		detected string
+		expected string
+	}{
+		{name: "cache newer", cached: "0.152.0", detected: "0.151.2", expected: "0.152.0"},
+		{name: "web newer", cached: "0.152.0", detected: "0.153.0", expected: "0.153.0"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			home := t.TempDir()
+			cache := filepath.Join(home, ".ai-cli", "useragent-versions.json")
+			require.NoError(t, os.MkdirAll(filepath.Dir(cache), 0o700))
+			require.NoError(t, os.WriteFile(cache, []byte(`{"codex":"`+test.cached+`"}`), 0o600))
+			t.Setenv("HOME", home)
+			t.Setenv("USERPROFILE", home)
+
+			selected := resolveNewest("codex", staticCodexVersion, func() string { return test.detected })
+			require.Equal(t, test.expected, selected)
+			require.Equal(t, test.expected, persisted("codex"))
+		})
+	}
+}
+
+func TestCodexContextVersionNeverDowngradesPersistedVersion(t *testing.T) {
+	home := t.TempDir()
+	cache := filepath.Join(home, ".ai-cli", "useragent-versions.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(cache), 0o700))
+	require.NoError(t, os.WriteFile(cache, []byte(`{"codex":"0.152.0"}`), 0o600))
+	original := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: contextRoundTrip(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"/openai/codex/releases/tag/rust-v0.151.2"}},
+			Body:       http.NoBody,
+		}, nil
+	})}
+	defer func() { http.DefaultClient = original }()
+
+	ctx := oauth.ContextWithEnvironment(t.Context(), []string{"HOME=" + home, "USERPROFILE=" + home})
+	version, err := CodexVersionForContext(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "0.152.0", version)
+}
+
+func TestCodexVersionUsesGitHubLatestReleaseRedirect(t *testing.T) {
+	original := http.DefaultClient
+	http.DefaultClient = &http.Client{Transport: contextRoundTrip(func(request *http.Request) (*http.Response, error) {
+		require.Equal(t, http.MethodHead, request.Method)
+		require.Equal(t, "https://github.com/openai/codex/releases/latest", request.URL.String())
+		return &http.Response{
+			StatusCode: http.StatusFound,
+			Header:     http.Header{"Location": []string{"/openai/codex/releases/tag/rust-v0.151.2"}},
+			Body:       http.NoBody,
+		}, nil
+	})}
+	defer func() { http.DefaultClient = original }()
+
+	version := fetchCodexLatestForContext(t.Context())
+	require.Equal(t, "0.151.2", version)
+}
+
+func TestCodexVersionRejectsInvalidGitHubLatestReleaseRedirect(t *testing.T) {
+	for _, location := range []string{
+		"http://github.com/openai/codex/releases/tag/rust-v0.151.2",
+		"https://example.com/openai/codex/releases/tag/rust-v0.151.2",
+		"https://github.com/openai/codex/releases/tag/v0.151.2",
+		"https://github.com/openai/codex/releases/tag/rust-vinvalid",
+	} {
+		t.Run(location, func(t *testing.T) {
+			original := http.DefaultClient
+			http.DefaultClient = &http.Client{Transport: contextRoundTrip(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": []string{location}}, Body: http.NoBody}, nil
+			})}
+			defer func() { http.DefaultClient = original }()
+			require.Empty(t, fetchCodexLatestForContext(t.Context()))
+		})
+	}
+}
+
 func TestNativeMuslProbeUsesCapturedExecutableAndCancellation(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX executable fixture")

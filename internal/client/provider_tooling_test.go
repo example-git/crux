@@ -131,6 +131,7 @@ func TestProviderToolingSDKThroughRegisteredRoute(t *testing.T) {
 	hs := httptest.NewServer(srv.Handler())
 	t.Cleanup(hs.Close)
 	c := captureClient(t, hs)
+	t.Cleanup(func() { require.NoError(t, c.RetireClient(context.Background())) })
 	created, err := c.CreateWorkspace(t.Context(), proto.Workspace{Path: path, DataDir: filepath.Join(root, "workspace-data"), AuthorityMode: "server"})
 	require.NoError(t, err)
 	owner, ok := created.Config.ProviderOwner("fixture")
