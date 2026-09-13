@@ -659,8 +659,13 @@ func TestStagedImageRetainsOutputDirectory(t *testing.T) {
 			outside := t.TempDir()
 			require.NoError(t, os.WriteFile(filepath.Join(outside, "image.png"), []byte("outside sentinel"), 0o600))
 			moved := directory + "-original"
-			require.NoError(t, os.Rename(directory, moved))
-			require.NoError(t, os.Symlink(outside, directory))
+			renameErr := os.Rename(directory, moved)
+			if renameErr != nil {
+				require.True(t, retainedDirectoryRenameBlocked(renameErr), "rename failed unexpectedly: %v", renameErr)
+				moved = directory
+			} else {
+				require.NoError(t, os.Symlink(outside, directory))
+			}
 			require.NoError(t, writeStagedImage(t.Context(), root, temporary, "image.png", force))
 			content, err := os.ReadFile(filepath.Join(moved, "image.png"))
 			require.NoError(t, err)
