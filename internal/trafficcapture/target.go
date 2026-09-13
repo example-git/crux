@@ -83,13 +83,6 @@ func resolveExecutable(raw, workingDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve target executable: %w", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("inspect target executable: %w", err)
-	}
-	if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
-		return "", fmt.Errorf("target is not executable: %s", path)
-	}
 	return path, nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 )
 
@@ -143,8 +144,12 @@ func capturePathIdentity(path string, expectedMode os.FileMode) (pathIdentity, e
 	if err != nil {
 		return pathIdentity{}, err
 	}
-	if expectedMode.IsDir() != info.IsDir() {
-		return pathIdentity{}, fmt.Errorf("unexpected filesystem object type: %s", path)
+	if expectedMode.IsDir() {
+		if !info.IsDir() {
+			return pathIdentity{}, fmt.Errorf("unexpected filesystem object type: %s", path)
+		}
+	} else if !info.Mode().IsRegular() || runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+		return pathIdentity{}, fmt.Errorf("target is not executable: %s", path)
 	}
 	return identityFromFileInfo(info)
 }
