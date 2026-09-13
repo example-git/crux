@@ -76,7 +76,7 @@ func TestExpandedTodoFence(t *testing.T) {
 		require.Len(t, strings.Split(m.pillsView, "\n"), area.Dy())
 		require.Contains(t, ansi.Strip(m.pillsView), "ctrl+t close")
 		require.Contains(t, ansi.Strip(m.pillsView), "…")
-		for y := area.Min.Y; y < area.Max.Y; y++ {
+		for y := area.Min.Y; y < area.Max.Y-1; y++ {
 			for x := area.Min.X; x < area.Max.X; x++ {
 				cell := screen.CellAt(x, y)
 				require.NotNil(t, cell.Style.Bg, "width=%d x=%d y=%d content=%q", width, x, y, cell.Content)
@@ -88,6 +88,9 @@ func TestExpandedTodoFence(t *testing.T) {
 		}
 		require.Equal(t, "╰", screen.CellAt(area.Min.X, area.Max.Y-2).Content)
 		require.Equal(t, "╯", screen.CellAt(area.Max.X-1, area.Max.Y-2).Content)
+		for x := area.Min.X; x < area.Max.X; x++ {
+			require.Nil(t, screen.CellAt(x, area.Max.Y-1).Style.Bg, "width=%d x=%d", width, x)
+		}
 		require.Empty(t, strings.TrimSpace(ansi.Strip(strings.Split(m.pillsView, "\n")[area.Dy()-1])))
 		require.Equal(t, original, m.session.Todos)
 		m.togglePillsExpanded()
@@ -111,6 +114,12 @@ func TestExpandedTodoBoxFitsGoalsAndFloatsAboveInput(t *testing.T) {
 				m.updateLayoutAndSize()
 				screen := uv.NewScreenBuffer(width, 45)
 				m.Draw(screen, screen.Bounds())
+				require.Equal(t, m.layout.main.Max.Y+1, m.layout.pills.Min.Y)
+				for x := m.layout.main.Min.X; x < m.layout.main.Max.X; x++ {
+					cell := screen.CellAt(x, m.layout.main.Max.Y)
+					require.NotNil(t, cell)
+					require.Nil(t, cell.Style.Bg, "width=%d compact=%t x=%d", width, compact, x)
+				}
 				rows := strings.Split(m.pillsView, "\n")
 				boxWidth := ansi.StringWidth(rows[len(rows)-1])
 				require.Equal(t, min(m.layout.pills.Dx(), len("Inspect the input attachment")+6), boxWidth)
@@ -129,7 +138,7 @@ func TestExpandedTodoBoxFitsGoalsAndFloatsAboveInput(t *testing.T) {
 				for x := m.layout.pills.Min.X; x < m.layout.pills.Min.X+boxWidth; x++ {
 					cell := screen.CellAt(x, y+1)
 					require.Equal(t, " ", cell.Content)
-					require.Equal(t, color.RGBAModel.Convert(m.com.Styles.Background), color.RGBAModel.Convert(cell.Style.Bg))
+					require.Nil(t, cell.Style.Bg)
 				}
 				if boxWidth < m.layout.pills.Dx() {
 					cell := screen.CellAt(m.layout.pills.Min.X+boxWidth, y)

@@ -46,8 +46,7 @@ func TestAssistantMessageItemExpandable(t *testing.T) {
 	t.Parallel()
 
 	sty := styles.CharmtonePantera()
-	// Short thinking: under the tail-window cap, so the cycle is
-	// collapsed -> full -> collapsed (tail-window is skipped).
+	// Short thinking starts collapsed and skips the tail window when opened.
 	msg := thinkingMessage("m1", "step one\nstep two\nstep three", "")
 	item := NewAssistantMessageItem(&sty, msg).(*AssistantMessageItem)
 
@@ -55,13 +54,13 @@ func TestAssistantMessageItemExpandable(t *testing.T) {
 	require.True(t, ok, "AssistantMessageItem must satisfy Expandable")
 
 	require.Equal(t, thinkingCollapsed, item.thinkingViewMode,
-		"new items must start in the collapsed view-mode")
+		"new items must start collapsed")
 	require.True(t, exp.ToggleExpanded(),
-		"first toggle of a non-empty thinking block must report expanded")
+		"first toggle must report expanded")
 	require.Equal(t, thinkingFullExpanded, item.thinkingViewMode,
-		"short blocks must skip tail-window and land in full expansion")
+		"short blocks must skip the tail window")
 	require.False(t, exp.ToggleExpanded(),
-		"second toggle must report collapsed (cycle closed)")
+		"second toggle must report collapsed")
 	require.Equal(t, thinkingCollapsed, item.thinkingViewMode)
 }
 
@@ -83,7 +82,7 @@ func TestAssistantMessageItemExpandableEmptyThinkingNoOp(t *testing.T) {
 
 	require.Equal(t, thinkingCollapsed, item.thinkingViewMode)
 	require.False(t, exp.ToggleExpanded(),
-		"empty thinking must report current (collapsed) state without flipping")
+		"empty thinking must report that it is not expandable")
 	require.Equal(t, thinkingCollapsed, item.thinkingViewMode,
 		"empty-thinking toggle must not mutate thinkingViewMode")
 

@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/tree"
 	"github.com/charmbracelet/x/ansi"
 	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/message"
@@ -46,12 +45,10 @@ const (
 )
 
 // maxExpandedThinkingTailLines is the F5 tail-window cap. When the user
-// expands a thinking block whose post-glamour line count exceeds this
+// expands a thinking block whose rendered plain-text line count exceeds this
 // threshold, only the last N lines are shown with an affordance line
 // indicating how many earlier lines are hidden. Clicking / pressing
-// space again promotes the view to a full expansion. The slice is
-// taken AFTER glamour render (not before) so fenced code blocks,
-// lists, and tables are not torn at arbitrary boundaries.
+// space again promotes the view to a full expansion.
 const maxExpandedThinkingTailLines = 200
 
 // thinkingViewMode is the F5 three-state view machine for the thinking
@@ -181,15 +178,14 @@ type AssistantMessageItem struct {
 	*cachedMessageItem
 	*focusableMessageItem
 
-	message            *message.Message
-	sty                *styles.Styles
-	anim               *anim.Anim
-	retryAnim          *anim.Anim
-	activeRetryAnim    bool
-	summaryExpanded    bool
-	thinkingViewMode   thinkingViewMode
-	thinkingStartsTurn bool
-	thinkingBoxHeight  int // Tracks the rendered thinking box height for click detection.
+	message           *message.Message
+	sty               *styles.Styles
+	anim              *anim.Anim
+	retryAnim         *anim.Anim
+	activeRetryAnim   bool
+	summaryExpanded   bool
+	thinkingViewMode  thinkingViewMode
+	thinkingBoxHeight int // Tracks the rendered thinking box height for click detection.
 
 	// Incremental FNV-64a hash of the thinking text. Avoids
 	// re-hashing the entire accumulated text on every streaming
@@ -215,12 +211,6 @@ type AssistantMessageItem struct {
 	// docs/notes/2026-05-12-chat-rendering-perf.md. See
 	// streaming_markdown.go for the full algorithm.
 	streamingContent streamingMarkdown
-
-	// streamingThinking renders completed reasoning Markdown and preserves
-	// its stable-prefix cache across view-mode changes. Active reasoning uses
-	// a bounded plain-text window instead, so streaming deltas never invoke
-	// Glamour or materialize the full accumulated document.
-	streamingThinking streamingMarkdown
 }
 
 var _ Expandable = (*AssistantMessageItem)(nil)
@@ -235,6 +225,7 @@ func NewAssistantMessageItem(sty *styles.Styles, message *message.Message) Messa
 		focusableMessageItem:     newFocusableMessageItem(v),
 		message:                  message,
 		sty:                      sty,
+		thinkingViewMode:         thinkingCollapsed,
 	}
 
 	a.anim = anim.New(anim.Settings{
@@ -440,9 +431,6 @@ func (a *AssistantMessageItem) renderMessageContent(width int) (string, int) {
 	}
 
 	if content != "" {
-		if thinking != "" {
-			messageParts = append(messageParts, "")
-		}
 		messageParts = append(messageParts, a.cachedContent(width))
 	}
 
@@ -521,7 +509,11 @@ func (a *AssistantMessageItem) thinkingKey() (uint64, uint64) {
 	// the flag bytes and the duration string. The view mode is folded
 	// in so that toggling collapsed ↔ tail-window ↔ full invalidates
 	// only the thinking section, not content/error.
-	extra := fnvFields([]byte{byte(a.thinkingViewMode), footer}, []byte(durationStr))
+	ellipsis := ""
+	if a.thinkingViewMode == thinkingCollapsed && a.message.IsThinking() {
+		ellipsis = a.currentAnim().Ellipsis()
+	}
+	extra := fnvFields([]byte{byte(a.thinkingViewMode), footer}, []byte(durationStr), []byte(ellipsis))
 	return srcHash, extra
 }
 
@@ -618,15 +610,8 @@ func (a *AssistantMessageItem) cachedError(width int) string {
 	return out
 }
 
-// renderThinking renders the thinking/reasoning content with footer.
-//
-// Active reasoning is shown as a bounded plain-text window and defers Markdown
-// parsing until the section finishes. Completed reasoning is sliced only after
-// Glamour rendering so fenced code blocks, list continuations, and tables are
-// not split mid-block. ThinkingBox styling is applied after either path.
-// renderLiveThinkingWindow renders active reasoning as bounded plain text.
-// Markdown is deferred until the reasoning section finishes, avoiding a
-// Glamour parse and full-document materialization on every streaming update.
+// renderLiveThinkingWindow renders reasoning as bounded plain text without
+// Markdown parsing or full-document styling.
 func renderLiveThinkingWindow(thinking string, width, limit, totalLines int) (string, int) {
 	thinking = strings.TrimSpace(thinking)
 	if thinking == "" {
@@ -652,38 +637,44 @@ func renderLiveThinkingWindow(thinking string, width, limit, totalLines int) (st
 	return rendered, hidden
 }
 
-func (a *AssistantMessageItem) JoinPrevious() bool {
-	return !a.thinkingStartsTurn && strings.TrimSpace(a.message.ReasoningContent().Thinking) != ""
+func (a *AssistantMessageItem) thinkingFrameWidth(width int) int {
+	return max(2, width-a.sty.Messages.ThinkingBox.GetHorizontalFrameSize())
 }
 
-func (a *AssistantMessageItem) SetThinkingStartsTurn(startsTurn bool) {
-	if a.thinkingStartsTurn == startsTurn {
-		return
-	}
-	a.thinkingStartsTurn = startsTurn
-	a.clearCache()
-	a.Bump()
-}
-
-func (a *AssistantMessageItem) thinkingBranchPadding() int {
-	return max(0, a.sty.Tool.Body.GetPaddingLeft()-a.sty.Messages.ThinkingBox.GetPaddingLeft())
-}
-
-func (a *AssistantMessageItem) renderThinkingBranch(content string, width int) string {
-	padding := a.thinkingBranchPadding()
-	enumerator := roundedEnumerator(padding, 2)
-	branch := tree.New().Enumerator(func(children tree.Children, index int) string {
-		if a.thinkingStartsTurn && index == 0 {
-			return strings.Repeat(" ", padding) + "╭──"
+func (a *AssistantMessageItem) renderThinkingFrame(content string, width int, closed bool) string {
+	frameWidth := a.thinkingFrameWidth(width)
+	rail := strings.Repeat("─", frameWidth-2)
+	lines := []string{"╭" + rail + "╮"}
+	if closed {
+		for _, line := range strings.Split(ansi.Wrap(content, max(1, frameWidth-2), ""), "\n") {
+			lineWidth := ansi.StringWidth(line)
+			left := max(0, (frameWidth-2-lineWidth)/2)
+			right := max(0, frameWidth-2-lineWidth-left)
+			lines = append(lines, "│"+strings.Repeat(" ", left)+line+strings.Repeat(" ", right)+"│")
 		}
-		return enumerator(children, index)
-	})
-	for _, line := range strings.Split(content, "\n") {
-		if strings.TrimSpace(ansi.Strip(line)) != "" {
-			branch.Child(line)
+	} else {
+		textStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(*a.sty.ThinkingMarkdown.Document.Color))
+		for _, line := range strings.Split(content, "\n") {
+			if strings.TrimSpace(ansi.Strip(line)) != "" {
+				lines = append(lines, "• "+textStyle.Render(line))
+			}
 		}
 	}
-	return a.sty.Messages.ThinkingBox.Width(width).Render(branch.String())
+	lines = append(lines, "╰"+rail+"╯")
+	box := a.sty.Messages.ThinkingBox
+	for index := range lines {
+		lines[index] = box.Render(lines[index])
+	}
+	return strings.Join(lines, "\n")
+}
+
+func normalizeThinkingLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) <= 4 || !strings.HasPrefix(trimmed, "**") || !strings.HasSuffix(trimmed, "**") {
+		return line
+	}
+	start := strings.Index(line, trimmed)
+	return line[:start] + trimmed[2:len(trimmed)-2] + line[start+len(trimmed):]
 }
 
 func nonblankThinkingLines(thinking string) []string {
@@ -691,7 +682,7 @@ func nonblankThinkingLines(thinking string) []string {
 	visible := lines[:0]
 	for _, line := range lines {
 		if strings.TrimSpace(line) != "" {
-			visible = append(visible, line)
+			visible = append(visible, normalizeThinkingLine(line))
 		}
 	}
 	return visible
@@ -708,74 +699,42 @@ func (a *AssistantMessageItem) renderThinking(thinking string, width int) string
 		return ""
 	}
 	mode := a.thinkingViewMode
-	if len(visibleLines) == 1 {
-		mode = thinkingFullExpanded
-	}
-	if mode == thinkingCollapsed {
-		result := a.renderThinkingBranch("Expand Thoughts ▾", width)
+	if mode == thinkingCollapsed || len(visibleLines) == 1 {
+		label := "THOUGHTS ▾"
+		if a.message.IsThinking() {
+			label = "Thinking" + a.currentAnim().Ellipsis()
+		} else if len(visibleLines) == 1 {
+			label = visibleLines[0]
+		}
+		result := a.renderThinkingFrame(label, width, true)
 		a.thinkingBoxHeight = lipgloss.Height(result)
 		return result
 	}
-	contentWidth := max(1, width-a.sty.Messages.ThinkingBox.GetHorizontalFrameSize()-a.thinkingBranchPadding()-4)
 	if a.thinkingHashLen != len(thinking) {
 		a.thinkingHashIncremental(thinking)
 	}
-	if a.message.IsThinking() {
-		limit := 0
-		hintFormat := ""
-		switch mode {
-		case thinkingTailWindow:
-			limit = maxExpandedThinkingTailLines
-			hintFormat = assistantMessageTailWindowFormat
-		}
-		rendered, hidden := renderLiveThinkingWindow(strings.Join(visibleLines, "\n"), contentWidth, limit, len(visibleLines))
-		rendered = lipgloss.NewStyle().Foreground(lipgloss.Color(*a.sty.ThinkingMarkdown.Document.Color)).Render(rendered)
-		if hidden > 0 {
-			hint := a.sty.Messages.ThinkingTruncationHint.Render(fmt.Sprintf(hintFormat, hidden))
-			rendered = hint + "\n\n" + rendered
-		}
-		result := a.renderThinkingBranch(rendered, width)
-		a.thinkingBoxHeight = lipgloss.Height(result)
-		return result
+	limit := 0
+	hintFormat := ""
+	if mode == thinkingTailWindow {
+		limit = maxExpandedThinkingTailLines
+		hintFormat = assistantMessageTailWindowFormat
 	}
-
-	renderer := common.ThinkingMarkdownRenderer(a.sty, contentWidth)
-	rendered := a.streamingThinking.Render(thinking, contentWidth, renderer)
-	rendered = strings.TrimSpace(rendered)
-
-	// Count lines and, for the windowed view modes, slice the tail
-	// WITHOUT splitting the entire rendered document. Splitting a
-	// 1200-line render just to keep the last 10 lines is O(n) per
-	// tick; tailLines finds the cut point with a bounded backward
-	// scan.
-	var lines []string
-	var totalLines int
-	switch mode {
-	case thinkingTailWindow:
-		totalLines = countLines(rendered)
-		if totalLines > maxExpandedThinkingTailLines {
-			tail, hidden := tailLines(rendered, maxExpandedThinkingTailLines, totalLines)
-			hint := a.sty.Messages.ThinkingTruncationHint.Render(
-				fmt.Sprintf(assistantMessageTailWindowFormat, hidden),
-			)
-			lines = append([]string{hint, ""}, strings.Split(tail, "\n")...)
-		} else {
-			lines = strings.Split(rendered, "\n")
-		}
-	default:
-		lines = strings.Split(rendered, "\n")
+	contentWidth := max(1, a.thinkingFrameWidth(width)-2)
+	rendered, hidden := renderLiveThinkingWindow(strings.Join(visibleLines, "\n"), contentWidth, limit, len(visibleLines))
+	if hidden > 0 {
+		hint := a.sty.Messages.ThinkingTruncationHint.Render(fmt.Sprintf(hintFormat, hidden))
+		rendered = hint + "\n" + rendered
 	}
-
-	result := a.renderThinkingBranch(strings.Join(lines, "\n"), width)
+	result := a.renderThinkingFrame(rendered, width, false)
 	a.thinkingBoxHeight = lipgloss.Height(result)
-
-	duration := a.message.ThinkingDuration()
-	if duration.String() != "0s" {
-		footer := a.sty.Messages.ThinkingFooterTitle.Render("Thought for ") +
-			a.sty.Messages.ThinkingFooterDuration.Render(duration.String())
-		result += "\n" + footer
+	if !a.message.IsThinking() {
+		duration := a.message.ThinkingDuration()
+		if duration.String() != "0s" {
+			footer := a.sty.Messages.ThinkingFooterTitle.Render("Thought for ") +
+				a.sty.Messages.ThinkingFooterDuration.Render(duration.String())
+			result += "\n" + footer
+		}
 	}
-
 	return result
 }
 
@@ -895,7 +854,6 @@ func (a *AssistantMessageItem) clearCache() {
 	a.contentSec.reset()
 	a.errorSec.reset()
 	a.streamingContent.Reset()
-	a.streamingThinking.Reset()
 	a.thinkingHash = 0
 	a.thinkingHashLen = 0
 	a.thinkingHashSample = ""
@@ -938,10 +896,6 @@ func (a *AssistantMessageItem) ToggleExpanded() bool {
 	case thinkingFullExpanded:
 		a.thinkingViewMode = thinkingCollapsed
 	}
-	// View-mode changes alter completed reasoning's post-Markdown windowing.
-	// Drop its prefix cache so the next finished render is monolithic and clean;
-	// active reasoning is plain text and does not populate this cache.
-	a.streamingThinking.Reset()
 	a.Bump()
 	return a.thinkingViewMode != thinkingCollapsed
 }
@@ -952,7 +906,7 @@ func (a *AssistantMessageItem) ToggleExpanded() bool {
 // as the heuristic rather than peeking into the cache: the cache
 // may be populated in collapsed state (where its height is bounded
 // by maxCollapsedThinkingHeight and tells us nothing about the
-// underlying length), and re-running glamour just to count lines
+// underlying length), and rendering the full text just to count lines
 // would defeat the cache. The heuristic can over-trigger (a source
 // with many short lines may wrap to fewer than N lines), in which
 // case the tail-window render is visually identical to full and

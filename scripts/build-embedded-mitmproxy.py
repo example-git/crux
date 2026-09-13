@@ -18,7 +18,9 @@ PYTHON_VERSION = "3.12.14"
 PYTHON_RELEASE = "20260825"
 MITMPROXY_VERSION = "13.0.0.dev0"
 MITMPROXY_REVISION = "b506c68108e287104045333ade476d92c39c275e"
-MITMPROXY_SOURCE_SHA256 = "a0672f3d21c5aec875ffb340782f42b029219818e4a2a8a6bac4b13d31320504"
+MITMPROXY_SOURCE_SHA256 = (
+    "a0672f3d21c5aec875ffb340782f42b029219818e4a2a8a6bac4b13d31320504"
+)
 ROOT = Path(__file__).resolve().parent.parent
 ASSET_DIRECTORY = ROOT / "internal" / "trafficcapture" / "assets"
 LOCK_DIRECTORY = ROOT / "scripts" / "mitmproxy-runtime"
@@ -150,6 +152,18 @@ def remove_path(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def prepare_mitmweb_source(source: Path) -> None:
+    pyproject = source / "pyproject.toml"
+    dependency = '    "urwid>=2.6.14,<=4.0.9",\n'
+    content = pyproject.read_text()
+    if content.count(dependency) != 1:
+        raise RuntimeError(
+            "pinned mitmproxy source has unexpected Urwid metadata"
+        )
+    pyproject.write_text(content.replace(dependency, ""))
+    remove_path(source / "mitmproxy" / "tools" / "console")
+
+
 def build_mitmproxy_wheel(temporary: Path) -> Path:
     archive = temporary / "mitmproxy-source.tar.gz"
     download(
@@ -168,8 +182,12 @@ def build_mitmproxy_wheel(temporary: Path) -> Path:
     sources = list(source_directory.iterdir())
     if len(sources) != 1 or not sources[0].is_dir():
         raise RuntimeError("unexpected mitmproxy source layout")
+    prepare_mitmweb_source(sources[0])
     environment = temporary / "wheel-builder"
-    subprocess.run([sys.executable, "-m", "venv", str(environment)], check=True)
+    subprocess.run(
+        [sys.executable, "-m", "venv", str(environment)],
+        check=True,
+    )
     python = environment / "bin" / "python"
     subprocess.run([
         str(python), "-m", "pip", "install",
@@ -185,7 +203,9 @@ def build_mitmproxy_wheel(temporary: Path) -> Path:
     ], check=True, env={**os.environ, "SOURCE_DATE_EPOCH": "0"})
     wheel = wheels / f"mitmproxy-{MITMPROXY_VERSION}-py3-none-any.whl"
     if not wheel.is_file():
-        raise RuntimeError("pinned mitmproxy source produced an unexpected wheel")
+        raise RuntimeError(
+            "pinned mitmproxy source produced an unexpected wheel"
+        )
     return wheel
 
 
@@ -265,7 +285,10 @@ def runtime_manifest(target: str) -> dict[str, str]:
         "mitmproxy": MITMPROXY_VERSION,
         "mitmproxy_revision": MITMPROXY_REVISION,
         "mitmproxy_source_sha256": MITMPROXY_SOURCE_SHA256,
-        "build_requirements_sha256": digest(LOCK_DIRECTORY / "requirements-build.txt"),
+        "mitmproxy_profile": "web-only",
+        "build_requirements_sha256": digest(
+            LOCK_DIRECTORY / "requirements-build.txt"
+        ),
         "layout": "in-process-v1",
         "requirements_sha256": digest(lock),
         "library": TARGETS[target]["library"],
@@ -294,6 +317,15 @@ def validate_runtime(target: str, python_root: Path) -> None:
     )
     if not required.is_file():
         raise RuntimeError("runtime is missing mitmproxy WebMaster")
+    site_packages = required.parents[3]
+    if (site_packages / "mitmproxy" / "tools" / "console").exists():
+        raise RuntimeError(
+            "web-only runtime contains mitmproxy console modules"
+        )
+    if list(site_packages.glob("urwid*")):
+        raise RuntimeError("web-only runtime contains Urwid")
+    if list(site_packages.glob("wcwidth*")):
+        raise RuntimeError("web-only runtime contains wcwidth")
     forbidden = []
     names = {"python", "python3", "python3.12", "mitmdump", "mitmweb"}
     for path in python_root.rglob("*"):

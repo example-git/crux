@@ -42,7 +42,8 @@ type JobRequest struct {
 	// Private captured client authority is retained only in memory, never in
 	// persisted job metadata, discovery or cross-workspace recovery payloads.
 	runtime         *PluginRuntime
-	inputFiles      map[string]os.FileInfo
+	inputCapture    *inputCapture
+	inputFiles      map[string]inputFileBinding
 	outputCapture   *outputCapture
 	outputRoots     map[string]*os.Root
 	Owner           *providerplugin.ImageOwner `json:"owner,omitempty"`
@@ -418,10 +419,22 @@ func (m *JobManager) enqueue(request JobRequest, outputDirectory, description st
 	if err := validateJobRequestBeforeAllocation(request, outputDirectory != ""); err != nil {
 		return managedtask.View{}, nil, err
 	}
-	request, err = request.CaptureInputFiles()
+	var releaseInputs func()
+	request, releaseInputs, err = request.CaptureInputFiles()
 	if err != nil {
 		return managedtask.View{}, nil, err
 	}
+	defer releaseInputs()
+	request.inputFiles, err = request.inputCapture.materialize()
+	if err != nil {
+		return managedtask.View{}, nil, err
+	}
+	inputsTransferred := false
+	defer func() {
+		if !inputsTransferred {
+			closeInputFiles(request.inputFiles)
+		}
+	}()
 	var releaseCapture func()
 	request, releaseCapture, err = request.captureOutputDirectories(outputDirectory)
 	if err != nil {
@@ -497,6 +510,7 @@ func (m *JobManager) enqueue(request JobRequest, outputDirectory, description st
 	}
 	m.active++
 	transferred = true
+	inputsTransferred = true
 	m.queue <- job
 	return job.Info(), append([]string(nil), request.OutputPaths...), nil
 }
@@ -562,39 +576,37 @@ func preflightJobPaths(request JobRequest) error {
 	return preflightJobOutputs(request)
 }
 
-func (request JobRequest) CaptureInputFiles() (JobRequest, error) {
+func (request JobRequest) CaptureInputFiles() (JobRequest, func(), error) {
 	request.InputPaths = slices.Clone(request.InputPaths)
-	if request.inputFiles != nil {
-		return request, preflightJobInputs(request)
+	if request.inputCapture != nil {
+		return request, func() {}, request.inputCapture.validate()
 	}
-	request.inputFiles = make(map[string]os.FileInfo, len(request.InputPaths))
-	for _, path := range request.InputPaths {
-		info, err := os.Stat(path)
-		if err != nil {
-			return request, fmt.Errorf("inspect input image %q: %w", path, err)
-		}
-		request.inputFiles[path] = info
+	capture, err := captureInputFiles(request.InputPaths)
+	if err != nil {
+		return request, func() {}, err
 	}
-	return request, preflightJobInputs(request)
+	request.inputCapture = capture
+	return request, capture.close, nil
+}
+
+func (request JobRequest) ValidateInputFiles() error {
+	if request.inputCapture == nil {
+		return errors.New("image input files were not captured")
+	}
+	return request.inputCapture.validate()
 }
 
 func preflightJobInputs(request JobRequest) error {
-	for _, path := range request.InputPaths {
-		info, err := os.Stat(path)
-		if err != nil {
-			return fmt.Errorf("inspect input image %q: %w", path, err)
-		}
-		if request.inputFiles != nil && !os.SameFile(request.inputFiles[path], info) {
-			return fmt.Errorf("input image %q changed after capture; submit a new request", path)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("input image is not a regular file: %s", path)
-		}
-		if info.Size() > maxInputImageBytes {
-			return fmt.Errorf("input image %q exceeds %d bytes", path, maxInputImageBytes)
-		}
+	if request.inputFiles != nil {
+		return validateInputFiles(request.inputFiles)
 	}
-	return nil
+	if request.inputCapture != nil {
+		return request.inputCapture.validate()
+	}
+	if len(request.InputPaths) == 0 {
+		return nil
+	}
+	return errors.New("image input files were not captured")
 }
 
 func preflightJobOutputs(request JobRequest) error {
@@ -680,6 +692,7 @@ func (m *JobManager) run(job *ImageJob) {
 
 func (j *ImageJob) completeExecution() {
 	j.executionOnce.Do(func() {
+		closeInputFiles(j.Request.inputFiles)
 		closeOutputRoots(j.Request.outputRoots)
 		close(j.executionDone)
 	})
@@ -730,7 +743,7 @@ func (m *JobManager) executeRequest(ctx context.Context, request JobRequest) (*R
 		var images []EditImage
 		var err error
 		if request.Mode == ModeEdit {
-			images, err = loadEditImages(ctx, request.InputPaths, request.inputFiles)
+			images, err = loadEditImages(ctx, request)
 			if err != nil {
 				return nil, err
 			}
@@ -759,7 +772,7 @@ func (m *JobManager) executeRequest(ctx context.Context, request JobRequest) (*R
 			Background: request.Background,
 		})
 	}
-	images, err := loadEditImages(ctx, request.InputPaths, request.inputFiles)
+	images, err := loadEditImages(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -775,19 +788,26 @@ func (m *JobManager) executeRequest(ctx context.Context, request JobRequest) (*R
 	})
 }
 
-func loadEditImages(ctx context.Context, paths []string, identities map[string]os.FileInfo) ([]EditImage, error) {
-	images := make([]EditImage, 0, len(paths))
+func loadEditImages(ctx context.Context, request JobRequest) ([]EditImage, error) {
+	if err := validateInputFiles(request.inputFiles); err != nil {
+		return nil, err
+	}
+	images := make([]EditImage, 0, len(request.InputPaths))
 	var total int64
-	for _, path := range paths {
+	for _, path := range request.InputPaths {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		file, err := os.Open(path)
+		binding, ok := request.inputFiles[path]
+		if !ok {
+			return nil, fmt.Errorf("input image was not captured: %s", path)
+		}
+		file, err := binding.root.Open(filepath.Base(path))
 		if err != nil {
 			return nil, fmt.Errorf("open input image %q: %w", path, err)
 		}
 		info, statErr := file.Stat()
-		if statErr != nil || !os.SameFile(identities[path], info) {
+		if statErr != nil || !os.SameFile(binding.identity, info) {
 			_ = file.Close()
 			return nil, fmt.Errorf("input image %q changed after capture; submit a new request", path)
 		}

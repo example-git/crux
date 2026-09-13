@@ -86,11 +86,11 @@ func TestThinkingHashIncrementalTracksLineCount(t *testing.T) {
 	}
 }
 
-func TestLiveThinkingDefersMarkdownUntilFinished(t *testing.T) {
+func TestThinkingRemainsPlainTextWhileActiveAndFinished(t *testing.T) {
 	t.Parallel()
 
 	sty := styles.CharmtonePantera()
-	thinking := "# Heading\n\n**bold reasoning**"
+	thinking := "# Heading\n\n**wrapped reasoning**\n\n**unfinished\n\nprefix **internal** suffix"
 	active := &message.Message{
 		ID:   "live-thinking",
 		Role: message.Assistant,
@@ -99,20 +99,23 @@ func TestLiveThinkingDefersMarkdownUntilFinished(t *testing.T) {
 		},
 	}
 	item := NewAssistantMessageItem(&sty, active).(*AssistantMessageItem)
-	item.ToggleExpanded()
+	require.True(t, item.ToggleExpanded())
 	activeRender := ansi.Strip(item.renderThinking(thinking, 80))
-	require.Contains(t, activeRender, "# Heading")
-	require.Contains(t, activeRender, "**bold reasoning**")
-	require.Empty(t, item.streamingThinking.stablePrefix)
+	require.Contains(t, activeRender, "• # Heading")
+	require.Contains(t, activeRender, "• wrapped reasoning")
+	require.NotContains(t, activeRender, "**wrapped reasoning**")
+	require.Contains(t, activeRender, "• **unfinished")
+	require.Contains(t, activeRender, "• prefix **internal** suffix")
 
 	finished := active.Clone()
 	finished.Parts = append(finished.Parts, message.Finish{Reason: message.FinishReasonEndTurn})
 	item.SetMessage(&finished)
 	finishedRender := ansi.Strip(item.renderThinking(thinking, 80))
-	require.Contains(t, finishedRender, "Heading")
-	require.Contains(t, finishedRender, "bold reasoning")
-	require.NotContains(t, finishedRender, "# Heading")
-	require.NotContains(t, finishedRender, "**bold reasoning**")
+	require.Contains(t, finishedRender, "• # Heading")
+	require.Contains(t, finishedRender, "• wrapped reasoning")
+	require.NotContains(t, finishedRender, "**wrapped reasoning**")
+	require.Contains(t, finishedRender, "• **unfinished")
+	require.Contains(t, finishedRender, "• prefix **internal** suffix")
 }
 
 func trimGlamourMarginsReference(s string) string {

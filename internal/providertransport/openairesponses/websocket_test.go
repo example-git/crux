@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,9 +97,14 @@ func TestWebSocketErrorPhraseInOutputDoesNotDisruptMultiplexedStreams(t *testing
 }
 
 func TestWebSocketRejectsDuplicateStreamAndIgnoresLateUnknownStream(t *testing.T) {
+	releaseEvents := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseEvents) }) }
+	defer release()
 	server := websocketServer(t, func(conn *websocket.Conn) {
 		_, _, err := conn.ReadMessage()
 		require.NoError(t, err)
+		<-releaseEvents
 		writeEvent(t, conn, "already-canceled", "response.output_text.delta", `,"delta":"late"`)
 		writeEvent(t, conn, "stream-a", "response.completed", `,"response":{"id":"resp_a"}`)
 	})
@@ -110,6 +116,7 @@ func TestWebSocketRejectsDuplicateStreamAndIgnoresLateUnknownStream(t *testing.T
 	require.NoError(t, err)
 	_, err = client.Open(context.Background(), "stream-a", json.RawMessage(`{"model":"a"}`))
 	require.ErrorContains(t, err, "already active")
+	release()
 	event, err := stream.Recv(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "response.completed", event.Type)

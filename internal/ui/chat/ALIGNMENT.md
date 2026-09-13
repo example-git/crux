@@ -12,6 +12,6 @@ Disclosure controls use `renderOutputFooter`: a content-width blue tab attached 
 
 Skip blank and whitespace-only thinking lines, including empty rendered Markdown rows. A single nonblank logical line stays fully visible even when it wraps, with no expansion control or toggle action. Only multiple nonblank lines are collapsible. All-blank thinking renders no branch or thinking click target.
 
-Thinking branches derive their indentation from the same Tool.Body left inset. Thoughts following tool output join the preceding item without a blank row; turn-opening thoughts keep their floating branch and normal inter-message gap. List rendering, height, scrolling, selection, and mouse coordinates use `GapAfter` for this conditional spacing.
+The complete thinking surface and its branches derive their left edge from the same Tool.Body inset. Thoughts following tool output join the preceding item without a blank row; turn-opening thoughts keep their floating branch and normal inter-message gap. List rendering, height, scrolling, selection, and mouse coordinates use `GapAfter` for this conditional spacing.
 
 `alignment_test.go` verifies complete message renderings at compact, normal, and capped widths, with both default and changed body insets. Extend its fixtures when adding an output renderer. Keep intentional content gutters distinct from outer panel alignment.

@@ -101,34 +101,49 @@ func (s *replacingImagePermissionService) Request(ctx context.Context, request p
 }
 
 func TestImagegenToolRejectsInputReplacedDuringApproval(t *testing.T) {
-	workingDir := t.TempDir()
-	input := filepath.Join(workingDir, "input.png")
-	require.NoError(t, os.WriteFile(input, []byte("approved fixture"), 0o600))
-	executed := make(chan struct{}, 1)
-	manager, err := imagegen.NewJobManagerWithStore(t.TempDir(), nil, imagegen.JobManagerOptions{
-		Executor: func(context.Context, imagegen.JobRequest) (*imagegen.Response, error) {
-			executed <- struct{}{}
-			return nil, nil
-		},
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { manager.StopAll(context.Background()) })
-	permissions := &replacingImagePermissionService{
-		recordingPermissionService: &recordingPermissionService{allow: true},
-		replace: func() {
-			require.NoError(t, os.Rename(input, input+".original"))
-			require.NoError(t, os.WriteFile(input, []byte("replacement fixture"), 0o600))
-		},
+	for _, replaceParent := range []bool{false, true} {
+		name := "file"
+		if replaceParent {
+			name = "parent"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			workingDir := filepath.Join(root, "workspace")
+			require.NoError(t, os.Mkdir(workingDir, 0o700))
+			input := filepath.Join(workingDir, "input.png")
+			require.NoError(t, os.WriteFile(input, []byte("approved fixture"), 0o600))
+			executed := make(chan struct{}, 1)
+			manager, err := imagegen.NewJobManagerWithStore(t.TempDir(), nil, imagegen.JobManagerOptions{
+				Executor: func(context.Context, imagegen.JobRequest) (*imagegen.Response, error) {
+					executed <- struct{}{}
+					return nil, nil
+				},
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { manager.StopAll(context.Background()) })
+			permissions := &replacingImagePermissionService{
+				recordingPermissionService: &recordingPermissionService{allow: true},
+				replace: func() {
+					if replaceParent {
+						require.NoError(t, os.Rename(workingDir, workingDir+"-original"))
+						require.NoError(t, os.Mkdir(workingDir, 0o700))
+					} else {
+						require.NoError(t, os.Rename(input, input+".original"))
+					}
+					require.NoError(t, os.WriteFile(input, []byte("replacement fixture"), 0o600))
+				},
+			}
+			params, err := json.Marshal(ImagegenParams{Mode: imagegen.ModeEdit, Prompt: "edit fixture", Images: []string{input}, Output: filepath.Join(workingDir, "output.png")})
+			require.NoError(t, err)
+			ctx := context.WithValue(t.Context(), SessionIDContextKey, "session")
+			response, err := NewImagegenTool(manager, permissions, workingDir).Run(ctx, fantasy.ToolCall{ID: "image-call", Name: ImagegenToolName, Input: string(params)})
+			require.NoError(t, err)
+			require.True(t, response.IsError)
+			require.Contains(t, response.Content, "changed after capture")
+			require.Equal(t, 1, permissions.requestCount)
+			require.Empty(t, executed)
+		})
 	}
-	params, err := json.Marshal(ImagegenParams{Mode: imagegen.ModeEdit, Prompt: "edit fixture", Images: []string{input}, Output: filepath.Join(workingDir, "output.png")})
-	require.NoError(t, err)
-	ctx := context.WithValue(t.Context(), SessionIDContextKey, "session")
-	response, err := NewImagegenTool(manager, permissions, workingDir).Run(ctx, fantasy.ToolCall{ID: "image-call", Name: ImagegenToolName, Input: string(params)})
-	require.NoError(t, err)
-	require.True(t, response.IsError)
-	require.Contains(t, response.Content, "changed after capture")
-	require.Equal(t, 1, permissions.requestCount)
-	require.Empty(t, executed)
 }
 
 func TestImagegenToolRetainsApprovedOutputDirectory(t *testing.T) {

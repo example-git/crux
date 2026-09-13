@@ -437,6 +437,9 @@ func statusWithDetails(options ProjectIndexOptions, directory string, status Sto
 	if status.StoreDirectory == "" {
 		status.StoreDirectory, _ = DefaultStoreDirectory()
 	}
+	if !options.Enabled {
+		return status
+	}
 	token, err := indexTokenSource(options.TokenSource)(context.Background())
 	switch {
 	case err != nil || token != "" && githubsemantic.AuthenticationRequired(token):

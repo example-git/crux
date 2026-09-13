@@ -88,29 +88,48 @@ func TestToolPanelAlignment(t *testing.T) {
 	}
 }
 
-func TestThinkingBranchAlignsWithToolBody(t *testing.T) {
+func TestThinkingSurfaceAlignsWithOuterMessageLayer(t *testing.T) {
 	for _, inset := range []int{2, 3} {
 		sty := styles.CharmtonePantera()
 		sty.Tool.Body = sty.Tool.Body.PaddingLeft(inset)
 		for _, width := range []int{40, 80, 160} {
-			for _, startsTurn := range []bool{false, true} {
-				item := NewAssistantMessageItem(&sty, thinkingMessageWithLines("thinking", 3)).(*AssistantMessageItem)
-				item.SetThinkingStartsTurn(startsTurn)
-				for _, mode := range []thinkingViewMode{thinkingCollapsed, thinkingFullExpanded, thinkingCollapsed} {
+			item := NewAssistantMessageItem(&sty, thinkingMessage("thinking", "First\nSecond\nThird", "Answer")).(*AssistantMessageItem)
+			for _, mode := range []thinkingViewMode{thinkingCollapsed, thinkingFullExpanded} {
+				for _, focused := range []bool{false, true} {
 					item.thinkingViewMode = mode
+					item.SetFocused(focused)
 					item.clearCache()
 					output := item.Render(width)
 					requireSummaryWidth(t, output, width)
-					found := false
-					for _, line := range strings.Split(ansi.Strip(output), "\n") {
-						index := strings.IndexAny(line, "╭╰├")
-						if index < 0 {
-							continue
+					buffer := uv.NewScreenBuffer(width, lipgloss.Height(output))
+					uv.NewStyledString(output).Draw(&buffer, buffer.Bounds())
+					wantFrameLeft := MessageLeftPaddingTotal + sty.Messages.ThinkingBox.GetPaddingLeft()
+					frameRows := 0
+					footerRows := 0
+					for y, line := range strings.Split(ansi.Strip(output), "\n") {
+						if index := strings.IndexAny(line, "╭│•╰"); index >= 0 {
+							frameLeft := ansi.StringWidth(line[:index])
+							require.Equal(t, wantFrameLeft, frameLeft, "inset=%d width=%d mode=%d focused=%t line=%q", inset, width, mode, focused, line)
+							frameRows++
 						}
-						require.Equal(t, MessageLeftPaddingTotal+inset, ansi.StringWidth(line[:index]))
-						found = true
+						if index := strings.Index(line, "Thought for"); index >= 0 {
+							footerLeft := ansi.StringWidth(line[:index])
+							require.Equal(t, wantFrameLeft, footerLeft, "inset=%d width=%d mode=%d focused=%t line=%q", inset, width, mode, focused, line)
+							footerRows++
+						}
+						for x := 0; x < width; x++ {
+							cell := buffer.CellAt(x, y)
+							if cell != nil {
+								require.Nil(t, cell.Style.Bg, "thinking background at %d,%d", x, y)
+							}
+						}
 					}
-					require.True(t, found)
+					require.Positive(t, frameRows)
+					if mode == thinkingFullExpanded {
+						require.Positive(t, footerRows)
+					} else {
+						require.Zero(t, footerRows)
+					}
 				}
 			}
 		}

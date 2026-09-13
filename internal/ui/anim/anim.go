@@ -381,6 +381,11 @@ func (a *Anim) renderLabel(label string) {
 }
 
 // Width returns the total width of the animation.
+func (a *Anim) Ellipsis() string {
+	frame := int(a.framesSinceStart.Load()/ellipsisAnimSpeed) % 3
+	return strings.Repeat(".", 3-frame)
+}
+
 func (a *Anim) Width() (w int) {
 	w = a.width
 	if a.labelWidth > 0 {

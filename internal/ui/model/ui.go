@@ -3713,6 +3713,7 @@ func (m *UI) Draw(scr uv.Screen, area uv.Rectangle) *tea.Cursor {
 				}
 				rows := strings.Split(m.pillsView, "\n")
 				surface.Max.X = surface.Min.X + ansi.StringWidth(rows[len(rows)-1])
+				surface.Max.Y--
 				fillSurfaceBackground(scr, surface, m.com.Styles.Background)
 			}
 		}

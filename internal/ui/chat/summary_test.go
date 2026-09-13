@@ -291,28 +291,26 @@ func TestThinkingTextUsesCompletedMutedColor(t *testing.T) {
 	want := lipgloss.Color(*sty.ThinkingMarkdown.Document.Color)
 	for _, width := range []int{40, 80} {
 		for _, answer := range []string{"", "Answer"} {
-			for _, startsTurn := range []bool{false, true} {
-				item := NewAssistantMessageItem(&sty, thinkingMessage("muted", "THOUGHT\n\nTHOUGHT", answer)).(*AssistantMessageItem)
-				item.SetThinkingStartsTurn(startsTurn)
-				item.thinkingViewMode = thinkingFullExpanded
-				out := item.cachedThinking(width)
-				buffer := uv.NewScreenBuffer(width, lipgloss.Height(out))
-				uv.NewStyledString(out).Draw(&buffer, buffer.Bounds())
-				found := 0
-				for y, line := range strings.Split(ansi.Strip(out), "\n") {
-					index := strings.Index(line, "THOUGHT")
-					if index < 0 {
-						continue
-					}
-					found++
-					cell := buffer.CellAt(ansi.StringWidth(line[:index]), y)
-					require.NotNil(t, cell.Style.Fg)
-					r, g, b, a := cell.Style.Fg.RGBA()
-					wr, wg, wb, wa := want.RGBA()
-					require.Equal(t, []uint32{wr, wg, wb, wa}, []uint32{r, g, b, a}, "answer=%q startsTurn=%v", answer, startsTurn)
+			item := NewAssistantMessageItem(&sty, thinkingMessage("muted", "THOUGHT\n\nTHOUGHT", answer)).(*AssistantMessageItem)
+			item.thinkingViewMode = thinkingFullExpanded
+			out := item.cachedThinking(width)
+			buffer := uv.NewScreenBuffer(width, lipgloss.Height(out))
+			uv.NewStyledString(out).Draw(&buffer, buffer.Bounds())
+			found := 0
+			for y, line := range strings.Split(ansi.Strip(out), "\n") {
+				index := strings.Index(line, "• THOUGHT")
+				if index < 0 {
+					continue
 				}
-				require.Equal(t, 2, found)
+				index += len("• ")
+				found++
+				cell := buffer.CellAt(ansi.StringWidth(line[:index]), y)
+				require.NotNil(t, cell.Style.Fg)
+				r, g, b, a := cell.Style.Fg.RGBA()
+				wr, wg, wb, wa := want.RGBA()
+				require.Equal(t, []uint32{wr, wg, wb, wa}, []uint32{r, g, b, a}, "answer=%q", answer)
 			}
+			require.Equal(t, 2, found)
 		}
 	}
 }

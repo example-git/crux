@@ -12,15 +12,9 @@ import (
 )
 
 // thinkingMessageWithLines builds a still-thinking assistant message
-// whose reasoning content is `count` short paragraphs separated by
-// blank lines. The blank-line separation is what matters: glamour
-// renders paragraph blocks one-per-line in the output (with a
-// trailing blank line between paragraphs) instead of reflowing the
-// entire input into one big wrapped paragraph. That gives us a
-// post-glamour line count we can drive past the tail-window
-// threshold deterministically. Each paragraph is tagged with its
-// (1-based) index so the test can identify head vs tail in the
-// rendered output.
+// whose reasoning content is `count` short lines separated by blank
+// source rows. Each line is tagged with its 1-based index so the test
+// can identify head vs tail in the rendered output.
 //
 // The message has no text content and no Finish part, so
 // IsThinking() returns true and the render path skips the
@@ -32,9 +26,6 @@ func thinkingMessageWithLines(id string, count int) *message.Message {
 		b.WriteString("ln")
 		b.WriteString(itoa(i))
 		if i < count {
-			// Blank line between paragraphs: glamour preserves the
-			// per-paragraph structure rather than reflowing into one
-			// wrapped block, so totalLines tracks count predictably.
 			b.WriteString("\n\n")
 		}
 	}
@@ -79,13 +70,9 @@ func renderedThinkingHeight(t *testing.T, item *AssistantMessageItem, width int)
 	return lipgloss.Height(item.thinkingSec.out)
 }
 
-// TestThinkingWindow_CollapsedCapPreserved guards that F5 did not
-// regress the existing collapsed-mode behaviour: a 5000-line
-// thinking block in the default (collapsed) state still renders at
-// most a small bounded height — the last `maxCollapsedThinkingHeight`
-// lines plus the truncation hint. The thinking message keeps
-// IsThinking() == true, so the optional "Thought for" footer is
-// suppressed and the section height equals the box height.
+// TestThinkingWindow_CollapsedCapPreserved guards that a 5000-line
+// active thinking block remains a three-row disclosure box until the
+// user explicitly opens it.
 func TestThinkingWindow_CollapsedCapPreserved(t *testing.T) {
 	t.Parallel()
 
@@ -93,31 +80,17 @@ func TestThinkingWindow_CollapsedCapPreserved(t *testing.T) {
 	msg := thinkingMessageWithLines("collapsed", 5000)
 	item := NewAssistantMessageItem(&sty, msg).(*AssistantMessageItem)
 
-	// Default state must be collapsed.
 	require.Equal(t, thinkingCollapsed, item.thinkingViewMode)
 
-	// Unique odd width avoids sharing the glamour renderer cache with
-	// any other parallel test (the renderer instance is memoized per
-	// width and is not safe for concurrent Render calls).
 	const width = 91
 	height := renderedThinkingHeight(t, item, width)
-
-	// Collapsed mode keeps the existing cap: last 10 lines + a
-	// 2-line hint prefix (hint + blank). Allow a small slack for
-	// any future style-driven padding so the test is robust to
-	// cosmetic tweaks while still being orders of magnitude below
-	// the 5000-line source.
-	const collapsedUpperBound = maxCollapsedThinkingHeight + 5
-	require.LessOrEqual(t, height, collapsedUpperBound,
-		"collapsed mode must remain bounded by the small cap; got %d", height)
+	require.Equal(t, 3, height)
+	require.Contains(t, ansi.Strip(item.thinkingSec.out), "Thinking...")
 }
 
 // TestThinkingWindow_ExpandedShortSkipsTailWindow guards that a
-// short thinking block (well under the tail-window cap) still
-// toggles directly to full expansion without an intermediate
-// tail-window step and shows no affordance footer. The cycle is
-// collapsed -> full -> collapsed for short blocks; tail-window is
-// only inserted when it would actually elide content.
+// short thinking block starts collapsed and opens directly to full
+// expansion without an intermediate tail-window step.
 func TestThinkingWindow_ExpandedShortSkipsTailWindow(t *testing.T) {
 	t.Parallel()
 
@@ -128,10 +101,12 @@ func TestThinkingWindow_ExpandedShortSkipsTailWindow(t *testing.T) {
 	msg := thinkingMessageWithLines("short", lines)
 	item := NewAssistantMessageItem(&sty, msg).(*AssistantMessageItem)
 
+	require.Equal(t, thinkingCollapsed, item.thinkingViewMode,
+		"short blocks must start collapsed")
 	require.True(t, item.ToggleExpanded(),
 		"first toggle should report expanded")
 	require.Equal(t, thinkingFullExpanded, item.thinkingViewMode,
-		"short blocks must skip tail-window and go straight to full expansion")
+		"short blocks must skip the tail window")
 
 	const width = 93
 	_ = item.RawRender(width)
@@ -142,10 +117,10 @@ func TestThinkingWindow_ExpandedShortSkipsTailWindow(t *testing.T) {
 		"short blocks must not show the tail-window affordance")
 	require.NotContains(t, plain, "lines hidden",
 		"short expanded blocks must not show any truncation hint")
-	require.Contains(t, plain, "ln1 ",
-		"a fully expanded short block must include the very first source paragraph")
-	require.Contains(t, plain, "ln50 ",
-		"a fully expanded short block must include the last source paragraph")
+	require.Contains(t, plain, "• ln1",
+		"a fully expanded short block must include the first source line")
+	require.Contains(t, plain, "• ln50",
+		"a fully expanded short block must include the last source line")
 }
 
 // TestThinkingWindow_TailWindowed asserts the central F5 behaviour:
@@ -175,9 +150,10 @@ func TestThinkingWindow_TailWindowed(t *testing.T) {
 	// Tail-windowed render.
 	tailMsg := thinkingMessageWithLines("tail", total)
 	tailItem := NewAssistantMessageItem(&sty, tailMsg).(*AssistantMessageItem)
+	require.Equal(t, thinkingCollapsed, tailItem.thinkingViewMode)
 	require.True(t, tailItem.ToggleExpanded(), "first toggle should report expanded")
 	require.Equal(t, thinkingTailWindow, tailItem.thinkingViewMode,
-		"a long block must enter tail-window after the first toggle")
+		"a long block must enter the tail window after expanding from collapsed")
 
 	height := renderedThinkingHeight(t, tailItem, width)
 
@@ -198,8 +174,8 @@ func TestThinkingWindow_TailWindowed(t *testing.T) {
 		"tail-windowed render must include the affordance footer")
 	require.Contains(t, tailPlain, "ln5000",
 		"tail-windowed render must include the LAST source paragraph — we tailed, not headed")
-	require.NotContains(t, tailPlain, "ln1 ",
-		"tail-windowed render must elide early source paragraphs")
+	require.NotContains(t, tailPlain, "• ln1 ",
+		"tail-windowed render must elide the first source line")
 
 	// Independent reference render: same source, same width, full
 	// expansion (no tail slice). The tail-windowed output's last K
@@ -212,13 +188,15 @@ func TestThinkingWindow_TailWindowed(t *testing.T) {
 
 	tailLines := strings.Split(tailPlain, "\n")
 	fullLines := strings.Split(fullPlain, "\n")
+	require.GreaterOrEqual(t, len(tailLines), 3)
+	require.GreaterOrEqual(t, len(fullLines), 3)
+	tailLines = tailLines[1 : len(tailLines)-1]
+	fullLines = fullLines[1 : len(fullLines)-1]
 
 	// K is the cap minus a small budget that covers the affordance
-	// prefix (hint line + blank line) and any framing differences
-	// the bordered ThinkingBox style may introduce around the
-	// edges. Documented inline because going much larger lets the
-	// affordance row leak into the comparison; going much smaller
-	// dilutes the assertion.
+	// prefix (hint line + blank line). Documented inline because
+	// going much larger lets the affordance row leak into the
+	// comparison; going much smaller dilutes the assertion.
 	const K = maxExpandedThinkingTailLines - 5
 	require.GreaterOrEqual(t, len(tailLines), K,
 		"tail render must contain at least K lines; got %d", len(tailLines))
@@ -247,13 +225,14 @@ func TestThinkingWindow_PromoteToFull(t *testing.T) {
 
 	const width = 97
 
+	require.Equal(t, thinkingCollapsed, item.thinkingViewMode)
 	require.True(t, item.ToggleExpanded())
 	require.Equal(t, thinkingTailWindow, item.thinkingViewMode)
 	_ = item.RawRender(width)
 	tailOut := item.thinkingSec.out
 	require.Contains(t, ansi.Strip(tailOut), "earlier lines hidden")
 
-	require.True(t, item.ToggleExpanded(), "second toggle stays expanded (full)")
+	require.True(t, item.ToggleExpanded(), "second toggle stays expanded in full view")
 	require.Equal(t, thinkingFullExpanded, item.thinkingViewMode)
 	_ = item.RawRender(width)
 	fullOut := item.thinkingSec.out
@@ -261,10 +240,10 @@ func TestThinkingWindow_PromoteToFull(t *testing.T) {
 
 	require.NotContains(t, fullPlain, "earlier lines hidden",
 		"full expansion must drop the tail-window affordance")
-	require.Contains(t, fullPlain, "ln1 ",
-		"full expansion must include the first source paragraph")
-	require.Contains(t, fullPlain, "ln1500 ",
-		"full expansion must include the last source paragraph")
+	require.Contains(t, fullPlain, "• ln1",
+		"full expansion must include the first source line")
+	require.Contains(t, fullPlain, "• ln1500",
+		"full expansion must include the last source line")
 
 	// Independent reference: a fresh item, rendered straight into
 	// the full-expanded state, must produce byte-equal output.
@@ -411,6 +390,7 @@ func TestThinkingWindow_ToggleInvalidatesOnlyThinking(t *testing.T) {
 	}
 
 	item := NewAssistantMessageItem(&sty, build()).(*AssistantMessageItem)
+	item.thinkingViewMode = thinkingCollapsed
 
 	const width = 101
 	_ = item.RawRender(width)

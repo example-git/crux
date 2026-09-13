@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // TestJQ_CtxCancel verifies that handleJQ polls ctx during iteration and
@@ -214,6 +216,29 @@ func TestJQ_Success(t *testing.T) {
 	}
 }
 
+func TestJQUsesInterpreterWorkingDirectory(t *testing.T) {
+	workingDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "input.json"), []byte(`{"name":"working directory"}`), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(workingDir, "nested"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "nested", "input.json"), []byte(`{"name":"nested directory"}`), 0o600))
+
+	for _, test := range []struct {
+		name    string
+		command string
+		want    string
+	}{
+		{name: "runner directory", command: "jq -r .name input.json", want: "working directory\n"},
+		{name: "changed directory", command: "cd nested && jq -r .name input.json", want: "nested directory\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			err := Run(t.Context(), RunOptions{Command: test.command, Cwd: workingDir, Stdout: &stdout})
+			require.NoError(t, err)
+			require.Equal(t, test.want, stdout.String())
+		})
+	}
+}
+
 func TestJQShellOptionsMatchSharedEvaluator(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "input.json")
 	if err := os.WriteFile(filePath, []byte(`{"name":"crux"}`), 0o644); err != nil {
@@ -242,7 +267,7 @@ func TestJQShellOptionsMatchSharedEvaluator(t *testing.T) {
 		},
 		{name: "raw input", args: []string{"jq", "-R", "-r", "ascii_upcase"}, options: JQOptions{Filter: "ascii_upcase", RawInput: true, RawOutput: true}, input: "one\ntwo"},
 		{name: "exit status", args: []string{"jq", "-e", "."}, options: JQOptions{Filter: ".", ExitStatus: true}, input: "false"},
-		{name: "file input", args: []string{"jq", ".name", filePath}, options: JQOptions{Filter: ".name", Files: []string{filePath}}},
+		{name: "file input", args: []string{"jq", ".name", filePath}, options: JQOptions{Filter: ".name", Files: []string{filePath}, OpenFile: openJQFile}},
 		{name: "runtime error", args: []string{"jq", ".foo"}, options: JQOptions{Filter: ".foo"}, input: "1"},
 	}
 

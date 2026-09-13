@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/expand"
@@ -196,22 +195,13 @@ func newRunner(cwd string, env []string, stdin io.Reader, stdout, stderr io.Writ
 // execHandlerOption returns an interp.RunnerOption that installs the
 // standard Crux middleware chain (builtins, script dispatch, block list)
 // on top of a process-group-isolated base exec handler.
-//
-// We use interp.ExecHandler (singular) with a manually-built chain rather
-// than interp.ExecHandlers because the latter always appends
-// interp.DefaultExecHandler as the final handler, which lacks process group
-// isolation. Without isolation, shells like zsh that set up job control
-// when sourcing framework files can send SIGINT/SIGTERM to Crux's process
-// group and crash the parent.
 func execHandlerOption(blockFuncs []BlockFunc) interp.RunnerOption {
 	base := processGroupExecHandler(defaultKillTimeout)
-	handler := base
-	for _, mw := range slices.Backward(standardHandlers(blockFuncs)) {
-		handler = mw(handler)
-	}
-	// ExecHandlers always appends DefaultExecHandler which lacks process
-	// group isolation, so we use the deprecated ExecHandler instead.
-	return interp.ExecHandler(handler)
+	handlers := standardHandlers(blockFuncs)
+	handlers = append(handlers, func(interp.ExecHandlerFunc) interp.ExecHandlerFunc {
+		return base
+	})
+	return interp.ExecHandlers(handlers...)
 }
 
 // nonInteractiveEnvVars are forced on every shell execution to prevent

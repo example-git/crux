@@ -217,6 +217,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Optional embedded mitmproxy runtime
+
+Builds created with `--embedded-mitmproxy` contain a web-only mitmproxy runtime,
+CPython, and Python dependencies. The runtime archive preserves each installed
+package's `.dist-info` metadata and license files. The exact source revision,
+source checksum, runtime profile, and hashed dependency-lock checksum are also
+recorded in the archive's `CRUX_RUNTIME.json` manifest.
+
+The pinned backports.zstd 1.7.0 wheels are licensed under PSF-2.0 and bundle the
+Python license plus the BSD license for zstd. The terminal-only Urwid dependency
+and mitmproxy console modules are excluded from the embedded web runtime.
+
 ## ripgrep v15.2.0
 
 Crux embeds official ripgrep binaries for supported macOS and Linux architectures.

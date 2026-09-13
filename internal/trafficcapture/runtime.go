@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-const embeddedRuntimeVersion = "mitmproxy-13.0.0.dev0-b506c68108e2-python-3.12.14"
+const embeddedRuntimeVersion = "mitmproxy-13.0.0.dev0-b506c68108e2-web1-python-3.12.14"
 
 func EmbeddedRuntimeAvailable() bool {
 	return len(embeddedRuntimeArchive) != 0 && embeddedRuntimeTarget != "" && embeddedRuntimeLibrary != ""

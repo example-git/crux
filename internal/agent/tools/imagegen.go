@@ -80,10 +80,12 @@ func NewImagegenTool(manager *imagegen.JobManager, permissions permission.Servic
 			if permissions == nil {
 				return fantasy.ToolResponse{}, errors.New("permission service is required for image generation")
 			}
-			request, err = request.CaptureInputFiles()
+			var releaseInputs func()
+			request, releaseInputs, err = request.CaptureInputFiles()
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
+			defer releaseInputs()
 			var releaseOutputs func()
 			request, releaseOutputs, err = request.CaptureOutputDirectories()
 			if err != nil {
@@ -156,6 +158,9 @@ func NewImagegenTool(manager *imagegen.JobManager, permissions permission.Servic
 			}
 			if !granted {
 				return NewPermissionDeniedResponse(), nil
+			}
+			if err := request.ValidateInputFiles(); err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
 
 			if err := manager.AuthenticateToolRequest(ctx, request, imagegen.SetupRequest{SessionID: sessionID, ToolCallID: call.ID, Interactive: len(interactive) > 0 && interactive[0]}); err != nil {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -59,6 +60,12 @@ type jqOutputWriter struct {
 	truncated bool
 }
 
+type jqInputBinding struct {
+	root     *os.Root
+	parent   os.FileInfo
+	identity os.FileInfo
+}
+
 func NewJQTool(permissions permission.Service, workingDir string, environments ...[]string) fantasy.AgentTool {
 	var environment []string
 	if len(environments) > 0 {
@@ -68,7 +75,8 @@ func NewJQTool(permissions permission.Service, workingDir string, environments .
 		JQToolName,
 		jqToolDescription,
 		func(ctx context.Context, params JQParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			options, denied, err := prepareJQOptions(ctx, permissions, workingDir, call.ID, params)
+			options, release, denied, err := prepareJQOptions(ctx, permissions, workingDir, call.ID, params)
+			defer release()
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
@@ -109,30 +117,38 @@ func NewJQTool(permissions permission.Service, workingDir string, environments .
 	)
 }
 
-func prepareJQOptions(ctx context.Context, permissions permission.Service, workingDir, toolCallID string, params JQParams) (shell.JQOptions, bool, error) {
+func prepareJQOptions(ctx context.Context, permissions permission.Service, workingDir, toolCallID string, params JQParams) (shell.JQOptions, func(), bool, error) {
+	bindings := make(map[string]jqInputBinding, len(params.Files))
+	release := func() {
+		for _, binding := range bindings {
+			_ = binding.root.Close()
+		}
+	}
 	if params.Input != "" && len(params.Files) > 0 {
-		return shell.JQOptions{}, false, errors.New("input and files are mutually exclusive")
+		return shell.JQOptions{}, release, false, errors.New("input and files are mutually exclusive")
 	}
 	if params.NullInput && (params.Input != "" || len(params.Files) > 0) {
-		return shell.JQOptions{}, false, errors.New("null_input cannot be combined with input or files")
+		return shell.JQOptions{}, release, false, errors.New("null_input cannot be combined with input or files")
 	}
 	variables, err := jqVariables(params.Args, params.JSONArgs)
 	if err != nil {
-		return shell.JQOptions{}, false, err
+		return shell.JQOptions{}, release, false, err
 	}
 	files := make([]string, 0, len(params.Files))
-	identities := make(map[string]os.FileInfo, len(params.Files))
 	for _, file := range params.Files {
 		if strings.TrimSpace(file) == "" {
-			return shell.JQOptions{}, false, errors.New("files must not contain an empty path")
+			return shell.JQOptions{}, release, false, errors.New("files must not contain an empty path")
 		}
 		resolved, err := canonicalToolPath(workingDir, file)
 		if err != nil {
-			return shell.JQOptions{}, false, err
+			return shell.JQOptions{}, release, false, err
 		}
-		identity, err := os.Lstat(resolved)
-		if err != nil {
-			return shell.JQOptions{}, false, err
+		if _, exists := bindings[resolved]; !exists {
+			binding, err := captureJQInput(resolved)
+			if err != nil {
+				return shell.JQOptions{}, release, false, err
+			}
+			bindings[resolved] = binding
 		}
 		allowed, err := authorizeExternalPath(
 			ctx,
@@ -146,32 +162,22 @@ func prepareJQOptions(ctx context.Context, permissions permission.Service, worki
 			JQPermissionsParams{FilePath: resolved, Filter: params.Filter},
 		)
 		if err != nil {
-			return shell.JQOptions{}, false, err
+			return shell.JQOptions{}, release, false, err
 		}
 		if !allowed {
-			return shell.JQOptions{}, true, nil
+			return shell.JQOptions{}, release, true, nil
 		}
 		files = append(files, resolved)
-		identities[resolved] = identity
 	}
 	return shell.JQOptions{
 		Filter: params.Filter,
 		Files:  files,
 		OpenFile: func(path string) (io.ReadCloser, error) {
-			expected, ok := identities[path]
+			binding, ok := bindings[path]
 			if !ok {
 				return nil, errors.New("jq input was not authorized")
 			}
-			file, err := os.Open(path)
-			if err != nil {
-				return nil, err
-			}
-			actual, err := file.Stat()
-			if err != nil || !os.SameFile(expected, actual) {
-				_ = file.Close()
-				return nil, fmt.Errorf("jq input %q changed during authorization; retry with the current file", path)
-			}
-			return file, nil
+			return openJQInput(path, binding)
 		},
 		RawOutput:     params.RawOutput,
 		JoinOutput:    params.JoinOutput,
@@ -181,7 +187,51 @@ func prepareJQOptions(ctx context.Context, permissions permission.Service, worki
 		ExitStatus:    params.ExitStatus,
 		RawInput:      params.RawInput,
 		Variables:     variables,
-	}, false, nil
+	}, release, false, nil
+}
+
+func captureJQInput(path string) (jqInputBinding, error) {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return jqInputBinding{}, err
+	}
+	parent, err := root.Stat(".")
+	if err != nil {
+		_ = root.Close()
+		return jqInputBinding{}, err
+	}
+	identity, err := root.Stat(filepath.Base(path))
+	if err != nil {
+		_ = root.Close()
+		return jqInputBinding{}, err
+	}
+	return jqInputBinding{root: root, parent: parent, identity: identity}, nil
+}
+
+func openJQInput(path string, binding jqInputBinding) (io.ReadCloser, error) {
+	current, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	currentParent, parentErr := current.Stat(".")
+	currentIdentity, identityErr := current.Stat(filepath.Base(path))
+	closeErr := current.Close()
+	if parentErr != nil || identityErr != nil || !os.SameFile(binding.parent, currentParent) || !os.SameFile(binding.identity, currentIdentity) {
+		return nil, fmt.Errorf("jq input %q changed during authorization; retry with the current file", path)
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	file, err := binding.root.Open(filepath.Base(path))
+	if err != nil {
+		return nil, err
+	}
+	actual, err := file.Stat()
+	if err != nil || !os.SameFile(binding.identity, actual) {
+		_ = file.Close()
+		return nil, fmt.Errorf("jq input %q changed during authorization; retry with the current file", path)
+	}
+	return file, nil
 }
 
 func jqVariables(args map[string]string, jsonArgs map[string]any) ([]shell.JQVariable, error) {
