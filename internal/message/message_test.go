@@ -434,7 +434,10 @@ func TestUpdate_DebouncesTextDeltas(t *testing.T) {
 	})
 	require.NoError(t, err)
 	// Drop the CreatedEvent emitted by Create.
-	time.Sleep(5 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return len(collector.snapshot()) == 1
+	}, time.Second, 5*time.Millisecond)
+	require.Equal(t, pubsub.CreatedEvent, collector.snapshot()[0].Type)
 	collector.reset()
 
 	// Push 5 deltas inside a single debounce window.
@@ -474,7 +477,10 @@ func TestUpdate_TerminalUpdatesFlushSynchronously(t *testing.T) {
 
 	msg, err := svc.Create(t.Context(), sessionID, CreateMessageParams{Role: Assistant})
 	require.NoError(t, err)
-	time.Sleep(5 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return len(collector.snapshot()) == 1
+	}, time.Second, 5*time.Millisecond)
+	require.Equal(t, pubsub.CreatedEvent, collector.snapshot()[0].Type)
 	collector.reset()
 
 	// AddFinish makes the message terminal; Update must flush
