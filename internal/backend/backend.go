@@ -700,6 +700,13 @@ initializeWorkspace:
 	dataDir := args.DataDir
 	if args.AuthenticatedPrincipal != "" {
 		dataDir = remoteWorkspaceDataDir(key, dataDir, args.AuthenticatedPrincipal)
+		if len(args.AllowedWorkspaceRoots) > 0 {
+			resolvedDataDir, resolveErr := fsext.CanonicalPath(dataDir)
+			if resolveErr != nil || !withinWorkspaceRoots(resolvedDataDir, args.AllowedWorkspaceRoots) {
+				return nil, proto.Workspace{}, fmt.Errorf("data directory escaped configured roots: %s", dataDir)
+			}
+			dataDir = resolvedDataDir
+		}
 	}
 	var cfg *config.ConfigStore
 	if args.AuthorityMode == "client" {

@@ -54,6 +54,7 @@ const (
 	ConstructionGeminiInteraction Construction = "gemini-interactions"
 	ConstructionGenericJSON       Construction = "generic-json"
 	ConstructionOpenAICompat      Construction = "openai-compat"
+	ConstructionCodebaseIndex     Construction = "codebase-index"
 
 	QuotaCredentialAccessToken  QuotaCredential = "access-token"
 	QuotaCredentialRefreshToken QuotaCredential = "refresh-token"
@@ -487,6 +488,29 @@ func integratedAdapters(codexClient codex.Client, geminiClient gemini.Client) []
 					raw, _ = json.Marshal(map[string]string{"account_id": accountID})
 				}
 				return id, id, raw
+			},
+		},
+		{
+			ProviderID: "codebase-index", Name: "GitHub Codebase Index",
+			AccountNamespace: "codebase-index", Construction: ConstructionCodebaseIndex,
+			LoginOrder: 50, AccountOrder: 50,
+			Identity: copilot.GitHubIdentity,
+			OAuth: &OAuthCapability{
+				Adapter: LoginDeviceCode, FlowID: "github-codebase-index",
+				RequestDeviceCode: func(ctx context.Context) (*DeviceAuthorization, error) {
+					code, err := copilot.RequestCodebaseIndexDeviceCode(ctx)
+					if err != nil {
+						return nil, err
+					}
+					return &DeviceAuthorization{UserCode: code.UserCode, VerificationURL: code.VerificationURI, ExpiresAt: code.ExpiresAt(), State: code}, nil
+				},
+				PollDeviceCode: func(ctx context.Context, authorization *DeviceAuthorization) (*oauth.Token, error) {
+					code, ok := authorization.State.(*copilot.DeviceCode)
+					if !ok || code == nil {
+						return nil, fmt.Errorf("invalid GitHub codebase-index device authorization state")
+					}
+					return copilot.PollForGitHubToken(ctx, code)
+				},
 			},
 		},
 		{

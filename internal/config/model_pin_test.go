@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // twoProviderConfig is a config file naming large as the given
@@ -72,9 +74,36 @@ func TestModelSelectionSurvivesPeerWrite(t *testing.T) {
 	require.Equal(t, "beta-model", large.Model)
 }
 
-// TestModelSelectionYieldsToDiskWhenUnchosen verifies the other half of the
-// rule: a model type this instance never selected still follows the config
-// file, so external edits and `crux login` defaults keep working.
+func TestModelSelectionReconcilesPeerWrite(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "crux.json")
+
+	t.Setenv("CRUX_GLOBAL_CONFIG", dir)
+	t.Setenv("CRUX_GLOBAL_DATA", dir)
+	resetProviderState()
+	t.Cleanup(resetProviderState)
+
+	require.NoError(t, os.WriteFile(configPath, []byte(twoProviderConfig("alpha", "alpha-model")), 0o600))
+	store, err := Load(dir, dir, false)
+	require.NoError(t, err)
+	owner, ok := store.RuntimeSnapshot().ProviderOwner("beta")
+	require.True(t, ok)
+
+	peerData, err := sjson.SetBytes(readOwnerMutationTestFile(t, configPath), "options.debug", true)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(configPath, peerData, 0o600))
+
+	selected := SelectedModel{Provider: "beta", Model: "beta-model"}
+	state, err := store.UpdatePreferredModelForOwner(ScopeGlobal, SelectedModelTypeLarge, selected, owner)
+	require.NoError(t, err)
+	require.Equal(t, &OwnedSelectedModel{Model: selected, Owner: owner}, state.Large)
+	require.Equal(t, selected, store.Config().Models[SelectedModelTypeLarge])
+	require.True(t, store.Config().Options.Debug)
+	persisted := readOwnerMutationTestFile(t, configPath)
+	require.True(t, gjson.GetBytes(persisted, "options.debug").Bool())
+	require.Equal(t, "beta", gjson.GetBytes(persisted, "models.large.provider").String())
+}
+
 func TestModelSelectionYieldsToDiskWhenUnchosen(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "crux.json")

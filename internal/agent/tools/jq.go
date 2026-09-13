@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -120,11 +121,16 @@ func prepareJQOptions(ctx context.Context, permissions permission.Service, worki
 		return shell.JQOptions{}, false, err
 	}
 	files := make([]string, 0, len(params.Files))
+	identities := make(map[string]os.FileInfo, len(params.Files))
 	for _, file := range params.Files {
 		if strings.TrimSpace(file) == "" {
 			return shell.JQOptions{}, false, errors.New("files must not contain an empty path")
 		}
 		resolved, err := canonicalToolPath(workingDir, file)
+		if err != nil {
+			return shell.JQOptions{}, false, err
+		}
+		identity, err := os.Lstat(resolved)
 		if err != nil {
 			return shell.JQOptions{}, false, err
 		}
@@ -146,10 +152,27 @@ func prepareJQOptions(ctx context.Context, permissions permission.Service, worki
 			return shell.JQOptions{}, true, nil
 		}
 		files = append(files, resolved)
+		identities[resolved] = identity
 	}
 	return shell.JQOptions{
-		Filter:        params.Filter,
-		Files:         files,
+		Filter: params.Filter,
+		Files:  files,
+		OpenFile: func(path string) (io.ReadCloser, error) {
+			expected, ok := identities[path]
+			if !ok {
+				return nil, errors.New("jq input was not authorized")
+			}
+			file, err := os.Open(path)
+			if err != nil {
+				return nil, err
+			}
+			actual, err := file.Stat()
+			if err != nil || !os.SameFile(expected, actual) {
+				_ = file.Close()
+				return nil, fmt.Errorf("jq input %q changed during authorization; retry with the current file", path)
+			}
+			return file, nil
+		},
 		RawOutput:     params.RawOutput,
 		JoinOutput:    params.JoinOutput,
 		CompactOutput: params.CompactOutput,

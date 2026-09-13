@@ -535,6 +535,43 @@ func TestJobManagerProductionEditPath(t *testing.T) {
 	require.Equal(t, []byte("edited-image"), written)
 }
 
+func TestEditJobRejectsInputReplacementBeforeUpload(t *testing.T) {
+	input := filepath.Join(t.TempDir(), "input.png")
+	require.NoError(t, os.WriteFile(input, []byte("approved image"), 0o600))
+	replacement := filepath.Join(t.TempDir(), "replacement.png")
+	require.NoError(t, os.WriteFile(replacement, []byte("replacement fixture"), 0o600))
+	var authenticationCalls atomic.Int64
+	replaced := make(chan error, 1)
+	manager, err := NewJobManagerWithStore(t.TempDir(), nil, JobManagerOptions{
+		ClientFactory: func() *Client {
+			err := os.Rename(input, input+".original")
+			if err == nil {
+				err = os.Symlink(replacement, input)
+			}
+			replaced <- err
+			client := NewClient()
+			client.authResolver = func(context.Context) (resolvedAuth, error) {
+				authenticationCalls.Add(1)
+				return resolvedAuth{}, fmt.Errorf("unexpected authentication")
+			}
+			return client
+		},
+		MaxConcurrent: 1,
+		MaxQueued:     1,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { manager.StopAll(context.Background()) })
+	output := filepath.Join(t.TempDir(), "output.png")
+	view, err := manager.Enqueue(JobRequest{Mode: ModeEdit, Prompt: "edit fixture", Count: 1, InputPaths: []string{input}, OutputPaths: []string{output}}, "edit fixture", managedtask.Ownership{ParentSessionID: "parent"})
+	require.NoError(t, err)
+	result, err := manager.Output(t.Context(), view.ID, true, 2*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, managedtask.StatusFailed, result.Task.State.Status)
+	require.NoError(t, <-replaced)
+	require.Zero(t, authenticationCalls.Load())
+	require.NoFileExists(t, output)
+}
+
 func TestWriteJobImagesStreamsExactOutputsAndClearsResponseData(t *testing.T) {
 	directory := t.TempDir()
 	outputs := []string{
@@ -573,19 +610,51 @@ func TestWriteStagedImagePreservesOriginalOnFailure(t *testing.T) {
 		t.Run(failure, func(t *testing.T) {
 			output := filepath.Join(t.TempDir(), "image.png")
 			require.NoError(t, os.WriteFile(output, []byte("original"), 0o644))
-			temporary, err := stageJobImage(t.Context(), output, base64.StdEncoding.EncodeToString([]byte("replacement")))
+			root, err := os.OpenRoot(filepath.Dir(output))
+			require.NoError(t, err)
+			defer root.Close()
+			temporary, err := stageJobImage(t.Context(), root, base64.StdEncoding.EncodeToString([]byte("replacement")))
 			require.NoError(t, err)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			if failure == "canceled" {
 				cancel()
 			} else {
-				require.NoError(t, os.Remove(temporary))
+				require.NoError(t, root.Remove(temporary))
 			}
-			require.Error(t, writeStagedImage(ctx, temporary, output, true))
+			require.Error(t, writeStagedImage(ctx, root, temporary, filepath.Base(output), true))
 			original, err := os.ReadFile(output)
 			require.NoError(t, err)
 			require.Equal(t, "original", string(original))
+		})
+	}
+}
+
+func TestStagedImageRetainsOutputDirectory(t *testing.T) {
+	for _, force := range []bool{false, true} {
+		t.Run(fmt.Sprintf("force=%t", force), func(t *testing.T) {
+			directory := filepath.Join(t.TempDir(), "outputs")
+			require.NoError(t, os.Mkdir(directory, 0o700))
+			root, err := os.OpenRoot(directory)
+			require.NoError(t, err)
+			defer root.Close()
+			temporary, err := stageJobImage(t.Context(), root, base64.StdEncoding.EncodeToString([]byte("generated")))
+			require.NoError(t, err)
+			defer root.Remove(temporary)
+			outside := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(outside, "image.png"), []byte("outside sentinel"), 0o600))
+			moved := directory + "-original"
+			require.NoError(t, os.Rename(directory, moved))
+			require.NoError(t, os.Symlink(outside, directory))
+			require.NoError(t, writeStagedImage(t.Context(), root, temporary, "image.png", force))
+			content, err := os.ReadFile(filepath.Join(moved, "image.png"))
+			require.NoError(t, err)
+			require.Equal(t, "generated", string(content))
+			removeCreatedOutputs([]string{filepath.Join(directory, "image.png")}, map[string]*os.Root{directory: root})
+			require.NoFileExists(t, filepath.Join(moved, "image.png"))
+			content, err = os.ReadFile(filepath.Join(outside, "image.png"))
+			require.NoError(t, err)
+			require.Equal(t, "outside sentinel", string(content))
 		})
 	}
 }

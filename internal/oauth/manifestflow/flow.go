@@ -322,7 +322,7 @@ func (e *Executor) exchange(ctx context.Context, rules []manifest.FieldRule, val
 	}
 	values["oauth.client_id"] = clientID
 	values["oauth.client_secret"] = clientSecret
-	fields := make(map[string]string, len(rules)+2)
+	fields := make(map[string]string)
 	for _, rule := range rules {
 		value, err := e.eval(rule.Value, values)
 		if err != nil {

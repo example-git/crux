@@ -1472,13 +1472,15 @@ func (s *ConfigStore) RemoveConfigField(scope Scope, key string) error {
 // persists it to the config file at the given scope. The selected model and
 // the recent-models list are written together in a single config write.
 //
-// The write skips the full disk reparse/reload (which would rebuild the
-// provider catalog and agents on every model switch and dominate selection
-// latency); agents are refreshed separately by the caller (see
+// The write skips the full disk reparse/reload when the accepted inputs are
+// still current. Agents are refreshed separately by the caller (see
 // UpdateAgentModel).
 func (s *ConfigStore) UpdatePreferredModel(scope Scope, modelType SelectedModelType, model SelectedModel) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.reconcilePreferredModelInputsLocked(context.Background()); err != nil {
+		return err
+	}
 	return s.updatePreferredModelLocked(scope, modelType, model)
 }
 
@@ -1488,6 +1490,9 @@ func (s *ConfigStore) UpdatePreferredModelForOwner(scope Scope, modelType Select
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.reconcilePreferredModelInputsLocked(context.Background()); err != nil {
+		return AgentModelState{}, err
+	}
 	if err := s.validateActiveProviderOwnerLocked(s.Config(), expected); err != nil {
 		return AgentModelState{}, err
 	}
@@ -1498,6 +1503,27 @@ func (s *ConfigStore) UpdatePreferredModelForOwner(scope Scope, modelType Select
 	return captureAgentModelState(cfg.Models, func(providerID string) (providerregistry.RegistrationOwner, bool) {
 		return providerOwnerForConfig(cfg, s.providerRegistry, providerID)
 	}), nil
+}
+
+func (s *ConfigStore) reconcilePreferredModelInputsLocked(ctx context.Context) error {
+	basis := s.Config().authenticationBasis
+	if basis == nil {
+		return nil
+	}
+	if basis.valid {
+		paths := slices.Sorted(maps.Keys(basis.sources))
+		err := verifyAuthenticationWriteTopology(ctx, basis, paths, s.workingDir, s.workspacePath, s.baseEnvironment, s.globalOnly)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, errAuthenticationInputsChanged) && !errors.Is(err, errAuthenticationPostimageChanged) {
+			return fmt.Errorf("verify configuration before model selection: %w", err)
+		}
+	}
+	if err := s.reloadFromDiskLocked(ctx); err != nil {
+		return fmt.Errorf("reload changed configuration before model selection: %w", err)
+	}
+	return nil
 }
 
 func (s *ConfigStore) updatePreferredModelLocked(scope Scope, modelType SelectedModelType, model SelectedModel) error {

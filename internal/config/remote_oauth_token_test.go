@@ -64,7 +64,7 @@ func TestNamespaceFreeOAuthInstalledCollectionAndDetachedAdmission(t *testing.T)
 	// The rollout catalogue independently retains Copilot, whose global status
 	// capture takes an account lock. The namespace-free credential creates no
 	// database or account identity; installation/load/collection above take no lock.
-	require.Equal(t, []string{"copilot"}, local.Config().ProviderAccountNamespaces())
+	require.Equal(t, []string{"copilot", "codebase-index"}, local.Config().ProviderAccountNamespaces())
 	require.NoFileExists(t, filepath.Join(root, "accounts", "accounts.json"))
 	serverRoot := t.TempDir()
 	receiver, err := CompileRemoteRuntime(serverRoot, filepath.Join(serverRoot, "workspace"), false, proposal, strings.Repeat("a", 64), env.NewFromMap(map[string]string{"HOME": serverRoot, "AI_CLI_DIR": filepath.Join(serverRoot, "forbidden"), "LITERAL": "ambient-substitution"}))

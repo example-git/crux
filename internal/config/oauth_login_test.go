@@ -216,6 +216,44 @@ func TestOAuthLoginCopiedPreparationSharesAttemptAndFailure(t *testing.T) {
 	}
 }
 
+func TestCodebaseIndexDeviceLoginCommit(t *testing.T) {
+	for _, identity := range []string{"42", ""} {
+		t.Run("identity-"+identity, func(t *testing.T) {
+			store, _, _, _ := setupReloadPluginStore(t)
+			owner := oauthLoginRegistration(t, store, "codebase-index", func(r *providerregistry.Registration) {
+				r.Identity = func(context.Context, string) (string, string, json.RawMessage) { return identity, "example", nil }
+				r.OAuth.RequestDeviceCode = func(context.Context) (*providerregistry.DeviceAuthorization, error) {
+					return &providerregistry.DeviceAuthorization{UserCode: "ABCD", VerificationURL: "https://example.invalid/device"}, nil
+				}
+				r.OAuth.PollDeviceCode = func(context.Context, *providerregistry.DeviceAuthorization) (*oauth.Token, error) {
+					return &oauth.Token{AccessToken: "synthetic-index-access"}, nil
+				}
+			})
+			before, err := store.CaptureAuthentication(t.Context())
+			require.NoError(t, err)
+			prep, err := store.PrepareOAuthLogin(t.Context(), before, owner)
+			require.NoError(t, err)
+			device, err := store.RequestOAuthDeviceCode(t.Context(), prep)
+			require.NoError(t, err)
+			authorized, err := store.PollOAuthDeviceCode(t.Context(), device)
+			if identity == "" {
+				require.ErrorContains(t, err, "identity")
+				return
+			}
+			require.NoError(t, err)
+			result, err := store.CommitOAuthLogin(t.Context(), ScopeGlobal, authorized)
+			require.NoError(t, err)
+			require.True(t, result.AccountsSaved && result.ConfigSaved && result.RuntimePublished)
+			entry, err := accounts.Active(t.Context(), owner.AccountNamespace)
+			require.NoError(t, err)
+			require.Equal(t, identity, entry.ID)
+			token, err := store.RuntimeSnapshot().CodebaseIndexToken(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, entry.AccessToken, token)
+		})
+	}
+}
+
 func TestOAuthLoginDeviceCopiesAndPrivateState(t *testing.T) {
 	f := newAuthenticationMutationFixture(t, ScopeWorkspace, false)
 	var requested, polled atomic.Int32

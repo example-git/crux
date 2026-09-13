@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/example-git/crux/internal/githubauth"
+	"github.com/example-git/crux/internal/providerregistry"
 )
 
 // RemoteCodebaseIndex is private runtime input. Paths, when present, were
@@ -80,21 +80,46 @@ func (s RuntimeSnapshot) CodebaseIndexToken(ctx context.Context) (string, error)
 		}
 		return value.AccessToken, nil
 	}
-	if s.environment == nil {
-		return githubauth.DefaultLegacyIndexFileSource().Token(ctx, githubauth.CodebaseIndex)
+	registration, ok := s.ProviderRegistration("codebase-index")
+	if !ok || registration.Construction != providerregistry.ConstructionCodebaseIndex || registration.AccountNamespace != "codebase-index" {
+		return "", errors.New("codebase-index login is unavailable in the current runtime")
 	}
-	dir := s.environment.Get("AI_CLI_DIR")
-	if dir == "" {
-		home := s.environment.Get("HOME")
-		if home == "" {
-			home = s.environment.Get("USERPROFILE")
-		}
-		if home == "" {
-			return "", errors.New("client home directory is unavailable for codebase indexing")
-		}
-		dir = filepath.Join(home, ".ai-cli")
+	provider, configured := s.config.Providers.Get(registration.ProviderID)
+	if configured && provider.Disable {
+		return "", errors.New("codebase-index login is disabled")
 	}
-	return (githubauth.LegacyIndexFileSource{Path: filepath.Join(dir, "codebase-index-auth.json")}).Token(ctx, githubauth.CodebaseIndex)
+	entry, captured, err := s.CapturedConstructionAccount(registration.Owner())
+	if err != nil {
+		return "", err
+	}
+	if !captured {
+		state, err := captureRuntimeAccounts(ctx, s, []string{registration.AccountNamespace})
+		if err != nil {
+			return "", err
+		}
+		activeID := state.ActiveID(registration.AccountNamespace)
+		if activeID != "" {
+			for _, candidate := range state.Entries(registration.AccountNamespace) {
+				if candidate.ID == activeID {
+					entry = &candidate
+					break
+				}
+			}
+			if entry == nil {
+				return "", errors.New("selected codebase-index account is missing; select a valid account in Accounts")
+			}
+		}
+	}
+	if entry == nil {
+		return "", nil
+	}
+	if entry.AccessToken == "" || entry.Expired() {
+		return "", errors.New("selected codebase-index account requires login")
+	}
+	if configured && !providerHasAccount(provider, *entry) {
+		return "", errors.New("codebase-index credentials do not match the selected account; select it through Accounts")
+	}
+	return entry.AccessToken, nil
 }
 
 func (value *RemoteCodebaseIndex) validate() error {

@@ -61,8 +61,10 @@ func scheduleActivityRefresh(delay time.Duration) tea.Cmd {
 
 func activityStatusLabel(status proto.CodebaseIndexStatus) string {
 	var labels []string
-	switch status.State {
-	case "indexing":
+	switch {
+	case status.Enabled && (status.CredentialStatus == "missing" || status.CredentialStatus == "invalid"):
+		labels = append(labels, "index "+lipgloss.NewStyle().Bold(true).Render("LOGIN REQUIRED"))
+	case status.State == "indexing":
 		label := "indexing"
 		if status.Serving {
 			label = "index ready, refreshing"
@@ -74,7 +76,7 @@ func activityStatusLabel(status proto.CodebaseIndexStatus) string {
 			label += " " + status.Stage
 		}
 		labels = append(labels, label)
-	case "ready":
+	case status.State == "ready":
 		labels = append(labels, "index ready")
 	}
 	if status.MemoryActivity != "" {

@@ -12,6 +12,8 @@ import (
 	"github.com/example-git/crux/internal/fsext"
 )
 
+var errAuthenticationPostimageChanged = errors.New("authored configuration postimage differs from prepared authentication inputs")
+
 type authenticationConfigWrite struct {
 	path    string
 	fields  map[string]any
@@ -146,7 +148,7 @@ func verifyAuthenticationWriteTopology(ctx context.Context, basis *authenticatio
 		}
 		expected, found := basis.sources[path]
 		if !found || file.info.exists != expected.exists || isShellConfig(path) && !bytes.Equal(expected.raw, file.data) || !isShellConfig(path) && !authenticationBasisJSONEqual(expected.raw, file.data, "") {
-			return errors.New("authored configuration postimage differs from prepared authentication inputs")
+			return errAuthenticationPostimageChanged
 		}
 	}
 	return ctx.Err()

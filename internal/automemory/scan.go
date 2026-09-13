@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,11 +26,13 @@ const (
 )
 
 type Topic struct {
-	Path        string
-	Name        string
-	Description string
-	Type        string
-	ModifiedAt  time.Time
+	directory    string
+	relativePath string
+	Path         string
+	Name         string
+	Description  string
+	Type         string
+	ModifiedAt   time.Time
 }
 
 var wordPattern = regexp.MustCompile(`[\pL\pN]+`)
@@ -51,7 +55,7 @@ func Relevant(ctx context.Context, workingDir, query string, now time.Time) (str
 
 	var builder strings.Builder
 	for _, topic := range relevantTopics(topics, query, maxRelevantMemories) {
-		content, readErr := readTopic(topic.Path)
+		content, readErr := readTopic(topic)
 		if readErr != nil {
 			continue
 		}
@@ -134,8 +138,16 @@ func scanTopics(directory string) ([]Topic, error) {
 	if directory == "" {
 		return nil, nil
 	}
+	root, err := os.OpenRoot(directory)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
 	var topics []Topic
-	err := filepath.WalkDir(directory, func(path string, entry os.DirEntry, walkErr error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
@@ -146,7 +158,7 @@ func scanTopics(directory string) ([]Topic, error) {
 		if err != nil || !info.Mode().IsRegular() {
 			return nil
 		}
-		header, err := readPrefix(path, 30, 8192)
+		header, _, err := readPrefix(root, filepath.FromSlash(path), 30, 8192)
 		if err != nil {
 			return nil
 		}
@@ -155,11 +167,13 @@ func scanTopics(directory string) ([]Topic, error) {
 			return nil
 		}
 		topics = append(topics, Topic{
-			Path:        path,
-			Name:        oneLine(name, 120),
-			Description: oneLine(description, 200),
-			Type:        oneLine(memoryType, 20),
-			ModifiedAt:  info.ModTime(),
+			directory:    directory,
+			relativePath: filepath.FromSlash(path),
+			Path:         filepath.Join(directory, filepath.FromSlash(path)),
+			Name:         oneLine(name, 120),
+			Description:  oneLine(description, 200),
+			Type:         oneLine(memoryType, 20),
+			ModifiedAt:   info.ModTime(),
 		})
 		return nil
 	})
@@ -181,13 +195,17 @@ func scanTopics(directory string) ([]Topic, error) {
 	return topics, nil
 }
 
-func readTopic(path string) (string, error) {
-	content, err := readPrefix(path, maxTopicLines, maxTopicBytes)
+func readTopic(topic Topic) (string, error) {
+	root, err := os.OpenRoot(topic.directory)
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Stat(path)
-	if err == nil && (info.Size() > maxTopicBytes || bytes.Count(content, []byte("\n")) >= maxTopicLines) {
+	defer root.Close()
+	content, truncated, err := readPrefix(root, topic.relativePath, maxTopicLines, maxTopicBytes)
+	if err != nil {
+		return "", err
+	}
+	if truncated {
 		marker := []byte("\n\n[... memory truncated; use view for the complete file ...]")
 		limit := maxTopicBytes - len(marker)
 		if len(content) > limit {
@@ -201,13 +219,27 @@ func readTopic(path string) (string, error) {
 	return string(content), nil
 }
 
-func readPrefix(path string, maxLines, maxBytes int) ([]byte, error) {
-	content, err := os.ReadFile(path)
+func readPrefix(root *os.Root, path string, maxLines, maxBytes int) ([]byte, bool, error) {
+	file, err := root.Open(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, false, fmt.Errorf("memory %q is not a regular file", path)
+	}
+	content, err := io.ReadAll(io.LimitReader(file, int64(maxBytes)+1))
+	if err != nil {
+		return nil, false, err
+	}
+	truncated := len(content) > maxBytes
 	lines := bytes.Split(content, []byte("\n"))
 	if len(lines) > maxLines {
+		truncated = true
 		lines = lines[:maxLines]
 	}
 	content = bytes.Join(lines, []byte("\n"))
@@ -217,7 +249,7 @@ func readPrefix(path string, maxLines, maxBytes int) ([]byte, error) {
 			content = content[:len(content)-1]
 		}
 	}
-	return bytes.TrimSpace(content), nil
+	return bytes.TrimSpace(content), truncated, nil
 }
 
 func parseFrontmatter(content []byte) (name, description, memoryType string) {

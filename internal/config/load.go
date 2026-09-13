@@ -426,6 +426,9 @@ func (c *Config) configureProvidersWithMigration(ctx context.Context, store *Con
 		return err
 	}
 	knownProviderNames := make(map[string]bool)
+	if registration, ok := snapshot.ProviderRegistration("codebase-index"); ok && registration.Construction == providerregistry.ConstructionCodebaseIndex {
+		knownProviderNames[registration.ProviderID] = true
+	}
 
 	// When disable_default_providers is enabled, skip all core and installed
 	// provider catalogs. Users must fully specify any providers they want.

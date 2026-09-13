@@ -90,6 +90,108 @@ func TestImagegenToolReturnsImmediatelyWhileNativeJobRuns(t *testing.T) {
 	require.Equal(t, managedtask.StatusCompleted, jobResult.Task.State.Status)
 }
 
+type replacingImagePermissionService struct {
+	*recordingPermissionService
+	replace func()
+}
+
+func (s *replacingImagePermissionService) Request(ctx context.Context, request permission.CreatePermissionRequest) (bool, error) {
+	s.replace()
+	return s.recordingPermissionService.Request(ctx, request)
+}
+
+func TestImagegenToolRejectsInputReplacedDuringApproval(t *testing.T) {
+	workingDir := t.TempDir()
+	input := filepath.Join(workingDir, "input.png")
+	require.NoError(t, os.WriteFile(input, []byte("approved fixture"), 0o600))
+	executed := make(chan struct{}, 1)
+	manager, err := imagegen.NewJobManagerWithStore(t.TempDir(), nil, imagegen.JobManagerOptions{
+		Executor: func(context.Context, imagegen.JobRequest) (*imagegen.Response, error) {
+			executed <- struct{}{}
+			return nil, nil
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { manager.StopAll(context.Background()) })
+	permissions := &replacingImagePermissionService{
+		recordingPermissionService: &recordingPermissionService{allow: true},
+		replace: func() {
+			require.NoError(t, os.Rename(input, input+".original"))
+			require.NoError(t, os.WriteFile(input, []byte("replacement fixture"), 0o600))
+		},
+	}
+	params, err := json.Marshal(ImagegenParams{Mode: imagegen.ModeEdit, Prompt: "edit fixture", Images: []string{input}, Output: filepath.Join(workingDir, "output.png")})
+	require.NoError(t, err)
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, "session")
+	response, err := NewImagegenTool(manager, permissions, workingDir).Run(ctx, fantasy.ToolCall{ID: "image-call", Name: ImagegenToolName, Input: string(params)})
+	require.NoError(t, err)
+	require.True(t, response.IsError)
+	require.Contains(t, response.Content, "changed after capture")
+	require.Equal(t, 1, permissions.requestCount)
+	require.Empty(t, executed)
+}
+
+func TestImagegenToolRetainsApprovedOutputDirectory(t *testing.T) {
+	for _, mode := range []string{"explicit", "numbered", "missing", "denied"} {
+		t.Run(mode, func(t *testing.T) {
+			workingDir := t.TempDir()
+			directory := filepath.Join(workingDir, "outputs")
+			require.NoError(t, os.Mkdir(directory, 0o700))
+			outside := t.TempDir()
+			manager, err := imagegen.NewJobManagerWithStore(t.TempDir(), nil, imagegen.JobManagerOptions{
+				Executor: func(context.Context, imagegen.JobRequest) (*imagegen.Response, error) {
+					return &imagegen.Response{Data: []imagegen.ImageData{{B64JSON: base64.StdEncoding.EncodeToString([]byte("generated fixture"))}}}, nil
+				},
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { manager.StopAll(context.Background()) })
+			params := ImagegenParams{Mode: imagegen.ModeGenerate, Prompt: "fixture", Output: filepath.Join(directory, "image.png"), Force: true}
+			name := "image.png"
+			if mode == "numbered" {
+				params.Output = ""
+				params.OutputDirectory = directory
+				name = "image_1.png"
+			}
+			if mode == "missing" || mode == "denied" {
+				params.Output = filepath.Join(directory, "nested", "deeper", "image.png")
+				name = filepath.Join("nested", "deeper", "image.png")
+			}
+			permissions := &replacingImagePermissionService{
+				recordingPermissionService: &recordingPermissionService{allow: mode != "denied"},
+				replace: func() {
+					require.NoDirExists(t, filepath.Join(directory, "nested"))
+					if mode != "denied" {
+						require.NoError(t, os.Rename(directory, directory+"-original"))
+						require.NoError(t, os.Symlink(outside, directory))
+					}
+				},
+			}
+			encoded, err := json.Marshal(params)
+			require.NoError(t, err)
+			ctx := context.WithValue(t.Context(), SessionIDContextKey, "session")
+			response, err := NewImagegenTool(manager, permissions, workingDir).Run(ctx, fantasy.ToolCall{ID: "image-call", Name: ImagegenToolName, Input: string(encoded)})
+			require.NoError(t, err)
+			if mode == "denied" {
+				require.True(t, response.IsError)
+				require.NoDirExists(t, filepath.Join(directory, "nested"))
+				return
+			}
+			require.False(t, response.IsError, response.Content)
+			var metadata ImagegenResponseMetadata
+			require.NoError(t, json.Unmarshal([]byte(response.Metadata), &metadata))
+			result, err := manager.Output(t.Context(), metadata.TaskID, true, 2*time.Second)
+			require.NoError(t, err)
+			require.Equal(t, managedtask.StatusCompleted, result.Task.State.Status)
+			content, err := os.ReadFile(filepath.Join(directory+"-original", name))
+			require.NoError(t, err)
+			require.Equal(t, "generated fixture", string(content))
+			entries, err := os.ReadDir(outside)
+			require.NoError(t, err)
+			require.Empty(t, entries)
+		})
+	}
+}
+
 func TestImagegenToolQueuesOneJobForMultipleOutputs(t *testing.T) {
 	executed := make(chan imagegen.JobRequest, 2)
 	manager, err := imagegen.NewJobManagerWithStore(t.TempDir(), nil, imagegen.JobManagerOptions{

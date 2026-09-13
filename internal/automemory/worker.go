@@ -431,7 +431,7 @@ func (w *Worker) relatedMemoryContext(query string) (string, error) {
 	}
 	var builder strings.Builder
 	for _, topic := range relevantTopics(topics, query, maxRelevantMemories) {
-		content, readErr := readTopic(topic.Path)
+		content, readErr := readTopic(topic)
 		if readErr != nil {
 			continue
 		}
@@ -446,7 +446,7 @@ func (w *Worker) memoryContext(limit int) (string, map[string]string, string, er
 		return "", nil, "", err
 	}
 	slices.SortFunc(topics, func(left, right Topic) int { return strings.Compare(left.Path, right.Path) })
-	cursor, err := os.ReadFile(filepath.Join(w.memory.Directory, ".consolidate-next"))
+	cursor, err := readMemoryServiceFile(w.memory.Directory, ".consolidate-next")
 	if err != nil && !os.IsNotExist(err) {
 		return "", nil, "", err
 	}
@@ -462,14 +462,7 @@ func (w *Worker) memoryContext(limit int) (string, map[string]string, string, er
 	next := ""
 	for i := range len(topics) {
 		topic := topics[(start+i)%len(topics)]
-		info, err := os.Stat(topic.Path)
-		if err != nil {
-			return "", nil, "", err
-		}
-		if info.Size() > maxMemoryFileBytes {
-			return "", nil, "", fmt.Errorf("memory %s exceeds maintenance file limit", filepath.Base(topic.Path))
-		}
-		content, err := os.ReadFile(topic.Path)
+		content, err := readMemoryServiceFile(topic.directory, topic.relativePath)
 		if err != nil {
 			return "", nil, "", err
 		}

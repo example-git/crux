@@ -65,6 +65,75 @@ func TestRelevantSkipsSymlinkTopics(t *testing.T) {
 	require.Empty(t, result)
 }
 
+func TestTopicReadRejectsParentReplacementAfterScan(t *testing.T) {
+	directory := t.TempDir()
+	nested := filepath.Join(directory, "nested")
+	require.NoError(t, os.Mkdir(nested, 0o700))
+	content := "---\nname: Testing\ndescription: Nested testing memory\ntype: project\n---\n\nInside content."
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "topic.md"), []byte(content), 0o600))
+	topics, err := scanTopics(directory)
+	require.NoError(t, err)
+	require.Len(t, topics, 1)
+	actual, err := readTopic(topics[0])
+	require.NoError(t, err)
+	require.Equal(t, content, actual)
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "topic.md"), []byte("Outside fixture."), 0o600))
+	require.NoError(t, os.Rename(nested, filepath.Join(directory, "original")))
+	require.NoError(t, os.Symlink(outside, nested))
+	actual, err = readTopic(topics[0])
+	require.Error(t, err)
+	require.Empty(t, actual)
+}
+
+func TestMemoryReadersRejectExternalControlFiles(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("CRUX_GLOBAL_DATA", t.TempDir())
+	t.Setenv("CRUX_AUTO_MEMORY_DIR", directory)
+	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "")
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	require.NoError(t, os.WriteFile(outside, []byte("Outside fixture."), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(directory, EntrypointName)))
+	memory, err := Load(t.Context(), t.TempDir())
+	require.Error(t, err)
+	require.Empty(t, memory.Content)
+	require.NoError(t, os.Remove(filepath.Join(directory, EntrypointName)))
+	require.NoError(t, os.Symlink(outside, filepath.Join(directory, ".consolidate-next")))
+	worker := &Worker{memory: Memory{Directory: directory}}
+	content, reviewed, _, err := worker.memoryContext(1000)
+	require.Error(t, err)
+	require.Empty(t, content)
+	require.Empty(t, reviewed)
+}
+
+func TestReadPrefixBoundsBytesAndLines(t *testing.T) {
+	directory := t.TempDir()
+	root, err := os.OpenRoot(directory)
+	require.NoError(t, err)
+	defer root.Close()
+	for _, test := range []struct {
+		name      string
+		content   string
+		lines     int
+		bytes     int
+		want      string
+		truncated bool
+	}{
+		{name: "exact bytes", content: "abcd", lines: 2, bytes: 4, want: "abcd"},
+		{name: "excess bytes", content: "abcdef", lines: 2, bytes: 4, want: "abcd", truncated: true},
+		{name: "excess lines", content: "ab\ncd\nef", lines: 2, bytes: 100, want: "ab\ncd", truncated: true},
+		{name: "utf8 boundary", content: "界界", lines: 2, bytes: 4, want: "界", truncated: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			require.NoError(t, os.WriteFile(filepath.Join(directory, "topic.md"), []byte(test.content), 0o600))
+			content, truncated, err := readPrefix(root, "topic.md", test.lines, test.bytes)
+			require.NoError(t, err)
+			require.Equal(t, test.want, string(content))
+			require.Equal(t, test.truncated, truncated)
+		})
+	}
+}
+
 func TestRelevantReturnsEmptyWhenNoTopicMatches(t *testing.T) {
 	directory := t.TempDir()
 	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "")

@@ -5,12 +5,15 @@ package githubsemantic
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/example-git/crux/internal/semanticembedding"
@@ -21,15 +24,77 @@ const (
 	defaultEmbeddingModel = "metis-1024-I16-Binary"
 )
 
+var (
+	rejectedCredentials sync.Map
+	requestGates        sync.Map
+)
+
+type githubRequestGate struct {
+	permit  chan struct{}
+	mu      sync.Mutex
+	retryAt time.Time
+}
+
+func githubRequestGateFor(baseURL, token string) *githubRequestGate {
+	key := sha256.Sum256([]byte(baseURL + "\x00" + token))
+	created := &githubRequestGate{permit: make(chan struct{}, 1)}
+	created.permit <- struct{}{}
+	actual, _ := requestGates.LoadOrStore(key, created)
+	return actual.(*githubRequestGate)
+}
+
+func (g *githubRequestGate) acquire(ctx context.Context) (func(), error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-g.permit:
+	}
+	g.mu.Lock()
+	retryAt := g.retryAt
+	g.mu.Unlock()
+	if delay := time.Until(retryAt); delay > 0 {
+		if err := waitForRetry(ctx, delay); err != nil {
+			g.release()
+			return nil, err
+		}
+	}
+	return g.release, nil
+}
+
+func (g *githubRequestGate) deferRetry(delay time.Duration) {
+	if delay <= 0 {
+		return
+	}
+	retryAt := time.Now().Add(delay)
+	g.mu.Lock()
+	if retryAt.After(g.retryAt) {
+		g.retryAt = retryAt
+	}
+	g.mu.Unlock()
+}
+
+func (g *githubRequestGate) release() {
+	g.permit <- struct{}{}
+}
+
+func AuthenticationRequired(token string) bool {
+	_, rejected := rejectedCredentials.Load(sha256.Sum256([]byte(token)))
+	return rejected
+}
+
 type TokenSource func(context.Context) (string, error)
 
 type GitHubSemanticError struct {
-	Operation string
-	Status    int
-	Body      string
+	Operation  string
+	Status     int
+	Body       string
+	RetryAfter time.Duration
 }
 
 func (e *GitHubSemanticError) Error() string {
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("GitHub %s request failed with status %d; retry after %s: %s", e.Operation, e.Status, e.RetryAfter.Round(time.Second), e.Body)
+	}
 	if e.Body == "" {
 		return fmt.Sprintf("GitHub %s request failed with status %d", e.Operation, e.Status)
 	}
@@ -66,7 +131,7 @@ func (c *GitHubClient) PreferredEmbeddingModel(ctx context.Context) string {
 			Active *bool  `json:"active"`
 		} `json:"models"`
 	}
-	if err := c.requestJSON(ctx, http.MethodGet, "/embeddings/models", nil, &response, "embedding model", 0); err != nil {
+	if err := c.requestJSON(ctx, http.MethodGet, "/embeddings/models", nil, &response, "embedding model", 0, 0); err != nil {
 		return defaultEmbeddingModel
 	}
 	for _, model := range response.Models {
@@ -122,7 +187,7 @@ func (c *GitHubClient) ChunkAndEmbedFile(ctx context.Context, path, content, mod
 			} `json:"embedding"`
 		} `json:"chunks"`
 	}
-	if err := c.requestJSON(ctx, http.MethodPost, "/chunks", request, &response, "chunking", c.maxRetries); err != nil {
+	if err := c.requestJSON(ctx, http.MethodPost, "/chunks", request, &response, "chunking", c.maxRetries, 0); err != nil {
 		return nil, err
 	}
 	returnedModel := response.EmbeddingModel
@@ -183,7 +248,9 @@ func (c *GitHubClient) EmbedQuery(ctx context.Context, query, model string) ([]f
 			Embedding []float32 `json:"embedding"`
 		} `json:"embeddings"`
 	}
-	if err := c.requestJSON(ctx, http.MethodPost, "/embeddings", request, &response, "embedding", c.maxRetries); err != nil {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := c.requestJSON(ctx, http.MethodPost, "/embeddings", request, &response, "embedding", c.maxRetries, 10*time.Second); err != nil {
 		return nil, err
 	}
 	if response.EmbeddingModel != "" && response.EmbeddingModel != model {
@@ -195,7 +262,7 @@ func (c *GitHubClient) EmbedQuery(ctx context.Context, query, model string) ([]f
 	return response.Embeddings[0].Embedding, nil
 }
 
-func (c *GitHubClient) requestJSON(ctx context.Context, method, path string, requestBody, responseBody any, operation string, retries int) error {
+func (c *GitHubClient) requestJSON(ctx context.Context, method, path string, requestBody, responseBody any, operation string, retries int, maxRetryWait time.Duration) error {
 	if c.tokenSource == nil {
 		return fmt.Errorf("GitHub token source is nil")
 	}
@@ -214,7 +281,14 @@ func (c *GitHubClient) requestJSON(ctx context.Context, method, path string, req
 	if token == "" {
 		return fmt.Errorf("GitHub codebase-index credential is unavailable")
 	}
+	gate := githubRequestGateFor(c.baseURL, token)
+	release, err := gate.acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("wait for GitHub %s request admission: %w", operation, err)
+	}
+	defer release()
 
+	var retryWait time.Duration
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bytes.NewReader(body))
 		if err != nil {
@@ -235,6 +309,7 @@ func (c *GitHubClient) requestJSON(ctx context.Context, method, path string, req
 			return fmt.Errorf("execute GitHub %s request: %w", operation, err)
 		}
 		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+			rejectedCredentials.Delete(sha256.Sum256([]byte(token)))
 			if responseBody == nil || resp.StatusCode == http.StatusNoContent {
 				resp.Body.Close()
 				return nil
@@ -249,23 +324,35 @@ func (c *GitHubClient) requestJSON(ctx context.Context, method, path string, req
 
 		responseBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 500))
 		resp.Body.Close()
+		rateLimited := resp.StatusCode == http.StatusTooManyRequests || githubRateLimited(resp, responseBytes)
 		retryable := resp.StatusCode == http.StatusRequestTimeout ||
-			resp.StatusCode == http.StatusTooManyRequests ||
-			resp.StatusCode >= 500 ||
-			githubRateLimited(resp, responseBytes)
-		if retryable && attempt < retries {
-			if err := c.wait(ctx, githubRetryDelay(resp, attempt+1)); err != nil {
+			rateLimited ||
+			resp.StatusCode >= 500
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden && !retryable {
+			rejectedCredentials.Store(sha256.Sum256([]byte(token)), struct{}{})
+		}
+		delay := githubRetryDelay(resp, responseBytes, attempt+1)
+		if rateLimited {
+			gate.deferRetry(delay)
+		}
+		if retryable && attempt < retries && (maxRetryWait == 0 || delay <= maxRetryWait-retryWait) {
+			if err := c.wait(ctx, delay); err != nil {
 				return fmt.Errorf("wait to retry GitHub %s request: %w", operation, err)
 			}
+			retryWait += delay
 			continue
 		}
 		if readErr != nil {
 			return &GitHubSemanticError{Operation: operation, Status: resp.StatusCode}
 		}
+		if !retryable {
+			delay = 0
+		}
 		return &GitHubSemanticError{
-			Operation: operation,
-			Status:    resp.StatusCode,
-			Body:      strings.Join(strings.Fields(string(responseBytes)), " "),
+			RetryAfter: delay,
+			Operation:  operation,
+			Status:     resp.StatusCode,
+			Body:       strings.Join(strings.Fields(string(responseBytes)), " "),
 		}
 	}
 }
@@ -289,9 +376,24 @@ func githubRateLimited(response *http.Response, body []byte) bool {
 	return strings.Contains(message, "rate limit exceeded") || strings.Contains(message, "secondary rate limit")
 }
 
-func githubRetryDelay(response *http.Response, attempt int) time.Duration {
-	if seconds, err := strconv.ParseFloat(response.Header.Get("Retry-After"), 64); err == nil && seconds > 0 {
-		return time.Duration(seconds * float64(time.Second))
+func githubRetryDelay(response *http.Response, body []byte, attempt int) time.Duration {
+	if delay := githubRetrySeconds(response.Header.Get("Retry-After")); delay > 0 {
+		return delay
+	}
+	if retryAt, err := http.ParseTime(response.Header.Get("Retry-After")); err == nil {
+		if delay := time.Until(retryAt); delay > 0 {
+			return delay
+		}
+	}
+	var value struct {
+		Metadata struct {
+			RetryAfter json.RawMessage `json:"retry_after"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(body, &value) == nil {
+		if delay := githubRetrySeconds(strings.Trim(string(value.Metadata.RetryAfter), "\"")); delay > 0 {
+			return delay
+		}
 	}
 	if reset, err := strconv.ParseInt(response.Header.Get("X-RateLimit-Reset"), 10, 64); err == nil {
 		if delay := time.Until(time.Unix(reset, 0)); delay > 0 {
@@ -299,6 +401,17 @@ func githubRetryDelay(response *http.Response, attempt int) time.Duration {
 		}
 	}
 	return min(250*time.Millisecond*time.Duration(1<<attempt), 2*time.Second)
+}
+
+func githubRetrySeconds(value string) time.Duration {
+	seconds, err := strconv.ParseFloat(value, 64)
+	if err != nil || math.IsNaN(seconds) || seconds <= 0 {
+		return 0
+	}
+	if seconds >= float64(math.MaxInt64)/float64(time.Second) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 func waitForRetry(ctx context.Context, delay time.Duration) error {

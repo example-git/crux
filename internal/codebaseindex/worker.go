@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/example-git/crux/internal/githubsemantic"
 )
 
 type StoreState string
@@ -386,13 +388,13 @@ func inspectProjectIndexStatus(options ProjectIndexOptions, checkNativeSource bo
 			status.Serving = false
 			if jobMatches && (job.status.State == StoreStateIndexing || job.status.State == StoreStateFailed) {
 				job.status.Serving = false
-				return job.status
+				return statusWithDetails(options, directory, job.status)
 			}
 			return status
 		}
 		if jobMatches && (job.status.State == StoreStateIndexing || job.status.State == StoreStateFailed) {
 			job.status.Serving = true
-			return job.status
+			return statusWithDetails(options, directory, job.status)
 		}
 		if (catalog.Source.Mode != "native" || checkNativeSource) && !sourceFilesCurrent(catalog.Source) {
 			status.State = StoreStateStale
@@ -400,13 +402,13 @@ func inspectProjectIndexStatus(options ProjectIndexOptions, checkNativeSource bo
 		}
 		if jobMatches && job.status.State == StoreStateReady {
 			job.status = statusWithCatalog(options, directory, catalog, job.status)
-			return job.status
+			return statusWithDetails(options, directory, job.status)
 		}
 		return status
 	}
 	if jobMatches && (job.status.State == StoreStateIndexing || job.status.State == StoreStateFailed) {
 		job.status.Serving = false
-		return job.status
+		return statusWithDetails(options, directory, job.status)
 	}
 	if errors.Is(catalogErr, os.ErrNotExist) {
 		checkpoint, checkpointErr := loadLatestProjectCheckpoint(directory, options.ProjectRoot, options.ConfiguredDatabasePath, filter)
@@ -437,7 +439,7 @@ func statusWithDetails(options ProjectIndexOptions, directory string, status Sto
 	}
 	token, err := indexTokenSource(options.TokenSource)(context.Background())
 	switch {
-	case err != nil:
+	case err != nil || token != "" && githubsemantic.AuthenticationRequired(token):
 		status.CredentialStatus = "invalid"
 	case token == "":
 		status.CredentialStatus = "missing"

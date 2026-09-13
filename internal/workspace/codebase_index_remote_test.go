@@ -30,8 +30,8 @@ func TestRemoteCodebaseIndexBuildSearchAndSettingsThroughTLS(t *testing.T) {
 	xdgIsolate(t)
 	clientAuth, serverAuth := t.TempDir(), t.TempDir()
 	t.Setenv("AI_CLI_DIR", clientAuth)
-	require.NoError(t, os.WriteFile(filepath.Join(clientAuth, "codebase-index-auth.json"), []byte(`{"accessToken":"synthetic-client-index-token","authMode":"vscode"}`), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(serverAuth, "codebase-index-auth.json"), []byte(`{"accessToken":"synthetic-server-must-not-be-used","authMode":"vscode"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(clientAuth, "accounts.json"), []byte(`{"active":{"codebase-index":"client"},"accounts":{"codebase-index":[{"id":"client","displayName":"Client","accessToken":"synthetic-client-index-token"}]}}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(serverAuth, "accounts.json"), []byte(`{"active":{"codebase-index":"server"},"accounts":{"codebase-index":[{"id":"server","displayName":"Server","accessToken":"synthetic-server-must-not-be-used"}]}}`), 0o600))
 	require.NoError(t, os.WriteFile(config.GlobalConfigData(), []byte(`{"providers":{"fixture":{"type":"openai-compat","api_key":"synthetic-model-token","base_url":"https://fixture.invalid/v1","models":[{"id":"fixture","name":"Fixture"}]}},"models":{"large":{"provider":"fixture","model":"fixture"},"small":{"provider":"fixture","model":"fixture"}},"tools":{"codebase_search":{"database_path":"/client-only/source.db","store_directory":"/client-only/store"}}}`), 0o600))
 	store, err := config.LoadRemoteClient(false)
 	require.NoError(t, err)
@@ -143,7 +143,7 @@ func TestRemoteCodebaseIndexBuildSearchAndSettingsThroughTLS(t *testing.T) {
 	require.ErrorIs(t, err, config.ErrRemoteRuntimeRevision)
 
 	// Missing client credentials cannot fall back to the signed-in server.
-	require.NoError(t, os.Remove(filepath.Join(clientAuth, "codebase-index-auth.json")))
+	require.NoError(t, os.Remove(filepath.Join(clientAuth, "accounts.json")))
 	status, err = w.UpdateCodebaseIndex(t.Context(), proto.CodebaseIndexUpdate{Enabled: true, IncludePaths: []string{"main.go"}})
 	require.NoError(t, err)
 	require.Equal(t, "missing", status.CredentialStatus)

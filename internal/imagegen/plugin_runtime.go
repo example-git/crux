@@ -476,7 +476,7 @@ func (r *PluginRuntime) Execute(ctx context.Context, owner providerplugin.ImageO
 		var workers sync.WaitGroup
 		for index := range count {
 			workers.Go(func() {
-				variantValues := make(map[string]any, len(values)+1)
+				variantValues := make(map[string]any)
 				for key, item := range values {
 					variantValues[key] = item
 				}

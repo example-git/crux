@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -45,6 +47,109 @@ func TestGitHubClientEmbedQuery(t *testing.T) {
 	embedding, err := client.EmbedQuery(context.Background(), "find session loading", "model-a")
 	require.NoError(t, err)
 	require.Equal(t, []float32{1, 0.5}, embedding)
+}
+
+func TestGitHubClientSerializesSharedCredentialRequests(t *testing.T) {
+	var inFlight atomic.Int32
+	var maximum atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		current := inFlight.Add(1)
+		for observed := maximum.Load(); current > observed && !maximum.CompareAndSwap(observed, current); observed = maximum.Load() {
+		}
+		time.Sleep(25 * time.Millisecond)
+		inFlight.Add(-1)
+		_, _ = response.Write([]byte(`{"embedding_model":"model-a","embeddings":[{"embedding":[1,0]}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	clients := []*GitHubClient{
+		NewGitHubClient(server.Client(), func(context.Context) (string, error) { return "shared-token", nil }, ""),
+		NewGitHubClient(server.Client(), func(context.Context) (string, error) { return "shared-token", nil }, ""),
+	}
+	for _, client := range clients {
+		client.baseURL = server.URL
+	}
+	start := make(chan struct{})
+	results := make(chan error, len(clients))
+	var workers sync.WaitGroup
+	for _, client := range clients {
+		workers.Add(1)
+		go func(client *GitHubClient) {
+			defer workers.Done()
+			<-start
+			_, err := client.EmbedQuery(t.Context(), "query", "model-a")
+			results <- err
+		}(client)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	for err := range results {
+		require.NoError(t, err)
+	}
+	require.Equal(t, int32(1), maximum.Load())
+}
+
+func TestGitHubClientRequestGateCancellation(t *testing.T) {
+	entered := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		select {
+		case <-entered:
+		default:
+			close(entered)
+			<-releaseRequest
+		}
+		_, _ = response.Write([]byte(`{"embedding_model":"model-a","embeddings":[{"embedding":[1,0]}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	first := NewGitHubClient(server.Client(), func(context.Context) (string, error) { return "shared-token", nil }, "")
+	first.baseURL = server.URL
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := first.EmbedQuery(t.Context(), "first", "model-a")
+		firstResult <- err
+	}()
+	<-entered
+
+	second := NewGitHubClient(server.Client(), func(context.Context) (string, error) { return "shared-token", nil }, "")
+	second.baseURL = server.URL
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := second.EmbedQuery(ctx, "second", "model-a")
+	require.ErrorIs(t, err, context.Canceled)
+
+	close(releaseRequest)
+	require.NoError(t, <-firstResult)
+}
+
+func TestGitHubClientSharesRateLimitCooldown(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if requests.Add(1) == 1 {
+			response.WriteHeader(http.StatusTooManyRequests)
+			_, _ = response.Write([]byte(`{"metadata":{"retry_after":0.05}}`))
+			return
+		}
+		_, _ = response.Write([]byte(`{"embedding_model":"model-a","embeddings":[{"embedding":[1,0]}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	first := NewGitHubClient(server.Client(), func(context.Context) (string, error) { return "shared-token", nil }, "")
+	first.baseURL = server.URL
+	first.maxRetries = 0
+	_, err := first.EmbedQuery(t.Context(), "first", "model-a")
+	require.ErrorContains(t, err, "status 429")
+
+	second := NewGitHubClient(server.Client(), func(context.Context) (string, error) { return "shared-token", nil }, "")
+	second.baseURL = server.URL
+	started := time.Now()
+	embedding, err := second.EmbedQuery(t.Context(), "second", "model-a")
+	require.NoError(t, err)
+	require.Equal(t, []float32{1, 0}, embedding)
+	require.GreaterOrEqual(t, time.Since(started), 40*time.Millisecond)
+	require.Equal(t, int32(2), requests.Load())
 }
 
 func TestGitHubClientEmbedQueryRetries(t *testing.T) {
@@ -180,6 +285,117 @@ func TestGitHubClientEmbedQueryErrors(t *testing.T) {
 		_, err := client.EmbedQuery(context.Background(), "query", "model-a")
 		require.ErrorContains(t, err, "invalid query embedding")
 	})
+}
+
+func TestGitHubClientLongQueryRetryReturnsImmediately(t *testing.T) {
+	for _, header := range []bool{false, true} {
+		t.Run(strconv.FormatBool(header), func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				requests.Add(1)
+				if header {
+					response.Header().Set("Retry-After", "202")
+				}
+				response.WriteHeader(http.StatusTooManyRequests)
+				_, _ = response.Write([]byte(`{"message":"try again in 201.434100025s","metadata":{"retry_after":"202"}}`))
+			}))
+			t.Cleanup(server.Close)
+			client := NewGitHubClient(server.Client(), func(context.Context) (string, error) { return "token", nil }, "")
+			client.baseURL = server.URL
+			client.wait = func(context.Context, time.Duration) error {
+				t.Fatal("query must not wait for a long rate limit")
+				return nil
+			}
+			_, err := client.EmbedQuery(t.Context(), "query", "model-a")
+			var semanticErr *GitHubSemanticError
+			require.ErrorAs(t, err, &semanticErr)
+			require.Equal(t, 202*time.Second, semanticErr.RetryAfter)
+			require.ErrorContains(t, err, "retry after 3m22s")
+			require.Equal(t, int32(1), requests.Load())
+		})
+	}
+}
+
+func TestGitHubClientChunkingHonorsBodyRetryDelay(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if requests.Add(1) == 1 {
+			response.WriteHeader(http.StatusTooManyRequests)
+			_, _ = response.Write([]byte(`{"metadata":{"retry_after":"202"}}`))
+			return
+		}
+		_, _ = response.Write([]byte(`{"embedding_model":"model-a","chunks":[]}`))
+	}))
+	t.Cleanup(server.Close)
+	client := NewGitHubClient(server.Client(), func(context.Context) (string, error) { return "token", nil }, "")
+	client.baseURL = server.URL
+	var delays []time.Duration
+	client.wait = func(_ context.Context, delay time.Duration) error {
+		delays = append(delays, delay)
+		return nil
+	}
+	_, err := client.ChunkAndEmbedFile(t.Context(), "main.go", "package main", "model-a")
+	require.NoError(t, err)
+	require.Equal(t, []time.Duration{202 * time.Second}, delays)
+	require.Equal(t, int32(2), requests.Load())
+}
+
+func TestGitHubClientQueryRetryBudget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Retry-After", "6")
+		response.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(server.Close)
+	client := NewGitHubClient(server.Client(), func(context.Context) (string, error) { return "token", nil }, "")
+	client.baseURL = server.URL
+	var waits int
+	client.wait = func(_ context.Context, delay time.Duration) error {
+		waits++
+		require.Equal(t, 6*time.Second, delay)
+		return nil
+	}
+	_, err := client.EmbedQuery(t.Context(), "query", "model-a")
+	require.ErrorContains(t, err, "status 429")
+	require.Equal(t, 1, waits)
+}
+
+func TestGitHubRetryDelay(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		header string
+		body   string
+		want   time.Duration
+	}{
+		{name: "header", header: "202", want: 202 * time.Second},
+		{name: "string metadata", body: `{"metadata":{"retry_after":"202"}}`, want: 202 * time.Second},
+		{name: "numeric metadata", body: `{"metadata":{"retry_after":1.5}}`, want: 1500 * time.Millisecond},
+		{name: "header precedence", header: "3", body: `{"metadata":{"retry_after":"202"}}`, want: 3 * time.Second},
+		{name: "invalid metadata", body: `{"metadata":{"retry_after":"NaN"}}`, want: 500 * time.Millisecond},
+		{name: "negative metadata", body: `{"metadata":{"retry_after":-2}}`, want: 500 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := &http.Response{Header: make(http.Header)}
+			response.Header.Set("Retry-After", test.header)
+			require.Equal(t, test.want, githubRetryDelay(response, []byte(test.body), 1))
+		})
+	}
+}
+
+func TestGitHubClientQueryCancellationDuringRetry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(server.Close)
+	client := NewGitHubClient(server.Client(), func(context.Context) (string, error) { return "token", nil }, "")
+	client.baseURL = server.URL
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	client.wait = func(ctx context.Context, delay time.Duration) error {
+		cancel()
+		return waitForRetry(ctx, delay)
+	}
+	_, err := client.EmbedQuery(ctx, "query", "model-a")
+	require.ErrorIs(t, err, context.Canceled)
 }
 
 func embeddingTestServer(t *testing.T, body string) *httptest.Server {

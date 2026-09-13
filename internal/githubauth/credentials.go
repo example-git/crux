@@ -11,6 +11,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/example-git/crux/internal/oauth/accounts"
 )
 
 type Purpose string
@@ -23,6 +25,45 @@ const (
 
 type Source interface {
 	Token(context.Context, Purpose) (string, error)
+}
+
+type AccountSource struct {
+	Path string
+	Err  error
+}
+
+func DefaultAccountSource() AccountSource {
+	legacy := DefaultLegacyIndexFileSource()
+	return AccountSource{Path: filepath.Join(filepath.Dir(legacy.Path), "accounts.json"), Err: legacy.Err}
+}
+
+func (s AccountSource) Token(ctx context.Context, purpose Purpose) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if s.Err != nil {
+		return "", s.Err
+	}
+	if purpose != CodebaseIndex {
+		return "", fmt.Errorf("GitHub credential source does not serve purpose %q", purpose)
+	}
+	state, err := accounts.CaptureStateAt(ctx, s.Path, []string{string(CodebaseIndex)})
+	if err != nil {
+		return "", err
+	}
+	activeID := state.ActiveID(string(CodebaseIndex))
+	if activeID == "" {
+		return "", nil
+	}
+	for _, entry := range state.Entries(string(CodebaseIndex)) {
+		if entry.ID == activeID {
+			if entry.AccessToken == "" || entry.Expired() {
+				return "", errors.New("selected codebase-index account requires login")
+			}
+			return entry.AccessToken, nil
+		}
+	}
+	return "", errors.New("selected codebase-index account is missing; select a valid account in Accounts")
 }
 
 // LegacyIndexFileSource reads the current codebase-index credential while its

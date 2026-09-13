@@ -46,6 +46,25 @@ func TestActivityStatusLabel(t *testing.T) {
 	require.Equal(t, "index ready, refreshing 12/40", activityStatusLabel(proto.CodebaseIndexStatus{State: "indexing", Serving: true, FilesProcessed: 12, FilesTotal: 40}))
 }
 
+func TestIndexLoginRequiredInEditorFrame(t *testing.T) {
+	for _, credential := range []string{"missing", "invalid"} {
+		for _, state := range []string{"ready", "indexing", "failed", "missing"} {
+			ui := newTestUI()
+			ui.state = uiChat
+			ui.activityStatus = proto.CodebaseIndexStatus{Enabled: true, State: state, Serving: true, CredentialStatus: credential, MemoryActivity: "updating"}
+			label := activityStatusLabel(ui.activityStatus)
+			require.Equal(t, "index LOGIN REQUIRED  memory updating", ansi.Strip(label))
+			require.Contains(t, label, "\x1b[1mLOGIN REQUIRED")
+			line := strings.Split(ui.renderEditorView(100), "\n")[0]
+			require.Equal(t, 100, ansi.StringWidth(line))
+			require.Contains(t, ansi.Strip(line), "index LOGIN REQUIRED  memory updating")
+			require.NotContains(t, ansi.Strip(line), "index ready")
+		}
+	}
+	require.Empty(t, activityStatusLabel(proto.CodebaseIndexStatus{State: "disabled", CredentialStatus: "missing"}))
+	require.Equal(t, "index ready", activityStatusLabel(proto.CodebaseIndexStatus{Enabled: true, State: "ready", CredentialStatus: "signed-in"}))
+}
+
 func TestActivityRefreshFetchesOffThreadAndPollsWhileActive(t *testing.T) {
 	t.Parallel()
 

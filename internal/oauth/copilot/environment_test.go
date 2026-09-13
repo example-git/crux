@@ -5,12 +5,48 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/stretchr/testify/require"
 )
+
+func TestCodebaseIndexOAuthAndIdentity(t *testing.T) {
+	original := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = original })
+	ctx := oauth.ContextWithEnvironment(t.Context(), []string{"COPILOT_ADVERTISE_MODE=vscode", "COPILOT_VSCODE_EXTENSION_VERSION=1.2.3"})
+	http.DefaultTransport = copilotRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		body := ""
+		switch r.URL.Path {
+		case "/login/device/code":
+			require.NoError(t, r.ParseForm())
+			require.Equal(t, codebaseIndexClientID, r.Form.Get("client_id"))
+			body = `{"device_code":"synthetic-device","user_code":"ABCD","expires_in":120}`
+		case "/login/oauth/access_token":
+			require.NoError(t, r.ParseForm())
+			require.Equal(t, codebaseIndexClientID, r.Form.Get("client_id"))
+			body = `{"access_token":"synthetic-github"}`
+		case "/user":
+			require.Equal(t, "api.github.com", r.URL.Host)
+			require.Equal(t, "Bearer synthetic-github", r.Header.Get("Authorization"))
+			body = `{"id":42,"login":"example"}`
+		default:
+			t.Fatalf("unexpected OAuth destination: %s", r.URL.Path)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+	})
+	device, err := RequestCodebaseIndexDeviceCode(ctx)
+	require.NoError(t, err)
+	token, err := tryGetGitHubTokenForClient(ctx, device.DeviceCode, codebaseIndexClientID)
+	require.NoError(t, err)
+	require.Equal(t, "synthetic-github", token.AccessToken)
+	require.Empty(t, token.RefreshToken)
+	id, name, _ := GitHubIdentity(ctx, token.AccessToken)
+	require.Equal(t, "42", id)
+	require.Equal(t, "example", name)
+}
 
 func TestDeviceAndPollRequestsUseCapturedIdentity(t *testing.T) {
 	ctx := oauth.ContextWithEnvironment(t.Context(), []string{"COPILOT_ADVERTISE_MODE=vscode", "COPILOT_VSCODE_EXTENSION_VERSION=1.2.3", "COPILOT_VSCODE_INTEGRATION_ID=captured-integration", "COPILOT_VSCODE_EDITOR_VERSION=captured-editor", "COPILOT_VSCODE_EDITOR_PLUGIN_VERSION=captured-plugin"})

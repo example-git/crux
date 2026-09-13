@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -142,8 +143,28 @@ func UserDirectory() string {
 }
 
 func readEntrypoint(path string) (string, error) {
-	content, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return "", fmt.Errorf("opening auto-memory directory: %w", err)
+	}
+	defer root.Close()
+	file, err := root.Open(filepath.Base(path))
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading auto-memory index %q: %w", path, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("auto-memory index %q is not a regular file", path)
+	}
+	content, err := io.ReadAll(io.LimitReader(file, MaxEntrypointBytes+1))
+	if err != nil {
 		return "", fmt.Errorf("reading auto-memory index %q: %w", path, err)
 	}
 	return truncateEntrypoint(content), nil

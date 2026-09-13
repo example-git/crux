@@ -141,5 +141,5 @@ LIMIT 1`, projectRoot).Scan(&found)
 }
 
 func CodebaseIndexToken(ctx context.Context) (string, error) {
-	return githubauth.DefaultLegacyIndexFileSource().Token(ctx, githubauth.CodebaseIndex)
+	return githubauth.DefaultAccountSource().Token(ctx, githubauth.CodebaseIndex)
 }

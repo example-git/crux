@@ -42,6 +42,9 @@ type JobRequest struct {
 	// Private captured client authority is retained only in memory, never in
 	// persisted job metadata, discovery or cross-workspace recovery payloads.
 	runtime         *PluginRuntime
+	inputFiles      map[string]os.FileInfo
+	outputCapture   *outputCapture
+	outputRoots     map[string]*os.Root
 	Owner           *providerplugin.ImageOwner `json:"owner,omitempty"`
 	OutputExtension string                     `json:"output_extension,omitempty"`
 	Mode            string                     `json:"mode"`
@@ -369,7 +372,7 @@ func (m *JobManager) ReserveNumberedOutputs(request JobRequest, directory string
 	if m.closed {
 		return nil, errors.New("background image job manager is closed")
 	}
-	paths, err := nextNumberedOutputPaths(directory, request.Count, request.Force, request.Backend, m.reservedPaths, request.OutputExtension)
+	paths, err := request.numberedOutputPaths(directory, m.reservedPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -415,19 +418,29 @@ func (m *JobManager) enqueue(request JobRequest, outputDirectory, description st
 	if err := validateJobRequestBeforeAllocation(request, outputDirectory != ""); err != nil {
 		return managedtask.View{}, nil, err
 	}
+	request, err = request.CaptureInputFiles()
+	if err != nil {
+		return managedtask.View{}, nil, err
+	}
+	var releaseCapture func()
+	request, releaseCapture, err = request.captureOutputDirectories(outputDirectory)
+	if err != nil {
+		return managedtask.View{}, nil, err
+	}
+	defer releaseCapture()
+	request.outputRoots, err = request.outputCapture.materialize()
+	if err != nil {
+		return managedtask.View{}, nil, err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			closeOutputRoots(request.outputRoots)
+		}
+	}()
 	if outputDirectory == "" {
-		if err := preflightJobPaths(request); err != nil {
+		if err := preflightJobOutputs(request); err != nil {
 			return managedtask.View{}, nil, err
-		}
-	} else {
-		if !filepath.IsAbs(outputDirectory) {
-			return managedtask.View{}, nil, fmt.Errorf("numbered output directory must be absolute: %s", outputDirectory)
-		}
-		if err := preflightJobInputs(request); err != nil {
-			return managedtask.View{}, nil, err
-		}
-		if err := os.MkdirAll(outputDirectory, 0o755); err != nil {
-			return managedtask.View{}, nil, fmt.Errorf("create output directory %q: %w", outputDirectory, err)
 		}
 	}
 
@@ -440,7 +453,7 @@ func (m *JobManager) enqueue(request JobRequest, outputDirectory, description st
 		return managedtask.View{}, nil, fmt.Errorf("background image queue capacity reached: %d active or pending jobs", m.maxQueued)
 	}
 	if outputDirectory != "" {
-		paths, err := nextNumberedOutputPaths(outputDirectory, request.Count, request.Force, request.Backend, m.reservedPaths, request.OutputExtension)
+		paths, err := request.numberedOutputPaths(outputDirectory, m.reservedPaths)
 		if err != nil {
 			return managedtask.View{}, nil, err
 		}
@@ -483,6 +496,7 @@ func (m *JobManager) enqueue(request JobRequest, outputDirectory, description st
 		m.reservedPaths[path] = id
 	}
 	m.active++
+	transferred = true
 	m.queue <- job
 	return job.Info(), append([]string(nil), request.OutputPaths...), nil
 }
@@ -548,11 +562,30 @@ func preflightJobPaths(request JobRequest) error {
 	return preflightJobOutputs(request)
 }
 
+func (request JobRequest) CaptureInputFiles() (JobRequest, error) {
+	request.InputPaths = slices.Clone(request.InputPaths)
+	if request.inputFiles != nil {
+		return request, preflightJobInputs(request)
+	}
+	request.inputFiles = make(map[string]os.FileInfo, len(request.InputPaths))
+	for _, path := range request.InputPaths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return request, fmt.Errorf("inspect input image %q: %w", path, err)
+		}
+		request.inputFiles[path] = info
+	}
+	return request, preflightJobInputs(request)
+}
+
 func preflightJobInputs(request JobRequest) error {
 	for _, path := range request.InputPaths {
 		info, err := os.Stat(path)
 		if err != nil {
 			return fmt.Errorf("inspect input image %q: %w", path, err)
+		}
+		if request.inputFiles != nil && !os.SameFile(request.inputFiles[path], info) {
+			return fmt.Errorf("input image %q changed after capture; submit a new request", path)
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("input image is not a regular file: %s", path)
@@ -566,10 +599,11 @@ func preflightJobInputs(request JobRequest) error {
 
 func preflightJobOutputs(request JobRequest) error {
 	for _, path := range request.OutputPaths {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return fmt.Errorf("create output directory %q: %w", filepath.Dir(path), err)
+		root := request.outputRoots[filepath.Dir(path)]
+		if root == nil {
+			return fmt.Errorf("output directory was not captured: %s", filepath.Dir(path))
 		}
-		info, err := os.Stat(path)
+		info, err := root.Stat(filepath.Base(path))
 		switch {
 		case err == nil && info.IsDir():
 			return fmt.Errorf("output path %q is a directory", path)
@@ -582,7 +616,7 @@ func preflightJobOutputs(request JobRequest) error {
 	return nil
 }
 
-func nextNumberedOutputPaths(directory string, count int, force bool, backend Backend, reserved map[string]string, extensions ...string) ([]string, error) {
+func nextNumberedOutputPaths(directory string, count int, force bool, backend Backend, reserved map[string]string, inspect func(string) (os.FileInfo, error), extensions ...string) ([]string, error) {
 	paths := make([]string, 0, count)
 	for index := 1; len(paths) < count; index++ {
 		name := NumberedOutputName(backend, index)
@@ -593,7 +627,7 @@ func nextNumberedOutputPaths(directory string, count int, force bool, backend Ba
 		if _, exists := reserved[path]; exists {
 			continue
 		}
-		info, err := os.Lstat(path)
+		info, err := inspect(name)
 		switch {
 		case err == nil && force && info.Mode().IsRegular():
 			paths = append(paths, path)
@@ -625,7 +659,7 @@ func (m *JobManager) run(job *ImageJob) {
 	job.mu.Lock()
 	if job.state.Status.Terminal() {
 		job.mu.Unlock()
-		job.executionOnce.Do(func() { close(job.executionDone) })
+		job.completeExecution()
 		return
 	}
 	runCtx, cancel := context.WithCancel(m.ctx)
@@ -639,9 +673,16 @@ func (m *JobManager) run(job *ImageJob) {
 	m.beginExecution()
 	defer func() {
 		m.endExecution()
-		job.executionOnce.Do(func() { close(job.executionDone) })
+		job.completeExecution()
 	}()
 	m.executeJob(runCtx, job, persistErr)
+}
+
+func (j *ImageJob) completeExecution() {
+	j.executionOnce.Do(func() {
+		closeOutputRoots(j.Request.outputRoots)
+		close(j.executionDone)
+	})
 }
 
 func (m *JobManager) beginExecution() {
@@ -689,7 +730,7 @@ func (m *JobManager) executeRequest(ctx context.Context, request JobRequest) (*R
 		var images []EditImage
 		var err error
 		if request.Mode == ModeEdit {
-			images, err = loadEditImages(ctx, request.InputPaths)
+			images, err = loadEditImages(ctx, request.InputPaths, request.inputFiles)
 			if err != nil {
 				return nil, err
 			}
@@ -718,7 +759,7 @@ func (m *JobManager) executeRequest(ctx context.Context, request JobRequest) (*R
 			Background: request.Background,
 		})
 	}
-	images, err := loadEditImages(ctx, request.InputPaths)
+	images, err := loadEditImages(ctx, request.InputPaths, request.inputFiles)
 	if err != nil {
 		return nil, err
 	}
@@ -734,7 +775,7 @@ func (m *JobManager) executeRequest(ctx context.Context, request JobRequest) (*R
 	})
 }
 
-func loadEditImages(ctx context.Context, paths []string) ([]EditImage, error) {
+func loadEditImages(ctx context.Context, paths []string, identities map[string]os.FileInfo) ([]EditImage, error) {
 	images := make([]EditImage, 0, len(paths))
 	var total int64
 	for _, path := range paths {
@@ -744,6 +785,11 @@ func loadEditImages(ctx context.Context, paths []string) ([]EditImage, error) {
 		file, err := os.Open(path)
 		if err != nil {
 			return nil, fmt.Errorf("open input image %q: %w", path, err)
+		}
+		info, statErr := file.Stat()
+		if statErr != nil || !os.SameFile(identities[path], info) {
+			_ = file.Close()
+			return nil, fmt.Errorf("input image %q changed after capture; submit a new request", path)
 		}
 		data, readErr := io.ReadAll(io.LimitReader(file, maxInputImageBytes+1))
 		closeErr := file.Close()
@@ -784,9 +830,13 @@ func writeJobImages(ctx context.Context, request JobRequest, response *Response)
 		temporary string
 	}
 	staged := make([]stagedImage, 0, len(response.Data))
+	roots := make(map[string]*os.Root)
 	defer func() {
 		for _, image := range staged {
-			_ = os.Remove(image.temporary)
+			_ = roots[filepath.Dir(image.path)].Remove(image.temporary)
+		}
+		for _, root := range roots {
+			_ = root.Close()
 		}
 	}()
 	failures := append([]ImageVariantFailure(nil), response.Failures...)
@@ -798,7 +848,26 @@ func writeJobImages(ctx context.Context, request JobRequest, response *Response)
 		encoded := response.Data[index].B64JSON
 		response.Data[index].B64JSON = ""
 		path := request.OutputPaths[variant-1]
-		temporary, stageErr := stageJobImage(ctx, path, encoded)
+		directory := filepath.Dir(path)
+		root := roots[directory]
+		if root == nil {
+			var openErr error
+			if request.outputRoots != nil {
+				if captured := request.outputRoots[directory]; captured != nil {
+					root, openErr = captured.OpenRoot(".")
+				} else {
+					openErr = errors.New("image output directory was not captured")
+				}
+			} else {
+				root, openErr = os.OpenRoot(directory)
+			}
+			if openErr != nil {
+				failures = append(failures, ImageVariantFailure{Variant: variant, Error: fmt.Sprintf("open output directory: %v", openErr)})
+				continue
+			}
+			roots[directory] = root
+		}
+		temporary, stageErr := stageJobImage(ctx, root, encoded)
 		if stageErr != nil {
 			failures = append(failures, ImageVariantFailure{Variant: variant, Error: fmt.Sprintf("decode image data: %v", stageErr)})
 			continue
@@ -810,12 +879,12 @@ func writeJobImages(ctx context.Context, request JobRequest, response *Response)
 	created := make([]string, 0, len(staged))
 	for _, image := range staged {
 		if err := ctx.Err(); err != nil {
-			removeCreatedOutputs(created)
+			removeCreatedOutputs(created, roots)
 			return nil, err
 		}
-		if writeErr := writeStagedImage(ctx, image.temporary, image.path, request.Force); writeErr != nil {
+		if writeErr := writeStagedImage(ctx, roots[filepath.Dir(image.path)], image.temporary, filepath.Base(image.path), request.Force); writeErr != nil {
 			if err := ctx.Err(); err != nil {
-				removeCreatedOutputs(created)
+				removeCreatedOutputs(created, roots)
 				return nil, err
 			}
 			failures = append(failures, ImageVariantFailure{Variant: image.variant, Error: writeErr.Error()})
@@ -836,17 +905,17 @@ func writeJobImages(ctx context.Context, request JobRequest, response *Response)
 	return outputs, nil
 }
 
-func stageJobImage(ctx context.Context, outputPath, encoded string) (string, error) {
-	file, err := os.CreateTemp(filepath.Dir(outputPath), ".crux-image-*")
+func stageJobImage(ctx context.Context, root *os.Root, encoded string) (string, error) {
+	temporary := ".crux-image-" + uuid.NewString()
+	file, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return "", fmt.Errorf("create temporary image file: %w", err)
 	}
-	temporary := file.Name()
 	remove := true
 	defer func() {
 		_ = file.Close()
 		if remove {
-			_ = os.Remove(temporary)
+			_ = root.Remove(temporary)
 		}
 	}()
 	if err := file.Chmod(0o644); err != nil {
@@ -868,22 +937,24 @@ func stageJobImage(ctx context.Context, outputPath, encoded string) (string, err
 	return temporary, nil
 }
 
-func writeStagedImage(ctx context.Context, temporary, path string, force bool) error {
+func writeStagedImage(ctx context.Context, root *os.Root, temporary, path string, force bool) error {
+	name := path
+	path = filepath.Join(root.Name(), path)
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if force {
-		if err := os.Rename(temporary, path); err != nil {
+		if err := root.Rename(temporary, name); err != nil {
 			return fmt.Errorf("replace image %q: %w", path, err)
 		}
 		return nil
 	}
-	input, err := os.Open(temporary)
+	input, err := root.Open(temporary)
 	if err != nil {
 		return fmt.Errorf("open staged image for %q: %w", path, err)
 	}
 	defer input.Close()
-	output, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	output, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
 			return fmt.Errorf("output already exists: %s", path)
@@ -893,7 +964,7 @@ func writeStagedImage(ctx context.Context, temporary, path string, force bool) e
 	_, writeErr := io.Copy(output, &jobContextReader{ctx: ctx, reader: input})
 	closeErr := output.Close()
 	if writeErr != nil || closeErr != nil {
-		_ = os.Remove(path)
+		_ = root.Remove(name)
 		if writeErr != nil {
 			return fmt.Errorf("write image %q: %w", path, writeErr)
 		}
@@ -923,9 +994,9 @@ func clearImageResponseData(response *Response) {
 	}
 }
 
-func removeCreatedOutputs(paths []string) {
+func removeCreatedOutputs(paths []string, roots map[string]*os.Root) {
 	for _, path := range paths {
-		_ = os.Remove(path)
+		_ = roots[filepath.Dir(path)].Remove(filepath.Base(path))
 	}
 }
 
@@ -1218,7 +1289,7 @@ func (j *ImageJob) requestStop() {
 			j.mu.Unlock()
 			j.releaseOnce.Do(func() { j.release(j) })
 			j.doneOnce.Do(func() { close(j.done) })
-			j.executionOnce.Do(func() { close(j.executionDone) })
+			j.completeExecution()
 			if notification != nil {
 				j.notify(*notification)
 			}
