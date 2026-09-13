@@ -3,6 +3,7 @@ package trafficcapture
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -33,6 +34,22 @@ func TestPreparedRequestRejectsExecutableReplacement(t *testing.T) {
 	require.ErrorContains(t, err, "changed after approval")
 	requireFileBytes(t, moved, "#!/bin/sh\n")
 	requireFileBytes(t, executable, "#!/bin/sh\nexit 1\n")
+}
+
+func TestPrepareRejectsNonExecutableTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows executable validation does not use mode bits")
+	}
+	workingDirectory := t.TempDir()
+	executable := filepath.Join(workingDirectory, "target")
+	require.NoError(t, os.WriteFile(executable, []byte("not executable"), 0o600))
+
+	_, err := Prepare(t.Context(), Request{
+		Executable:  executable,
+		WorkingDir:  workingDirectory,
+		CapturePath: filepath.Join(workingDirectory, "capture.mitm"),
+	})
+	require.ErrorContains(t, err, "target is not executable")
 }
 
 func TestCaptureOutputRejectsParentReplacement(t *testing.T) {
