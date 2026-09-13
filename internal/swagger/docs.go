@@ -9632,7 +9632,8 @@ const docTemplate = `{
                 "gemini-generate-content",
                 "gemini-interactions",
                 "generic-json",
-                "openai-compat"
+                "openai-compat",
+                "codebase-index"
             ],
             "x-enum-varnames": [
                 "ConstructionCodex",
@@ -9643,7 +9644,8 @@ const docTemplate = `{
                 "ConstructionGeminiContent",
                 "ConstructionGeminiInteraction",
                 "ConstructionGenericJSON",
-                "ConstructionOpenAICompat"
+                "ConstructionOpenAICompat",
+                "ConstructionCodebaseIndex"
             ]
         },
         "providerregistry.HostRuntimeControl": {

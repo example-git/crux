@@ -3,11 +3,14 @@ package shell
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/example-git/crux/internal/filepathext"
 	"github.com/itchyny/gojq"
 	"mvdan.cc/sh/v3/interp"
 )
@@ -133,7 +136,31 @@ func handleJQ(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		i++
 	}
 
+	options.OpenFile = func(path string) (io.ReadCloser, error) {
+		resolved := path
+		if !filepath.IsAbs(path) {
+			resolved = filepathext.SmartJoin(interp.HandlerCtx(ctx).Dir, path)
+		}
+		return openJQFile(resolved)
+	}
 	return RunJQ(ctx, options, stdin, stdout, stderr)
+}
+
+func openJQFile(path string) (io.ReadCloser, error) {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, err
+	}
+	file, err := root.Open(filepath.Base(path))
+	closeErr := root.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		_ = file.Close()
+		return nil, closeErr
+	}
+	return file, nil
 }
 
 func RunJQ(ctx context.Context, options JQOptions, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -234,11 +261,11 @@ func readInputs(ctx context.Context, stdin io.Reader, files []string, nullInput,
 		return []any{nil}, nil
 	}
 
-	if openFile == nil {
-		openFile = func(path string) (io.ReadCloser, error) { return os.Open(path) }
-	}
 	var readers []io.Reader
 	if len(files) > 0 {
+		if openFile == nil {
+			return nil, errors.New("jq file opener is required for file inputs")
+		}
 		for _, f := range files {
 			if err := ctx.Err(); err != nil {
 				return nil, err

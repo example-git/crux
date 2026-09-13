@@ -236,3 +236,19 @@ func TestAnimateWithoutStart(t *testing.T) {
 	next := a.Animate(msg)
 	require.NotNil(t, next, "matching gen-0 tick must advance a fresh Anim")
 }
+
+func TestEllipsisCyclesFromThreeDotsToOne(t *testing.T) {
+	t.Parallel()
+
+	a := New(Settings{ID: "ellipsis", Size: 5})
+	msg := a.Start()().(StepMsg)
+	require.Equal(t, "...", a.Ellipsis())
+	for _, want := range []string{"..", ".", "..."} {
+		for range ellipsisAnimSpeed {
+			next := a.Animate(msg)
+			require.NotNil(t, next)
+			msg = next().(StepMsg)
+		}
+		require.Equal(t, want, a.Ellipsis())
+	}
+}

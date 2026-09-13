@@ -276,6 +276,9 @@ func runtimeControlStorageKeys(state RuntimeControlState) ([]string, error) {
 
 func runtimeControlReadField(data []byte, keys []string) (RuntimeControlValue, error) {
 	for _, key := range keys {
+		if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+			return RuntimeControlValue{}, nil
+		}
 		var object map[string]json.RawMessage
 		if json.Unmarshal(data, &object) != nil || object == nil {
 			return RuntimeControlValue{}, errors.New("runtime control configuration path must contain objects")
@@ -291,7 +294,12 @@ func runtimeControlReadField(data []byte, keys []string) (RuntimeControlValue, e
 
 func runtimeControlChangeField(data []byte, keys []string, value json.RawMessage, remove bool) ([]byte, error) {
 	var object map[string]json.RawMessage
-	if json.Unmarshal(data, &object) != nil || object == nil {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		if remove {
+			return bytes.Clone(data), nil
+		}
+		object = make(map[string]json.RawMessage)
+	} else if json.Unmarshal(data, &object) != nil || object == nil {
 		return nil, errors.New("runtime control configuration path must contain objects")
 	}
 	key := keys[0]
@@ -303,7 +311,7 @@ func runtimeControlChangeField(data []byte, keys []string, value json.RawMessage
 		}
 	} else {
 		next, exists := object[key]
-		if !exists {
+		if !exists || bytes.Equal(bytes.TrimSpace(next), []byte("null")) {
 			if remove {
 				return bytes.Clone(data), nil
 			}

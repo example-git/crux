@@ -115,6 +115,9 @@ func (h *highlightableMessageItem) SetHighlight(startLine int, startCol int, end
 	if endCol >= 0 {
 		newEndCol = max(0, endCol-offset)
 	}
+	if startLine == endLine && newStartCol == newEndCol {
+		startLine, newStartCol, endLine, newEndCol = -1, -1, -1, -1
+	}
 	if h.startLine == startLine && h.startCol == newStartCol && h.endLine == endLine && h.endCol == newEndCol {
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"image/color"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/exp/charmtone"
 )
 
@@ -36,7 +37,9 @@ func TestInputUsesChatBackgroundAndPanelsRemainRecessed(t *testing.T) {
 	assertColorEqual(t, "dialog panel", style.Dialog.ContentPanelBg, background)
 	assertColorEqual(t, "command panel", style.Dialog.CommandPanel.GetBackground(), background)
 	assertColorEqual(t, "permission details", style.Dialog.Permissions.ParamsBg, background)
-	assertColorEqual(t, "thinking", style.Messages.ThinkingBox.GetBackground(), style.Background)
+	if _, ok := style.Messages.ThinkingBox.GetBackground().(lipgloss.NoColor); !ok {
+		t.Fatalf("thinking background = %T, want lipgloss.NoColor", style.Messages.ThinkingBox.GetBackground())
+	}
 	assertColorEqual(t, "focused input", style.Editor.Textarea.Focused.Base.GetBackground(), style.Background)
 	assertColorEqual(t, "blurred input", style.Editor.Textarea.Blurred.Base.GetBackground(), style.Background)
 	baseR, baseG, baseB, _ := style.Background.RGBA()

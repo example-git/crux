@@ -184,18 +184,22 @@ func TestOverrideModelsSDKThroughRegisteredServerRoute(t *testing.T) {
 	requested := config.AgentModelState{Large: &selected}
 	ack, err := c.OverrideModels(t.Context(), created.ID, requested)
 	require.NoError(t, err)
+	require.Equal(t, accountFiles, modelOverridesAccountFiles(t, os.Getenv("AI_CLI_DIR")), "valid override must not access account storage")
 	require.Equal(t, requested.Large, ack.Large)
 	require.Equal(t, before.Small, ack.Small)
 	current, err := c.GetWorkspace(t.Context(), created.ID)
 	require.NoError(t, err)
+	require.Equal(t, accountFiles, modelOverridesAccountFiles(t, os.Getenv("AI_CLI_DIR")), "workspace refresh must not access account storage")
 	require.Equal(t, ack, current.Config.AgentModelState())
 
 	invalidSmall := *before.Small
 	invalidSmall.Model.Model = "missing-model"
 	_, err = c.OverrideModels(t.Context(), created.ID, config.AgentModelState{Large: before.Large, Small: &invalidSmall})
 	require.ErrorContains(t, err, "missing-model")
+	require.Equal(t, accountFiles, modelOverridesAccountFiles(t, os.Getenv("AI_CLI_DIR")), "rejected override must not access account storage")
 	current, err = c.GetWorkspace(t.Context(), created.ID)
 	require.NoError(t, err)
+	require.Equal(t, accountFiles, modelOverridesAccountFiles(t, os.Getenv("AI_CLI_DIR")), "final workspace refresh must not access account storage")
 	require.Equal(t, ack, current.Config.AgentModelState(), "the invalid second slot must not revert the first")
 	afterDisk, err := os.ReadFile(configPath)
 	require.NoError(t, err)

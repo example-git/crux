@@ -375,7 +375,10 @@ func quickStyle(o quickStyleOpts) Styles {
 	}
 
 	quietMarkdown := func(background color.Color) ansi.StyleConfig {
-		plainBg := hex(background)
+		var plainBg *string
+		if background != nil {
+			plainBg = hex(background)
+		}
 		plainFg := hex(o.fgMoreSubtle)
 		return ansi.StyleConfig{
 			Document: ansi.StyleBlock{
@@ -539,7 +542,7 @@ func quickStyle(o quickStyleOpts) Styles {
 		}
 	}
 	s.QuietMarkdown = quietMarkdown(panelBackground)
-	s.ThinkingMarkdown = quietMarkdown(o.bgBase)
+	s.ThinkingMarkdown = quietMarkdown(nil)
 
 	s.Help = help.Styles{
 		ShortKey:       base.Foreground(o.fgMoreSubtle),
@@ -952,7 +955,7 @@ func quickStyle(o quickStyleOpts) Styles {
 	s.Messages.AssistantCanceled = lipgloss.NewStyle().Foreground(o.fgSubtle).Italic(true)
 
 	// Thinking section styles
-	s.Messages.ThinkingBox = base.Foreground(o.fgSubtle).Background(o.bgBase).Padding(0, 1)
+	s.Messages.ThinkingBox = base.Foreground(o.fgSubtle).Padding(0, 1)
 	s.Messages.ThinkingTruncationHint = base.Foreground(o.info)
 	s.Messages.ThinkingFooterTitle = base.Foreground(o.fgSubtle).PaddingLeft(1)
 	s.Messages.ThinkingFooterDuration = base.Foreground(o.info)

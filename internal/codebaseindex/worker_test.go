@@ -307,8 +307,16 @@ func TestReconcileProjectIndexingDisablesAndCancelsWorker(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 
 	options.Enabled = false
-	require.Equal(t, StoreStateDisabled, ReconcileProjectIndexing(context.Background(), options).State)
-	require.Equal(t, StoreStateDisabled, InspectProjectIndexStatus(options).State)
+	options.TokenSource = func(context.Context) (string, error) {
+		t.Fatal("disabled indexing consulted its credential source")
+		return "", nil
+	}
+	reconciled := ReconcileProjectIndexing(context.Background(), options)
+	require.Equal(t, StoreStateDisabled, reconciled.State)
+	require.Empty(t, reconciled.CredentialStatus)
+	inspected := InspectProjectIndexStatus(options)
+	require.Equal(t, StoreStateDisabled, inspected.State)
+	require.Empty(t, inspected.CredentialStatus)
 	require.Eventually(t, func() bool {
 		select {
 		case <-canceled:

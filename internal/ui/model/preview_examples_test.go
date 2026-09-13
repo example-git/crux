@@ -120,14 +120,22 @@ func TestPreviewLongOutputsActuallyExpand(t *testing.T) {
 			}
 			expanded := false
 			for _, item := range p.exampleItems(o) {
-				c, ok := item.(chat.Expandable)
+				control, ok := item.(chat.Expandable)
 				if !ok {
 					continue
 				}
-				collapsed := ansi.Strip(item.Render(180))
-				c.ToggleExpanded()
-				full := ansi.Strip(item.Render(180))
-				if len(full) > len(collapsed) && strings.Count(full, "\n") > strings.Count(collapsed, "\n") {
+				renders := []string{ansi.Strip(item.Render(180))}
+				control.ToggleExpanded()
+				renders = append(renders, ansi.Strip(item.Render(180)))
+				control.ToggleExpanded()
+				renders = append(renders, ansi.Strip(item.Render(180)))
+				minLines, maxLines := strings.Count(renders[0], "\n"), strings.Count(renders[0], "\n")
+				for _, render := range renders[1:] {
+					lines := strings.Count(render, "\n")
+					minLines = min(minLines, lines)
+					maxLines = max(maxLines, lines)
+				}
+				if maxLines > minLines {
 					expanded = true
 				}
 			}

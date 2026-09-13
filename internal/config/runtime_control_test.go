@@ -13,6 +13,7 @@ import (
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
+	"github.com/example-git/crux/internal/providerplugin/manifest/manifesttest"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
@@ -69,6 +70,99 @@ func runtimeControlTestTarget(t *testing.T, store *ConfigStore, id string) Runti
 	})
 	require.NoError(t, err)
 	return state.Target
+}
+
+func TestRuntimeControlNullPathsAreAbsentAndMaterialized(t *testing.T) {
+	keys := []string{"options", "analysis_effort"}
+	for name, data := range map[string][]byte{
+		"null root":         []byte(`null`),
+		"null intermediate": []byte(`{"options":null}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			state, err := runtimeControlReadField(data, keys)
+			require.NoError(t, err)
+			require.False(t, state.Present)
+
+			updated, err := runtimeControlChangeField(data, keys, json.RawMessage(`"high"`), false)
+			require.NoError(t, err)
+			require.JSONEq(t, `{"options":{"analysis_effort":"high"}}`, string(updated))
+
+			unchanged, err := runtimeControlChangeField(data, keys, nil, true)
+			require.NoError(t, err)
+			require.Equal(t, data, unchanged)
+		})
+	}
+}
+
+func TestRuntimeControlNonObjectPathsRemainInvalid(t *testing.T) {
+	keys := []string{"options", "analysis_effort"}
+	for name, data := range map[string][]byte{
+		"invalid JSON":        []byte(`{"options":`),
+		"scalar root":         []byte(`"invalid"`),
+		"array root":          []byte(`[]`),
+		"boolean root":        []byte(`false`),
+		"number root":         []byte(`1`),
+		"scalar intermediate": []byte(`{"options":"invalid"}`),
+		"array intermediate":  []byte(`{"options":[]}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := runtimeControlReadField(data, keys)
+			require.ErrorContains(t, err, "runtime control configuration path must contain objects")
+
+			_, err = runtimeControlChangeField(data, keys, json.RawMessage(`"high"`), false)
+			require.ErrorContains(t, err, "runtime control configuration path must contain objects")
+
+			_, err = runtimeControlChangeField(data, keys, nil, true)
+			require.ErrorContains(t, err, "runtime control configuration path must contain objects")
+		})
+	}
+}
+
+func TestRuntimeControlStoreResolvesAndSetsHostOptionUnderNullOptions(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	workingDir := filepath.Join(root, "workspace")
+	dataDir := filepath.Join(root, "global-data")
+	cacheDir := filepath.Join(root, "cache")
+	require.NoError(t, os.MkdirAll(configDir, 0o700))
+	require.NoError(t, os.MkdirAll(workingDir, 0o700))
+	base := env.NewFromMap(map[string]string{
+		"HOME": root, "USERPROFILE": root, "AI_CLI_DIR": filepath.Join(root, "accounts"),
+		"CRUX_GLOBAL_CONFIG": configDir, "CRUX_GLOBAL_DATA": dataDir, "CRUX_CACHE_DIR": cacheDir,
+		"CRUX_PROVIDER_PROFILE": string(ProviderProfilePluginCompat),
+	})
+	require.NoError(t, registrytest.Install(t.Context(), dataDir, cacheDir, manifesttest.Delegated("codex")))
+	model := catalog.Model{ID: "gpt-5.6", CanReason: true, ReasoningLevels: []string{"low", "high"}, DefaultReasoningEffort: "low"}
+	configuration := &Config{
+		Providers: csync.NewMapFrom(map[string]ProviderConfig{
+			"codex": {ID: "codex", Plugin: &ProviderPluginReference{ID: "test.codex", Version: "1.1.0"}, APIKey: "synthetic-runtime-key", Models: []catalog.Model{model}},
+		}),
+		Models: map[SelectedModelType]SelectedModel{
+			SelectedModelTypeLarge: {Provider: "codex", Model: model.ID},
+			SelectedModelTypeSmall: {Provider: "codex", Model: model.ID},
+		},
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(configDir, "crux.json"), mustMarshalConfig(configuration), 0o600))
+	store, err := LoadIsolated(workingDir, filepath.Join(root, "workspace-data"), false, base)
+	require.NoError(t, err)
+	target := runtimeControlTestTarget(t, store, "options.analysis_effort")
+	require.NoError(t, os.WriteFile(store.globalDataPath, []byte(`{"options":null}`), 0o600))
+
+	state, err := store.RuntimeControlState(t.Context(), ScopeGlobal, target)
+	require.NoError(t, err)
+	require.True(t, state.ScopedKnown)
+	require.False(t, state.Scoped.Present)
+	require.True(t, RuntimeControlJSONEqual(state.Effective.Value, json.RawMessage(`"low"`)))
+
+	state, err = store.SetRuntimeControl(t.Context(), ScopeGlobal, target, json.RawMessage(`"high"`))
+	require.NoError(t, err)
+	require.True(t, state.Scoped.Present)
+	require.True(t, RuntimeControlJSONEqual(state.Scoped.Value, json.RawMessage(`"high"`)))
+	data, err := os.ReadFile(store.globalDataPath)
+	require.NoError(t, err)
+	persisted, err := runtimeControlReadField(data, []string{"options", "analysis_effort"})
+	require.NoError(t, err)
+	require.True(t, RuntimeControlJSONEqual(persisted.Value, json.RawMessage(`"high"`)))
 }
 
 func TestRuntimeControlLiteralValuesAndRemoval(t *testing.T) {

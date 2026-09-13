@@ -396,7 +396,7 @@ func (m *UI) renderPills() {
 			body := paintEditorBody(" "+line+" ", width-2, background)
 			rows = append(rows, frame.Render("│")+body+frame.Render("│"))
 		}
-		rows = append(rows, frame.Render("╰"+strings.Repeat("─", width-2)+"╯"), frame.Render(strings.Repeat(" ", width)))
+		rows = append(rows, frame.Render("╰"+strings.Repeat("─", width-2)+"╯"), strings.Repeat(" ", width))
 		m.pillsView = strings.Join(rows, "\n")
 		if hasQueue {
 			m.pillsView = lipgloss.JoinVertical(lipgloss.Left, queuePill(m.promptQueue, t, m.promptQueueItems...), m.pillsView)

@@ -536,40 +536,55 @@ func TestJobManagerProductionEditPath(t *testing.T) {
 }
 
 func TestEditJobRejectsInputReplacementBeforeUpload(t *testing.T) {
-	input := filepath.Join(t.TempDir(), "input.png")
-	require.NoError(t, os.WriteFile(input, []byte("approved image"), 0o600))
-	replacement := filepath.Join(t.TempDir(), "replacement.png")
-	require.NoError(t, os.WriteFile(replacement, []byte("replacement fixture"), 0o600))
-	var authenticationCalls atomic.Int64
-	replaced := make(chan error, 1)
-	manager, err := NewJobManagerWithStore(t.TempDir(), nil, JobManagerOptions{
-		ClientFactory: func() *Client {
-			err := os.Rename(input, input+".original")
-			if err == nil {
-				err = os.Symlink(replacement, input)
-			}
-			replaced <- err
-			client := NewClient()
-			client.authResolver = func(context.Context) (resolvedAuth, error) {
-				authenticationCalls.Add(1)
-				return resolvedAuth{}, fmt.Errorf("unexpected authentication")
-			}
-			return client
-		},
-		MaxConcurrent: 1,
-		MaxQueued:     1,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { manager.StopAll(context.Background()) })
-	output := filepath.Join(t.TempDir(), "output.png")
-	view, err := manager.Enqueue(JobRequest{Mode: ModeEdit, Prompt: "edit fixture", Count: 1, InputPaths: []string{input}, OutputPaths: []string{output}}, "edit fixture", managedtask.Ownership{ParentSessionID: "parent"})
-	require.NoError(t, err)
-	result, err := manager.Output(t.Context(), view.ID, true, 2*time.Second)
-	require.NoError(t, err)
-	require.Equal(t, managedtask.StatusFailed, result.Task.State.Status)
-	require.NoError(t, <-replaced)
-	require.Zero(t, authenticationCalls.Load())
-	require.NoFileExists(t, output)
+	for _, replaceParent := range []bool{false, true} {
+		name := "file"
+		if replaceParent {
+			name = "parent"
+		}
+		t.Run(name, func(t *testing.T) {
+			parent := t.TempDir()
+			input := filepath.Join(parent, "input.png")
+			require.NoError(t, os.WriteFile(input, []byte("approved image"), 0o600))
+			var authenticationCalls atomic.Int64
+			replaced := make(chan error, 1)
+			manager, err := NewJobManagerWithStore(t.TempDir(), nil, JobManagerOptions{
+				ClientFactory: func() *Client {
+					var err error
+					if replaceParent {
+						err = os.Rename(parent, parent+"-original")
+						if err == nil {
+							err = os.Mkdir(parent, 0o700)
+						}
+					} else {
+						err = os.Rename(input, input+".original")
+					}
+					if err == nil {
+						err = os.WriteFile(input, []byte("replacement fixture"), 0o600)
+					}
+					replaced <- err
+					client := NewClient()
+					client.authResolver = func(context.Context) (resolvedAuth, error) {
+						authenticationCalls.Add(1)
+						return resolvedAuth{}, fmt.Errorf("unexpected authentication")
+					}
+					return client
+				},
+				MaxConcurrent: 1,
+				MaxQueued:     1,
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { manager.StopAll(context.Background()) })
+			output := filepath.Join(t.TempDir(), "output.png")
+			view, err := manager.Enqueue(JobRequest{Mode: ModeEdit, Prompt: "edit fixture", Count: 1, InputPaths: []string{input}, OutputPaths: []string{output}}, "edit fixture", managedtask.Ownership{ParentSessionID: "parent"})
+			require.NoError(t, err)
+			result, err := manager.Output(t.Context(), view.ID, true, 2*time.Second)
+			require.NoError(t, err)
+			require.Equal(t, managedtask.StatusFailed, result.Task.State.Status)
+			require.NoError(t, <-replaced)
+			require.Zero(t, authenticationCalls.Load())
+			require.NoFileExists(t, output)
+		})
+	}
 }
 
 func TestWriteJobImagesStreamsExactOutputsAndClearsResponseData(t *testing.T) {

@@ -39,7 +39,8 @@ func TestExpandableMarkdownUsesPanelSurface(t *testing.T) {
 		}
 		require.True(t, found)
 	}
-	require.Equal(t, sty.Background, sty.Messages.ThinkingBox.GetBackground())
+	require.Equal(t, lipgloss.NoColor{}, sty.Messages.ThinkingBox.GetBackground())
+	require.Nil(t, sty.ThinkingMarkdown.Document.BackgroundColor)
 }
 
 func TestOutputFootersConnectToBody(t *testing.T) {
@@ -82,45 +83,65 @@ func TestOutputFootersConnectToBody(t *testing.T) {
 	}
 }
 
-func TestThinkingDisclosureAndNormalSurface(t *testing.T) {
-	common.InvalidateMarkdownRendererCache()
-	t.Cleanup(common.InvalidateMarkdownRendererCache)
+func TestThinkingDisclosureAndTransparentSurface(t *testing.T) {
 	sty := styles.CharmtonePantera()
 	for _, active := range []bool{false, true} {
 		for _, width := range []int{40, 80} {
-			msg := thinkingMessage("surface-thinking", "**SURFACE_MARKER**\n\nSecond thought", "Done")
+			thinking := "**SURFACE_MARKER**\n\nSecond *internal* thought\n\n**unfinished\n\nprefix **internal** suffix"
+			msg := thinkingMessage("surface-thinking", thinking, "Done")
 			if active {
-				msg.Parts = []message.ContentPart{message.ReasoningContent{Thinking: "**SURFACE_MARKER**\n\nSecond thought"}}
+				msg.Parts = []message.ContentPart{message.ReasoningContent{Thinking: thinking}}
 			}
 			item := NewAssistantMessageItem(&sty, msg).(*AssistantMessageItem)
-			item.RawRender(width)
-			collapsed := ansi.Strip(item.thinkingSec.out)
-			require.Equal(t, "╰── Expand Thoughts ▾", strings.TrimSpace(collapsed))
-			require.Equal(t, 1, item.thinkingBoxHeight)
-			require.True(t, item.HandleMouseClick(ansi.MouseLeft, 4, 0))
-			require.False(t, item.HandleMouseClick(ansi.MouseLeft, 4, 1))
+			collapsed := item.cachedThinking(width)
+			collapsedLines := strings.Split(ansi.Strip(collapsed), "\n")
+			require.Len(t, collapsedLines, 3)
+			require.Contains(t, collapsedLines[1], map[bool]string{false: "THOUGHTS ▾", true: "Thinking..."}[active])
+			frameWidth := ansi.StringWidth(strings.TrimSpace(collapsedLines[0]))
+			for _, line := range collapsedLines {
+				trimmed := strings.TrimSpace(line)
+				require.Equal(t, frameWidth, ansi.StringWidth(trimmed), line)
+			}
+			require.True(t, strings.HasPrefix(strings.TrimSpace(collapsedLines[1]), "│"))
+			require.True(t, strings.HasSuffix(strings.TrimSpace(collapsedLines[1]), "│"))
+			require.Equal(t, 3, item.thinkingBoxHeight)
+
 			require.True(t, item.ToggleExpanded())
-			item.RawRender(width)
-			output := item.thinkingSec.out
-			require.Contains(t, ansi.Strip(output), "SURFACE_MARKER")
-			require.Contains(t, ansi.Strip(output), "├──")
-			require.Contains(t, ansi.Strip(output), "╰──")
-			buffer := uv.NewScreenBuffer(width, lipgloss.Height(output))
-			uv.NewStyledString(output).Draw(&buffer, buffer.Bounds())
+			expanded := item.cachedThinking(width)
+			plainExpanded := ansi.Strip(expanded)
+			expandedLines := strings.Split(plainExpanded, "\n")
+			require.Contains(t, plainExpanded, "• SURFACE_MARKER")
+			require.NotContains(t, plainExpanded, "**SURFACE_MARKER**")
+			require.Contains(t, plainExpanded, "• Second *internal* thought")
+			require.Contains(t, plainExpanded, "• **unfinished")
+			require.Contains(t, plainExpanded, "• prefix **internal** suffix")
+			require.Equal(t, frameWidth, ansi.StringWidth(strings.TrimSpace(expandedLines[0])))
+			bottomRail := -1
+			for index, line := range expandedLines {
+				trimmed := strings.TrimSpace(line)
+				if strings.HasPrefix(trimmed, "• ") {
+					require.NotContains(t, trimmed, "│")
+					require.NotContains(t, trimmed, "├")
+					require.NotContains(t, trimmed, "┤")
+				}
+				if strings.HasPrefix(trimmed, "╰") {
+					bottomRail = index
+					require.Equal(t, frameWidth, ansi.StringWidth(trimmed))
+				}
+			}
+			require.Positive(t, bottomRail)
+			require.Equal(t, bottomRail+1, item.thinkingBoxHeight)
+			require.True(t, item.HandleMouseClick(ansi.MouseLeft, 4, 0))
+			require.False(t, item.HandleMouseClick(ansi.MouseLeft, 4, item.thinkingBoxHeight))
+
+			buffer := uv.NewScreenBuffer(width, lipgloss.Height(expanded))
+			uv.NewStyledString(expanded).Draw(&buffer, buffer.Bounds())
 			for y := range buffer.Height() {
 				for x := range width {
 					cell := buffer.CellAt(x, y)
-					if cell.Style.Bg == nil {
-						continue
-					}
-					r, g, b, _ := cell.Style.Bg.RGBA()
-					wr, wg, wb, _ := sty.Background.RGBA()
-					require.Equal(t, []uint32{wr, wg, wb}, []uint32{r, g, b}, "cell %d,%d", x, y)
+					require.Nil(t, cell.Style.Bg, "cell %d,%d", x, y)
 				}
 			}
-			require.False(t, item.ToggleExpanded())
-			item.RawRender(width)
-			require.Equal(t, collapsed, ansi.Strip(item.thinkingSec.out))
 		}
 	}
 }

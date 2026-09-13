@@ -320,7 +320,7 @@ type Styles struct {
 		SectionHeader      lipgloss.Style
 
 		// Thinking section styles
-		ThinkingBox            lipgloss.Style // Background for thinking content
+		ThinkingBox            lipgloss.Style
 		ThinkingTruncationHint lipgloss.Style // "… (N lines hidden)" hint
 		ThinkingFooterTitle    lipgloss.Style // "Thought for" text
 		ThinkingFooterDuration lipgloss.Style // Duration value
