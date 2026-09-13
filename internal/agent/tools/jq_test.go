@@ -175,21 +175,33 @@ func TestJQToolRejectsReplacementDuringApproval(t *testing.T) {
 			require.NoError(t, os.WriteFile(path, []byte(`"approved"`), 0o600))
 			outside := t.TempDir()
 			require.NoError(t, os.WriteFile(filepath.Join(outside, "input.json"), []byte(`"replacement fixture"`), 0o600))
+			var renameErr, symlinkErr error
 			permissions := &replacingJQPermissionService{
 				recordingPermissionService: &recordingPermissionService{allow: true},
 				replace: func() {
 					if parent {
-						require.NoError(t, os.Rename(directory, directory+"-original"))
-						require.NoError(t, os.Symlink(outside, directory))
+						renameErr = os.Rename(directory, directory+"-original")
+						if renameErr == nil {
+							symlinkErr = os.Symlink(outside, directory)
+						}
 					} else {
-						require.NoError(t, os.Rename(path, path+".original"))
-						require.NoError(t, os.Symlink(filepath.Join(outside, "input.json"), path))
+						renameErr = os.Rename(path, path+".original")
+						if renameErr == nil {
+							symlinkErr = os.Symlink(filepath.Join(outside, "input.json"), path)
+						}
 					}
 				},
 			}
 			ctx := context.WithValue(t.Context(), SessionIDContextKey, "session-1")
 			response := runJQTool(t, NewJQTool(permissions, workingDir), ctx, JQParams{Files: []string{path}})
-			require.True(t, response.IsError)
+			if renameErr != nil {
+				require.True(t, retainedDirectoryRenameBlocked(renameErr), "rename failed unexpectedly: %v", renameErr)
+				require.False(t, response.IsError, response.Content)
+				require.Contains(t, response.Content, "approved")
+			} else {
+				require.NoError(t, symlinkErr)
+				require.True(t, response.IsError)
+			}
 			require.NotContains(t, response.Content, "replacement fixture")
 			require.Equal(t, 1, permissions.requestCount)
 		})

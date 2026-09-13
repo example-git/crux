@@ -116,21 +116,27 @@ func TestImagegenToolRejectsInputReplacedDuringApproval(t *testing.T) {
 			manager, err := imagegen.NewJobManagerWithStore(t.TempDir(), nil, imagegen.JobManagerOptions{
 				Executor: func(context.Context, imagegen.JobRequest) (*imagegen.Response, error) {
 					executed <- struct{}{}
-					return nil, nil
+					return &imagegen.Response{Data: []imagegen.ImageData{{B64JSON: base64.StdEncoding.EncodeToString([]byte("generated fixture"))}}}, nil
 				},
 			})
 			require.NoError(t, err)
 			t.Cleanup(func() { manager.StopAll(context.Background()) })
+			var renameErr, replaceErr error
 			permissions := &replacingImagePermissionService{
 				recordingPermissionService: &recordingPermissionService{allow: true},
 				replace: func() {
 					if replaceParent {
-						require.NoError(t, os.Rename(workingDir, workingDir+"-original"))
-						require.NoError(t, os.Mkdir(workingDir, 0o700))
+						renameErr = os.Rename(workingDir, workingDir+"-original")
+						if renameErr != nil {
+							return
+						}
+						replaceErr = os.Mkdir(workingDir, 0o700)
 					} else {
-						require.NoError(t, os.Rename(input, input+".original"))
+						renameErr = os.Rename(input, input+".original")
 					}
-					require.NoError(t, os.WriteFile(input, []byte("replacement fixture"), 0o600))
+					if replaceErr == nil {
+						replaceErr = os.WriteFile(input, []byte("replacement fixture"), 0o600)
+					}
 				},
 			}
 			params, err := json.Marshal(ImagegenParams{Mode: imagegen.ModeEdit, Prompt: "edit fixture", Images: []string{input}, Output: filepath.Join(workingDir, "output.png")})
@@ -138,6 +144,22 @@ func TestImagegenToolRejectsInputReplacedDuringApproval(t *testing.T) {
 			ctx := context.WithValue(t.Context(), SessionIDContextKey, "session")
 			response, err := NewImagegenTool(manager, permissions, workingDir).Run(ctx, fantasy.ToolCall{ID: "image-call", Name: ImagegenToolName, Input: string(params)})
 			require.NoError(t, err)
+			if renameErr != nil {
+				require.True(t, retainedDirectoryRenameBlocked(renameErr), "rename failed unexpectedly: %v", renameErr)
+				require.False(t, response.IsError, response.Content)
+				var metadata ImagegenResponseMetadata
+				require.NoError(t, json.Unmarshal([]byte(response.Metadata), &metadata))
+				result, err := manager.Output(t.Context(), metadata.TaskID, true, 2*time.Second)
+				require.NoError(t, err)
+				require.Equal(t, managedtask.StatusCompleted, result.Task.State.Status)
+				require.Len(t, executed, 1)
+				content, err := os.ReadFile(input)
+				require.NoError(t, err)
+				require.Equal(t, "approved fixture", string(content))
+				require.Equal(t, 1, permissions.requestCount)
+				return
+			}
+			require.NoError(t, replaceErr)
 			require.True(t, response.IsError)
 			require.Contains(t, response.Content, "changed after capture")
 			require.Equal(t, 1, permissions.requestCount)
@@ -171,13 +193,16 @@ func TestImagegenToolRetainsApprovedOutputDirectory(t *testing.T) {
 				params.Output = filepath.Join(directory, "nested", "deeper", "image.png")
 				name = filepath.Join("nested", "deeper", "image.png")
 			}
+			var renameErr, symlinkErr error
 			permissions := &replacingImagePermissionService{
 				recordingPermissionService: &recordingPermissionService{allow: mode != "denied"},
 				replace: func() {
 					require.NoDirExists(t, filepath.Join(directory, "nested"))
 					if mode != "denied" {
-						require.NoError(t, os.Rename(directory, directory+"-original"))
-						require.NoError(t, os.Symlink(outside, directory))
+						renameErr = os.Rename(directory, directory+"-original")
+						if renameErr == nil {
+							symlinkErr = os.Symlink(outside, directory)
+						}
 					}
 				},
 			}
@@ -192,12 +217,19 @@ func TestImagegenToolRetainsApprovedOutputDirectory(t *testing.T) {
 				return
 			}
 			require.False(t, response.IsError, response.Content)
+			outputDirectory := directory + "-original"
+			if renameErr != nil {
+				require.True(t, retainedDirectoryRenameBlocked(renameErr), "rename failed unexpectedly: %v", renameErr)
+				outputDirectory = directory
+			} else {
+				require.NoError(t, symlinkErr)
+			}
 			var metadata ImagegenResponseMetadata
 			require.NoError(t, json.Unmarshal([]byte(response.Metadata), &metadata))
 			result, err := manager.Output(t.Context(), metadata.TaskID, true, 2*time.Second)
 			require.NoError(t, err)
 			require.Equal(t, managedtask.StatusCompleted, result.Task.State.Status)
-			content, err := os.ReadFile(filepath.Join(directory+"-original", name))
+			content, err := os.ReadFile(filepath.Join(outputDirectory, name))
 			require.NoError(t, err)
 			require.Equal(t, "generated fixture", string(content))
 			entries, err := os.ReadDir(outside)
