@@ -19,6 +19,7 @@ import (
 
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/connection"
+	"github.com/example-git/crux/internal/lock"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
@@ -306,6 +307,12 @@ func TestRemoteTLSAuthorizationMalformedStoreFailsClosed(t *testing.T) {
 	path := filepath.Join(config.GlobalWorkspaceDir(), "connections.json")
 	original, err := os.ReadFile(path)
 	require.NoError(t, err)
+	mutate := func(action func()) {
+		release, err := lock.File(t.Context(), path+".lock")
+		require.NoError(t, err)
+		defer release()
+		action()
+	}
 	for _, damage := range []string{"invalid-json", "trailing-json", "duplicate-key", "case-alias-clients", "invalid-utf8", "invalid-server-key", "invalid-client-certificate", "directory", "missing"} {
 		t.Run(damage, func(t *testing.T) {
 			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
@@ -316,37 +323,39 @@ func TestRemoteTLSAuthorizationMalformedStoreFailsClosed(t *testing.T) {
 			_, err = io.Copy(io.Discard, response.Body)
 			require.NoError(t, err)
 			require.NoError(t, response.Body.Close())
-			switch damage {
-			case "invalid-json":
-				require.NoError(t, os.WriteFile(path, []byte(`{"secret-client":"synthetic-private-data"`), 0o600))
-			case "trailing-json":
-				require.NoError(t, os.WriteFile(path, append(bytes.Clone(original), []byte(` {}`)...), 0o600))
-			case "duplicate-key":
-				require.NoError(t, os.WriteFile(path, bytes.Replace(original, []byte(`"version": 1`), []byte(`"version": 1, "version": 1`), 1), 0o600))
-			case "invalid-utf8":
-				require.NoError(t, os.WriteFile(path, append(bytes.Clone(original), 0xff), 0o600))
-			case "case-alias-clients", "invalid-server-key", "invalid-client-certificate":
-				var damaged map[string]any
-				require.NoError(t, json.Unmarshal(original, &damaged))
+			mutate(func() {
 				switch damage {
-				case "case-alias-clients":
-					clients := damaged["authorized_clients"].(map[string]any)
-					damaged["AUTHORIZED_CLIENTS"] = map[string]any{"revoked": clients["revoked"]}
-					delete(clients, "revoked")
-				case "invalid-server-key":
-					damaged["server"].(map[string]any)["private_key"] = "synthetic-private-data"
-				default:
-					damaged["authorized_clients"].(map[string]any)["secret-client"] = "synthetic-private-data"
+				case "invalid-json":
+					require.NoError(t, os.WriteFile(path, []byte(`{"secret-client":"synthetic-private-data"`), 0o600))
+				case "trailing-json":
+					require.NoError(t, os.WriteFile(path, append(bytes.Clone(original), []byte(` {}`)...), 0o600))
+				case "duplicate-key":
+					require.NoError(t, os.WriteFile(path, bytes.Replace(original, []byte(`"version": 1`), []byte(`"version": 1, "version": 1`), 1), 0o600))
+				case "invalid-utf8":
+					require.NoError(t, os.WriteFile(path, append(bytes.Clone(original), 0xff), 0o600))
+				case "case-alias-clients", "invalid-server-key", "invalid-client-certificate":
+					var damaged map[string]any
+					require.NoError(t, json.Unmarshal(original, &damaged))
+					switch damage {
+					case "case-alias-clients":
+						clients := damaged["authorized_clients"].(map[string]any)
+						damaged["AUTHORIZED_CLIENTS"] = map[string]any{"revoked": clients["revoked"]}
+						delete(clients, "revoked")
+					case "invalid-server-key":
+						damaged["server"].(map[string]any)["private_key"] = "synthetic-private-data"
+					default:
+						damaged["authorized_clients"].(map[string]any)["secret-client"] = "synthetic-private-data"
+					}
+					data, err := json.Marshal(damaged)
+					require.NoError(t, err)
+					require.NoError(t, os.WriteFile(path, data, 0o600))
+				case "directory", "missing":
+					require.NoError(t, os.Remove(path))
+					if damage == "directory" {
+						require.NoError(t, os.Mkdir(path, 0o700))
+					}
 				}
-				data, err := json.Marshal(damaged)
-				require.NoError(t, err)
-				require.NoError(t, os.WriteFile(path, data, 0o600))
-			case "directory", "missing":
-				require.NoError(t, os.Remove(path))
-				if damage == "directory" {
-					require.NoError(t, os.Mkdir(path, 0o700))
-				}
-			}
+			})
 			request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/workspaces", nil)
 			require.NoError(t, err)
 			response, err = clients["retained"].Do(request)
@@ -376,10 +385,12 @@ func TestRemoteTLSAuthorizationMalformedStoreFailsClosed(t *testing.T) {
 				}
 				require.Error(t, err, "a case-aliased grant must not restore the removed client")
 			}
-			if damage == "directory" {
-				require.NoError(t, os.Remove(path))
-			}
-			require.NoError(t, os.WriteFile(path, original, 0o600))
+			mutate(func() {
+				if damage == "directory" {
+					require.NoError(t, os.Remove(path))
+				}
+				require.NoError(t, os.WriteFile(path, original, 0o600))
+			})
 		})
 	}
 }
