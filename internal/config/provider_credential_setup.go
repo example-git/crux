@@ -3,7 +3,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
+	"strconv"
 	"strings"
 
 	kjsonschema "github.com/kaptinlin/jsonschema"
@@ -39,40 +39,47 @@ func validateProviderCredentialSetup(snapshot RuntimeSnapshot, provider Provider
 	}
 	result := schema.ValidateMap(values)
 	pending := providerMissingConfigurationCredentials(snapshot, provider)
-	if result.IsValid() || pending && onlyMissingCredentialRequirements(result, missing) {
+	if result.IsValid() || pending && onlyMissingCredentialRequirements(result, schema, values, missing) {
 		return pending, nil
 	}
 	return false, errors.New("checked provider configuration is invalid")
 }
 
-func onlyMissingCredentialRequirements(result *kjsonschema.EvaluationResult, missing map[string]bool) bool {
-	if result == nil {
+func onlyMissingCredentialRequirements(result *kjsonschema.EvaluationResult, schema *kjsonschema.Schema, values map[string]any, missing map[string]bool) bool {
+	if result == nil || schema == nil {
 		return false
 	}
 	if result.IsValid() {
 		return true
+	}
+	if result.InstanceLocation != "" && result.InstanceLocation != "#" {
+		property, dependent := strings.CutPrefix(result.EvaluationPath, "/dependentSchemas/")
+		if !dependent || result.InstanceLocation != "/"+property {
+			return false
+		}
 	}
 	found := false
 	for keyword, detail := range result.Errors {
 		if detail == nil {
 			return false
 		}
-		if keyword == "required" && (result.InstanceLocation == "" || result.InstanceLocation == "#") {
-			parameter := "property"
-			if detail.Code == "missing_required_properties" {
-				parameter = "properties"
-			} else if detail.Code != "missing_required_property" {
-				return false
+		if keyword == "required" {
+			requiredMissing := false
+			for _, name := range schema.Required {
+				if _, exists := values[name]; exists {
+					continue
+				}
+				if !missing[name] {
+					return false
+				}
+				requiredMissing = true
 			}
-			text, ok := detail.Params[parameter].(string)
-			if !ok || !onlyDeclaredMissingNames(text, missing) {
+			if !requiredMissing {
 				return false
 			}
 			found = true
 			continue
 		}
-		// Aggregate errors need concrete child failures, all restricted to
-		// missing credentials at the root instance. No message text is parsed.
 		switch keyword {
 		case "allOf", "anyOf", "oneOf", "$ref", "if", "then", "else", "dependentSchemas":
 			if len(result.Details) == 0 {
@@ -82,9 +89,24 @@ func onlyMissingCredentialRequirements(result *kjsonschema.EvaluationResult, mis
 			return false
 		}
 	}
+	referencePending := schema.ResolvedRef != nil
 	for _, child := range result.Details {
-		if child != nil && !child.IsValid() {
-			if !onlyMissingCredentialRequirements(child, missing) {
+		if child == nil || child.EvaluationPath == "/if" {
+			continue
+		}
+		var childSchema *kjsonschema.Schema
+		if child.EvaluationPath == "" {
+			if referencePending {
+				childSchema = schema.ResolvedRef
+				referencePending = false
+			} else if schema.If != nil && !schema.If.ValidateMap(values).IsValid() {
+				childSchema = schema.Else
+			}
+		} else {
+			childSchema = credentialRequirementChildSchema(schema, child.EvaluationPath)
+		}
+		if !child.IsValid() {
+			if !onlyMissingCredentialRequirements(child, childSchema, values, missing) {
 				return false
 			}
 			found = true
@@ -93,37 +115,30 @@ func onlyMissingCredentialRequirements(result *kjsonschema.EvaluationResult, mis
 	return found
 }
 
-// The validator supplies quoted exact property names in a finite parameter,
-// not an error message. Match against declared names without splitting on
-// punctuation that may itself occur in a valid JSON property name.
-func onlyDeclaredMissingNames(value string, missing map[string]bool) bool {
-	if value == "" || len(value) > 128*132 {
-		return false
+func credentialRequirementChildSchema(schema *kjsonschema.Schema, path string) *kjsonschema.Schema {
+	keyword, suffix, _ := strings.Cut(strings.TrimPrefix(path, "/"), "/")
+	var children []*kjsonschema.Schema
+	switch keyword {
+	case "allOf":
+		children = schema.AllOf
+	case "anyOf":
+		children = schema.AnyOf
+	case "oneOf":
+		children = schema.OneOf
+	case "if":
+		return schema.If
+	case "then":
+		return schema.Then
+	case "else":
+		return schema.Else
+	case "dependentSchemas":
+		return schema.DependentSchemas[suffix]
+	default:
+		return nil
 	}
-	seen := map[int]bool{}
-	var match func(int) bool
-	match = func(offset int) bool {
-		if offset == len(value) {
-			return true
-		}
-		if seen[offset] {
-			return false
-		}
-		seen[offset] = true
-		for property := range missing {
-			name := fmt.Sprintf("'%s'", property)
-			if !strings.HasPrefix(value[offset:], name) {
-				continue
-			}
-			next := offset + len(name)
-			if next == len(value) {
-				return true
-			}
-			if strings.HasPrefix(value[next:], ", ") && match(next+2) {
-				return true
-			}
-		}
-		return false
+	index, err := strconv.Atoi(suffix)
+	if err != nil || index < 0 || index >= len(children) {
+		return nil
 	}
-	return match(0)
+	return children[index]
 }

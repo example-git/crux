@@ -223,7 +223,7 @@ func (e *imageEvaluation) operation(value manifest.ImageValue, context map[strin
 		}
 		result := make([]any, 0, len(items))
 		for index, item := range items {
-			child := make(map[string]any, len(context)+2)
+			child := make(map[string]any)
 			for k, v := range context {
 				child[k] = v
 			}

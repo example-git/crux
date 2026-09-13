@@ -23,7 +23,7 @@ import (
 func Registrations() []providerregistry.Registration {
 	var result []providerregistry.Registration
 	for _, registration := range providerregistry.Integrated() {
-		if registration.Construction == providerregistry.ConstructionCopilot {
+		if registration.Construction == providerregistry.ConstructionCopilot || registration.Construction == providerregistry.ConstructionCodebaseIndex {
 			result = append(result, registration)
 			continue
 		}

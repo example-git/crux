@@ -118,6 +118,14 @@ func TestExpandedTodoBoxFitsGoalsAndFloatsAboveInput(t *testing.T) {
 				y := m.layout.editor.Min.Y - 2
 				require.Equal(t, "╰", screen.CellAt(m.layout.pills.Min.X, y).Content)
 				require.Equal(t, "╯", screen.CellAt(m.layout.pills.Min.X+boxWidth-1, y).Content)
+				for row := m.layout.pills.Min.Y; row <= y; row++ {
+					if queued > 0 && row < m.layout.pills.Min.Y+pillHeightWithBorder {
+						continue
+					}
+					for x := m.layout.pills.Min.X; x < m.layout.pills.Min.X+boxWidth; x++ {
+						require.Equal(t, color.RGBAModel.Convert(m.com.Styles.Background), color.RGBAModel.Convert(screen.CellAt(x, row).Style.Bg))
+					}
+				}
 				for x := m.layout.pills.Min.X; x < m.layout.pills.Min.X+boxWidth; x++ {
 					cell := screen.CellAt(x, y+1)
 					require.Equal(t, " ", cell.Content)

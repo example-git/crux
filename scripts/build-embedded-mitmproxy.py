@@ -4,6 +4,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import platform
 import shutil
@@ -15,7 +16,9 @@ import urllib.request
 
 PYTHON_VERSION = "3.12.14"
 PYTHON_RELEASE = "20260825"
-MITMPROXY_VERSION = "12.2.3"
+MITMPROXY_VERSION = "13.0.0.dev0"
+MITMPROXY_REVISION = "b506c68108e287104045333ade476d92c39c275e"
+MITMPROXY_SOURCE_SHA256 = "a0672f3d21c5aec875ffb340782f42b029219818e4a2a8a6bac4b13d31320504"
 ROOT = Path(__file__).resolve().parent.parent
 ASSET_DIRECTORY = ROOT / "internal" / "trafficcapture" / "assets"
 LOCK_DIRECTORY = ROOT / "scripts" / "mitmproxy-runtime"
@@ -147,7 +150,46 @@ def remove_path(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def install_packages(target: str, python_root: Path) -> None:
+def build_mitmproxy_wheel(temporary: Path) -> Path:
+    archive = temporary / "mitmproxy-source.tar.gz"
+    download(
+        "https://api.github.com/repos/mitmproxy/mitmproxy/"
+        f"tarball/{MITMPROXY_REVISION}",
+        archive,
+        MITMPROXY_SOURCE_SHA256,
+    )
+    source_directory = temporary / "mitmproxy-source"
+    with tarfile.open(archive, "r:gz") as source:
+        members = [
+            member for member in source.getmembers()
+            if PurePosixPath(member.name).parts[1:2] != ("docs",)
+        ]
+        source.extractall(source_directory, members=members, filter="data")
+    sources = list(source_directory.iterdir())
+    if len(sources) != 1 or not sources[0].is_dir():
+        raise RuntimeError("unexpected mitmproxy source layout")
+    environment = temporary / "wheel-builder"
+    subprocess.run([sys.executable, "-m", "venv", str(environment)], check=True)
+    python = environment / "bin" / "python"
+    subprocess.run([
+        str(python), "-m", "pip", "install",
+        "--disable-pip-version-check", "--no-deps", "--require-hashes",
+        "--only-binary=:all:", "--requirement",
+        str(LOCK_DIRECTORY / "requirements-build.txt"),
+    ], check=True)
+    wheels = temporary / "wheels"
+    subprocess.run([
+        str(python), "-m", "pip", "wheel",
+        "--disable-pip-version-check", "--no-deps", "--no-build-isolation",
+        "--wheel-dir", str(wheels), str(sources[0]),
+    ], check=True, env={**os.environ, "SOURCE_DATE_EPOCH": "0"})
+    wheel = wheels / f"mitmproxy-{MITMPROXY_VERSION}-py3-none-any.whl"
+    if not wheel.is_file():
+        raise RuntimeError("pinned mitmproxy source produced an unexpected wheel")
+    return wheel
+
+
+def install_packages(target: str, python_root: Path, wheel: Path) -> None:
     site_packages = (
         python_root / "lib" / "python3.12" / "site-packages"
     )
@@ -185,6 +227,12 @@ def install_packages(target: str, python_root: Path) -> None:
         str(LOCK_DIRECTORY / f"requirements-{target}.txt"),
     ]
     subprocess.run(command, check=True)
+    source_lock = wheel.parent / "requirements-mitmproxy.txt"
+    source_lock.write_text(
+        f"mitmproxy @ {wheel.as_uri()} --hash=sha256:{digest(wheel)}\n"
+    )
+    command[-1] = str(source_lock)
+    subprocess.run(command, check=True)
 
 
 def prune_runtime(python_root: Path) -> None:
@@ -215,6 +263,9 @@ def runtime_manifest(target: str) -> dict[str, str]:
         "python": PYTHON_VERSION,
         "python_build": PYTHON_RELEASE,
         "mitmproxy": MITMPROXY_VERSION,
+        "mitmproxy_revision": MITMPROXY_REVISION,
+        "mitmproxy_source_sha256": MITMPROXY_SOURCE_SHA256,
+        "build_requirements_sha256": digest(LOCK_DIRECTORY / "requirements-build.txt"),
         "layout": "in-process-v1",
         "requirements_sha256": digest(lock),
         "library": TARGETS[target]["library"],
@@ -345,7 +396,8 @@ def build_target(target: str, force: bool) -> None:
         )
         download(url, archive, definition["sha256"])
         python_root = extract_python(archive, temporary / "source")
-        install_packages(target, python_root)
+        wheel = build_mitmproxy_wheel(temporary)
+        install_packages(target, python_root, wheel)
         prune_runtime(python_root)
         write_manifest(target, python_root)
         validate_runtime(target, python_root)

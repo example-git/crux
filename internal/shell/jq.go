@@ -41,6 +41,7 @@ type JQVariable struct {
 type JQOptions struct {
 	Filter        string
 	Files         []string
+	OpenFile      func(string) (io.ReadCloser, error)
 	RawOutput     bool
 	JoinOutput    bool
 	CompactOutput bool
@@ -173,7 +174,7 @@ func RunJQ(ctx context.Context, options JQOptions, stdin io.Reader, stdout, stde
 		return interp.ExitStatus(3)
 	}
 
-	inputs, err := readInputs(ctx, stdin, options.Files, options.NullInput, options.RawInput, options.Slurp)
+	inputs, err := readInputs(ctx, stdin, options.Files, options.NullInput, options.RawInput, options.Slurp, options.OpenFile)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
@@ -228,15 +229,21 @@ func RunJQ(ctx context.Context, options JQOptions, stdin io.Reader, stdout, stde
 // still outlast ctx; the outer abandon-goroutine path in the hook
 // runner (internal/hooks/runner.go) is the authoritative enforcer for
 // that case.
-func readInputs(ctx context.Context, stdin io.Reader, files []string, nullInput, rawInput, slurp bool) ([]any, error) {
+func readInputs(ctx context.Context, stdin io.Reader, files []string, nullInput, rawInput, slurp bool, openFile func(string) (io.ReadCloser, error)) ([]any, error) {
 	if nullInput {
 		return []any{nil}, nil
 	}
 
+	if openFile == nil {
+		openFile = func(path string) (io.ReadCloser, error) { return os.Open(path) }
+	}
 	var readers []io.Reader
 	if len(files) > 0 {
 		for _, f := range files {
-			file, err := os.Open(f)
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			file, err := openFile(f)
 			if err != nil {
 				return nil, err
 			}

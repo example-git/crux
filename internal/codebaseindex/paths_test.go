@@ -130,10 +130,11 @@ func TestResolveDatabasePathIgnoresStandaloneCatalogs(t *testing.T) {
 }
 
 func TestCodebaseIndexToken(t *testing.T) {
-	t.Run("loads VS Code credential", func(t *testing.T) {
+	t.Run("loads selected account", func(t *testing.T) {
 		dir := t.TempDir()
 		t.Setenv("AI_CLI_DIR", dir)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "codebase-index-auth.json"), []byte(`{"accessToken":"secret-token","authMode":"vscode"}`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "accounts.json"), []byte(`{"active":{"codebase-index":"selected"},"accounts":{"codebase-index":[{"id":"other","accessToken":"other-token"},{"id":"selected","accessToken":"secret-token"}]}}`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "codebase-index-auth.json"), []byte(`{"accessToken":"legacy-must-not-be-used","authMode":"vscode"}`), 0o600))
 
 		token, err := CodebaseIndexToken(context.Background())
 		require.NoError(t, err)
@@ -147,21 +148,21 @@ func TestCodebaseIndexToken(t *testing.T) {
 		require.Empty(t, token)
 	})
 
-	t.Run("rejects invalid credential", func(t *testing.T) {
+	t.Run("rejects dangling selection", func(t *testing.T) {
 		dir := t.TempDir()
 		t.Setenv("AI_CLI_DIR", dir)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "codebase-index-auth.json"), []byte(`{"accessToken":"secret-token","authMode":"copilot-cli"}`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "accounts.json"), []byte(`{"active":{"codebase-index":"missing"},"accounts":{"codebase-index":[{"id":"selected","accessToken":"secret-token"}]}}`), 0o600))
 
 		_, err := CodebaseIndexToken(context.Background())
-		require.ErrorContains(t, err, "credential is invalid")
+		require.ErrorContains(t, err, "selected codebase-index account is missing")
 	})
 
 	t.Run("rejects malformed JSON", func(t *testing.T) {
 		dir := t.TempDir()
 		t.Setenv("AI_CLI_DIR", dir)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "codebase-index-auth.json"), []byte(`{"accessToken":`), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "accounts.json"), []byte(`{"active":`), 0o600))
 
 		_, err := CodebaseIndexToken(context.Background())
-		require.ErrorContains(t, err, "parse codebase-index credential")
+		require.ErrorContains(t, err, "invalid account database")
 	})
 }

@@ -368,6 +368,9 @@ func (s *ConfigStore) finishOAuthAuthorization(ctx context.Context, p *oauthLogi
 			return AuthorizedOAuthPreparation{}, errors.New("OAuth account metadata is invalid")
 		}
 		if id == "" {
+			if p.registration.Construction == providerregistry.ConstructionCodebaseIndex {
+				return AuthorizedOAuthPreparation{}, errors.New("GitHub account identity could not be loaded; retry login")
+			}
 			id = "default"
 		}
 		if display == "" {

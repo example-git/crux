@@ -3,6 +3,7 @@ package automemory
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -79,16 +80,12 @@ func (s *Service) Get(ctx context.Context, scope Scope, topic string) (Entry, er
 	if err != nil {
 		return Entry{}, err
 	}
-	path := filepath.Join(memory.Directory, file)
-	content, err := os.ReadFile(path)
+	content, err := readMemoryServiceFile(memory.Directory, file)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Entry{}, fmt.Errorf("%s memory %q does not exist", scope, file)
 		}
 		return Entry{}, fmt.Errorf("reading %s memory %q: %w", scope, file, err)
-	}
-	if len(content) > maxMemoryFileBytes {
-		return Entry{}, fmt.Errorf("%s memory %q exceeds the %d-byte service limit", scope, file, maxMemoryFileBytes)
 	}
 	name, description, memoryType := parseFrontmatter(content)
 	if name == "" || description == "" || memoryType == "" {
@@ -181,6 +178,37 @@ func (s *Service) resolve(ctx context.Context, scope Scope, requireManaged bool)
 	return memory, nil
 }
 
+func readMemoryServiceFile(directory, name string) ([]byte, error) {
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("memory %q is not a regular file", name)
+	}
+	if info.Size() > maxMemoryFileBytes {
+		return nil, fmt.Errorf("memory %q exceeds the %d-byte service limit", name, maxMemoryFileBytes)
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxMemoryFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(content) > maxMemoryFileBytes {
+		return nil, fmt.Errorf("memory %q exceeds the %d-byte service limit", name, maxMemoryFileBytes)
+	}
+	return content, nil
+}
+
 func normalizeTopicFile(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if filepath.Ext(value) == "" {
@@ -240,7 +268,7 @@ func applyMemoryMutations(memory Memory, mutations []memoryMutation, snapshots .
 			return fmt.Errorf("invalid memory action %q", mutation.Action)
 		}
 		if len(snapshots) > 0 {
-			current, readErr := os.ReadFile(filepath.Join(memory.Directory, mutation.File))
+			current, readErr := readMemoryServiceFile(memory.Directory, mutation.File)
 			expected, reviewed := snapshots[0][mutation.File]
 			if readErr != nil && !os.IsNotExist(readErr) {
 				return readErr

@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	fantasy "github.com/example-git/crux/foundation"
+	"github.com/example-git/crux/internal/permission"
 	"github.com/stretchr/testify/require"
 )
 
@@ -131,6 +132,68 @@ func TestJQToolAuthorizesExternalFiles(t *testing.T) {
 	require.Equal(t, "read", permissions.lastRequest.Action)
 	require.Equal(t, canonicalExternalFile, permissions.lastRequest.Path)
 	require.Equal(t, JQPermissionsParams{FilePath: canonicalExternalFile, Filter: ".name"}, permissions.lastRequest.Params)
+}
+
+func TestJQToolReadsApprovedExternalSymlink(t *testing.T) {
+	workingDir := t.TempDir()
+	target := filepath.Join(t.TempDir(), "input.json")
+	require.NoError(t, os.WriteFile(target, []byte(`"approved target"`), 0o600))
+	link := filepath.Join(workingDir, "linked.json")
+	require.NoError(t, os.Symlink(target, link))
+	permissions := &recordingPermissionService{allow: true}
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, "session-1")
+	response := runJQTool(t, NewJQTool(permissions, workingDir), ctx, JQParams{Files: []string{link}, RawOutput: true})
+	require.False(t, response.IsError)
+	require.Equal(t, "approved target\n", response.Content)
+	require.Equal(t, 1, permissions.requestCount)
+	resolved, err := canonicalToolPath(workingDir, target)
+	require.NoError(t, err)
+	require.Equal(t, resolved, permissions.lastRequest.Path)
+}
+
+type replacingJQPermissionService struct {
+	*recordingPermissionService
+	replace func()
+}
+
+func (s *replacingJQPermissionService) Request(ctx context.Context, request permission.CreatePermissionRequest) (bool, error) {
+	s.replace()
+	return s.recordingPermissionService.Request(ctx, request)
+}
+
+func TestJQToolRejectsReplacementDuringApproval(t *testing.T) {
+	for _, parent := range []bool{false, true} {
+		name := "file"
+		if parent {
+			name = "parent"
+		}
+		t.Run(name, func(t *testing.T) {
+			workingDir := t.TempDir()
+			directory := filepath.Join(t.TempDir(), "approved")
+			require.NoError(t, os.Mkdir(directory, 0o700))
+			path := filepath.Join(directory, "input.json")
+			require.NoError(t, os.WriteFile(path, []byte(`"approved"`), 0o600))
+			outside := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(outside, "input.json"), []byte(`"replacement fixture"`), 0o600))
+			permissions := &replacingJQPermissionService{
+				recordingPermissionService: &recordingPermissionService{allow: true},
+				replace: func() {
+					if parent {
+						require.NoError(t, os.Rename(directory, directory+"-original"))
+						require.NoError(t, os.Symlink(outside, directory))
+					} else {
+						require.NoError(t, os.Rename(path, path+".original"))
+						require.NoError(t, os.Symlink(filepath.Join(outside, "input.json"), path))
+					}
+				},
+			}
+			ctx := context.WithValue(t.Context(), SessionIDContextKey, "session-1")
+			response := runJQTool(t, NewJQTool(permissions, workingDir), ctx, JQParams{Files: []string{path}})
+			require.True(t, response.IsError)
+			require.NotContains(t, response.Content, "replacement fixture")
+			require.Equal(t, 1, permissions.requestCount)
+		})
+	}
 }
 
 func TestJQToolStopsAfterExternalFilePermissionDenial(t *testing.T) {

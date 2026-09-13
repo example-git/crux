@@ -354,9 +354,9 @@ func scanProviders(ctx context.Context, cfg *Config, environment env.Env) (Provi
 
 	var catalogErr error
 	registrations := slices.DeleteFunc(slices.Clone(allIntegrated), func(registration providerregistry.Registration) bool {
-		return registration.Construction != providerregistry.ConstructionCopilot
+		return registration.Construction != providerregistry.ConstructionCopilot && registration.Construction != providerregistry.ConstructionCodebaseIndex
 	})
-	activeCoreProviderIDs := make(map[string]bool, len(coreCatalog))
+	activeCoreProviderIDs := map[string]bool{"codebase-index": true}
 	for _, provider := range coreCatalog {
 		activeCoreProviderIDs[string(provider.ID)] = true
 	}
@@ -580,6 +580,8 @@ func validateForwardedProviderState(cfg *Config, providers map[string]ProviderCo
 
 func coreProviderConstruction(providerID string) (providerregistry.Construction, bool) {
 	switch providerID {
+	case "codebase-index":
+		return providerregistry.ConstructionCodebaseIndex, true
 	case string(catalog.ProviderCopilot):
 		return providerregistry.ConstructionCopilot, true
 	case codex.ID:
@@ -651,7 +653,7 @@ func ProviderCapabilities() *providerregistry.Registry {
 		return registry
 	}
 	registrations := slices.DeleteFunc(providerregistry.Integrated(), func(registration providerregistry.Registration) bool {
-		return registration.Construction != providerregistry.ConstructionCopilot
+		return registration.Construction != providerregistry.ConstructionCopilot && registration.Construction != providerregistry.ConstructionCodebaseIndex
 	})
 	registry, _ := providerregistry.New(registrations...)
 	return registry
@@ -724,7 +726,7 @@ func rolloutOwnerModes(policy providerRolloutPolicy, integrated, plugins []provi
 	integratedIDs := make(map[string]bool, len(integrated))
 	for _, registration := range integrated {
 		integratedIDs[registration.ProviderID] = true
-		if policy.Profile == ProviderProfileIntegrated || registration.Construction == providerregistry.ConstructionCopilot {
+		if policy.Profile == ProviderProfileIntegrated || registration.Construction == providerregistry.ConstructionCopilot || registration.Construction == providerregistry.ConstructionCodebaseIndex {
 			modes[registration.ProviderID] = providerregistry.OwnerIntegrated
 		} else {
 			modes[registration.ProviderID] = providerregistry.OwnerDisabled

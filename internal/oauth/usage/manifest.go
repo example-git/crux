@@ -132,7 +132,7 @@ func (operation *manifestUsageOperation) execute(ctx context.Context, token stri
 	}
 	userAgent := operation.userAgent
 	operation.identityMu.Unlock()
-	contextValues := make(map[string]string, len(values.Context)+1)
+	contextValues := make(map[string]string)
 	for name, value := range values.Context {
 		contextValues[name] = value
 	}
@@ -140,7 +140,7 @@ func (operation *manifestUsageOperation) execute(ctx context.Context, token stri
 		contextValues["client.user_agent"] = userAgent
 	}
 	values.Context = contextValues
-	credentialValues := make(map[string]string, len(values.Credentials)+1)
+	credentialValues := make(map[string]string)
 	for name, value := range values.Credentials {
 		credentialValues[name] = value
 	}

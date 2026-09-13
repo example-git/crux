@@ -765,7 +765,7 @@ func mergeProviderMetadata(base, additional fantasy.ProviderMetadata) (fantasy.P
 	if len(base) == 0 && len(additional) == 0 {
 		return nil, nil
 	}
-	result := make(fantasy.ProviderMetadata, len(base)+len(additional))
+	result := make(fantasy.ProviderMetadata)
 	for namespace, value := range base {
 		result[namespace] = value
 	}
@@ -780,7 +780,7 @@ func mergeProviderMetadata(base, additional fantasy.ProviderMetadata) (fantasy.P
 		if !existingOK || !nextOK {
 			return nil, fmt.Errorf("metadata namespace %q conflicts with an earlier event", namespace)
 		}
-		merged := make(Metadata, len(*existing)+len(*next))
+		merged := make(Metadata)
 		for name, field := range *existing {
 			merged[name] = field
 		}

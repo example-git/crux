@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/redact"
 	"github.com/stretchr/testify/require"
 )
@@ -16,8 +17,8 @@ func TestRemoteCodebaseIndexCredentialAndPathOwnership(t *testing.T) {
 	store, _, _, _ := setupReloadPluginStore(t)
 	clientDir, serverDir := os.Getenv("AI_CLI_DIR"), t.TempDir()
 	require.NoError(t, os.MkdirAll(clientDir, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(clientDir, "codebase-index-auth.json"), []byte(`{"accessToken":"synthetic-client-codebase","authMode":"vscode"}`), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(serverDir, "codebase-index-auth.json"), []byte(`{"accessToken":"synthetic-server-codebase","authMode":"vscode"}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(clientDir, "accounts.json"), []byte(`{"active":{"codebase-index":"client"},"accounts":{"codebase-index":[{"id":"client","displayName":"Client","accessToken":"synthetic-client-codebase"}]}}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(serverDir, "accounts.json"), []byte(`{"active":{"codebase-index":"server"},"accounts":{"codebase-index":[{"id":"server","displayName":"Server","accessToken":"synthetic-server-codebase"}]}}`), 0o600))
 	require.NoError(t, store.SetConfigFields(ScopeWorkspace, map[string]any{"tools.codebase_search.enabled": true, "tools.codebase_search.database_path": "/client/source.db", "tools.codebase_search.store_directory": "/client/store"}))
 	proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
 	require.NoError(t, err)
@@ -54,6 +55,42 @@ func TestRemoteCodebaseIndexCredentialAndPathOwnership(t *testing.T) {
 	receiver.RevokeRuntime()
 	_, err = accepted.CodebaseIndexToken(t.Context())
 	require.ErrorIs(t, err, ErrRuntimeRevoked)
+}
+
+func TestCodebaseIndexAccountLifecycle(t *testing.T) {
+	store, _, _, _ := setupReloadPluginStore(t)
+	owner, ok := store.RuntimeSnapshot().ProviderOwner("codebase-index")
+	require.True(t, ok)
+	models := store.Config().Models
+	for _, id := range []string{"first", "second"} {
+		require.NoError(t, accounts.SaveWithoutActivating(t.Context(), owner.AccountNamespace, accounts.Entry{ID: id, DisplayName: id, AccessToken: "synthetic-" + id}))
+	}
+	for _, id := range []string{"first", "second"} {
+		before, err := store.CaptureAuthentication(t.Context())
+		require.NoError(t, err)
+		result, err := store.SwitchAuthenticationAccount(t.Context(), ScopeGlobal, before, owner, id)
+		require.NoError(t, err)
+		require.True(t, result.RuntimePublished)
+		token, err := store.RuntimeSnapshot().CodebaseIndexToken(t.Context())
+		require.NoError(t, err)
+		require.Equal(t, "synthetic-"+id, token)
+		require.NoError(t, store.ReloadFromDisk(t.Context()))
+		token, err = store.RuntimeSnapshot().CodebaseIndexToken(t.Context())
+		require.NoError(t, err)
+		require.Equal(t, "synthetic-"+id, token)
+		require.Equal(t, models, store.Config().Models)
+	}
+	before, err := store.CaptureAuthentication(t.Context())
+	require.NoError(t, err)
+	_, err = store.LogoutAuthentication(t.Context(), ScopeGlobal, before, owner)
+	require.NoError(t, err)
+	token, err := store.RuntimeSnapshot().CodebaseIndexToken(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, token)
+	require.NoError(t, store.ReloadFromDisk(t.Context()))
+	token, err = store.RuntimeSnapshot().CodebaseIndexToken(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, token)
 }
 
 func TestRemoteCodebaseIndexSettingsAreScopedAndSurviveReload(t *testing.T) {

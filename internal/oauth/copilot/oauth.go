@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	clientID = "Iv1.b507a08c87ecfe98"
+	clientID              = "Iv1.b507a08c87ecfe98"
+	codebaseIndexClientID = "01ab8ac9400c4e429b23"
 
 	deviceCodeURL   = "https://github.com/login/device/code"
 	accessTokenURL  = "https://github.com/login/oauth/access_token"
@@ -38,6 +39,40 @@ type DeviceCode struct {
 
 // RequestDeviceCode initiates the device code flow with GitHub.
 func RequestDeviceCode(ctx context.Context) (*DeviceCode, error) {
+	return requestDeviceCode(ctx, clientID)
+}
+
+func RequestCodebaseIndexDeviceCode(ctx context.Context) (*DeviceCode, error) {
+	return requestDeviceCode(ctx, codebaseIndexClientID)
+}
+
+func GitHubIdentity(ctx context.Context, accessToken string) (string, string, json.RawMessage) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
+	if err != nil {
+		return "", "", nil
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	client := providertransport.ClientWithContextOwnerValidator(ctx, providertransport.CapturedOriginHTTPClient(&http.Client{Timeout: 30 * time.Second}, req.URL.String()))
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", nil
+	}
+	var user struct {
+		ID    int64  `json:"id"`
+		Login string `json:"login"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&user); err != nil || user.ID <= 0 || user.Login == "" {
+		return "", "", nil
+	}
+	return fmt.Sprint(user.ID), user.Login, nil
+}
+
+func requestDeviceCode(ctx context.Context, clientID string) (*DeviceCode, error) {
 	data := url.Values{}
 	data.Set("client_id", clientID)
 	data.Set("scope", "read:user")
@@ -85,6 +120,16 @@ func (dc *DeviceCode) ExpiresAt() time.Time {
 
 // PollForToken polls GitHub for the access token after user authorization.
 func PollForToken(ctx context.Context, dc *DeviceCode) (*oauth.Token, error) {
+	return pollForToken(ctx, dc, tryGetToken)
+}
+
+func PollForGitHubToken(ctx context.Context, dc *DeviceCode) (*oauth.Token, error) {
+	return pollForToken(ctx, dc, func(ctx context.Context, deviceCode string) (*oauth.Token, error) {
+		return tryGetGitHubTokenForClient(ctx, deviceCode, codebaseIndexClientID)
+	})
+}
+
+func pollForToken(ctx context.Context, dc *DeviceCode, exchange func(context.Context, string) (*oauth.Token, error)) (*oauth.Token, error) {
 	interval := max(dc.Interval, 5)
 	deadline := dc.expiresAt
 	if deadline.IsZero() {
@@ -104,7 +149,7 @@ func PollForToken(ctx context.Context, dc *DeviceCode) (*oauth.Token, error) {
 		case <-ticker.C:
 		}
 
-		token, err := tryGetToken(ctx, dc.DeviceCode)
+		token, err := exchange(ctx, dc.DeviceCode)
 		if err == errPending {
 			continue
 		}
@@ -128,6 +173,18 @@ var (
 )
 
 func tryGetToken(ctx context.Context, deviceCode string) (*oauth.Token, error) {
+	token, err := tryGetGitHubToken(ctx, deviceCode)
+	if err != nil {
+		return nil, err
+	}
+	return getCopilotToken(ctx, token.AccessToken)
+}
+
+func tryGetGitHubToken(ctx context.Context, deviceCode string) (*oauth.Token, error) {
+	return tryGetGitHubTokenForClient(ctx, deviceCode, clientID)
+}
+
+func tryGetGitHubTokenForClient(ctx context.Context, deviceCode, clientID string) (*oauth.Token, error) {
 	data := url.Values{}
 	data.Set("client_id", clientID)
 	data.Set("device_code", deviceCode)
@@ -165,7 +222,8 @@ func tryGetToken(ctx context.Context, deviceCode string) (*oauth.Token, error) {
 		if result.AccessToken == "" {
 			return nil, errPending
 		}
-		return getCopilotToken(ctx, result.AccessToken)
+		redact.Register(result.AccessToken)
+		return &oauth.Token{AccessToken: result.AccessToken}, nil
 	case "authorization_pending":
 		return nil, errPending
 	case "slow_down":

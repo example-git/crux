@@ -377,6 +377,57 @@ func TestSummarizeUsesPromptedTextCheckpointAndClearsCodexChain(t *testing.T) {
 	require.Empty(t, storedSummary.Content().ProviderMetadata)
 }
 
+func TestSummarizeImagePayloadsPreserveStoredHistory(t *testing.T) {
+	for _, policy := range []fantasy.InstructionPolicy{fantasy.InstructionPolicyAnthropic, fantasy.InstructionPolicyCodex} {
+		t.Run(string(policy), func(t *testing.T) {
+			env := testEnv(t)
+			model := &summaryCaptureModel{finishStreamModel: finishStreamModel{text: "<summary>checkpoint</summary>"}}
+			agent := newSummaryTestAgent(env, model)
+			runtime := agent.Runtime()
+			runtime.LargeModel.InstructionPolicy = policy
+			runtime.LargeModel.CatalogModel.SupportsImages = true
+			current, err := env.sessions.Create(t.Context(), "session")
+			require.NoError(t, err)
+			var originals []message.Message
+			for _, params := range []message.CreateMessageParams{
+				{Role: message.User, Parts: []message.ContentPart{message.TextContent{Text: "summarize this work"}, message.BinaryContent{MIMEType: "image/png", Data: []byte("synthetic-upload")}}},
+				{Role: message.Assistant, Parts: []message.ContentPart{message.ToolCall{ID: "image-call", Name: "view", Input: `{}`, Finished: true}}},
+				{Role: message.Tool, Parts: []message.ContentPart{message.ToolResult{ToolCallID: "image-call", Name: "view", MIMEType: "image/png", Data: "c3ludGhldGljLXRvb2w=", Content: "image description"}}},
+			} {
+				stored, err := env.messages.Create(t.Context(), current.ID, params)
+				require.NoError(t, err)
+				originals = append(originals, stored)
+			}
+			require.NoError(t, agent.SummarizeWithRuntime(t.Context(), current.ID, nil, nil, runtime))
+			calls, _ := model.snapshot()
+			require.Len(t, calls, 1)
+			images := 0
+			for _, msg := range calls[0].Prompt {
+				for _, part := range msg.Content {
+					if file, ok := fantasy.AsMessagePart[fantasy.FilePart](part); ok && strings.HasPrefix(file.MediaType, "image/") {
+						images++
+					}
+					if tool, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part); ok {
+						if _, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](tool.Output); ok {
+							images++
+						}
+					}
+				}
+			}
+			if policy == fantasy.InstructionPolicyCodex {
+				require.Equal(t, 2, images)
+			} else {
+				require.Zero(t, images)
+			}
+			for _, original := range originals {
+				stored, err := env.messages.Get(t.Context(), original.ID)
+				require.NoError(t, err)
+				require.Equal(t, original.Parts, stored.Parts)
+			}
+		})
+	}
+}
+
 func TestSummarizeAnthropicOutputBudgetAndCheckpoint(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -432,6 +483,7 @@ func TestSummarizeAnthropicOutputBudgetAndCheckpoint(t *testing.T) {
 			env := testEnv(t)
 			agent := newSummaryTestAgent(env, model)
 			runtime := agent.Runtime()
+			runtime.LargeModel.CatalogModel.SupportsImages = true
 			runtime.LargeModel.CatalogModel.DefaultMaxTokens = test.catalogMax
 			runtime.LargeModel.ModelCfg.MaxTokens = test.configured
 			runtime.LargeModel.InstructionPolicy = fantasy.InstructionPolicyAnthropic
@@ -439,7 +491,7 @@ func TestSummarizeAnthropicOutputBudgetAndCheckpoint(t *testing.T) {
 			require.NoError(t, err)
 			original, err := env.messages.Create(t.Context(), current.ID, message.CreateMessageParams{
 				Role:  message.User,
-				Parts: []message.ContentPart{message.TextContent{Text: "preserve the current task"}},
+				Parts: []message.ContentPart{message.TextContent{Text: "preserve the current task"}, message.BinaryContent{MIMEType: "image/png", Data: []byte("synthetic-summary-image")}},
 			})
 			require.NoError(t, err)
 			err = agent.SummarizeWithRuntime(t.Context(), current.ID, nil, nil, runtime)
@@ -455,9 +507,16 @@ func TestSummarizeAnthropicOutputBudgetAndCheckpoint(t *testing.T) {
 			case body := <-requests:
 				require.EqualValues(t, test.wantMax, body["max_tokens"])
 				require.Empty(t, body["tools"])
+				encoded, err := json.Marshal(body)
+				require.NoError(t, err)
+				require.NotContains(t, string(encoded), `"type":"image"`)
+				require.NotContains(t, string(encoded), "c3ludGhldGljLXN1bW1hcnktaW1hZ2U=")
 			default:
 				t.Fatal("summary did not reach the Anthropic HTTP transport")
 			}
+			retained, err := env.messages.Get(t.Context(), original.ID)
+			require.NoError(t, err)
+			require.Equal(t, original.Parts, retained.Parts)
 			stored, err := env.sessions.Get(t.Context(), current.ID)
 			require.NoError(t, err)
 			if test.wantError == "" {

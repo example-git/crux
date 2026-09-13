@@ -68,6 +68,48 @@ func TestMemoryServiceManagesProjectAndUserScopes(t *testing.T) {
 	require.Len(t, userEntries, 1)
 }
 
+func TestMemoryServiceRejectsEscapingTopicReads(t *testing.T) {
+	t.Setenv("CRUX_GLOBAL_DATA", t.TempDir())
+	t.Setenv("CRUX_AUTO_MEMORY_DIR", "")
+	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "")
+	service := NewService(t.TempDir())
+	memory, err := service.resolve(t.Context(), ScopeProject, true)
+	require.NoError(t, err)
+	content := "---\nname: Outside\ndescription: Outside memory scope\ntype: project\n---\n\nFixture content.\n"
+	outside := filepath.Join(t.TempDir(), "outside.md")
+	require.NoError(t, os.WriteFile(outside, []byte(content), 0o600))
+	require.NoError(t, os.Symlink(outside, filepath.Join(memory.Directory, "linked.md")))
+	entry, err := service.Get(t.Context(), ScopeProject, "linked")
+	require.Error(t, err)
+	require.Empty(t, entry.Content)
+	err = applyMemoryMutations(memory, []memoryMutation{{Action: "delete", File: "linked.md"}}, map[string]string{"linked.md": content})
+	require.Error(t, err)
+	_, err = os.Lstat(filepath.Join(memory.Directory, "linked.md"))
+	require.NoError(t, err)
+	unchanged, err := os.ReadFile(outside)
+	require.NoError(t, err)
+	require.Equal(t, content, string(unchanged))
+}
+
+func TestMemoryServiceRejectsOversizedTopicReads(t *testing.T) {
+	t.Setenv("CRUX_GLOBAL_DATA", t.TempDir())
+	t.Setenv("CRUX_AUTO_MEMORY_DIR", "")
+	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "")
+	service := NewService(t.TempDir())
+	memory, err := service.resolve(t.Context(), ScopeProject, true)
+	require.NoError(t, err)
+	header := "---\nname: Large\ndescription: Boundary fixture\ntype: project\n---\n\n"
+	content := header + strings.Repeat("x", maxMemoryFileBytes-len(header))
+	require.NoError(t, os.WriteFile(filepath.Join(memory.Directory, "large.md"), []byte(content), 0o600))
+	require.NoError(t, os.Symlink("large.md", filepath.Join(memory.Directory, "local.md")))
+	entry, err := service.Get(t.Context(), ScopeProject, "local")
+	require.NoError(t, err)
+	require.Len(t, entry.Content, maxMemoryFileBytes-len(header))
+	require.NoError(t, os.WriteFile(filepath.Join(memory.Directory, "large.md"), []byte(content+"x"), 0o600))
+	_, err = service.Get(t.Context(), ScopeProject, "large")
+	require.ErrorContains(t, err, "limit")
+}
+
 func TestMemoryServiceRejectsInvalidMutations(t *testing.T) {
 	t.Setenv("CRUX_GLOBAL_DATA", t.TempDir())
 	t.Setenv("CRUX_AUTO_MEMORY_DIR", "")

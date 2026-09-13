@@ -168,7 +168,7 @@ func (layers authenticationLayers) merged(path string, replacement []byte) (*Con
 }
 
 func (layers authenticationLayers) mergedReplacements(replacements map[string][]byte) (*Config, error) {
-	values := make([][]byte, 0, len(layers.order)+len(layers.overlays))
+	var values [][]byte
 	for _, source := range layers.order {
 		data := layers.values[source]
 		if replacement, changed := replacements[source]; changed {

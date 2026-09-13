@@ -129,7 +129,9 @@ func authenticationUnconfiguredProvider(before AuthenticationCapture, owner prov
 			matches++
 		}
 	}
-	if matches != 1 {
+	if matches == 0 && registration.Construction == providerregistry.ConstructionCodebaseIndex {
+		known = catalog.Provider{ID: catalog.ProviderID(registration.ProviderID), Name: registration.Name, Type: "openai-compat"}
+	} else if matches != 1 {
 		return ProviderConfig{}, errors.New("authentication provider has no unique accepted catalog")
 	}
 	var original struct {

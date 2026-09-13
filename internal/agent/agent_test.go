@@ -980,6 +980,9 @@ func TestPreparePrompt_OrphanedToolUseMixed(t *testing.T) {
 }
 
 func TestPreparePromptMovesDelayedParallelToolResultsNextToCalls(t *testing.T) {
+	var source bytes.Buffer
+	require.NoError(t, png.Encode(&source, image.NewRGBA(image.Rect(0, 0, 32, 32))))
+	encodedImage := base64.StdEncoding.EncodeToString(source.Bytes())
 	body := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		encoded, err := io.ReadAll(request.Body)
@@ -1016,7 +1019,7 @@ func TestPreparePromptMovesDelayedParallelToolResultsNextToCalls(t *testing.T) {
 				ToolCallID: "call_image",
 				Name:       "view",
 				Content:    "loaded image",
-				Data:       base64.StdEncoding.EncodeToString([]byte("image")),
+				Data:       encodedImage,
 				MIMEType:   "image/png",
 				Metadata:   `{"source":"tool"}`,
 			}},
@@ -1043,7 +1046,7 @@ func TestPreparePromptMovesDelayedParallelToolResultsNextToCalls(t *testing.T) {
 	require.Equal(t, "call_image", imageResult.ToolCallID)
 	media, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](imageResult.Output)
 	require.True(t, ok)
-	require.Equal(t, base64.StdEncoding.EncodeToString([]byte("image")), media.Data)
+	require.Equal(t, encodedImage, media.Data)
 	require.Equal(t, "loaded image", media.Text)
 	require.Equal(t, `{"source":"tool"}`, imageResult.ClientMetadata)
 	errorResult, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](history[2].Content[0])
@@ -1065,9 +1068,13 @@ func TestPreparePromptMovesDelayedParallelToolResultsNextToCalls(t *testing.T) {
 		Messages []struct {
 			Role    string `json:"role"`
 			Content []struct {
-				Type          string `json:"type"`
-				ToolUseID     string `json:"tool_use_id"`
-				IsError       bool   `json:"is_error"`
+				Type      string `json:"type"`
+				ToolUseID string `json:"tool_use_id"`
+				IsError   bool   `json:"is_error"`
+				Source    struct {
+					MediaType string `json:"media_type"`
+					Data      string `json:"data"`
+				} `json:"source"`
 				ResultContent []struct {
 					Type string `json:"type"`
 					Text string `json:"text"`
@@ -1089,10 +1096,18 @@ func TestPreparePromptMovesDelayedParallelToolResultsNextToCalls(t *testing.T) {
 	require.Equal(t, "call_error", request.Messages[1].Content[1].ToolUseID)
 	require.True(t, request.Messages[1].Content[1].IsError)
 	require.Equal(t, "image", request.Messages[1].Content[3].Type)
+	wireImage := request.Messages[1].Content[3].Source
+	require.Equal(t, "image/jpeg", wireImage.MediaType)
+	wireBytes, err := base64.StdEncoding.DecodeString(wireImage.Data)
+	require.NoError(t, err)
+	_, format, err := image.DecodeConfig(bytes.NewReader(wireBytes))
+	require.NoError(t, err)
+	require.Equal(t, "jpeg", format)
+	require.LessOrEqual(t, len(wireBytes), 512*1024)
 	require.Equal(t, message.User, messages[1].Role)
 	require.Equal(t, "loaded image", messages[2].ToolResults()[0].Content)
 	require.Equal(t, `{"source":"tool"}`, messages[2].ToolResults()[0].Metadata)
-	require.Equal(t, base64.StdEncoding.EncodeToString([]byte("image")), messages[2].ToolResults()[0].Data)
+	require.Equal(t, encodedImage, messages[2].ToolResults()[0].Data)
 }
 
 func TestPreparePromptKeepsRealAndSyntheticParallelResultsAdjacent(t *testing.T) {
@@ -1257,7 +1272,9 @@ func TestWorkaroundProviderMediaLimitations_VisionModel(t *testing.T) {
 	sa := testSessionAgent(env, nil, nil, "test prompt")
 	agent := sa.(*sessionAgent)
 
-	pngBase64 := base64.StdEncoding.EncodeToString([]byte("fake-png-data"))
+	var source bytes.Buffer
+	require.NoError(t, png.Encode(&source, image.NewRGBA(image.Rect(0, 0, 32, 32))))
+	pngBase64 := base64.StdEncoding.EncodeToString(source.Bytes())
 
 	messages := []fantasy.Message{
 		{
@@ -1303,10 +1320,21 @@ func TestWorkaroundProviderMediaLimitations_VisionModel(t *testing.T) {
 	require.Len(t, result[1].Content, 2)
 	file, ok := fantasy.AsMessagePart[fantasy.FilePart](result[1].Content[1])
 	require.True(t, ok)
-	require.Equal(t, "image/png", file.MediaType)
+	require.Equal(t, "image/jpeg", file.MediaType)
+	_, format, err := image.DecodeConfig(bytes.NewReader(file.Data))
+	require.NoError(t, err)
+	require.Equal(t, "jpeg", format)
+	original, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](messages[0].Content[0])
+	require.True(t, ok)
+	media, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](original.Output)
+	require.True(t, ok)
+	require.Equal(t, pngBase64, media.Data)
+	require.Equal(t, "image/png", media.MediaType)
 }
 
 func TestWorkaroundProviderMediaLimitationsKeepsParallelAnthropicToolResultsFirst(t *testing.T) {
+	var source bytes.Buffer
+	require.NoError(t, png.Encode(&source, image.NewRGBA(image.Rect(0, 0, 32, 32))))
 	body := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		encoded, err := io.ReadAll(request.Body)
@@ -1341,7 +1369,7 @@ func TestWorkaroundProviderMediaLimitationsKeepsParallelAnthropicToolResultsFirs
 			Content: []fantasy.MessagePart{fantasy.ToolResultPart{
 				ToolCallID: "call_image",
 				Output: fantasy.ToolResultOutputContentMedia{
-					Data:      base64.StdEncoding.EncodeToString([]byte("image")),
+					Data:      base64.StdEncoding.EncodeToString(source.Bytes()),
 					MediaType: "image/png",
 				},
 			}},
@@ -1387,13 +1415,15 @@ func TestWorkaroundProviderMediaLimitationsAgesToolImagesByUserTurns(t *testing.
 	env := testEnv(t)
 	agent := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
 	largeModel := Model{CatalogModel: catalog.Model{SupportsImages: true}}
+	var source bytes.Buffer
+	require.NoError(t, png.Encode(&source, image.NewRGBA(image.Rect(0, 0, 32, 32))))
 	toolMessage := func() fantasy.Message {
 		return fantasy.Message{
 			Role: fantasy.MessageRoleTool,
 			Content: []fantasy.MessagePart{fantasy.ToolResultPart{
 				ToolCallID: "call_1",
 				Output: fantasy.ToolResultOutputContentMedia{
-					Data:      base64.StdEncoding.EncodeToString([]byte("tool-image")),
+					Data:      base64.StdEncoding.EncodeToString(source.Bytes()),
 					MediaType: "image/png",
 				},
 			}},
@@ -1402,7 +1432,7 @@ func TestWorkaroundProviderMediaLimitationsAgesToolImagesByUserTurns(t *testing.
 	imageCount := func(message fantasy.Message) int {
 		count := 0
 		for _, part := range message.Content {
-			if file, ok := fantasy.AsMessagePart[fantasy.FilePart](part); ok && file.MediaType == "image/png" {
+			if file, ok := fantasy.AsMessagePart[fantasy.FilePart](part); ok && file.MediaType == "image/jpeg" {
 				count++
 			}
 		}
@@ -1415,7 +1445,7 @@ func TestWorkaroundProviderMediaLimitationsAgesToolImagesByUserTurns(t *testing.
 				Role: fantasy.MessageRoleUser,
 				Content: []fantasy.MessagePart{
 					fantasy.TextPart{Text: "direct image"},
-					fantasy.FilePart{Filename: "direct.png", MediaType: "image/png", Data: []byte("direct")},
+					fantasy.FilePart{Filename: "direct.png", MediaType: "image/png", Data: source.Bytes()},
 				},
 			},
 			toolMessage(),
@@ -1501,9 +1531,12 @@ func TestWorkaroundProviderMediaLimitationsUsesStoredImagePolicy(t *testing.T) {
 			},
 		}},
 	}}
+	policy := imageattachment.ChatPolicy(nil)
+	policy.MaxSide = 256
 	largeModel := Model{
 		ModelCfg:     config.SelectedModel{Provider: "codex"},
 		CatalogModel: catalog.Model{SupportsImages: true},
+		ImagePolicy:  &policy,
 	}
 
 	result, err := agent.workaroundProviderMediaLimitations(messages, largeModel)
@@ -1513,8 +1546,8 @@ func TestWorkaroundProviderMediaLimitationsUsesStoredImagePolicy(t *testing.T) {
 	require.True(t, ok)
 	decoded, _, err := image.DecodeConfig(bytes.NewReader(file.Data))
 	require.NoError(t, err)
-	require.Equal(t, 2048, decoded.Width)
-	require.Equal(t, 2048, decoded.Height)
+	require.Equal(t, 256, decoded.Width)
+	require.Equal(t, 256, decoded.Height)
 }
 
 func TestProviderRetryLogFields(t *testing.T) {

@@ -66,6 +66,41 @@ func PolicyFor(registration providerregistry.Registration) (Policy, bool) {
 	return PolicyFromDeclaration(registration.Images)
 }
 
+func ChatPolicy(declared *Policy) Policy {
+	policy := Policy{
+		MIMETypes:      map[string]bool{"image/jpeg": true, "image/png": true, "image/gif": true, "image/webp": true},
+		MaxSourceBytes: MaxSourceBytes,
+		MaxSide:        1920, MaxPatches: 2500, MaxRawBytes: 512 * 1024,
+		OutputMediaType: "image/jpeg", FlattenAlpha: "white",
+		QualitySteps: []int{85, 75, 65, 55, 45, 35, 25}, ResizePercent: 80,
+	}
+	if declared == nil {
+		return policy
+	}
+	policy.MaxSourceBytes = declared.MaxSourceBytes
+	policy.MIMETypes = declared.MIMETypes
+	if declared.MaxSide > 0 {
+		policy.MaxSide = min(policy.MaxSide, declared.MaxSide)
+	}
+	if declared.MaxPatches > 0 {
+		policy.MaxPatches = min(policy.MaxPatches, declared.MaxPatches)
+	}
+	if declared.MaxRawBytes > 0 {
+		policy.MaxRawBytes = min(policy.MaxRawBytes, declared.MaxRawBytes)
+	}
+	if !policy.MIMETypes["image/jpeg"] || declared.OutputMediaType != "" {
+		policy.OutputMediaType = declared.OutputMediaType
+		policy.FlattenAlpha = declared.FlattenAlpha
+	}
+	if len(declared.QualitySteps) > 0 {
+		policy.QualitySteps = append([]int(nil), declared.QualitySteps...)
+	}
+	if declared.ResizePercent > 0 {
+		policy.ResizePercent = declared.ResizePercent
+	}
+	return policy
+}
+
 func SourceLimitForPolicy(policy *Policy) int64 {
 	if policy != nil {
 		return policy.MaxSourceBytes

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/message"
@@ -13,6 +14,28 @@ import (
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/session"
 )
+
+func omitSummaryImages(messages []fantasy.Message) []fantasy.Message {
+	result := slices.Clone(messages)
+	for index, msg := range result {
+		parts := make([]fantasy.MessagePart, 0, len(msg.Content))
+		for _, part := range msg.Content {
+			if file, ok := fantasy.AsMessagePart[fantasy.FilePart](part); ok && strings.HasPrefix(strings.ToLower(file.MediaType), "image/") {
+				parts = append(parts, fantasy.TextPart{Text: "[Image omitted from summary request]"})
+				continue
+			}
+			if tool, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part); ok {
+				if media, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](tool.Output); ok && strings.HasPrefix(strings.ToLower(media.MediaType), "image/") {
+					tool.Output = fantasy.ToolResultOutputContentText{Text: strings.TrimSpace(media.Text + "\n[Image omitted from summary request]")}
+					part = tool
+				}
+			}
+			parts = append(parts, part)
+		}
+		result[index].Content = parts
+	}
+	return result
+}
 
 type RemoteCompactor interface {
 	Compact(context.Context, fantasy.Call) (*codexresponses.CompactionResult, error)

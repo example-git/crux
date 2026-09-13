@@ -1794,6 +1794,9 @@ func (a *sessionAgent) summarizeWithRuntime(ctx context.Context, sessionID strin
 	aiMsgs, _ := a.preparePrompt(msgs, preparePromptOptions{
 		SupportsImages: largeModel.CatalogModel.SupportsImages,
 	})
+	if largeModel.InstructionPolicy != fantasy.InstructionPolicyCodex {
+		aiMsgs = omitSummaryImages(aiMsgs)
+	}
 	placeholder, err := a.messages.Create(genCtx, sessionID, message.CreateMessageParams{
 		Role:             message.Assistant,
 		Model:            largeModel.ModelCfg.Model,
@@ -3147,11 +3150,15 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 	return normalizedMessages, nil
 }
 
-func normalizeProviderPromptImages(messages []fantasy.Message, policy *imageattachment.Policy) ([]fantasy.Message, error) {
-	if policy == nil {
-		return messages, nil
-	}
+func normalizeProviderPromptImages(messages []fantasy.Message, declared *imageattachment.Policy) ([]fantasy.Message, error) {
+	policy := imageattachment.ChatPolicy(declared)
 	result := make([]fantasy.Message, len(messages))
+	type imagePosition struct {
+		message int
+		part    int
+	}
+	var images []imagePosition
+	imageBytes := 0
 	for messageIndex, promptMessage := range messages {
 		result[messageIndex] = promptMessage
 		result[messageIndex].Content = append([]fantasy.MessagePart(nil), promptMessage.Content...)
@@ -3160,7 +3167,7 @@ func normalizeProviderPromptImages(messages []fantasy.Message, policy *imageatta
 			if !ok || !strings.HasPrefix(strings.ToLower(file.MediaType), "image/") {
 				continue
 			}
-			normalized, err := imageattachment.Normalize(*policy, message.Attachment{
+			normalized, err := imageattachment.Normalize(policy, message.Attachment{
 				FileName: file.Filename,
 				MimeType: strings.ToLower(file.MediaType),
 				Content:  file.Data,
@@ -3172,7 +3179,43 @@ func normalizeProviderPromptImages(messages []fantasy.Message, policy *imageatta
 			file.MediaType = normalized.MimeType
 			file.Data = normalized.Content
 			result[messageIndex].Content[partIndex] = file
+			images = append(images, imagePosition{messageIndex, partIndex})
+			imageBytes += base64.StdEncoding.EncodedLen(len(file.Data))
 		}
+	}
+	const maximumImageBytes = 10 * 1024 * 1024
+	for _, target := range []int{256 * 1024, 64 * 1024} {
+		if imageBytes <= maximumImageBytes {
+			break
+		}
+		policy.MaxRawBytes = min(policy.MaxRawBytes, target)
+		for _, position := range images {
+			file, _ := fantasy.AsMessagePart[fantasy.FilePart](result[position.message].Content[position.part])
+			if len(file.Data) <= policy.MaxRawBytes {
+				continue
+			}
+			normalized, err := imageattachment.Normalize(policy, message.Attachment{
+				FileName: file.Filename, MimeType: file.MediaType, Content: file.Data,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("compress provider image %q: %w", file.Filename, err)
+			}
+			imageBytes -= base64.StdEncoding.EncodedLen(len(file.Data))
+			file.Filename, file.MediaType, file.Data = normalized.FileName, normalized.MimeType, normalized.Content
+			imageBytes += base64.StdEncoding.EncodedLen(len(file.Data))
+			result[position.message].Content[position.part] = file
+			if imageBytes <= maximumImageBytes {
+				break
+			}
+		}
+	}
+	for index, position := range images {
+		if imageBytes <= maximumImageBytes || index == len(images)-1 {
+			break
+		}
+		file, _ := fantasy.AsMessagePart[fantasy.FilePart](result[position.message].Content[position.part])
+		imageBytes -= base64.StdEncoding.EncodedLen(len(file.Data))
+		result[position.message].Content[position.part] = fantasy.TextPart{Text: omittedImageHistoryMessage}
 	}
 	return result, nil
 }
