@@ -737,16 +737,15 @@ func connectToServer(cmd *cobra.Command) (*client.Client, *proto.Workspace, func
 		Channels: channels,
 		Version:  version.Version,
 	}
-	if savedConnection != nil {
-		if _, err := c.NegotiateRemoteRuntime(cmd.Context()); err != nil {
-			return nil, nil, nil, err
-		}
-		wsReq.AuthorityMode = "client"
-		wsReq.Runtime, err = collectRemoteProviderStatePrepared(cmd.Context(), c, debug, 1, prepareRunModelOverrides(cmd), wsReq.Path)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-	} else {
+	if _, err := c.NegotiateRemoteRuntime(cmd.Context()); err != nil {
+		return nil, nil, nil, err
+	}
+	wsReq.AuthorityMode = "client"
+	wsReq.Runtime, err = collectRemoteProviderStatePrepared(cmd.Context(), c, debug, 1, prepareRunModelOverrides(cmd), wsReq.Path)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if savedConnection == nil {
 		wsReq.Env = os.Environ()
 	}
 

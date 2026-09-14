@@ -25,6 +25,10 @@ type Status struct {
 	help     help.Model
 	helpKm   help.KeyMap
 	msg      util.InfoMsg
+	// onProblem receives every error and warning shown in the status
+	// line, regardless of which caller set it, so the full text can be
+	// retained for the Recent Errors dialog.
+	onProblem func(util.InfoMsg)
 }
 
 // NewStatus creates a new status bar and help model.
@@ -37,9 +41,18 @@ func NewStatus(com *common.Common, km help.KeyMap) *Status {
 	return s
 }
 
+// SetProblemHandler registers the observer invoked for every error or
+// warning message set on the status line.
+func (s *Status) SetProblemHandler(fn func(util.InfoMsg)) {
+	s.onProblem = fn
+}
+
 // SetInfoMsg sets the status info message.
 func (s *Status) SetInfoMsg(msg util.InfoMsg) {
 	s.msg = msg
+	if s.onProblem != nil && (msg.Type == util.InfoTypeError || msg.Type == util.InfoTypeWarn) && msg.Msg != "" {
+		s.onProblem(msg)
+	}
 }
 
 // ClearInfoMsg clears the status info message.
@@ -196,6 +209,12 @@ func (s *Status) renderInfo(width int) string {
 
 	messageWidth := remaining - messageFrame
 	message := strings.ReplaceAll(s.msg.Msg, "\n", " ")
+	if s.msg.Type == util.InfoTypeError {
+		const hint = " · /errors for full text"
+		if hintWidth := lipgloss.Width(hint); messageWidth > hintWidth*3 {
+			message = ansi.Truncate(message, messageWidth-hintWidth, "…") + hint
+		}
+	}
 	message = ansi.Truncate(message, messageWidth, "…")
 	if message == "" {
 		return indicator

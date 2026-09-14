@@ -81,6 +81,52 @@ func ResolveWithEnvironment(ctx context.Context, identity *manifest.ResolvedClie
 	return version, expand(identity.UserAgentFormat, version), nil
 }
 
+func ValidateResolved(identity *manifest.ResolvedClientIdentity, version, userAgent string) error {
+	if identity == nil {
+		if version != "" || userAgent != "" {
+			return fmt.Errorf("resolved client identity has no declaration")
+		}
+		return nil
+	}
+	return ValidateResolvedForPlatform(identity, version, userAgent, runtime.GOOS, runtime.GOARCH)
+}
+
+func ValidateResolvedForPlatform(identity *manifest.ResolvedClientIdentity, version, userAgent, goos, goarch string) error {
+	if identity == nil {
+		if version != "" || userAgent != "" || goos != "" || goarch != "" {
+			return fmt.Errorf("resolved client identity has no declaration")
+		}
+		return nil
+	}
+	if !validPlatformValue(goos) || !validPlatformValue(goarch) {
+		return fmt.Errorf("resolved client platform is invalid")
+	}
+	pattern, err := regexp.Compile(identity.VersionPattern)
+	if err != nil {
+		return err
+	}
+	if !pattern.MatchString(version) {
+		return fmt.Errorf("resolved client version is invalid")
+	}
+	if userAgent != expandForPlatform(identity.UserAgentFormat, version, goos, goarch) {
+		return fmt.Errorf("resolved client user agent is invalid")
+	}
+	return nil
+}
+
+func validPlatformValue(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || strings.ContainsRune("._-", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func Resolve(identity *manifest.ResolvedClientIdentity) (string, string, error) {
 	return resolve(context.Background(), identity, true)
 }
@@ -173,10 +219,14 @@ func fetchVersion(ctx context.Context, identity *manifest.ResolvedClientIdentity
 }
 
 func expand(value, version string) string {
+	return expandForPlatform(value, version, runtime.GOOS, runtime.GOARCH)
+}
+
+func expandForPlatform(value, version, goos, goarch string) string {
 	return strings.NewReplacer(
 		"{version}", version,
-		"{os}", runtime.GOOS,
-		"{arch}", runtime.GOARCH,
+		"{os}", goos,
+		"{arch}", goarch,
 	).Replace(value)
 }
 

@@ -156,12 +156,9 @@ func (c *controllerV1) handlePostWorkspaces(w http.ResponseWriter, r *http.Reque
 	args := request.Workspace
 	args.Runtime, args.AuthorityMode = request.Runtime, request.AuthorityMode
 	args.AuthenticatedPrincipal = requestPrincipal(r)
-	if c.server.clientRuntimeOnly() && args.AuthorityMode != "client" {
-		jsonError(w, http.StatusBadRequest, "remote workspaces require client authority")
-		return
-	}
+	args.LocalClientAuthority = c.server.localClientAuthority()
 	if args.Runtime != nil || args.AuthorityMode == "client" {
-		if !requireRuntimeProtocol(w, r) {
+		if !c.requireRuntimeProtocol(w, r) {
 			return
 		}
 	}
@@ -185,6 +182,10 @@ func (c *controllerV1) handlePostWorkspaces(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		jsonError(w, http.StatusBadRequest, "legacy provider forwarding is unsupported; negotiate the client runtime protocol")
+		return
+	}
+	if args.AuthorityMode != "client" {
+		jsonError(w, http.StatusBadRequest, "server workspaces require client authority")
 		return
 	}
 

@@ -74,11 +74,11 @@ func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*prot
 		return nil, errors.New("legacy forwarding is unsupported; collect a client runtime snapshot")
 	}
 	mode := ws.AuthorityMode
-	if mode == "" && c.secure {
+	if mode == "" {
 		mode = "client"
 	}
-	if mode == "" {
-		mode = "server"
+	if mode != "client" {
+		return nil, errors.New("server workspaces require client authority")
 	}
 	headers := http.Header{"Content-Type": []string{"application/json"}}
 	var capabilities *proto.RemoteRuntimeCapabilities

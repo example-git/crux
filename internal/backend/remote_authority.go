@@ -72,8 +72,14 @@ func validateWorkspaceAuthority(args proto.Workspace) error {
 	}
 	switch args.AuthorityMode {
 	case "client":
-		if args.AuthenticatedPrincipal == "" || args.Runtime == nil {
-			return errors.New("client authority requires a verified TLS principal and complete runtime")
+		if args.Runtime == nil {
+			return errors.New("client authority requires a complete runtime")
+		}
+		if args.AuthenticatedPrincipal == "" && !args.LocalClientAuthority {
+			return errors.New("client authority requires verified TLS or local transport")
+		}
+		if args.AuthenticatedPrincipal != "" && args.LocalClientAuthority {
+			return errors.New("local client authority cannot include a TLS principal")
 		}
 		digest, err := config.RemoteRuntimeDigest(*args.Runtime)
 		if err != nil || digest != args.Runtime.Digest {

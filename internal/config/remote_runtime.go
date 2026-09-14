@@ -49,6 +49,9 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 		if definition.NativeIdentity != nil {
 			redact.Register(definition.NativeIdentity.UserAgent, definition.NativeIdentity.Version, definition.NativeIdentity.Originator)
 		}
+		if definition.ClientIdentity != nil {
+			redact.Register(definition.ClientIdentity.Version, definition.ClientIdentity.UserAgent)
+		}
 		if definition.GeminiProjectID != nil {
 			redact.RegisterJSONValue(*definition.GeminiProjectID)
 		}
@@ -66,9 +69,9 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion = 1
-	// v23 also requires ordered current-session presence. Older receivers may
-	// ignore selection_generation, so exact negotiation must reject them.
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v23"
+	// v24 also requires client-resolved provider identity metadata. Older
+	// receivers may resolve identity on the server, so negotiation rejects them.
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v24"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -97,11 +100,12 @@ type RemoteRuntimeProposal struct {
 }
 
 type RemoteProviderDefinition struct {
-	Unloaded        *ProviderLoadIssue `json:"unloaded,omitempty"`
-	Config          ProviderConfig     `json:"config"`
-	BundleDigest    string             `json:"bundle_digest,omitempty"`
-	GeminiProjectID *string            `json:"gemini_project_id,omitempty"`
-	NativeIdentity  *NativeIdentity    `json:"native_identity,omitempty"`
+	Unloaded        *ProviderLoadIssue              `json:"unloaded,omitempty"`
+	Config          ProviderConfig                  `json:"config"`
+	BundleDigest    string                          `json:"bundle_digest,omitempty"`
+	ClientIdentity  *ResolvedProviderClientIdentity `json:"client_identity,omitempty"`
+	GeminiProjectID *string                         `json:"gemini_project_id,omitempty"`
+	NativeIdentity  *NativeIdentity                 `json:"native_identity,omitempty"`
 }
 
 type RemoteCredentialBinding struct {
@@ -133,6 +137,7 @@ type clientRuntimeState struct {
 	authority RemoteAuthority
 	proposal  RemoteRuntimeProposal
 	bundles   map[string]providerplugin.DetachedBundle
+	local     bool
 	// Immutable receiver-local history; intentionally absent from proposal/wire data.
 	withdrawnAt map[providerregistry.RegistrationOwner]uint64
 }
@@ -221,8 +226,9 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 	}
 	workingDir, dataDir, debug := s.workingDir, s.config.Options.DataDirectory, s.config.Options.Debug
 	baseEnvironment := cloneEnvironment(s.baseEnvironment)
+	local := s.clientRuntime.local
 	s.writeMu.RUnlock()
-	candidate, err := CompileRemoteRuntime(workingDir, dataDir, debug, proposal, principal, baseEnvironment)
+	candidate, err := compileClientRuntime(workingDir, dataDir, debug, proposal, principal, baseEnvironment, local)
 	if err != nil {
 		return nil, err
 	}
@@ -278,6 +284,9 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 		if definition.NativeIdentity != nil {
 			redact.Register(definition.NativeIdentity.UserAgent, definition.NativeIdentity.Version, definition.NativeIdentity.Originator)
 		}
+		if definition.ClientIdentity != nil {
+			redact.Register(definition.ClientIdentity.Version, definition.ClientIdentity.UserAgent)
+		}
 		if definition.GeminiProjectID != nil {
 			redact.RegisterJSONValue(*definition.GeminiProjectID)
 		}
@@ -309,17 +318,31 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 // a provider scan, migration, account-store access, or global publication. Its
 // caller owns atomic admission/publication and must supply a verified principal.
 func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal RemoteRuntimeProposal, principal string, baseEnvironment env.Env) (*ConfigStore, error) {
+	return compileClientRuntime(workingDir, dataDir, debug, proposal, principal, baseEnvironment, false)
+}
+
+func CompileLocalRuntime(workingDir, dataDir string, debug bool, proposal RemoteRuntimeProposal, baseEnvironment env.Env) (*ConfigStore, error) {
+	return compileClientRuntime(workingDir, dataDir, debug, proposal, "", baseEnvironment, true)
+}
+
+func compileClientRuntime(workingDir, dataDir string, debug bool, proposal RemoteRuntimeProposal, principal string, baseEnvironment env.Env, local bool) (*ConfigStore, error) {
 	if proposal.Version != RemoteRuntimeVersion {
 		return nil, errors.New("unsupported client runtime protocol version")
 	}
 	if proposal.Revision == 0 {
 		return nil, errors.New("runtime revision must be positive")
 	}
-	if len(principal) != 64 {
-		return nil, errors.New("verified client principal is required")
-	}
-	if _, err := hex.DecodeString(principal); err != nil {
-		return nil, errors.New("invalid verified client principal")
+	if local {
+		if principal != "" {
+			return nil, errors.New("local client runtime cannot include a remote principal")
+		}
+	} else {
+		if len(principal) != 64 {
+			return nil, errors.New("verified client principal is required")
+		}
+		if _, err := hex.DecodeString(principal); err != nil {
+			return nil, errors.New("invalid verified client principal")
+		}
 	}
 	if len(proposal.Bundles) > MaxRemoteRuntimeBundles || len(proposal.Providers) == 0 || len(proposal.Providers) > MaxRemoteRuntimeProviders || len(proposal.Credentials) > MaxRemoteRuntimeProviders {
 		return nil, errors.New("runtime item count exceeds receiver limits")
@@ -405,7 +428,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		}
 		if issue := definition.Unloaded; issue != nil {
 			if issue.ProviderID != id || issue.Message == "" || len(issue.Message) > 8192 ||
-				definition.BundleDigest != "" || definition.NativeIdentity != nil || definition.GeminiProjectID != nil ||
+				definition.BundleDigest != "" || definition.NativeIdentity != nil || definition.ClientIdentity != nil || definition.GeminiProjectID != nil ||
 				!reflect.DeepEqual(provider, unloadedProviderConfig(provider)) {
 				return nil, errors.New("invalid unloaded client provider definition")
 			}
@@ -432,6 +455,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			return nil, errors.New("client provider endpoint must be an explicit HTTP, HTTPS, or declared WebSocket destination")
 		}
 		var metadata catalog.Provider
+		var executableRegistration *providerregistry.Registration
 		switch provider.Owner.Type {
 		case ProviderOwnerPlugin, ProviderOwnerPreset:
 			bundle, ok := bundles[definition.BundleDigest]
@@ -470,6 +494,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 					return nil, errors.New("client provider configuration bindings are invalid")
 				}
 				registrations = append(registrations, registration)
+				executableRegistration = &registrations[len(registrations)-1]
 				scan.pluginStatuses[bundle.ID()] = providerplugin.Status{ID: bundle.ID(), ProviderID: id, Version: bundle.Version(), Digest: bundle.Digest(), State: providerplugin.StateRegistered, Trust: providerplugin.TrustTrusted, Compatibility: providerplugin.CompatibilityCompatible}
 				scan.ownerModes[id] = providerregistry.OwnerPluginNative
 			} else {
@@ -495,6 +520,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			for _, registration := range providerregistry.Integrated() {
 				if registration.ProviderID == id && reflect.DeepEqual(provider.Owner, providerOwnerReferenceForRegistration(registration)) {
 					registrations = append(registrations, registration)
+					executableRegistration = &registrations[len(registrations)-1]
 					found = true
 					break
 				}
@@ -508,6 +534,16 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			}
 		default:
 			return nil, errors.New("client provider authority is unsupported")
+		}
+		if provider.Owner.Construction == providerregistry.ConstructionAnthropicMessages {
+			if executableRegistration == nil || executableRegistration.Operation == nil || executableRegistration.Operation.Anthropic == nil {
+				return nil, errors.New("client Anthropic identity declaration is unavailable")
+			}
+			if err := validateResolvedProviderClientIdentity(executableRegistration.Operation.Anthropic.ClientIdentity, definition.ClientIdentity); err != nil {
+				return nil, err
+			}
+		} else if definition.ClientIdentity != nil {
+			return nil, errors.New("client identity does not match its provider construction")
 		}
 		if endpoint.Scheme == "wss" || endpoint.Scheme == "ws" {
 			if provider.Owner.Construction != providerregistry.ConstructionCodex || provider.Owner.Type == ProviderOwnerCore && endpoint.Scheme != "wss" {
@@ -719,7 +755,7 @@ func CompileRemoteRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		}
 	}
 	cfg.SetupAgents()
-	return &ConfigStore{config: cfg, publicationSequence: 1, workingDir: workingDir, baseEnvironment: cloneEnvironment(baseEnvironment), effectiveEnvironment: env.NewFromMap(maps.Clone(proposal.CredentialEnvironment)), resolver: IdentityResolver(), providerRegistry: registry, knownProviders: cloneProviderCatalog(scan.Providers), ephemeralAccounts: forwarded, clientRuntime: &clientRuntimeState{authority: authority, proposal: proposal, bundles: bundles}}, nil
+	return &ConfigStore{config: cfg, publicationSequence: 1, workingDir: workingDir, baseEnvironment: cloneEnvironment(baseEnvironment), effectiveEnvironment: env.NewFromMap(maps.Clone(proposal.CredentialEnvironment)), resolver: IdentityResolver(), providerRegistry: registry, knownProviders: cloneProviderCatalog(scan.Providers), ephemeralAccounts: forwarded, clientRuntime: &clientRuntimeState{authority: authority, proposal: proposal, bundles: bundles, local: local}}, nil
 }
 
 // ClientProviderUnavailable returns an explicit accepted client availability

@@ -29,7 +29,7 @@ type clientProjectRoundTrip func(*http.Request) (*http.Response, error)
 func (f clientProjectRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
-	for _, mode := range []string{"explicit", "credential-lookup", "captured-default", "explicit-provider-header", "missing-metadata", "server-owned"} {
+	for _, mode := range []string{"explicit", "captured-empty", "captured-default", "explicit-provider-header", "missing-metadata", "server-owned"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("GEMINI_PROJECT_ID", "execution-host-project")
 			t.Setenv("ANTIGRAVITY_CLI_VERSION", "execution-host-version")
@@ -40,7 +40,7 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 				identity.UserAgent = "antigravity/cli/0.1.0 default-os/default-arch"
 			}
 			project := ""
-			expected := "credential-project"
+			expected := ""
 			if mode == "explicit" {
 				project, expected = "client-project", "client-project"
 			}
@@ -132,7 +132,7 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 			require.NoError(t, err)
 			require.Contains(t, result.Content.Text(), "project authority verified")
 			expectedInferences := 1
-			if mode == "explicit" || mode == "credential-lookup" || mode == "captured-default" || mode == "explicit-provider-header" {
+			if mode == "explicit" || mode == "captured-empty" || mode == "captured-default" || mode == "explicit-provider-header" {
 				proposal.Revision, proposal.Credentials[0].Generation = 2, 2
 				nextIdentity := config.NativeIdentity{UserAgent: "antigravity/cli/new-owner-version next-client-os/next-client-arch"}
 				proposal.Providers[0].NativeIdentity = &nextIdentity
@@ -165,14 +165,7 @@ func TestClientGeminiProjectIgnoresExecutionHostOverride(t *testing.T) {
 				expectedInferences = 3
 			}
 			require.EqualValues(t, expectedInferences, inferences.Load())
-			switch mode {
-			case "credential-lookup", "captured-default", "explicit-provider-header":
-				require.EqualValues(t, 3, lookups.Load())
-			case "missing-metadata":
-				require.EqualValues(t, 1, lookups.Load())
-			default:
-				require.Zero(t, lookups.Load())
-			}
+			require.Zero(t, lookups.Load(), "the execution host must not resolve client project metadata")
 		})
 	}
 }

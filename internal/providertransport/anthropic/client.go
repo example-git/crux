@@ -44,11 +44,26 @@ func NewClient(operation *providertransport.Operation, debug bool, validate prov
 	if operation == nil || operation.Anthropic == nil {
 		return nil, fmt.Errorf("Anthropic operation has no wire policy")
 	}
+	version, userAgent, err := ResolveIdentity(operation.Anthropic.ClientIdentity)
+	if err != nil {
+		return nil, err
+	}
+	return NewClientWithIdentity(operation, debug, validate, version, userAgent, "", "")
+}
+
+func NewClientWithIdentity(operation *providertransport.Operation, debug bool, validate providertransport.OwnerValidator, version, userAgent, goos, goarch string) (*http.Client, error) {
+	if operation == nil || operation.Anthropic == nil {
+		return nil, fmt.Errorf("Anthropic operation has no wire policy")
+	}
 	if validate == nil {
 		return nil, fmt.Errorf("Anthropic provider owner validator is unavailable")
 	}
-	policy := operation.Anthropic
-	version, userAgent, err := ResolveIdentity(policy.ClientIdentity)
+	var err error
+	if goos == "" && goarch == "" {
+		err = clientidentity.ValidateResolved(operation.Anthropic.ClientIdentity, version, userAgent)
+	} else {
+		err = clientidentity.ValidateResolvedForPlatform(operation.Anthropic.ClientIdentity, version, userAgent, goos, goarch)
+	}
 	if err != nil {
 		return nil, err
 	}

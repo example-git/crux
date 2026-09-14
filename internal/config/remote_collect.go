@@ -10,8 +10,10 @@ import (
 	"slices"
 
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/oauth/useragent"
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providertransport"
 )
 
 func cloneTransportBundles(values map[string]providerplugin.TransportBundle) map[string]providerplugin.TransportBundle {
@@ -256,7 +258,7 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 				// disagreements below still require explicit reconciliation.
 				credential.Unavailable = true
 			} else if entry == nil || entry.ID == "" || entry.AccessToken != selectedAccess || provider.OAuthToken != nil && entry.RefreshToken != provider.OAuthToken.RefreshToken {
-				return proposal, errors.New("selected client account changed; reload client configuration before reconnecting")
+				return proposal, fmt.Errorf("selected client account for provider %q changed; reload client configuration before reconnecting", id)
 			}
 			credential.Account, credential.APIKey = entry, ""
 		}
@@ -264,6 +266,36 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 			credential.APIKey = ""
 			credential.Account = nil
 			credential.OAuthToken = nil
+		}
+		if owner.Construction == providerregistry.ConstructionGeminiAntigravity && definition.GeminiProjectID != nil && *definition.GeminiProjectID == "" && !credential.Unavailable {
+			registration, ok := snapshot.ProviderRegistrationFor(id, provider)
+			if !ok || registration.Owner() != owner || registration.Gemini == nil || definition.NativeIdentity == nil {
+				return proposal, errors.New("selected client Gemini project resolver is unavailable")
+			}
+			accessToken := credential.APIKey
+			if credential.Account != nil {
+				accessToken = credential.Account.AccessToken
+			}
+			if credential.OAuthToken != nil {
+				accessToken = credential.OAuthToken.AccessToken
+			}
+			projectContext, err := useragent.ContextWithGeminiIdentity(ctx, *definition.NativeIdentity)
+			if err != nil {
+				return proposal, err
+			}
+			if snapshot.publicationStore != nil {
+				projectContext = providertransport.ContextWithOwnerValidator(projectContext, func() error {
+					return snapshot.publicationStore.ValidateRegistrationOwner(owner)
+				})
+			}
+			project := registration.Gemini.ProjectForCredential(projectContext, accessToken)
+			if err := providertransport.ValidateContextOwner(projectContext); err != nil {
+				return proposal, err
+			}
+			if err := ctx.Err(); err != nil {
+				return proposal, err
+			}
+			definition.GeminiProjectID = &project
 		}
 		proposal.Providers = append(proposal.Providers, definition)
 		proposal.Credentials = append(proposal.Credentials, credential)

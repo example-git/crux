@@ -129,8 +129,9 @@ type Backend struct {
 	// to run unlocked; CreateWorkspace refuses once it is set. That
 	// makes the shutdown-vs-create decision atomic: a create can never
 	// be handed a workspace on a process that is already leaving.
-	closing    bool
-	persistent bool
+	closing           bool
+	persistent        bool
+	clientRuntimeOnly bool
 	// retired holds the IDs of clients that announced their exit via
 	// RetireClient. Creates from a retired client are refused, which is what
 	// lets a client release a workspace whose ID it never learned.
@@ -335,6 +336,11 @@ func New(ctx context.Context, cfg *config.ConfigStore, shutdownFn ShutdownFunc) 
 	return backend
 }
 
+func (b *Backend) RequireClientRuntime() {
+	b.clientRuntimeOnly = true
+	b.cfg = nil
+}
+
 func (b *Backend) initWorkspaceConfig(workingDir, dataDir string, debug bool) (*config.ConfigStore, error) {
 	b.environmentOnce.Do(func() {
 		if b.baseEnvironment == nil {
@@ -481,6 +487,9 @@ func (b *Backend) completeWorkspaceResponse(clientID string) {
 // client which is released either by the first SSE attach (which
 // converts it into a stream claim) or by the grace window expiring.
 func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, response proto.Workspace, err error) {
+	if b.clientRuntimeOnly && args.AuthorityMode != "client" {
+		return nil, proto.Workspace{}, errors.Join(ErrInvalidClientRuntime, errors.New("server workspaces require client authority"))
+	}
 	if args.AuthorityMode == "" && args.AuthenticatedPrincipal == "" && args.Runtime == nil {
 		args.AuthorityMode = "server"
 	}
@@ -710,7 +719,11 @@ initializeWorkspace:
 	}
 	var cfg *config.ConfigStore
 	if args.AuthorityMode == "client" {
-		cfg, err = config.CompileRemoteRuntime(args.Path, dataDir, args.Debug, *args.Runtime, args.AuthenticatedPrincipal, env.New())
+		if args.LocalClientAuthority {
+			cfg, err = config.CompileLocalRuntime(args.Path, dataDir, args.Debug, *args.Runtime, env.New())
+		} else {
+			cfg, err = config.CompileRemoteRuntime(args.Path, dataDir, args.Debug, *args.Runtime, args.AuthenticatedPrincipal, env.New())
+		}
 	} else {
 		cfg, err = initConfig(args.Path, dataDir, args.Debug)
 	}

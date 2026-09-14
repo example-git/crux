@@ -114,12 +114,15 @@ func (m *UI) completeModelSelection(result modelSelectionCompletedMsg) tea.Cmd {
 	if operation == nil {
 		return nil
 	}
+	var cmds []tea.Cmd
+	if result.err != nil {
+		cmds = append(cmds, util.ReportError(result.err))
+	}
 	lane := m.modelSelectionLanes[operation.workspace]
 	if lane == nil || lane.active != operation {
-		return nil
+		return tea.Batch(cmds...)
 	}
 	lane.active = nil
-	var cmds []tea.Cmd
 	// Always release the originating workspace lane, including stale and failed
 	// completions. Newer work starts only after this full operation has returned.
 	if len(lane.queued) > 0 {
@@ -133,7 +136,7 @@ func (m *UI) completeModelSelection(result modelSelectionCompletedMsg) tea.Cmd {
 		return tea.Batch(cmds...)
 	}
 	if result.err != nil {
-		return tea.Batch(append(cmds, util.ReportError(result.err))...)
+		return tea.Batch(cmds...)
 	}
 	if result.modelType == config.SelectedModelTypeLarge {
 		m.applyThemeForProvider(result.providerID)

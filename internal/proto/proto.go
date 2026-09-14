@@ -49,6 +49,7 @@ type Workspace struct {
 	Creation               *Workspace                    `json:"-"`
 	AuthorityMode          string                        `json:"-"`
 	AuthenticatedPrincipal string                        `json:"-"`
+	LocalClientAuthority   bool                          `json:"-"`
 }
 
 type BrowserListing struct {

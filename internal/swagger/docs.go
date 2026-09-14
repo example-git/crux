@@ -6505,6 +6505,9 @@ const docTemplate = `{
                 "bundle_digest": {
                     "type": "string"
                 },
+                "client_identity": {
+                    "$ref": "#/definitions/config.ResolvedProviderClientIdentity"
+                },
                 "config": {
                     "$ref": "#/definitions/config.ProviderConfig"
                 },
@@ -6622,6 +6625,23 @@ const docTemplate = `{
                 },
                 "version": {
                     "type": "integer"
+                }
+            }
+        },
+        "config.ResolvedProviderClientIdentity": {
+            "type": "object",
+            "properties": {
+                "arch": {
+                    "type": "string"
+                },
+                "os": {
+                    "type": "string"
+                },
+                "user_agent": {
+                    "type": "string"
+                },
+                "version": {
+                    "type": "string"
                 }
             }
         },

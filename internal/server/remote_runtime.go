@@ -119,7 +119,10 @@ func (s *Server) authorizeRoute(next http.HandlerFunc) http.HandlerFunc {
 // @Router /runtime-capabilities [get]
 func (c *controllerV1) handleGetRemoteRuntimeCapabilities(w http.ResponseWriter, r *http.Request) {
 	principal := requestPrincipal(r)
-	if principal == "" {
+	sharing := proto.RemoteRuntimeCertificateSharing
+	if c.server.localClientAuthority() {
+		sharing = proto.RemoteRuntimeLocalSharing
+	} else if principal == "" {
 		jsonError(w, http.StatusForbidden, "runtime negotiation requires verified client TLS")
 		return
 	}
@@ -128,13 +131,13 @@ func (c *controllerV1) handleGetRemoteRuntimeCapabilities(w http.ResponseWriter,
 		Protocol:      proto.RemoteRuntimeProtocol, RuntimeVersion: config.RemoteRuntimeVersion,
 		Compiler: config.RemoteRuntimeCompiler, HostVersion: version.Version,
 		MaxRequestBytes: maxRemoteRequestBytes, MaxBundles: config.MaxRemoteRuntimeBundles,
-		MaxProviders: config.MaxRemoteRuntimeProviders, Principal: principal, WorkspaceSharing: "exclusive-certificate",
+		MaxProviders: config.MaxRemoteRuntimeProviders, Principal: principal, WorkspaceSharing: sharing,
 		DisconnectGraceMillis: c.backend.DetachGrace().Milliseconds(),
 	})
 }
 
-func requireRuntimeProtocol(w http.ResponseWriter, r *http.Request) bool {
-	if requestPrincipal(r) == "" {
+func (c *controllerV1) requireRuntimeProtocol(w http.ResponseWriter, r *http.Request) bool {
+	if requestPrincipal(r) == "" && !c.server.localClientAuthority() {
 		jsonError(w, http.StatusForbidden, "client runtime requires verified client TLS")
 		return false
 	}
@@ -335,7 +338,7 @@ func validRuntimeInstructionString(raw []byte) bool {
 // @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
 // @Router /workspaces/{id}/runtime [put]
 func (c *controllerV1) handlePutWorkspaceRuntime(w http.ResponseWriter, r *http.Request) {
-	if !requireRuntimeProtocol(w, r) {
+	if !c.requireRuntimeProtocol(w, r) {
 		return
 	}
 	var args proto.UpdateRemoteRuntimeRequest
@@ -384,7 +387,7 @@ func (c *controllerV1) handlePutWorkspaceRuntime(w http.ResponseWriter, r *http.
 // @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
 // @Router /workspaces/{id}/runtime/refresh-completion [post]
 func (c *controllerV1) handlePostClientRefreshCompletion(w http.ResponseWriter, r *http.Request) {
-	if !requireRuntimeProtocol(w, r) {
+	if !c.requireRuntimeProtocol(w, r) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
