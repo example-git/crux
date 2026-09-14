@@ -1692,7 +1692,7 @@ func (c *coordinator) buildAnthropicProvider(debug bool, baseURL, apiKey string,
 // streamed tool names. Replacing it with the generic Anthropic client silently
 // removes those plugin contracts even though provider construction still
 // appears successful.
-func (c *coordinator) buildManifestAnthropicProvider(debug bool, registration providerregistry.Registration, baseURL, apiKey string, headers map[string]string, values providertransport.TemplateValues, validate providertransport.OwnerValidator) (fantasy.Provider, error) {
+func (c *coordinator) buildManifestAnthropicProvider(debug bool, registration providerregistry.Registration, baseURL, apiKey string, headers map[string]string, values providertransport.TemplateValues, validate providertransport.OwnerValidator, identity *config.ResolvedProviderClientIdentity) (fantasy.Provider, error) {
 	baseURL, err := anthropictransport.EffectiveBaseURL(registration.Operation, baseURL)
 	if err != nil {
 		return nil, err
@@ -1702,7 +1702,12 @@ func (c *coordinator) buildManifestAnthropicProvider(debug bool, registration pr
 		return nil, err
 	}
 	operation.Endpoint.BaseURL = baseURL
-	httpClient, err := anthropictransport.NewClient(operation, debug, validate)
+	var httpClient *http.Client
+	if identity == nil {
+		httpClient, err = anthropictransport.NewClient(operation, debug, validate)
+	} else {
+		httpClient, err = anthropictransport.NewClientWithIdentity(operation, debug, validate, identity.Version, identity.UserAgent, identity.OS, identity.Arch)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -2148,14 +2153,8 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 				if err != nil {
 					return nil, err
 				}
-				return gemini.NewProviderWithIdentity(baseURL, func() string { return apiKey }, headers, registration.Operation, validateOwner, func(ctx context.Context, token string) string {
-					if project != "" {
-						return project
-					}
-					if registration.Gemini == nil {
-						return ""
-					}
-					return registration.Gemini.ProjectForCredential(ctx, token)
+				return gemini.NewProviderWithIdentity(baseURL, func() string { return apiKey }, headers, registration.Operation, validateOwner, func(context.Context, string) string {
+					return project
 				}, identity)
 			}
 			return c.buildGeminiAntigravityProvider(registration, baseURL, apiKey, headers, validateOwner)
@@ -2176,7 +2175,15 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 				return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
 			}
 			if registration.Operation.Anthropic != nil {
-				return c.buildManifestAnthropicProvider(debug, registration, baseURL, apiKey, headers, values, validateOwner)
+				var identity *config.ResolvedProviderClientIdentity
+				if snapshot.IsClientOwned() {
+					captured, err := snapshot.ClientProviderIdentity(providerCfg.ID, registration.Operation.Anthropic.ClientIdentity)
+					if err != nil {
+						return nil, err
+					}
+					identity = &captured
+				}
+				return c.buildManifestAnthropicProvider(debug, registration, baseURL, apiKey, headers, values, validateOwner, identity)
 			}
 			return c.buildAnthropicProvider(debug, baseURL, apiKey, headers, registration.AnthropicEfficiency, registration.Operation, validateOwner)
 		case providerregistry.ConstructionOpenAIResponses:

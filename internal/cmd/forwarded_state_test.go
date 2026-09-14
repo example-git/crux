@@ -135,7 +135,9 @@ func TestCollectedRuntimeIncludesOnlySelectedCanonicalAccount(t *testing.T) {
 		0o600,
 	))
 
-	proposal, err := collectRemoteProviderState(t.Context(), false, 1)
+	store, err := config.LoadRemoteClient(false)
+	require.NoError(t, err)
+	proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
 	require.NoError(t, err)
 	registry, err := providerregistry.New(registrytest.Registrations()...)
 	require.NoError(t, err)
@@ -148,7 +150,7 @@ func TestCollectedRuntimeIncludesOnlySelectedCanonicalAccount(t *testing.T) {
 	require.Equal(t, &entry, proposal.Credentials[0].Account)
 
 	require.NoError(t, accounts.Save(t.Context(), "unknown.accounts", accounts.Entry{ID: "unknown", AccessToken: "unknown-secret"}))
-	proposal, err = collectRemoteProviderState(t.Context(), false, 2)
+	proposal, err = store.CollectRemoteRuntime(t.Context(), 2)
 	require.NoError(t, err)
 	data, err := json.Marshal(proposal)
 	require.NoError(t, err)
@@ -159,6 +161,6 @@ func TestCollectedRuntimeIncludesOnlySelectedCanonicalAccount(t *testing.T) {
 	changed := accounts.Entry{ID: "changed", AccessToken: "different-active-token"}
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, changed))
 	require.NoError(t, accounts.SetActive(t.Context(), accounts.ProviderCodex, changed.ID))
-	_, err = collectRemoteProviderState(t.Context(), false, 3)
-	require.ErrorContains(t, err, "selected client account changed")
+	_, err = store.CollectRemoteRuntime(t.Context(), 3)
+	require.ErrorContains(t, err, "selected client account for provider \"codex\" changed")
 }

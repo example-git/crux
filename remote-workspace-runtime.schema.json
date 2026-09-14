@@ -628,6 +628,9 @@
         "bundle_digest": {
           "type": "string"
         },
+        "client_identity": {
+          "$ref": "#/$defs/ResolvedProviderClientIdentity"
+        },
         "gemini_project_id": {
           "type": "string"
         },
@@ -757,6 +760,30 @@
         "models",
         "controls",
         "credentials"
+      ]
+    },
+    "ResolvedProviderClientIdentity": {
+      "properties": {
+        "version": {
+          "type": "string"
+        },
+        "user_agent": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "arch": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "version",
+        "user_agent",
+        "os",
+        "arch"
       ]
     },
     "SelectedModel": {

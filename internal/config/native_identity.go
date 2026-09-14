@@ -2,14 +2,19 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"runtime"
 	"slices"
 	"sync"
 
 	"github.com/example-git/crux/internal/env"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/useragent"
+	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/providertransport"
+	"github.com/example-git/crux/internal/providertransport/clientidentity"
 )
 
 // NativeIdentity declares captured native header defaults, never an environment
@@ -17,17 +22,32 @@ import (
 // precedence is preserved. Strings are immutable and returned by value.
 type NativeIdentity = useragent.NativeIdentity
 
+type ResolvedProviderClientIdentity struct {
+	Version   string `json:"version"`
+	UserAgent string `json:"user_agent"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+}
+
 type nativeIdentityCapture struct {
-	environment []string
-	mu          sync.Mutex
-	resolved    map[providerregistry.Construction]NativeIdentity
-	running     map[providerregistry.Construction]chan struct{}
+	environment       []string
+	mu                sync.Mutex
+	resolved          map[providerregistry.Construction]NativeIdentity
+	running           map[providerregistry.Construction]chan struct{}
+	resolvedProviders map[string]ResolvedProviderClientIdentity
+	runningProviders  map[string]chan struct{}
 }
 
 func newNativeIdentityCapture(entries []string) *nativeIdentityCapture {
 	entries = slices.Clone(entries)
 	slices.Sort(entries)
-	return &nativeIdentityCapture{environment: entries, resolved: make(map[providerregistry.Construction]NativeIdentity), running: make(map[providerregistry.Construction]chan struct{})}
+	return &nativeIdentityCapture{
+		environment:       entries,
+		resolved:          make(map[providerregistry.Construction]NativeIdentity),
+		running:           make(map[providerregistry.Construction]chan struct{}),
+		resolvedProviders: make(map[string]ResolvedProviderClientIdentity),
+		runningProviders:  make(map[string]chan struct{}),
+	}
 }
 
 func (capture *nativeIdentityCapture) matches(entries []string) bool {
@@ -57,6 +77,68 @@ func validateNativeIdentity(kind providerregistry.Construction, identity *Native
 		return identity.ValidateCodex()
 	}
 	return identity.ValidateGemini()
+}
+
+func validateResolvedProviderClientIdentity(declaration *manifest.ResolvedClientIdentity, identity *ResolvedProviderClientIdentity) error {
+	if identity == nil {
+		return errors.New("client provider requires a captured client_identity declaration")
+	}
+	return clientidentity.ValidateResolvedForPlatform(declaration, identity.Version, identity.UserAgent, identity.OS, identity.Arch)
+}
+
+func (capture *nativeIdentityCapture) resolveProvider(ctx context.Context, declaration *manifest.ResolvedClientIdentity) (ResolvedProviderClientIdentity, error) {
+	if capture == nil || declaration == nil {
+		return ResolvedProviderClientIdentity{}, errors.New("provider client identity capture is unavailable")
+	}
+	encoded, err := json.Marshal(declaration)
+	if err != nil {
+		return ResolvedProviderClientIdentity{}, err
+	}
+	key := string(encoded)
+	for {
+		if err := providertransport.ValidateContextOwner(ctx); err != nil {
+			return ResolvedProviderClientIdentity{}, err
+		}
+		if err := ctx.Err(); err != nil {
+			return ResolvedProviderClientIdentity{}, err
+		}
+		capture.mu.Lock()
+		if identity, ok := capture.resolvedProviders[key]; ok {
+			capture.mu.Unlock()
+			return identity, nil
+		}
+		if done := capture.runningProviders[key]; done != nil {
+			capture.mu.Unlock()
+			select {
+			case <-done:
+				continue
+			case <-ctx.Done():
+				return ResolvedProviderClientIdentity{}, ctx.Err()
+			}
+		}
+		done := make(chan struct{})
+		capture.runningProviders[key] = done
+		capture.mu.Unlock()
+		version, userAgent, resolveErr := clientidentity.ResolveWithEnvironment(ctx, declaration, capture.environment)
+		identity := ResolvedProviderClientIdentity{Version: version, UserAgent: userAgent, OS: runtime.GOOS, Arch: runtime.GOARCH}
+		if resolveErr == nil {
+			resolveErr = validateResolvedProviderClientIdentity(declaration, &identity)
+		}
+		if resolveErr == nil {
+			resolveErr = providertransport.ValidateContextOwner(ctx)
+		}
+		if resolveErr == nil {
+			resolveErr = ctx.Err()
+		}
+		capture.mu.Lock()
+		if resolveErr == nil {
+			capture.resolvedProviders[key] = identity
+		}
+		delete(capture.runningProviders, key)
+		close(done)
+		capture.mu.Unlock()
+		return identity, resolveErr
+	}
 }
 
 func (capture *nativeIdentityCapture) peek(kind providerregistry.Construction) (NativeIdentity, bool) {
@@ -155,6 +237,21 @@ func (snapshot RuntimeSnapshot) prepareNativeIdentities(ctx context.Context) err
 				return err
 			}
 		}
+		if owner.Construction == providerregistry.ConstructionAnthropicMessages {
+			provider, _ := snapshot.config.authenticationCollectionProvider(id)
+			registration, ok := snapshot.ProviderRegistrationFor(id, provider)
+			if ok && registration.Operation != nil && registration.Operation.Anthropic != nil && registration.Operation.Anthropic.ClientIdentity != nil {
+				identityContext := ctx
+				if snapshot.publicationStore != nil {
+					identityContext = providertransport.ContextWithOwnerValidator(ctx, func() error {
+						return snapshot.publicationStore.ValidateRegistrationOwner(owner)
+					})
+				}
+				if _, err := snapshot.nativeIdentities.resolveProvider(identityContext, registration.Operation.Anthropic.ClientIdentity); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return ctx.Err()
 }
@@ -178,6 +275,22 @@ func (snapshot RuntimeSnapshot) ClientNativeIdentity(id string) (NativeIdentity,
 		return *definition.NativeIdentity, nil
 	}
 	return NativeIdentity{}, errors.New("captured client native identity is unavailable")
+}
+
+func (snapshot RuntimeSnapshot) ClientProviderIdentity(id string, declaration *manifest.ResolvedClientIdentity) (ResolvedProviderClientIdentity, error) {
+	if snapshot.clientRuntime == nil {
+		return ResolvedProviderClientIdentity{}, errors.New("client provider identity authority is unavailable")
+	}
+	for _, definition := range snapshot.clientRuntime.proposal.Providers {
+		if definition.Config.ID != id {
+			continue
+		}
+		if err := validateResolvedProviderClientIdentity(declaration, definition.ClientIdentity); err != nil {
+			return ResolvedProviderClientIdentity{}, err
+		}
+		return *definition.ClientIdentity, nil
+	}
+	return ResolvedProviderClientIdentity{}, errors.New("captured client provider identity is unavailable")
 }
 
 func (snapshot RuntimeSnapshot) contextWithClientNativeIdentity(ctx context.Context, owner providerregistry.RegistrationOwner) (context.Context, error) {

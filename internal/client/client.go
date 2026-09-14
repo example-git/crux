@@ -89,6 +89,20 @@ func NewAuthenticatedClient(path string, saved cruxconnection.Connection) (*Clie
 // Unauthenticated local transports have no durable remote-authentication scope.
 func (c *Client) AuthenticationJournalIdentity() string { return c.authenticationIdentity }
 
+func (c *Client) localRuntimeTransport() bool {
+	if c == nil || c.secure {
+		return false
+	}
+	switch c.network {
+	case "unix", "npipe":
+		return true
+	case "tcp", "tcp4", "tcp6":
+		return server.IsLoopbackHost(&url.URL{Scheme: "tcp", Host: c.addr})
+	default:
+		return false
+	}
+}
+
 // RemoteAddress returns the TCP endpoint captured when connecting, without IO.
 // Local socket transports do not have a remote address to display.
 func (c *Client) RemoteAddress() string {

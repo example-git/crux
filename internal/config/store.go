@@ -1502,10 +1502,37 @@ func (s *ConfigStore) UpdatePreferredModelForOwner(scope Scope, modelType Select
 	if err := s.updatePreferredModelLocked(scope, modelType, model); err != nil {
 		return AgentModelState{}, err
 	}
+	if err := s.rebindSelectedRemoteAccountsLocked(context.Background()); err != nil {
+		return AgentModelState{}, err
+	}
 	cfg := s.Config()
 	return captureAgentModelState(cfg.Models, func(providerID string) (providerregistry.RegistrationOwner, bool) {
 		return providerOwnerForConfig(cfg, s.providerRegistry, providerID)
 	}), nil
+}
+
+// rebindSelectedRemoteAccountsLocked repeats the load-time account binding
+// for an owning client store after its selected models change. Collection
+// requires the selected provider's token to match its active saved account;
+// a provider that was not selected at load time has not been bound yet, so
+// switching to it would otherwise be refused as a changed account even though
+// the same selection works on a locally owned runtime. Caller holds writeMu.
+func (s *ConfigStore) rebindSelectedRemoteAccountsLocked(ctx context.Context) error {
+	if !s.globalOnly {
+		return nil
+	}
+	s.configMu.Lock()
+	next := s.config.cloneForWrite()
+	snapshot := s.runtimeSnapshotLocked(next, s.resolver, s.providerRegistry, s.effectiveEnvironment)
+	s.configMu.Unlock()
+	if err := bindSelectedRemoteAccounts(ctx, snapshot, next); err != nil {
+		return fmt.Errorf("bind selected client accounts: %w", err)
+	}
+	registerConfigSecrets(next)
+	s.configMu.Lock()
+	s.publishConfigLocked(next)
+	s.configMu.Unlock()
+	return nil
 }
 
 func (s *ConfigStore) reconcilePreferredModelInputsLocked(ctx context.Context) error {

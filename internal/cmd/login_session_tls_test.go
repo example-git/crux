@@ -129,12 +129,11 @@ func testCLIWorkspaceSession(t *testing.T, accountCommands bool) {
 		{"loopback-dynamic", "client", false, false, false},
 		{"hosted-paste", "client", true, false, false},
 		{"device-code", "client", false, false, false},
-		{"hosted-paste", "server", true, false, false},
 		{"hosted-paste", "client", false, true, false},
 		{"hosted-paste", "client", false, false, true},
 	}
 	if accountCommands {
-		scenarios = []scenario{{"hosted-paste", "client", true, false, false}, {"hosted-paste", "server", true, false, false}, {"hosted-paste", "client", false, true, false}}
+		scenarios = []scenario{{"hosted-paste", "client", true, false, false}, {"hosted-paste", "client", false, true, false}}
 	}
 	for _, test := range scenarios {
 		t.Run(fmt.Sprintf("%s/%s/drop=%t/recovery=%t/cancel=%t", test.flow, test.authority, test.drop, test.reject, test.cancelInput), func(t *testing.T) {

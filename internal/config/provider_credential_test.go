@@ -152,5 +152,5 @@ func TestProviderOAuthLiteralKnownProviderAndCollection(t *testing.T) {
 	require.NoFileExists(t, marker)
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, accounts.Entry{ID: "peer", AccessToken: "changed"}))
 	_, err = store.CollectRemoteRuntime(t.Context(), 2)
-	require.ErrorContains(t, err, "selected client account changed")
+	require.ErrorContains(t, err, "selected client account for provider \"codex\" changed")
 }

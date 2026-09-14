@@ -468,6 +468,7 @@ type UI struct {
 	// provider (Claude, Codex, or Gemini/Antigravity OAuth). It is nil
 	// when unknown or unsupported.
 	providerUsage                 *oauthusage.Usage
+	recentErrors                  []dialog.ErrorRecord
 	usageFetchGen                 uint64
 	modelSelectionLanes           map[workspace.Workspace]*modelSelectionLane
 	modelSelectionGen             uint64
@@ -585,6 +586,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool, initial
 	}
 
 	status := NewStatus(com, ui)
+	status.SetProblemHandler(ui.recordStatusProblem)
 
 	// Seed the active theme key from the large model provider so the
 	// first model selection can correctly skip a redundant theme swap.
@@ -1262,6 +1264,7 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 		if m.session == nil {
 			break
 		}
+		m.recordMessageError(&msg.Payload)
 		if msg.Payload.SessionID != m.session.ID {
 			// This might be a child session message from an agent tool.
 			if cmd := m.handleChildSessionMessage(msg); cmd != nil {
@@ -1940,6 +1943,7 @@ func (m *UI) setSessionMessages(msgs []message.Message, nested map[string][]mess
 			m.lastUserMessageTime = msg.CreatedAt
 			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap, m.com.Workspace.WorkingDir())...)
 		case message.Assistant:
+			m.recordMessageError(msg)
 			items = append(items, chat.ExtractMessageItems(m.com.Styles, msg, toolResultMap, m.com.Workspace.WorkingDir())...)
 			if msg.FinishPart() != nil && msg.FinishPart().Reason == message.FinishReasonEndTurn {
 				infoItem := chat.NewAssistantInfoItem(m.com.Styles, msg, m.com.Config(), time.Unix(m.lastUserMessageTime, 0))
@@ -5519,6 +5523,8 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openNotificationsDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.ErrorsID:
+		m.openErrorsDialog()
 	case dialog.ProjectsID:
 		if cmd := m.openProjectsDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -5680,6 +5686,86 @@ func (m *UI) openNotificationsDialog() tea.Cmd {
 	notificationsDialog := dialog.NewNotifications(m.com)
 	m.dialog.OpenDialog(notificationsDialog)
 	return nil
+}
+
+// recordError keeps the full text of a reported error so the status line's
+// truncated rendering can be expanded and copied later.
+func (m *UI) recordError(message string) {
+	m.recordErrorRecord(dialog.ErrorRecord{Time: time.Now(), Message: message})
+}
+
+// recordStatusProblem is the single capture point for everything the
+// status line shows as an error or warning, whichever code path set it.
+func (m *UI) recordStatusProblem(msg util.InfoMsg) {
+	text := msg.Msg
+	if msg.Type == util.InfoTypeWarn {
+		text = "warning: " + text
+	}
+	m.recordError(text)
+}
+
+// recordMessageError captures the error banner of an assistant message
+// (provider failures, HTTP errors from the server, refusals) so the full
+// text is available in the Recent Errors dialog. Updates to the same
+// message replace the earlier record.
+func (m *UI) recordMessageError(msg *message.Message) {
+	if msg == nil || msg.Role != message.Assistant {
+		return
+	}
+	finish := msg.FinishPart()
+	if finish == nil {
+		return
+	}
+	switch finish.Reason {
+	case message.FinishReasonError, message.FinishReasonContentFilter:
+	default:
+		return
+	}
+	text := strings.TrimSpace(finish.Message)
+	if details := strings.TrimSpace(finish.Details); details != "" {
+		if text == "" {
+			text = details
+		} else {
+			text += "\n" + details
+		}
+	}
+	if text == "" {
+		text = string(finish.Reason)
+	}
+	at := time.Now()
+	if finish.Time > 0 {
+		at = time.Unix(finish.Time, 0)
+	}
+	m.recordErrorRecord(dialog.ErrorRecord{Time: at, Message: text, Key: "message:" + msg.ID})
+}
+
+func (m *UI) recordErrorRecord(record dialog.ErrorRecord) {
+	if record.Key != "" {
+		for i := range m.recentErrors {
+			if m.recentErrors[i].Key == record.Key {
+				if m.recentErrors[i].Message == record.Message {
+					return
+				}
+				m.recentErrors = append(m.recentErrors[:i], m.recentErrors[i+1:]...)
+				break
+			}
+		}
+	}
+	m.recentErrors = append(m.recentErrors, record)
+	if len(m.recentErrors) > dialog.MaxRecentErrors {
+		m.recentErrors = m.recentErrors[len(m.recentErrors)-dialog.MaxRecentErrors:]
+	}
+	if existing, ok := m.dialog.Dialog(dialog.ErrorsID).(*dialog.Errors); ok {
+		existing.SetRecords(m.recentErrors)
+	}
+}
+
+func (m *UI) openErrorsDialog() {
+	if m.dialog.ContainsDialog(dialog.ErrorsID) {
+		m.dialog.BringToFront(dialog.ErrorsID)
+		return
+	}
+	m.dialog.OpenDialog(dialog.NewErrors(m.com, m.recentErrors))
 }
 
 func (m *UI) openProjectsDialog() tea.Cmd {

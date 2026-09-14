@@ -71,6 +71,45 @@ func selectedGeminiIdentityStore(t *testing.T, project string) (*ConfigStore, pr
 	return store, owner, entry, values
 }
 
+func TestCollectRemoteGeminiProjectUsesSelectedClientCredential(t *testing.T) {
+	store, _, entry, _ := selectedGeminiIdentityStore(t, "")
+	definition, _, err := store.RuntimeSnapshot().ClientProviderDefinition(gemini.ID)
+	require.NoError(t, err)
+	require.NotNil(t, definition.NativeIdentity)
+	var requests atomic.Int32
+	host := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "Bearer "+entry.AccessToken, r.Header.Get("Authorization"))
+		assert.Equal(t, definition.NativeIdentity.UserAgent, r.Header.Get("User-Agent"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"cloudaicompanionProject":"credential-project"}`)
+	}))
+	defer host.Close()
+	target, err := url.Parse(host.URL)
+	require.NoError(t, err)
+	previous, previousTransport := http.DefaultClient, http.DefaultTransport
+	http.DefaultClient = &http.Client{Transport: selectedGeminiIdentityTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Scheme != "https" || r.URL.Host != "gemini-ag-project.example.invalid" || r.URL.Path != "/project" {
+			return nil, fmt.Errorf("unexpected outbound request %s", r.URL.Redacted())
+		}
+		copy := r.Clone(r.Context())
+		address := *r.URL
+		address.Scheme, address.Host = target.Scheme, target.Host
+		copy.URL, copy.Host = &address, target.Host
+		return host.Client().Transport.RoundTrip(copy)
+	})}
+	http.DefaultTransport = http.DefaultClient.Transport
+	defer func() { http.DefaultClient, http.DefaultTransport = previous, previousTransport }()
+
+	proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, requests.Load())
+	require.Len(t, proposal.Providers, 1)
+	require.NotNil(t, proposal.Providers[0].GeminiProjectID)
+	require.Equal(t, "credential-project", *proposal.Providers[0].GeminiProjectID)
+}
+
 func TestSelectedGeminiRefreshUsesCapturedEnvironmentAndPersists(t *testing.T) {
 	for _, name := range []string{"nonempty-project", "blank-project", "changed-project", "changed-client-id", "changed-version", "missing-environment-client-credentials", "project-changed-during-exchange"} {
 		t.Run(name, func(t *testing.T) {

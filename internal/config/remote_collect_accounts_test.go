@@ -35,7 +35,50 @@ func TestLoadRemoteClientBindsActiveAccountAndDetectsLaterSwitch(t *testing.T) {
 	replacement := accounts.Entry{ID: "replacement", AccessToken: "synthetic-replacement-access", RefreshToken: "synthetic-replacement-refresh"}
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, replacement))
 	_, err = store.CollectRemoteRuntime(t.Context(), 2)
-	require.ErrorContains(t, err, "selected client account changed; reload client configuration before reconnecting")
+	require.ErrorContains(t, err, "selected client account for provider \"codex\" changed; reload client configuration before reconnecting")
+}
+
+func TestRemoteClientSwitchingProviderBindsItsActiveAccountBeforeCollection(t *testing.T) {
+	root := t.TempDir()
+	for _, key := range []string{"HOME", "USERPROFILE", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "CRUX_GLOBAL_CONFIG", "CRUX_GLOBAL_DATA", "CRUX_CACHE_DIR", "AI_CLI_DIR"} {
+		t.Setenv(key, filepath.Join(root, key))
+		require.NoError(t, os.MkdirAll(os.Getenv(key), 0o700))
+	}
+	t.Setenv("CRUX_PROVIDER_PROFILE", "plugin-compat")
+	require.NoError(t, registrytest.Install(t.Context(), os.Getenv("CRUX_GLOBAL_DATA"), os.Getenv("CRUX_CACHE_DIR"), *registrytest.Provider("codex").Manifest))
+	require.NoError(t, registrytest.Install(t.Context(), os.Getenv("CRUX_GLOBAL_DATA"), os.Getenv("CRUX_CACHE_DIR"), *registrytest.Provider("gemini-ag").Manifest))
+	data := []byte(`{"providers":{
+		"codex":{"api_key":"synthetic-stale-codex-access","oauth":{"access_token":"synthetic-stale-codex-access","refresh_token":"synthetic-stale-codex-refresh"},"plugin":{"id":"test.codex","version":"1.1.0"},"owner":{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"},"models":[{"id":"fixture","name":"Fixture"}]},
+		"gemini-ag":{"api_key":"synthetic-gemini-access","oauth":{"access_token":"synthetic-gemini-access","refresh_token":"synthetic-gemini-refresh"},"plugin":{"id":"test.gemini-ag","version":"1.1.0"},"owner":{"type":"plugin","construction":"integrated-gemini-antigravity","compatibility_adapter":"integrated-gemini-antigravity"},"models":[{"id":"fixture","name":"Fixture"}]}},
+		"models":{"large":{"provider":"gemini-ag","model":"fixture"},"small":{"provider":"gemini-ag","model":"fixture"}}}`)
+	require.NoError(t, os.WriteFile(GlobalConfigData(), data, 0o600))
+	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderGemini, accounts.Entry{ID: "gemini", AccessToken: "synthetic-gemini-access", RefreshToken: "synthetic-gemini-refresh"}))
+	codexActive := accounts.Entry{ID: "codex-active", AccessToken: "synthetic-active-codex-access", RefreshToken: "synthetic-active-codex-refresh"}
+	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, codexActive))
+
+	store, err := LoadRemoteClient(false)
+	require.NoError(t, err)
+	// Only the provider selected at load time is bound; codex still carries the
+	// stale config token because it was not selected.
+	stale, ok := store.Config().Providers.Get("codex")
+	require.True(t, ok)
+	require.Equal(t, "synthetic-stale-codex-access", stale.OAuthToken.AccessToken)
+
+	owner, ok := store.RuntimeSnapshot().ProviderOwner("codex")
+	require.True(t, ok)
+	for _, modelType := range []SelectedModelType{SelectedModelTypeLarge, SelectedModelTypeSmall} {
+		_, err = store.UpdatePreferredModelForOwner(ScopeGlobal, modelType, SelectedModel{Provider: "codex", Model: "fixture"}, owner)
+		require.NoError(t, err)
+	}
+
+	proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
+	require.NoError(t, err, "switching to a provider at runtime must publish it, not refuse collection")
+	require.Equal(t, "codex", proposal.Models[SelectedModelTypeLarge].Provider)
+	require.Len(t, proposal.Credentials, 1)
+	require.Equal(t, &codexActive, proposal.Credentials[0].Account)
+	bound, ok := store.Config().Providers.Get("codex")
+	require.True(t, ok)
+	require.Equal(t, codexActive.AccessToken, bound.OAuthToken.AccessToken)
 }
 
 func TestCollectRemoteRuntimeRetainsUnconfiguredOAuthCandidate(t *testing.T) {
@@ -98,7 +141,7 @@ func TestCollectRemoteRuntimeReadsCurrentCapturedAccountPath(t *testing.T) {
 			require.NoError(t, accounts.Save(t.Context(), f.owner.AccountNamespace, changed))
 			t.Setenv("AI_CLI_DIR", foreign)
 			_, err = f.store.CollectRemoteRuntime(t.Context(), 2)
-			require.ErrorContains(t, err, "selected client account changed")
+			require.ErrorContains(t, err, "selected client account for provider \""+f.owner.ProviderID+"\" changed")
 			require.NoDirExists(t, foreign)
 		})
 	}

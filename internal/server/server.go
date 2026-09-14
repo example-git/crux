@@ -191,8 +191,8 @@ func (s *Server) authenticatedManagementRequest(r *http.Request) bool {
 	return !s.remoteManagement() || (r.TLS != nil && len(r.TLS.PeerCertificates) > 0)
 }
 
-func (s *Server) clientRuntimeOnly() bool {
-	return s.tlsConfig != nil || s.remoteManagement()
+func (s *Server) localClientAuthority() bool {
+	return s.tlsConfig == nil && !s.remoteManagement()
 }
 
 func IsLoopbackHost(hostURL *url.URL) bool {
@@ -214,7 +214,7 @@ func DefaultServer(cfg *config.ConfigStore) *Server {
 }
 
 // NewServer creates a new [Server] with the given network and address.
-func NewServer(cfg *config.ConfigStore, network, address string) *Server {
+func NewServer(_ *config.ConfigStore, network, address string) *Server {
 	s := new(Server)
 	s.Addr = address
 	s.network = network
@@ -222,7 +222,7 @@ func NewServer(cfg *config.ConfigStore, network, address string) *Server {
 	// The backend is created with a shutdown callback that triggers
 	// a graceful server shutdown (e.g. when the last workspace is
 	// removed).
-	s.backend = backend.New(context.Background(), cfg, func() {
+	s.backend = backend.New(context.Background(), nil, func() {
 		go func() {
 			slog.Info("Shutting down server...")
 			if err := s.Shutdown(context.Background()); err != nil {
@@ -230,6 +230,7 @@ func NewServer(cfg *config.ConfigStore, network, address string) *Server {
 			}
 		}()
 	})
+	s.backend.RequireClientRuntime()
 	if err := s.SetWorkspaceRoots(nil); err != nil {
 		slog.Warn("Failed to configure default workspace root", "error", err)
 	}

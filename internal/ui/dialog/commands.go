@@ -582,6 +582,7 @@ func (c *Commands) defaultCommands() []*CommandItem {
 	commands = append(commands, NewCommandItem(c.com.Styles, "codebase_index", "Codebase Index", "ctrl+i", ActionOpenDialog{DialogID: CodebaseIndexID}).WithAliases("index", "semantic_index"))
 	commands = append(commands, NewCommandItem(c.com.Styles, "mcp_servers", "MCP Servers", "", ActionOpenDialog{DialogID: MCPServersID}).WithAliases("mcp", "mcp_config", "servers"))
 	commands = append(commands, NewCommandItem(c.com.Styles, "create_agent", "Create Agent Definition", "", ActionOpenDialog{DialogID: AgentDefinitionsID}).WithAliases("agent_definition", "new_agent"))
+	commands = append(commands, NewCommandItem(c.com.Styles, "errors", "Recent Errors", "", ActionOpenDialog{DialogID: ErrorsID}).WithAliases("error", "last_error", "recent_errors"))
 
 	commands = append(
 		commands,

@@ -18,8 +18,8 @@ import (
 // NegotiateRemoteRuntime is authenticated and contains no private state. It is
 // deliberately called before constructing a secret-bearing request body.
 func (c *Client) NegotiateRemoteRuntime(ctx context.Context) (*proto.RemoteRuntimeCapabilities, error) {
-	if !c.secure {
-		return nil, errors.New("client runtime requires a saved authenticated TLS connection")
+	if !c.secure && !c.localRuntimeTransport() {
+		return nil, errors.New("client runtime requires a local transport or saved authenticated TLS connection")
 	}
 	rsp, err := c.get(ctx, "/runtime-capabilities", nil, nil)
 	if err != nil {
@@ -40,7 +40,11 @@ func (c *Client) NegotiateRemoteRuntime(ctx context.Context) (*proto.RemoteRunti
 	if err := json.NewDecoder(io.LimitReader(rsp.Body, 64<<10)).Decode(&value); err != nil {
 		return nil, errors.New("invalid remote runtime capabilities")
 	}
-	if value.Protocol != proto.RemoteRuntimeProtocol || value.RuntimeVersion != config.RemoteRuntimeVersion || value.Compiler != config.RemoteRuntimeCompiler || value.WorkspaceSharing != "exclusive-certificate" || len(value.Principal) != 64 || value.MaxRequestBytes <= 0 || value.MaxBundles <= 0 || value.MaxProviders <= 0 || value.DisconnectGraceMillis < 0 {
+	sharingValid := value.WorkspaceSharing == proto.RemoteRuntimeLocalSharing && value.Principal == ""
+	if c.secure {
+		sharingValid = value.WorkspaceSharing == proto.RemoteRuntimeCertificateSharing && len(value.Principal) == 64
+	}
+	if value.Protocol != proto.RemoteRuntimeProtocol || value.RuntimeVersion != config.RemoteRuntimeVersion || value.Compiler != config.RemoteRuntimeCompiler || !sharingValid || value.MaxRequestBytes <= 0 || value.MaxBundles <= 0 || value.MaxProviders <= 0 || value.DisconnectGraceMillis < 0 {
 		return nil, errors.New("remote runtime capabilities are incompatible; no private state was sent")
 	}
 	return &value, nil

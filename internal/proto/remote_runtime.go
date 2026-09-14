@@ -2,7 +2,11 @@ package proto
 
 import "github.com/example-git/crux/internal/config"
 
-const RemoteRuntimeProtocol = "crux-client-runtime-v1"
+const (
+	RemoteRuntimeProtocol           = "crux-client-runtime-v1"
+	RemoteRuntimeLocalSharing       = "local-client"
+	RemoteRuntimeCertificateSharing = "exclusive-certificate"
+)
 
 // CreateWorkspaceRequest is private input, distinct from public discovery.
 type CreateWorkspaceRequest struct {

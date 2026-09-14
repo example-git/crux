@@ -667,6 +667,8 @@ definitions:
     properties:
       bundle_digest:
         type: string
+      client_identity:
+        $ref: '#/definitions/config.ResolvedProviderClientIdentity'
       config:
         $ref: '#/definitions/config.ProviderConfig'
       gemini_project_id:
@@ -745,6 +747,17 @@ definitions:
         type: integer
       version:
         type: integer
+    type: object
+  config.ResolvedProviderClientIdentity:
+    properties:
+      arch:
+        type: string
+      os:
+        type: string
+      user_agent:
+        type: string
+      version:
+        type: string
     type: object
   config.RuntimeControlOverride:
     properties:
