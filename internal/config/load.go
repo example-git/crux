@@ -90,12 +90,13 @@ func SnapshotEnvironment() env.Env {
 // project and the remote workspace path are not client model configuration.
 func LoadRemoteClient(debug bool) (*ConfigStore, error) {
 	base := snapshotEnvironment()
-	return loadWithEnvironment(globalWorkspaceDirFromEnvironment(base), "", debug, base, true, configLoadOptions{globalOnly: true})
+	return loadWithEnvironment(globalWorkspaceDirFromEnvironment(base), "", debug, base, true, configLoadOptions{globalOnly: true, bindRemoteAccounts: true})
 }
 
 type configLoadOptions struct {
-	previewReadOnly bool
-	globalOnly      bool
+	previewReadOnly    bool
+	globalOnly         bool
+	bindRemoteAccounts bool
 }
 
 func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment env.Env, publishProcessState bool, options configLoadOptions) (*ConfigStore, error) {
@@ -239,6 +240,12 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		}
 	}
 	cfg.SetupAgents()
+	if options.bindRemoteAccounts {
+		snapshot := RuntimeSnapshot{config: cfg, registry: scan.Registry, environment: candidateEnv}
+		if err := bindSelectedRemoteAccounts(context.Background(), snapshot, cfg); err != nil {
+			return nil, fmt.Errorf("bind selected client accounts: %w", err)
+		}
+	}
 	if options.previewReadOnly {
 		store.effectiveEnvironment = cloneEnvironment(candidateEnv)
 		registerConfigSecrets(cfg)

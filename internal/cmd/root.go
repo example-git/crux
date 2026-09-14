@@ -656,9 +656,6 @@ func collectRemoteProviderStateForClient(ctx context.Context, c *client.Client, 
 }
 
 func collectRemoteProviderStatePrepared(ctx context.Context, c *client.Client, debug bool, revision uint64, prepare func(*config.ConfigStore) error, remotePaths ...string) (*config.RemoteRuntimeProposal, error) {
-	// A remote workspace is not the local launch project. Keep the owning
-	// client's configuration anchored at its global workspace, including on
-	// later reloads; --cwd and --data-dir belong to the remote workspace.
 	store, err := config.LoadRemoteClient(debug)
 	if err != nil {
 		return nil, fmt.Errorf("load selected client runtime: %w", err)

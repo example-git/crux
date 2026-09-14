@@ -8,8 +8,35 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLoadRemoteClientBindsActiveAccountAndDetectsLaterSwitch(t *testing.T) {
+	root := t.TempDir()
+	for _, key := range []string{"HOME", "USERPROFILE", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "CRUX_GLOBAL_CONFIG", "CRUX_GLOBAL_DATA", "CRUX_CACHE_DIR", "AI_CLI_DIR"} {
+		t.Setenv(key, filepath.Join(root, key))
+		require.NoError(t, os.MkdirAll(os.Getenv(key), 0o700))
+	}
+	t.Setenv("CRUX_PROVIDER_PROFILE", "plugin-compat")
+	require.NoError(t, registrytest.Install(t.Context(), os.Getenv("CRUX_GLOBAL_DATA"), os.Getenv("CRUX_CACHE_DIR"), *registrytest.Provider("codex").Manifest))
+	data := []byte(`{"providers":{"codex":{"api_key":"synthetic-stale-access","oauth":{"access_token":"synthetic-stale-access","refresh_token":"synthetic-stale-refresh"},"plugin":{"id":"test.codex","version":"1.1.0"},"owner":{"type":"plugin","construction":"integrated-codex","compatibility_adapter":"integrated-codex"},"models":[{"id":"fixture","name":"Fixture"}]}},"models":{"large":{"provider":"codex","model":"fixture"},"small":{"provider":"codex","model":"fixture"}}}`)
+	require.NoError(t, os.WriteFile(GlobalConfigData(), data, 0o600))
+	active := accounts.Entry{ID: "active", AccessToken: "synthetic-active-access", RefreshToken: "synthetic-active-refresh"}
+	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, active))
+
+	store, err := LoadRemoteClient(false)
+	require.NoError(t, err)
+	proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
+	require.NoError(t, err)
+	require.Len(t, proposal.Credentials, 1)
+	require.Equal(t, &active, proposal.Credentials[0].Account)
+
+	replacement := accounts.Entry{ID: "replacement", AccessToken: "synthetic-replacement-access", RefreshToken: "synthetic-replacement-refresh"}
+	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, replacement))
+	_, err = store.CollectRemoteRuntime(t.Context(), 2)
+	require.ErrorContains(t, err, "selected client account changed; reload client configuration before reconnecting")
+}
 
 func TestCollectRemoteRuntimeRetainsUnconfiguredOAuthCandidate(t *testing.T) {
 	f := newAuthenticationCandidateFixture(t, "example-responses", false, false, "")

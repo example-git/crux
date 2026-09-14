@@ -156,6 +156,10 @@ func (c *controllerV1) handlePostWorkspaces(w http.ResponseWriter, r *http.Reque
 	args := request.Workspace
 	args.Runtime, args.AuthorityMode = request.Runtime, request.AuthorityMode
 	args.AuthenticatedPrincipal = requestPrincipal(r)
+	if c.server.clientRuntimeOnly() && args.AuthorityMode != "client" {
+		jsonError(w, http.StatusBadRequest, "remote workspaces require client authority")
+		return
+	}
 	if args.Runtime != nil || args.AuthorityMode == "client" {
 		if !requireRuntimeProtocol(w, r) {
 			return

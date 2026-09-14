@@ -95,6 +95,71 @@ func (s *ConfigStore) captureRemoteCollectionRuntime(ctx context.Context) (Runti
 
 // account resolves only a selected owner. Authentication completion supplies
 // its retained observation; ordinary collection preserves its current reader.
+func bindSelectedRemoteAccounts(ctx context.Context, snapshot RuntimeSnapshot, cfg *Config) error {
+	selected := make(map[string]bool)
+	for _, model := range cfg.Models {
+		selected[model.Provider] = true
+	}
+	if cfg.Images != nil {
+		for _, image := range cfg.Images.Providers {
+			for _, owner := range image.Credentials {
+				selected[owner.ProviderID] = true
+			}
+		}
+	}
+	owners := make(map[string]providerregistry.RegistrationOwner)
+	var namespaces []string
+	for _, providerID := range slices.Sorted(maps.Keys(selected)) {
+		provider, ok := cfg.authenticationCollectionProvider(providerID)
+		if !ok {
+			continue
+		}
+		owner, active := snapshot.ProviderOwnerFor(providerID, provider)
+		if !active || !owner.HasOAuth || owner.AccountNamespace == "" {
+			continue
+		}
+		owners[providerID] = owner
+		namespaces = append(namespaces, owner.AccountNamespace)
+	}
+	if len(namespaces) == 0 {
+		return nil
+	}
+	before, err := captureRuntimeAccounts(ctx, snapshot, namespaces)
+	if err != nil {
+		return err
+	}
+	for _, providerID := range slices.Sorted(maps.Keys(owners)) {
+		owner := owners[providerID]
+		activeID := before.ActiveID(owner.AccountNamespace)
+		var selected *accounts.Entry
+		for _, entry := range before.Entries(owner.AccountNamespace) {
+			if entry.ID == activeID {
+				entry := entry
+				selected = &entry
+				break
+			}
+		}
+		if selected == nil || selected.ID == "" || selected.AccessToken == "" {
+			continue
+		}
+		provider, configured := cfg.Providers.Get(providerID)
+		registration, registered := snapshot.ProviderRegistrationFor(providerID, provider)
+		if !configured || !registered || registration.Owner() != owner || registration.OAuth == nil {
+			return fmt.Errorf("selected client provider %q has no active OAuth owner", providerID)
+		}
+		applyOAuthTokenToProvider(&provider, selected.Token(), registration)
+		cfg.Providers.Set(providerID, provider)
+	}
+	after, err := captureRuntimeAccounts(ctx, snapshot, namespaces)
+	if err != nil {
+		return err
+	}
+	if !before.SameObservation(after) {
+		return errors.New("selected client account changed while loading remote configuration")
+	}
+	return nil
+}
+
 func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revision uint64, removed map[providerregistry.RegistrationOwner]bool, resolve func(string) (string, error), account func(context.Context, providerregistry.RegistrationOwner) (*accounts.Entry, error)) (RemoteRuntimeProposal, error) {
 	if snapshot.IsClientOwned() {
 		return RemoteRuntimeProposal{}, errors.New("collect runtime on its owning client")

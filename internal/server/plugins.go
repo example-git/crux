@@ -1,6 +1,10 @@
 package server
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/example-git/crux/internal/proto"
+)
 
 // handleGetPlugins returns the redacted provider plugin snapshot for the host.
 //
@@ -11,6 +15,10 @@ import "net/http"
 //	@Failure		500	{object}	proto.Error
 //	@Router			/plugins [get]
 func (c *controllerV1) handleGetPlugins(w http.ResponseWriter, r *http.Request) {
+	if c.server.clientRuntimeOnly() {
+		jsonEncode(w, proto.PluginSnapshot{})
+		return
+	}
 	snapshot, err := c.backend.PluginSnapshot()
 	if err != nil {
 		c.handleError(w, r, err)

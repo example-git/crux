@@ -1,17 +1,18 @@
 package trafficcapture
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
 func TestPreparedRequestRejectsExecutableReplacement(t *testing.T) {
+	if !testFilesystemIdentitySupported() {
+		t.Skip("traffic capture filesystem identity is supported on Linux and macOS")
+	}
 	workingDirectory := t.TempDir()
 	name := "target"
 	if runtime.GOOS == "windows" {
@@ -42,6 +43,26 @@ func TestPreparedRequestRejectsExecutableReplacement(t *testing.T) {
 	requireFileBytes(t, executable, "#!/bin/sh\nexit 1\n")
 }
 
+func TestPrepareRejectsUnsupportedFilesystemIdentity(t *testing.T) {
+	if testFilesystemIdentitySupported() {
+		t.Skip("traffic capture filesystem identity is supported")
+	}
+	workingDirectory := t.TempDir()
+	name := "target"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	executable := filepath.Join(workingDirectory, name)
+	require.NoError(t, os.WriteFile(executable, []byte("target"), 0o700))
+
+	_, err := Prepare(t.Context(), Request{
+		Executable:  executable,
+		WorkingDir:  workingDirectory,
+		CapturePath: filepath.Join(workingDirectory, "capture.mitm"),
+	})
+	require.ErrorContains(t, err, "traffic capture filesystem identity is unsupported on this platform")
+}
+
 func TestPrepareRejectsNonExecutableTarget(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows executable validation does not use mode bits")
@@ -59,6 +80,9 @@ func TestPrepareRejectsNonExecutableTarget(t *testing.T) {
 }
 
 func TestCaptureOutputRejectsParentReplacement(t *testing.T) {
+	if !testFilesystemIdentitySupported() {
+		t.Skip("traffic capture filesystem identity is supported on Linux and macOS")
+	}
 	root := t.TempDir()
 	directory := filepath.Join(root, "output")
 	moved := filepath.Join(root, "approved-output")
@@ -69,15 +93,7 @@ func TestCaptureOutputRejectsParentReplacement(t *testing.T) {
 	require.NoError(t, err)
 	defer binding.close()
 
-	renameErr := os.Rename(directory, moved)
-	if retainedDirectoryRenameBlocked(renameErr) {
-		_, err = binding.create()
-		require.NoError(t, err)
-		require.NoDirExists(t, moved)
-		require.FileExists(t, capturePath)
-		return
-	}
-	require.NoError(t, renameErr)
+	require.NoError(t, os.Rename(directory, moved))
 	require.NoError(t, os.Mkdir(directory, 0o700))
 
 	_, err = binding.create()
@@ -100,11 +116,8 @@ func TestCaptureOutputRejectsCreatedMissingDirectory(t *testing.T) {
 	require.NoFileExists(t, capturePath)
 }
 
-func retainedDirectoryRenameBlocked(err error) bool {
-	if runtime.GOOS != "windows" {
-		return false
-	}
-	return errors.Is(err, syscall.Errno(5)) || errors.Is(err, syscall.Errno(32))
+func testFilesystemIdentitySupported() bool {
+	return runtime.GOOS == "darwin" || runtime.GOOS == "linux"
 }
 
 func requireFileBytes(t *testing.T, path, expected string) {

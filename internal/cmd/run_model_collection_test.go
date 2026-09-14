@@ -23,8 +23,10 @@ func TestRunModelFlagsApplyBeforeInitialClientCollection(t *testing.T) {
 	path := config.GlobalConfigData()
 	require.NoError(t, os.WriteFile(path, data, 0o600))
 	require.NoError(t, accounts.Save(t.Context(), accounts.ProviderCodex, accounts.Entry{ID: "other", AccessToken: "synthetic-unselected-active"}))
-	_, err := collectRemoteProviderState(t.Context(), false, 1)
-	require.ErrorContains(t, err, "selected client account changed")
+	initial, err := collectRemoteProviderState(t.Context(), false, 1)
+	require.NoError(t, err)
+	require.Len(t, initial.Credentials, 1)
+	require.Equal(t, "synthetic-unselected-active", initial.Credentials[0].Account.AccessToken)
 	command := &cobra.Command{Use: "run"}
 	command.SetContext(t.Context())
 	command.Flags().String("model", "chosen/flag", "")
