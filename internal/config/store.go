@@ -2846,6 +2846,12 @@ func (s *ConfigStore) reloadFromDiskWithCredentialCaptureLocked(ctx context.Cont
 		cfg.Models[SelectedModelTypeSmall] = resolved.Small
 	}
 	cfg.SetupAgents()
+	if s.globalOnly {
+		snapshot := s.runtimeSnapshotLocked(cfg, resolver, scan.Registry, candidateEnv)
+		if err := bindSelectedRemoteAccounts(ctx, snapshot, cfg); err != nil {
+			return fmt.Errorf("bind selected client accounts during reload: %w", err)
+		}
+	}
 
 	// Finalize the intended receipts on the unpublished configuration. Runtime
 	// preparation may retain this exact pointer and immediately start readers;

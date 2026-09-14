@@ -23,6 +23,7 @@ import (
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -73,6 +74,34 @@ func newRemoteAuthorityTLSHarness(t *testing.T, configure ...func(*tls.Config)) 
 	hs.StartTLS()
 	t.Cleanup(hs.Close)
 	return hs, clients
+}
+
+func TestRemoteServerRejectsServerAuthorityAndDoesNotLoadPlugins(t *testing.T) {
+	hs, clients := newRemoteAuthorityTLSHarness(t)
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, hs.URL+"/v1/plugins", nil)
+	require.NoError(t, err)
+	response, err := clients["retained"].Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var snapshot proto.PluginSnapshot
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&snapshot))
+	require.NoError(t, response.Body.Close())
+	require.Empty(t, snapshot.Plugins)
+	require.Empty(t, snapshot.EnabledProviders)
+
+	body, err := json.Marshal(proto.CreateWorkspaceRequest{Workspace: proto.Workspace{Path: t.TempDir(), ClientID: uuid.NewString()}, AuthorityMode: "server"})
+	require.NoError(t, err)
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/workspaces", bytes.NewReader(body))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+	response, err = clients["retained"].Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusBadRequest, response.StatusCode)
+	result, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	require.Contains(t, string(result), "remote workspaces require client authority")
 }
 
 func TestRemoteTLSAdmissionBaseline(t *testing.T) {

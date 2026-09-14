@@ -191,6 +191,10 @@ func (s *Server) authenticatedManagementRequest(r *http.Request) bool {
 	return !s.remoteManagement() || (r.TLS != nil && len(r.TLS.PeerCertificates) > 0)
 }
 
+func (s *Server) clientRuntimeOnly() bool {
+	return s.tlsConfig != nil || s.remoteManagement()
+}
+
 func IsLoopbackHost(hostURL *url.URL) bool {
 	if hostURL.Scheme != "tcp" {
 		return true

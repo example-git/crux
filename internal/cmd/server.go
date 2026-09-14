@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -45,13 +46,13 @@ func runServer(cmd *cobra.Command, host string, workspaceRoots []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get debug flag: %v", err)
 	}
-	cfg, err := config.Load(config.GlobalWorkspaceDir(), dataDir, debug)
-	if err != nil {
-		return fmt.Errorf("failed to load configuration: %v", err)
-	}
 	hostURL, err := server.ParseHostURL(host)
 	if err != nil {
 		return fmt.Errorf("invalid server host: %v", err)
+	}
+	cfg, err := loadServerConfig(hostURL, dataDir, debug)
+	if err != nil {
+		return fmt.Errorf("failed to load configuration: %v", err)
 	}
 	logFile := filepath.Join(config.GlobalCacheDir(), "server-"+safeHostName(hostURL), "crux.log")
 	if term.IsTerminal(os.Stderr.Fd()) {
@@ -98,4 +99,11 @@ func runServer(cmd *cobra.Command, host string, workspaceRoots []string) error {
 		return fmt.Errorf("failed to shutdown server: %v", err)
 	}
 	return nil
+}
+
+func loadServerConfig(hostURL *url.URL, dataDir string, debug bool) (*config.ConfigStore, error) {
+	if hostURL.Scheme == "tcp" && !server.IsLoopbackHost(hostURL) {
+		return nil, nil
+	}
+	return config.Load(config.GlobalWorkspaceDir(), dataDir, debug)
 }
