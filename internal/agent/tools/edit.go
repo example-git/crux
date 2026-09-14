@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -52,6 +50,19 @@ type editContext struct {
 	files       history.Service
 	filetracker filetracker.Service
 	workingDir  string
+	target      *writeTargetBinding
+}
+
+func bindEditTarget(edit editContext, filePath string) (editContext, func(), error) {
+	if edit.target != nil {
+		return edit, func() {}, nil
+	}
+	target, err := captureWriteTarget(filePath)
+	if err != nil {
+		return edit, func() {}, err
+	}
+	edit.target = target
+	return edit, target.close, nil
 }
 
 func NewEditTool(
@@ -82,9 +93,22 @@ func NewEditTool(
 				return NewPermissionDeniedResponse(), nil
 			}
 
+			target, err := captureWriteTarget(params.FilePath)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			defer target.close()
+
 			var response fantasy.ToolResponse
 
-			editCtx := editContext{ctx, permissions, files, filetracker, workingDir}
+			editCtx := editContext{
+				ctx:         ctx,
+				permissions: permissions,
+				files:       files,
+				filetracker: filetracker,
+				workingDir:  workingDir,
+				target:      target,
+			}
 
 			if params.OldString == "" {
 				response, err = createNewFile(editCtx, params.FilePath, params.NewString, call)
@@ -113,17 +137,18 @@ func NewEditTool(
 }
 
 func createNewFile(edit editContext, filePath, content string, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
-	fileInfo, err := os.Stat(filePath)
-	if err == nil {
-		if fileInfo.IsDir() {
+	edit, release, err := bindEditTarget(edit, filePath)
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
+	defer release()
+
+	if edit.target.exists() {
+		if edit.target.info().IsDir() {
 			return fantasy.NewTextErrorResponse(fmt.Sprintf("path is a directory, not a file: %s", filePath)), nil
 		}
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("file already exists: %s", filePath)), nil
-	} else if !os.IsNotExist(err) {
-		return fantasy.ToolResponse{}, fmt.Errorf("failed to access file: %w", err)
 	}
-
-	dir := filepath.Dir(filePath)
 
 	sessionID := GetSessionFromContext(edit.ctx)
 	if sessionID == "" {
@@ -169,12 +194,7 @@ func createNewFile(edit editContext, filePath, content string, call fantasy.Tool
 		return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
 	}
 
-	err = os.MkdirAll(dir, 0o755)
-	if err != nil {
-		return fantasy.ToolResponse{}, fmt.Errorf("failed to create parent directories: %w", err)
-	}
-	err = os.WriteFile(filePath, []byte(content), 0o644)
-	if err != nil {
+	if err := edit.target.create([]byte(content)); err != nil {
 		return fantasy.ToolResponse{}, fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -257,14 +277,15 @@ func notFoundError(content, old string) error {
 // and records the read in the file tracker. Callers must convert line endings
 // before calling this function.
 func commitFileChange(edit editContext, sessionID, toolCallID, filePath, oldContent, newContent string) error {
-	info, err := os.Stat(filePath)
+	targetFile, checkpointContent, info, err := edit.target.openForUpdate()
 	if err != nil {
 		return fmt.Errorf("inspect file before checkpoint: %w", err)
 	}
-	if err := checkpointFile(edit.ctx, edit.files, edit.permissions, sessionID, toolCallID, filePath, oldContent, true, info.Mode()); err != nil {
+	defer targetFile.Close()
+	if err := checkpointFile(edit.ctx, edit.files, edit.permissions, sessionID, toolCallID, filePath, string(checkpointContent), true, info.Mode()); err != nil {
 		return fmt.Errorf("create file checkpoint: %w", err)
 	}
-	if err := os.WriteFile(filePath, []byte(newContent), 0o644); err != nil {
+	if err := writeOpenedFile(targetFile, []byte(newContent)); err != nil {
 		return fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -290,12 +311,9 @@ func commitFileChange(edit editContext, sessionID, toolCallID, filePath, oldCont
 }
 
 func loadExistingFile(edit editContext, filePath, sessionError string) (sessionID, oldContent string, isCrlf bool, resp fantasy.ToolResponse, err error) {
-	fileInfo, err := os.Stat(filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", "", false, fantasy.NewTextErrorResponse(fmt.Sprintf("file not found: %s", filePath)), nil
-		}
-		return "", "", false, fantasy.ToolResponse{}, fmt.Errorf("failed to access file: %w", err)
+	fileInfo := edit.target.info()
+	if fileInfo == nil {
+		return "", "", false, fantasy.NewTextErrorResponse(fmt.Sprintf("file not found: %s", filePath)), nil
 	}
 
 	if fileInfo.IsDir() {
@@ -322,7 +340,7 @@ func loadExistingFile(edit editContext, filePath, sessionError string) (sessionI
 		), nil
 	}
 
-	content, err := os.ReadFile(filePath)
+	content, err := edit.target.read()
 	if err != nil {
 		return "", "", false, fantasy.ToolResponse{}, fmt.Errorf("failed to read file: %w", err)
 	}
@@ -332,6 +350,12 @@ func loadExistingFile(edit editContext, filePath, sessionError string) (sessionI
 }
 
 func deleteContent(edit editContext, filePath, oldString string, replaceAll bool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	edit, release, err := bindEditTarget(edit, filePath)
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
+	defer release()
+
 	sessionID, oldContent, isCrlf, resp, err := loadExistingFile(edit, filePath, "session ID is required for deleting content")
 	if err != nil {
 		return fantasy.ToolResponse{}, err
@@ -402,6 +426,12 @@ func deleteContent(edit editContext, filePath, oldString string, replaceAll bool
 }
 
 func replaceContent(edit editContext, filePath, oldString, newString string, replaceAll bool, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	edit, release, err := bindEditTarget(edit, filePath)
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
+	defer release()
+
 	sessionID, oldContent, isCrlf, resp, err := loadExistingFile(edit, filePath, "session ID is required for editing a file")
 	if err != nil {
 		return fantasy.ToolResponse{}, err

@@ -16,26 +16,23 @@ import (
 const workerStartupTimeout = 60 * time.Second
 
 func Launch(ctx context.Context, request Request) (Metadata, error) {
-	if !EmbeddedRuntimeAvailable() {
-		return Metadata{}, embeddedRuntimeUnavailableError()
-	}
-	target, err := resolveTarget(ctx, request)
+	prepared, err := Prepare(ctx, request)
 	if err != nil {
 		return Metadata{}, err
 	}
+	defer prepared.Close()
+	return prepared.Launch(ctx)
+}
+
+func launchPrepared(ctx context.Context, prepared *PreparedRequest) (Metadata, error) {
+	if !EmbeddedRuntimeAvailable() {
+		return Metadata{}, embeddedRuntimeUnavailableError()
+	}
+	request := prepared.request
+	target := prepared.target
 	tmux, err := exec.LookPath("tmux")
 	if err != nil {
 		return Metadata{}, errors.New("tmux is required but is not available in PATH")
-	}
-	if request.ManagedCapture {
-		if err := ensurePrivateDirectory(storageDirectory()); err != nil {
-			return Metadata{}, err
-		}
-		if err := ensurePrivateDirectory(CaptureDirectory()); err != nil {
-			return Metadata{}, err
-		}
-	} else if err := os.MkdirAll(filepath.Dir(request.CapturePath), 0o700); err != nil {
-		return Metadata{}, fmt.Errorf("create capture directory: %w", err)
 	}
 	timestamp := time.Now().UTC().Format("20060102T150405Z")
 	session := fmt.Sprintf("crux-capture-%s-%d", timestamp, os.Getpid())
@@ -45,6 +42,15 @@ func Launch(ctx context.Context, request Request) (Metadata, error) {
 	}
 	if exists {
 		return Metadata{}, fmt.Errorf("tmux session already exists: %s", session)
+	}
+	if request.ManagedCapture && prepared.output.ancestor == filepath.Clean(CaptureDirectory()) {
+		if err := ensurePrivateDirectory(CaptureDirectory()); err != nil {
+			return Metadata{}, err
+		}
+	}
+	outputIdentity, err := prepared.output.create()
+	if err != nil {
+		return Metadata{}, fmt.Errorf("prepare capture output: %w", err)
 	}
 	runtimeRoot := runDirectory()
 	if err := ensurePrivateDirectory(storageDirectory()); err != nil {
@@ -77,20 +83,24 @@ func Launch(ctx context.Context, request Request) (Metadata, error) {
 		}
 	}
 	config := workerConfig{
-		Command:     target.Command,
-		Environment: target.Environment,
-		WorkingDir:  target.WorkingDir,
-		Output:      request.CapturePath,
-		Host:        "127.0.0.1",
-		Port:        proxyPort,
-		ViewerPort:  viewerPort,
-		UnsetEnv:    append([]string{}, request.UnsetEnv...),
-		RuntimePath: runtimePath,
-		StatusPath:  statusPath,
-		ReadyPath:   readyPath,
-		StopPath:    stopPath,
-		PaneLogPath: paneLogPath,
-		Session:     session,
+		Command:            target.Command,
+		Environment:        target.Environment,
+		WorkingDir:         target.WorkingDir,
+		WorkingDirIdentity: prepared.workingDirIdentity,
+		Output:             request.CapturePath,
+		OutputIdentity:     outputIdentity,
+		CapturePath:        request.CapturePath,
+		ExecutableIdentity: prepared.executableIdentity,
+		Host:               "127.0.0.1",
+		Port:               proxyPort,
+		ViewerPort:         viewerPort,
+		UnsetEnv:           append([]string{}, request.UnsetEnv...),
+		RuntimePath:        runtimePath,
+		StatusPath:         statusPath,
+		ReadyPath:          readyPath,
+		StopPath:           stopPath,
+		PaneLogPath:        paneLogPath,
+		Session:            session,
 	}
 	if err := writePrivateJSON(configPath, config); err != nil {
 		return Metadata{}, err
@@ -100,7 +110,7 @@ func Launch(ctx context.Context, request Request) (Metadata, error) {
 		return Metadata{}, fmt.Errorf("locate Crux executable: %w", err)
 	}
 	workerCommand := shellJoin(executable, "__traffic-capture-worker", configPath)
-	if err := startTmuxCapture(ctx, tmux, session, target.WorkingDir, workerCommand); err != nil {
+	if err := startTmuxCapture(ctx, tmux, session, runtimePath, workerCommand); err != nil {
 		return Metadata{}, err
 	}
 	launched := false

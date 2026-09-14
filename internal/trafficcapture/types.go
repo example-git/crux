@@ -14,6 +14,11 @@ type Request struct {
 	Wait               bool
 }
 
+type pathIdentity struct {
+	Device uint64 `json:"device"`
+	Inode  uint64 `json:"inode"`
+}
+
 type Metadata struct {
 	Session     string
 	CapturePath string
@@ -24,20 +29,25 @@ type Metadata struct {
 }
 
 type workerConfig struct {
-	Command     []string          `json:"command"`
-	Environment map[string]string `json:"environment"`
-	WorkingDir  string            `json:"cwd"`
-	Output      string            `json:"output"`
-	Host        string            `json:"host"`
-	Port        int               `json:"port"`
-	ViewerPort  int               `json:"viewer_port"`
-	UnsetEnv    []string          `json:"unset_env"`
-	RuntimePath string            `json:"runtime_path"`
-	StatusPath  string            `json:"status_path"`
-	ReadyPath   string            `json:"ready_path"`
-	StopPath    string            `json:"stop_path"`
-	PaneLogPath string            `json:"pane_log"`
-	Session     string            `json:"session"`
+	Command            []string          `json:"command"`
+	Environment        map[string]string `json:"environment"`
+	WorkingDir         string            `json:"cwd"`
+	WorkingDirIdentity pathIdentity      `json:"cwd_identity"`
+	Output             string            `json:"output"`
+	OutputIdentity     pathIdentity      `json:"output_identity"`
+	CapturePath        string            `json:"capture_path"`
+	ExecutableIdentity pathIdentity      `json:"executable_identity"`
+	PassFDs            []int             `json:"pass_fds,omitempty"`
+	Host               string            `json:"host"`
+	Port               int               `json:"port"`
+	ViewerPort         int               `json:"viewer_port"`
+	UnsetEnv           []string          `json:"unset_env"`
+	RuntimePath        string            `json:"runtime_path"`
+	StatusPath         string            `json:"status_path"`
+	ReadyPath          string            `json:"ready_path"`
+	StopPath           string            `json:"stop_path"`
+	PaneLogPath        string            `json:"pane_log"`
+	Session            string            `json:"session"`
 }
 
 type workerStatus struct {

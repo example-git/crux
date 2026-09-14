@@ -3,7 +3,6 @@ package config
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -120,8 +119,12 @@ func (s *ConfigStore) refreshProviderOAuthTokenAtPath(ctx context.Context, path 
 	if err != nil {
 		return nil, err
 	}
+	digest, err := s.loadAuthenticationDigest(ctx)
+	if err != nil {
+		return nil, err
+	}
 	identity, _ := json.Marshal([]any{identityScope, owner, definitionID, OAuthTokenCredentialID(expected)})
-	key := fmt.Sprintf("%x", sha256.Sum256(identity))
+	key := digest.bytesID(authenticationDigestOperation, identity)
 	lockCtx, cancelLock := context.WithTimeout(ctx, refreshLockDeadline)
 	defer cancelLock()
 	release, err := lock.File(lockCtx, s.refreshLockPath(owner.ProviderID))
@@ -153,7 +156,7 @@ func (s *ConfigStore) refreshProviderOAuthTokenAtPath(ctx context.Context, path 
 		return nil, errors.New("OAuth token exchange outcome is unknown; reauthenticate or recollect the owning client")
 	}
 	if receipt != nil && receipt.token() != nil && receipt.lineage != nil {
-		_, journal, readErr := readSelectedTokenLineage(ctx, receipt.lineage.path)
+		_, journal, readErr := readSelectedTokenLineage(ctx, receipt.lineage.path, digest)
 		if readErr != nil {
 			s.writeMu.Unlock()
 			return cloneOAuthToken(receipt.token()), fmt.Errorf("OAuth token rotated and retained; durable lineage cannot be read: %w", readErr)
@@ -163,7 +166,7 @@ func (s *ConfigStore) refreshProviderOAuthTokenAtPath(ctx context.Context, path 
 				s.writeMu.Unlock()
 				return cloneOAuthToken(receipt.token()), errors.New("OAuth token rotated and retained; durable successor conflicts with the observed exchange")
 			}
-			restored, restoreErr := s.prepareSelectedTokenLineage(ctx, currentRuntime, path, key, definitionID, owner, expected)
+			restored, restoreErr := s.prepareSelectedTokenLineage(ctx, digest, currentRuntime, path, key, definitionID, owner, expected)
 			if restoreErr != nil {
 				s.writeMu.Unlock()
 				return cloneOAuthToken(receipt.token()), fmt.Errorf("OAuth token rotated and retained; durable lineage cannot be adopted: %w", restoreErr)
@@ -174,7 +177,7 @@ func (s *ConfigStore) refreshProviderOAuthTokenAtPath(ctx context.Context, path 
 	}
 	if receipt == nil {
 		for _, previous := range s.selectedTokenRotations {
-			if previous.providerID == owner.ProviderID && previous.originalID == OAuthTokenCredentialID(expected) && previous.token() != nil {
+			if previous.providerID == owner.ProviderID && previous.originalID == selectedTokenCredentialID(digest, expected) && previous.token() != nil {
 				s.writeMu.Unlock()
 				return nil, errors.New("this OAuth credential already has a retained rotation; reconcile its original provider definition before reuse")
 			}
@@ -188,7 +191,7 @@ func (s *ConfigStore) refreshProviderOAuthTokenAtPath(ctx context.Context, path 
 			s.writeMu.Unlock()
 			return nil, errors.New("too many retained OAuth rotations; reconcile pending credentials before refreshing")
 		}
-		receipt, err = s.prepareSelectedTokenLineage(ctx, currentRuntime, path, key, definitionID, owner, expected)
+		receipt, err = s.prepareSelectedTokenLineage(ctx, digest, currentRuntime, path, key, definitionID, owner, expected)
 		if err != nil {
 			s.writeMu.Unlock()
 			return nil, err

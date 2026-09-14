@@ -75,7 +75,7 @@ func (key AuthenticationJournalKey) validate() error {
 
 func (key AuthenticationJournalKey) id() string {
 	encoded, _ := json.Marshal(key)
-	return selectedTokenBytesID(encoded)
+	return stableBytesID(encoded)
 }
 
 type AuthenticationJournal struct {
@@ -167,7 +167,7 @@ func (s *ConfigStore) captureAuthenticationJournalLocked() (AuthenticationJourna
 		return AuthenticationJournal{}, errors.New("authentication journal requires its captured owning configuration path")
 	}
 	scope, _ := json.Marshal([]string{s.globalDataPath, s.workspacePath, s.workingDir})
-	return AuthenticationJournal{store: s, path: filepath.Clean(s.globalDataPath) + ".authentication-journal.json", scope: selectedTokenBytesID(scope)}, nil
+	return AuthenticationJournal{store: s, path: filepath.Clean(s.globalDataPath) + ".authentication-journal.json", scope: stableBytesID(scope)}, nil
 }
 
 func (journal AuthenticationJournal) locked(ctx context.Context) (context.Context, func(), error) {

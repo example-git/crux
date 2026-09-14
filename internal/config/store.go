@@ -408,6 +408,9 @@ type ConfigStore struct {
 	// Protected by writeMu; see RefreshProviderOAuthTokenForRuntime.
 	selectedTokenRotations map[string]*selectedTokenRotation
 
+	authenticationDigestMu  sync.Mutex
+	authenticationDigestKey []byte
+
 	// exchangeToken performs the provider-specific OAuth token exchange.
 	// It is a field so tests can substitute a fake exchange without making
 	// real network calls. Production code leaves it nil, and exchange falls

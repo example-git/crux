@@ -46,13 +46,17 @@ func (*oauthLoginJournal) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private OAuth login journal handle]"))
 }
 
-func oauthLoginCaptureID(p *oauthLoginPreparation) (string, error) {
-	if p == nil || !p.before.inputs.valid || p.before.runtime.config == nil {
-		return "", errors.New("OAuth recovery capture is unavailable")
+func oauthLoginCaptureIDs(ctx context.Context, p *oauthLoginPreparation) (string, string, error) {
+	if p == nil || !p.before.inputs.valid || p.before.runtime.config == nil || p.before.runtime.lifetimeStore == nil {
+		return "", "", errors.New("OAuth recovery capture is unavailable")
+	}
+	digest, err := p.before.runtime.lifetimeStore.loadAuthenticationDigest(ctx)
+	if err != nil {
+		return "", "", err
 	}
 	inputs := make([]selectedTokenInputProof, 0, len(p.before.inputs.files))
 	for _, file := range p.before.inputs.files {
-		inputs = append(inputs, selectedTokenProof(file))
+		inputs = append(inputs, selectedTokenLegacyProof(file))
 	}
 	type accountSelection struct {
 		Active  string
@@ -73,32 +77,33 @@ func oauthLoginCaptureID(p *oauthLoginPreparation) (string, error) {
 		for _, path := range captured.order {
 			source, found := captured.sources[path]
 			if !found {
-				return "", errAuthenticationBasisUnavailable
+				return "", "", errAuthenticationBasisUnavailable
 			}
-			basis = append(basis, inputBasis{path, selectedTokenBytesID(source.raw), selectedTokenBytesID(source.evaluated), source.exists})
+			basis = append(basis, inputBasis{path, stableBytesID(source.raw), stableBytesID(source.evaluated), source.exists})
 		}
 	} else {
-		return "", errAuthenticationBasisUnavailable
+		return "", "", errAuthenticationBasisUnavailable
 	}
 	bundle := ""
 	if p.owner.HasManifest {
 		scan := p.before.runtime.config.providerScan
 		if scan == nil {
-			return "", errors.New("OAuth recovery bundle capture is unavailable")
+			return "", "", errors.New("OAuth recovery bundle capture is unavailable")
 		}
 		status, exists := scan.pluginStatuses[p.owner.ManifestID]
 		if !exists {
-			return "", errors.New("OAuth recovery bundle owner is unavailable")
+			return "", "", errors.New("OAuth recovery bundle owner is unavailable")
 		}
 		bundle = status.Digest
 	}
-	// Hash every captured input, including evaluated source output and complete
-	// account metadata. None of these bytes become public recovery metadata.
-	data, err := json.Marshal([]any{p.owner, p.registration.Manifest, bundle, p.before.runtime.config, selectedTokenEnvironmentID(p.before.runtime.Environment()), p.before.inputs.order, inputs, basis, selected, p.settings.globalPath, p.settings.workspacePath, p.settings.workingDir, p.settings.overrides, p.before.runtime.config.authenticationBasis.noUnset})
+	environment := p.before.runtime.Environment()
+	slices.Sort(environment)
+	encodedEnvironment, _ := json.Marshal(environment)
+	data, err := json.Marshal([]any{p.owner, p.registration.Manifest, bundle, p.before.runtime.config, stableBytesID(encodedEnvironment), p.before.inputs.order, inputs, basis, selected, p.settings.globalPath, p.settings.workspacePath, p.settings.workingDir, p.settings.overrides, p.before.runtime.config.authenticationBasis.noUnset})
 	if err != nil {
-		return "", errors.New("OAuth recovery capture cannot be encoded")
+		return "", "", errors.New("OAuth recovery capture cannot be encoded")
 	}
-	return selectedTokenBytesID(data), nil
+	return digest.bytesID(authenticationDigestLoginCapture, data), stableBytesID(data), nil
 }
 
 func decodeOAuthLoginJournal(entry AuthenticationJournalEntry) (oauthLoginJournalRecord, error) {
@@ -108,7 +113,7 @@ func decodeOAuthLoginJournal(entry AuthenticationJournalEntry) (oauthLoginJourna
 	}
 	decoder := json.NewDecoder(bytes.NewReader(entry.Payload()))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&record) != nil || decoder.Decode(new(any)) != io.EOF || record.Version != 1 || record.Owner.ProviderID == "" || len(record.Capture) != 64 || record.Token != nil && !record.Started || record.Abandoned && (!entry.Completed() || (record.Token != nil) != record.TokenRecoveryAbandoned) || record.TokenRecoveryAbandoned && !record.Abandoned {
+	if decoder.Decode(&record) != nil || decoder.Decode(new(any)) != io.EOF || record.Version != 1 && record.Version != 2 || record.Owner.ProviderID == "" || len(record.Capture) != 64 || record.Token != nil && !record.Started || record.Abandoned && (!entry.Completed() || (record.Token != nil) != record.TokenRecoveryAbandoned) || record.TokenRecoveryAbandoned && !record.Abandoned {
 		return record, errors.New("OAuth recovery record is invalid")
 	}
 	if record.Token != nil {
@@ -135,7 +140,7 @@ func (s *ConfigStore) prepareOAuthLoginJournal(ctx context.Context, p *oauthLogi
 	if err != nil {
 		return err
 	}
-	captureID, err := oauthLoginCaptureID(p)
+	captureID, legacyCaptureID, err := oauthLoginCaptureIDs(ctx, p)
 	if err != nil {
 		return err
 	}
@@ -148,14 +153,25 @@ func (s *ConfigStore) prepareOAuthLoginJournal(ctx context.Context, p *oauthLogi
 		if err != nil {
 			return err
 		}
-		if record.Scope != journal.ScopeID() || record.Owner != p.owner || record.Capture != captureID {
+		expectedCaptureID := captureID
+		if record.Version == 1 {
+			expectedCaptureID = legacyCaptureID
+		}
+		if record.Scope != journal.ScopeID() || record.Owner != p.owner || record.Capture != expectedCaptureID {
 			return errors.New("OAuth operation conflicts with its durable captured intent")
+		}
+		if record.Version == 1 {
+			record.Version, record.Capture = 2, captureID
+			handle := &oauthLoginJournal{journal: journal, key: key, revision: entry.Revision(), completed: entry.Completed(), record: record}
+			if err := handle.persist(ctx); err != nil {
+				return err
+			}
 		}
 		// Recovery is a separately selected action. A reused Begin ID cannot
 		// turn a historical token or unknown exchange into a new authorization.
 		return errors.New("OAuth operation already has a durable record; recover its observed result or start a new login")
 	}
-	handle := &oauthLoginJournal{journal: journal, key: key, record: oauthLoginJournalRecord{Version: 1, Scope: journal.ScopeID(), Owner: p.owner, Capture: captureID}}
+	handle := &oauthLoginJournal{journal: journal, key: key, record: oauthLoginJournalRecord{Version: 2, Scope: journal.ScopeID(), Owner: p.owner, Capture: captureID}}
 	if err := handle.persist(ctx); err != nil {
 		return err
 	}
@@ -414,9 +430,21 @@ func (s *ConfigStore) RecoverOAuthLoginResult(ctx context.Context, before Authen
 	if err != nil {
 		return AuthorizedOAuthPreparation{}, err
 	}
-	captureID, err := oauthLoginCaptureID(prepared.state)
-	if err != nil || captureID != record.Capture {
+	captureID, legacyCaptureID, err := oauthLoginCaptureIDs(ctx, prepared.state)
+	expectedCaptureID := captureID
+	if record.Version == 1 {
+		expectedCaptureID = legacyCaptureID
+	}
+	if err != nil || expectedCaptureID != record.Capture {
 		return AuthorizedOAuthPreparation{}, errors.New("OAuth recovery captured owner inputs changed; reconcile saved state or start a new login")
+	}
+	if record.Version == 1 {
+		record.Version, record.Capture = 2, captureID
+		handle := &oauthLoginJournal{journal: journal, key: key, revision: entry.Revision(), record: record}
+		if err := handle.persist(ctx); err != nil {
+			return AuthorizedOAuthPreparation{}, err
+		}
+		entry.revision = handle.revision
 	}
 	prepared.state.journal = &oauthLoginJournal{journal: journal, key: key, revision: entry.Revision(), record: record}
 	return s.finishOAuthAuthorization(s.oauthLoginContext(ctx, prepared.state), prepared.state, cloneOAuthToken(record.Token))

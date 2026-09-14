@@ -244,6 +244,60 @@ func TestSelectedTokenDurableInstalledRestartKnownSuccessor(t *testing.T) {
 	}
 }
 
+func TestSelectedTokenDurableMigratesVersionOneLineage(t *testing.T) {
+	f := newInstalledLineageFixture(t)
+	store := f.load(t)
+	admitted := store.RuntimeSnapshot()
+	store.writeMu.Lock()
+	inputs, err := store.captureAuthenticationInputsLocked(t.Context(), admitted)
+	store.writeMu.Unlock()
+	require.NoError(t, err)
+	fresh, err := store.RefreshProviderOAuthTokenForRuntime(t.Context(), ScopeGlobal, f.owner, f.original, admitted)
+	require.NoError(t, err)
+	path := selectedTokenLineagePath(store.globalDataPath, f.owner.ProviderID)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var journal selectedTokenLineageJournal
+	require.NoError(t, json.Unmarshal(data, &journal))
+	definition, owner, err := admitted.clientProviderDefinitionRaw(f.owner.ProviderID)
+	require.NoError(t, err)
+	require.Equal(t, f.owner, owner)
+	definitionID, err := definition.Digest()
+	require.NoError(t, err)
+	identity, err := json.Marshal([]any{ScopeGlobal, f.owner, definitionID, OAuthTokenCredentialID(f.original)})
+	require.NoError(t, err)
+	legacyKey := stableBytesID(identity)
+	legacy := selectedTokenLineageJournal{Version: 1, Sequence: journal.Sequence, Records: map[string]selectedTokenLineageRecord{}}
+	for _, record := range journal.Records {
+		record.Original = OAuthTokenCredentialID(f.original)
+		record.Environment = stableEnvironmentID(admitted.Environment())
+		record.Before.Digest = stableBytesID(record.BeforeData)
+		for index, proof := range record.Inputs {
+			input, found := inputs.file(proof.Path)
+			require.True(t, found)
+			record.Inputs[index] = selectedTokenLegacyProof(input)
+		}
+		record.Runtime, err = selectedTokenRuntimeLegacyID(admitted, f.original, record)
+		require.NoError(t, err)
+		legacy.Records[legacyKey] = record
+	}
+	data, err = json.Marshal(legacy)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+
+	restarted := f.load(t)
+	replayed, err := restarted.RefreshProviderOAuthTokenForRuntime(t.Context(), ScopeGlobal, f.owner, f.original, restarted.RuntimeSnapshot())
+	require.NoError(t, err)
+	require.Equal(t, fresh, replayed)
+	require.EqualValues(t, 1, f.requests.Load())
+	data, err = os.ReadFile(path)
+	require.NoError(t, err)
+	journal = selectedTokenLineageJournal{}
+	require.NoError(t, json.Unmarshal(data, &journal))
+	require.Equal(t, selectedTokenLineageVersion, journal.Version)
+	require.NotContains(t, journal.Records, legacyKey)
+}
+
 func TestSelectedTokenDurableRestartRejectsUnknownAndDifferentCredentials(t *testing.T) {
 	for _, mode := range []string{"unknown-exchange", "different-disk-token", "different-environment", "different-provider"} {
 		t.Run(mode, func(t *testing.T) {
@@ -304,7 +358,7 @@ func TestSelectedTokenDurablePreflightRejectsInvalidJournal(t *testing.T) {
 			case "case-alias":
 				require.NoError(t, os.WriteFile(path, []byte(`{"version":1,"Version":1,"sequence":0,"records":{}}`), 0o600))
 			case "unknown-version":
-				require.NoError(t, os.WriteFile(path, []byte(`{"version":2,"sequence":0,"records":{}}`), 0o600))
+				require.NoError(t, os.WriteFile(path, []byte(`{"version":3,"sequence":0,"records":{}}`), 0o600))
 			case "oversized":
 				file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 				require.NoError(t, err)
@@ -335,6 +389,8 @@ func TestSelectedTokenDurableCapacityPreservesUnresolvedAndCurrentPredecessor(t 
 		t.Run(fmt.Sprint(committed), func(t *testing.T) {
 			f := newInstalledLineageFixture(t)
 			store := f.load(t)
+			digest, err := store.loadAuthenticationDigest(t.Context())
+			require.NoError(t, err)
 			fresh, err := store.RefreshProviderOAuthTokenForRuntime(t.Context(), ScopeGlobal, f.owner, f.original, store.RuntimeSnapshot())
 			require.NoError(t, err)
 			path := selectedTokenLineagePath(store.globalDataPath, f.owner.ProviderID)
@@ -354,10 +410,10 @@ func TestSelectedTokenDurableCapacityPreservesUnresolvedAndCurrentPredecessor(t 
 				record := template
 				record.Sequence = i
 				record.Committed = committed
-				record.Original = selectedTokenBytesID([]byte(fmt.Sprint("historical-start", i)))
+				record.Original = digest.bytesID(authenticationDigestCredential, []byte(fmt.Sprint("historical-start", i)))
 				record.Successor = cloneOAuthToken(fresh)
 				record.Successor.AccessToken = fmt.Sprint("historical-successor", i)
-				journal.Records[selectedTokenBytesID([]byte(fmt.Sprint("historical-key", i)))] = record
+				journal.Records[digest.bytesID(authenticationDigestOperation, []byte(fmt.Sprint("historical-key", i)))] = record
 			}
 			journal.Sequence = selectedTokenRotationLimit
 			data, err = json.Marshal(journal)
@@ -378,7 +434,7 @@ func TestSelectedTokenDurableCapacityPreservesUnresolvedAndCurrentPredecessor(t 
 				require.NoError(t, json.Unmarshal(data, &journal))
 				require.Len(t, journal.Records, selectedTokenRotationLimit)
 				require.Contains(t, journal.Records, predecessor)
-				require.NotContains(t, journal.Records, selectedTokenBytesID([]byte("historical-key2")))
+				require.NotContains(t, journal.Records, digest.bytesID(authenticationDigestOperation, []byte("historical-key2")))
 				require.EqualValues(t, selectedTokenRotationLimit+1, journal.Sequence)
 			}
 			f.noAccounts(t)

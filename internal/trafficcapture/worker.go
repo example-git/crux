@@ -28,12 +28,43 @@ func RunWorker(configPath string) error {
 	if err != nil {
 		return fmt.Errorf("read traffic capture worker config: %w", err)
 	}
-	var config workerSignalConfig
+	var config workerConfig
 	if err := json.Unmarshal(data, &config); err != nil {
 		return fmt.Errorf("decode traffic capture worker config: %w", err)
 	}
 	if config.StopPath == "" {
 		return fmt.Errorf("traffic capture worker config is missing stop_path")
+	}
+	if len(config.Command) == 0 {
+		return fmt.Errorf("traffic capture worker config is missing command")
+	}
+
+	output, err := openVerifiedCapturePath(config.Output, config.OutputIdentity, os.O_RDWR)
+	if err != nil {
+		return fmt.Errorf("open approved capture output: %w", err)
+	}
+	defer output.Close()
+	executable, err := openVerifiedCapturePath(config.Command[0], config.ExecutableIdentity, os.O_RDONLY)
+	if err != nil {
+		return fmt.Errorf("open approved target executable: %w", err)
+	}
+	defer executable.Close()
+	workingDirectory, err := openVerifiedCapturePath(config.WorkingDir, config.WorkingDirIdentity, os.O_RDONLY)
+	if err != nil {
+		return fmt.Errorf("open approved target working directory: %w", err)
+	}
+	defer workingDirectory.Close()
+
+	if err := workingDirectory.Chdir(); err != nil {
+		return fmt.Errorf("enter approved target working directory: %w", err)
+	}
+	config.Output = fmt.Sprintf("/dev/fd/%d", output.Fd())
+	if err := bindWorkerExecutable(&config, executable); err != nil {
+		return err
+	}
+	config.WorkingDir = ""
+	if err := writePrivateJSON(configPath, config); err != nil {
+		return fmt.Errorf("bind traffic capture worker config: %w", err)
 	}
 	if err := os.Setenv("CRUX_TRAFFIC_CAPTURE_CONFIG", configPath); err != nil {
 		return fmt.Errorf("set traffic capture worker config: %w", err)
@@ -52,6 +83,28 @@ func RunWorker(configPath string) error {
 		}
 	}()
 	return runEmbeddedPython(embeddedWorker)
+}
+
+func openVerifiedCapturePath(path string, expected pathIdentity, flag int) (*os.File, error) {
+	file, err := os.OpenFile(path, flag, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	actual, err := identityFromFileInfo(info)
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	if actual != expected {
+		_ = file.Close()
+		return nil, fmt.Errorf("filesystem object changed after approval: %s", path)
+	}
+	return file, nil
 }
 
 func WritePaneLog(path string, input io.Reader) error {
