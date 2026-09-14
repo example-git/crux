@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html/template"
 	"io/fs"
-	"os"
 	"os/exec"
 	"testing"
 
@@ -60,18 +59,6 @@ func GetMessageFromContext(ctx context.Context) string {
 func checkpointFile(ctx context.Context, files history.Service, permissions permission.Service, sessionID, toolCallID, path, content string, exists bool, mode fs.FileMode) error {
 	if files == nil {
 		return nil
-	}
-	if exists {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		info, err := os.Stat(path)
-		if err != nil {
-			return err
-		}
-		content = string(data)
-		mode = info.Mode()
 	}
 	messageID := GetMessageFromContext(ctx)
 	err := files.Checkpoint(ctx, sessionID, messageID, path, content, exists, mode)

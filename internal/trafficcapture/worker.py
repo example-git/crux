@@ -158,11 +158,12 @@ async def run_worker() -> int:
     ready_path = Path(config["ready_path"])
     stop_path = Path(config["stop_path"])
     output = Path(config["output"])
+    capture_path = Path(config.get("capture_path", config["output"]))
     status: dict[str, object] = {
         "state": "waiting",
         "session": config["session"],
         "tmux_socket": "crux-capture",
-        "capture": str(output),
+        "capture": str(capture_path),
         "pane_log": config["pane_log"],
     }
     write_json(status_path, status)
@@ -220,8 +221,9 @@ async def run_worker() -> int:
             )
             target = subprocess.Popen(
                 config["command"],
-                cwd=config["cwd"],
+                cwd=config.get("cwd") or None,
                 env=environment,
+                pass_fds=tuple(config.get("pass_fds", ())),
             )
             status.update(
                 {
@@ -281,7 +283,7 @@ async def run_worker() -> int:
         }
     )
     write_json(status_path, status)
-    print(f"Capture saved to {output}")
+    print(f"Capture saved to {capture_path}")
     return return_code
 
 

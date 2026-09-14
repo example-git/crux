@@ -73,6 +73,25 @@ func NewTrafficCaptureTool(permissions permission.Service, workingDir string) fa
 			if sessionID == "" {
 				return fantasy.ToolResponse{}, errors.New("session ID is required for traffic capture")
 			}
+			preparedRequest, err := trafficcapture.Prepare(ctx, trafficcapture.Request{
+				Executable:         prepared.Executable,
+				Arguments:          prepared.Arguments,
+				PID:                prepared.PID,
+				WorkingDir:         prepared.WorkingDir,
+				WorkingDirExplicit: prepared.workingDirExplicit,
+				CapturePath:        prepared.CapturePath,
+				ManagedCapture:     prepared.managedCapture,
+				UnsetEnv:           prepared.UnsetEnv,
+				Wait:               prepared.Wait,
+			})
+			if err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
+			defer preparedRequest.Close()
+			authorized := preparedRequest.Request()
+			prepared.Executable = authorized.Executable
+			prepared.WorkingDir = authorized.WorkingDir
+
 			granted, err := permissions.Request(ctx, permission.CreatePermissionRequest{
 				SessionID:   sessionID,
 				Path:        prepared.CapturePath,
@@ -98,20 +117,7 @@ func NewTrafficCaptureTool(permissions permission.Service, workingDir string) fa
 			if !granted {
 				return NewPermissionDeniedResponse(), nil
 			}
-			if err := validatePreparedTrafficCaptureParams(prepared); err != nil {
-				return fantasy.NewTextErrorResponse(err.Error()), nil
-			}
-			metadata, err := trafficcapture.Launch(ctx, trafficcapture.Request{
-				Executable:         prepared.Executable,
-				Arguments:          prepared.Arguments,
-				PID:                prepared.PID,
-				WorkingDir:         prepared.WorkingDir,
-				WorkingDirExplicit: prepared.workingDirExplicit,
-				CapturePath:        prepared.CapturePath,
-				ManagedCapture:     prepared.managedCapture,
-				UnsetEnv:           prepared.UnsetEnv,
-				Wait:               prepared.Wait,
-			})
+			metadata, err := preparedRequest.Launch(ctx)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
@@ -184,22 +190,6 @@ func prepareTrafficCaptureParams(workingDir string, params TrafficCaptureParams)
 	}
 	params.CapturePath = resolvedCapturePath
 	return params, nil
-}
-
-func validatePreparedTrafficCaptureParams(params TrafficCaptureParams) error {
-	info, err := os.Stat(params.WorkingDir)
-	if err != nil {
-		return fmt.Errorf("access working directory: %w", err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("working directory is not a directory: %s", params.WorkingDir)
-	}
-	if _, err := os.Lstat(params.CapturePath); err == nil {
-		return fmt.Errorf("capture file already exists: %s", params.CapturePath)
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("access capture path: %w", err)
-	}
-	return nil
 }
 
 func trafficCapturePermissionDescription(params TrafficCaptureParams) string {

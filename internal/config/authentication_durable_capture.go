@@ -24,6 +24,13 @@ func (c AuthenticationCapture) DurableObservationID() (string, error) {
 	if err := c.runtime.RuntimeRevocation(); err != nil {
 		return "", err
 	}
+	if c.runtime.lifetimeStore == nil {
+		return "", errors.New("durable authentication observation has no owning store")
+	}
+	digest, err := c.runtime.lifetimeStore.authenticationDigestWithoutContext()
+	if err != nil {
+		return "", err
+	}
 	type source struct {
 		Path, Raw, Evaluated string
 		Exists               bool
@@ -48,7 +55,7 @@ func (c AuthenticationCapture) DurableObservationID() (string, error) {
 	}
 	var files []selectedTokenInputProof
 	for _, file := range c.inputs.files {
-		files = append(files, selectedTokenProof(file))
+		files = append(files, selectedTokenLegacyProof(file))
 	}
 	var sources []source
 	for _, path := range c.runtime.config.authenticationBasis.order {
@@ -56,7 +63,7 @@ func (c AuthenticationCapture) DurableObservationID() (string, error) {
 		if !ok {
 			return "", errAuthenticationBasisUnavailable
 		}
-		sources = append(sources, source{path, selectedTokenBytesID(value.raw), selectedTokenBytesID(value.evaluated), value.exists})
+		sources = append(sources, source{path, stableBytesID(value.raw), stableBytesID(value.evaluated), value.exists})
 	}
 	selected := map[string]account{}
 	var providers []provider
@@ -98,11 +105,11 @@ func (c AuthenticationCapture) DurableObservationID() (string, error) {
 		}
 		providers = append(providers, item)
 	}
-	data, err := json.Marshal([]any{c.runtime.config, c.owners, c.inputs.order, files, sources, selected, providers, selectedTokenEnvironmentID(c.runtime.Environment()), c.runtime.config.authenticationBasis.noUnset})
+	data, err := json.Marshal([]any{c.runtime.config, c.owners, c.inputs.order, files, sources, selected, providers, stableEnvironmentID(c.runtime.Environment()), c.runtime.config.authenticationBasis.noUnset})
 	if err != nil {
 		return "", errors.New("durable authentication observation cannot be encoded")
 	}
-	return selectedTokenBytesID(data), nil
+	return digest.bytesID(authenticationDigestDurableObservation, data), nil
 }
 
 // RestoreAuthenticationProposal attaches provenance only after current saved

@@ -5,8 +5,6 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -74,8 +72,15 @@ func NewWriteTool(
 				return NewPermissionDeniedResponse(), nil
 			}
 
-			fileInfo, err := os.Stat(filePath)
-			if err == nil {
+			target, err := captureWriteTarget(filePath)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			defer target.close()
+
+			fileInfo := target.info()
+			oldContent := ""
+			if fileInfo != nil {
 				if fileInfo.IsDir() {
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("Path is a directory, not a file: %s", filePath)), nil
 				}
@@ -87,19 +92,13 @@ func NewWriteTool(
 						filePath, modTime.Format(time.RFC3339), lastRead.Format(time.RFC3339))), nil
 				}
 
-				oldContent, readErr := os.ReadFile(filePath)
-				if readErr == nil && string(oldContent) == params.Content {
-					return fantasy.NewTextErrorResponse(fmt.Sprintf("File %s already contains the exact content. No changes made.", filePath)), nil
+				oldBytes, readErr := target.read()
+				if readErr != nil {
+					return fantasy.ToolResponse{}, fmt.Errorf("error reading file: %w", readErr)
 				}
-			} else if !os.IsNotExist(err) {
-				return fantasy.ToolResponse{}, fmt.Errorf("error checking file: %w", err)
-			}
-
-			oldContent := ""
-			if fileInfo != nil && !fileInfo.IsDir() {
-				oldBytes, readErr := os.ReadFile(filePath)
-				if readErr == nil {
-					oldContent = string(oldBytes)
+				oldContent = string(oldBytes)
+				if oldContent == params.Content {
+					return fantasy.NewTextErrorResponse(fmt.Sprintf("File %s already contains the exact content. No changes made.", filePath)), nil
 				}
 			}
 
@@ -138,21 +137,25 @@ func NewWriteTool(
 				return resp, nil
 			}
 
-			exists := fileInfo != nil && !fileInfo.IsDir()
-			mode := os.FileMode(0)
-			if exists {
-				mode = fileInfo.Mode()
-			}
-			if err := checkpointFile(ctx, files, permissions, sessionID, call.ID, filePath, oldContent, exists, mode); err != nil {
-				return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
-			}
-
-			if err = os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
-				return fantasy.ToolResponse{}, fmt.Errorf("error creating directory: %w", err)
-			}
-			err = os.WriteFile(filePath, []byte(params.Content), 0o644)
-			if err != nil {
-				return fantasy.ToolResponse{}, fmt.Errorf("error writing file: %w", err)
+			if target.exists() {
+				file, checkpointContent, info, err := target.openForUpdate()
+				if err != nil {
+					return fantasy.ToolResponse{}, fmt.Errorf("inspect file before checkpoint: %w", err)
+				}
+				defer file.Close()
+				if err := checkpointFile(ctx, files, permissions, sessionID, call.ID, filePath, string(checkpointContent), true, info.Mode()); err != nil {
+					return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
+				}
+				if err := writeOpenedFile(file, []byte(params.Content)); err != nil {
+					return fantasy.ToolResponse{}, fmt.Errorf("error writing file: %w", err)
+				}
+			} else {
+				if err := checkpointFile(ctx, files, permissions, sessionID, call.ID, filePath, "", false, 0); err != nil {
+					return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
+				}
+				if err := target.create([]byte(params.Content)); err != nil {
+					return fantasy.ToolResponse{}, fmt.Errorf("error writing file: %w", err)
+				}
 			}
 
 			// Check if file exists in history

@@ -5,7 +5,6 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
-	"os"
 	"strings"
 
 	"github.com/charmbracelet/x/powernap/pkg/lsp/protocol"
@@ -87,6 +86,18 @@ func NewReplaceSymbolTool(
 				return NewPermissionDeniedResponse(), nil
 			}
 
+			targetBinding, err := captureWriteTarget(params.FilePath)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			defer targetBinding.close()
+			if !targetBinding.exists() {
+				return fantasy.NewTextErrorResponse(fmt.Sprintf("file not found: %s", params.FilePath)), nil
+			}
+			if targetBinding.info().IsDir() {
+				return fantasy.NewTextErrorResponse(fmt.Sprintf("path is a directory, not a file: %s", params.FilePath)), nil
+			}
+
 			lspManager.Start(ctx, params.FilePath)
 
 			client := findLSPClient(lspManager, params.FilePath)
@@ -106,7 +117,7 @@ func NewReplaceSymbolTool(
 
 			rng := target.GetRange()
 
-			content, err := os.ReadFile(params.FilePath)
+			content, err := targetBinding.read()
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to read file: %w", err)
 			}
@@ -166,12 +177,13 @@ func NewReplaceSymbolTool(
 				}
 			}
 
+			file, checkpointContent, info, err := targetBinding.openForUpdate()
+			if err != nil {
+				return fantasy.ToolResponse{}, fmt.Errorf("inspect file before checkpoint: %w", err)
+			}
+			defer file.Close()
 			if files != nil && sessionID != "" {
-				info, err := os.Stat(params.FilePath)
-				if err != nil {
-					return fantasy.ToolResponse{}, fmt.Errorf("inspect file before checkpoint: %w", err)
-				}
-				if err := checkpointFile(ctx, files, permissions, sessionID, call.ID, params.FilePath, string(content), true, info.Mode()); err != nil {
+				if err := checkpointFile(ctx, files, permissions, sessionID, call.ID, params.FilePath, string(checkpointContent), true, info.Mode()); err != nil {
 					return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
 				}
 				if _, err := files.CreateVersion(ctx, sessionID, params.FilePath, string(content)); err != nil {
@@ -179,7 +191,7 @@ func NewReplaceSymbolTool(
 				}
 			}
 
-			if err := os.WriteFile(params.FilePath, []byte(newContent), 0o644); err != nil {
+			if err := writeOpenedFile(file, []byte(newContent)); err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to write file: %w", err)
 			}
 

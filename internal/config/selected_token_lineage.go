@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	selectedTokenLineageVersion   = 1
+	selectedTokenLineageVersion   = 2
 	maxSelectedTokenLineageBytes  = 64 << 20
 	maxSelectedTokenPreimageBytes = 8 << 20
 )
@@ -84,23 +84,31 @@ func (selectedTokenLineageJournal) Format(state fmt.State, _ rune) {
 	_, _ = state.Write([]byte("[private OAuth token lineage journal]"))
 }
 
-func selectedTokenProof(file authenticationInputFile) selectedTokenInputProof {
-	return selectedTokenInputProof{Path: file.path, Exists: file.info.exists, Identity: file.info.identity, Size: file.info.size, Mode: uint32(file.info.mode), Modified: file.info.modified, Digest: selectedTokenBytesID(file.data)}
+func selectedTokenProof(digest authenticationDigest, file authenticationInputFile) selectedTokenInputProof {
+	proof := selectedTokenLegacyProof(file)
+	proof.Digest = digest.legacyID(authenticationDigestInputProof, proof.Digest)
+	return proof
+}
+
+func selectedTokenLegacyProof(file authenticationInputFile) selectedTokenInputProof {
+	return selectedTokenInputProof{Path: file.path, Exists: file.info.exists, Identity: file.info.identity, Size: file.info.size, Mode: uint32(file.info.mode), Modified: file.info.modified, Digest: stableBytesID(file.data)}
 }
 
 func (p selectedTokenInputProof) file(data []byte) authenticationInputFile {
 	return authenticationInputFile{path: p.Path, data: bytes.Clone(data), info: authenticationInputFileInfo{exists: p.Exists, identity: p.Identity, size: p.Size, mode: os.FileMode(p.Mode), modified: p.Modified}}
 }
 
-func selectedTokenBytesID(data []byte) string { return fmt.Sprintf("%x", sha256.Sum256(data)) }
+func selectedTokenCredentialID(digest authenticationDigest, token *oauth.Token) string {
+	return digest.legacyID(authenticationDigestCredential, OAuthTokenCredentialID(token))
+}
 
 func selectedTokenLineagePath(path, providerID string) string {
-	return filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".oauth-"+selectedTokenBytesID([]byte(providerID))+".json")
+	return filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".oauth-"+stableBytesID([]byte(providerID))+".json")
 }
 
 // Read size and permissions before allocating or decoding secret data. Keep
 // the same no-follow, stable-inode checks as captured configuration inputs.
-func readSelectedTokenLineage(ctx context.Context, path string) (authenticationInputFile, selectedTokenLineageJournal, error) {
+func readSelectedTokenLineage(ctx context.Context, path string, digest authenticationDigest) (authenticationInputFile, selectedTokenLineageJournal, error) {
 	before := authenticationInputFile{path: path}
 	journal := selectedTokenLineageJournal{Version: selectedTokenLineageVersion, Records: map[string]selectedTokenLineageRecord{}}
 	if err := ctx.Err(); err != nil {
@@ -133,12 +141,16 @@ func readSelectedTokenLineage(ctx context.Context, path string) (authenticationI
 	}
 	decoder := json.NewDecoder(bytes.NewReader(before.data))
 	decoder.DisallowUnknownFields()
-	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || journal.Version != selectedTokenLineageVersion || journal.Records == nil || len(journal.Records) > selectedTokenRotationLimit {
+	if decoder.Decode(&journal) != nil || decoder.Decode(new(any)) != io.EOF || journal.Version != 1 && journal.Version != selectedTokenLineageVersion || journal.Records == nil || len(journal.Records) > selectedTokenRotationLimit {
 		return before, journal, errors.New("OAuth token lineage is malformed or unsupported")
+	}
+	proofID := func(data []byte) string { return digest.bytesID(authenticationDigestInputProof, data) }
+	if journal.Version == 1 {
+		proofID = stableBytesID
 	}
 	for key, record := range journal.Records {
 		registerOAuthTokenSecrets(record.Successor)
-		if len(key) != 64 || record.Sequence == 0 || record.Sequence > journal.Sequence || record.Committed && record.Successor == nil || record.Original == "" || record.Definition == "" || len(record.BeforeData) > maxSelectedTokenPreimageBytes || len(record.Inputs) > 256 || selectedTokenBytesID(record.BeforeData) != record.Before.Digest || !filepath.IsAbs(record.Before.Path) || filepath.Clean(record.Before.Path) != record.Before.Path {
+		if len(key) != 64 || record.Sequence == 0 || record.Sequence > journal.Sequence || record.Committed && record.Successor == nil || record.Original == "" || record.Definition == "" || len(record.BeforeData) > maxSelectedTokenPreimageBytes || len(record.Inputs) > 256 || proofID(record.BeforeData) != record.Before.Digest || !filepath.IsAbs(record.Before.Path) || filepath.Clean(record.Before.Path) != record.Before.Path {
 			return before, journal, errors.New("OAuth token lineage record is invalid")
 		}
 		if record.Successor != nil {
@@ -148,6 +160,31 @@ func readSelectedTokenLineage(ctx context.Context, path string) (authenticationI
 		}
 	}
 	return before, journal, nil
+}
+
+func migrateSelectedTokenLineage(journal selectedTokenLineageJournal, digest authenticationDigest) (selectedTokenLineageJournal, bool, error) {
+	if journal.Version == selectedTokenLineageVersion {
+		return journal, false, nil
+	}
+	if journal.Version != 1 {
+		return journal, false, errors.New("OAuth token lineage is unsupported")
+	}
+	next := selectedTokenLineageJournal{Version: selectedTokenLineageVersion, Sequence: journal.Sequence, Records: make(map[string]selectedTokenLineageRecord, len(journal.Records))}
+	for key, record := range journal.Records {
+		record.Original = digest.legacyID(authenticationDigestCredential, record.Original)
+		record.Environment = digest.legacyID(authenticationDigestEnvironment, record.Environment)
+		record.Runtime = digest.legacyID(authenticationDigestRuntime, record.Runtime)
+		record.Before.Digest = digest.legacyID(authenticationDigestInputProof, record.Before.Digest)
+		for index := range record.Inputs {
+			record.Inputs[index].Digest = digest.legacyID(authenticationDigestInputProof, record.Inputs[index].Digest)
+		}
+		key = digest.legacyID(authenticationDigestOperation, key)
+		if _, exists := next.Records[key]; exists {
+			return journal, false, errors.New("OAuth token lineage migration has conflicting identities")
+		}
+		next.Records[key] = record
+	}
+	return next, true, nil
 }
 
 // encoding/json accepts case-insensitive struct field aliases. Journals are
@@ -202,7 +239,7 @@ func canonicalTokenDocument(data []byte, id string, original *oauth.Token) []byt
 	return result
 }
 
-func selectedTokenRuntimeID(snapshot RuntimeSnapshot, original *oauth.Token, record selectedTokenLineageRecord) (string, error) {
+func selectedTokenRuntimeLegacyID(snapshot RuntimeSnapshot, original *oauth.Token, record selectedTokenLineageRecord) (string, error) {
 	cfg := snapshot.Config()
 	data, err := json.Marshal(cfg)
 	if err != nil {
@@ -220,7 +257,7 @@ func selectedTokenRuntimeID(snapshot RuntimeSnapshot, original *oauth.Token, rec
 			raw = canonicalTokenDocument(raw, record.Owner.ProviderID, original)
 			evaluated = canonicalTokenDocument(evaluated, record.Owner.ProviderID, original)
 		}
-		return []any{source.exists, selectedTokenBytesID(raw), selectedTokenBytesID(evaluated)}
+		return []any{source.exists, stableBytesID(raw), stableBytesID(evaluated)}
 	}
 	var basis any
 	if b := cfg.authenticationBasis; b != nil {
@@ -239,14 +276,26 @@ func selectedTokenRuntimeID(snapshot RuntimeSnapshot, original *oauth.Token, rec
 	if err != nil {
 		return "", errors.New("OAuth token runtime basis cannot be captured")
 	}
-	return selectedTokenBytesID(encoded), nil
+	return stableBytesID(encoded), nil
 }
 
-func selectedTokenEnvironmentID(environment []string) string {
+func selectedTokenRuntimeID(digest authenticationDigest, snapshot RuntimeSnapshot, original *oauth.Token, record selectedTokenLineageRecord) (string, error) {
+	legacy, err := selectedTokenRuntimeLegacyID(snapshot, original, record)
+	if err != nil {
+		return "", err
+	}
+	return digest.legacyID(authenticationDigestRuntime, legacy), nil
+}
+
+func stableEnvironmentID(environment []string) string {
 	values := slices.Clone(environment)
 	slices.Sort(values)
 	encoded, _ := json.Marshal(values)
-	return selectedTokenBytesID(encoded)
+	return stableBytesID(encoded)
+}
+
+func selectedTokenEnvironmentID(digest authenticationDigest, environment []string) string {
+	return digest.legacyID(authenticationDigestEnvironment, stableEnvironmentID(environment))
 }
 
 func selectedTokenSuccessorData(record selectedTokenLineageRecord) ([]byte, error) {
@@ -264,8 +313,12 @@ func selectedTokenSuccessorData(record selectedTokenLineageRecord) ([]byte, erro
 }
 
 // Called with writeMu and the cross-process provider refresh lock held.
-func (s *ConfigStore) prepareSelectedTokenLineage(ctx context.Context, current RuntimeSnapshot, path, key, definitionID string, owner providerregistry.RegistrationOwner, expected *oauth.Token) (*selectedTokenRotation, error) {
-	file, journal, err := readSelectedTokenLineage(ctx, selectedTokenLineagePath(path, owner.ProviderID))
+func (s *ConfigStore) prepareSelectedTokenLineage(ctx context.Context, digest authenticationDigest, current RuntimeSnapshot, path, key, definitionID string, owner providerregistry.RegistrationOwner, expected *oauth.Token) (*selectedTokenRotation, error) {
+	file, journal, err := readSelectedTokenLineage(ctx, selectedTokenLineagePath(path, owner.ProviderID), digest)
+	if err != nil {
+		return nil, err
+	}
+	journal, migrated, err := migrateSelectedTokenLineage(journal, digest)
 	if err != nil {
 		return nil, err
 	}
@@ -281,14 +334,15 @@ func (s *ConfigStore) prepareSelectedTokenLineage(ctx context.Context, current R
 	if !found || len(before.data) > maxSelectedTokenPreimageBytes || len(inputs.files) > 256 {
 		return nil, errors.New("OAuth token captured inputs exceed the lineage limit")
 	}
+	originalID := selectedTokenCredentialID(digest, expected)
 	record, exists := journal.Records[key]
 	if !exists {
 		for _, previous := range journal.Records {
-			if previous.Original == OAuthTokenCredentialID(expected) {
+			if previous.Original == originalID {
 				return nil, errors.New("this OAuth credential has a durable exchange under another provider definition; reconcile its original selection")
 			}
 		}
-		if err := pruneSelectedTokenLineages(&journal, expected); err != nil {
+		if err := pruneSelectedTokenLineages(&journal, digest, expected); err != nil {
 			return nil, err
 		}
 		if !reflect.DeepEqual(provider.OAuthToken, expected) || provider.APIKey != expected.AccessToken {
@@ -300,11 +354,11 @@ func (s *ConfigStore) prepareSelectedTokenLineage(ctx context.Context, current R
 		if journal.Sequence == ^uint64(0) {
 			return nil, errors.New("OAuth token lineage sequence is exhausted")
 		}
-		record = selectedTokenLineageRecord{Sequence: journal.Sequence + 1, Owner: owner, Definition: definitionID, Original: OAuthTokenCredentialID(expected), Environment: selectedTokenEnvironmentID(current.Environment()), Order: slices.Clone(inputs.order), Before: selectedTokenProof(before), BeforeData: bytes.Clone(before.data)}
+		record = selectedTokenLineageRecord{Sequence: journal.Sequence + 1, Owner: owner, Definition: definitionID, Original: originalID, Environment: selectedTokenEnvironmentID(digest, current.Environment()), Order: slices.Clone(inputs.order), Before: selectedTokenProof(digest, before), BeforeData: bytes.Clone(before.data)}
 		for _, input := range inputs.files {
-			record.Inputs = append(record.Inputs, selectedTokenProof(input))
+			record.Inputs = append(record.Inputs, selectedTokenProof(digest, input))
 		}
-		record.Runtime, err = selectedTokenRuntimeID(current, expected, record)
+		record.Runtime, err = selectedTokenRuntimeID(digest, current, expected, record)
 		if err != nil {
 			return nil, err
 		}
@@ -317,7 +371,7 @@ func (s *ConfigStore) prepareSelectedTokenLineage(ctx context.Context, current R
 			return nil, errors.New("OAuth token lineage storage is full")
 		}
 	} else {
-		if record.Owner != owner || record.Definition != definitionID || record.Original != OAuthTokenCredentialID(expected) || record.Environment != selectedTokenEnvironmentID(current.Environment()) || record.Before.Path != path {
+		if record.Owner != owner || record.Definition != definitionID || record.Original != originalID || record.Environment != selectedTokenEnvironmentID(digest, current.Environment()) || record.Before.Path != path {
 			return nil, errors.New("OAuth token lineage does not match the captured owner and environment")
 		}
 		if record.Successor == nil {
@@ -329,11 +383,17 @@ func (s *ConfigStore) prepareSelectedTokenLineage(ctx context.Context, current R
 		if provider.APIKey != provider.OAuthToken.AccessToken {
 			return nil, errors.New("OAuth token lineage credential is inconsistent")
 		}
-		runtimeID, err := selectedTokenRuntimeID(current, expected, record)
+		runtimeID, err := selectedTokenRuntimeID(digest, current, expected, record)
 		if err != nil || runtimeID != record.Runtime {
 			return nil, errors.New("OAuth token lineage captured configuration changed")
 		}
-		if err := verifySelectedTokenLineageInputs(inputs, record); err != nil {
+		if err := verifySelectedTokenLineageInputs(digest, inputs, record); err != nil {
+			return nil, err
+		}
+	}
+	if migrated {
+		file, err = persistSelectedTokenLineageJournal(ctx, file, journal)
+		if err != nil {
 			return nil, err
 		}
 	}
@@ -368,14 +428,14 @@ func (s *ConfigStore) prepareSelectedTokenLineage(ctx context.Context, current R
 // the currently selected token and every unresolved exchange remain retained.
 // An evicted caller cannot exchange from a different current config/token:
 // ordinary new-lineage admission still requires its exact selected preimage.
-func pruneSelectedTokenLineages(journal *selectedTokenLineageJournal, expected *oauth.Token) error {
+func pruneSelectedTokenLineages(journal *selectedTokenLineageJournal, digest authenticationDigest, expected *oauth.Token) error {
 	if len(journal.Records) < selectedTokenRotationLimit {
 		return nil
 	}
-	original := OAuthTokenCredentialID(expected)
+	original := selectedTokenCredentialID(digest, expected)
 	oldest := ""
 	for key, record := range journal.Records {
-		if !record.Committed || record.Original == original || OAuthTokenCredentialID(record.Successor) == original {
+		if !record.Committed || record.Original == original || selectedTokenCredentialID(digest, record.Successor) == original {
 			continue
 		}
 		if oldest == "" || record.Sequence < journal.Records[oldest].Sequence {
@@ -389,7 +449,7 @@ func pruneSelectedTokenLineages(journal *selectedTokenLineageJournal, expected *
 	return nil
 }
 
-func verifySelectedTokenLineageInputs(inputs authenticationConfigInputs, record selectedTokenLineageRecord) error {
+func verifySelectedTokenLineageInputs(digest authenticationDigest, inputs authenticationConfigInputs, record selectedTokenLineageRecord) error {
 	if !slices.Equal(inputs.order, record.Order) || len(inputs.files) != len(record.Inputs) {
 		return errors.New("OAuth token lineage input topology changed")
 	}
@@ -399,7 +459,7 @@ func verifySelectedTokenLineageInputs(inputs authenticationConfigInputs, record 
 	}
 	for index, input := range inputs.files {
 		proof := record.Inputs[index]
-		if selectedTokenProof(input) == proof {
+		if selectedTokenProof(digest, input) == proof {
 			continue
 		}
 		// Only the target and its already captured inode aliases may carry the
@@ -414,6 +474,29 @@ func verifySelectedTokenLineageInputs(inputs authenticationConfigInputs, record 
 
 // Store a started record before exchange, then its exact decoded successor
 // before the config write. A canceled caller cannot discard that successor.
+func persistSelectedTokenLineageJournal(ctx context.Context, file authenticationInputFile, journal selectedTokenLineageJournal) (authenticationInputFile, error) {
+	data, err := json.Marshal(journal)
+	if err != nil || len(data) > maxSelectedTokenLineageBytes {
+		return file, errors.New("OAuth token lineage cannot be encoded within its limit")
+	}
+	stage, err := stageAuthenticationScopeWrite(ctx, file, authenticationCredentialEdit{path: file.path, data: data})
+	if err != nil {
+		return file, fmt.Errorf("OAuth token lineage cannot be staged: %w", authenticationInputError(err))
+	}
+	defer stage.Close()
+	after, written, err := stage.Commit(ctx)
+	if written && after.path == "" {
+		observed, readErr := readAuthenticationInput(ctx, file.path)
+		if readErr == nil && observed.info.exists && observed.privateSuccessor && bytes.Equal(observed.data, data) {
+			after = observed
+		}
+	}
+	if err != nil {
+		return after, fmt.Errorf("OAuth token lineage write is not acknowledged: %w", authenticationInputError(err))
+	}
+	return after, nil
+}
+
 func (l *selectedTokenLineage) persist(ctx context.Context, successor *oauth.Token) error {
 	if l == nil {
 		return errors.New("OAuth token lineage is unavailable")
@@ -426,32 +509,13 @@ func (l *selectedTokenLineage) persist(ctx context.Context, successor *oauth.Tok
 	}
 	next := selectedTokenLineageJournal{Version: selectedTokenLineageVersion, Sequence: max(l.journal.Sequence, l.record.Sequence), Records: maps.Clone(l.journal.Records)}
 	next.Records[l.key] = l.record
-	data, err := json.Marshal(next)
-	if err != nil || len(data) > maxSelectedTokenLineageBytes {
-		return errors.New("OAuth token lineage cannot be encoded within its limit")
-	}
-	stage, err := stageAuthenticationScopeWrite(ctx, l.file, authenticationCredentialEdit{path: l.path, data: data})
-	if err != nil {
-		return fmt.Errorf("OAuth token lineage cannot be staged: %w", authenticationInputError(err))
-	}
-	defer stage.Close()
-	after, written, err := stage.Commit(ctx)
-	if written {
-		if after.path != "" {
-			l.file = after
-		} else {
-			// A rename followed by a failed sync/read is still a write. A
-			// retry may stage the identical known bytes from that observed
-			// preimage, but never claim that the failed write was durable.
-			observed, readErr := readAuthenticationInput(ctx, l.path)
-			if readErr == nil && observed.info.exists && observed.privateSuccessor && bytes.Equal(observed.data, data) {
-				l.file = observed
-			}
-		}
+	after, err := persistSelectedTokenLineageJournal(ctx, l.file, next)
+	if after.path != "" {
+		l.file = after
 	}
 	if err != nil {
-		return fmt.Errorf("OAuth token lineage write is not acknowledged: %w", authenticationInputError(err))
+		return err
 	}
-	l.file, l.journal = after, next
+	l.journal = next
 	return nil
 }

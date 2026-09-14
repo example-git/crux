@@ -5,8 +5,6 @@ import (
 	_ "embed"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"strings"
 
 	fantasy "github.com/example-git/crux/foundation"
@@ -87,6 +85,12 @@ func NewMultiEditTool(
 				return NewPermissionDeniedResponse(), nil
 			}
 
+			target, err := captureWriteTarget(params.FilePath)
+			if err != nil {
+				return fantasy.ToolResponse{}, err
+			}
+			defer target.close()
+
 			// Validate all edits before applying any
 			if err := validateEdits(params.Edits); err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
@@ -94,7 +98,14 @@ func NewMultiEditTool(
 
 			var response fantasy.ToolResponse
 
-			editCtx := editContext{ctx, permissions, files, filetracker, workingDir}
+			editCtx := editContext{
+				ctx:         ctx,
+				permissions: permissions,
+				files:       files,
+				filetracker: filetracker,
+				workingDir:  workingDir,
+				target:      target,
+			}
 			// Handle file creation case (first edit has empty old_string)
 			if len(params.Edits) > 0 && params.Edits[0].OldString == "" {
 				response, err = processMultiEditWithCreation(editCtx, params, call)
@@ -153,6 +164,12 @@ func applyEditsToContent(currentContent string, edits []MultiEditOperation, star
 }
 
 func processMultiEditWithCreation(edit editContext, params MultiEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	edit, release, err := bindEditTarget(edit, params.FilePath)
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
+	defer release()
+
 	// First edit creates the file
 	firstEdit := params.Edits[0]
 	if firstEdit.OldString != "" {
@@ -160,10 +177,8 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 	}
 
 	// Check if file already exists
-	if _, err := os.Stat(params.FilePath); err == nil {
+	if edit.target.exists() {
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("file already exists: %s", params.FilePath)), nil
-	} else if !os.IsNotExist(err) {
-		return fantasy.ToolResponse{}, fmt.Errorf("failed to access file: %w", err)
 	}
 
 	currentContent, failedEdits, whitespaceCorrected := applyEditsToContent(firstEdit.NewString, params.Edits[1:], 1)
@@ -217,12 +232,7 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 		return fantasy.ToolResponse{}, fmt.Errorf("create file checkpoint: %w", err)
 	}
 
-	// Create parent directories and write the file
-	if err := os.MkdirAll(filepath.Dir(params.FilePath), 0o755); err != nil {
-		return fantasy.ToolResponse{}, fmt.Errorf("failed to create parent directories: %w", err)
-	}
-	err = os.WriteFile(params.FilePath, []byte(currentContent), 0o644)
-	if err != nil {
+	if err := edit.target.create([]byte(currentContent)); err != nil {
 		return fantasy.ToolResponse{}, fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -261,6 +271,12 @@ func processMultiEditWithCreation(edit editContext, params MultiEditParams, call
 }
 
 func processMultiEditExistingFile(edit editContext, params MultiEditParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	edit, release, err := bindEditTarget(edit, params.FilePath)
+	if err != nil {
+		return fantasy.ToolResponse{}, err
+	}
+	defer release()
+
 	sessionID, oldContent, isCrlf, resp, err := loadExistingFile(edit, params.FilePath, "session ID is required for editing a file")
 	if err != nil {
 		return fantasy.ToolResponse{}, err
