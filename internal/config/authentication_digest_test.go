@@ -3,8 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,9 +18,15 @@ func TestAuthenticationDigestKeyPersistsAcrossStores(t *testing.T) {
 	second, err := (&ConfigStore{globalDataPath: path}).loadAuthenticationDigest(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, first.bytesID(authenticationDigestCredential, []byte("credential")), second.bytesID(authenticationDigestCredential, []byte("credential")))
-	info, err := os.Stat(path + ".authentication-hmac.key")
+	keyFile, err := os.Open(path + ".authentication-hmac.key")
 	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	defer keyFile.Close()
+	require.NoError(t, fsext.ValidatePrivateFile(keyFile))
+	if runtime.GOOS != "windows" {
+		info, err := keyFile.Stat()
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 
 	other, err := (&ConfigStore{globalDataPath: filepath.Join(t.TempDir(), "crux.json")}).loadAuthenticationDigest(t.Context())
 	require.NoError(t, err)

@@ -46,11 +46,10 @@ func TestBackgroundShellRestartSameID(t *testing.T) {
 	require.Equal(t, task.StatusKilled, original.Status())
 	require.Eventually(t, func() bool {
 		stdout, stderr, _, _ := restarted.GetOutput()
-		return strings.Contains(stdout, "preserved:") && stderr == "stderr"
+		return strings.Contains(stdout, "preserved:") && stderr == "stderr" && calls.Load() > before
 	}, time.Second*3, time.Millisecond*10)
 	stdout, _, _, _ := restarted.GetOutput()
 	require.Equal(t, "preserved:"+root, stdout)
-	require.Greater(t, calls.Load(), before)
 	original.MarkBackgrounded()
 	record, err := recordStore.Get(original.ID)
 	require.NoError(t, err)

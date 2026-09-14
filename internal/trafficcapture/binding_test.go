@@ -1,9 +1,11 @@
 package trafficcapture
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -11,8 +13,12 @@ import (
 
 func TestPreparedRequestRejectsExecutableReplacement(t *testing.T) {
 	workingDirectory := t.TempDir()
-	executable := filepath.Join(workingDirectory, "target")
-	moved := filepath.Join(workingDirectory, "approved-target")
+	name := "target"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	executable := filepath.Join(workingDirectory, name)
+	moved := filepath.Join(workingDirectory, "approved-"+name)
 	capturePath := filepath.Join(workingDirectory, "capture.mitm")
 	require.NoError(t, os.WriteFile(executable, []byte("#!/bin/sh\n"), 0o700))
 
@@ -63,7 +69,15 @@ func TestCaptureOutputRejectsParentReplacement(t *testing.T) {
 	require.NoError(t, err)
 	defer binding.close()
 
-	require.NoError(t, os.Rename(directory, moved))
+	renameErr := os.Rename(directory, moved)
+	if retainedDirectoryRenameBlocked(renameErr) {
+		_, err = binding.create()
+		require.NoError(t, err)
+		require.NoDirExists(t, moved)
+		require.FileExists(t, capturePath)
+		return
+	}
+	require.NoError(t, renameErr)
 	require.NoError(t, os.Mkdir(directory, 0o700))
 
 	_, err = binding.create()
@@ -84,6 +98,13 @@ func TestCaptureOutputRejectsCreatedMissingDirectory(t *testing.T) {
 	_, err = binding.create()
 	require.ErrorContains(t, err, "changed after approval")
 	require.NoFileExists(t, capturePath)
+}
+
+func retainedDirectoryRenameBlocked(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	return errors.Is(err, syscall.Errno(5)) || errors.Is(err, syscall.Errno(32))
 }
 
 func requireFileBytes(t *testing.T, path, expected string) {

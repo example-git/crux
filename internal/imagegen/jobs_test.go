@@ -580,8 +580,16 @@ func TestEditJobRejectsInputReplacementBeforeUpload(t *testing.T) {
 			result, err := manager.Output(t.Context(), view.ID, true, 2*time.Second)
 			require.NoError(t, err)
 			require.Equal(t, managedtask.StatusFailed, result.Task.State.Status)
-			require.NoError(t, <-replaced)
-			require.Zero(t, authenticationCalls.Load())
+			replaceErr := <-replaced
+			if replaceErr != nil {
+				require.True(t, retainedDirectoryRenameBlocked(replaceErr), "rename failed unexpectedly: %v", replaceErr)
+				require.EqualValues(t, 1, authenticationCalls.Load())
+				content, err := os.ReadFile(input)
+				require.NoError(t, err)
+				require.Equal(t, "approved image", string(content))
+			} else {
+				require.Zero(t, authenticationCalls.Load())
+			}
 			require.NoFileExists(t, output)
 		})
 	}
