@@ -96,8 +96,13 @@ func TestWriteRejectsParentReplacementDuringPermission(t *testing.T) {
 	ctx := context.WithValue(t.Context(), SessionIDContextKey, "session")
 
 	_, err := tool.Run(ctx, fantasy.ToolCall{ID: "call", Name: WriteToolName, Input: input})
-	require.ErrorContains(t, err, "changed after capture")
 	require.Zero(t, history.calls)
+	if retainedDirectoryRenameBlocked(err) {
+		require.NoDirExists(t, moved)
+		requireFileContent(t, path, "authorized")
+		return
+	}
+	require.ErrorContains(t, err, "changed after capture")
 	requireFileContent(t, filepath.Join(moved, "target.txt"), "authorized")
 	requireFileContent(t, path, "replacement")
 }
