@@ -60,23 +60,24 @@ type serverPeerAttachment struct {
 }
 
 type serverPeerChannel struct {
-	controller            *controllerV1
-	connection            *websocket.Conn
-	clientID              string
-	principal             string
-	epoch                 string
-	ctx                   context.Context
-	cancel                context.CancelCauseFunc
-	critical              chan peerChannelOutbound
-	state                 chan peerChannelOutbound
-	workspace             chan peerChannelOutbound
-	telemetry             chan peerChannelOutbound
-	attachmentsMu         sync.Mutex
-	attachments           map[string]*serverPeerAttachment
-	lastReceived          atomic.Uint64
-	lastSent              atomic.Uint64
-	lastHeartbeat         atomic.Int64
-	lastHeartbeatSequence atomic.Uint64
+	controller              *controllerV1
+	connection              *websocket.Conn
+	clientID                string
+	principal               string
+	epoch                   string
+	ctx                     context.Context
+	cancel                  context.CancelCauseFunc
+	critical                chan peerChannelOutbound
+	state                   chan peerChannelOutbound
+	workspace               chan peerChannelOutbound
+	telemetry               chan peerChannelOutbound
+	attachmentsMu           sync.Mutex
+	attachments             map[string]*serverPeerAttachment
+	lastReceived            atomic.Uint64
+	lastSent                atomic.Uint64
+	lastHeartbeat           atomic.Int64
+	lastHeartbeatSequence   atomic.Uint64
+	authenticatedManagement bool
 }
 
 func (c *controllerV1) handleGetPeerChannel(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +101,10 @@ func (c *controllerV1) handleGetPeerChannel(w http.ResponseWriter, r *http.Reque
 		controller: c, connection: connection, clientID: clientID, principal: requestPrincipal(r),
 		ctx: ctx, cancel: cancel, critical: make(chan peerChannelOutbound, 64), state: make(chan peerChannelOutbound, 128),
 		workspace: make(chan peerChannelOutbound, 512), telemetry: make(chan peerChannelOutbound, 64), attachments: map[string]*serverPeerAttachment{},
+		authenticatedManagement: c.server.authenticatedManagementRequest(r),
 	}
+	c.registerMenuPeer(peer.principal, peer)
+	defer c.unregisterMenuPeer(peer.principal, peer)
 	peer.lastHeartbeat.Store(time.Now().UnixNano())
 	connection.SetReadLimit(proto.MaxPeerChannelEnvelopeBytes)
 	_ = connection.SetReadDeadline(time.Now().Add(peerChannelPongTimeout))
@@ -210,6 +214,12 @@ func (peer *serverPeerChannel) execute(message proto.PeerDecodedMessage) proto.P
 	case proto.PeerTypeProviderRefreshCompleted:
 		value := message.Payload.(*proto.PeerProviderRefreshCompletion)
 		ack = peer.completeRefresh(message.Envelope.WorkspaceID, *value)
+	case proto.PeerTypeWorkspaceList:
+		ack = peer.listWorkspaces()
+	case proto.PeerTypeBrowserList:
+		ack = peer.browseList(*message.Payload.(*proto.PeerBrowserListRequest))
+	case proto.PeerTypeWorkspaceCreate:
+		ack = peer.createWorkspaceDirectory(message.Envelope.MessageID, *message.Payload.(*proto.PeerWorkspaceCreateRequest))
 	default:
 		ack = proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "unsupported peer channel command"}
 	}
@@ -234,6 +244,63 @@ func (peer *serverPeerChannel) reconcileHelloWorkspaces(requested []proto.PeerWo
 		summaries = append(summaries, proto.PeerWorkspaceSummary{WorkspaceID: candidate.WorkspaceID, Revision: authority.Revision, Digest: authority.Digest})
 	}
 	return summaries, requirements
+}
+
+// listWorkspaces returns the caller's visible workspace list as the
+// acknowledgement's structured Data payload. It requires authenticated
+// TLS management access, matching handleGetWorkspaces.
+func (peer *serverPeerChannel) listWorkspaces() proto.PeerAcknowledgement {
+	if !peer.authenticatedManagement {
+		return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusForbidden, Message: "workspace management requires authenticated TLS"}
+	}
+	data, err := json.Marshal(peer.controller.backend.ListWorkspacesForPrincipal(peer.principal))
+	if err != nil {
+		return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "failed to encode workspace list"}
+	}
+	return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK, Data: data}
+}
+
+// browseList returns a directory listing rooted at one of the server's
+// configured workspace roots as the acknowledgement's structured Data
+// payload. It requires authenticated TLS management access, matching
+// handleGetBrowser.
+func (peer *serverPeerChannel) browseList(request proto.PeerBrowserListRequest) proto.PeerAcknowledgement {
+	if !peer.authenticatedManagement {
+		return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusForbidden, Message: "workspace management requires authenticated TLS"}
+	}
+	listing, err := peer.controller.server.browse(request.Path)
+	if err != nil {
+		return peerBadRequestAcknowledgementError(err)
+	}
+	data, err := json.Marshal(listing)
+	if err != nil {
+		return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "failed to encode directory listing"}
+	}
+	return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK, Data: data}
+}
+
+// createWorkspaceDirectory creates a new project directory (optionally
+// running git init or git clone) rooted at one of the server's
+// configured workspace roots, streaming progress lines as
+// PeerTypeWorkspaceCreateProgress telemetry events keyed by requestID.
+// It requires authenticated TLS management access, matching the HTTP
+// workspace-management endpoints.
+func (peer *serverPeerChannel) createWorkspaceDirectory(requestID string, request proto.PeerWorkspaceCreateRequest) proto.PeerAcknowledgement {
+	if !peer.authenticatedManagement {
+		return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusForbidden, Message: "workspace management requires authenticated TLS"}
+	}
+	progress := func(line string) {
+		_ = peer.enqueue(peerChannelOutbound{messageType: proto.PeerTypeWorkspaceCreateProgress, payload: proto.PeerWorkspaceCreateProgress{RequestID: requestID, Line: line}})
+	}
+	path, err := peer.controller.server.createProject(peer.ctx, request, progress)
+	if err != nil {
+		return peerBadRequestAcknowledgementError(err)
+	}
+	data, err := json.Marshal(proto.PeerWorkspaceCreateResult{Path: path})
+	if err != nil {
+		return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "failed to encode project creation result"}
+	}
+	return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK, Data: data}
 }
 
 func (peer *serverPeerChannel) attach(workspaceID string, accepted *proto.WorkspaceAttachment) proto.PeerAcknowledgement {
@@ -318,7 +385,8 @@ func (peer *serverPeerChannel) setModelSelection(workspaceID string, request pro
 	}
 	selections := make(map[config.SelectedModelType]config.SelectedModel, len(request.Selections))
 	for _, selection := range request.Selections {
-		definition, owner, err := attachment.workspace.Cfg.RuntimeSnapshot().RetainedClientProviderDefinition(selection.Model.Provider.Owner.ProviderID)
+		snapshot := attachment.workspace.Cfg.RuntimeSnapshot()
+		definition, owner, err := snapshot.RetainedClientProviderDefinition(selection.Model.Provider.Owner.ProviderID)
 		if err != nil {
 			return peerAcknowledgementError(err)
 		}
@@ -326,10 +394,16 @@ func (peer *serverPeerChannel) setModelSelection(workspaceID string, request pro
 		if err != nil || digest != selection.Model.Provider.DefinitionDigest || definition.BundleDigest != selection.Model.Provider.BundleDigest || providerauth.PublicOwner(owner) != selection.Model.Provider.Owner {
 			return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusConflict, Message: "provider reference does not match the accepted runtime"}
 		}
+		// Usage of an asymmetric secondary-owner's provider is locked to the
+		// connection whose principal contributed it; every other attached
+		// connection may see its name but cannot select or drive it.
+		if contributor := snapshot.ProviderOwnerPrincipal(selection.Model.Provider.Owner.ProviderID); contributor != "" && contributor != peer.principal {
+			return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusForbidden, Message: "this provider is owned by a different attached client"}
+		}
 		selections[selection.ModelType] = selection.Settings
 	}
 	base := request.Runtime
-	ack, err := attachment.workspace.Cfg.PatchRemoteModelSelections(peer.ctx, peer.principal, base.ExpectedRevision, base.ExpectedDigest, base.ResultRevision, base.ResultDigest, selections)
+	ack, err := attachment.workspace.Cfg.PatchOwnedModelSelections(peer.ctx, peer.principal, base.ExpectedRevision, base.ExpectedDigest, base.ResultRevision, base.ResultDigest, selections)
 	if err != nil {
 		return peerAcknowledgementError(err)
 	}
@@ -883,4 +957,19 @@ func peerAcknowledgementError(err error) proto.PeerAcknowledgement {
 		status, message = proto.WorkspaceChannelStatusUnavailable, "workspace is unavailable"
 	}
 	return proto.PeerAcknowledgement{Status: status, Message: message}
+}
+
+// peerBadRequestAcknowledgementError surfaces err's own message (bounded and
+// redacted of any accidental secret-shaped content) as an invalid-status
+// acknowledgement. Use this for menu operations (browse, project creation)
+// whose errors are plain filesystem/path/git-command failures with no
+// backend sentinel-error taxonomy, mirroring the equivalent HTTP handlers
+// (e.g. handleGetBrowser) which return err.Error() directly instead of a
+// generic message.
+func peerBadRequestAcknowledgementError(err error) proto.PeerAcknowledgement {
+	message := redact.String(err.Error())
+	if message == "" {
+		message = "peer channel command is invalid"
+	}
+	return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: message}
 }

@@ -31,6 +31,8 @@ func TestPeerMessageRegistryComplete(t *testing.T) {
 		PeerTypeEventFile, PeerTypeEventAgent, PeerTypeEventConfigChanged,
 		PeerTypeEventSkills, PeerTypeEventTask, PeerTypeRunCompleted,
 		PeerTypeRunFailed, PeerTypeRunCancelled,
+		PeerTypeWorkspaceList, PeerTypeWorkspaceListChanged, PeerTypeBrowserList,
+		PeerTypeWorkspaceCreate, PeerTypeWorkspaceCreateProgress,
 	}
 	require.ElementsMatch(t, expected, RegisteredPeerMessageTypes())
 	for _, messageType := range expected {

@@ -23,6 +23,54 @@ type controllerV1 struct {
 	peerExecutionMu sync.Mutex
 	peerJournalMu   sync.Mutex
 	peerJournal     map[string]peerJournalEntry
+	menuPeersMu     sync.Mutex
+	menuPeers       map[string]map[*serverPeerChannel]struct{}
+}
+
+// registerMenuPeer records peer as eligible to receive connection-scoped
+// menu push notifications (for example, PeerTypeWorkspaceListChanged) for
+// the given principal. Call unregisterMenuPeer when the connection closes.
+func (c *controllerV1) registerMenuPeer(principal string, peer *serverPeerChannel) {
+	c.menuPeersMu.Lock()
+	defer c.menuPeersMu.Unlock()
+	if c.menuPeers == nil {
+		c.menuPeers = map[string]map[*serverPeerChannel]struct{}{}
+	}
+	peers := c.menuPeers[principal]
+	if peers == nil {
+		peers = map[*serverPeerChannel]struct{}{}
+		c.menuPeers[principal] = peers
+	}
+	peers[peer] = struct{}{}
+}
+
+func (c *controllerV1) unregisterMenuPeer(principal string, peer *serverPeerChannel) {
+	c.menuPeersMu.Lock()
+	defer c.menuPeersMu.Unlock()
+	peers := c.menuPeers[principal]
+	if peers == nil {
+		return
+	}
+	delete(peers, peer)
+	if len(peers) == 0 {
+		delete(c.menuPeers, principal)
+	}
+}
+
+// notifyWorkspaceListChanged pushes a best-effort PeerTypeWorkspaceListChanged
+// invalidation event to every connection registered for principal. Delivery
+// is not guaranteed; receivers that miss it will still see the current list
+// the next time they explicitly request it.
+func (c *controllerV1) notifyWorkspaceListChanged(principal string) {
+	c.menuPeersMu.Lock()
+	peers := make([]*serverPeerChannel, 0, len(c.menuPeers[principal]))
+	for peer := range c.menuPeers[principal] {
+		peers = append(peers, peer)
+	}
+	c.menuPeersMu.Unlock()
+	for _, peer := range peers {
+		_ = peer.enqueue(peerChannelOutbound{messageType: proto.PeerTypeWorkspaceListChanged, payload: proto.PeerWorkspaceListChanged{}})
+	}
 }
 
 // handleGetHealth checks server health.
@@ -197,6 +245,7 @@ func (c *controllerV1) handlePostWorkspaces(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer complete()
+	c.notifyWorkspaceListChanged(args.AuthenticatedPrincipal)
 	jsonEncode(w, result)
 	// Start the create-grace window only after buffered response bytes have
 	// been offered to the transport, giving the client a practical chance to
@@ -284,7 +333,9 @@ func (c *controllerV1) handleDeleteIdleWorkspace(w http.ResponseWriter, r *http.
 	}
 	if err := c.backend.CloseIdleWorkspace(r.PathValue("id")); err != nil {
 		c.handleError(w, r, err)
+		return
 	}
+	c.notifyWorkspaceListChanged(requestPrincipal(r))
 }
 
 func (c *controllerV1) handleDeleteWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -297,6 +348,7 @@ func (c *controllerV1) handleDeleteWorkspaces(w http.ResponseWriter, r *http.Req
 		c.handleError(w, r, err)
 		return
 	}
+	c.notifyWorkspaceListChanged(requestPrincipal(r))
 }
 
 // handleGetWorkspaceConfig returns workspace configuration.

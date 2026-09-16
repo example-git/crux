@@ -43,9 +43,10 @@ import (
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/skills"
 	"github.com/example-git/crux/internal/ui/common"
+	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/ui/logo"
+	"github.com/example-git/crux/internal/ui/menushell"
 	ui "github.com/example-git/crux/internal/ui/model"
-	"github.com/example-git/crux/internal/ui/servermenu"
 	"github.com/example-git/crux/internal/ui/styles"
 	"github.com/example-git/crux/internal/version"
 	"github.com/example-git/crux/internal/workspace"
@@ -562,7 +563,7 @@ func runServerMenu(cmd *cobra.Command) error {
 
 	var menuError error
 	for {
-		model := servermenu.New(cmd.Context(), menuClient)
+		model := menushell.New(cmd.Context(), serverMenuClient{menuClient})
 		model.SetConnection(saved.Name, saved.Address)
 		model.SetError(menuError)
 		menuError = nil
@@ -581,7 +582,7 @@ func runServerMenu(cmd *cobra.Command) error {
 	}
 }
 
-func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection, localCwd string, selection servermenu.Selection) error {
+func runSelectedRemoteWorkspace(cmd *cobra.Command, saved connection.Connection, localCwd string, selection dialog.ServerMenuSelection) error {
 	remotePath := selection.Path
 	if remotePath == "" {
 		remotePath = localCwd

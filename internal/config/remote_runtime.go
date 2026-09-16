@@ -97,6 +97,15 @@ type RemoteRuntimeProposal struct {
 	ImageClientIdentities       []RemoteImageClientIdentity         `json:"image_client_identities,omitempty"`
 	CredentialEnvironment       map[string]string                   `json:"credential_environment,omitempty"`
 	ProviderContextInstructions map[string]string                   `json:"provider_context_instructions,omitempty"`
+	// AllowSecondaryOwners is an explicit, primary-owner-controlled opt-in.
+	// It must be true on the primary owner's own accepted proposal before
+	// any other authenticated principal may join this client-authority
+	// workspace as a secondary owner (see AdmitSecondaryClientAuthority).
+	// Without it, a distinct principal targeting the same workspace path is
+	// flatly rejected (backend.ErrWorkspaceAuthority) exactly as if no
+	// multi-owner support existed, preserving workspace isolation between
+	// unrelated authenticated clients by default.
+	AllowSecondaryOwners bool `json:"allow_secondary_owners,omitempty"`
 }
 
 type RemoteProviderDefinition struct {
@@ -125,6 +134,11 @@ type RemoteAuthority struct {
 	Revision  uint64                  `json:"revision"`
 	Digest    string                  `json:"digest"`
 	Accounts  []RemoteAccountIdentity `json:"accounts"`
+	// AllowSecondaryOwners mirrors RemoteRuntimeProposal.AllowSecondaryOwners
+	// from the primary owner's currently accepted proposal. It is the sole
+	// gate backend.checkWorkspaceReuse consults before permitting a distinct
+	// principal to attempt secondary-owner admission on this workspace.
+	AllowSecondaryOwners bool `json:"allow_secondary_owners,omitempty"`
 }
 
 type RemoteAccountIdentity struct {
@@ -140,6 +154,24 @@ type clientRuntimeState struct {
 	local     bool
 	// Immutable receiver-local history; intentionally absent from proposal/wire data.
 	withdrawnAt map[providerregistry.RegistrationOwner]uint64
+	// secondaryOwners and providerOwner support asymmetric multi-owner
+	// client-authority workspaces: a second distinct principal may contribute
+	// its own disjoint provider/model manifest to a workspace whose primary
+	// client authority is authority.Principal. Both are receiver-local
+	// bookkeeping, intentionally absent from the wire proposal/digest, and
+	// are preserved (not reset) across a primary ReplaceRemoteRuntime call.
+	// See AdmitSecondaryClientAuthority and RuntimeSnapshot.ProviderOwnerPrincipal.
+	secondaryOwners map[string]*clientRuntimeOwner
+	providerOwner   map[string]string
+}
+
+// clientRuntimeOwner is one additional principal's own accepted contribution
+// to a shared client-authority workspace, kept separately from the merged
+// clientRuntimeState.proposal so it can be re-validated and re-merged
+// whenever the primary owner replaces its own runtime.
+type clientRuntimeOwner struct {
+	principal string
+	proposal  RemoteRuntimeProposal
 }
 
 // RemoteRuntimeDigest binds the entire private proposal, including exact
@@ -227,10 +259,32 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 	workingDir, dataDir, debug := s.workingDir, s.config.Options.DataDirectory, s.config.Options.Debug
 	baseEnvironment := cloneEnvironment(s.baseEnvironment)
 	local := s.clientRuntime.local
+	secondaryOwners := s.clientRuntime.secondaryOwners
 	s.writeMu.RUnlock()
-	candidate, err := compileClientRuntime(workingDir, dataDir, debug, proposal, principal, baseEnvironment, local)
+	// A primary replace only ever supplies the primary owner's own providers.
+	// Any already-admitted secondary owners' disjoint contributions must be
+	// re-merged so this replace does not silently drop them.
+	effectiveProposal := proposal
+	if len(secondaryOwners) > 0 {
+		merged, err := mergeClientRuntimeProposals(proposal, secondaryOwners)
+		if err != nil {
+			return nil, err
+		}
+		merged.Digest = ""
+		digest, err := RemoteRuntimeDigest(merged)
+		if err != nil {
+			return nil, err
+		}
+		merged.Digest = digest
+		effectiveProposal = merged
+	}
+	candidate, err := compileClientRuntime(workingDir, dataDir, debug, effectiveProposal, principal, baseEnvironment, local)
 	if err != nil {
 		return nil, err
+	}
+	if len(secondaryOwners) > 0 {
+		candidate.clientRuntime.secondaryOwners = secondaryOwners
+		candidate.clientRuntime.providerOwner = computeProviderOwners(principal, proposal.Providers, secondaryOwners)
 	}
 	// Prepared models inherit the live store's retirement even though their
 	// publication identity remains the unpublished candidate's identity.
@@ -612,7 +666,7 @@ func compileClientRuntime(workingDir, dataDir string, debug bool, proposal Remot
 			return nil, errors.New("client provider configuration violates its schema")
 		}
 	}
-	authority := RemoteAuthority{Mode: "client", Principal: principal, Revision: proposal.Revision, Digest: digest}
+	authority := RemoteAuthority{Mode: "client", Principal: principal, Revision: proposal.Revision, Digest: digest, AllowSecondaryOwners: proposal.AllowSecondaryOwners}
 	forwarded := map[string]ForwardedAccount{}
 	credentialProviders := map[string]bool{}
 	unavailable := map[string]bool{}

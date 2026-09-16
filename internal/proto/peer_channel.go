@@ -106,6 +106,11 @@ const (
 	PeerTypeRunCompleted                  PeerMessageType = "run.completed"
 	PeerTypeRunFailed                     PeerMessageType = "run.failed"
 	PeerTypeRunCancelled                  PeerMessageType = "run.cancelled"
+	PeerTypeWorkspaceList                 PeerMessageType = "menu.workspace.list"
+	PeerTypeWorkspaceListChanged          PeerMessageType = "menu.workspace.list_changed"
+	PeerTypeBrowserList                   PeerMessageType = "menu.browser.list"
+	PeerTypeWorkspaceCreate               PeerMessageType = "menu.workspace.create"
+	PeerTypeWorkspaceCreateProgress       PeerMessageType = "menu.workspace.create_progress"
 )
 
 type PeerEnvelope struct {
@@ -422,6 +427,65 @@ type PeerAcknowledgement struct {
 	Status    WorkspaceChannelStatus  `json:"status"`
 	Authority *config.RemoteAuthority `json:"authority,omitempty"`
 	Message   string                  `json:"message,omitempty"`
+	// Data carries a structured result for connection-scoped request/response
+	// commands (for example, PeerTypeWorkspaceList, PeerTypeBrowserList,
+	// PeerTypeWorkspaceCreate) that need to return more than a bare status.
+	// It is always empty on a failed acknowledgement.
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// PeerWorkspaceListRequest requests the caller's visible workspace list.
+// It is connection-scoped: it must be sent with an empty WorkspaceID.
+type PeerWorkspaceListRequest struct{}
+
+// PeerWorkspaceListChanged is a connection-scoped push notification telling
+// the receiver that its visible workspace list has changed (a workspace was
+// created, closed, or deleted by any connection for the same principal).
+// It carries no data; the receiver is expected to re-issue
+// PeerTypeWorkspaceList to fetch the current list.
+type PeerWorkspaceListChanged struct{}
+
+// PeerBrowserListRequest requests a directory listing rooted under the
+// server's configured workspace roots. An empty Path lists the first
+// configured root, matching the existing HTTP browse behavior.
+type PeerBrowserListRequest struct {
+	Path string `json:"path,omitempty"`
+}
+
+// PeerWorkspaceCreateMode identifies how PeerTypeWorkspaceCreate should
+// populate a new directory before it can be opened as a workspace.
+type PeerWorkspaceCreateMode string
+
+const (
+	PeerWorkspaceCreatePlain   PeerWorkspaceCreateMode = "plain"
+	PeerWorkspaceCreateGitInit PeerWorkspaceCreateMode = "git-init"
+	PeerWorkspaceCreateClone   PeerWorkspaceCreateMode = "git-clone"
+)
+
+// PeerWorkspaceCreateRequest asks the server to create a new project
+// directory under one of its configured workspace roots. RelativePath is
+// resolved against Root and must not escape it. CloneURL is required (and
+// only valid) when Mode is PeerWorkspaceCreateClone.
+type PeerWorkspaceCreateRequest struct {
+	Root         string                  `json:"root"`
+	RelativePath string                  `json:"relative_path"`
+	Mode         PeerWorkspaceCreateMode `json:"mode"`
+	CloneURL     string                  `json:"clone_url,omitempty"`
+}
+
+// PeerWorkspaceCreateResult is returned as the Data payload of a successful
+// PeerTypeWorkspaceCreate acknowledgement.
+type PeerWorkspaceCreateResult struct {
+	Path string `json:"path"`
+}
+
+// PeerWorkspaceCreateProgress streams best-effort progress lines (for
+// example, `git clone` output) for an in-flight PeerTypeWorkspaceCreate
+// request. It is telemetry: delivery is not guaranteed and lines may be
+// dropped under backpressure.
+type PeerWorkspaceCreateProgress struct {
+	RequestID string `json:"request_id"`
+	Line      string `json:"line"`
 }
 
 type PeerErrorPayload struct {
@@ -460,7 +524,7 @@ var peerMessageRegistry = map[PeerMessageType]PeerMessageSpec{
 	PeerTypeRuntimePatchApplied:           peerSpec(PeerDirectionServerToClient, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryState, 64<<10, func() any { return new(PeerRuntimePatchApplied) }, validateRuntimePatchApplied),
 	PeerTypeRuntimeTransaction:            peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, MaxPeerChannelPayloadBytes, func() any { return new(PeerRuntimeTransaction) }, validateRuntimeTransaction),
 	PeerTypeRuntimeReplace:                peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, MaxPeerChannelPayloadBytes, func() any { return new(PeerRuntimeReplace) }, validateRuntimeReplace),
-	PeerTypeAcknowledgement:               peerSpec(PeerDirectionBidirectional, PeerScopeEither, PeerMessageAcknowledgement, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerAcknowledgement) }, validateAcknowledgement),
+	PeerTypeAcknowledgement:               peerSpec(PeerDirectionBidirectional, PeerScopeEither, PeerMessageAcknowledgement, false, PeerDeliveryCritical, 1<<20, func() any { return new(PeerAcknowledgement) }, validateAcknowledgement),
 	PeerTypeError:                         peerSpec(PeerDirectionBidirectional, PeerScopeEither, PeerMessageError, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerErrorPayload) }, validateErrorPayload),
 	PeerTypeEventLSP:                      peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[LSPEvent]) }),
 	PeerTypeEventMCP:                      peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[MCPEvent]) }),
@@ -478,6 +542,11 @@ var peerMessageRegistry = map[PeerMessageType]PeerMessageSpec{
 	PeerTypeRunCompleted:                  peerRunEventSpec(PeerTypeRunCompleted),
 	PeerTypeRunFailed:                     peerRunEventSpec(PeerTypeRunFailed),
 	PeerTypeRunCancelled:                  peerRunEventSpec(PeerTypeRunCancelled),
+	PeerTypeWorkspaceList:                 peerSpec(PeerDirectionClientToServer, PeerScopeConnection, PeerMessageCommand, true, PeerDeliveryState, 1<<10, func() any { return new(PeerWorkspaceListRequest) }, validateWorkspaceListRequest),
+	PeerTypeWorkspaceListChanged:          peerSpec(PeerDirectionServerToClient, PeerScopeConnection, PeerMessageEvent, false, PeerDeliveryState, 1<<10, func() any { return new(PeerWorkspaceListChanged) }, validateWorkspaceListChanged),
+	PeerTypeBrowserList:                   peerSpec(PeerDirectionClientToServer, PeerScopeConnection, PeerMessageCommand, true, PeerDeliveryState, 4<<10, func() any { return new(PeerBrowserListRequest) }, validateBrowserListRequest),
+	PeerTypeWorkspaceCreate:               peerSpec(PeerDirectionClientToServer, PeerScopeConnection, PeerMessageCommand, true, PeerDeliveryState, 8<<10, func() any { return new(PeerWorkspaceCreateRequest) }, validateWorkspaceCreateRequest),
+	PeerTypeWorkspaceCreateProgress:       peerSpec(PeerDirectionServerToClient, PeerScopeConnection, PeerMessageEvent, false, PeerDeliveryTelemetry, 4<<10, func() any { return new(PeerWorkspaceCreateProgress) }, validateWorkspaceCreateProgress),
 }
 
 func peerSpec(direction PeerMessageDirection, scope PeerMessageScope, kind PeerMessageKind, acknowledged bool, delivery PeerDeliveryClass, maxPayloadSize int, constructor func() any, validator func(any) error) PeerMessageSpec {
@@ -1035,7 +1104,7 @@ func validateRuntimeReplace(payload any) error {
 
 func validateAcknowledgement(payload any) error {
 	value, ok := peerPayload[PeerAcknowledgement](payload)
-	if !ok || !validPeerText(value.Message, MaxPeerChannelMessageBytes, false) {
+	if !ok || !validPeerText(value.Message, MaxPeerChannelMessageBytes, false) || len(value.Data) > 1<<20 {
 		return errors.New("invalid peer acknowledgement")
 	}
 	switch value.Status {
@@ -1047,8 +1116,63 @@ func validateAcknowledgement(payload any) error {
 		if value.Authority != nil {
 			return errors.New("failed peer acknowledgement contains authority")
 		}
+		if len(value.Data) != 0 {
+			return errors.New("failed peer acknowledgement contains data")
+		}
 	default:
 		return errors.New("invalid peer acknowledgement status")
+	}
+	return nil
+}
+
+func validateWorkspaceListRequest(payload any) error {
+	_, ok := peerPayload[PeerWorkspaceListRequest](payload)
+	if !ok {
+		return errors.New("invalid workspace list request")
+	}
+	return nil
+}
+
+func validateWorkspaceListChanged(payload any) error {
+	_, ok := peerPayload[PeerWorkspaceListChanged](payload)
+	if !ok {
+		return errors.New("invalid workspace list change notification")
+	}
+	return nil
+}
+
+func validateBrowserListRequest(payload any) error {
+	value, ok := peerPayload[PeerBrowserListRequest](payload)
+	if !ok || !validPeerText(value.Path, 4096, false) {
+		return errors.New("invalid browser list request")
+	}
+	return nil
+}
+
+func validateWorkspaceCreateRequest(payload any) error {
+	value, ok := peerPayload[PeerWorkspaceCreateRequest](payload)
+	if !ok || !validPeerText(value.Root, 4096, true) || !validPeerText(value.RelativePath, 4096, true) {
+		return errors.New("invalid workspace create request")
+	}
+	switch value.Mode {
+	case PeerWorkspaceCreatePlain, PeerWorkspaceCreateGitInit:
+		if value.CloneURL != "" {
+			return errors.New("workspace create mode does not accept a clone URL")
+		}
+	case PeerWorkspaceCreateClone:
+		if !validPeerText(value.CloneURL, 4096, true) {
+			return errors.New("workspace create clone requires a URL")
+		}
+	default:
+		return errors.New("invalid workspace create mode")
+	}
+	return nil
+}
+
+func validateWorkspaceCreateProgress(payload any) error {
+	value, ok := peerPayload[PeerWorkspaceCreateProgress](payload)
+	if !ok || !validPeerID(value.RequestID) || !validPeerText(value.Line, MaxPeerChannelMessageBytes, false) {
+		return errors.New("invalid workspace create progress")
 	}
 	return nil
 }

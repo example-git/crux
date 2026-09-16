@@ -64,6 +64,9 @@ type peerChannel struct {
 	lastSent              atomic.Uint64
 	lastHeartbeat         atomic.Int64
 	lastHeartbeatSequence atomic.Uint64
+	menuMu                sync.Mutex
+	listChangedSubs       map[chan struct{}]struct{}
+	progressListeners     map[string]func(string)
 }
 
 type workspaceChannel struct {
@@ -231,6 +234,7 @@ func (c *Client) openPeerChannel(ctx context.Context) (*peerChannel, error) {
 		client: c, conn: connection, ctx: channelCtx, cancel: cancel, done: make(chan struct{}), ready: make(chan struct{}), epoch: strings.ReplaceAll(uuid.NewString(), "-", ""),
 		critical: make(chan peerChannelWrite, 64), state: make(chan peerChannelWrite, 128), workspace: make(chan peerChannelWrite, 512), telemetry: make(chan peerChannelWrite, 64),
 		pending: map[string]peerChannelPending{}, serverWorkspaces: map[string]proto.PeerWorkspaceSummary{}, stateRequirements: map[string]proto.PeerStateRequirement{},
+		listChangedSubs: map[chan struct{}]struct{}{}, progressListeners: map[string]func(string){},
 	}
 	peer.lastHeartbeat.Store(time.Now().UnixNano())
 	connection.SetReadLimit(proto.MaxPeerChannelEnvelopeBytes)
@@ -351,7 +355,7 @@ func (c *Client) sendWorkspaceChannelCommand(ctx context.Context, id string, fra
 		channel.mu.Unlock()
 	}()
 	ack, err := channel.peer.command(ctx, id, messageType, payload)
-	return proto.WorkspaceChannelAcknowledgement(ack), err
+	return proto.WorkspaceChannelAcknowledgement{Status: ack.Status, Authority: ack.Authority, Message: ack.Message}, err
 }
 
 func (peer *peerChannel) command(ctx context.Context, workspaceID string, messageType proto.PeerMessageType, payload any) (proto.PeerAcknowledgement, error) {
@@ -663,6 +667,23 @@ func (peer *peerChannel) runReader() {
 			}
 			peer.mu.Unlock()
 			peer.lastHeartbeat.Store(time.Now().UnixNano())
+		case proto.PeerTypeWorkspaceListChanged:
+			peer.menuMu.Lock()
+			for sub := range peer.listChangedSubs {
+				select {
+				case sub <- struct{}{}:
+				default:
+				}
+			}
+			peer.menuMu.Unlock()
+		case proto.PeerTypeWorkspaceCreateProgress:
+			progress := message.Payload.(*proto.PeerWorkspaceCreateProgress)
+			peer.menuMu.Lock()
+			listener := peer.progressListeners[progress.RequestID]
+			peer.menuMu.Unlock()
+			if listener != nil {
+				listener(progress.Line)
+			}
 		default:
 			event, err := decodePeerEvent(message)
 			if err != nil {
@@ -777,6 +798,13 @@ func (peer *peerChannel) close(err error) {
 				channel.mu.Unlock()
 			})
 		}
+		peer.menuMu.Lock()
+		for sub := range peer.listChangedSubs {
+			delete(peer.listChangedSubs, sub)
+			close(sub)
+		}
+		peer.progressListeners = nil
+		peer.menuMu.Unlock()
 	})
 }
 

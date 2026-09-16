@@ -100,14 +100,41 @@ func checkWorkspaceReuse(ws *Workspace, args proto.Workspace) error {
 	if mode == "" {
 		mode = "server"
 	} // Existing local backend callers.
-	if ws.principal != args.AuthenticatedPrincipal || mode != args.AuthorityMode {
+	if mode != args.AuthorityMode {
 		return ErrWorkspaceAuthority
 	}
-	if mode == "client" {
+	if mode != "client" {
+		if ws.principal != args.AuthenticatedPrincipal {
+			return ErrWorkspaceAuthority
+		}
+		return nil
+	}
+	if ws.principal == args.AuthenticatedPrincipal {
 		accepted := ws.Cfg.RemoteAuthority()
 		if accepted == nil || args.Runtime == nil || accepted.Revision != args.Runtime.Revision || accepted.Digest != args.Runtime.Digest {
 			return ErrRuntimeConflict
 		}
+		return nil
+	}
+	// A distinct principal may join this client-authority workspace only if
+	// the primary owner's own accepted proposal explicitly opted in (see
+	// config.RemoteRuntimeProposal.AllowSecondaryOwners), and then only by
+	// contributing its own disjoint provider/model manifest as a secondary
+	// owner; see registerReusedClient/AdmitSecondaryClientAuthority. Its
+	// runtime digest self-consistency was already checked by
+	// validateWorkspaceAuthority; the disjointness/merge check happens there.
+	// Without that explicit opt-in, a distinct principal is flatly rejected
+	// here exactly as if no multi-owner support existed at all, preserving
+	// workspace isolation between unrelated authenticated clients by
+	// default: an unauthorized principal must not be able to attach to, or
+	// merely probe the existence of, another principal's live workspace by
+	// presenting any runtime proposal, disjoint or not.
+	accepted := ws.Cfg.RemoteAuthority()
+	if accepted == nil || !accepted.AllowSecondaryOwners {
+		return ErrWorkspaceAuthority
+	}
+	if args.Runtime == nil || args.LocalClientAuthority {
+		return ErrRuntimeConflict
 	}
 	return nil
 }
@@ -129,9 +156,19 @@ func (b *Backend) registerReusedClient(ws *Workspace, args proto.Workspace, clie
 	if args.AuthorityMode != "client" {
 		return admit()
 	}
-	err := ws.Cfg.WithRemoteAuthorityAdmission(config.RemoteAuthority{Mode: "client", Principal: args.AuthenticatedPrincipal, Revision: args.Runtime.Revision, Digest: args.Runtime.Digest}, admit)
-	if errors.Is(err, config.ErrRemoteRuntimeRevision) {
-		return ErrRuntimeConflict
+	if ws.principal == args.AuthenticatedPrincipal {
+		err := ws.Cfg.WithRemoteAuthorityAdmission(config.RemoteAuthority{Mode: "client", Principal: args.AuthenticatedPrincipal, Revision: args.Runtime.Revision, Digest: args.Runtime.Digest}, admit)
+		if errors.Is(err, config.ErrRemoteRuntimeRevision) {
+			return ErrRuntimeConflict
+		}
+		return err
 	}
-	return err
+	// A distinct principal contributing its own disjoint provider/model
+	// manifest to this already-accepted client-authority workspace. Usage of
+	// its providers stays locked to this principal; see
+	// config.RuntimeSnapshot.ProviderOwnerPrincipal.
+	if _, err := ws.Cfg.AdmitSecondaryClientAuthority(ws.ctx, args.AuthenticatedPrincipal, *args.Runtime); err != nil {
+		return errors.Join(ErrRuntimeConflict, err)
+	}
+	return admit()
 }

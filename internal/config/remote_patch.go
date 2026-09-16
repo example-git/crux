@@ -38,9 +38,13 @@ func (s *ConfigStore) PatchRemoteRuntime(ctx context.Context, principal string, 
 	if err != nil {
 		return nil, err
 	}
+	ownerOf := s.RuntimeSnapshot().ProviderOwnerPrincipal
 	changed := transaction.Advance
 	removed := map[string]bool{}
 	for _, owner := range transaction.DefinitionRemovals {
+		if ownerOf(owner.ProviderID) != principal {
+			return nil, errors.New("provider is owned by a different attached client and cannot be modified here")
+		}
 		if removed[owner.ProviderID] || !removeRemoteProvider(&proposal, owner) {
 			return nil, errors.New("invalid provider definition removal")
 		}
@@ -78,6 +82,9 @@ func (s *ConfigStore) PatchRemoteRuntime(ctx context.Context, principal string, 
 		if providerID == "" || removed[providerID] || put[providerID] || instructionSet[providerID] || remoteProviderIndex(proposal.Providers, providerID) < 0 {
 			return nil, errors.New("invalid provider context instruction update")
 		}
+		if ownerOf(providerID) != principal {
+			return nil, errors.New("provider is owned by a different attached client and cannot be modified here")
+		}
 		if set.ContextInstruction != nil {
 			if proposal.ProviderContextInstructions == nil {
 				proposal.ProviderContextInstructions = map[string]string{}
@@ -95,6 +102,9 @@ func (s *ConfigStore) PatchRemoteRuntime(ctx context.Context, principal string, 
 		if providerID == "" || credentials[providerID] || replacement.Generation != resultRevision || remoteProviderIndex(proposal.Providers, providerID) < 0 {
 			return nil, errors.New("invalid provider credential replacement")
 		}
+		if ownerOf(providerID) != principal {
+			return nil, errors.New("provider is owned by a different attached client and cannot be modified here")
+		}
 		replaceRemoteCredential(&proposal, replacement)
 		credentials[providerID] = true
 		changed = true
@@ -103,6 +113,9 @@ func (s *ConfigStore) PatchRemoteRuntime(ctx context.Context, principal string, 
 		providerID := owner.ProviderID
 		if providerID == "" || credentials[providerID] || remoteProviderIndex(proposal.Providers, providerID) < 0 {
 			return nil, errors.New("invalid provider credential invalidation")
+		}
+		if ownerOf(providerID) != principal {
+			return nil, errors.New("provider is owned by a different attached client and cannot be modified here")
 		}
 		index := remoteCredentialIndex(proposal.Credentials, providerID)
 		if index >= 0 && proposal.Credentials[index].Owner != owner {
@@ -208,6 +221,24 @@ func (s *ConfigStore) remotePatchProposal(principal string, baseRevision uint64,
 	proposal.Digest = ""
 	for index := range proposal.Credentials {
 		proposal.Credentials[index].Generation = resultRevision
+	}
+	// ReplaceRemoteRuntime (which every patch ultimately commits through via
+	// commitRemotePatch) treats its incoming proposal as the primary owner's
+	// own contribution and re-merges any already-admitted secondary owners on
+	// top of it. snapshot.clientRuntime.proposal is already the merged view,
+	// so any secondary-owned provider must be stripped back out here first;
+	// otherwise it would be merged in a second time and rejected as a
+	// collision with itself.
+	if owner := snapshot.clientRuntime.providerOwner; len(snapshot.clientRuntime.secondaryOwners) > 0 {
+		proposal.Providers = slices.DeleteFunc(proposal.Providers, func(definition RemoteProviderDefinition) bool {
+			return owner[definition.Config.ID] != "" && owner[definition.Config.ID] != principal
+		})
+		proposal.Credentials = slices.DeleteFunc(proposal.Credentials, func(binding RemoteCredentialBinding) bool {
+			return owner[binding.Owner.ProviderID] != "" && owner[binding.Owner.ProviderID] != principal
+		})
+		if err := pruneRemoteRuntimeBundles(&proposal); err != nil {
+			return RemoteRuntimeProposal{}, err
+		}
 	}
 	return proposal, nil
 }
