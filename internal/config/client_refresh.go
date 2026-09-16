@@ -240,8 +240,8 @@ func (s *ConfigStore) CompleteClientRefresh(principal string, response ClientRef
 			snapshot := s.RuntimeSnapshot()
 			authority := snapshot.RemoteAuthority()
 			accountID, credentialID, ok := snapshot.clientRefreshCredential(call.request.Owner)
-			if authority == nil || authority.Principal != principal || authority.Revision <= call.request.Revision || !ok || accountID != call.request.AccountID || credentialID != response.CredentialID || response.CredentialID == call.request.CredentialID {
-				return errors.New("client refresh completion does not match an accepted account rotation")
+			if detail := clientRefreshRotationMismatchDetail(authority, principal, ok, accountID, credentialID, response, call.request); detail != "" {
+				return fmt.Errorf("client refresh completion does not match an accepted account rotation (%s)", detail)
 			}
 			digest, err := snapshot.clientRuntime.proposal.ProviderDefinitionDigest(call.request.Owner.ProviderID)
 			if err != nil || digest != call.providerDigest {
@@ -254,4 +254,31 @@ func (s *ConfigStore) CompleteClientRefresh(principal string, response ClientRef
 		return nil
 	}
 	return errors.New("client refresh request is not pending")
+}
+
+// clientRefreshRotationMismatchDetail identifies which specific condition
+// rejected an otherwise-successful refresh completion. None of the identifiers
+// compared here are secret (revision, digest, account ID, and credential ID
+// are already exchanged in the clear elsewhere in this protocol); returning
+// which one diverged turns a single generic rejection message into an
+// actionable diagnosis instead of requiring separate reproduction.
+func clientRefreshRotationMismatchDetail(authority *RemoteAuthority, principal string, ok bool, accountID, credentialID string, response ClientRefreshCompletion, request ClientRefreshRequest) string {
+	switch {
+	case authority == nil:
+		return "no accepted runtime is currently published for this principal"
+	case authority.Principal != principal:
+		return "accepted runtime belongs to a different principal"
+	case authority.Revision <= request.Revision:
+		return fmt.Sprintf("accepted revision %d did not advance past the request's revision %d", authority.Revision, request.Revision)
+	case !ok:
+		return "accepted runtime no longer has a credential bound for this provider owner"
+	case accountID != request.AccountID:
+		return "accepted runtime's account no longer matches the account this request was issued for"
+	case credentialID != response.CredentialID:
+		return "accepted runtime's credential no longer matches the credential the client reported after refresh"
+	case response.CredentialID == request.CredentialID:
+		return "refresh completed but the reported credential is unchanged from before the refresh"
+	default:
+		return ""
+	}
 }

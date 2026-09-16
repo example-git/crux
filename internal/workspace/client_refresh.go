@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -31,6 +32,20 @@ func clientRefreshFailureReason(err error) string {
 		return message
 	}
 	return string(runes[:maxReasonRunes]) + "..."
+}
+
+// clientRefreshRejectionReason explains why the server rejected an already
+// successful refresh completion. The rejection almost always carries the
+// server's own explicit, non-secret reason (see CompleteClientRefresh's
+// validation messages); surface that instead of a generic guess so the real
+// cause -- for example an unrelated concurrent runtime change, or the
+// completion racing an unrelated revision bump -- is visible.
+func clientRefreshRejectionReason(err error) string {
+	var rejection *client.WorkspaceChannelCommandError
+	if errors.As(err, &rejection) && rejection.Message != "" {
+		return clientRefreshFailureReason(fmt.Errorf("a newer accepted runtime replaced this refresh request before it completed (%s)", rejection.Message))
+	}
+	return "a newer accepted runtime replaced this refresh request before it completed"
 }
 
 // HandleClientRefreshEvent is shared by the UI subscription and headless run
@@ -89,7 +104,7 @@ func (w *ClientWorkspace) HandleClientRefreshEvent(ctx context.Context, event an
 				// A concurrent accepted revision may no longer satisfy the
 				// initiating definition/account. End that old request explicitly;
 				// never leave it waiting after this client has stopped retrying.
-				response = config.ClientRefreshCompletion{RequestID: request.ID, Failed: true, Reason: "a newer accepted runtime replaced this refresh request before it completed"}
+				response = config.ClientRefreshCompletion{RequestID: request.ID, Failed: true, Reason: clientRefreshRejectionReason(err)}
 				continue
 			}
 			select {
