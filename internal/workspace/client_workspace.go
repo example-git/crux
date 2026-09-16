@@ -1254,13 +1254,14 @@ func (w *ClientWorkspace) recreateArgs() proto.Workspace {
 		dataDir = ws.RequestedDataDir
 	}
 	return proto.Workspace{
-		Path:     ws.Path,
-		DataDir:  dataDir,
-		Debug:    ws.Debug,
-		YOLO:     ws.YOLO,
-		Channels: ws.Channels,
-		Env:      ws.Env,
-		Version:  version.Version,
+		Path:          ws.Path,
+		DataDir:       dataDir,
+		Debug:         ws.Debug,
+		YOLO:          ws.YOLO,
+		Channels:      ws.Channels,
+		Env:           ws.Env,
+		Version:       version.Version,
+		AuthorityMode: ws.AuthorityMode,
 	}
 }
 

@@ -155,8 +155,15 @@ func TestWorkspaceOAuthTLSAcknowledgedCompletionAndRecovery(t *testing.T) {
 			baseline := f.transport.puts.Load()
 			switch test.disposition {
 			case "lost-response":
+				// putMode 2 must let the commit genuinely reach and land
+				// on the backend; only losing the acknowledgement is the
+				// fault being injected. Arming getMode=1 up front would
+				// instead block the dial before the operation ever
+				// reaches the receiver, so the loss has to be deferred
+				// until after the put is counted.
 				f.transport.putMode.Store(2)
-				f.transport.getMode.Store(1)
+				loseGet := func() { f.transport.getMode.Store(1) }
+				f.transport.afterPut.Store(&loseGet)
 			case "rejected", "review":
 				f.transport.putMode.Store(1)
 			}
@@ -171,6 +178,7 @@ func TestWorkspaceOAuthTLSAcknowledgedCompletionAndRecovery(t *testing.T) {
 			require.Equal(t, providerauth.MutationProgress{AccountsSaved: true, ConfigSaved: true, RuntimePublished: true}, outcome.Progress)
 			require.EqualValues(t, baseline+1, f.transport.puts.Load())
 			localInfos, localFiles := clientAuthenticationFiles(t, f.path, filepath.Join(f.root, "accounts", "accounts.json"))
+			f.transport.afterPut.Store(nil)
 			f.transport.putMode.Store(0)
 			f.transport.getMode.Store(0)
 			replay, err := f.w.CompleteProviderOAuthLogin(t.Context(), f.ref)

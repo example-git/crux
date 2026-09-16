@@ -171,7 +171,27 @@ func TestClientAuthenticationRecoveryRequiresLocalAdoptionAfterExactPut(t *testi
 			_, err = f.w.UpdatePreferredModel(config.ScopeGlobal, config.SelectedModelTypeLarge, model, f.owner)
 			require.Error(t, err)
 			require.Equal(t, puts, f.puts.Load())
-			requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)
+			if mode == "cache" {
+				// Unlike "cancel" (whose failed completion never left a.pending
+				// set, so reconciliation here is a no-op), "cache"'s failure
+				// came from a local adoption mismatch after a genuine wire
+				// acknowledgement, so a.pending is still the exact logout
+				// proposal. getMode=1 only blocks a fresh dial or an in-flight
+				// state command; it does not retroactively sever the
+				// still-open connection from that original logout. Generic
+				// reconciliation can therefore legitimately adopt it here
+				// from the cached summary alone, with no new network access,
+				// which is why the accounts file (removal intent) changes
+				// even though the fresh model-preference publish itself
+				// still fails (that publish does require a redial).
+				require.True(t, receipt.adopted)
+				require.True(t, a.removed[f.owner])
+				requireClientAuthenticationFilesUnchanged(t, []string{f.accountsPath}, infos[1:], bodies[1:])
+			} else {
+				require.False(t, receipt.adopted)
+				require.False(t, a.removed[f.owner])
+				requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)
+			}
 			f.getMode.Store(0)
 			if mode == "cancel" {
 				_, err = f.w.recoverClientAuthentication(t.Context(), clientAuthenticationRecoveryAction(request.OperationID, request.Target, 1))
@@ -273,19 +293,26 @@ func TestClientAuthenticationRecoveryRejectsDriftAndUnrelatedAuthority(t *testin
 				require.NoError(t, err)
 				require.NoError(t, os.WriteFile(f.path, append(data, '\n'), 0o600))
 			case "principal", "revision":
-				change := func() {
-					f.w.mu.Lock()
-					defer f.w.mu.Unlock()
-					copy := *f.w.ws.Authority
-					if mode == "principal" {
-						copy.Principal = "foreign"
-					} else {
-						copy.Revision += 10
-						copy.Digest = "foreign"
-					}
-					f.w.ws.Authority = &copy
+				// verifyClientAuthenticationRecoveryCache reads the
+				// client's own cached w.ws.Authority directly
+				// (via w.cached()), with no network round trip. The
+				// connection from the rejected switch above was never
+				// closed (putMode==1 corrupts the outgoing transaction
+				// so the server replies over the same still-open
+				// channel), so recoverClientAuthentication never
+				// redials and an afterGet-style hook tied to the
+				// peer-channel dial handler would never fire. Apply
+				// the drift directly instead of deferring it.
+				f.w.mu.Lock()
+				copy := *f.w.ws.Authority
+				if mode == "principal" {
+					copy.Principal = "foreign"
+				} else {
+					copy.Revision += 10
+					copy.Digest = "foreign"
 				}
-				f.afterGet.Store(&change)
+				f.w.ws.Authority = &copy
+				f.w.mu.Unlock()
 			}
 			paths := []string{f.path, f.accountsPath}
 			infos, bodies := clientAuthenticationFiles(t, paths...)

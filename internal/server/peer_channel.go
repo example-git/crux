@@ -388,6 +388,13 @@ func (peer *serverPeerChannel) applyRuntimeTransaction(workspaceID string, reque
 			update := operation.DefinitionPut
 			transaction.DefinitionPuts = append(transaction.DefinitionPuts, config.RemoteProviderDefinitionPut{Definition: update.Definition, Bundle: update.Bundle, ContextInstruction: update.ContextInstruction})
 			introduced[update.Provider.Owner.ProviderID] = update.Provider
+		case proto.PeerTypeProviderContextInstructionSet:
+			update := operation.ContextInstructionSet
+			owner, err := peer.acceptedProviderOwner(attachment, update.Provider)
+			if err != nil || removed[update.Provider.Owner.ProviderID] {
+				return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusConflict, Message: "provider context instruction update does not match the accepted runtime"}
+			}
+			transaction.ContextInstructionSets = append(transaction.ContextInstructionSets, config.RemoteProviderContextInstructionSet{Provider: owner, ContextInstruction: update.ContextInstruction})
 		case proto.PeerTypeProviderCredentialReplace:
 			update := operation.CredentialReplace
 			config.RegisterRemoteCredentialSecrets(update.Credential)
@@ -447,7 +454,14 @@ func (peer *serverPeerChannel) applyRuntimeTransaction(workspaceID string, reque
 		}
 	}
 	for owner, generation := range generations {
-		if current, found := attachment.authentication[owner]; found && (generation.Epoch != current.Epoch || generation.Sequence <= current.Sequence) {
+		// A transaction may legitimately re-affirm a provider's current,
+		// unchanged authentication state (every PatchRemoteRuntime call
+		// broadcasts the observed state for every credentialed provider,
+		// not only the ones the transaction otherwise modifies). Reject
+		// only a genuinely older generation (or a changed epoch); the same
+		// generation as already recorded is an idempotent re-affirmation,
+		// not a stale replay.
+		if current, found := attachment.authentication[owner]; found && (generation.Epoch != current.Epoch || generation.Sequence < current.Sequence) {
 			return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusConflict, Message: "provider authentication generation is stale"}
 		}
 	}
@@ -537,7 +551,7 @@ func (peer *serverPeerChannel) completeRefresh(workspaceID string, request proto
 	if attachment == nil || attachment.workspace.Cfg == nil {
 		return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusUnavailable, Message: "workspace runtime is unavailable"}
 	}
-	completion := config.ClientRefreshCompletion{RequestID: request.RequestID, Revision: request.Revision, Digest: request.Digest, CredentialID: request.CredentialID, Failed: request.Failed}
+	completion := config.ClientRefreshCompletion{RequestID: request.RequestID, Revision: request.Revision, Digest: request.Digest, CredentialID: request.CredentialID, Failed: request.Failed, Reason: request.Reason}
 	if err := attachment.workspace.Cfg.CompleteClientRefresh(peer.principal, completion); err != nil {
 		return peerAcknowledgementError(err)
 	}
@@ -714,7 +728,8 @@ func (peer *serverPeerChannel) writeLoop() error {
 	for {
 		message, ok := peer.nextOutbound(pings.C, heartbeats.C)
 		if !ok {
-			return context.Cause(peer.ctx)
+			err := context.Cause(peer.ctx)
+			return err
 		}
 		if message.controlType != 0 {
 			if err := peer.connection.WriteControl(message.controlType, message.controlData, time.Now().Add(peerChannelWriteTimeout)); err != nil {

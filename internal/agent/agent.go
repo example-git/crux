@@ -1490,7 +1490,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			return nil, err
 		}
 		if shouldSummarize {
-			if summarizeErr := a.summarizeWithRuntime(turnCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh, systemInstructions, ac, runtime); summarizeErr != nil {
+			// Do not reuse the full turn's systemInstructions here: summarization
+			// must not inherit project instructions, skills, memory, or turn
+			// context (see summarizeWithRuntime), only the provider-level
+			// SystemPromptPrefix it applies itself when given empty instructions.
+			if summarizeErr := a.summarizeWithRuntime(turnCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh, fantasy.Instructions{}, ac, runtime); summarizeErr != nil {
 				return nil, summarizeErr
 			}
 		}
@@ -1765,11 +1769,20 @@ func (a *sessionAgent) summarizeWithRuntime(ctx context.Context, sessionID strin
 		return fmt.Errorf("session compaction mode %q is unsupported", compactionMode)
 	}
 
+	// Summarization must not receive the full turn system prompt (project
+	// instructions, skills, memory, codebase/turn context, MCP tool
+	// descriptions): none of that applies to a request that only reads
+	// transcript text and returns <analysis>/<summary> blocks, and including
+	// it wastes output budget that belongs to the summary itself. The
+	// provider-level prefix is not project content — it is the per-provider
+	// customization some providers require to behave correctly (for
+	// example Anthropic's instruction wrapping), so it is always preserved
+	// even though the project-level base instructions are dropped.
 	if instructions.Empty() {
 		instructions = appendRuntimeInstructions(
-			runtime.Instructions,
+			fantasy.Instructions{},
 			largeModel.SystemPromptPrefix,
-			a.runtimeMCPInstructions(),
+			"",
 			"",
 			"",
 			"",
@@ -1873,7 +1886,7 @@ func (a *sessionAgent) summarizeWithRuntime(ctx context.Context, sessionID strin
 		}
 		resp, err := agent.Stream(genCtx, fantasy.AgentStreamCall{
 			MaxOutputTokens: maxOutputTokens,
-			Prompt:          buildSummaryPrompt(currentSession.Todos),
+			Prompt:          buildSummaryPrompt(currentSession.Todos, ""),
 			Messages:        aiMsgs,
 			Headers:         sessionHeaders(sessionID, "summary"),
 			ProviderOptions: opts,
@@ -1892,9 +1905,10 @@ func (a *sessionAgent) summarizeWithRuntime(ctx context.Context, sessionID strin
 			return err
 		}
 
-		summary, err := formatCompactSummary(allResponseText(resp.Response.Content))
+		responseText := allResponseText(resp.Response.Content)
+		summary, err := formatCompactSummary(responseText)
 		if err != nil {
-			if resp.Response.FinishReason == fantasy.FinishReasonLength {
+			if resp.Response.FinishReason == fantasy.FinishReasonLength || responseLikelyTruncated(responseText) {
 				return fmt.Errorf("summary was truncated by a token limit before completion (output tokens: %d); conversation history was preserved: %w", resp.TotalUsage.OutputTokens, err)
 			}
 			return err
@@ -3221,18 +3235,24 @@ func normalizeProviderPromptImages(messages []fantasy.Message, declared *imageat
 }
 
 // buildSummaryPrompt constructs the prompt text for session summarization.
-func buildSummaryPrompt(todos []session.Todo) string {
+// additionalInstructions is an optional, currently-unplumbed extra-focus
+// instruction (e.g. "focus on TypeScript changes"); it defaults to empty and
+// is invisible in the prompt when blank, so no caller needs to supply it yet.
+func buildSummaryPrompt(todos []session.Todo, additionalInstructions string) string {
 	prompt := strings.TrimSpace(string(summaryPrompt))
-	if len(todos) == 0 {
-		return prompt
-	}
 	var context strings.Builder
 	context.WriteString(prompt)
-	context.WriteString("\n\nAdditional Context:\nCurrent todo list:\n")
-	for _, todo := range todos {
-		fmt.Fprintf(&context, "- [%s] %s\n", todo.Status, todo.Content)
+	if len(todos) > 0 {
+		context.WriteString("\n\nAdditional Context:\nCurrent todo list:\n")
+		for _, todo := range todos {
+			fmt.Fprintf(&context, "- [%s] %s\n", todo.Status, todo.Content)
+		}
+		context.WriteString("Preserve these statuses, but only keep tasks that still follow from the newest user direction.")
 	}
-	context.WriteString("Preserve these statuses, but only keep tasks that still follow from the newest user direction.")
+	if additionalInstructions = strings.TrimSpace(additionalInstructions); additionalInstructions != "" {
+		context.WriteString("\n\nAdditional Instructions:\n")
+		context.WriteString(additionalInstructions)
+	}
 	return context.String()
 }
 
@@ -3260,6 +3280,20 @@ func formatCompactSummary(response string) (string, error) {
 		return "", errors.New("summary response did not contain a non-empty <summary> block")
 	}
 	return "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n" + strings.TrimSpace(match[1]) + "\n\nContinue from the newest unfinished user request. Do not acknowledge this summary, repeat completed work, or resume superseded tasks.", nil
+}
+
+// responseLikelyTruncated reports whether a malformed compaction response
+// looks like it was cut off mid-generation (an <analysis> or <summary> block
+// was opened but never closed) rather than a model formatting mistake. Some
+// providers/transports do not reliably label a cut-off stream with a
+// length/max-tokens finish reason (for example a dropped connection or an
+// idle-timeout abort), so this catches that case even when the reported
+// finish reason says otherwise.
+func responseLikelyTruncated(response string) bool {
+	openedWithoutClose := func(open, closeTag string) bool {
+		return strings.Contains(response, open) && !strings.Contains(response, closeTag)
+	}
+	return openedWithoutClose("<analysis>", "</analysis>") || openedWithoutClose("<summary>", "</summary>")
 }
 
 func compactionContinuationCall(call SessionAgentCall) SessionAgentCall {

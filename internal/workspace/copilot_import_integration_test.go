@@ -79,16 +79,36 @@ func TestCopilotImportThroughTLS(t *testing.T) {
 			})
 			proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
 			require.NoError(t, err)
-			remote := startWorkspaceChannelProxyServer(t, observed, tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
-				if !fromClient || frame.Type != proto.WorkspaceChannelRuntimeReplaceFrame {
+			remote := startPeerChannelProxyServer(t, observed, tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, envelope proto.PeerEnvelope) workspaceChannelProxyDecision {
+				if !fromClient || envelope.Type != proto.PeerTypeRuntimeTransaction {
 					return workspaceChannelProxyDecision{}
 				}
 				puts.Add(1)
 				if mode != "rejected-ack" {
 					return workspaceChannelProxyDecision{}
 				}
-				ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic rejection"}}
-				return workspaceChannelProxyDecision{drop: true, reply: &ack}
+				// Corrupt the expected digest so the real server genuinely
+				// rejects the transaction, mirroring the v2 rejection
+				// pattern used elsewhere: there is no synthesized-reply
+				// path on the peer-channel leg, only real rejection.
+				var transaction proto.PeerRuntimeTransaction
+				if json.Unmarshal(envelope.Payload, &transaction) != nil {
+					t.Error("cannot decode intercepted peer runtime transaction")
+					return workspaceChannelProxyDecision{drop: true, close: true}
+				}
+				originalDigest := transaction.Runtime.ExpectedDigest
+				transaction.Runtime.ExpectedDigest = strings.Repeat("f", 64)
+				if transaction.Runtime.ExpectedDigest == originalDigest {
+					transaction.Runtime.ExpectedDigest = strings.Repeat("e", 64)
+				}
+				payload, encodeErr := json.Marshal(transaction)
+				if encodeErr != nil {
+					t.Errorf("cannot encode intercepted peer runtime transaction: %v", encodeErr)
+					return workspaceChannelProxyDecision{drop: true, close: true}
+				}
+				replacement := envelope
+				replacement.Payload = payload
+				return workspaceChannelProxyDecision{replacement: &replacement}
 			})
 			t.Cleanup(func() { _ = s.Close() })
 			var exchanges, quotas atomic.Int32

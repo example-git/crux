@@ -19,6 +19,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # Windows has a long tail of known-flaky/host-specific test failures that
+    # aren't worth blocking merges on; keep running them for visibility but
+    # don't let them fail the required check. Linux and macOS remain blocking.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

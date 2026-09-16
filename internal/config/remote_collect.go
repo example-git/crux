@@ -14,6 +14,8 @@ import (
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/providertransport"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func cloneTransportBundles(values map[string]providerplugin.TransportBundle) map[string]providerplugin.TransportBundle {
@@ -97,7 +99,16 @@ func (s *ConfigStore) captureRemoteCollectionRuntime(ctx context.Context) (Runti
 
 // account resolves only a selected owner. Authentication completion supplies
 // its retained observation; ordinary collection preserves its current reader.
-func bindSelectedRemoteAccounts(ctx context.Context, snapshot RuntimeSnapshot, cfg *Config) error {
+//
+// The returned map lists, per rebound provider ID, the exact "api_key"/
+// "oauth" field values now held in memory. Binding here only ever mutates
+// cfg in memory; a provider that was not selected when the owning client's
+// config was last durably written can otherwise be left with a stale
+// on-disk credential indefinitely. A caller that owns disk persistence
+// (i.e. is not a read-only preview) must mirror these fields onto disk so a
+// later strict refresh's disk-consistency check does not mistake this
+// known, intentional in-memory rebind for an unexplained credential change.
+func bindSelectedRemoteAccounts(ctx context.Context, snapshot RuntimeSnapshot, cfg *Config) (map[string]map[string]any, error) {
 	selected := make(map[string]bool)
 	for _, model := range cfg.Models {
 		selected[model.Provider] = true
@@ -124,12 +135,13 @@ func bindSelectedRemoteAccounts(ctx context.Context, snapshot RuntimeSnapshot, c
 		namespaces = append(namespaces, owner.AccountNamespace)
 	}
 	if len(namespaces) == 0 {
-		return nil
+		return nil, nil
 	}
 	before, err := captureRuntimeAccounts(ctx, snapshot, namespaces)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	updates := make(map[string]map[string]any)
 	for _, providerID := range slices.Sorted(maps.Keys(owners)) {
 		owner := owners[providerID]
 		activeID := before.ActiveID(owner.AccountNamespace)
@@ -147,19 +159,59 @@ func bindSelectedRemoteAccounts(ctx context.Context, snapshot RuntimeSnapshot, c
 		provider, configured := cfg.Providers.Get(providerID)
 		registration, registered := snapshot.ProviderRegistrationFor(providerID, provider)
 		if !configured || !registered || registration.Owner() != owner || registration.OAuth == nil {
-			return fmt.Errorf("selected client provider %q has no active OAuth owner", providerID)
+			return nil, fmt.Errorf("selected client provider %q has no active OAuth owner", providerID)
+		}
+		// Skip providers already matching the active account: this keeps
+		// reload/startup binding a no-op write for the common case and, more
+		// importantly, means any caller that mirrors updates onto disk only
+		// ever touches the providers that were actually stale.
+		if providerHasAccount(provider, *selected) {
+			continue
 		}
 		applyOAuthTokenToProvider(&provider, selected.Token(), registration)
 		cfg.Providers.Set(providerID, provider)
+		updates[providerID] = map[string]any{"api_key": selected.AccessToken, "oauth": selected.Token()}
 	}
 	after, err := captureRuntimeAccounts(ctx, snapshot, namespaces)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !before.SameObservation(after) {
-		return errors.New("selected client account changed while loading remote configuration")
+		return nil, errors.New("selected client account changed while loading remote configuration")
 	}
-	return nil
+	return updates, nil
+}
+
+// persistRemoteAccountBindings durably mirrors the in-memory provider
+// credential fields bindSelectedRemoteAccounts just applied onto the given
+// scope's config file on disk. bindSelectedRemoteAccounts only ever mutates
+// the in-memory Config; without this, a provider that was rebound to its
+// active account after the owning client's config was already loaded (for
+// example by switching the selected model to a provider that was not
+// selected at startup) keeps its old, stale credential on disk indefinitely.
+// A later strict refresh (RefreshSelectedOAuthAccountForRuntime) reads that
+// stale disk copy directly and rejects the refresh as an unexplained
+// credential change, even though nothing was actually rotated or changed by
+// the user. Callers must not invoke this for a read-only preview load.
+func (s *ConfigStore) persistRemoteAccountBindings(scope Scope, updates map[string]map[string]any) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	return s.atomicWrite(scope, func(data []byte) ([]byte, error) {
+		if len(data) == 0 || !gjson.ValidBytes(data) {
+			data = []byte("{}")
+		}
+		for providerID, fields := range updates {
+			for key, value := range fields {
+				var err error
+				data, err = sjson.SetBytes(data, "providers."+providerID+"."+key, value)
+				if err != nil {
+					return nil, fmt.Errorf("persist rebound credential for provider %q: %w", providerID, err)
+				}
+			}
+		}
+		return data, nil
+	})
 }
 
 func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revision uint64, removed map[providerregistry.RegistrationOwner]bool, resolve func(string) (string, error), account func(context.Context, providerregistry.RegistrationOwner) (*accounts.Entry, error)) (RemoteRuntimeProposal, error) {

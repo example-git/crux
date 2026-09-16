@@ -199,13 +199,13 @@ func TestOAuthUIThroughWorkspaceTLSAndActualCallback(t *testing.T) {
 				var replayMu sync.Mutex
 				var runtimeCommands sync.Map
 				rpc := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if ownership == "client" && flow == "hosted-paste" && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/channel") {
-						proxyModelWorkspaceChannel(t, w, r, backend.URL, proxyTLS, func(fromClient bool, frame proto.WorkspaceChannelFrame) modelWorkspaceChannelProxyDecision {
-							if fromClient && frame.Type == proto.WorkspaceChannelRuntimeReplaceFrame {
-								runtimeCommands.Store(frame.CommandID, struct{}{})
+					if ownership == "client" && flow == "hosted-paste" && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/peer-channel") {
+						proxyModelWorkspaceChannel(t, w, r, backend.URL, proxyTLS, func(fromClient bool, envelope proto.PeerEnvelope) modelWorkspaceChannelProxyDecision {
+							if fromClient && isPeerRuntimeCommand(envelope.Type) {
+								runtimeCommands.Store(envelope.MessageID, struct{}{})
 							}
-							if !fromClient && frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
-								if _, ok := runtimeCommands.LoadAndDelete(frame.CommandID); ok && lostReplies.CompareAndSwap(0, 1) {
+							if !fromClient && envelope.Type == proto.PeerTypeAcknowledgement {
+								if _, ok := runtimeCommands.LoadAndDelete(envelope.ReplyTo); ok && lostReplies.CompareAndSwap(0, 1) {
 									return modelWorkspaceChannelProxyDecision{drop: true, close: true}
 								}
 							}

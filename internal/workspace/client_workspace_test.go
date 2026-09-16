@@ -3,9 +3,12 @@ package workspace
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -531,11 +534,119 @@ func TestClientWorkspaceListMCPPromptsServerError(t *testing.T) {
 // subscription loop reconnects after the workspace channel drops instead of
 // leaving the TUI permanently orphaned (which surfaced as a stuck
 // "coder agent is offline"), and that Shutdown stops the loop.
+// newUnixHTTPServer starts an HTTP server bound to a local unix socket and
+// returns a client connected to it. The real peer-channel dial refuses
+// insecure TCP (mutual TLS or a local socket are required), so every test
+// below that exercises the actual subscription loop needs this instead of
+// httptest.NewServer's TCP listener.
+func newUnixHTTPServer(t *testing.T, handler http.Handler) *client.Client {
+	t.Helper()
+	root, err := os.MkdirTemp("", "crx-workspace-test-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	address := filepath.Join(root, "test.sock")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", address)
+	require.NoError(t, err)
+	srv := &http.Server{Handler: handler}
+	finished := make(chan error, 1)
+	go func() { finished <- srv.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = listener.Close()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("unix http test server did not stop")
+		}
+	})
+	c, err := client.NewClient(t.TempDir(), "unix", address)
+	require.NoError(t, err)
+	return c
+}
+
+// peerChannelHandshakeForTest upgrades r to the real peer-channel v2
+// subprotocol, completes the hello/ready handshake, and returns the
+// client's workspace-attach request so the caller can decide how to
+// acknowledge it. Production's subscription loop dials exclusively
+// through this v2 protocol; it has no v1 fallback.
+// peerWriteOrAbandon writes a peer-channel frame and reports whether the
+// write succeeded. Several tests here shut a client down while it is mid
+// reconnect, which races the client closing this very connection; that is
+// an expected outcome of the test, not a protocol bug, so the caller
+// abandons the connection instead of failing.
+func peerWriteOrAbandon(t *testing.T, connection *websocket.Conn, data []byte) bool {
+	t.Helper()
+	return connection.WriteMessage(websocket.TextMessage, data) == nil
+}
+
+// peerReadOrAbandon reads one peer-channel frame for the same reason
+// peerWriteOrAbandon exists: a read failure here (deadline, EOF, reset)
+// means the client already went away, not that the mock got bad data.
+func peerReadOrAbandon(t *testing.T, connection *websocket.Conn) ([]byte, bool) {
+	t.Helper()
+	_, data, err := connection.ReadMessage()
+	if err != nil {
+		return nil, false
+	}
+	return data, true
+}
+
+func peerChannelHandshakeForTest(t *testing.T, w http.ResponseWriter, r *http.Request) (*websocket.Conn, string, proto.PeerDecodedMessage, bool) {
+	t.Helper()
+	require.Equal(t, "/v1/peer-channel", r.URL.Path)
+	connection, err := (&websocket.Upgrader{Subprotocols: []string{proto.PeerChannelProtocol}}).Upgrade(w, r, nil)
+	require.NoError(t, err)
+
+	data, ok := peerReadOrAbandon(t, connection)
+	if !ok {
+		_ = connection.Close()
+		return nil, "", proto.PeerDecodedMessage{}, false
+	}
+	hello, err := proto.DecodePeerMessage(data, proto.PeerDirectionClientToServer)
+	require.NoError(t, err)
+	require.Equal(t, proto.PeerTypeHello, hello.Envelope.Type)
+	epoch := hello.Envelope.Epoch
+
+	ackData, err := proto.EncodePeerMessage(epoch, 1, "server-1", hello.Envelope.MessageID, "", proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+	require.NoError(t, err)
+	if !peerWriteOrAbandon(t, connection, ackData) {
+		_ = connection.Close()
+		return nil, "", proto.PeerDecodedMessage{}, false
+	}
+	readyData, err := proto.EncodePeerMessage(epoch, 2, "server-2", "", "", proto.PeerTypeReady, proto.PeerReady{})
+	require.NoError(t, err)
+	if !peerWriteOrAbandon(t, connection, readyData) {
+		_ = connection.Close()
+		return nil, "", proto.PeerDecodedMessage{}, false
+	}
+
+	data, ok = peerReadOrAbandon(t, connection)
+	if !ok {
+		_ = connection.Close()
+		return nil, "", proto.PeerDecodedMessage{}, false
+	}
+	attach, err := proto.DecodePeerMessage(data, proto.PeerDirectionClientToServer)
+	require.NoError(t, err)
+	require.Equal(t, proto.PeerTypeWorkspaceAttach, attach.Envelope.Type)
+	return connection, epoch, attach, true
+}
+
+// serveWorkspaceChannelForTest completes the peer-channel v2 handshake,
+// acknowledges the workspace-attach successfully, and then either holds
+// the connection open (reading until the client disconnects) or closes it
+// immediately to simulate a stream drop.
 func serveWorkspaceChannelForTest(t *testing.T, w http.ResponseWriter, r *http.Request, hold bool) {
 	t.Helper()
-	connection, err := (&websocket.Upgrader{Subprotocols: []string{proto.WorkspaceChannelProtocol}}).Upgrade(w, r, nil)
-	require.NoError(t, err)
+	connection, epoch, attach, ok := peerChannelHandshakeForTest(t, w, r)
+	if !ok {
+		return
+	}
 	defer connection.Close()
+	data, err := proto.EncodePeerMessage(epoch, 3, "server-3", attach.Envelope.MessageID, attach.Envelope.WorkspaceID, proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+	require.NoError(t, err)
+	if !peerWriteOrAbandon(t, connection, data) {
+		return
+	}
 	if hold {
 		_, _, _ = connection.ReadMessage()
 	}
@@ -552,9 +663,9 @@ func TestClientWorkspaceReconnectRefreshesMissedConfiguration(t *testing.T) {
 			Options: &config.Options{},
 		}}
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	sdk := newUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/channel"):
+		case r.URL.Path == "/v1/peer-channel":
 			count := subscriptions.Add(1)
 			serveWorkspaceChannelForTest(t, w, r, count > 1)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/workspaces/ws-1":
@@ -567,11 +678,6 @@ func TestClientWorkspaceReconnectRefreshesMissedConfiguration(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
-	defer server.Close()
-	endpoint, err := url.Parse(server.URL)
-	require.NoError(t, err)
-	sdk, err := client.NewClient(t.TempDir(), "tcp", endpoint.Host)
-	require.NoError(t, err)
 	workspace := NewClientWorkspace(sdk, snapshot("original"))
 	messages := make(chan ConnectionEvent, 10)
 	done := make(chan struct{})
@@ -614,24 +720,18 @@ func TestClientWorkspace_ReconnectsOnStreamDrop(t *testing.T) {
 	})
 
 	var subscribes atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/workspaces/ws-1" && r.Method == http.MethodGet {
 			_ = json.NewEncoder(w).Encode(proto.Workspace{ID: "ws-1"})
 			return
 		}
-		if !strings.HasSuffix(r.URL.Path, "/channel") {
+		if r.URL.Path != "/v1/peer-channel" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 		subscribes.Add(1)
 		serveWorkspaceChannelForTest(t, w, r, false)
 	}))
-	defer srv.Close()
-
-	u, err := url.Parse(srv.URL)
-	require.NoError(t, err)
-	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
-	require.NoError(t, err)
 
 	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1"})
 
@@ -773,23 +873,36 @@ type recoveryServer struct {
 
 func (s *recoveryServer) start(t *testing.T) *client.Client {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
+	return newUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/workspaces/"+s.liveID && s.liveID != "":
-			require.NoError(t, json.NewEncoder(w).Encode(proto.Workspace{ID: s.liveID, Path: "/tmp/recover"}))
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces":
-			s.creates++
-			if s.createErr != nil {
-				http.Error(w, "no", s.createErr())
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/workspaces/"):
+			id := strings.TrimPrefix(r.URL.Path, "/v1/workspaces/")
+			s.mu.Lock()
+			live := s.liveID
+			s.mu.Unlock()
+			if live == "" || id != live {
+				http.Error(w, "workspace not found", http.StatusNotFound)
 				return
 			}
-			if s.hangUpOnCreate {
+			require.NoError(t, json.NewEncoder(w).Encode(proto.Workspace{ID: live, Path: "/tmp/recover"}))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces":
+			s.mu.Lock()
+			s.creates++
+			createErr := s.createErr
+			hangUp := s.hangUpOnCreate
+			nextID := s.nextID
+			s.mu.Unlock()
+			if createErr != nil {
+				http.Error(w, "no", createErr())
+				return
+			}
+			if hangUp {
 				// Register the workspace, then hang up before the client
 				// can read the ID. This is the case no amount of client
 				// bookkeeping can name.
-				s.liveID = s.nextID
+				s.mu.Lock()
+				s.liveID = nextID
+				s.mu.Unlock()
 				if hj, ok := w.(http.Hijacker); ok {
 					conn, _, err := hj.Hijack()
 					require.NoError(t, err)
@@ -797,43 +910,107 @@ func (s *recoveryServer) start(t *testing.T) *client.Client {
 				}
 				return
 			}
-			s.liveID = s.nextID
+			s.mu.Lock()
+			s.liveID = nextID
+			s.mu.Unlock()
 			require.NoError(t, json.NewEncoder(w).Encode(proto.Workspace{
-				ID: s.liveID, Path: "/tmp/recover",
+				ID: nextID, Path: "/tmp/recover",
 			}))
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/clients/"):
+			s.mu.Lock()
 			s.retired = append(s.retired, strings.TrimPrefix(r.URL.Path, "/v1/clients/"))
 			s.liveID = ""
+			s.mu.Unlock()
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/workspaces/"):
+			s.mu.Lock()
 			s.deleted = append(s.deleted, strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"))
-		case strings.HasSuffix(r.URL.Path, "/current-session"):
-			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/current-session")
-			if id != s.liveID {
-				http.Error(w, "workspace not found", http.StatusNotFound)
+			s.mu.Unlock()
+		case r.URL.Path == "/v1/peer-channel":
+			// The workspace ID isn't known until the client's
+			// workspace-attach request is read (the peer-channel dial
+			// itself has no per-workspace path), so the not-found check
+			// that v1 made at the HTTP layer instead becomes a rejected
+			// acknowledgement here. The lock must not be held across the
+			// blocking reads below: production re-asserts the current
+			// session over this same connection right after reconnecting
+			// (see SendCurrentSessionSelection), and that re-assertion
+			// itself waits on a concurrent GET to this same handler.
+			//
+			// Production caches one peer connection per client and reuses
+			// it for every subsequent workspace-attach attempt: a
+			// rejected (not-found) attach does not terminate the
+			// underlying socket, so a client that lost its workspace
+			// keeps retrying the attach on this SAME connection until a
+			// re-registration succeeds. The mock has to stay alive across
+			// that whole sequence instead of hanging up after the first
+			// attach.
+			connection, epoch, attach, ok := peerChannelHandshakeForTest(t, w, r)
+			if !ok {
 				return
 			}
-			var req proto.CurrentSession
-			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
-			s.sessionPosts = append(s.sessionPosts, req.SessionID)
-		case strings.HasSuffix(r.URL.Path, "/channel"):
-			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/channel")
-			if id != s.liveID {
-				http.Error(w, "workspace not found", http.StatusNotFound)
+			defer connection.Close()
+			seq := uint64(3)
+			ackAttach := func(env proto.PeerEnvelope) bool {
+				s.mu.Lock()
+				live := s.liveID
+				s.mu.Unlock()
+				status := proto.WorkspaceChannelStatusOK
+				if env.WorkspaceID != live {
+					status = proto.WorkspaceChannelStatusNotFound
+				} else {
+					s.mu.Lock()
+					s.streams++
+					s.mu.Unlock()
+				}
+				data, err := proto.EncodePeerMessage(epoch, seq, "server-cmd", env.MessageID, env.WorkspaceID, proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: status})
+				require.NoError(t, err)
+				seq++
+				return peerWriteOrAbandon(t, connection, data)
+			}
+			ackCommand := func(env proto.PeerEnvelope) bool {
+				ack, err := proto.EncodePeerMessage(epoch, seq, "server-cmd", env.MessageID, env.WorkspaceID, proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+				require.NoError(t, err)
+				seq++
+				return peerWriteOrAbandon(t, connection, ack)
+			}
+			if !ackAttach(attach.Envelope) {
 				return
 			}
-			s.streams++
-			serveWorkspaceChannelForTest(t, w, r, false)
+			for {
+				_ = connection.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+				raw, ok := peerReadOrAbandon(t, connection)
+				if !ok {
+					return
+				}
+				msg, err := proto.DecodePeerMessage(raw, proto.PeerDirectionClientToServer)
+				require.NoError(t, err)
+				switch {
+				case msg.Envelope.Type == proto.PeerTypeWorkspaceAttach:
+					// A retried attach for a (possibly different, freshly
+					// re-created) workspace ID, sent over the same
+					// connection as the original rejected attach.
+					if !ackAttach(msg.Envelope) {
+						return
+					}
+				case msg.Envelope.Type == proto.PeerTypeSessionCurrentSet:
+					if sess, ok := msg.Payload.(*proto.CurrentSession); ok {
+						s.mu.Lock()
+						s.sessionPosts = append(s.sessionPosts, sess.SessionID)
+						s.mu.Unlock()
+					}
+					if !ackCommand(msg.Envelope) {
+						return
+					}
+				default:
+					if !ackCommand(msg.Envelope) {
+						return
+					}
+				}
+			}
 		default:
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
-	t.Cleanup(srv.Close)
-
-	u, err := url.Parse(srv.URL)
-	require.NoError(t, err)
-	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
-	require.NoError(t, err)
-	return c
 }
 
 func (s *recoveryServer) snapshot(f func(*recoveryServer)) {
@@ -1130,7 +1307,7 @@ func TestClientWorkspace_ShutdownWaitsForInFlightRecovery(t *testing.T) {
 	var once sync.Once
 	live := ""
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/workspaces":
 			once.Do(func() { close(creating) })
@@ -1147,25 +1324,35 @@ func TestClientWorkspace_ShutdownWaitsForInFlightRecovery(t *testing.T) {
 			ops = append(ops, "retire")
 			live = ""
 			mu.Unlock()
-		case strings.HasSuffix(r.URL.Path, "/channel"):
-			mu.Lock()
-			known := live == strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/channel")
-			mu.Unlock()
-			if !known {
-				http.Error(w, "workspace not found", http.StatusNotFound)
+		case r.URL.Path == "/v1/peer-channel":
+			// The workspace ID isn't known until the client's
+			// workspace-attach request is read, so the not-found check
+			// that v1 made at the HTTP layer instead becomes a rejected
+			// acknowledgement here.
+			connection, epoch, attach, ok := peerChannelHandshakeForTest(t, w, r)
+			if !ok {
 				return
 			}
-			serveWorkspaceChannelForTest(t, w, r, true)
+			defer connection.Close()
+			mu.Lock()
+			known := live == attach.Envelope.WorkspaceID
+			mu.Unlock()
+			status := proto.WorkspaceChannelStatusOK
+			if !known {
+				status = proto.WorkspaceChannelStatusNotFound
+			}
+			data, err := proto.EncodePeerMessage(epoch, 3, "server-3", attach.Envelope.MessageID, attach.Envelope.WorkspaceID, proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: status})
+			require.NoError(t, err)
+			if !peerWriteOrAbandon(t, connection, data) {
+				return
+			}
+			if known {
+				_, _, _ = connection.ReadMessage()
+			}
 		default:
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
-	t.Cleanup(srv.Close)
-
-	u, err := url.Parse(srv.URL)
-	require.NoError(t, err)
-	c, err := client.NewClient(t.TempDir(), "tcp", u.Host)
-	require.NoError(t, err)
 
 	ws := NewClientWorkspace(c, proto.Workspace{ID: "ws-1", Path: "/tmp/quit-mid-recovery"})
 	done := make(chan struct{})

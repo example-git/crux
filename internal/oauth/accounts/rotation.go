@@ -97,6 +97,53 @@ func WithSelectedForOwner(ctx context.Context, provider string, expected Entry, 
 	})
 }
 
+// AdoptExternalRefresh records a token rotation that was exchanged outside
+// RefreshSelectedForOwner — for example a lenient, config-level refresh keyed
+// only by the provider's currently configured token rather than the selected
+// account. Without this, that lenient path can rotate a provider's refresh
+// token with the OAuth server and move on while this store's entry keeps
+// referencing the pre-rotation, now-consumed refresh token indefinitely.
+// A later RefreshSelectedForOwner call would then present that dead token to
+// the OAuth server and be rejected, even though the account itself is fine.
+//
+// The stored entry is only replaced when it still exactly matches before, so
+// a concurrent explicit account change or accounts-tracked refresh already in
+// progress is never clobbered by a guess. The recorded rotation link lets a
+// later refresh recognize fresh as a proven descendant of before rather than
+// reporting a false credential change.
+func AdoptExternalRefresh(ctx context.Context, provider string, before, fresh Entry) error {
+	if provider == "" || before.ID == "" || fresh.ID == "" || before.ID != fresh.ID {
+		return errors.New("adopt external refresh requires a matching account id")
+	}
+	beforeID := CredentialID(before)
+	if beforeID == CredentialID(fresh) {
+		return nil
+	}
+	registerSecrets(fresh)
+	return mutateStore(ctx, nil, func(s *store) error {
+		entry := find(s.Accounts[provider], before.ID)
+		if entry == nil || CredentialID(*entry) != beforeID {
+			// Something else already changed this account; never guess.
+			return nil
+		}
+		s.markMutation(provider, before.ID)
+		s.Accounts[provider] = upsert(s.Accounts[provider], fresh)
+		if s.Rotations == nil {
+			s.Rotations = map[string]map[string][]rotation{}
+		}
+		if s.Rotations[provider] == nil {
+			s.Rotations[provider] = map[string][]rotation{}
+		}
+		history := append(s.Rotations[provider][before.ID], rotation{Before: beforeID, After: CredentialID(fresh)})
+		// Mirror the bounded history retained by a normal tracked rotation.
+		if len(history) > 8 {
+			history = history[len(history)-8:]
+		}
+		s.Rotations[provider][before.ID] = history
+		return nil
+	})
+}
+
 func rotationDescends(s *store, provider, id, before, after string) bool {
 	if before == after {
 		return true

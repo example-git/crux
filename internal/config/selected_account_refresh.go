@@ -127,7 +127,7 @@ func (s *ConfigStore) RefreshSelectedOAuthAccountForRuntime(ctx context.Context,
 			return nil, fmt.Errorf("provider configuration no longer matches the selected account: %w", accounts.ErrCredentialChanged)
 		}
 		if !diskHasAccountOrAbsent(diskBefore, expected) {
-			return nil, fmt.Errorf("provider configuration on disk no longer matches the selected account: %w", accounts.ErrCredentialChanged)
+			return nil, fmt.Errorf("provider configuration on disk no longer matches the selected account (%s): %w", diskAccountMismatchDetail(diskBefore, expected), accounts.ErrCredentialChanged)
 		}
 		exchangeCtx = oauth.ContextWithEnvironment(exchangeCtx, admitted.Environment())
 		if s.exchangeToken != nil {
@@ -243,4 +243,35 @@ func diskHasAccountOrAbsent(provider gjson.Result, entry accounts.Entry) bool {
 		}
 	}
 	return true
+}
+
+// diskAccountMismatchDetail explains, without revealing any token value, why
+// diskHasAccountOrAbsent rejected the disk-persisted provider configuration
+// against the expected account. It exists purely for diagnostics: the exact
+// mechanism differentiating this failure from a genuine credential change
+// (stale on-disk copy vs. a real rotation) is otherwise invisible once the
+// error is generic.
+func diskAccountMismatchDetail(provider gjson.Result, entry accounts.Entry) string {
+	key, token := provider.Get("api_key"), provider.Get("oauth")
+	if key.Exists() && key.String() != entry.AccessToken {
+		return "disk api_key field does not match the selected account's access token"
+	}
+	if !token.Exists() {
+		return "disk provider configuration has neither a matching api_key nor an oauth field"
+	}
+	var stored oauth.Token
+	if err := json.Unmarshal([]byte(token.Raw), &stored); err != nil {
+		return "disk oauth field is not a valid stored token"
+	}
+	expectedToken := entry.Token()
+	switch {
+	case stored.AccessToken != entry.AccessToken:
+		return "disk oauth access_token does not match the selected account"
+	case stored.RefreshToken != entry.RefreshToken:
+		return "disk oauth refresh_token does not match the selected account"
+	case stored.ExpiresAt != expectedToken.ExpiresAt:
+		return "disk oauth expires_at does not match the selected account"
+	default:
+		return "disk oauth token does not match the selected account for an undetermined field"
+	}
 }

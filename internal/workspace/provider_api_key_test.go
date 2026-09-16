@@ -61,8 +61,19 @@ func TestWorkspaceCheckedAPIKeyTLSReceiptAndInference(t *testing.T) {
 			beforeConfig, readErr := os.ReadFile(f.path)
 			require.NoError(t, readErr)
 			if mode == "lost-response" {
+				// putMode 2 must let the save genuinely reach and commit on
+				// the backend; only losing the acknowledgement (and any
+				// subsequent reconciliation dial) is the fault being
+				// injected. Arming getMode=1 up front would instead block
+				// the save itself at the state-command interception point
+				// before it ever reached the backend, which is a different
+				// (and untested) fault. Deferring the flip to the moment
+				// the ack is about to be dropped mirrors the equivalent,
+				// already-verified fixture pattern used elsewhere in this
+				// package (see client_authentication_mutation_test.go).
 				f.putMode.Store(2)
-				f.getMode.Store(1)
+				loseGet := func() { f.getMode.Store(1) }
+				f.afterPut.Store(&loseGet)
 			}
 			if mode == "rejected" {
 				f.putMode.Store(1)
@@ -95,6 +106,7 @@ func TestWorkspaceCheckedAPIKeyTLSReceiptAndInference(t *testing.T) {
 			require.Equal(t, providerauth.MutationProgress{ConfigSaved: true, RuntimePublished: true}, outcome.Progress)
 			require.Equal(t, baseline+1, f.puts.Load())
 			require.Equal(t, models, f.store.RuntimeSnapshot().AgentModelState())
+			f.afterPut.Store(nil)
 			f.getMode.Store(0)
 			f.putMode.Store(0)
 			replay, err := f.w.SaveCheckedProviderAPIKey(t.Context(), save)

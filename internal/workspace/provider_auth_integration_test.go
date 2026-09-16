@@ -108,16 +108,35 @@ func testProviderAuthenticationThroughTLS(t *testing.T, mode string) {
 	})
 	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
 	require.NoError(t, err)
-	remote := startWorkspaceChannelProxyServer(t, observed, tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
-		if !fromClient || frame.Type != proto.WorkspaceChannelRuntimeReplaceFrame {
+	remote := startPeerChannelProxyServer(t, observed, tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, envelope proto.PeerEnvelope) workspaceChannelProxyDecision {
+		if !fromClient || envelope.Type != proto.PeerTypeRuntimeTransaction {
 			return workspaceChannelProxyDecision{}
 		}
 		publications.Add(1)
 		if !reject.Load() {
 			return workspaceChannelProxyDecision{}
 		}
-		ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic publication rejection"}}
-		return workspaceChannelProxyDecision{drop: true, reply: &ack}
+		// Corrupt the expected digest so the real server genuinely rejects
+		// the transaction; the peer-channel leg has no synthesized-reply
+		// path, only real rejection.
+		var transaction proto.PeerRuntimeTransaction
+		if json.Unmarshal(envelope.Payload, &transaction) != nil {
+			t.Error("cannot decode intercepted peer runtime transaction")
+			return workspaceChannelProxyDecision{drop: true, close: true}
+		}
+		originalDigest := transaction.Runtime.ExpectedDigest
+		transaction.Runtime.ExpectedDigest = strings.Repeat("f", 64)
+		if transaction.Runtime.ExpectedDigest == originalDigest {
+			transaction.Runtime.ExpectedDigest = strings.Repeat("e", 64)
+		}
+		payload, encodeErr := json.Marshal(transaction)
+		if encodeErr != nil {
+			t.Errorf("cannot encode intercepted peer runtime transaction: %v", encodeErr)
+			return workspaceChannelProxyDecision{drop: true, close: true}
+		}
+		replacement := envelope
+		replacement.Payload = payload
+		return workspaceChannelProxyDecision{replacement: &replacement}
 	})
 	t.Cleanup(func() { _ = s.Close() })
 

@@ -17,10 +17,16 @@ type RemoteProviderDefinitionPut struct {
 	ContextInstruction *string
 }
 
+type RemoteProviderContextInstructionSet struct {
+	Provider           providerregistry.RegistrationOwner
+	ContextInstruction *string
+}
+
 type RemoteRuntimeTransaction struct {
 	Advance                 bool
 	DefinitionRemovals      []providerregistry.RegistrationOwner
 	DefinitionPuts          []RemoteProviderDefinitionPut
+	ContextInstructionSets  []RemoteProviderContextInstructionSet
 	CredentialReplacements  []RemoteCredentialBinding
 	CredentialInvalidations []providerregistry.RegistrationOwner
 	ModelSelections         map[SelectedModelType]SelectedModel
@@ -64,6 +70,23 @@ func (s *ConfigStore) PatchRemoteRuntime(ctx context.Context, principal string, 
 			proposal.ProviderContextInstructions[providerID] = *update.ContextInstruction
 		}
 		put[providerID] = true
+		changed = true
+	}
+	instructionSet := map[string]bool{}
+	for _, set := range transaction.ContextInstructionSets {
+		providerID := set.Provider.ProviderID
+		if providerID == "" || removed[providerID] || put[providerID] || instructionSet[providerID] || remoteProviderIndex(proposal.Providers, providerID) < 0 {
+			return nil, errors.New("invalid provider context instruction update")
+		}
+		if set.ContextInstruction != nil {
+			if proposal.ProviderContextInstructions == nil {
+				proposal.ProviderContextInstructions = map[string]string{}
+			}
+			proposal.ProviderContextInstructions[providerID] = *set.ContextInstruction
+		} else {
+			delete(proposal.ProviderContextInstructions, providerID)
+		}
+		instructionSet[providerID] = true
 		changed = true
 	}
 	credentials := map[string]bool{}

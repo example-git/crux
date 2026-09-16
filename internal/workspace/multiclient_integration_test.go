@@ -13,6 +13,7 @@ import (
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/connection"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
@@ -134,25 +135,49 @@ func shellTaskView(backgroundShell *shell.BackgroundShell) managedtask.View {
 }
 
 type runtimeServer struct {
-	srv     *server.Server
-	httpSrv *httptest.Server
-	host    string
+	srv        *server.Server
+	httpSrv    *httptest.Server
+	host       string
+	serverCode string
+	identity   connection.Identity
 }
 
 func newRuntimeServer(t *testing.T) *runtimeServer {
 	t.Helper()
+	serverCode, err := connection.EnsureServerIdentity(t.Context())
+	require.NoError(t, err)
+	// Every client this fixture creates shares this one mTLS identity. The
+	// pre-TLS version of this fixture had no principal concept at all, so
+	// any client could freely join any workspace by path (several tests
+	// here rely on exactly that: two clients created for the same
+	// directory are expected to share one workspace). A shared identity
+	// preserves that "multiple sessions, one authorized user" semantics
+	// under the peer channel's now-mandatory TLS requirement, without
+	// tripping the workspace-ownership check that correctly rejects a
+	// second, distinct principal from joining another principal's
+	// workspace. Sessions started from the same identity still get
+	// distinct client IDs (see client.NewAuthenticatedClient), so they
+	// remain separately observable/retirable.
+	identity, err := connection.NewClientIdentity("multiclient-owner")
+	require.NoError(t, err)
+	require.NoError(t, connection.AuthorizeClient(t.Context(), "multiclient-owner", identity.Certificate))
 	s := server.NewServer(nil, "tcp", "127.0.0.1:0")
-	hs := httptest.NewServer(s.Handler())
+	require.NoError(t, s.EnableNetworkAuth(t.Context()))
+	hs := httptest.NewUnstartedServer(s.Handler())
+	tlsConfig, err := connection.ServerTLSConfig(t.Context())
+	require.NoError(t, err)
+	hs.TLS = tlsConfig
+	hs.StartTLS()
 	t.Cleanup(hs.Close)
 
 	u, err := url.Parse(hs.URL)
 	require.NoError(t, err)
-	return &runtimeServer{srv: s, httpSrv: hs, host: u.Host}
+	return &runtimeServer{srv: s, httpSrv: hs, host: u.Host, serverCode: serverCode, identity: identity}
 }
 
 func (r *runtimeServer) newClient(t *testing.T, path string) *client.Client {
 	t.Helper()
-	c, err := client.NewClient(path, "tcp", r.host)
+	c, err := client.NewAuthenticatedClient(path, connection.Connection{Address: "tcp://" + r.host, ServerCertificate: r.serverCode, Client: r.identity})
 	require.NoError(t, err)
 	// Retire the client during cleanup so the server releases every
 	// claim it holds and tears the workspace down at once, closing the
@@ -182,11 +207,11 @@ func TestClientWorkspace_ConfigChangedRefreshesSiblingCache(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	wsProto, err := cA.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: dataDir})
+	wsProto, err := cA.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: dataDir, AuthorityMode: "server"})
 	require.NoError(t, err)
 	// Client B joins the same workspace by path; the server
 	// deduplicates and returns the existing workspace.
-	wsProtoB, err := cB.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: dataDir})
+	wsProtoB, err := cB.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: dataDir, AuthorityMode: "server"})
 	require.NoError(t, err)
 	require.Equal(t, wsProto.ID, wsProtoB.ID)
 
@@ -259,7 +284,7 @@ func TestClientWorkspace_ConfigChangedSignalArrives(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	wsProto, err := c.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: dataDir})
+	wsProto, err := c.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: dataDir, AuthorityMode: "server"})
 	require.NoError(t, err)
 
 	evc, err := c.SubscribeEvents(ctx, wsProto.ID)
@@ -297,9 +322,9 @@ func TestServer_SharedWorkspaceManagedTaskLifecycle(t *testing.T) {
 	clientB := runtime.newClient(t, workingDir)
 	ctx := t.Context()
 
-	workspaceA, err := clientA.CreateWorkspace(ctx, proto.Workspace{Path: workingDir, DataDir: dataDir})
+	workspaceA, err := clientA.CreateWorkspace(ctx, proto.Workspace{Path: workingDir, DataDir: dataDir, AuthorityMode: "server"})
 	require.NoError(t, err)
-	workspaceB, err := clientB.CreateWorkspace(ctx, proto.Workspace{Path: workingDir, DataDir: dataDir})
+	workspaceB, err := clientB.CreateWorkspace(ctx, proto.Workspace{Path: workingDir, DataDir: dataDir, AuthorityMode: "server"})
 	require.NoError(t, err)
 	require.Equal(t, workspaceA.ID, workspaceB.ID)
 
@@ -384,9 +409,9 @@ func TestServer_ConcurrentSessionsSameDirShareOneWorkspace(t *testing.T) {
 	cA, cB := rt.newClient(t, cwd), rt.newClient(t, cwd)
 	ctx := t.Context()
 
-	wsA, err := cA.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: dataDir})
+	wsA, err := cA.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: dataDir, AuthorityMode: "server"})
 	require.NoError(t, err)
-	wsB, err := cB.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: dataDir})
+	wsB, err := cB.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: dataDir, AuthorityMode: "server"})
 	require.NoError(t, err)
 	require.Equal(t, wsA.ID, wsB.ID, "same directory must share one workspace")
 
@@ -409,9 +434,9 @@ func TestServer_ConcurrentSessionsDifferentDirsAreIndependent(t *testing.T) {
 	cA, cB := rt.newClient(t, cwdA), rt.newClient(t, cwdB)
 	ctx := t.Context()
 
-	wsA, err := cA.CreateWorkspace(ctx, proto.Workspace{Path: cwdA, DataDir: t.TempDir()})
+	wsA, err := cA.CreateWorkspace(ctx, proto.Workspace{Path: cwdA, DataDir: t.TempDir(), AuthorityMode: "server"})
 	require.NoError(t, err)
-	wsB, err := cB.CreateWorkspace(ctx, proto.Workspace{Path: cwdB, DataDir: t.TempDir()})
+	wsB, err := cB.CreateWorkspace(ctx, proto.Workspace{Path: cwdB, DataDir: t.TempDir(), AuthorityMode: "server"})
 	require.NoError(t, err)
 	require.NotEqual(t, wsA.ID, wsB.ID)
 
@@ -435,7 +460,7 @@ func TestServer_RefusesShutdownWhileWorkspaceLive(t *testing.T) {
 	cLive := rt.newClient(t, cwd)
 	ctx := t.Context()
 
-	ws, err := cLive.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: t.TempDir()})
+	ws, err := cLive.CreateWorkspace(ctx, proto.Workspace{Path: cwd, DataDir: t.TempDir(), AuthorityMode: "server"})
 	require.NoError(t, err)
 
 	// A second client, standing in for one that found a version mismatch.
@@ -459,7 +484,7 @@ func TestServer_DetachGraceSurvivesStreamBlip(t *testing.T) {
 	cwd := t.TempDir()
 	c := rt.newClient(t, cwd)
 
-	ws, err := c.CreateWorkspace(t.Context(), proto.Workspace{Path: cwd, DataDir: t.TempDir()})
+	ws, err := c.CreateWorkspace(t.Context(), proto.Workspace{Path: cwd, DataDir: t.TempDir(), AuthorityMode: "server"})
 	require.NoError(t, err)
 
 	streamCtx, killStream := context.WithCancel(t.Context())
@@ -501,12 +526,12 @@ func TestClientWorkspace_RecoversAfterServerSideTeardown(t *testing.T) {
 	sibling := rt.newClient(t, t.TempDir())
 	siblingCwd := t.TempDir()
 	_, err := sibling.CreateWorkspace(t.Context(), proto.Workspace{
-		Path: siblingCwd, DataDir: t.TempDir(),
+		Path: siblingCwd, DataDir: t.TempDir(), AuthorityMode: "server",
 	})
 	require.NoError(t, err)
 
 	c := rt.newClient(t, cwd)
-	wsProto, err := c.CreateWorkspace(t.Context(), proto.Workspace{Path: cwd, DataDir: dataDir})
+	wsProto, err := c.CreateWorkspace(t.Context(), proto.Workspace{Path: cwd, DataDir: dataDir, AuthorityMode: "server"})
 	require.NoError(t, err)
 	originalID := wsProto.ID
 

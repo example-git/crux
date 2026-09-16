@@ -145,6 +145,60 @@ func TestClientRefreshCompletionRejectsChangedProviderDefinition(t *testing.T) {
 	}
 }
 
+// TestClientRefreshCompletionSurvivesUnrelatedConcurrentRepublish reproduces
+// a live race: the owning client rotates the requested credential and
+// publishes it (advancing the accepted runtime to revision 2), then before
+// its completion message reaches the server, an unrelated republish from the
+// same principal (for example a model switch) advances the accepted runtime
+// again to revision 3 while carrying the just-rotated credential forward
+// unchanged. The completion the client sends still echoes revision 2/digest
+// 2 because it was built before that second publish. This must still
+// succeed: the account, credential, and provider definition it names are
+// still exactly what the current (revision 3) accepted state reflects, so
+// rejecting it would discard a credential rotation that already happened.
+func TestClientRefreshCompletionSurvivesUnrelatedConcurrentRepublish(t *testing.T) {
+	store, proposal := clientRefreshRuntimeFixture(t)
+	owner := proposal.Credentials[0].Owner
+	requests := make(chan ClientRefreshRequest, 1)
+	store.SetClientRefreshPublisher(func(_ context.Context, request ClientRefreshRequest) { requests <- request })
+	result := make(chan RuntimeSnapshot, 1)
+	errs := make(chan error, 1)
+	go func() {
+		snapshot, err := store.RequestClientRefresh(t.Context(), store.RuntimeSnapshot(), owner)
+		result <- snapshot
+		errs <- err
+	}()
+	request := <-requests
+
+	// Step 1: the owning client's own rotation lands at revision 2.
+	fresh := *proposal.Credentials[0].Account
+	fresh.AccessToken, fresh.RefreshToken = "synthetic-new", "synthetic-new-refresh"
+	proposal.Revision = 2
+	proposal.Credentials[0].Generation = 2
+	proposal.Credentials[0].Account = &fresh
+	proposal = sealRemoteRuntime(t, proposal)
+	_, err := store.ReplaceRemoteRuntime(t.Context(), proposal, request.Principal, 1)
+	require.NoError(t, err)
+	completionDigest := proposal.Digest
+
+	// Step 2: an unrelated concurrent republish (e.g. a model switch) lands
+	// at revision 3 before the completion above reaches the server. It does
+	// not touch the refreshed provider's definition or credential at all.
+	proposal.Revision = 3
+	proposal.Models[SelectedModelTypeSmall] = SelectedModel{Provider: "codex", Model: "fixture", MaxTokens: 4096}
+	proposal = sealRemoteRuntime(t, proposal)
+	_, err = store.ReplaceRemoteRuntime(t.Context(), proposal, request.Principal, 2)
+	require.NoError(t, err)
+
+	// The completion still echoes the stale revision/digest captured before
+	// the unrelated republish landed.
+	response := ClientRefreshCompletion{RequestID: request.ID, Revision: 2, Digest: completionDigest, CredentialID: accounts.CredentialID(fresh)}
+	require.NoError(t, store.CompleteClientRefresh(request.Principal, response))
+	require.NoError(t, <-errs)
+	accepted := <-result
+	require.Equal(t, uint64(3), accepted.RemoteAuthority().Revision, "the waiting caller must observe the actual current accepted runtime, not the stale echoed revision")
+}
+
 func TestClientRefreshFailureAndAccountSwitch(t *testing.T) {
 	for _, action := range []string{"client-failed", "account-switched"} {
 		t.Run(action, func(t *testing.T) {

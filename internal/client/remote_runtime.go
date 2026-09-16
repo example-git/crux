@@ -99,9 +99,27 @@ func (c *Client) PatchRemoteRuntime(ctx context.Context, id string, previous, ne
 	controlsChanged := !reflect.DeepEqual(previous.Controls, next.Controls)
 	beforeShape, afterShape := runtimePatchShape(previous), runtimePatchShape(next)
 	providerStateChanged := !remoteRuntimeWireEqual(beforeShape, afterShape)
+	capabilities, err := c.NegotiateRemoteRuntime(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var messageType proto.PeerMessageType
 	var payload any
-	if !providerStateChanged && len(changedModels) > 0 && !controlsChanged {
+	if unsupported := runtimeTransactionUnsupportedFields(previous, next); len(unsupported) > 0 {
+		// Fields such as the codebase index or image configuration have no
+		// PeerRuntimeOperation wire representation, so an incremental
+		// transaction can never carry this change (buildPeerRuntimeTransaction
+		// would unconditionally reject it below). A full state replace is the
+		// only way to publish it; the server accepts PeerTypeRuntimeReplace
+		// from any revision-matching client authority, not only from a
+		// user-initiated recovery flow, so this reuses that same message
+		// type instead of introducing a new one for these fields.
+		if err := validateRemoteRuntimeCapabilities(capabilities, &next); err != nil {
+			return nil, err
+		}
+		messageType = proto.PeerTypeRuntimeReplace
+		payload = proto.PeerRuntimeReplace{ExpectedRevision: previous.Revision, Runtime: next, ExplicitRecovery: true}
+	} else if !providerStateChanged && len(changedModels) > 0 && !controlsChanged {
 		selections, err := peerModelSelections(next, changedModels)
 		if err != nil {
 			return nil, err
@@ -119,10 +137,6 @@ func (c *Client) PatchRemoteRuntime(ctx context.Context, id string, previous, ne
 		messageType = proto.PeerTypeRuntimeTransaction
 		payload = transaction
 	}
-	capabilities, err := c.NegotiateRemoteRuntime(ctx)
-	if err != nil {
-		return nil, err
-	}
 	messageID := uuid.NewString()
 	var commandErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -137,7 +151,18 @@ func (c *Client) PatchRemoteRuntime(ctx context.Context, id string, previous, ne
 		if !authorityMatchesAttachment(current, capabilities.Principal, proto.WorkspaceAttachment{Mode: "client", Revision: previous.Revision, Digest: previous.Digest}) {
 			return nil, fmt.Errorf("%w: receiver does not retain the expected incremental runtime base", errRemoteAuthorityMismatch)
 		}
-		channel, sendErr := c.getWorkspaceChannel(ctx, id)
+		// Pass the just-validated previous authority explicitly instead of
+		// letting getWorkspaceChannel fall back to the separately retained
+		// c.attachments[id] cache. That cache is only refreshed by a
+		// successful PatchRemoteRuntime/ReplaceRemoteRuntime acknowledgement,
+		// so it can still show an older revision here even though the check
+		// above just confirmed the live receiver state matches previous
+		// (e.g. after a caller discovers, via its own pending-authority
+		// fallback, that an earlier transaction committed on the receiver
+		// despite its acknowledgement being lost). Reusing the same base we
+		// already verified avoids rejecting a transaction against a stale,
+		// unrelated cache entry.
+		channel, sendErr := c.getWorkspaceChannel(ctx, id, config.RemoteAuthority{Mode: "client", Principal: capabilities.Principal, Revision: previous.Revision, Digest: previous.Digest})
 		if sendErr == nil {
 			var acknowledgement proto.PeerAcknowledgement
 			acknowledgement, sendErr = channel.peer.commandWithID(ctx, id, messageID, messageType, payload)
@@ -207,26 +232,40 @@ func peerModelSelections(proposal config.RemoteRuntimeProposal, modelTypes []con
 	return selections, nil
 }
 
-func buildPeerRuntimeTransaction(base proto.PeerRuntimeBase, previous, next config.RemoteRuntimeProposal, changedModels []config.SelectedModelType, controlsChanged bool, authentication []proto.PeerProviderAuthentication) (proto.PeerRuntimeTransaction, bool, error) {
+// runtimeTransactionUnsupportedFields reports which top-level
+// RemoteRuntimeProposal fields changed between previous and next that the
+// incremental PeerRuntimeTransaction wire operations cannot express (there is
+// no PeerRuntimeOperation variant for any of them). Callers that can only
+// send an incremental transaction must reject such a change; PatchRemoteRuntime
+// instead routes it through a full PeerTypeRuntimeReplace (see
+// patchRequiresFullReplace).
+func runtimeTransactionUnsupportedFields(previous, next config.RemoteRuntimeProposal) []string {
 	beforeUnsupported, afterUnsupported := previous, next
 	beforeUnsupported.Revision, beforeUnsupported.Digest, beforeUnsupported.Bundles, beforeUnsupported.Providers, beforeUnsupported.Credentials, beforeUnsupported.Models, beforeUnsupported.Controls, beforeUnsupported.ProviderContextInstructions = 0, "", nil, nil, nil, nil, config.RemoteRuntimeControls{}, nil
 	afterUnsupported.Revision, afterUnsupported.Digest, afterUnsupported.Bundles, afterUnsupported.Providers, afterUnsupported.Credentials, afterUnsupported.Models, afterUnsupported.Controls, afterUnsupported.ProviderContextInstructions = 0, "", nil, nil, nil, nil, config.RemoteRuntimeControls{}, nil
-	if !remoteRuntimeWireEqual(beforeUnsupported, afterUnsupported) {
-		var fields []string
-		for _, field := range []struct {
-			name    string
-			changed bool
-		}{
-			{name: "codebase index", changed: !reflect.DeepEqual(beforeUnsupported.CodebaseIndex, afterUnsupported.CodebaseIndex)},
-			{name: "image configuration", changed: !reflect.DeepEqual(beforeUnsupported.Images, afterUnsupported.Images)},
-			{name: "image browser credentials", changed: !reflect.DeepEqual(beforeUnsupported.ImageBrowserCredentials, afterUnsupported.ImageBrowserCredentials)},
-			{name: "image client identities", changed: !reflect.DeepEqual(beforeUnsupported.ImageClientIdentities, afterUnsupported.ImageClientIdentities)},
-			{name: "credential environment", changed: !reflect.DeepEqual(beforeUnsupported.CredentialEnvironment, afterUnsupported.CredentialEnvironment)},
-		} {
-			if field.changed {
-				fields = append(fields, field.name)
-			}
+	if remoteRuntimeWireEqual(beforeUnsupported, afterUnsupported) {
+		return nil
+	}
+	var fields []string
+	for _, field := range []struct {
+		name    string
+		changed bool
+	}{
+		{name: "codebase index", changed: !reflect.DeepEqual(beforeUnsupported.CodebaseIndex, afterUnsupported.CodebaseIndex)},
+		{name: "image configuration", changed: !reflect.DeepEqual(beforeUnsupported.Images, afterUnsupported.Images)},
+		{name: "image browser credentials", changed: !reflect.DeepEqual(beforeUnsupported.ImageBrowserCredentials, afterUnsupported.ImageBrowserCredentials)},
+		{name: "image client identities", changed: !reflect.DeepEqual(beforeUnsupported.ImageClientIdentities, afterUnsupported.ImageClientIdentities)},
+		{name: "credential environment", changed: !reflect.DeepEqual(beforeUnsupported.CredentialEnvironment, afterUnsupported.CredentialEnvironment)},
+	} {
+		if field.changed {
+			fields = append(fields, field.name)
 		}
+	}
+	return fields
+}
+
+func buildPeerRuntimeTransaction(base proto.PeerRuntimeBase, previous, next config.RemoteRuntimeProposal, changedModels []config.SelectedModelType, controlsChanged bool, authentication []proto.PeerProviderAuthentication) (proto.PeerRuntimeTransaction, bool, error) {
+	if fields := runtimeTransactionUnsupportedFields(previous, next); len(fields) > 0 {
 		return proto.PeerRuntimeTransaction{}, false, fmt.Errorf("incremental runtime transaction contains unsupported state changes: %s", strings.Join(fields, ", "))
 	}
 	authenticationByProvider := map[string]proto.PeerProviderAuthentication{}
@@ -272,6 +311,21 @@ func buildPeerRuntimeTransaction(base proto.PeerRuntimeBase, previous, next conf
 	for _, selected := range next.Models {
 		selectedProviders[selected.Provider] = true
 	}
+	// instructionChanged tracks a context-instruction-only change (the
+	// provider definition itself is unchanged). Such a change is carried by
+	// a dedicated PeerTypeProviderContextInstructionSet operation below,
+	// not by a definition remove+put pair: the definition-put wire
+	// operation is an add, not an update, so re-expressing an unchanged
+	// definition as a remove+put would also force re-issuing the
+	// provider's unchanged credential, which requires a fresh
+	// provider-authentication generation that an instruction-only change
+	// does not have.
+	instructionChanged := map[string]bool{}
+	for _, providerID := range providerIDs {
+		prevInstruction, prevHas := previous.ProviderContextInstructions[providerID]
+		nextInstruction, nextHas := next.ProviderContextInstructions[providerID]
+		instructionChanged[providerID] = prevHas != nextHas || prevInstruction != nextInstruction
+	}
 	for _, providerID := range providerIDs {
 		before, beforeFound := previousDefinitions[providerID]
 		after, afterFound := nextDefinitions[providerID]
@@ -313,6 +367,30 @@ func buildPeerRuntimeTransaction(base proto.PeerRuntimeBase, previous, next conf
 		}
 		transaction.Operations = append(transaction.Operations, proto.PeerRuntimeOperation{Type: proto.PeerTypeProviderDefinitionPut, DefinitionPut: &update})
 		providerPuts[providerID] = true
+	}
+	for _, providerID := range providerIDs {
+		before, beforeFound := previousDefinitions[providerID]
+		after, afterFound := nextDefinitions[providerID]
+		if !beforeFound || !afterFound || !reflect.DeepEqual(before, after) || !instructionChanged[providerID] {
+			continue
+		}
+		provider, err := proto.ProviderRefForRuntime(next, providerID)
+		if err != nil {
+			return proto.PeerRuntimeTransaction{}, false, err
+		}
+		nextInstruction, hasInstruction := next.ProviderContextInstructions[providerID]
+		if selectedProviders[providerID] && !hasInstruction {
+			return proto.PeerRuntimeTransaction{}, false, fmt.Errorf("selected provider %q has no context instruction", providerID)
+		}
+		var instructionPtr *string
+		if hasInstruction {
+			instructionPtr = &nextInstruction
+			expectedContextInstructions[providerID] = nextInstruction
+		} else {
+			delete(expectedContextInstructions, providerID)
+		}
+		set := proto.PeerProviderContextInstructionSet{Provider: provider, ContextInstruction: instructionPtr}
+		transaction.Operations = append(transaction.Operations, proto.PeerRuntimeOperation{Type: proto.PeerTypeProviderContextInstructionSet, ContextInstructionSet: &set})
 	}
 	if !reflect.DeepEqual(expectedContextInstructions, next.ProviderContextInstructions) {
 		return proto.PeerRuntimeTransaction{}, false, errors.New("incremental runtime transaction contains unsupported provider context instruction changes")

@@ -1525,8 +1525,30 @@ func (s *ConfigStore) rebindSelectedRemoteAccountsLocked(ctx context.Context) er
 	next := s.config.cloneForWrite()
 	snapshot := s.runtimeSnapshotLocked(next, s.resolver, s.providerRegistry, s.effectiveEnvironment)
 	s.configMu.Unlock()
-	if err := bindSelectedRemoteAccounts(ctx, snapshot, next); err != nil {
+	updates, err := bindSelectedRemoteAccounts(ctx, snapshot, next)
+	if err != nil {
 		return fmt.Errorf("bind selected client accounts: %w", err)
+	}
+	// Persist before publishing in memory: a crash between the two leaves
+	// disk consistent with what a later reload would recompute anyway,
+	// whereas publishing first and losing the disk write would resurrect
+	// the exact stale-credential defect this rebinding closes.
+	//
+	// NOTE (do not "fix" this away again): this write is intentional, not a
+	// leftover/speculative side effect. Without it, an owning client that
+	// switches its selected model to a provider it did not have selected at
+	// startup keeps that provider's stale pre-switch credential on disk
+	// indefinitely. The remote server only ever executes what the client's
+	// forwarded runtime proposal contains, so a stale disk credential here
+	// is what causes "remote server keeps using the wrong/old
+	// account for a provider after the client switched" for OAuth-owned
+	// providers. See internal/cmd/run_model_collection_test.go for the
+	// companion invariant this must preserve: a bare --model/--small-model
+	// run-flag override must still never persist a *model selection* to
+	// disk, even though this credential-healing write legitimately does
+	// persist for the affected provider's api_key/oauth fields.
+	if err := s.persistRemoteAccountBindings(ScopeGlobal, updates); err != nil {
+		return fmt.Errorf("persist rebound client accounts: %w", err)
 	}
 	registerConfigSecrets(next)
 	s.configMu.Lock()
@@ -1809,8 +1831,9 @@ func (s *ConfigStore) setProviderOAuthTokenLocked(scope Scope, providerID string
 	if err != nil {
 		return err
 	}
+	previousToken := providerConfig.OAuthToken
 	applyOAuthTokenToProvider(&providerConfig, token, registration)
-	return s.updateLocked(scope, func(next *Config) map[string]any {
+	if err := s.updateLocked(scope, func(next *Config) map[string]any {
 		next.Providers.Set(providerID, providerConfig)
 		fields := map[string]any{
 			fmt.Sprintf("providers.%s.api_key", providerID): token.AccessToken,
@@ -1825,7 +1848,50 @@ func (s *ConfigStore) setProviderOAuthTokenLocked(scope Scope, providerID string
 			fields[fmt.Sprintf("providers.%s.preset", providerID)] = providerConfig.Preset
 		}
 		return fields
-	})
+	}); err != nil {
+		return err
+	}
+	s.reconcileSelectedAccountRotation(registration.Owner(), previousToken, token)
+	return nil
+}
+
+// reconcileSelectedAccountRotation mirrors a provider token rotation obtained
+// through a lenient, config-level refresh (keyed only by the provider's
+// currently configured token) into the accounts package's separately
+// tracked selected-account store. Without this, a provider that is also
+// bound to a selected account (owner.AccountNamespace != "") leaves that
+// store holding the pre-rotation refresh token indefinitely: the lenient
+// path already rotated it with the OAuth server and moved on, but never
+// told the accounts store, which the stricter remote/client-owned refresh
+// (RefreshSelectedOAuthAccountForRuntime) reads from directly. That later
+// refresh then presents an already-consumed refresh token to the OAuth
+// server and is rejected with invalid_grant even though the account itself
+// is perfectly healthy. This is best-effort: a failure here does not
+// invalidate the token rotation that already succeeded and was persisted to
+// config, so it only logs.
+func (s *ConfigStore) reconcileSelectedAccountRotation(owner providerregistry.RegistrationOwner, previous, fresh *oauth.Token) {
+	if owner.AccountNamespace == "" || previous == nil || fresh == nil || previous.RefreshToken == "" {
+		return
+	}
+	if previous.AccessToken == fresh.AccessToken && previous.RefreshToken == fresh.RefreshToken {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	active, err := accounts.Active(ctx, owner.AccountNamespace)
+	if err != nil {
+		slog.Warn("Failed to read selected account while reconciling refreshed token", "provider", owner.ProviderID, "error", err)
+		return
+	}
+	if active == nil || active.AccessToken != previous.AccessToken || active.RefreshToken != previous.RefreshToken {
+		// The selected account store's active entry does not match what we
+		// just refreshed from; never guess which account this belongs to.
+		return
+	}
+	freshEntry := accounts.FromToken(active.ID, active.DisplayName, fresh, active)
+	if err := accounts.AdoptExternalRefresh(ctx, owner.AccountNamespace, *active, freshEntry); err != nil {
+		slog.Warn("Failed to mirror refreshed token into selected account store", "provider", owner.ProviderID, "error", err)
+	}
 }
 
 func (s *ConfigStore) RemoveProviderCredentials(scope Scope, expected providerregistry.RegistrationOwner) error {
@@ -2239,10 +2305,12 @@ func (s *ConfigStore) applyToken(token *oauth.Token, providerID string, expected
 	if !ok {
 		return fmt.Errorf("provider %s not found", providerID)
 	}
+	previousToken := providerConfig.OAuthToken
 	applyOAuthTokenToProvider(&providerConfig, token, registration)
 	next := cfg.cloneForWrite()
 	next.Providers.Set(providerID, providerConfig)
 	s.setConfig(next)
+	s.reconcileSelectedAccountRotation(registration.Owner(), previousToken, token)
 	return nil
 }
 
@@ -2875,8 +2943,14 @@ func (s *ConfigStore) reloadFromDiskWithCredentialCaptureLocked(ctx context.Cont
 	cfg.SetupAgents()
 	if s.globalOnly {
 		snapshot := s.runtimeSnapshotLocked(cfg, resolver, scan.Registry, candidateEnv)
-		if err := bindSelectedRemoteAccounts(ctx, snapshot, cfg); err != nil {
+		updates, err := bindSelectedRemoteAccounts(ctx, snapshot, cfg)
+		if err != nil {
 			return fmt.Errorf("bind selected client accounts during reload: %w", err)
+		}
+		// See the matching NOTE in rebindSelectedRemoteAccountsLocked above:
+		// this disk write is intentional, not speculative leftover code.
+		if err := s.persistRemoteAccountBindings(ScopeGlobal, updates); err != nil {
+			return fmt.Errorf("persist rebound client accounts during reload: %w", err)
 		}
 	}
 

@@ -28,6 +28,12 @@ builds:
     goarch:
       - amd64
       - arm64
+    ignore:
+      # macOS on Intel (x86_64) is being phased out by Apple; stop shipping
+      # official darwin/amd64 builds. Anyone who still needs one can build it
+      # from source.
+      - goos: darwin
+        goarch: amd64
     flags:
       - -trimpath
     ldflags:

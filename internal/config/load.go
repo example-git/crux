@@ -242,8 +242,32 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 	cfg.SetupAgents()
 	if options.bindRemoteAccounts {
 		snapshot := RuntimeSnapshot{config: cfg, registry: scan.Registry, environment: candidateEnv}
-		if err := bindSelectedRemoteAccounts(context.Background(), snapshot, cfg); err != nil {
+		updates, err := bindSelectedRemoteAccounts(context.Background(), snapshot, cfg)
+		if err != nil {
 			return nil, fmt.Errorf("bind selected client accounts: %w", err)
+		}
+		// Fold into the same tracked correction commit as pendingModelFields
+		// rather than writing to globalDataPath directly here: preimages for
+		// that file were already captured above, and a write outside the
+		// commitStartupCorrections/captureConfigPostimages transaction would
+		// make it see the file as unexpectedly changed and fail startup.
+		//
+		// NOTE (intentional, not faulty/speculative): this heals a provider
+		// whose on-disk api_key/oauth fields have drifted from the accounts
+		// store's active entry for that provider (e.g. because the provider
+		// was not selected the last time this owning client's config was
+		// durably written). Without it, the remote server keeps executing
+		// against the stale forwarded credential for that provider even
+		// after the client switches to it, and a later strict refresh
+		// (RefreshSelectedOAuthAccountForRuntime) rejects the refresh as an
+		// unexplained credential change. A plain --model/--small-model run
+		// flag override must still never persist a *model selection* this
+		// way; see internal/cmd/run_model_collection_test.go for that
+		// separate, still-enforced invariant.
+		for providerID, fields := range updates {
+			for key, value := range fields {
+				pendingModelFields[fmt.Sprintf("providers.%s.%s", providerID, key)] = value
+			}
 		}
 	}
 	if options.previewReadOnly {

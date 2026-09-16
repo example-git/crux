@@ -53,19 +53,38 @@ func TestProviderInstructionsThroughTLS(t *testing.T) {
 	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
 	require.NoError(t, err)
 	var lostCommands sync.Map
-	remote := startWorkspaceChannelProxyServer(t, s.Handler(), tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
-		if fromClient && frame.Type == proto.WorkspaceChannelRuntimeReplaceFrame {
+	remote := startPeerChannelProxyServer(t, s.Handler(), tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, envelope proto.PeerEnvelope) workspaceChannelProxyDecision {
+		if fromClient && envelope.Type == proto.PeerTypeRuntimeTransaction {
 			publications.Add(1)
 			if rejectPublication.Swap(false) {
-				ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic rejected instruction publication"}}
-				return workspaceChannelProxyDecision{drop: true, reply: &ack}
+				// Corrupt the expected digest so the real server
+				// genuinely rejects the transaction; the peer-channel leg
+				// has no synthesized-reply path, only real rejection.
+				var transaction proto.PeerRuntimeTransaction
+				if json.Unmarshal(envelope.Payload, &transaction) != nil {
+					t.Error("cannot decode intercepted peer runtime transaction")
+					return workspaceChannelProxyDecision{drop: true, close: true}
+				}
+				originalDigest := transaction.Runtime.ExpectedDigest
+				transaction.Runtime.ExpectedDigest = strings.Repeat("f", 64)
+				if transaction.Runtime.ExpectedDigest == originalDigest {
+					transaction.Runtime.ExpectedDigest = strings.Repeat("e", 64)
+				}
+				payload, encodeErr := json.Marshal(transaction)
+				if encodeErr != nil {
+					t.Errorf("cannot encode intercepted peer runtime transaction: %v", encodeErr)
+					return workspaceChannelProxyDecision{drop: true, close: true}
+				}
+				replacement := envelope
+				replacement.Payload = payload
+				return workspaceChannelProxyDecision{replacement: &replacement}
 			}
 			if loseAcknowledgement.Swap(false) {
-				lostCommands.Store(frame.CommandID, struct{}{})
+				lostCommands.Store(envelope.MessageID, struct{}{})
 			}
 		}
-		if !fromClient && frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
-			if _, ok := lostCommands.LoadAndDelete(frame.CommandID); ok {
+		if !fromClient && envelope.Type == proto.PeerTypeAcknowledgement {
+			if _, ok := lostCommands.LoadAndDelete(envelope.ReplyTo); ok {
 				return workspaceChannelProxyDecision{drop: true, close: true}
 			}
 		}

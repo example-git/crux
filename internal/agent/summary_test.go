@@ -81,14 +81,19 @@ func (m *failingSummaryModel) Stream(context.Context, fantasy.Call) (fantasy.Str
 
 type autoCompactionModel struct {
 	finishStreamModel
-	calls atomic.Int64
+	calls   atomic.Int64
+	mu      sync.Mutex
+	prompts []fantasy.Prompt
 }
 
-func (m *autoCompactionModel) Stream(context.Context, fantasy.Call) (fantasy.StreamResponse, error) {
-	call := m.calls.Add(1)
+func (m *autoCompactionModel) Stream(_ context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
+	invocation := m.calls.Add(1)
+	m.mu.Lock()
+	m.prompts = append(m.prompts, call.Prompt)
+	m.mu.Unlock()
 	text := "regular response"
 	usage := fantasy.Usage{InputTokens: 90, TotalTokens: 90}
-	if call > 1 {
+	if invocation > 1 {
 		text = "<analysis>draft</analysis><summary>automatic checkpoint</summary>"
 		usage = fantasy.Usage{}
 	}
@@ -291,7 +296,7 @@ func newSummaryTestAgent(env fakeEnv, model fantasy.LanguageModel) *sessionAgent
 }
 
 func TestBuildSummaryPromptPrioritizesLatestUserDirection(t *testing.T) {
-	prompt := buildSummaryPrompt([]session.Todo{{Status: session.TodoStatusInProgress, Content: "current task"}})
+	prompt := buildSummaryPrompt([]session.Todo{{Status: session.TodoStatusInProgress, Content: "current task"}}, "")
 
 	require.Contains(t, prompt, "Treat the newest explicit user direction as authoritative")
 	require.Contains(t, prompt, "All User Messages")
@@ -360,8 +365,12 @@ func TestSummarizeUsesPromptedTextCheckpointAndClearsCodexChain(t *testing.T) {
 	require.Empty(t, calls[0].Tools)
 	require.Equal(t, options, calls[0].ProviderOptions)
 	require.Equal(t, sessionHeaders(current.ID, "summary"), calls[0].Headers)
-	require.Contains(t, fantasySystemText(calls[0].Prompt), "system prompt")
-	require.Equal(t, buildSummaryPrompt(nil), fantasyUserText(calls[0].Prompt[len(calls[0].Prompt)-1:]))
+	// Summarization must not inherit the agent's base system prompt (project
+	// instructions, skills, memory, tool descriptions): only the compaction
+	// template and any provider-level SystemPromptPrefix belong here, and
+	// this fixture sets no SystemPromptPrefix, so the system content is empty.
+	require.NotContains(t, fantasySystemText(calls[0].Prompt), "system prompt")
+	require.Equal(t, buildSummaryPrompt(nil, ""), fantasyUserText(calls[0].Prompt[len(calls[0].Prompt)-1:]))
 	require.Equal(t, []string{session.HashID(current.ID)}, resets)
 
 	storedSession, err := env.sessions.Get(t.Context(), current.ID)
@@ -442,7 +451,8 @@ func TestSummarizeAnthropicOutputBudgetAndCheckpoint(t *testing.T) {
 		{name: "configured override", catalogMax: 64000, configured: 12000, wantMax: 12000, stopReason: "end_turn", text: "<summary>checkpoint</summary>"},
 		{name: "unspecified budget", wantMax: 4096, stopReason: "end_turn", text: "<summary>checkpoint</summary>"},
 		{name: "truncated", catalogMax: 64000, wantMax: 64000, stopReason: "max_tokens", text: "<summary>unfinished", wantError: "truncated by a token limit"},
-		{name: "malformed", catalogMax: 64000, wantMax: 64000, stopReason: "end_turn", text: "<summary>unfinished", wantError: "non-empty <summary> block"},
+		{name: "truncated without length finish reason", catalogMax: 64000, wantMax: 64000, stopReason: "end_turn", text: "<summary>unfinished", wantError: "truncated by a token limit"},
+		{name: "malformed", catalogMax: 64000, wantMax: 64000, stopReason: "end_turn", text: "I cannot summarize this conversation.", wantError: "non-empty <summary> block"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			requests := make(chan map[string]any, 1)
@@ -499,7 +509,7 @@ func TestSummarizeAnthropicOutputBudgetAndCheckpoint(t *testing.T) {
 				require.NoError(t, err)
 			} else {
 				require.ErrorContains(t, err, test.wantError)
-				if test.stopReason == "end_turn" {
+				if test.stopReason == "end_turn" && !strings.Contains(test.wantError, "truncated") {
 					require.NotContains(t, err.Error(), "truncated")
 				}
 			}
@@ -897,6 +907,16 @@ func TestAutomaticCompactionPublishesSummaryPlaceholderAndCompletesIt(t *testing
 	})
 	require.NoError(t, err)
 	require.Equal(t, int64(2), model.calls.Load())
+
+	// The mid-turn automatic compaction call (the second Stream invocation)
+	// must not inherit the agent's base system prompt (project instructions,
+	// skills, memory, MCP/tool descriptions): only the compaction template
+	// belongs here. This fixture sets no provider SystemPromptPrefix, so the
+	// compaction call's system content must be entirely empty.
+	model.mu.Lock()
+	compactionPrompt := model.prompts[1]
+	model.mu.Unlock()
+	require.Empty(t, fantasySystemText(compactionPrompt))
 
 	createdEvent := nextSummaryMessageEvent(t, events)
 	require.Equal(t, pubsub.CreatedEvent, createdEvent.Type)

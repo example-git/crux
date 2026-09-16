@@ -59,19 +59,50 @@ func testRuntimeControlsThroughTLS(t *testing.T, adapter string) {
 	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
 	require.NoError(t, err)
 	var lostCommands sync.Map
-	remote := startWorkspaceChannelProxyServer(t, s.Handler(), tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
-		if fromClient && frame.Type == proto.WorkspaceChannelRuntimeReplaceFrame {
+	remote := startPeerChannelProxyServer(t, s.Handler(), tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, envelope proto.PeerEnvelope) workspaceChannelProxyDecision {
+		// A runtime-control publish is sent as whichever wire message covers
+		// what actually changed: a standalone PeerTypeRuntimeControlsPatch
+		// for host-level overrides, a PeerTypeModelSelectionSet when only a
+		// model-scoped or small-model provider option changed, or bundled
+		// into a PeerTypeRuntimeTransaction when provider state changed too.
+		// All three must be recognized as a control publication here.
+		isControlPublish := envelope.Type == proto.PeerTypeRuntimeTransaction || envelope.Type == proto.PeerTypeRuntimeControlsPatch || envelope.Type == proto.PeerTypeModelSelectionSet
+		if fromClient && isControlPublish {
 			publications.Add(1)
 			if reject.Swap(false) {
-				ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic rejected control publication"}}
-				return workspaceChannelProxyDecision{drop: true, reply: &ack}
+				// Corrupting the optimistic-concurrency digest makes the real
+				// server reject the publish, exercising the same
+				// synthetic-rejection scenario the legacy v1 proxy produced
+				// with a synthesized acknowledgement frame.
+				var payload []byte
+				var marshalErr error
+				switch envelope.Type {
+				case proto.PeerTypeRuntimeTransaction:
+					var transaction proto.PeerRuntimeTransaction
+					require.NoError(t, json.Unmarshal(envelope.Payload, &transaction))
+					transaction.Runtime.ExpectedDigest = strings.Repeat("0", 64)
+					payload, marshalErr = json.Marshal(transaction)
+				case proto.PeerTypeRuntimeControlsPatch:
+					var patch proto.PeerRuntimeControlsPatch
+					require.NoError(t, json.Unmarshal(envelope.Payload, &patch))
+					patch.Runtime.ExpectedDigest = strings.Repeat("0", 64)
+					payload, marshalErr = json.Marshal(patch)
+				default:
+					var selection proto.PeerModelSelectionSet
+					require.NoError(t, json.Unmarshal(envelope.Payload, &selection))
+					selection.Runtime.ResultDigest = strings.Repeat("0", 64)
+					payload, marshalErr = json.Marshal(selection)
+				}
+				require.NoError(t, marshalErr)
+				envelope.Payload = payload
+				return workspaceChannelProxyDecision{replacement: &envelope}
 			}
 			if loseAck.Swap(false) {
-				lostCommands.Store(frame.CommandID, struct{}{})
+				lostCommands.Store(envelope.MessageID, struct{}{})
 			}
 		}
-		if !fromClient && frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
-			if _, ok := lostCommands.LoadAndDelete(frame.CommandID); ok {
+		if !fromClient && envelope.Type == proto.PeerTypeAcknowledgement {
+			if _, ok := lostCommands.LoadAndDelete(envelope.ReplyTo); ok {
 				return workspaceChannelProxyDecision{drop: true, close: true}
 			}
 		}

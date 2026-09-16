@@ -295,6 +295,18 @@ func TestClientAuthenticationReviewCapacityRetainsPendingUntilExplicitAbandonmen
 	_, err = f.w.applyClientAuthenticationReview(t.Context(), other)
 	require.ErrorIs(t, err, providerauth.ErrOperationConflict)
 	f.getMode.Store(1)
+	// PeerWorkspaceAuthority is a local cache read that never touches the
+	// network while a connection stays open, so getMode's dial-time fault
+	// injection has no effect on it until the currently open connection is
+	// actually severed. Force that disconnect, then poll a disposable probe
+	// (which has no side effects on the review ledger under test) until the
+	// client has actually noticed and is redialing into the synthetic
+	// failure, before relying on every loop iteration below to observe it.
+	f.forceDisconnect(t)
+	require.Eventually(t, func() bool {
+		_, probeErr := f.w.client.PeerWorkspaceAuthority(t.Context(), f.w.workspaceID(), f.w.authority.principal)
+		return probeErr != nil
+	}, 5*time.Second, 5*time.Millisecond, "client must redial and observe the synthetic peer channel outage")
 	for sequence := uint64(2); sequence <= clientAuthenticationReceiptLimit+2; sequence++ {
 		_, err = f.w.reviewClientAuthentication(t.Context(), authenticationReviewAction(request.OperationID, request.Target, sequence))
 		require.Error(t, err)
@@ -516,6 +528,19 @@ func TestClientAuthenticationReviewDelayedReceiverFences(t *testing.T) {
 					f.w.ws.Authority = &copy
 				}
 				if phase == "review" {
+					// verifyAuthenticationReviewCache re-reads w.ws.Authority
+					// (and w.ws.ID) after the network round trip and compares
+					// it against the review.cache baseline captured just
+					// before that round trip. With the connection already
+					// open (from rejectedAuthenticationReviewFixture), the
+					// PeerWorkspaceAuthority call in between is a pure local
+					// cache read and never redials, so afterGet (tied to the
+					// dial handler) would never fire and the mutation would
+					// either never apply or apply too early to be observed
+					// as drift. Forcing a disconnect first makes that call
+					// genuinely redial, landing the mutation exactly between
+					// the baseline capture and the re-check.
+					f.forceDisconnect(t)
 					f.afterGet.Store(&change)
 				}
 				summary, err := f.w.reviewClientAuthentication(t.Context(), review)
@@ -524,6 +549,7 @@ func TestClientAuthenticationReviewDelayedReceiverFences(t *testing.T) {
 				} else {
 					require.NoError(t, err)
 					if phase == "apply" {
+						f.forceDisconnect(t)
 						f.afterGet.Store(&change)
 					} else {
 						f.afterPut.Store(&change)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/compatibility"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
@@ -59,7 +61,12 @@ func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, s
 	agentProvider, agentModel := selectedProvider, selectedModel
 	sessions := make(map[string]map[string]any)
 	cancelled := make(map[string]bool)
-	events := make(chan map[string]any, 16)
+	// events carries the fixture's synthetic run-completion payloads to the
+	// single peer-channel connection below, which is the v2 ("/v1/peer-channel")
+	// equivalent of the old v1 ("/channel") websocket this fixture used to
+	// serve directly as WorkspaceChannelFrame/proto.WorkspaceChannelProtocol
+	// frames. See the "/peer-channel" case for why this had to change.
+	events := make(chan proto.RunComplete, 16)
 	providerSurfaces := func() []any {
 		return []any{
 			map[string]any{"id": "openai", "name": "OpenAI", "owner": map[string]any{"provider_id": "openai", "construction": "openai-compat"}, "available": true, "availability": "available", "models": []any{
@@ -71,7 +78,25 @@ func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, s
 			}},
 		}
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// NOTE: this fixture must serve over a Unix socket, not TCP. The real
+	// client's dialPeerChannel (internal/client/workspace_channel.go) refuses
+	// to open the peer channel over insecure TCP outright ("peer channel
+	// refuses insecure TCP; use mutually authenticated TLS or a local
+	// socket") regardless of protocol version, so a TCP-backed fixture makes
+	// every codex-native-bridge call to SubscribeEvents fail before it ever
+	// reaches the "/peer-channel" handler below — which then leaves the
+	// app-server bridge's stdin scanner goroutine never started and the
+	// test's first write to stdin blocked forever. See
+	// internal/client/proto_test.go's peerChannelTestServer for the
+	// canonical unix-socket-backed reference this mirrors. Do not switch
+	// this back to httptest.NewServer (TCP).
+	socketDir, err := os.MkdirTemp("", "crx-native-api-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "native-api.sock")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", socketPath)
+	require.NoError(t, err)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/v1")
 		switch {
 		case path == "/health":
@@ -114,10 +139,47 @@ func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, s
 					"owner": owner,
 				},
 			})
-		case strings.HasSuffix(path, "/channel"):
-			connection, err := (&websocket.Upgrader{Subprotocols: []string{proto.WorkspaceChannelProtocol}}).Upgrade(w, r, nil)
+		case path == "/peer-channel":
+			// NOTE: this fixture used to serve the old v1 workspace channel
+			// directly ("/channel", proto.WorkspaceChannelProtocol,
+			// proto.WorkspaceChannelFrame). The real client
+			// (internal/client/workspace_channel.go's dialPeerChannel) now
+			// dials the v2 peer channel at "/v1/peer-channel" instead, so a
+			// fixture still speaking v1 here left the client's dial
+			// permanently unanswered: the app-server bridge would block
+			// forever before it ever read its first stdin message, hanging
+			// the whole test. Do not revert this back to the v1 shape; see
+			// internal/client/proto_test.go's peerChannelTestServer for the
+			// canonical v2 handshake this mirrors.
+			connection, err := (&websocket.Upgrader{Subprotocols: []string{proto.PeerChannelProtocol}}).Upgrade(w, r, nil)
 			require.NoError(t, err)
 			defer connection.Close()
+
+			_, helloData, err := connection.ReadMessage()
+			require.NoError(t, err)
+			hello, err := proto.DecodePeerMessage(helloData, proto.PeerDirectionClientToServer)
+			require.NoError(t, err)
+			require.Equal(t, proto.PeerTypeHello, hello.Envelope.Type)
+			epoch := hello.Envelope.Epoch
+
+			ack, err := proto.EncodePeerMessage(epoch, 1, "server-1", hello.Envelope.MessageID, "", proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+			require.NoError(t, err)
+			require.NoError(t, connection.WriteMessage(websocket.TextMessage, ack))
+			ready, err := proto.EncodePeerMessage(epoch, 2, "server-2", "", "", proto.PeerTypeReady, proto.PeerReady{})
+			require.NoError(t, err)
+			require.NoError(t, connection.WriteMessage(websocket.TextMessage, ready))
+
+			_, attachData, err := connection.ReadMessage()
+			require.NoError(t, err)
+			attach, err := proto.DecodePeerMessage(attachData, proto.PeerDirectionClientToServer)
+			require.NoError(t, err)
+			require.Equal(t, proto.PeerTypeWorkspaceAttach, attach.Envelope.Type)
+			workspaceID := attach.Envelope.WorkspaceID
+
+			attachAck, err := proto.EncodePeerMessage(epoch, 3, "server-3", attach.Envelope.MessageID, workspaceID, proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+			require.NoError(t, err)
+			require.NoError(t, connection.WriteMessage(websocket.TextMessage, attachAck))
+
 			closed := make(chan struct{})
 			go func() {
 				defer close(closed)
@@ -127,12 +189,27 @@ func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, s
 					}
 				}
 			}()
+			seq := uint64(4)
 			for {
 				select {
 				case event := <-events:
-					payload, err := json.Marshal(map[string]any{"type": "run_complete", "payload": map[string]any{"type": "updated", "payload": event}})
+					// The v2 protocol requires a distinct message type per
+					// terminal run status (run.completed only for success,
+					// run.cancelled when Cancelled is set, run.failed when
+					// Error is set) -- proto.validatePeerRunEvent rejects a
+					// run.completed envelope carrying Cancelled/Error.
+					messageType := proto.PeerTypeRunCompleted
+					switch {
+					case event.Cancelled:
+						messageType = proto.PeerTypeRunCancelled
+					case event.Error != "":
+						messageType = proto.PeerTypeRunFailed
+					}
+					resource := proto.PeerResourceEvent[proto.RunComplete]{Type: string(pubsub.UpdatedEvent), Payload: event}
+					data, err := proto.EncodePeerMessage(epoch, seq, fmt.Sprintf("server-%d", seq), "", workspaceID, messageType, resource)
 					require.NoError(t, err)
-					require.NoError(t, connection.WriteJSON(proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelEventFrame, Event: payload}))
+					seq++
+					require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
 				case <-closed:
 					return
 				}
@@ -171,7 +248,7 @@ func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, s
 				mu.Lock()
 				wasCancelled := cancelled[sessionID]
 				mu.Unlock()
-				events <- map[string]any{"session_id": sessionID, "run_id": runID, "message_id": "message-1", "text": responseText, "cancelled": wasCancelled}
+				events <- proto.RunComplete{SessionID: sessionID, RunID: runID, MessageID: "message-1", Text: responseText, Cancelled: wasCancelled}
 			}()
 			w.WriteHeader(http.StatusAccepted)
 		case strings.HasSuffix(path, "/cancel"):
@@ -236,11 +313,21 @@ func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, s
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	address := strings.TrimPrefix(server.URL, "http://")
+	})
+	server := &http.Server{Handler: handler}
+	finished := make(chan error, 1)
+	go func() { finished <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = listener.Close()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("native API fixture did not stop")
+		}
+	})
 	previous := codexClientFactory
-	codexClientFactory = func(path string) (*client.Client, error) { return client.NewClient(path, "tcp", address) }
+	codexClientFactory = func(path string) (*client.Client, error) { return client.NewClient(path, "unix", socketPath) }
 	t.Cleanup(func() { codexClientFactory = previous })
 	return workingDir
 }

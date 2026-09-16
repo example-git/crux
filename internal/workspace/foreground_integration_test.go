@@ -13,7 +13,7 @@ func TestForegroundControlRemoteSessionIsolation(t *testing.T) {
 	runtime := newRuntimeServer(t)
 	cwd := t.TempDir()
 	client := runtime.newClient(t, cwd)
-	created, err := client.CreateWorkspace(t.Context(), proto.Workspace{Path: cwd, DataDir: t.TempDir()})
+	created, err := client.CreateWorkspace(t.Context(), proto.Workspace{Path: cwd, DataDir: t.TempDir(), AuthorityMode: "server"})
 	require.NoError(t, err)
 	live, err := runtime.srv.Backend().GetWorkspace(created.ID)
 	require.NoError(t, err)

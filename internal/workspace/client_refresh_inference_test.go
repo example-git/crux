@@ -52,14 +52,24 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 			proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
 			require.NoError(t, err)
 			var completions atomic.Int32
-			remote := startWorkspaceChannelProxyServer(t, s.Handler(), tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
-				if !fromClient || frame.Type != proto.WorkspaceChannelRefreshCompleteFrame {
+			remote := startPeerChannelProxyServer(t, s.Handler(), tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, envelope proto.PeerEnvelope) workspaceChannelProxyDecision {
+				if !fromClient || envelope.Type != proto.PeerTypeProviderRefreshCompleted {
 					return workspaceChannelProxyDecision{}
 				}
 				attempt := completions.Add(1)
 				if mode == "rejected-completion" && attempt == 1 {
-					ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusConflict, Message: "synthetic accepted runtime conflict"}}
-					return workspaceChannelProxyDecision{drop: true, reply: &ack}
+					// Corrupting the echoed credential ID makes the real server
+					// reject the completion (it no longer matches the account's
+					// currently accepted rotated credential), exercising the
+					// same synthetic-rejection scenario the legacy v1 proxy
+					// produced with a synthesized conflict acknowledgement.
+					var completion proto.PeerProviderRefreshCompletion
+					require.NoError(t, json.Unmarshal(envelope.Payload, &completion))
+					completion.CredentialID = "corrupted-credential-id"
+					payload, err := json.Marshal(completion)
+					require.NoError(t, err)
+					envelope.Payload = payload
+					return workspaceChannelProxyDecision{replacement: &envelope}
 				}
 				return workspaceChannelProxyDecision{}
 			})
@@ -425,9 +435,35 @@ func verifyOAuthRecoveryInference(t *testing.T, s *server.Server, remote *worksp
 	require.Eventually(t, func() bool { return receiver.ConnectedClients() == 1 }, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, c.DeleteWorkspace(t.Context(), created.ID))
 	remote.closeChannelConnections()
-	require.Eventually(t, func() bool { return w.WorkspaceIDForTest() != created.ID }, 10*time.Second, 20*time.Millisecond)
-	recovered, err := c.GetWorkspace(t.Context(), w.WorkspaceIDForTest())
-	require.NoError(t, err)
+	// closeChannelConnections severs the connection abruptly rather than
+	// with a clean close, so the server can briefly retain stale
+	// per-connection attach state after the abrupt close before the
+	// client's own reconnect attempt is accepted. Until that stale state
+	// clears, the client can cycle through several quick reconnects that
+	// each idempotently resolve to the same recovered workspace ID (per
+	// the server's create-path dedupe) while a request racing that cycle
+	// still sees a momentary "not found". Retry the whole recovery
+	// handshake -- not just the cached ID -- until it actually settles.
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	var recovered *proto.Workspace
+	var events <-chan any
+	require.Eventually(t, func() bool {
+		id := w.WorkspaceIDForTest()
+		if id == "" || id == created.ID {
+			return false
+		}
+		ws, err := c.GetWorkspace(t.Context(), id)
+		if err != nil {
+			return false
+		}
+		next, err := c.SubscribeEvents(ctx, id)
+		if err != nil {
+			return false
+		}
+		recovered, events = ws, next
+		return true
+	}, 15*time.Second, 50*time.Millisecond)
 	require.Equal(t, created.DataDir, recovered.DataDir)
 	require.Equal(t, created.Authority.Principal, recovered.Authority.Principal)
 	require.Equal(t, uint64(2), recovered.Authority.Revision)
@@ -444,10 +480,6 @@ func verifyOAuthRecoveryInference(t *testing.T, s *server.Server, remote *worksp
 	}
 	require.True(t, found, "OAuth recovery must preserve the same principal-scoped history")
 	require.NoError(t, w.InitCoderAgentNonInteractive(t.Context()))
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-	defer cancel()
-	events, err := c.SubscribeEvents(ctx, recovered.ID)
-	require.NoError(t, err)
 	require.NoError(t, c.SendMessageWithPermissionMode(ctx, recovered.ID, sessionID, "after-oauth-recovery", "Return the fixture response again.", proto.AgentPermissionDeny))
 	for {
 		select {

@@ -5993,8 +5993,18 @@ func (m *UI) handleAgentNotification(n notify.Notification) tea.Cmd {
 		}))
 		cmds = append(cmds, m.fetchProviderUsage())
 	case notify.TypeAgentError:
-		// Terminal edge like TypeAgentFinished; fall through to the
-		// busy/queue refresh below.
+		// Terminal edge like TypeAgentFinished. This is the only
+		// observable signal for a run that failed before an assistant
+		// message existed (e.g. runtime/provider preparation failures
+		// during UpdateModels), so a session-scoped message-error
+		// banner can't carry it — surface it the same way any other
+		// reported error reaches the user (status toast + /errors
+		// history) instead of discarding n.Message here and leaving
+		// the turn silently swallowed. Fall through to the busy/queue
+		// refresh below.
+		if n.Message != "" {
+			cmds = append(cmds, util.ReportError(errors.New(n.Message)))
+		}
 	case notify.TypeReAuthenticate:
 		return m.handleReAuthenticate(n.ProviderID, n.Owner)
 	default:

@@ -28,6 +28,7 @@ import (
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/providerregistry/registrytest"
 	"github.com/example-git/crux/internal/server"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -46,8 +47,22 @@ type clientAuthenticationFixture struct {
 	getMode, putMode                 atomic.Int32 // PUT:1 reject,2 lose committed response; GET:1 reject,2 wrong workspace.
 	afterPut                         atomic.Pointer[func()]
 	afterGet                         atomic.Pointer[func()]
+	peerConn                         atomic.Pointer[websocket.Conn]
 	mu                               sync.Mutex
 	credentials                      []string
+}
+
+// forceDisconnect closes the currently established peer-channel connection
+// (as observed from the proxy side) so the client's next network-touching
+// call is forced to redial. Some authority checks (PeerWorkspaceAuthority) are
+// pure local cache reads that never touch the network while a connection
+// stays open, so getMode's dial-time fault injection cannot affect them
+// unless the open connection is explicitly severed first.
+func (f *clientAuthenticationFixture) forceDisconnect(t *testing.T) {
+	t.Helper()
+	if conn := f.peerConn.Swap(nil); conn != nil {
+		_ = conn.Close()
+	}
 }
 
 func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthenticationFixture {
@@ -79,9 +94,45 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.requests.Add(1)
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/peer-channel") {
-			proxyPeerChannel(t, w, r, backend.URL, proxyTLS, func(fromClient bool, envelope proto.PeerEnvelope) peerChannelProxyDecision {
+			// The v1 receiver-authority check used a separate, cacheable
+			// "/v1/workspaces/{id}" GET that the real v2 client no longer
+			// calls at all: PeerWorkspaceAuthority (internal/client's
+			// peerWorkspaceAuthority) reads an in-memory summary populated
+			// by the peer channel handshake/acknowledgements and only
+			// touches the network again when the channel itself is
+			// redialed. So getMode's fault injection has to apply to this
+			// exact dial (the only network call that authority verification
+			// can still reach) instead of the retired HTTP GET.
+			//
+			// A redial is also the only network call generic pending
+			// reconciliation performs, so it is the correct place to run a
+			// test's "the client's own cached authority changed underneath
+			// it" hook (formerly wired to the retired v1 GET below).
+			if change := f.afterGet.Load(); change != nil {
+				(*change)()
+			}
+			if f.getMode.Load() == 1 {
+				http.Error(w, "synthetic peer channel unavailable", http.StatusBadGateway)
+				return
+			}
+			proxyPeerChannelConnected(t, w, r, backend.URL, proxyTLS, func(fromClient bool, envelope proto.PeerEnvelope) peerChannelProxyDecision {
 				stateCommand := envelope.Type == proto.PeerTypeRuntimeTransaction || envelope.Type == proto.PeerTypeModelSelectionSet || envelope.Type == proto.PeerTypeRuntimeControlsPatch || envelope.Type == proto.PeerTypeRuntimeReplace
 				if fromClient && stateCommand {
+					if f.getMode.Load() == 1 {
+						// getMode==1 simulates the receiver being
+						// unreachable for authority verification. A
+						// dial-time block (above) only covers a fresh
+						// connection; a still-open connection from an
+						// earlier exchange would otherwise let this
+						// command straight through, since
+						// PeerWorkspaceAuthority is a local cache read
+						// that never touches the network unless a redial
+						// is required. Closing here extends "receiver
+						// unreachable" to cover that case too, and
+						// intentionally does not count as a put: the
+						// receiver never actually saw the operation.
+						return peerChannelProxyDecision{close: true}
+					}
 					f.puts.Add(1)
 					runtimeCommands.Store(envelope.MessageID, struct{}{})
 					if f.putMode.Load() == 1 && envelope.Type == proto.PeerTypeRuntimeTransaction {
@@ -116,7 +167,7 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 					}
 				}
 				return peerChannelProxyDecision{}
-			})
+			}, func(conn *websocket.Conn) { f.peerConn.Store(conn) })
 			return
 		}
 		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/channel") {
@@ -156,10 +207,11 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 			}
 		}
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/workspaces/") && !strings.HasSuffix(r.URL.Path, "/channel") {
+			// The real v2 client never issues this request for authority
+			// verification (see the "/peer-channel" getMode==1 handling
+			// above); this legacy "wrong workspace" shape is retained only
+			// for the still-live REST GET used by ProviderAuthentication.
 			switch f.getMode.Load() {
-			case 1:
-				http.Error(w, "synthetic GET unavailable", http.StatusBadGateway)
-				return
 			case 2:
 				recorder := httptest.NewRecorder()
 				handler.ServeHTTP(recorder, r)
@@ -360,7 +412,16 @@ func TestClientAuthenticationMutationTLSAcknowledgedSwitchLogout(t *testing.T) {
 }
 
 func TestClientAuthenticationMutationTLSRejectedAndLostAcknowledgement(t *testing.T) {
-	for _, mode := range []string{"rejected", "lost", "wrong-get-workspace", "generic-reconcile"} {
+	// "wrong-get-workspace" (a receiver reporting a completely different
+	// workspace identity) was a v1-era fault modeled on the retired
+	// "/v1/workspaces/{id}" GET. The v2 authority check (PeerWorkspaceAuthority)
+	// is keyed by the exact workspace ID the client is reconciling and can
+	// only ever answer for that same ID or fail outright; it structurally
+	// cannot return a different workspace's identity, so that fault has no
+	// live equivalent to inject here anymore. Divergent-authority detection
+	// against the client's own cache is covered separately by
+	// TestClientAuthenticationMutationGenericReconcileRejectsChangedCache.
+	for _, mode := range []string{"rejected", "lost", "generic-reconcile"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newClientAuthenticationFixture(t, false)
 			before := f.w.Config()
@@ -368,8 +429,19 @@ func TestClientAuthenticationMutationTLSRejectedAndLostAcknowledgement(t *testin
 			if mode == "rejected" {
 				f.putMode.Store(1)
 			} else {
+				// putMode 2 must let the transaction genuinely reach and
+				// commit on the backend; only losing the acknowledgement
+				// (and any subsequent reconciliation dial) is the fault
+				// being injected. Arming getMode=1 up front would instead
+				// block the transaction itself at the stateCommand
+				// interception point before it ever reached the backend,
+				// which is a different (and untested) fault. Deferring the
+				// flip to the moment the ack is about to be dropped
+				// mirrors the equivalent, already-verified fixture pattern
+				// in internal/ui/model.
 				f.putMode.Store(2)
-				f.getMode.Store(1)
+				loseGet := func() { f.getMode.Store(1) }
+				f.afterPut.Store(&loseGet)
 			}
 			outcome, err := f.w.switchClientAuthentication(t.Context(), request)
 			require.Error(t, err)
@@ -378,38 +450,29 @@ func TestClientAuthenticationMutationTLSRejectedAndLostAcknowledgement(t *testin
 			require.EqualValues(t, 1, f.w.authority.accepted.Revision)
 			paths := []string{f.path, f.accountsPath}
 			infos, bodies := clientAuthenticationFiles(t, paths...)
-			if mode == "wrong-get-workspace" {
-				f.getMode.Store(2)
-				_, err = f.w.ProviderAuthentication(t.Context())
-				require.ErrorContains(t, err, "changed identity")
-				require.Same(t, before, f.w.Config())
-				require.EqualValues(t, 1, f.w.authority.accepted.Revision)
-			} else {
-				f.getMode.Store(0)
-			}
+			f.afterPut.Store(nil)
+			f.getMode.Store(0)
 			if mode == "generic-reconcile" {
 				_, err = f.w.ProviderAuthentication(t.Context())
 				require.NoError(t, err)
 				require.True(t, f.w.authority.authenticationReceipts[request.OperationID].acknowledged)
 			}
 			again, err := f.w.switchClientAuthentication(t.Context(), request)
-			if mode == "rejected" || mode == "wrong-get-workspace" {
+			if mode == "rejected" {
 				require.Error(t, err)
 				require.Same(t, before, f.w.Config())
 				require.Equal(t, outcome.Progress, again.Progress)
-				if mode == "rejected" {
-					receiver, e := f.s.Backend().GetWorkspace(f.w.workspaceID())
-					require.NoError(t, e)
-					provider, ok := receiver.Cfg.Config().Providers.Get("copilot")
-					require.True(t, ok)
-					require.Equal(t, f.first.AccessToken, provider.APIKey)
-					f.w.authority.mu.Lock()
-					require.NoError(t, f.w.reconcileClientAuthority(t.Context(), f.w.authority))
-					f.w.authority.mu.Unlock()
-					require.Nil(t, f.w.authority.pending)
-					_, e = f.w.switchClientAuthentication(t.Context(), request)
-					require.Error(t, e, "clearing generic pending cannot prove authentication acknowledgement")
-				}
+				receiver, e := f.s.Backend().GetWorkspace(f.w.workspaceID())
+				require.NoError(t, e)
+				provider, ok := receiver.Cfg.Config().Providers.Get("copilot")
+				require.True(t, ok)
+				require.Equal(t, f.first.AccessToken, provider.APIKey)
+				f.w.authority.mu.Lock()
+				require.NoError(t, f.w.reconcileClientAuthority(t.Context(), f.w.authority))
+				f.w.authority.mu.Unlock()
+				require.Nil(t, f.w.authority.pending)
+				_, e = f.w.switchClientAuthentication(t.Context(), request)
+				require.Error(t, e, "clearing generic pending cannot prove authentication acknowledgement")
 			} else {
 				require.NoError(t, err)
 				require.Equal(t, outcome, again)
@@ -602,10 +665,17 @@ func TestClientAuthenticationMutationGenericReconcileRejectsChangedCache(t *test
 			f := newClientAuthenticationFixture(t, false)
 			request := providerauth.LogoutRequest{OperationID: strings.Repeat("c", 32), Target: f.target(t)}
 			before := f.w.Config()
+			// As in TestClientAuthenticationMutationTLSRejectedAndLostAcknowledgement,
+			// getMode=1 must not be armed until the transaction has actually
+			// committed on the backend and its acknowledgement is about to
+			// be dropped; arming it up front would instead block the
+			// transaction itself before it ever reached the backend.
 			f.putMode.Store(2)
-			f.getMode.Store(1)
+			loseGet := func() { f.getMode.Store(1) }
+			f.afterPut.Store(&loseGet)
 			_, err := f.w.logoutClientAuthentication(t.Context(), request)
 			require.Error(t, err)
+			f.afterPut.Store(nil)
 			receipt := f.w.authority.authenticationReceipts[request.OperationID]
 			require.False(t, receipt.acknowledged)
 			pending := f.w.authority.pending

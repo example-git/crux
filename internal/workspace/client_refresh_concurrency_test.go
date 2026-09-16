@@ -20,6 +20,7 @@ import (
 	"github.com/example-git/crux/internal/connection"
 	"github.com/example-git/crux/internal/oauth/accounts"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/workspace"
@@ -55,29 +56,37 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 			losePut.Store(mode == "lost-acknowledgements")
 			loseCompletion.Store(mode == "lost-acknowledgements")
 			var dropped sync.Map
-			remote := startWorkspaceChannelProxyServer(t, s.Handler(), tlsConfig, func(r *http.Request) *tls.Config {
+			remote := startPeerChannelProxyServer(t, s.Handler(), tlsConfig, func(r *http.Request) *tls.Config {
 				if len(r.TLS.PeerCertificates) > 0 && bytes.Equal(r.TLS.PeerCertificates[0].Raw, peerTLS.Certificates[0].Certificate[0]) {
 					return peerTLS
 				}
 				return firstTLS
-			}, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
+			}, func(fromClient bool, envelope proto.PeerEnvelope) workspaceChannelProxyDecision {
 				if fromClient {
-					switch frame.Type {
-					case proto.WorkspaceChannelRuntimeReplaceFrame:
+					// The post-refresh runtime publish is whichever
+					// incremental peer message the client picked for what
+					// actually changed (here, only the credential value, so
+					// PatchRemoteRuntime always sends a
+					// PeerTypeRuntimeTransaction), but a full
+					// PeerTypeRuntimeReplace is also treated as a publish
+					// for robustness.
+					isPut := envelope.Type == proto.PeerTypeRuntimeTransaction || envelope.Type == proto.PeerTypeRuntimeReplace || envelope.Type == proto.PeerTypeRuntimeControlsPatch || envelope.Type == proto.PeerTypeModelSelectionSet
+					switch {
+					case isPut:
 						puts.Add(1)
 						if losePut.Swap(false) {
-							dropped.Store(frame.CommandID, struct{}{})
+							dropped.Store(envelope.MessageID, struct{}{})
 						}
-					case proto.WorkspaceChannelRefreshCompleteFrame:
+					case envelope.Type == proto.PeerTypeProviderRefreshCompleted:
 						completions.Add(1)
 						if loseCompletion.Swap(false) {
-							dropped.Store(frame.CommandID, struct{}{})
+							dropped.Store(envelope.MessageID, struct{}{})
 						}
 					}
 					return workspaceChannelProxyDecision{}
 				}
-				if frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
-					if _, ok := dropped.LoadAndDelete(frame.CommandID); ok {
+				if envelope.Type == proto.PeerTypeAcknowledgement {
+					if _, ok := dropped.LoadAndDelete(envelope.ReplyTo); ok {
 						return workspaceChannelProxyDecision{drop: true, close: true}
 					}
 				}
@@ -179,12 +188,29 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 			for index, p := range participants {
 				events, err := p.client.SubscribeEvents(ctx, p.created.ID)
 				require.NoError(t, err)
+				owner := providerauth.PublicOwner(p.created.Runtime.Credentials[0].Owner)
 				go func() {
 					waiting := true
 					for {
 						select {
 						case event, ok := <-events:
 							if !ok {
+								// The proxy's fault injection for a lost
+								// acknowledgement forcibly closes the whole
+								// peer-channel connection, which also drops
+								// any unrelated event (such as this
+								// participant's own RunComplete) that was
+								// published while genuinely disconnected: a
+								// fresh subscription only observes events
+								// from the moment it is created, and pending
+								// client-refresh requests are the only event
+								// kind the server explicitly replays after
+								// reattachment. Once past the refresh
+								// synchronization gate, poll the durable
+								// session state after resubscribing so a
+								// completion that happened during the gap is
+								// still observed instead of hanging until
+								// the test's deadline.
 								for {
 									next, subscribeErr := p.client.SubscribeEvents(ctx, p.created.ID)
 									if subscribeErr == nil {
@@ -198,10 +224,16 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 										return
 									}
 								}
+								if !waiting {
+									if info, infoErr := p.client.GetAgentSessionInfo(ctx, p.created.ID, p.sessionID); infoErr == nil && !info.IsBusy {
+										results <- outcome{index: index, run: proto.RunComplete{SessionID: p.sessionID, RunID: "shared-refresh", Text: info.Title}}
+										return
+									}
+								}
 								continue
 							}
-							if refresh, ok := event.(pubsub.Event[config.ClientRefreshRequest]); ok && waiting {
-								if refresh.Payload.Principal != p.created.Authority.Principal || refresh.Payload.Revision != 1 || refresh.Payload.CredentialID != accounts.CredentialID(entry) {
+							if refresh, ok := event.(proto.PeerProviderRefreshRequest); ok && waiting {
+								if refresh.Provider.Owner != owner || refresh.Revision != 1 {
 									results <- outcome{index: index, err: fmt.Errorf("refresh request lost its initiating authority")}
 									return
 								}

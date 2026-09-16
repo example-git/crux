@@ -18,6 +18,21 @@ import (
 
 type clientRefreshEvent struct{ deadline int64 }
 
+// clientRefreshFailureReason returns a bounded, non-secret explanation of why
+// the owning client could not fulfill a refresh request. fulfillClientRefresh
+// only ever returns validation/state errors or an OAuth exchange failure, not
+// credential values, but the text is still capped defensively before it
+// leaves this process on the wire.
+func clientRefreshFailureReason(err error) string {
+	const maxReasonRunes = 500
+	message := err.Error()
+	runes := []rune(message)
+	if len(runes) <= maxReasonRunes {
+		return message
+	}
+	return string(runes[:maxReasonRunes]) + "..."
+}
+
 // HandleClientRefreshEvent is shared by the UI subscription and headless run
 // loop. Work runs asynchronously so token exchange cannot stall channel draining.
 func (w *ClientWorkspace) HandleClientRefreshEvent(ctx context.Context, event any) bool {
@@ -55,7 +70,7 @@ func (w *ClientWorkspace) HandleClientRefreshEvent(ctx context.Context, event an
 		response, err := w.fulfillClientRefresh(refreshCtx, request)
 		if err != nil {
 			slog.Error("Owning client refresh failed", "provider", request.Owner.ProviderID, "error", err)
-			response = config.ClientRefreshCompletion{RequestID: request.ID, Failed: true}
+			response = config.ClientRefreshCompletion{RequestID: request.ID, Failed: true, Reason: clientRefreshFailureReason(err)}
 		}
 		// Re-send the identical completion after a lost response. The receiver
 		// records it by request ID; this never repeats an exchange or runtime PUT.
@@ -74,7 +89,7 @@ func (w *ClientWorkspace) HandleClientRefreshEvent(ctx context.Context, event an
 				// A concurrent accepted revision may no longer satisfy the
 				// initiating definition/account. End that old request explicitly;
 				// never leave it waiting after this client has stopped retrying.
-				response = config.ClientRefreshCompletion{RequestID: request.ID, Failed: true}
+				response = config.ClientRefreshCompletion{RequestID: request.ID, Failed: true, Reason: "a newer accepted runtime replaced this refresh request before it completed"}
 				continue
 			}
 			select {

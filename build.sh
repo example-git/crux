@@ -23,11 +23,6 @@ build_crux() {
   CGO_ENABLED=0 GOEXPERIMENT=greenteagc go build -v ${go_tag_args[@]+"${go_tag_args[@]}"} -o crux .
 }
 
-build_crux_amd64() {
-  GOOS=darwin GOARCH=amd64 CGO_ENABLED=0 GOEXPERIMENT=greenteagc go build -v -o crux-amd64 . || return
-  arch -x86_64 ./crux-amd64 --version >/dev/null
-}
-
 backup_crux() {
   local backup_dir=$HOME/.ai-cli/backups/crux
   local timestamp
@@ -53,18 +48,6 @@ run_build() {
   run_step "Building Crux" build_crux
 }
 
-run_amd64_build() {
-  if [[ $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
-    printf 'FAILURE: --build-amd64 requires Apple Silicon macOS with Rosetta.\n' >&2
-    return 2
-  fi
-  if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
-    printf 'FAILURE: Rosetta is not installed or unavailable.\n' >&2
-    return 2
-  fi
-  run_step "Building and verifying the macOS amd64 Crux binary with Rosetta" build_crux_amd64
-}
-
 run_install() {
   run_build || return
   if [[ -e "$HOME/.ai-cli/bin/crux" ]]; then
@@ -85,7 +68,6 @@ run_checks() {
 usage() {
   printf 'Usage: %s [MODE] [--embedded-mitmproxy]\n' "$0"
   printf '  --build               Build ./crux without installing it\n'
-  printf '  --build-amd64         Build ./crux-amd64 for macOS amd64 and verify it with Rosetta\n'
   printf '  --install             Build and install Crux (default)\n'
   printf '  --test                Run the full race test suite\n'
   printf '  --check               Run the race build and log capitalization check\n'
@@ -99,7 +81,7 @@ for argument in "$@"; do
     --embedded-mitmproxy)
       embedded_mitmproxy=1
       ;;
-    --build|--build-amd64|--install|--test|--check|--all|--help|-h)
+    --build|--install|--test|--check|--all|--help|-h)
       if [[ -n $mode ]]; then
         printf 'FAILURE: multiple modes requested: %s and %s.\n' "$mode" "$argument" >&2
         usage >&2
@@ -117,10 +99,6 @@ done
 mode=${mode:---install}
 
 if (( embedded_mitmproxy )) && [[ $mode != --help && $mode != -h ]]; then
-  if [[ $mode == --build-amd64 ]]; then
-    printf 'FAILURE: embedded mitmproxy supports Darwin arm64, Linux amd64, and Linux arm64 only.\n' >&2
-    exit 2
-  fi
   run_step "Preparing the embedded mitmproxy runtime" python3 ./scripts/build-embedded-mitmproxy.py --target current || exit
   go_tag_args=(-tags embedded_mitmproxy)
 fi
@@ -128,9 +106,6 @@ fi
 case "$mode" in
   --build)
     run_build
-    ;;
-  --build-amd64)
-    run_amd64_build
     ;;
   --install)
     run_install

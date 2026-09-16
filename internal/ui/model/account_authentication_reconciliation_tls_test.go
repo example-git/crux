@@ -29,6 +29,7 @@ import (
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/workspace"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
@@ -85,23 +86,78 @@ func newAuthenticationReconciliationTLSFixture(t *testing.T, barrier bool) *auth
 	var runtimeCommands sync.Map
 	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.requests.Add(1)
-		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/channel") {
-			proxyModelWorkspaceChannel(t, w, r, backend.URL, proxyTLS, func(fromClient bool, frame proto.WorkspaceChannelFrame) modelWorkspaceChannelProxyDecision {
-				if fromClient && frame.Type == proto.WorkspaceChannelRuntimeReplaceFrame {
-					f.puts.Add(1)
-					runtimeCommands.Store(frame.CommandID, struct{}{})
-					if f.putMode.Load() == 1 {
-						runtimeCommands.Delete(frame.CommandID)
-						ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic rejection"}}
-						return modelWorkspaceChannelProxyDecision{drop: true, reply: &ack}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/peer-channel") {
+			// The v1 receiver-authority check used a separate, cacheable
+			// "/v1/workspaces/{id}" GET that the real v2 client no longer
+			// calls at all: PeerWorkspaceAuthority (internal/client's
+			// peerWorkspaceAuthority) reads an in-memory summary populated by
+			// the peer channel handshake/acknowledgements and only touches
+			// the network again when the channel itself is redialed. So
+			// getMode's fault injection has to apply to this exact dial
+			// (the only network call that authority verification can still
+			// reach) instead of the retired HTTP GET.
+			if f.getMode.Load() == 1 {
+				http.Error(w, "synthetic peer channel unavailable", http.StatusBadGateway)
+				return
+			}
+			proxyModelWorkspaceChannel(t, w, r, backend.URL, proxyTLS, func(fromClient bool, envelope proto.PeerEnvelope) modelWorkspaceChannelProxyDecision {
+				if fromClient && isPeerRuntimeCommand(envelope.Type) {
+					if f.getMode.Load() == 1 {
+						// getMode==1 simulates the receiver being unreachable
+						// for authority verification. A dial-time block (see
+						// the "/peer-channel" handling above) only covers a
+						// fresh connection; a still-open connection from an
+						// earlier exchange would otherwise let this command
+						// straight through, since PeerWorkspaceAuthority is a
+						// local cache read that never touches the network
+						// unless a redial is required. Closing here extends
+						// "receiver unreachable" to cover that case too, and
+						// intentionally does not count as a put: the
+						// receiver never actually saw the operation.
+						return modelWorkspaceChannelProxyDecision{close: true}
 					}
+					f.puts.Add(1)
+					mode := f.putMode.Load()
+					runtimeCommands.Store(envelope.MessageID, mode)
+					if mode == 1 {
+						runtimeCommands.Delete(envelope.MessageID)
+						payload, err := json.Marshal(proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic rejection"})
+						if err == nil {
+							// The proxy assigns the actual wire Sequence;
+							// this synthetic reply only needs to carry the
+							// fields that matter above the wire layer.
+							reply := &proto.PeerEnvelope{
+								Version:     proto.PeerChannelVersion,
+								Epoch:       envelope.Epoch,
+								MessageID:   uuid.NewString(),
+								ReplyTo:     envelope.MessageID,
+								Kind:        proto.PeerMessageAcknowledgement,
+								Type:        proto.PeerTypeAcknowledgement,
+								WorkspaceID: envelope.WorkspaceID,
+								Payload:     payload,
+							}
+							if change := f.afterPut.Load(); change != nil {
+								(*change)()
+							}
+							// putMode 1 rejects over the live connection: no
+							// reconnect needed, since the synthetic ack alone
+							// resolves the pending command.
+							return modelWorkspaceChannelProxyDecision{drop: true, reply: reply}
+						}
+					}
+					// putMode 2 ("lose committed response") lets the command
+					// reach the real backend and genuinely commit there; only
+					// its acknowledgement is dropped below, forcing the
+					// client to reconnect and discover the already-applied
+					// change through peer-channel authority reconciliation
+					// rather than through a second PUT.
 				}
-				if !fromClient && frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
-					if _, ok := runtimeCommands.LoadAndDelete(frame.CommandID); ok {
+				if !fromClient && envelope.Type == proto.PeerTypeAcknowledgement {
+					if mode, ok := runtimeCommands.LoadAndDelete(envelope.ReplyTo); ok {
 						if change := f.afterPut.Load(); change != nil {
 							(*change)()
 						}
-						if f.putMode.Load() == 2 {
+						if mode == int32(2) {
 							return modelWorkspaceChannelProxyDecision{drop: true, close: true}
 						}
 					}
@@ -111,10 +167,11 @@ func newAuthenticationReconciliationTLSFixture(t *testing.T, barrier bool) *auth
 			return
 		}
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/workspaces/") {
+			// The real v2 client never issues this request (see the
+			// "/peer-channel" getMode==1 handling above); this legacy
+			// "wrong workspace" shape is retained only in case a future test
+			// exercises a lingering v1-compatible caller.
 			switch f.getMode.Load() {
-			case 1:
-				http.Error(w, "synthetic GET unavailable", http.StatusBadGateway)
-				return
 			case 2:
 				recorder := httptest.NewRecorder()
 				handler.ServeHTTP(recorder, r)

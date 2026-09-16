@@ -137,8 +137,25 @@ func proxyWorkspaceChannel(t *testing.T, w http.ResponseWriter, r *http.Request,
 
 	var frontendWrite sync.Mutex
 	var backendWrite sync.Mutex
+	// toBackendSeq/toClientSeq are the gapless, per-connection wire sequence
+	// counters each endpoint actually observes for peer-channel (v2)
+	// traffic. The real v2 server (internal/server/peer_channel.go's
+	// readLoop) rejects any message whose Sequence does not immediately
+	// follow the last one it saw, so every message actually delivered on a
+	// given leg (forwarded untouched, replaced, or synthesized here) must be
+	// renumbered against that leg's own counter, or a dropped/injected
+	// message on one leg desyncs the other leg's expected sequence and the
+	// connection is killed before the fault-injection scenario takes
+	// effect. This only applies when peerIntercept is in use; the legacy
+	// workspace-channel (v1) path below is unaffected.
+	var toBackendSeq, toClientSeq uint64
 	done := make(chan struct{}, 2)
-	pump := func(source, destination *websocket.Conn, fromClient bool, destinationWrite, sourceWrite *sync.Mutex) {
+	renumber := func(counter *uint64, envelope proto.PeerEnvelope) ([]byte, error) {
+		*counter++
+		envelope.Sequence = *counter
+		return json.Marshal(envelope)
+	}
+	pump := func(source, destination *websocket.Conn, fromClient bool, destinationWrite, sourceWrite *sync.Mutex, destinationSeq, sourceSeq *uint64) {
 		defer func() { done <- struct{}{} }()
 		for {
 			messageType, data, readErr := source.ReadMessage()
@@ -146,11 +163,13 @@ func proxyWorkspaceChannel(t *testing.T, w http.ResponseWriter, r *http.Request,
 				return
 			}
 			decision := workspaceChannelProxyDecision{}
+			var peerEnvelope proto.PeerEnvelope
+			havePeerEnvelope := false
 			if messageType == websocket.TextMessage {
 				if peerIntercept != nil {
-					var envelope proto.PeerEnvelope
-					if json.Unmarshal(data, &envelope) == nil && envelope.Version == proto.PeerChannelVersion {
-						decision = peerIntercept(fromClient, envelope)
+					if json.Unmarshal(data, &peerEnvelope) == nil && peerEnvelope.Version == proto.PeerChannelVersion {
+						havePeerEnvelope = true
+						decision = peerIntercept(fromClient, peerEnvelope)
 					}
 				} else if intercept != nil {
 					var frame proto.WorkspaceChannelFrame
@@ -159,40 +178,74 @@ func proxyWorkspaceChannel(t *testing.T, w http.ResponseWriter, r *http.Request,
 					}
 				}
 			}
-			if decision.replacement != nil {
-				replacement, marshalErr := json.Marshal(decision.replacement)
-				if marshalErr != nil {
+			if peerIntercept == nil {
+				if decision.replacement != nil {
+					replacement, marshalErr := json.Marshal(decision.replacement)
+					if marshalErr != nil {
+						return
+					}
+					data = replacement
+				}
+				if decision.reply != nil {
+					reply, marshalErr := json.Marshal(decision.reply)
+					if marshalErr != nil {
+						return
+					}
+					sourceWrite.Lock()
+					writeErr := source.WriteMessage(websocket.TextMessage, reply)
+					sourceWrite.Unlock()
+					if writeErr != nil {
+						return
+					}
+				}
+				if decision.close {
 					return
 				}
-				data = replacement
-			}
-			if decision.reply != nil {
-				reply, marshalErr := json.Marshal(decision.reply)
-				if marshalErr != nil {
-					return
+				if decision.drop {
+					continue
 				}
-				sourceWrite.Lock()
-				writeErr := source.WriteMessage(websocket.TextMessage, reply)
-				sourceWrite.Unlock()
+				destinationWrite.Lock()
+				writeErr := destination.WriteMessage(messageType, data)
+				destinationWrite.Unlock()
 				if writeErr != nil {
 					return
 				}
+				continue
 			}
+			// No peer-channel intercept sets decision.reply today (it is
+			// typed for the legacy v1 WorkspaceChannelFrame reply below,
+			// not proto.PeerEnvelope); only replacement/drop/close are
+			// meaningful on this leg.
 			if decision.close {
 				return
 			}
 			if decision.drop {
 				continue
 			}
+			outgoing := data
+			switch {
+			case decision.replacement != nil:
+				replacement, marshalErr := renumber(destinationSeq, *decision.replacement)
+				if marshalErr != nil {
+					return
+				}
+				outgoing = replacement
+			case havePeerEnvelope:
+				rewritten, marshalErr := renumber(destinationSeq, peerEnvelope)
+				if marshalErr != nil {
+					return
+				}
+				outgoing = rewritten
+			}
 			destinationWrite.Lock()
-			writeErr := destination.WriteMessage(messageType, data)
+			writeErr := destination.WriteMessage(messageType, outgoing)
 			destinationWrite.Unlock()
 			if writeErr != nil {
 				return
 			}
 		}
 	}
-	go pump(frontend, backend, true, &backendWrite, &frontendWrite)
-	go pump(backend, frontend, false, &frontendWrite, &backendWrite)
+	go pump(frontend, backend, true, &backendWrite, &frontendWrite, &toBackendSeq, &toClientSeq)
+	go pump(backend, frontend, false, &frontendWrite, &backendWrite, &toClientSeq, &toBackendSeq)
 	<-done
 }

@@ -120,11 +120,20 @@ func (c *Client) getWorkspaceChannel(ctx context.Context, id string, authority .
 	}
 	if accepted != nil && accepted.Mode == "client" {
 		summary, err := peer.workspaceSummary(id)
-		if err != nil {
+		switch {
+		case err == nil:
+			if summary.Revision != accepted.Revision || summary.Digest != accepted.Digest {
+				return nil, errors.New("peer channel receiver has a different accepted runtime than the retained client authority")
+			}
+		case errors.Is(err, ErrNotFound):
+			// The current peer connection has no record of this workspace ID yet
+			// (it may have been created or recovered after this connection's hello
+			// handshake, or after its last heartbeat merge). That does not mean the
+			// workspace is unreachable: fall through and let the attach command
+			// below establish it against the server directly. The acknowledgement
+			// check further down still rejects a mismatched resulting authority.
+		default:
 			return nil, err
-		}
-		if summary.Revision != accepted.Revision || summary.Digest != accepted.Digest {
-			return nil, errors.New("peer channel receiver has a different accepted runtime than the retained client authority")
 		}
 	}
 	c.channelsMu.Lock()
@@ -325,7 +334,7 @@ func (c *Client) sendWorkspaceChannelCommand(ctx context.Context, id string, fra
 		payload = proto.PeerRuntimeReplace{ExpectedRevision: frame.RuntimeReplace.ExpectedRevision, Runtime: frame.RuntimeReplace.Runtime}
 	case proto.WorkspaceChannelRefreshCompleteFrame:
 		messageType = proto.PeerTypeProviderRefreshCompleted
-		payload = proto.PeerProviderRefreshCompletion{RequestID: frame.RefreshComplete.RequestID, Revision: frame.RefreshComplete.Revision, Digest: frame.RefreshComplete.Digest, CredentialID: frame.RefreshComplete.CredentialID, Failed: frame.RefreshComplete.Failed}
+		payload = proto.PeerProviderRefreshCompletion{RequestID: frame.RefreshComplete.RequestID, Revision: frame.RefreshComplete.Revision, Digest: frame.RefreshComplete.Digest, CredentialID: frame.RefreshComplete.CredentialID, Failed: frame.RefreshComplete.Failed, Reason: frame.RefreshComplete.Reason}
 	default:
 		return proto.WorkspaceChannelAcknowledgement{}, errors.New("workspace command has no peer channel mapping")
 	}

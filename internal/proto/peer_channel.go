@@ -63,48 +63,49 @@ const (
 type PeerMessageType string
 
 const (
-	PeerTypeHello                        PeerMessageType = "peer.hello"
-	PeerTypeReady                        PeerMessageType = "peer.ready"
-	PeerTypeHeartbeat                    PeerMessageType = "peer.heartbeat"
-	PeerTypeGoodbye                      PeerMessageType = "peer.goodbye"
-	PeerTypeStateSummary                 PeerMessageType = "state.summary"
-	PeerTypeStateRequired                PeerMessageType = "state.required"
-	PeerTypeWorkspaceAttach              PeerMessageType = "workspace.attach"
-	PeerTypeWorkspaceDetach              PeerMessageType = "workspace.detach"
-	PeerTypeSessionCurrentSet            PeerMessageType = "session.current.set"
-	PeerTypeProviderDefinitionPut        PeerMessageType = "provider.definition.put"
-	PeerTypeProviderDefinitionRemove     PeerMessageType = "provider.definition.remove"
-	PeerTypeProviderAvailability         PeerMessageType = "provider.availability.changed"
-	PeerTypeProviderAuthChanged          PeerMessageType = "provider.auth.changed"
-	PeerTypeProviderAuthInvalidated      PeerMessageType = "provider.auth.invalidated"
-	PeerTypeProviderRefreshRequired      PeerMessageType = "provider.auth.refresh_required"
-	PeerTypeProviderRefreshCompleted     PeerMessageType = "provider.auth.refresh_completed"
-	PeerTypeProviderCredentialReplace    PeerMessageType = "provider.credential.replace"
-	PeerTypeProviderCredentialInvalidate PeerMessageType = "provider.credential.invalidate"
-	PeerTypeModelSelectionSet            PeerMessageType = "model.selection.set"
-	PeerTypeModelSelectionChanged        PeerMessageType = "model.selection.changed"
-	PeerTypeRuntimeControlsPatch         PeerMessageType = "runtime.controls.patch"
-	PeerTypeRuntimePatchApplied          PeerMessageType = "runtime.patch.applied"
-	PeerTypeRuntimeTransaction           PeerMessageType = "runtime.transaction.apply"
-	PeerTypeRuntimeReplace               PeerMessageType = "runtime.replace"
-	PeerTypeAcknowledgement              PeerMessageType = "peer.acknowledgement"
-	PeerTypeError                        PeerMessageType = "peer.error"
-	PeerTypeEventLSP                     PeerMessageType = "event.lsp"
-	PeerTypeEventMCP                     PeerMessageType = "event.mcp"
-	PeerTypeEventPermissionRequest       PeerMessageType = "event.permission.request"
-	PeerTypeEventPermissionResult        PeerMessageType = "event.permission.result"
-	PeerTypeEventQuestionRequest         PeerMessageType = "event.question.request"
-	PeerTypeEventQuestionResult          PeerMessageType = "event.question.result"
-	PeerTypeEventMessage                 PeerMessageType = "event.message"
-	PeerTypeEventSession                 PeerMessageType = "event.session"
-	PeerTypeEventFile                    PeerMessageType = "event.file"
-	PeerTypeEventAgent                   PeerMessageType = "event.agent"
-	PeerTypeEventConfigChanged           PeerMessageType = "event.config.changed"
-	PeerTypeEventSkills                  PeerMessageType = "event.skills"
-	PeerTypeEventTask                    PeerMessageType = "event.task"
-	PeerTypeRunCompleted                 PeerMessageType = "run.completed"
-	PeerTypeRunFailed                    PeerMessageType = "run.failed"
-	PeerTypeRunCancelled                 PeerMessageType = "run.cancelled"
+	PeerTypeHello                         PeerMessageType = "peer.hello"
+	PeerTypeReady                         PeerMessageType = "peer.ready"
+	PeerTypeHeartbeat                     PeerMessageType = "peer.heartbeat"
+	PeerTypeGoodbye                       PeerMessageType = "peer.goodbye"
+	PeerTypeStateSummary                  PeerMessageType = "state.summary"
+	PeerTypeStateRequired                 PeerMessageType = "state.required"
+	PeerTypeWorkspaceAttach               PeerMessageType = "workspace.attach"
+	PeerTypeWorkspaceDetach               PeerMessageType = "workspace.detach"
+	PeerTypeSessionCurrentSet             PeerMessageType = "session.current.set"
+	PeerTypeProviderDefinitionPut         PeerMessageType = "provider.definition.put"
+	PeerTypeProviderDefinitionRemove      PeerMessageType = "provider.definition.remove"
+	PeerTypeProviderContextInstructionSet PeerMessageType = "provider.context_instruction.set"
+	PeerTypeProviderAvailability          PeerMessageType = "provider.availability.changed"
+	PeerTypeProviderAuthChanged           PeerMessageType = "provider.auth.changed"
+	PeerTypeProviderAuthInvalidated       PeerMessageType = "provider.auth.invalidated"
+	PeerTypeProviderRefreshRequired       PeerMessageType = "provider.auth.refresh_required"
+	PeerTypeProviderRefreshCompleted      PeerMessageType = "provider.auth.refresh_completed"
+	PeerTypeProviderCredentialReplace     PeerMessageType = "provider.credential.replace"
+	PeerTypeProviderCredentialInvalidate  PeerMessageType = "provider.credential.invalidate"
+	PeerTypeModelSelectionSet             PeerMessageType = "model.selection.set"
+	PeerTypeModelSelectionChanged         PeerMessageType = "model.selection.changed"
+	PeerTypeRuntimeControlsPatch          PeerMessageType = "runtime.controls.patch"
+	PeerTypeRuntimePatchApplied           PeerMessageType = "runtime.patch.applied"
+	PeerTypeRuntimeTransaction            PeerMessageType = "runtime.transaction.apply"
+	PeerTypeRuntimeReplace                PeerMessageType = "runtime.replace"
+	PeerTypeAcknowledgement               PeerMessageType = "peer.acknowledgement"
+	PeerTypeError                         PeerMessageType = "peer.error"
+	PeerTypeEventLSP                      PeerMessageType = "event.lsp"
+	PeerTypeEventMCP                      PeerMessageType = "event.mcp"
+	PeerTypeEventPermissionRequest        PeerMessageType = "event.permission.request"
+	PeerTypeEventPermissionResult         PeerMessageType = "event.permission.result"
+	PeerTypeEventQuestionRequest          PeerMessageType = "event.question.request"
+	PeerTypeEventQuestionResult           PeerMessageType = "event.question.result"
+	PeerTypeEventMessage                  PeerMessageType = "event.message"
+	PeerTypeEventSession                  PeerMessageType = "event.session"
+	PeerTypeEventFile                     PeerMessageType = "event.file"
+	PeerTypeEventAgent                    PeerMessageType = "event.agent"
+	PeerTypeEventConfigChanged            PeerMessageType = "event.config.changed"
+	PeerTypeEventSkills                   PeerMessageType = "event.skills"
+	PeerTypeEventTask                     PeerMessageType = "event.task"
+	PeerTypeRunCompleted                  PeerMessageType = "run.completed"
+	PeerTypeRunFailed                     PeerMessageType = "run.failed"
+	PeerTypeRunCancelled                  PeerMessageType = "run.cancelled"
 )
 
 type PeerEnvelope struct {
@@ -300,6 +301,19 @@ type PeerProviderDefinitionRemove struct {
 	Provider ProviderRef `json:"provider"`
 }
 
+// PeerProviderContextInstructionSet updates only the per-provider context
+// instruction text without touching the provider's definition or credential.
+// A nil ContextInstruction clears the instruction. This exists because the
+// provider definition-put wire operation is add-only (see PatchRemoteRuntime)
+// and re-issuing an unchanged credential through a remove+put pair would
+// require a fresh provider-authentication generation that an instruction-only
+// change does not have, so instruction-only changes must use this dedicated
+// operation instead of a definition remove+put pair.
+type PeerProviderContextInstructionSet struct {
+	Provider           ProviderRef `json:"provider"`
+	ContextInstruction *string     `json:"context_instruction,omitempty"`
+}
+
 type PeerProviderAvailability struct {
 	Provider   ProviderRef             `json:"provider"`
 	Generation providerauth.Generation `json:"generation"`
@@ -328,6 +342,11 @@ type PeerProviderRefreshCompletion struct {
 	Digest       string `json:"digest,omitempty"`
 	CredentialID string `json:"credential_id,omitempty"`
 	Failed       bool   `json:"failed,omitempty"`
+	// Reason is a non-secret, human-readable explanation of why the owning
+	// client could not complete the refresh (for example, the OAuth exchange
+	// error or a definition mismatch). It must never carry tokens or other
+	// credential material; only set alongside Failed.
+	Reason string `json:"reason,omitempty"`
 }
 
 type PeerProviderCredentialReplace struct {
@@ -349,15 +368,16 @@ type PeerRuntimeBase struct {
 }
 
 type PeerRuntimeOperation struct {
-	Type                 PeerMessageType                   `json:"type"`
-	DefinitionPut        *PeerProviderDefinitionPut        `json:"definition_put,omitempty"`
-	DefinitionRemove     *PeerProviderDefinitionRemove     `json:"definition_remove,omitempty"`
-	CredentialReplace    *PeerProviderCredentialReplace    `json:"credential_replace,omitempty"`
-	CredentialInvalidate *PeerProviderCredentialInvalidate `json:"credential_invalidate,omitempty"`
-	Availability         *PeerProviderAvailability         `json:"availability,omitempty"`
-	Authentication       *PeerProviderAuthentication       `json:"authentication,omitempty"`
-	ModelSelection       *PeerModelSelectionOperation      `json:"model_selection,omitempty"`
-	Controls             *config.RemoteRuntimeControls     `json:"controls,omitempty"`
+	Type                  PeerMessageType                    `json:"type"`
+	DefinitionPut         *PeerProviderDefinitionPut         `json:"definition_put,omitempty"`
+	DefinitionRemove      *PeerProviderDefinitionRemove      `json:"definition_remove,omitempty"`
+	ContextInstructionSet *PeerProviderContextInstructionSet `json:"context_instruction_set,omitempty"`
+	CredentialReplace     *PeerProviderCredentialReplace     `json:"credential_replace,omitempty"`
+	CredentialInvalidate  *PeerProviderCredentialInvalidate  `json:"credential_invalidate,omitempty"`
+	Availability          *PeerProviderAvailability          `json:"availability,omitempty"`
+	Authentication        *PeerProviderAuthentication        `json:"authentication,omitempty"`
+	ModelSelection        *PeerModelSelectionOperation       `json:"model_selection,omitempty"`
+	Controls              *config.RemoteRuntimeControls      `json:"controls,omitempty"`
 }
 
 type PeerRuntimeTransaction struct {
@@ -415,48 +435,49 @@ type PeerResourceEvent[T any] struct {
 }
 
 var peerMessageRegistry = map[PeerMessageType]PeerMessageSpec{
-	PeerTypeHello:                        peerSpec(PeerDirectionClientToServer, PeerScopeConnection, PeerMessageCommand, true, PeerDeliveryCritical, 64<<10, func() any { return new(PeerHello) }, validateHello),
-	PeerTypeReady:                        peerSpec(PeerDirectionServerToClient, PeerScopeConnection, PeerMessageEvent, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerReady) }, validateReady),
-	PeerTypeHeartbeat:                    peerSpec(PeerDirectionBidirectional, PeerScopeConnection, PeerMessageEvent, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerHeartbeat) }, validateHeartbeat),
-	PeerTypeGoodbye:                      peerSpec(PeerDirectionBidirectional, PeerScopeConnection, PeerMessageEvent, false, PeerDeliveryCritical, 8<<10, func() any { return new(PeerGoodbye) }, validateGoodbye),
-	PeerTypeStateSummary:                 peerSpec(PeerDirectionBidirectional, PeerScopeConnection, PeerMessageEvent, false, PeerDeliveryState, 1<<20, func() any { return new(PeerStateSummary) }, validateStateSummary),
-	PeerTypeStateRequired:                peerSpec(PeerDirectionBidirectional, PeerScopeEither, PeerMessageEvent, false, PeerDeliveryState, 1<<20, func() any { return new(PeerStateRequired) }, validateStateRequired),
-	PeerTypeWorkspaceAttach:              peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 64<<10, func() any { return new(PeerWorkspaceAttach) }, validateWorkspaceAttach),
-	PeerTypeWorkspaceDetach:              peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 1<<10, func() any { return new(PeerWorkspaceDetach) }, nil),
-	PeerTypeSessionCurrentSet:            peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 64<<10, func() any { return new(CurrentSession) }, validatePeerCurrentSession),
-	PeerTypeProviderDefinitionPut:        peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, MaxPeerChannelPayloadBytes, func() any { return new(PeerProviderDefinitionPut) }, validateProviderDefinitionPut),
-	PeerTypeProviderDefinitionRemove:     peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, 64<<10, func() any { return new(PeerProviderDefinitionRemove) }, validateProviderDefinitionRemove),
-	PeerTypeProviderAvailability:         peerSpec(PeerDirectionBidirectional, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryState, 64<<10, func() any { return new(PeerProviderAvailability) }, validateProviderAvailability),
-	PeerTypeProviderAuthChanged:          peerSpec(PeerDirectionBidirectional, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryState, 64<<10, func() any { return new(PeerProviderAuthentication) }, validateProviderAuthentication),
-	PeerTypeProviderAuthInvalidated:      peerSpec(PeerDirectionBidirectional, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerProviderAuthentication) }, validateProviderAuthentication),
-	PeerTypeProviderRefreshRequired:      peerSpec(PeerDirectionServerToClient, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerProviderRefreshRequest) }, validateProviderRefreshRequest),
-	PeerTypeProviderRefreshCompleted:     peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 64<<10, func() any { return new(PeerProviderRefreshCompletion) }, validateProviderRefreshCompletion),
-	PeerTypeProviderCredentialReplace:    peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 1<<20, func() any { return new(PeerProviderCredentialReplace) }, validateProviderCredentialReplace),
-	PeerTypeProviderCredentialInvalidate: peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 64<<10, func() any { return new(PeerProviderCredentialInvalidate) }, validateProviderCredentialInvalidate),
-	PeerTypeModelSelectionSet:            peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, 256<<10, func() any { return new(PeerModelSelectionSet) }, validateModelSelectionSet),
-	PeerTypeModelSelectionChanged:        peerSpec(PeerDirectionServerToClient, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryState, 128<<10, func() any { return new(PeerModelSelectionChanged) }, validateModelSelectionChanged),
-	PeerTypeRuntimeControlsPatch:         peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, 256<<10, func() any { return new(PeerRuntimeControlsPatch) }, validateRuntimeControlsPatch),
-	PeerTypeRuntimePatchApplied:          peerSpec(PeerDirectionServerToClient, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryState, 64<<10, func() any { return new(PeerRuntimePatchApplied) }, validateRuntimePatchApplied),
-	PeerTypeRuntimeTransaction:           peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, MaxPeerChannelPayloadBytes, func() any { return new(PeerRuntimeTransaction) }, validateRuntimeTransaction),
-	PeerTypeRuntimeReplace:               peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, MaxPeerChannelPayloadBytes, func() any { return new(PeerRuntimeReplace) }, validateRuntimeReplace),
-	PeerTypeAcknowledgement:              peerSpec(PeerDirectionBidirectional, PeerScopeEither, PeerMessageAcknowledgement, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerAcknowledgement) }, validateAcknowledgement),
-	PeerTypeError:                        peerSpec(PeerDirectionBidirectional, PeerScopeEither, PeerMessageError, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerErrorPayload) }, validateErrorPayload),
-	PeerTypeEventLSP:                     peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[LSPEvent]) }),
-	PeerTypeEventMCP:                     peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[MCPEvent]) }),
-	PeerTypeEventPermissionRequest:       peerEventSpec(PeerDeliveryCritical, func() any { return new(PeerResourceEvent[PermissionRequest]) }),
-	PeerTypeEventPermissionResult:        peerEventSpec(PeerDeliveryCritical, func() any { return new(PeerResourceEvent[PermissionNotification]) }),
-	PeerTypeEventQuestionRequest:         peerEventSpec(PeerDeliveryCritical, func() any { return new(PeerResourceEvent[QuestionRequest]) }),
-	PeerTypeEventQuestionResult:          peerEventSpec(PeerDeliveryCritical, func() any { return new(PeerResourceEvent[QuestionNotification]) }),
-	PeerTypeEventMessage:                 peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[Message]) }),
-	PeerTypeEventSession:                 peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[Session]) }),
-	PeerTypeEventFile:                    peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[File]) }),
-	PeerTypeEventAgent:                   peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[AgentEvent]) }),
-	PeerTypeEventConfigChanged:           peerEventSpec(PeerDeliveryState, func() any { return new(PeerResourceEvent[ConfigChanged]) }),
-	PeerTypeEventSkills:                  peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[SkillsEvent]) }),
-	PeerTypeEventTask:                    peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[TaskNotification]) }),
-	PeerTypeRunCompleted:                 peerRunEventSpec(PeerTypeRunCompleted),
-	PeerTypeRunFailed:                    peerRunEventSpec(PeerTypeRunFailed),
-	PeerTypeRunCancelled:                 peerRunEventSpec(PeerTypeRunCancelled),
+	PeerTypeHello:                         peerSpec(PeerDirectionClientToServer, PeerScopeConnection, PeerMessageCommand, true, PeerDeliveryCritical, 64<<10, func() any { return new(PeerHello) }, validateHello),
+	PeerTypeReady:                         peerSpec(PeerDirectionServerToClient, PeerScopeConnection, PeerMessageEvent, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerReady) }, validateReady),
+	PeerTypeHeartbeat:                     peerSpec(PeerDirectionBidirectional, PeerScopeConnection, PeerMessageEvent, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerHeartbeat) }, validateHeartbeat),
+	PeerTypeGoodbye:                       peerSpec(PeerDirectionBidirectional, PeerScopeConnection, PeerMessageEvent, false, PeerDeliveryCritical, 8<<10, func() any { return new(PeerGoodbye) }, validateGoodbye),
+	PeerTypeStateSummary:                  peerSpec(PeerDirectionBidirectional, PeerScopeConnection, PeerMessageEvent, false, PeerDeliveryState, 1<<20, func() any { return new(PeerStateSummary) }, validateStateSummary),
+	PeerTypeStateRequired:                 peerSpec(PeerDirectionBidirectional, PeerScopeEither, PeerMessageEvent, false, PeerDeliveryState, 1<<20, func() any { return new(PeerStateRequired) }, validateStateRequired),
+	PeerTypeWorkspaceAttach:               peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 64<<10, func() any { return new(PeerWorkspaceAttach) }, validateWorkspaceAttach),
+	PeerTypeWorkspaceDetach:               peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 1<<10, func() any { return new(PeerWorkspaceDetach) }, nil),
+	PeerTypeSessionCurrentSet:             peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 64<<10, func() any { return new(CurrentSession) }, validatePeerCurrentSession),
+	PeerTypeProviderDefinitionPut:         peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, MaxPeerChannelPayloadBytes, func() any { return new(PeerProviderDefinitionPut) }, validateProviderDefinitionPut),
+	PeerTypeProviderDefinitionRemove:      peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, 64<<10, func() any { return new(PeerProviderDefinitionRemove) }, validateProviderDefinitionRemove),
+	PeerTypeProviderContextInstructionSet: peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, MaxPeerChannelPayloadBytes, func() any { return new(PeerProviderContextInstructionSet) }, validateProviderContextInstructionSet),
+	PeerTypeProviderAvailability:          peerSpec(PeerDirectionBidirectional, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryState, 64<<10, func() any { return new(PeerProviderAvailability) }, validateProviderAvailability),
+	PeerTypeProviderAuthChanged:           peerSpec(PeerDirectionBidirectional, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryState, 64<<10, func() any { return new(PeerProviderAuthentication) }, validateProviderAuthentication),
+	PeerTypeProviderAuthInvalidated:       peerSpec(PeerDirectionBidirectional, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerProviderAuthentication) }, validateProviderAuthentication),
+	PeerTypeProviderRefreshRequired:       peerSpec(PeerDirectionServerToClient, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerProviderRefreshRequest) }, validateProviderRefreshRequest),
+	PeerTypeProviderRefreshCompleted:      peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 64<<10, func() any { return new(PeerProviderRefreshCompletion) }, validateProviderRefreshCompletion),
+	PeerTypeProviderCredentialReplace:     peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 1<<20, func() any { return new(PeerProviderCredentialReplace) }, validateProviderCredentialReplace),
+	PeerTypeProviderCredentialInvalidate:  peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryCritical, 64<<10, func() any { return new(PeerProviderCredentialInvalidate) }, validateProviderCredentialInvalidate),
+	PeerTypeModelSelectionSet:             peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, 256<<10, func() any { return new(PeerModelSelectionSet) }, validateModelSelectionSet),
+	PeerTypeModelSelectionChanged:         peerSpec(PeerDirectionServerToClient, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryState, 128<<10, func() any { return new(PeerModelSelectionChanged) }, validateModelSelectionChanged),
+	PeerTypeRuntimeControlsPatch:          peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, 256<<10, func() any { return new(PeerRuntimeControlsPatch) }, validateRuntimeControlsPatch),
+	PeerTypeRuntimePatchApplied:           peerSpec(PeerDirectionServerToClient, PeerScopeWorkspace, PeerMessageEvent, false, PeerDeliveryState, 64<<10, func() any { return new(PeerRuntimePatchApplied) }, validateRuntimePatchApplied),
+	PeerTypeRuntimeTransaction:            peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, MaxPeerChannelPayloadBytes, func() any { return new(PeerRuntimeTransaction) }, validateRuntimeTransaction),
+	PeerTypeRuntimeReplace:                peerSpec(PeerDirectionClientToServer, PeerScopeWorkspace, PeerMessageCommand, true, PeerDeliveryState, MaxPeerChannelPayloadBytes, func() any { return new(PeerRuntimeReplace) }, validateRuntimeReplace),
+	PeerTypeAcknowledgement:               peerSpec(PeerDirectionBidirectional, PeerScopeEither, PeerMessageAcknowledgement, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerAcknowledgement) }, validateAcknowledgement),
+	PeerTypeError:                         peerSpec(PeerDirectionBidirectional, PeerScopeEither, PeerMessageError, false, PeerDeliveryCritical, 64<<10, func() any { return new(PeerErrorPayload) }, validateErrorPayload),
+	PeerTypeEventLSP:                      peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[LSPEvent]) }),
+	PeerTypeEventMCP:                      peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[MCPEvent]) }),
+	PeerTypeEventPermissionRequest:        peerEventSpec(PeerDeliveryCritical, func() any { return new(PeerResourceEvent[PermissionRequest]) }),
+	PeerTypeEventPermissionResult:         peerEventSpec(PeerDeliveryCritical, func() any { return new(PeerResourceEvent[PermissionNotification]) }),
+	PeerTypeEventQuestionRequest:          peerEventSpec(PeerDeliveryCritical, func() any { return new(PeerResourceEvent[QuestionRequest]) }),
+	PeerTypeEventQuestionResult:           peerEventSpec(PeerDeliveryCritical, func() any { return new(PeerResourceEvent[QuestionNotification]) }),
+	PeerTypeEventMessage:                  peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[Message]) }),
+	PeerTypeEventSession:                  peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[Session]) }),
+	PeerTypeEventFile:                     peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[File]) }),
+	PeerTypeEventAgent:                    peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[AgentEvent]) }),
+	PeerTypeEventConfigChanged:            peerEventSpec(PeerDeliveryState, func() any { return new(PeerResourceEvent[ConfigChanged]) }),
+	PeerTypeEventSkills:                   peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[SkillsEvent]) }),
+	PeerTypeEventTask:                     peerEventSpec(PeerDeliveryWorkspace, func() any { return new(PeerResourceEvent[TaskNotification]) }),
+	PeerTypeRunCompleted:                  peerRunEventSpec(PeerTypeRunCompleted),
+	PeerTypeRunFailed:                     peerRunEventSpec(PeerTypeRunFailed),
+	PeerTypeRunCancelled:                  peerRunEventSpec(PeerTypeRunCancelled),
 }
 
 func peerSpec(direction PeerMessageDirection, scope PeerMessageScope, kind PeerMessageKind, acknowledged bool, delivery PeerDeliveryClass, maxPayloadSize int, constructor func() any, validator func(any) error) PeerMessageSpec {
@@ -756,6 +777,20 @@ func validateProviderDefinitionRemove(payload any) error {
 	return value.Provider.Validate()
 }
 
+func validateProviderContextInstructionSet(payload any) error {
+	value, ok := peerPayload[PeerProviderContextInstructionSet](payload)
+	if !ok {
+		return errors.New("invalid provider context instruction update")
+	}
+	if err := value.Provider.Validate(); err != nil {
+		return err
+	}
+	if value.ContextInstruction != nil && (len(*value.ContextInstruction) > config.MaxProviderContextInstructionBytes || !utf8.ValidString(*value.ContextInstruction)) {
+		return errors.New("provider context instruction is invalid")
+	}
+	return nil
+}
+
 func validateProviderAvailability(payload any) error {
 	value, ok := peerPayload[PeerProviderAvailability](payload)
 	if !ok || !validPeerText(value.Reason, MaxPeerChannelMessageBytes, false) {
@@ -788,7 +823,7 @@ func validateProviderRefreshRequest(payload any) error {
 
 func validateProviderRefreshCompletion(payload any) error {
 	value, ok := peerPayload[PeerProviderRefreshCompletion](payload)
-	if !ok || !validPeerID(value.RequestID) {
+	if !ok || !validPeerID(value.RequestID) || !validPeerText(value.Reason, MaxPeerChannelMessageBytes, false) {
 		return errors.New("invalid provider refresh completion")
 	}
 	if value.Failed {
@@ -796,6 +831,9 @@ func validateProviderRefreshCompletion(payload any) error {
 			return errors.New("failed provider refresh contains a credential receipt")
 		}
 		return nil
+	}
+	if value.Reason != "" {
+		return errors.New("successful provider refresh cannot carry a failure reason")
 	}
 	if value.Revision == 0 || !validPeerDigest(value.Digest, true) || !validPeerText(value.CredentialID, 1024, true) {
 		return errors.New("invalid provider refresh completion receipt")
@@ -899,7 +937,7 @@ func validateRuntimeTransaction(payload any) error {
 	seenModels := map[config.SelectedModelType]bool{}
 	for _, operation := range value.Operations {
 		count := 0
-		for _, present := range []bool{operation.DefinitionPut != nil, operation.DefinitionRemove != nil, operation.CredentialReplace != nil, operation.CredentialInvalidate != nil, operation.Availability != nil, operation.Authentication != nil, operation.ModelSelection != nil, operation.Controls != nil} {
+		for _, present := range []bool{operation.DefinitionPut != nil, operation.DefinitionRemove != nil, operation.ContextInstructionSet != nil, operation.CredentialReplace != nil, operation.CredentialInvalidate != nil, operation.Availability != nil, operation.Authentication != nil, operation.ModelSelection != nil, operation.Controls != nil} {
 			if present {
 				count++
 			}
@@ -921,6 +959,12 @@ func validateRuntimeTransaction(payload any) error {
 				return errors.New("invalid provider definition update operation")
 			}
 			key = string(operation.Type) + "\x00" + operation.DefinitionPut.Provider.Owner.ProviderID
+		case PeerTypeProviderContextInstructionSet:
+			phase = 1
+			if operation.ContextInstructionSet == nil || validateProviderContextInstructionSet(operation.ContextInstructionSet) != nil {
+				return errors.New("invalid provider context instruction operation")
+			}
+			key = string(operation.Type) + "\x00" + operation.ContextInstructionSet.Provider.Owner.ProviderID
 		case PeerTypeProviderCredentialReplace:
 			phase = 2
 			if operation.CredentialReplace == nil {

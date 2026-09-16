@@ -31,6 +31,10 @@ type ClientRefreshCompletion struct {
 	Digest       string `json:"digest,omitempty"`
 	CredentialID string `json:"credential_id,omitempty"`
 	Failed       bool   `json:"failed,omitempty"`
+	// Reason is a non-secret, human-readable explanation of why the owning
+	// client reported Failed. It must never contain tokens or other
+	// credential material and is only meaningful when Failed is true.
+	Reason string `json:"reason,omitempty"`
 }
 
 type clientRefreshCall struct {
@@ -212,12 +216,31 @@ func (s *ConfigStore) CompleteClientRefresh(principal string, response ClientRef
 			return errors.New("client refresh request expired")
 		}
 		if response.Failed {
-			call.err = errors.New("owning client could not refresh the accepted account; check client authentication")
+			if response.Reason != "" {
+				call.err = fmt.Errorf("owning client could not refresh the accepted account: %s", response.Reason)
+			} else {
+				call.err = errors.New("owning client could not refresh the accepted account; check client authentication")
+			}
 		} else {
+			// Match against the store's current accepted state rather than
+			// requiring authority.Revision/Digest to equal the values the
+			// client echoed. The client computes those values while holding
+			// its own authority lock, then releases it before this
+			// completion is sent; an unrelated concurrent publish from the
+			// same principal (for example a model switch that lands right
+			// after this rotation) can legitimately advance the accepted
+			// revision again in that gap while still carrying the exact
+			// rotated credential forward unchanged. Requiring byte-for-byte
+			// equality there would reject an otherwise-successful refresh
+			// and discard a credential rotation that already happened. The
+			// account, credential, and provider-definition checks below
+			// still verify this exact rotation is what the current accepted
+			// state actually reflects, so an unrelated account/credential
+			// change is still rejected.
 			snapshot := s.RuntimeSnapshot()
 			authority := snapshot.RemoteAuthority()
 			accountID, credentialID, ok := snapshot.clientRefreshCredential(call.request.Owner)
-			if authority == nil || authority.Principal != principal || authority.Revision != response.Revision || authority.Revision <= call.request.Revision || authority.Digest != response.Digest || !ok || accountID != call.request.AccountID || credentialID != response.CredentialID || response.CredentialID == call.request.CredentialID {
+			if authority == nil || authority.Principal != principal || authority.Revision <= call.request.Revision || !ok || accountID != call.request.AccountID || credentialID != response.CredentialID || response.CredentialID == call.request.CredentialID {
 				return errors.New("client refresh completion does not match an accepted account rotation")
 			}
 			digest, err := snapshot.clientRuntime.proposal.ProviderDefinitionDigest(call.request.Owner.ProviderID)

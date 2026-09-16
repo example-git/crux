@@ -87,12 +87,19 @@ func TestNamespaceFreeWorkspaceOAuthThroughTLS(t *testing.T) {
 			originalAuthority := *f.w.ws.Authority
 			authorizeWorkspaceOAuth(t, f, "hosted-paste")
 			if mode == "lost-login-response" {
+				// putMode 2 must let the commit genuinely reach and land
+				// on the backend; only losing the acknowledgement is the
+				// fault being injected. Arming getMode=1 up front would
+				// instead block the dial before the operation ever
+				// reaches the receiver.
 				f.transport.putMode.Store(2)
-				f.transport.getMode.Store(1)
+				loseGet := func() { f.transport.getMode.Store(1) }
+				f.transport.afterPut.Store(&loseGet)
 			}
 			outcome, err := f.w.CompleteProviderOAuthLogin(t.Context(), f.ref)
 			if mode == "lost-login-response" {
 				require.Error(t, err)
+				f.transport.afterPut.Store(nil)
 				f.transport.putMode.Store(0)
 				f.transport.getMode.Store(0)
 				replayed, err := f.w.CompleteProviderOAuthLogin(t.Context(), f.ref)

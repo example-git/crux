@@ -18,7 +18,7 @@ func TestPeerMessageRegistryComplete(t *testing.T) {
 		PeerTypeHello, PeerTypeReady, PeerTypeHeartbeat, PeerTypeGoodbye,
 		PeerTypeStateSummary, PeerTypeStateRequired, PeerTypeWorkspaceAttach,
 		PeerTypeWorkspaceDetach, PeerTypeSessionCurrentSet, PeerTypeProviderDefinitionPut,
-		PeerTypeProviderDefinitionRemove, PeerTypeProviderAvailability,
+		PeerTypeProviderDefinitionRemove, PeerTypeProviderContextInstructionSet, PeerTypeProviderAvailability,
 		PeerTypeProviderAuthChanged, PeerTypeProviderAuthInvalidated,
 		PeerTypeProviderRefreshRequired, PeerTypeProviderRefreshCompleted,
 		PeerTypeProviderCredentialReplace, PeerTypeProviderCredentialInvalidate,
