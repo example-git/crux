@@ -99,7 +99,7 @@ func TestRegisterConfigSecretsCoversProvidersAndMCP(t *testing.T) {
 func TestRegisterConfigSecretsCoversPrivateAuthenticationCandidates(t *testing.T) {
 	registration := providerregistry.Registration{
 		ProviderID: "candidate-provider", Construction: providerregistry.ConstructionOpenAICompat,
-		Manifest: &manifest.Manifest{ID: "candidate.owner", Version: "1.0.0", Configuration: manifest.Configuration{Fields: map[string]manifest.FieldDisplay{"private": {Secret: true}, "public": {}}}},
+		Manifest: &manifest.Manifest{ID: "plugin.owner", Version: "1.0.0", Configuration: manifest.Configuration{Fields: map[string]manifest.FieldDisplay{"private": {Secret: true}, "public": {}}}},
 	}
 	registry, err := providerregistry.New(registration)
 	require.NoError(t, err)
@@ -115,4 +115,55 @@ func TestRegisterConfigSecretsCoversPrivateAuthenticationCandidates(t *testing.T
 	require.Nil(t, cfg.RedactedForTransport().authenticationCandidates)
 	_, configured := cfg.Providers.Get(registration.ProviderID)
 	require.False(t, configured)
+}
+
+func TestRegisterRemoteCredentialSecretsExcludesPublicMetadata(t *testing.T) {
+	secrets := []string{
+		"remote-binding-api-key-secret",
+		"remote-binding-oauth-access-secret",
+		"remote-binding-oauth-refresh-secret",
+		"remote-binding-oauth-client-secret",
+		"remote-binding-account-access-secret",
+		"remote-binding-account-refresh-secret",
+		"remote-binding-account-raw-secret",
+	}
+	public := []string{
+		"remote-binding-provider-id",
+		"remote-binding-manifest-id",
+		"remote-binding-manifest-version",
+		"remote-binding-preset-digest",
+		"remote-binding-account-id",
+		"remote-binding-account-display",
+		"remote-binding-generation-marker",
+	}
+	binding := RemoteCredentialBinding{
+		Owner: providerregistry.RegistrationOwner{
+			ProviderID:      public[0],
+			ManifestID:      public[1],
+			ManifestVersion: public[2],
+			PresetDigest:    public[3],
+		},
+		Generation: 73,
+		APIKey:     secrets[0],
+		OAuthToken: &oauth.Token{
+			AccessToken:  secrets[1],
+			RefreshToken: secrets[2],
+			Client:       &oauth.OAuthClient{ClientSecret: secrets[3]},
+		},
+		Account: &accounts.Entry{
+			ID:           public[4],
+			DisplayName:  public[5],
+			AccessToken:  secrets[4],
+			RefreshToken: secrets[5],
+			Raw:          []byte(`{"nested":"` + secrets[6] + `"}`),
+		},
+	}
+
+	RegisterRemoteCredentialSecrets(binding)
+	for _, secret := range secrets {
+		require.Equal(t, redact.Replacement, redact.String(secret))
+	}
+	for _, value := range public {
+		require.Equal(t, value, redact.String(value))
+	}
 }

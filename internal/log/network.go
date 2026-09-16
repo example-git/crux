@@ -732,10 +732,7 @@ func isPrivateRuntimeRequest(request *http.Request) bool {
 	if request.Header.Get(EphemeralStateHeader) != "" {
 		return true
 	}
-	if request.Method == http.MethodPost && request.URL.Path == "/v1/workspaces" {
-		return true
-	}
-	return request.Method == http.MethodPut && strings.HasPrefix(request.URL.Path, "/v1/workspaces/") && strings.HasSuffix(request.URL.Path, "/runtime")
+	return request.Method == http.MethodPost && request.URL.Path == "/v1/workspaces"
 }
 
 // Authentication interaction routes carry arbitrary secret input, URLs and

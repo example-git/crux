@@ -70,8 +70,79 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 	f.s = server.NewServer(nil, "tcp", "127.0.0.1:0")
 	require.NoError(t, f.s.EnableNetworkAuth(t.Context()))
 	handler := f.s.Handler()
+	backend := httptest.NewUnstartedServer(handler)
+	backend.TLS = tlsConfig
+	backend.StartTLS()
+	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+	require.NoError(t, err)
+	var runtimeCommands sync.Map
 	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.requests.Add(1)
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/peer-channel") {
+			proxyPeerChannel(t, w, r, backend.URL, proxyTLS, func(fromClient bool, envelope proto.PeerEnvelope) peerChannelProxyDecision {
+				stateCommand := envelope.Type == proto.PeerTypeRuntimeTransaction || envelope.Type == proto.PeerTypeModelSelectionSet || envelope.Type == proto.PeerTypeRuntimeControlsPatch || envelope.Type == proto.PeerTypeRuntimeReplace
+				if fromClient && stateCommand {
+					f.puts.Add(1)
+					runtimeCommands.Store(envelope.MessageID, struct{}{})
+					if f.putMode.Load() == 1 && envelope.Type == proto.PeerTypeRuntimeTransaction {
+						var transaction proto.PeerRuntimeTransaction
+						if json.Unmarshal(envelope.Payload, &transaction) != nil {
+							t.Error("cannot decode intercepted peer runtime transaction")
+							return peerChannelProxyDecision{drop: true, close: true}
+						}
+						originalDigest := transaction.Runtime.ExpectedDigest
+						transaction.Runtime.ExpectedDigest = strings.Repeat("f", 64)
+						if transaction.Runtime.ExpectedDigest == originalDigest {
+							transaction.Runtime.ExpectedDigest = strings.Repeat("e", 64)
+						}
+						payload, encodeErr := json.Marshal(transaction)
+						if encodeErr != nil {
+							t.Errorf("cannot encode intercepted peer runtime transaction: %v", encodeErr)
+							return peerChannelProxyDecision{drop: true, close: true}
+						}
+						replacement := envelope
+						replacement.Payload = payload
+						return peerChannelProxyDecision{replacement: &replacement}
+					}
+				}
+				if !fromClient && envelope.Type == proto.PeerTypeAcknowledgement {
+					if _, ok := runtimeCommands.LoadAndDelete(envelope.ReplyTo); ok {
+						if change := f.afterPut.Load(); change != nil {
+							(*change)()
+						}
+						if f.putMode.Load() == 2 {
+							return peerChannelProxyDecision{drop: true, close: true}
+						}
+					}
+				}
+				return peerChannelProxyDecision{}
+			})
+			return
+		}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/channel") {
+			proxyWorkspaceChannel(t, w, r, backend.URL, proxyTLS, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
+				if fromClient && frame.Type == proto.WorkspaceChannelRuntimeReplaceFrame {
+					f.puts.Add(1)
+					runtimeCommands.Store(frame.CommandID, struct{}{})
+					if f.putMode.Load() == 1 {
+						ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic rejection"}}
+						return workspaceChannelProxyDecision{drop: true, reply: &ack}
+					}
+				}
+				if !fromClient && frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
+					if _, ok := runtimeCommands.LoadAndDelete(frame.CommandID); ok {
+						if change := f.afterPut.Load(); change != nil {
+							(*change)()
+						}
+						if f.putMode.Load() == 2 {
+							return workspaceChannelProxyDecision{drop: true, close: true}
+						}
+					}
+				}
+				return workspaceChannelProxyDecision{}
+			})
+			return
+		}
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/auth/remove") {
 			f.removes.Add(1)
 			if f.removeMode.Load() == 1 {
@@ -84,37 +155,7 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 				return
 			}
 		}
-		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
-			f.puts.Add(1)
-			switch f.putMode.Load() {
-			case 1:
-				http.Error(w, "synthetic rejection", http.StatusBadRequest)
-				return
-			case 2:
-				recorder := httptest.NewRecorder()
-				handler.ServeHTTP(recorder, r)
-				if recorder.Code != http.StatusOK {
-					t.Errorf("committed PUT failed: %d %s", recorder.Code, recorder.Body.String())
-				}
-				if change := f.afterPut.Load(); change != nil {
-					(*change)()
-				}
-				http.Error(w, "synthetic lost response", http.StatusBadGateway)
-				return
-			}
-			if change := f.afterPut.Load(); change != nil {
-				recorder := httptest.NewRecorder()
-				handler.ServeHTTP(recorder, r)
-				(*change)()
-				for key, values := range recorder.Header() {
-					w.Header()[key] = values
-				}
-				w.WriteHeader(recorder.Code)
-				_, _ = w.Write(recorder.Body.Bytes())
-				return
-			}
-		}
-		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/workspaces/") {
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/workspaces/") && !strings.HasSuffix(r.URL.Path, "/channel") {
 			switch f.getMode.Load() {
 			case 1:
 				http.Error(w, "synthetic GET unavailable", http.StatusBadGateway)
@@ -147,7 +188,7 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 	}))
 	remote.TLS = tlsConfig
 	remote.StartTLS()
-	t.Cleanup(func() { remote.Close(); _ = f.s.Close() })
+	t.Cleanup(func() { remote.Close(); backend.Close(); _ = f.s.Close() })
 	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		f.mu.Lock()

@@ -2,6 +2,7 @@ package workspace_test
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -49,30 +50,28 @@ func TestProviderInstructionsThroughTLS(t *testing.T) {
 	require.NoError(t, s.EnableNetworkAuth(t.Context()))
 	var rejectPublication, loseAcknowledgement atomic.Bool
 	var publications atomic.Int32
-	handler := s.Handler()
-	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
+	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+	require.NoError(t, err)
+	var lostCommands sync.Map
+	remote := startWorkspaceChannelProxyServer(t, s.Handler(), tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
+		if fromClient && frame.Type == proto.WorkspaceChannelRuntimeReplaceFrame {
 			publications.Add(1)
 			if rejectPublication.Swap(false) {
-				http.Error(w, "synthetic rejected instruction publication", http.StatusBadRequest)
-				return
+				ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic rejected instruction publication"}}
+				return workspaceChannelProxyDecision{drop: true, reply: &ack}
 			}
 			if loseAcknowledgement.Swap(false) {
-				recorder := httptest.NewRecorder()
-				handler.ServeHTTP(recorder, r)
-				assert.Equal(t, http.StatusOK, recorder.Code)
-				connection, _, err := w.(http.Hijacker).Hijack()
-				if assert.NoError(t, err) {
-					_ = connection.Close()
-				}
-				return
+				lostCommands.Store(frame.CommandID, struct{}{})
 			}
 		}
-		handler.ServeHTTP(w, r)
-	}))
-	remote.TLS = tlsConfig
-	remote.StartTLS()
-	t.Cleanup(func() { remote.Close(); _ = s.Close() })
+		if !fromClient && frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
+			if _, ok := lostCommands.LoadAndDelete(frame.CommandID); ok {
+				return workspaceChannelProxyDecision{drop: true, close: true}
+			}
+		}
+		return workspaceChannelProxyDecision{}
+	})
+	t.Cleanup(func() { _ = s.Close() })
 
 	type observedRequest struct{ body, instructions string }
 	var requestMu sync.Mutex
@@ -164,7 +163,7 @@ func TestProviderInstructionsThroughTLS(t *testing.T) {
 		require.NoError(t, err)
 		marker := "provider-instructions-" + phase
 		require.NoError(t, c.SendMessageWithPermissionMode(ctx, created.ID, session.ID, marker, marker+": Return the fixture response.", proto.AgentPermissionDeny))
-		awaitRefreshFixtureRun(t, ctx, events, w, marker)
+		events = awaitRefreshFixtureRun(t, ctx, c, created.ID, events, w, marker)
 		requestMu.Lock()
 		defer requestMu.Unlock()
 		var matching []observedRequest
@@ -239,8 +238,8 @@ func TestProviderInstructionsThroughTLS(t *testing.T) {
 	require.Empty(t, acceptedProvider.ToolingInstructions)
 	run("rejected-publication", "native", "")
 
-	// A subsequent publication reconciles retained local state; an applied PUT
-	// whose response is lost succeeds only after GET confirms its exact digest.
+	// A subsequent publication reconciles retained local state; an applied command
+	// whose acknowledgement is lost succeeds only after GET confirms its exact digest.
 	loseAcknowledgement.Store(true)
 	require.NoError(t, w.SetProviderToolingInstructions(config.ScopeGlobal, owner, "crux"))
 	run("lost-ack-reconciled", "crux", "")

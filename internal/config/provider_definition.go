@@ -19,6 +19,23 @@ func (snapshot RuntimeSnapshot) ClientProviderDefinition(id string) (RemoteProvi
 	return snapshot.clientProviderDefinition(context.Background(), id, snapshot.Resolve)
 }
 
+func (snapshot RuntimeSnapshot) RetainedClientProviderDefinition(id string) (RemoteProviderDefinition, providerregistry.RegistrationOwner, error) {
+	if !snapshot.IsClientOwned() || snapshot.clientRuntime == nil {
+		return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, errors.New("accepted client runtime is unavailable")
+	}
+	for _, definition := range snapshot.clientRuntime.proposal.Providers {
+		if definition.Config.ID != id {
+			continue
+		}
+		owner, ok := snapshot.ProviderOwnerFor(id, definition.Config)
+		if !ok {
+			return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, errors.New("accepted client provider has no active exact owner")
+		}
+		return definition, owner, nil
+	}
+	return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, errors.New("provider definition is absent from the accepted client runtime")
+}
+
 func (snapshot RuntimeSnapshot) clientProviderDefinition(ctx context.Context, id string, resolve func(string) (string, error)) (RemoteProviderDefinition, providerregistry.RegistrationOwner, error) {
 	definition, owner, err := snapshot.clientProviderDefinitionRaw(id)
 	if err != nil {

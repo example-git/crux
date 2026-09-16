@@ -1,13 +1,16 @@
 package workspace_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,33 +46,44 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 			require.NoError(t, err)
 			s := server.NewServer(nil, "tcp", "127.0.0.1:0")
 			require.NoError(t, s.EnableNetworkAuth(t.Context()))
+			firstTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+			require.NoError(t, err)
+			peerTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: peerIdentity})
+			require.NoError(t, err)
 			var puts, completions atomic.Int32
 			var losePut, loseCompletion atomic.Bool
 			losePut.Store(mode == "lost-acknowledgements")
 			loseCompletion.Store(mode == "lost-acknowledgements")
-			handler := s.Handler()
-			remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				lose := false
-				if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
-					puts.Add(1)
-					lose = losePut.Swap(false)
+			var dropped sync.Map
+			remote := startWorkspaceChannelProxyServer(t, s.Handler(), tlsConfig, func(r *http.Request) *tls.Config {
+				if len(r.TLS.PeerCertificates) > 0 && bytes.Equal(r.TLS.PeerCertificates[0].Raw, peerTLS.Certificates[0].Certificate[0]) {
+					return peerTLS
 				}
-				if strings.HasSuffix(r.URL.Path, "/runtime/refresh-completion") {
-					completions.Add(1)
-					lose = loseCompletion.Swap(false)
+				return firstTLS
+			}, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
+				if fromClient {
+					switch frame.Type {
+					case proto.WorkspaceChannelRuntimeReplaceFrame:
+						puts.Add(1)
+						if losePut.Swap(false) {
+							dropped.Store(frame.CommandID, struct{}{})
+						}
+					case proto.WorkspaceChannelRefreshCompleteFrame:
+						completions.Add(1)
+						if loseCompletion.Swap(false) {
+							dropped.Store(frame.CommandID, struct{}{})
+						}
+					}
+					return workspaceChannelProxyDecision{}
 				}
-				if lose {
-					recorder := httptest.NewRecorder()
-					handler.ServeHTTP(recorder, r)
-					require.Contains(t, []int{http.StatusOK, http.StatusNoContent}, recorder.Code, recorder.Body.String())
-					http.Error(w, "synthetic acknowledgement lost after commit", http.StatusBadGateway)
-					return
+				if frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
+					if _, ok := dropped.LoadAndDelete(frame.CommandID); ok {
+						return workspaceChannelProxyDecision{drop: true, close: true}
+					}
 				}
-				handler.ServeHTTP(w, r)
-			}))
-			remote.TLS = tlsConfig
-			remote.StartTLS()
-			t.Cleanup(func() { remote.Close(); _ = s.Close() })
+				return workspaceChannelProxyDecision{}
+			})
+			t.Cleanup(func() { _ = s.Close() })
 
 			var exchanges, oldDispatches, freshDispatches atomic.Int32
 			provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -171,8 +185,20 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 						select {
 						case event, ok := <-events:
 							if !ok {
-								results <- outcome{index: index, err: fmt.Errorf("event stream closed")}
-								return
+								for {
+									next, subscribeErr := p.client.SubscribeEvents(ctx, p.created.ID)
+									if subscribeErr == nil {
+										events = next
+										break
+									}
+									select {
+									case <-time.After(5 * time.Millisecond):
+									case <-ctx.Done():
+										results <- outcome{index: index, err: subscribeErr}
+										return
+									}
+								}
+								continue
 							}
 							if refresh, ok := event.(pubsub.Event[config.ClientRefreshRequest]); ok && waiting {
 								if refresh.Payload.Principal != p.created.Authority.Principal || refresh.Payload.Revision != 1 || refresh.Payload.CredentialID != accounts.CredentialID(entry) {

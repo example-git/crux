@@ -54,8 +54,8 @@ func SetWorkspaceShutdownFnForTest(ws *Workspace, fn func()) {
 }
 
 // WorkspaceLiveStreamCountForTest returns the number of clients on ws
-// that have at least one live SSE stream. Used by integration tests
-// in other packages to wait for SSE attaches before publishing events.
+// that have at least one live workspace channel. Used by integration tests
+// in other packages to wait for channel attaches before publishing events.
 func WorkspaceLiveStreamCountForTest(ws *Workspace) int {
 	ws.clientsMu.Lock()
 	defer ws.clientsMu.Unlock()

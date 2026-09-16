@@ -172,13 +172,23 @@ func TestRemoteRuntimeProviderFieldsTLSAdmission(t *testing.T) {
 	for _, test := range cases {
 		t.Run("replace/"+test.name, func(t *testing.T) {
 			candidate := seal(test.context, 2)
-			data := marshal(proto.UpdateRemoteRuntimeRequest{ExpectedRevision: 1, Runtime: candidate})
+			commandID := uuid.NewString()
+			frame := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelRuntimeReplaceFrame, CommandID: commandID, RuntimeReplace: &proto.UpdateRemoteRuntimeRequest{ExpectedRevision: 1, Runtime: candidate}}
+			data := marshal(frame)
 			require.Equal(t, 1, bytes.Count(data, []byte(test.from)))
 			data = bytes.Replace(data, []byte(test.from), []byte(test.to), 1)
-			status, body := call(http.MethodPut, "/v1/workspaces/"+workspace.ID+"/runtime", data)
-			require.Equal(t, http.StatusBadRequest, status, string(body))
-			require.Contains(t, string(body), test.err)
-			status, body = call(http.MethodGet, "/v1/workspaces/"+workspace.ID, nil)
+			channel := dialRemoteRuntimeChannel(t, hs.URL, clients["retained"], workspace.ID, clientID, workspace.Authority)
+			writeRemoteRuntimeFrame(t, channel, data)
+			if test.name == "invalid UTF-8" {
+				_, _, err := channel.ReadMessage()
+				require.Error(t, err)
+			} else {
+				ack := readRemoteRuntimeAcknowledgement(t, channel, commandID)
+				require.Equal(t, proto.WorkspaceChannelStatusInvalid, ack.Status)
+				require.Equal(t, "invalid workspace channel command", ack.Message)
+			}
+			_ = channel.Close()
+			status, body := call(http.MethodGet, "/v1/workspaces/"+workspace.ID, nil)
 			require.Equal(t, http.StatusOK, status, string(body))
 			var current proto.Workspace
 			require.NoError(t, json.Unmarshal(body, &current))
@@ -189,13 +199,17 @@ func TestRemoteRuntimeProviderFieldsTLSAdmission(t *testing.T) {
 	updated.Providers[0].Config.ToolingInstructions = config.ToolingInstructionsCrux
 	updated.Digest, err = config.RemoteRuntimeDigest(updated)
 	require.NoError(t, err)
-	data := marshal(proto.UpdateRemoteRuntimeRequest{ExpectedRevision: 1, Runtime: updated})
+	commandID := uuid.NewString()
+	frame := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelRuntimeReplaceFrame, CommandID: commandID, RuntimeReplace: &proto.UpdateRemoteRuntimeRequest{ExpectedRevision: 1, Runtime: updated}}
+	data := marshal(frame)
 	data = bytes.Replace(data, []byte("🚀"), []byte(`\ud83d\ude80`), 1)
-	status, body = call(http.MethodPut, "/v1/workspaces/"+workspace.ID+"/runtime", data)
-	require.Equal(t, http.StatusOK, status, string(body))
-	var ack config.RemoteAuthority
-	require.NoError(t, json.Unmarshal(body, &ack))
-	require.Equal(t, uint64(2), ack.Revision)
+	channel := dialRemoteRuntimeChannel(t, hs.URL, clients["retained"], workspace.ID, clientID, workspace.Authority)
+	defer channel.Close()
+	writeRemoteRuntimeFrame(t, channel, data)
+	ack := readRemoteRuntimeAcknowledgement(t, channel, commandID)
+	require.Equal(t, proto.WorkspaceChannelStatusOK, ack.Status)
+	require.NotNil(t, ack.Authority)
+	require.Equal(t, uint64(2), ack.Authority.Revision)
 	status, body = call(http.MethodGet, "/v1/workspaces/"+workspace.ID, nil)
 	require.Equal(t, http.StatusOK, status, string(body))
 	require.NoError(t, json.Unmarshal(body, &workspace))

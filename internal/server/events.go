@@ -23,7 +23,7 @@ import (
 )
 
 // wrapEvent converts a raw tea.Msg (a pubsub.Event[T] from the app
-// event fan-in) into a pubsub.Payload envelope with the correct
+// event fan-in) into a workspace-channel payload with the correct
 // PayloadType discriminator and a proto-typed inner payload that has
 // proper JSON tags. Returns nil if the event type is unrecognized.
 func wrapEvent(ev any) *pubsub.Payload {
@@ -47,7 +47,7 @@ func wrapEvent(ev any) *pubsub.Payload {
 			// Unsupported MCP event type (e.g. EventChannelMessage, which
 			// has no proto representation until session delivery is wired
 			// up). Drop it instead of fabricating a state_changed event.
-			slog.Debug("Dropping unsupported MCP event type for SSE", "type", e.Payload.Type)
+			slog.Debug("Dropping unsupported MCP event type for workspace channel", "type", e.Payload.Type)
 			return nil
 		}
 		return envelope(pubsub.PayloadTypeMCPEvent, pubsub.Event[proto.MCPEvent]{
@@ -84,7 +84,7 @@ func wrapEvent(ev any) *pubsub.Payload {
 			},
 		})
 	case pubsub.Event[question.Request]:
-		slog.Info("Wrapping question batch event for SSE", "id", e.Payload.ID, "questions", len(e.Payload.Questions))
+		slog.Info("Wrapping question batch event for workspace channel", "id", e.Payload.ID, "questions", len(e.Payload.Questions))
 		return envelope(pubsub.PayloadTypeQuestionRequest, pubsub.Event[proto.QuestionRequest]{
 			Type: e.Type,
 			Payload: proto.QuestionRequest{
@@ -164,7 +164,7 @@ func wrapEvent(ev any) *pubsub.Payload {
 			Payload: skillsEventToProto(e.Payload),
 		})
 	default:
-		slog.Warn("Unrecognized event type for SSE wrapping", "type", fmt.Sprintf("%T", ev))
+		slog.Warn("Unrecognized event type for workspace channel wrapping", "type", fmt.Sprintf("%T", ev))
 		return nil
 	}
 }

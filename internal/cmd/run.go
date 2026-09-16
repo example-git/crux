@@ -580,6 +580,9 @@ func resolveModelOverrides(cfg *config.Config, surfaces []providerregistry.Surfa
 // CLI model choice was supplied. Unavailable recorded choices fail visibly;
 // they cannot silently fall back to the currently selected provider.
 func restoreModelFromSession(ctx context.Context, c *client.Client, workspaceID string, retained *workspace.ClientWorkspace, sessionID string) (bool, error) {
+	if authority := retained.AcceptedAuthority(); authority != nil && authority.Mode == "client" {
+		return false, nil
+	}
 	msgs, err := c.ListMessages(ctx, workspaceID, sessionID)
 	if err != nil {
 		return false, fmt.Errorf("failed to list messages: %w", err)

@@ -13,14 +13,16 @@ import (
 // ClientRefreshRequest contains identifiers only. The receiver never exchanges
 // a client refresh token and a response never contains credential material.
 type ClientRefreshRequest struct {
-	ID           string                             `json:"id"`
-	Principal    string                             `json:"principal"`
-	Revision     uint64                             `json:"revision"`
-	Digest       string                             `json:"digest"`
-	Owner        providerregistry.RegistrationOwner `json:"owner"`
-	AccountID    string                             `json:"account_id"`
-	CredentialID string                             `json:"credential_id"`
-	Deadline     int64                              `json:"deadline"`
+	ID               string                             `json:"id"`
+	Principal        string                             `json:"principal"`
+	Revision         uint64                             `json:"revision"`
+	Digest           string                             `json:"digest"`
+	Owner            providerregistry.RegistrationOwner `json:"owner"`
+	DefinitionDigest string                             `json:"definition_digest"`
+	BundleDigest     string                             `json:"bundle_digest,omitempty"`
+	AccountID        string                             `json:"account_id"`
+	CredentialID     string                             `json:"credential_id"`
+	Deadline         int64                              `json:"deadline"`
 }
 
 type ClientRefreshCompletion struct {
@@ -137,9 +139,16 @@ func (s *ConfigStore) RequestClientRefresh(ctx context.Context, admitted Runtime
 			s.clientRefreshMu.Unlock()
 			return RuntimeSnapshot{}, errors.New("too many pending client refresh requests")
 		}
+		var bundleDigest string
+		for _, definition := range admitted.clientRuntime.proposal.Providers {
+			if definition.Config.ID == owner.ProviderID {
+				bundleDigest = definition.BundleDigest
+				break
+			}
+		}
 		call = &clientRefreshCall{done: make(chan struct{}), admittedRevision: authority.Revision, admittedDigest: authority.Digest, providerDigest: providerDigest, request: ClientRefreshRequest{
 			ID: uuid.NewString(), Principal: requestAuthority.Principal, Revision: requestAuthority.Revision, Digest: requestAuthority.Digest,
-			Owner: owner, AccountID: accountID, CredentialID: credentialID, Deadline: time.Now().Add(3 * time.Minute).UnixMilli(),
+			Owner: owner, DefinitionDigest: providerDigest, BundleDigest: bundleDigest, AccountID: accountID, CredentialID: credentialID, Deadline: time.Now().Add(3 * time.Minute).UnixMilli(),
 		}}
 		s.clientRefreshes[key] = call
 	}

@@ -18,7 +18,7 @@ import (
 
 // lspStatesTTL bounds how long the memoized LSP state may go without a
 // re-probe being scheduled; LSP events normally refresh it much sooner. The
-// backstop covers events missed across SSE reconnects in client/server
+// backstop covers events missed across channel reconnects in client/server
 // mode, so it can be an order of magnitude looser than the busy/permission
 // TTL (which drives interactive affordances like the spinner and queue
 // pill): a few seconds of stale LSP counts is invisible, a few seconds of

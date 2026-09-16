@@ -1,14 +1,12 @@
 package client
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
@@ -18,7 +16,6 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
-	"github.com/example-git/crux/internal/pubsub"
 )
 
 func (c *Client) Browse(ctx context.Context, path string) (proto.BrowserListing, error) {
@@ -74,11 +71,14 @@ func (c *Client) CreateWorkspace(ctx context.Context, ws proto.Workspace) (*prot
 		return nil, errors.New("legacy forwarding is unsupported; collect a client runtime snapshot")
 	}
 	mode := ws.AuthorityMode
-	if mode == "" {
+	if mode == "" && c.secure {
 		mode = "client"
 	}
-	if mode != "client" {
-		return nil, errors.New("server workspaces require client authority")
+	if mode == "" {
+		mode = "server"
+	}
+	if mode != "client" && mode != "server" {
+		return nil, fmt.Errorf("unsupported workspace authority mode %q", mode)
 	}
 	headers := http.Header{"Content-Type": []string{"application/json"}}
 	var capabilities *proto.RemoteRuntimeCapabilities
@@ -171,7 +171,28 @@ func bindWorkspaceProviderOwners(workspace *proto.Workspace) error {
 }
 
 func (c *Client) OpenWorkspace(ctx context.Context, id string) (*proto.Workspace, error) {
-	return c.GetWorkspace(ctx, id)
+	workspace, err := c.GetWorkspace(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if workspace.Authority == nil {
+		return nil, errors.New("workspace has no accepted authority")
+	}
+	attachment := proto.WorkspaceAttachment{Mode: workspace.Authority.Mode, Revision: workspace.Authority.Revision, Digest: workspace.Authority.Digest}
+	if err := attachment.Validate(); err != nil {
+		return nil, err
+	}
+	if workspace.Authority.Mode == "client" {
+		capabilities, err := c.NegotiateRemoteRuntime(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if workspace.Authority.Principal != capabilities.Principal {
+			return nil, errors.New("workspace authority principal does not match the authenticated client")
+		}
+	}
+	c.retainWorkspaceAttachment(workspace.ID, workspace.Authority)
+	return workspace, nil
 }
 
 // DeleteWorkspace deletes a workspace on the server.
@@ -200,224 +221,21 @@ func (c *Client) CloseIdleWorkspace(ctx context.Context, id string) error {
 	return nil
 }
 
-// SetCurrentSession reports the client's current-session selection
-// for the named workspace. An empty sessionID clears the entry. The
-// request carries the process-scoped client ID minted in [NewClient]
-// as a query parameter so the server can route the update to the
-// correct [clientState] entry.
 func (c *Client) SetCurrentSession(ctx context.Context, workspaceID, sessionID string) error {
-	return c.sendCurrentSession(ctx, workspaceID, proto.CurrentSession{SessionID: sessionID})
-}
-
-func (c *Client) sendCurrentSession(ctx context.Context, workspaceID string, selection proto.CurrentSession) error {
-	q := url.Values{"client_id": []string{c.clientID}}
-	rsp, err := c.post(
-		ctx,
-		fmt.Sprintf("/workspaces/%s/current-session", workspaceID),
-		q,
-		jsonBody(selection),
-		http.Header{"Content-Type": []string{"application/json"}},
-	)
+	selection, err := c.PrepareCurrentSession(workspaceID, sessionID, nil)
 	if err != nil {
-		return fmt.Errorf("failed to set current session: %w", err)
+		return err
 	}
-	defer rsp.Body.Close()
-	if err := checkStatus(rsp); err != nil {
-		return fmt.Errorf("failed to set current session: %w", err)
-	}
-	return nil
+	return c.SendCurrentSessionSelection(ctx, workspaceID, selection)
 }
 
-// SubscribeEvents subscribes to server-sent events for a workspace.
+// SubscribeEvents subscribes to the shared workspace channel.
 func (c *Client) SubscribeEvents(ctx context.Context, id string, authority ...config.RemoteAuthority) (<-chan any, error) {
-	accepted, err := c.workspaceAttachment(id, authority)
+	channel, err := c.getWorkspaceChannel(ctx, id, authority...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to subscribe to workspace channel: %w", err)
 	}
-	headers := http.Header{
-		"Accept":        {"text/event-stream"},
-		"Cache-Control": {"no-cache"},
-		"Connection":    {"keep-alive"},
-	}
-	if accepted != nil {
-		accepted.SetHeaders(headers)
-	}
-	events := make(chan any, 100)
-	q := url.Values{"client_id": []string{c.clientID}}
-	//nolint:bodyclose
-	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/events", id), q, headers)
-	if err != nil {
-		return nil, fmt.Errorf("failed to subscribe to events: %w", err)
-	}
-
-	if err := checkStatus(rsp); err != nil {
-		rsp.Body.Close()
-		return nil, fmt.Errorf("failed to subscribe to events: %w", err)
-	}
-
-	if accepted != nil {
-		ack, err := proto.ParseWorkspaceAttachment(rsp.Header)
-		if err != nil || ack == nil || *ack != *accepted {
-			rsp.Body.Close()
-			return nil, errors.New("event stream did not acknowledge the accepted workspace authority; upgrade or reconnect explicitly")
-		}
-	}
-
-	go func() {
-		defer rsp.Body.Close()
-		defer close(events)
-
-		scr := bufio.NewReader(rsp.Body)
-		for {
-			line, err := scr.ReadBytes('\n')
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				slog.Error("Reading from events stream", "error", err)
-				// The response body is terminal after a transport read error.
-				// Close this subscription so the workspace reconnect loop can
-				// open a new request and recover a lost workspace if needed.
-				return
-			}
-			line = bytes.TrimSpace(line)
-			if len(line) == 0 {
-				continue
-			}
-
-			data, ok := bytes.CutPrefix(line, []byte("data:"))
-			if !ok {
-				slog.Warn("Invalid event format", "line", string(line))
-				continue
-			}
-
-			data = bytes.TrimSpace(data)
-
-			var p pubsub.Payload
-			if err := json.Unmarshal(data, &p); err != nil {
-				slog.Error("Unmarshaling event envelope", "error", err)
-				continue
-			}
-
-			switch p.Type {
-			case pubsub.PayloadTypeLSPEvent:
-				var e pubsub.Event[proto.LSPEvent]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeMCPEvent:
-				var e pubsub.Event[proto.MCPEvent]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypePermissionRequest:
-				var e pubsub.Event[proto.PermissionRequest]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypePermissionNotification:
-				var e pubsub.Event[proto.PermissionNotification]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeQuestionRequest:
-				var e pubsub.Event[proto.QuestionRequest]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeQuestionNotification:
-				var e pubsub.Event[proto.QuestionNotification]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeMessage:
-				var e pubsub.Event[proto.Message]
-				if err := json.Unmarshal(p.Payload, &e); err != nil {
-					slog.Error("Unmarshaling message event", "error", err)
-					continue
-				}
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeSession:
-				var e pubsub.Event[proto.Session]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeFile:
-				var e pubsub.Event[proto.File]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeAgentEvent:
-				var e pubsub.Event[proto.AgentEvent]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeConfigChanged:
-				var e pubsub.Event[proto.ConfigChanged]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeClientRefresh:
-				var e pubsub.Event[config.ClientRefreshRequest]
-				if json.Unmarshal(p.Payload, &e) != nil {
-					return
-				}
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeSkillsEvent:
-				var e pubsub.Event[proto.SkillsEvent]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeTaskNotification:
-				var e pubsub.Event[proto.TaskNotification]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			case pubsub.PayloadTypeRunComplete:
-				var e pubsub.Event[proto.RunComplete]
-				_ = json.Unmarshal(p.Payload, &e)
-				if !sendEvent(ctx, events, e) {
-					return
-				}
-			default:
-				slog.Warn("Unknown event type", "type", p.Type)
-				continue
-			}
-		}
-	}()
-
-	return events, nil
-}
-
-func sendEvent(ctx context.Context, evc chan any, ev any) bool {
-	if ctx.Err() != nil {
-		return false
-	}
-	select {
-	case evc <- ev:
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return channel.subscribe(ctx), nil
 }
 
 // GetLSPDiagnostics retrieves LSP diagnostics for a specific LSP client.

@@ -2,11 +2,16 @@ package cmd
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/client"
@@ -15,10 +20,31 @@ import (
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/workspace"
+	"github.com/gorilla/websocket"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestHeadlessSessionHistoryDoesNotOverrideClientAuthority(t *testing.T) {
+	var requests atomic.Int32
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(remote.Close)
+	api, err := client.NewClient(t.TempDir(), "tcp", strings.TrimPrefix(remote.URL, "http://"))
+	require.NoError(t, err)
+	retained := workspace.NewClientWorkspace(api, proto.Workspace{
+		ID:        "fixture",
+		Authority: &config.RemoteAuthority{Mode: "client", Principal: "client-principal", Revision: 2, Digest: strings.Repeat("a", 64)},
+	})
+	t.Cleanup(retained.Shutdown)
+	changed, err := restoreModelFromSession(t.Context(), api, "fixture", retained, "existing")
+	require.NoError(t, err)
+	require.False(t, changed)
+	require.Zero(t, requests.Load())
+}
 
 func TestHeadlessModelSelectionUsesAcknowledgedState(t *testing.T) {
 	for _, mode := range []string{"default-small", "explicit-small", "small-only", "invalid-large", "invalid-small", "default-failure", "empty-default", "rejected-override", "wrong-ack", "stale-config", "refresh-failure", "explicit-beats-restore", "restore", "restore-unavailable", "empty-history", "stream-close", "prepared-implicit"} {
@@ -99,7 +125,11 @@ func TestHeadlessModelSelectionUsesAcknowledgedState(t *testing.T) {
 			calls := map[string]int{}
 			var mu sync.Mutex
 			var built config.AgentModelState
-			remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			remote := newLocalPeerChannelServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet && r.URL.Path == "/v1/peer-channel" {
+					servePeerChannelHandshakeAndClose(t, w, r, mode)
+					return
+				}
 				if r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/clients/") {
 					w.WriteHeader(http.StatusOK)
 					return
@@ -185,10 +215,6 @@ func TestHeadlessModelSelectionUsesAcknowledgedState(t *testing.T) {
 					// Stop before creating a session or executing a provider. Actual
 					// inference and refresh are covered by the separate TLS fixture.
 					http.Error(w, "fixture stop after capturing selected state", http.StatusConflict)
-				case "GET /v1/workspaces/fixture/events":
-					assert.Equal(t, "stream-close", mode)
-					w.Header().Set("Content-Type", "text/event-stream")
-					w.WriteHeader(http.StatusOK)
 				case "POST /v1/workspaces/fixture/agent":
 					assert.Equal(t, "stream-close", mode)
 					w.WriteHeader(http.StatusOK)
@@ -198,7 +224,7 @@ func TestHeadlessModelSelectionUsesAcknowledgedState(t *testing.T) {
 				}
 			}))
 			t.Cleanup(remote.Close)
-			api, err := client.NewClient(t.TempDir(), "tcp", strings.TrimPrefix(remote.URL, "http://"))
+			api, err := client.NewClient(t.TempDir(), "unix", remote.Address)
 			require.NoError(t, err)
 			ws := &proto.Workspace{ID: "fixture", Config: initial, ProviderSurfaces: config.ProviderSurfaces(initial)}
 			retained := workspace.NewClientWorkspace(api, *ws)
@@ -228,4 +254,88 @@ func TestHeadlessModelSelectionUsesAcknowledgedState(t *testing.T) {
 			}
 		})
 	}
+}
+
+// localPeerChannelServer hosts an HTTP handler on a local unix socket so
+// tests can exercise the real peer-channel v2 transport without insecure
+// TCP, which the production dialer refuses outright.
+type localPeerChannelServer struct {
+	Address  string
+	listener net.Listener
+	server   *http.Server
+}
+
+func (s *localPeerChannelServer) Close() {
+	_ = s.server.Close()
+	_ = s.listener.Close()
+}
+
+func newLocalPeerChannelServer(t *testing.T, handler http.Handler) *localPeerChannelServer {
+	t.Helper()
+	root, err := os.MkdirTemp("", "crx-run-model-flow-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	address := filepath.Join(root, "channel.sock")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", address)
+	require.NoError(t, err)
+	server := &http.Server{Handler: handler}
+	finished := make(chan error, 1)
+	go func() { finished <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = listener.Close()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("run model flow fixture did not stop")
+		}
+	})
+	return &localPeerChannelServer{Address: address, listener: listener, server: server}
+}
+
+// servePeerChannelHandshakeAndClose completes the peer-channel v2 hello,
+// ready, and workspace-attach handshake and then closes the connection, so
+// SubscribeEvents succeeds but the resulting event stream ends before the
+// run completes.
+func servePeerChannelHandshakeAndClose(t *testing.T, w http.ResponseWriter, r *http.Request, mode string) {
+	t.Helper()
+	assert.Equal(t, "stream-close", mode)
+	connection, err := (&websocket.Upgrader{Subprotocols: []string{proto.PeerChannelProtocol}}).Upgrade(w, r, nil)
+	if !assert.NoError(t, err) {
+		return
+	}
+	defer connection.Close()
+
+	_, data, err := connection.ReadMessage()
+	if !assert.NoError(t, err) {
+		return
+	}
+	hello, err := proto.DecodePeerMessage(data, proto.PeerDirectionClientToServer)
+	if !assert.NoError(t, err) || !assert.Equal(t, proto.PeerTypeHello, hello.Envelope.Type) {
+		return
+	}
+	epoch := hello.Envelope.Epoch
+
+	ack, err := proto.EncodePeerMessage(epoch, 1, "server-1", hello.Envelope.MessageID, "", proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+	if !assert.NoError(t, err) || !assert.NoError(t, connection.WriteMessage(websocket.TextMessage, ack)) {
+		return
+	}
+	ready, err := proto.EncodePeerMessage(epoch, 2, "server-2", "", "", proto.PeerTypeReady, proto.PeerReady{})
+	if !assert.NoError(t, err) || !assert.NoError(t, connection.WriteMessage(websocket.TextMessage, ready)) {
+		return
+	}
+
+	_, data, err = connection.ReadMessage()
+	if !assert.NoError(t, err) {
+		return
+	}
+	attach, err := proto.DecodePeerMessage(data, proto.PeerDirectionClientToServer)
+	if !assert.NoError(t, err) || !assert.Equal(t, proto.PeerTypeWorkspaceAttach, attach.Envelope.Type) {
+		return
+	}
+	attachAck, err := proto.EncodePeerMessage(epoch, 3, "server-3", attach.Envelope.MessageID, attach.Envelope.WorkspaceID, proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+	if !assert.NoError(t, err) {
+		return
+	}
+	_ = connection.WriteMessage(websocket.TextMessage, attachAck)
 }

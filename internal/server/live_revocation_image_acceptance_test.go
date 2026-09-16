@@ -276,7 +276,7 @@ func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
 	select {
 	case <-streamEnds["revoked"]:
 	case <-time.After(5 * time.Second):
-		t.Fatal("the revoked event stream remained open")
+		t.Fatal("the revoked workspace channel remained open")
 	}
 	_, err = clients["revoked"].ListTasks(ctx, workspaces["revoked"].ID)
 	require.Error(t, err)

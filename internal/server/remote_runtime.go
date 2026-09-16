@@ -18,7 +18,6 @@ import (
 	"github.com/example-git/crux/internal/connection"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/proto"
-	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/version"
 )
 
@@ -75,7 +74,7 @@ func requestPrincipal(r *http.Request) string {
 }
 
 // Registered inside the ServeMux, after route variables have been extracted.
-// Every workspace route (including SSE and tasks) passes this same boundary.
+// Every workspace route (including the channel and tasks) passes this same boundary.
 func (s *Server) authorizeRoute(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		principal := requestPrincipal(r)
@@ -127,8 +126,8 @@ func (c *controllerV1) handleGetRemoteRuntimeCapabilities(w http.ResponseWriter,
 		return
 	}
 	jsonEncode(w, proto.RemoteRuntimeCapabilities{
-		CodebaseIndex: true,
-		Protocol:      proto.RemoteRuntimeProtocol, RuntimeVersion: config.RemoteRuntimeVersion,
+		CodebaseIndex: true, PeerChannel: proto.PeerChannelProtocol, IncrementalState: true,
+		Protocol: proto.RemoteRuntimeProtocol, RuntimeVersion: config.RemoteRuntimeVersion,
 		Compiler: config.RemoteRuntimeCompiler, HostVersion: version.Version,
 		MaxRequestBytes: maxRemoteRequestBytes, MaxBundles: config.MaxRemoteRuntimeBundles,
 		MaxProviders: config.MaxRemoteRuntimeProviders, Principal: principal, WorkspaceSharing: sharing,
@@ -248,32 +247,38 @@ func validateRuntimeJSON(data []byte) error {
 // same struct field matching as encoding/json also covers accepted key casing,
 // without assigning meaning to similarly named plugin configuration/schema keys.
 func validateRuntimeProviderFields(data []byte) error {
+	type runtimeFields struct {
+		Providers []struct {
+			Config struct {
+				ToolingInstructions json.RawMessage `json:"tooling_instructions"`
+			} `json:"config"`
+		} `json:"providers"`
+		ProviderContextInstructions map[string]json.RawMessage `json:"provider_context_instructions"`
+	}
 	var request struct {
-		Runtime struct {
-			Providers []struct {
-				Config struct {
-					ToolingInstructions json.RawMessage `json:"tooling_instructions"`
-				} `json:"config"`
-			} `json:"providers"`
-			ProviderContextInstructions map[string]json.RawMessage `json:"provider_context_instructions"`
-		} `json:"runtime"`
+		Runtime        runtimeFields `json:"runtime"`
+		RuntimeReplace struct {
+			Runtime runtimeFields `json:"runtime"`
+		} `json:"runtime_replace"`
 	}
 	if err := json.Unmarshal(data, &request); err != nil {
 		return errors.New("invalid private runtime provider fields")
 	}
-	for _, provider := range request.Runtime.Providers {
-		raw := provider.Config.ToolingInstructions
-		if len(raw) == 0 {
-			continue
+	for _, runtime := range []runtimeFields{request.Runtime, request.RuntimeReplace.Runtime} {
+		for _, provider := range runtime.Providers {
+			raw := provider.Config.ToolingInstructions
+			if len(raw) == 0 {
+				continue
+			}
+			var profile string
+			if json.Unmarshal(raw, &profile) != nil || (profile != config.ToolingInstructionsCrux && profile != config.ToolingInstructionsNative) {
+				return errors.New("explicit private runtime tooling instructions must be crux or native")
+			}
 		}
-		var profile string
-		if json.Unmarshal(raw, &profile) != nil || (profile != config.ToolingInstructionsCrux && profile != config.ToolingInstructionsNative) {
-			return errors.New("explicit private runtime tooling instructions must be crux or native")
-		}
-	}
-	for _, raw := range request.Runtime.ProviderContextInstructions {
-		if !validRuntimeInstructionString(raw) {
-			return errors.New("private runtime provider instructions must be Unicode strings")
+		for _, raw := range runtime.ProviderContextInstructions {
+			if !validRuntimeInstructionString(raw) {
+				return errors.New("private runtime provider instructions must be Unicode strings")
+			}
 		}
 	}
 	return nil
@@ -316,94 +321,4 @@ func validRuntimeInstructionString(raw []byte) bool {
 		}
 	}
 	return true
-}
-
-// handlePutWorkspaceRuntime documents the workspace authority contract.
-//
-// @Summary Replace the accepted client runtime
-// @Description Stages the complete private proposal and atomically publishes only against expected_revision. Rejected proposals preserve accepted authority. The reply contains no credentials or bundle content.
-// @Tags runtime
-// @Produce json
-// @Accept json
-// @Param request body proto.UpdateRemoteRuntimeRequest true "Exact request and operation identity"
-// @Param id path string true "Workspace ID bound to the authenticated principal"
-// @Param Crux-Runtime-Protocol header string true "Negotiated protocol: crux-client-runtime-v1"
-// @Param X-Crux-Ephemeral-State header string true "Nonempty marker suppressing private request bodies from traffic logs"
-// @Success 200 {object} config.RemoteAuthority
-// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
-// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
-// @Failure 404 {object} proto.Error "Workspace is unavailable"
-// @Failure 409 {object} proto.Error "Accepted revision or exact refresh identity changed"
-// @Failure 428 {object} proto.Error "Runtime protocol negotiation is required"
-// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
-// @Router /workspaces/{id}/runtime [put]
-func (c *controllerV1) handlePutWorkspaceRuntime(w http.ResponseWriter, r *http.Request) {
-	if !c.requireRuntimeProtocol(w, r) {
-		return
-	}
-	var args proto.UpdateRemoteRuntimeRequest
-	if err := decodeRuntimeRequest(w, r, &args); err != nil {
-		jsonError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	ws, err := c.backend.GetWorkspace(r.PathValue("id"))
-	if err != nil {
-		c.handleError(w, r, err)
-		return
-	}
-	ack, err := ws.Cfg.ReplaceRemoteRuntime(r.Context(), args.Runtime, requestPrincipal(r), args.ExpectedRevision)
-	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, config.ErrRemoteRuntimeRevision) {
-			status = http.StatusConflict
-		} else if errors.Is(err, config.ErrRuntimeRevoked) {
-			status = http.StatusForbidden
-		}
-		jsonError(w, status, err.Error())
-		return
-	}
-	// Provider snapshots do not change process-wide MCP configuration.
-	ws.SendEvent(pubsub.Event[proto.ConfigChanged]{Type: pubsub.UpdatedEvent, Payload: proto.ConfigChanged{WorkspaceID: ws.ID}})
-	jsonEncode(w, ack)
-}
-
-// handlePostClientRefreshCompletion documents the workspace authority contract.
-//
-// @Summary Acknowledge a client credential refresh
-// @Description Completes the exact retained refresh request after the owning client persists and publishes its result. Replaying that completion never starts another token exchange.
-// @Tags runtime
-// @Produce json
-// @Accept json
-// @Param request body config.ClientRefreshCompletion true "Exact request and operation identity"
-// @Param id path string true "Workspace ID bound to the authenticated principal"
-// @Param Crux-Runtime-Protocol header string true "Negotiated protocol: crux-client-runtime-v1"
-// @Param X-Crux-Ephemeral-State header string true "Nonempty marker suppressing private request bodies from traffic logs"
-// @Success 204 "Exact completion acknowledged"
-// @Failure 400 {object} proto.Error "Invalid request; authentication operations may instead return their request-bound response with an error"
-// @Failure 403 {object} proto.Error "Principal is unauthorized or does not own this workspace"
-// @Failure 404 {object} proto.Error "Workspace is unavailable"
-// @Failure 409 {object} proto.Error "Accepted revision or exact refresh identity changed"
-// @Failure 428 {object} proto.Error "Runtime protocol negotiation is required"
-// @Failure 500 {object} proto.Error "Response unavailable; do not infer whether persistence or publication occurred"
-// @Router /workspaces/{id}/runtime/refresh-completion [post]
-func (c *controllerV1) handlePostClientRefreshCompletion(w http.ResponseWriter, r *http.Request) {
-	if !c.requireRuntimeProtocol(w, r) {
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-	var response config.ClientRefreshCompletion
-	if err := decodeRuntimeRequest(w, r, &response); err != nil {
-		jsonError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	ws, err := c.backend.GetWorkspace(r.PathValue("id"))
-	if err != nil {
-		c.handleError(w, r, err)
-		return
-	}
-	if err := ws.Cfg.CompleteClientRefresh(requestPrincipal(r), response); err != nil {
-		jsonError(w, http.StatusConflict, err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }

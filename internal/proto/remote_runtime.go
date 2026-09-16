@@ -23,6 +23,8 @@ type UpdateRemoteRuntimeRequest struct {
 // RemoteRuntimeCapabilities contains no account, provider configuration or token.
 type RemoteRuntimeCapabilities struct {
 	CodebaseIndex         bool   `json:"codebase_index,omitempty"`
+	PeerChannel           string `json:"peer_channel"`
+	IncrementalState      bool   `json:"incremental_state"`
 	Protocol              string `json:"protocol"`
 	RuntimeVersion        int    `json:"runtime_version"`
 	Compiler              string `json:"compiler"`

@@ -3324,88 +3324,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaces/{id}/events": {
-            "get": {
-                "description": "The event stream claim must match accepted workspace authority. Client-owned attachment requires the exact mode/revision/digest from a retained creation or replacement acknowledgement. The response echoes the accepted tuple before events. A client UUID or public discovery result alone does not authorize attachment.",
-                "produces": [
-                    "text/event-stream"
-                ],
-                "tags": [
-                    "workspaces"
-                ],
-                "summary": "Stream workspace events (SSE)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Workspace ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Accepted mode: client or server; required for client-owned attachment",
-                        "name": "Crux-Workspace-Authority-Mode",
-                        "in": "header"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Exact accepted decimal revision; required with authority mode",
-                        "name": "Crux-Workspace-Authority-Revision",
-                        "in": "header"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Exact accepted runtime digest; required with authority mode",
-                        "name": "Crux-Workspace-Authority-Digest",
-                        "in": "header"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "headers": {
-                            "Crux-Workspace-Authority-Digest": {
-                                "type": "string",
-                                "description": "Accepted runtime digest"
-                            },
-                            "Crux-Workspace-Authority-Mode": {
-                                "type": "string",
-                                "description": "Accepted workspace mode"
-                            },
-                            "Crux-Workspace-Authority-Revision": {
-                                "type": "string",
-                                "description": "Accepted decimal revision"
-                            }
-                        }
-                    },
-                    "403": {
-                        "description": "Client principal does not own the workspace or claim",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "409": {
-                        "description": "Attachment authority differs from the accepted runtime",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    }
-                }
-            }
-        },
         "/workspaces/{id}/filetracker/lastread": {
             "get": {
                 "produces": [
@@ -4762,185 +4680,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/workspaces/{id}/runtime": {
-            "put": {
-                "description": "Stages the complete private proposal and atomically publishes only against expected_revision. Rejected proposals preserve accepted authority. The reply contains no credentials or bundle content.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "runtime"
-                ],
-                "summary": "Replace the accepted client runtime",
-                "parameters": [
-                    {
-                        "description": "Exact request and operation identity",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/proto.UpdateRemoteRuntimeRequest"
-                        }
-                    },
-                    {
-                        "type": "string",
-                        "description": "Workspace ID bound to the authenticated principal",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Negotiated protocol: crux-client-runtime-v1",
-                        "name": "Crux-Runtime-Protocol",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Nonempty marker suppressing private request bodies from traffic logs",
-                        "name": "X-Crux-Ephemeral-State",
-                        "in": "header",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/config.RemoteAuthority"
-                        }
-                    },
-                    "400": {
-                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "403": {
-                        "description": "Principal is unauthorized or does not own this workspace",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "404": {
-                        "description": "Workspace is unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "409": {
-                        "description": "Accepted revision or exact refresh identity changed",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "428": {
-                        "description": "Runtime protocol negotiation is required",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "500": {
-                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    }
-                }
-            }
-        },
-        "/workspaces/{id}/runtime/refresh-completion": {
-            "post": {
-                "description": "Completes the exact retained refresh request after the owning client persists and publishes its result. Replaying that completion never starts another token exchange.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "runtime"
-                ],
-                "summary": "Acknowledge a client credential refresh",
-                "parameters": [
-                    {
-                        "description": "Exact request and operation identity",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/config.ClientRefreshCompletion"
-                        }
-                    },
-                    {
-                        "type": "string",
-                        "description": "Workspace ID bound to the authenticated principal",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Negotiated protocol: crux-client-runtime-v1",
-                        "name": "Crux-Runtime-Protocol",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Nonempty marker suppressing private request bodies from traffic logs",
-                        "name": "X-Crux-Ephemeral-State",
-                        "in": "header",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "Exact completion acknowledged"
-                    },
-                    "400": {
-                        "description": "Invalid request; authentication operations may instead return their request-bound response with an error",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "403": {
-                        "description": "Principal is unauthorized or does not own this workspace",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "404": {
-                        "description": "Workspace is unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "409": {
-                        "description": "Accepted revision or exact refresh identity changed",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "428": {
-                        "description": "Runtime protocol negotiation is required",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    },
-                    "500": {
-                        "description": "Response unavailable; do not infer whether persistence or publication occurred",
-                        "schema": {
-                            "$ref": "#/definitions/proto.Error"
-                        }
-                    }
-                }
-            }
-        },
         "/workspaces/{id}/sessions": {
             "get": {
                 "produces": [
@@ -5735,26 +5474,6 @@ const docTemplate = `{
                 },
                 "small": {
                     "$ref": "#/definitions/config.OwnedSelectedModel"
-                }
-            }
-        },
-        "config.ClientRefreshCompletion": {
-            "type": "object",
-            "properties": {
-                "credential_id": {
-                    "type": "string"
-                },
-                "digest": {
-                    "type": "string"
-                },
-                "failed": {
-                    "type": "boolean"
-                },
-                "request_id": {
-                    "type": "string"
-                },
-                "revision": {
-                    "type": "integer"
                 }
             }
         },
@@ -7685,7 +7404,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/config.RemoteRuntimeProposal"
                 },
                 "skills": {
-                    "description": "Skills carries the snapshot of skill discovery state at workspace\ncreation time. Subsequent updates flow through the SSE event\nstream.",
+                    "description": "Skills carries the snapshot of skill discovery state at workspace\ncreation time. Subsequent updates flow through the workspace channel.",
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/proto.SkillState"
@@ -8959,17 +8678,6 @@ const docTemplate = `{
                 }
             }
         },
-        "proto.UpdateRemoteRuntimeRequest": {
-            "type": "object",
-            "properties": {
-                "expected_revision": {
-                    "type": "integer"
-                },
-                "runtime": {
-                    "$ref": "#/definitions/config.RemoteRuntimeProposal"
-                }
-            }
-        },
         "proto.VersionInfo": {
             "type": "object",
             "properties": {
@@ -9059,7 +8767,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "skills": {
-                    "description": "Skills carries the snapshot of skill discovery state at workspace\ncreation time. Subsequent updates flow through the SSE event\nstream.",
+                    "description": "Skills carries the snapshot of skill discovery state at workspace\ncreation time. Subsequent updates flow through the workspace channel.",
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/proto.SkillState"

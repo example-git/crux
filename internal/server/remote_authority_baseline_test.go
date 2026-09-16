@@ -29,6 +29,12 @@ import (
 
 func newRemoteAuthorityTLSHarness(t *testing.T, configure ...func(*tls.Config)) (*httptest.Server, map[string]*http.Client) {
 	t.Helper()
+	hs, clients, _ := newRemoteAuthorityTLSHarnessWithServer(t, configure...)
+	return hs, clients
+}
+
+func newRemoteAuthorityTLSHarnessWithServer(t *testing.T, configure ...func(*tls.Config)) (*httptest.Server, map[string]*http.Client, *Server) {
+	t.Helper()
 	root := t.TempDir()
 	for _, name := range []string{"HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "CRUX_GLOBAL_DATA", "CRUX_GLOBAL_CONFIG", "CRUX_CACHE_DIR", "AI_CLI_DIR"} {
 		t.Setenv(name, filepath.Join(root, name))
@@ -53,7 +59,7 @@ func newRemoteAuthorityTLSHarness(t *testing.T, configure ...func(*tls.Config)) 
 		t.Cleanup(transport.CloseIdleConnections)
 		clients[name] = &http.Client{Transport: transport, Timeout: 5 * time.Second}
 	}
-	srv := NewServer(nil, "tcp", "127.0.0.1:0")
+	srv := NewServer(nil, "tcp", "0.0.0.0:0")
 	t.Cleanup(func() {
 		// Backend.Shutdown initiates HTTP shutdown; it does not drain the
 		// workspaces created by this fixture. Join each principal's retained
@@ -73,7 +79,7 @@ func newRemoteAuthorityTLSHarness(t *testing.T, configure ...func(*tls.Config)) 
 	hs.TLS = srv.tlsConfig
 	hs.StartTLS()
 	t.Cleanup(hs.Close)
-	return hs, clients
+	return hs, clients, srv
 }
 
 func TestRemoteServerRejectsServerAuthorityAndDoesNotLoadPlugins(t *testing.T) {
@@ -90,7 +96,9 @@ func TestRemoteServerRejectsServerAuthorityAndDoesNotLoadPlugins(t *testing.T) {
 	require.Empty(t, snapshot.Plugins)
 	require.Empty(t, snapshot.EnabledProviders)
 
-	body, err := json.Marshal(proto.CreateWorkspaceRequest{Workspace: proto.Workspace{Path: t.TempDir(), ClientID: uuid.NewString()}, AuthorityMode: "server"})
+	workspacePath := filepath.Join(os.Getenv("HOME"), "server-authority")
+	require.NoError(t, os.MkdirAll(workspacePath, 0o700))
+	body, err := json.Marshal(proto.CreateWorkspaceRequest{Workspace: proto.Workspace{Path: workspacePath, ClientID: uuid.NewString()}, AuthorityMode: "server"})
 	require.NoError(t, err)
 	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/workspaces", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -125,17 +133,20 @@ func TestRemoteTLSAdmissionBaseline(t *testing.T) {
 			t.Run(kind+"/marked="+map[bool]string{false: "false", true: "true"}[marked], func(t *testing.T) {
 				// Legacy forwarding is now rejected at the boundary, before
 				// config or DB initialization, even for an authenticated peer.
-				args := proto.Workspace{Path: t.TempDir()}
+				workspacePath := filepath.Join(os.Getenv("HOME"), "legacy-"+kind+"-"+map[bool]string{false: "plain", true: "marked"}[marked])
+				require.NoError(t, os.MkdirAll(workspacePath, 0o700))
+				workspace := proto.Workspace{Path: workspacePath}
 				if kind != "accounts" {
-					args.ForwardedProviders = map[string]config.ProviderConfig{"example": {ID: "example", APIKey: "synthetic-private-key"}}
+					workspace.ForwardedProviders = map[string]config.ProviderConfig{"example": {ID: "example", APIKey: "synthetic-private-key"}}
 				}
 				if kind != "providers" {
-					args.ForwardedAccounts = map[string]config.ForwardedAccount{"example": {Entry: accounts.Entry{ID: "client", AccessToken: "synthetic-private-access"}}}
+					workspace.ForwardedAccounts = map[string]config.ForwardedAccount{"example": {Entry: accounts.Entry{ID: "client", AccessToken: "synthetic-private-access"}}}
 				}
-				body, err := json.Marshal(args)
+				body, err := json.Marshal(proto.CreateWorkspaceRequest{Workspace: workspace, AuthorityMode: "client"})
 				require.NoError(t, err)
 				request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, hs.URL+"/v1/workspaces", bytes.NewReader(body))
 				require.NoError(t, err)
+				request.Header.Set("Crux-Runtime-Protocol", proto.RemoteRuntimeProtocol)
 				if marked {
 					request.Header.Set(cruxlog.EphemeralStateHeader, "1")
 				}

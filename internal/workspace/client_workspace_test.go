@@ -23,6 +23,7 @@ import (
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/skills"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -450,7 +451,7 @@ func TestTranslateEvent_Skills(t *testing.T) {
 // TestNewClientWorkspace_SeedsSkillsCache verifies that the snapshot in
 // proto.Workspace.Skills populates the package-level cache the TUI
 // reads at construction time, eliminating the race between TUI startup
-// and the first SSE event.
+// and the first workspace-channel event.
 func TestNewClientWorkspace_SeedsSkillsCache(t *testing.T) {
 	// Not parallel - touches the package-level skills cache.
 	prev := skills.GetLatestStates()
@@ -527,13 +528,23 @@ func TestClientWorkspaceListMCPPromptsServerError(t *testing.T) {
 }
 
 // TestClientWorkspace_ReconnectsOnStreamDrop verifies that the event
-// subscription loop reconnects after the SSE stream drops instead of
+// subscription loop reconnects after the workspace channel drops instead of
 // leaving the TUI permanently orphaned (which surfaced as a stuck
 // "coder agent is offline"), and that Shutdown stops the loop.
+func serveWorkspaceChannelForTest(t *testing.T, w http.ResponseWriter, r *http.Request, hold bool) {
+	t.Helper()
+	connection, err := (&websocket.Upgrader{Subprotocols: []string{proto.WorkspaceChannelProtocol}}).Upgrade(w, r, nil)
+	require.NoError(t, err)
+	defer connection.Close()
+	if hold {
+		_, _, _ = connection.ReadMessage()
+	}
+}
+
 func TestClientWorkspaceReconnectRefreshesMissedConfiguration(t *testing.T) {
-	originalInitial, originalMax := sseReconnectInitialBackoff, sseReconnectMaxBackoff
-	sseReconnectInitialBackoff, sseReconnectMaxBackoff = time.Millisecond, time.Millisecond
-	defer func() { sseReconnectInitialBackoff, sseReconnectMaxBackoff = originalInitial, originalMax }()
+	originalInitial, originalMax := channelReconnectInitialBackoff, channelReconnectMaxBackoff
+	channelReconnectInitialBackoff, channelReconnectMaxBackoff = time.Millisecond, time.Millisecond
+	defer func() { channelReconnectInitialBackoff, channelReconnectMaxBackoff = originalInitial, originalMax }()
 	var subscriptions, refreshes atomic.Int32
 	snapshot := func(model string) proto.Workspace {
 		return proto.Workspace{ID: "ws-1", Config: &config.Config{
@@ -543,13 +554,9 @@ func TestClientWorkspaceReconnectRefreshesMissedConfiguration(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/events"):
+		case strings.HasSuffix(r.URL.Path, "/channel"):
 			count := subscriptions.Add(1)
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.(http.Flusher).Flush()
-			if count > 1 {
-				<-r.Context().Done()
-			}
+			serveWorkspaceChannelForTest(t, w, r, count > 1)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/workspaces/ws-1":
 			if refreshes.Add(1) == 1 {
 				http.Error(w, "temporary snapshot failure", http.StatusServiceUnavailable)
@@ -598,12 +605,12 @@ func TestClientWorkspaceReconnectRefreshesMissedConfiguration(t *testing.T) {
 
 func TestClientWorkspace_ReconnectsOnStreamDrop(t *testing.T) {
 	// Shrink the backoff so several reconnects happen quickly.
-	origInitial, origMax := sseReconnectInitialBackoff, sseReconnectMaxBackoff
-	sseReconnectInitialBackoff = 5 * time.Millisecond
-	sseReconnectMaxBackoff = 20 * time.Millisecond
+	origInitial, origMax := channelReconnectInitialBackoff, channelReconnectMaxBackoff
+	channelReconnectInitialBackoff = 5 * time.Millisecond
+	channelReconnectMaxBackoff = 20 * time.Millisecond
 	t.Cleanup(func() {
-		sseReconnectInitialBackoff = origInitial
-		sseReconnectMaxBackoff = origMax
+		channelReconnectInitialBackoff = origInitial
+		channelReconnectMaxBackoff = origMax
 	})
 
 	var subscribes atomic.Int32
@@ -612,19 +619,12 @@ func TestClientWorkspace_ReconnectsOnStreamDrop(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(proto.Workspace{ID: "ws-1"})
 			return
 		}
-		if !strings.HasSuffix(r.URL.Path, "/events") {
-			// Any other bookkeeping call (e.g. GetWorkspace) just
-			// gets an empty OK; the test only cares about the stream.
+		if !strings.HasSuffix(r.URL.Path, "/channel") {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 		subscribes.Add(1)
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		// Drop the stream immediately so the client must reconnect.
+		serveWorkspaceChannelForTest(t, w, r, false)
 	}))
 	defer srv.Close()
 
@@ -642,10 +642,10 @@ func TestClientWorkspace_ReconnectsOnStreamDrop(t *testing.T) {
 	}()
 
 	// The loop must reconnect several times as the server keeps
-	// dropping the stream.
+	// dropping the channel.
 	require.Eventually(t, func() bool { return subscribes.Load() >= 3 },
 		2*time.Second, 5*time.Millisecond,
-		"subscription loop should reconnect after the stream drops")
+		"subscription loop should reconnect after the channel drops")
 
 	// Shutdown cancels the subscription context; the loop must return.
 	ws.Shutdown()
@@ -660,12 +660,12 @@ func TestClientWorkspace_ReconnectsOnStreamDrop(t *testing.T) {
 // reconnect loop does not spin forever after Shutdown even when it can
 // never connect (server unreachable).
 func TestClientWorkspace_SubscriptionStopsWhenServerDown(t *testing.T) {
-	origInitial, origMax := sseReconnectInitialBackoff, sseReconnectMaxBackoff
-	sseReconnectInitialBackoff = 5 * time.Millisecond
-	sseReconnectMaxBackoff = 20 * time.Millisecond
+	origInitial, origMax := channelReconnectInitialBackoff, channelReconnectMaxBackoff
+	channelReconnectInitialBackoff = 5 * time.Millisecond
+	channelReconnectMaxBackoff = 20 * time.Millisecond
 	t.Cleanup(func() {
-		sseReconnectInitialBackoff = origInitial
-		sseReconnectMaxBackoff = origMax
+		channelReconnectInitialBackoff = origInitial
+		channelReconnectMaxBackoff = origMax
 	})
 
 	// Port 1 is not listening: SubscribeEvents fails on every attempt.
@@ -754,7 +754,7 @@ func agentInfoWorkspace(t *testing.T, info proto.AgentInfo) *ClientWorkspace {
 // and records what the client did.
 type recoveryServer struct {
 	mu sync.Mutex
-	// liveID is the only workspace ID whose event stream is served.
+	// liveID is the only workspace ID whose channel is served.
 	liveID string
 	// nextID names the workspace the next create hands back.
 	nextID string
@@ -815,19 +815,14 @@ func (s *recoveryServer) start(t *testing.T) *client.Client {
 			var req proto.CurrentSession
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
 			s.sessionPosts = append(s.sessionPosts, req.SessionID)
-		case strings.HasSuffix(r.URL.Path, "/events"):
-			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/events")
+		case strings.HasSuffix(r.URL.Path, "/channel"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/channel")
 			if id != s.liveID {
 				http.Error(w, "workspace not found", http.StatusNotFound)
 				return
 			}
 			s.streams++
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			if f, ok := w.(http.Flusher); ok {
-				f.Flush()
-			}
-			// Drop the stream so the loop keeps cycling.
+			serveWorkspaceChannelForTest(t, w, r, false)
 		default:
 			w.WriteHeader(http.StatusOK)
 		}
@@ -890,7 +885,7 @@ func (r *connectionRecorder) sawStuck() bool {
 // re-register, adopt the new ID, re-assert the session it was viewing,
 // and tell the UI to resync — not retry a dead ID forever.
 func TestClientWorkspace_RecoversFromWorkspaceGone(t *testing.T) {
-	t.Cleanup(SetSSEBackoffForTest(time.Millisecond, 5*time.Millisecond))
+	t.Cleanup(SetChannelBackoffForTest(time.Millisecond, 5*time.Millisecond))
 
 	srv := &recoveryServer{liveID: "", nextID: "ws-2"}
 	c := srv.start(t)
@@ -943,7 +938,7 @@ func TestClientWorkspace_RecoversFromWorkspaceGone(t *testing.T) {
 // frozen at the moment of the drop — everything published while the
 // client was away is gone, and the server had dropped its presence entry.
 func TestClientWorkspace_ResyncsAfterPlainStreamDrop(t *testing.T) {
-	t.Cleanup(SetSSEBackoffForTest(time.Millisecond, 5*time.Millisecond))
+	t.Cleanup(SetChannelBackoffForTest(time.Millisecond, 5*time.Millisecond))
 
 	srv := &recoveryServer{liveID: "ws-1"}
 	c := srv.start(t)
@@ -990,7 +985,7 @@ func TestClientWorkspace_ResyncsAfterPlainStreamDrop(t *testing.T) {
 // the UI notice rather than stopping: a hard stop would strand a user
 // whose server comes back a minute later.
 func TestClientWorkspace_EscalatesUnrecoverableConnection(t *testing.T) {
-	t.Cleanup(SetSSEBackoffForTest(time.Millisecond, 2*time.Millisecond))
+	t.Cleanup(SetChannelBackoffForTest(time.Millisecond, 2*time.Millisecond))
 
 	srv := &recoveryServer{createErr: func() int { return http.StatusInternalServerError }}
 	c := srv.start(t)
@@ -1025,7 +1020,7 @@ func TestClientWorkspace_EscalatesUnrecoverableConnection(t *testing.T) {
 // holding a claim it cannot name. Retiring the client is what makes
 // teardown exact here — there is nothing to guess and nothing to scan.
 func TestClientWorkspace_ShutdownRetiresAfterLostCreateResponse(t *testing.T) {
-	t.Cleanup(SetSSEBackoffForTest(time.Millisecond, 5*time.Millisecond))
+	t.Cleanup(SetChannelBackoffForTest(time.Millisecond, 5*time.Millisecond))
 
 	srv := &recoveryServer{nextID: "ws-orphan", hangUpOnCreate: true}
 	c := srv.start(t)
@@ -1127,7 +1122,7 @@ func TestClientWorkspace_AgentReadyErr_WorkspaceGone(t *testing.T) {
 // create went on to register — an orphan keeping the server alive and
 // blocking the next upgrade.
 func TestClientWorkspace_ShutdownWaitsForInFlightRecovery(t *testing.T) {
-	t.Cleanup(SetSSEBackoffForTest(time.Millisecond, 5*time.Millisecond))
+	t.Cleanup(SetChannelBackoffForTest(time.Millisecond, 5*time.Millisecond))
 
 	var mu sync.Mutex
 	var ops []string
@@ -1152,16 +1147,15 @@ func TestClientWorkspace_ShutdownWaitsForInFlightRecovery(t *testing.T) {
 			ops = append(ops, "retire")
 			live = ""
 			mu.Unlock()
-		case strings.HasSuffix(r.URL.Path, "/events"):
+		case strings.HasSuffix(r.URL.Path, "/channel"):
 			mu.Lock()
-			known := live == strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/events")
+			known := live == strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/workspaces/"), "/channel")
 			mu.Unlock()
 			if !known {
 				http.Error(w, "workspace not found", http.StatusNotFound)
 				return
 			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
+			serveWorkspaceChannelForTest(t, w, r, true)
 		default:
 			w.WriteHeader(http.StatusOK)
 		}

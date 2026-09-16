@@ -46,11 +46,11 @@ var (
 	// replaced underneath the client. The subscription loop re-registers
 	// the workspace in the background when it sees this.
 	ErrWorkspaceGone = errors.New("the server reset this workspace; reconnecting")
-	// ErrStreamClosed means an established event stream ended.
-	// Resubscribing usually succeeds immediately, but events published in
+	// ErrChannelClosed means an established workspace channel ended.
+	// Reconnecting usually succeeds immediately, but events published in
 	// the meantime are lost for good, so the client treats it as a
 	// degraded link that requires a resync.
-	ErrStreamClosed = errors.New("the event stream closed; reconnecting")
+	ErrChannelClosed = errors.New("the workspace channel closed; reconnecting")
 )
 
 // ConnectionState describes the health of the client-server link as
@@ -58,11 +58,11 @@ var (
 type ConnectionState int
 
 const (
-	// ConnectionDegraded means the event stream is down (or the workspace
+	// ConnectionDegraded means the workspace channel is down (or the workspace
 	// was lost server-side) and the client is retrying or re-registering
 	// in the background.
 	ConnectionDegraded ConnectionState = iota
-	// ConnectionRecovered means the event stream was re-established,
+	// ConnectionRecovered means the workspace channel was re-established,
 	// possibly against a re-created workspace.
 	ConnectionRecovered
 )

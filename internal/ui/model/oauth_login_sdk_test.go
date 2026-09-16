@@ -182,6 +182,12 @@ func TestOAuthUIThroughWorkspaceTLSAndActualCallback(t *testing.T) {
 				t.Cleanup(ownerServer.Backend().Shutdown)
 				tlsConfig, err := connection.ServerTLSConfig(t.Context())
 				require.NoError(t, err)
+				backend := httptest.NewUnstartedServer(ownerServer.Handler())
+				backend.TLS = tlsConfig
+				backend.StartTLS()
+				t.Cleanup(backend.Close)
+				proxyTLS, err := connection.ClientTLSConfig(saved)
+				require.NoError(t, err)
 				// Lose successful responses after the real registered handler has
 				// admitted the action. The UI must retry the exact original action.
 				var lostReplies atomic.Int32
@@ -191,15 +197,27 @@ func TestOAuthUIThroughWorkspaceTLSAndActualCallback(t *testing.T) {
 				}
 				replays := make(map[string]replayedRequest)
 				var replayMu sync.Mutex
+				var runtimeCommands sync.Map
 				rpc := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if ownership == "client" && flow == "hosted-paste" && r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/channel") {
+						proxyModelWorkspaceChannel(t, w, r, backend.URL, proxyTLS, func(fromClient bool, frame proto.WorkspaceChannelFrame) modelWorkspaceChannelProxyDecision {
+							if fromClient && frame.Type == proto.WorkspaceChannelRuntimeReplaceFrame {
+								runtimeCommands.Store(frame.CommandID, struct{}{})
+							}
+							if !fromClient && frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
+								if _, ok := runtimeCommands.LoadAndDelete(frame.CommandID); ok && lostReplies.CompareAndSwap(0, 1) {
+									return modelWorkspaceChannelProxyDecision{drop: true, close: true}
+								}
+							}
+							return modelWorkspaceChannelProxyDecision{}
+						})
+						return
+					}
 					drop := false
 					if ownership == "server" && flow == "loopback-dynamic" {
 						for _, suffix := range []string{"/auth/oauth/begin", "/auth/oauth/bind", "/auth/oauth/code", "/auth/oauth/complete"} {
 							drop = drop || strings.HasSuffix(r.URL.Path, suffix)
 						}
-					}
-					if ownership == "client" && flow == "hosted-paste" && r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/v1/workspaces/") {
-						drop = true
 					}
 					if !drop {
 						ownerServer.Handler().ServeHTTP(w, r)

@@ -52,7 +52,7 @@ var (
 	ErrChannelOptInMismatch     = errors.New("requested channels differ from the existing workspace; channels are an explicit opt-in and are not shared across duplicate creates")
 )
 
-// DefaultCreateGrace is the window in which a client must open an SSE
+// DefaultCreateGrace is the window in which a client must open a workspace channel
 // stream after creating a workspace before its creation hold is
 // released. Exposed as a package variable so tests can shorten it.
 var DefaultCreateGrace = 30 * time.Second
@@ -70,7 +70,7 @@ var DefaultCreateGrace = 30 * time.Second
 var DefaultIdleShutdownDelay = 60 * time.Second
 
 // DefaultDetachGrace is how long a client's claim on a workspace survives
-// after its last SSE stream drops without an explicit release. The stream
+// after its last workspace channel drops without an explicit release. The stream
 // is the client's refcount claim, so tearing the workspace down the instant
 // it closes turns any momentary drop (a hiccup, a suspended laptop, a proxy
 // timeout) into a permanently lost workspace: the client's reconnect comes
@@ -171,11 +171,11 @@ type Backend struct {
 
 // clientState tracks one client's claim on a workspace.
 //
-//   - streams counts the number of live SSE event streams the client
+//   - streams counts the number of live workspace channels the client
 //     currently has open against the workspace.
 //   - holdTimer is non-nil in the two timer-held states: the client
-//     created the workspace but has not yet attached an SSE stream
-//     (fires after createGrace), or the client's last SSE stream dropped
+//     created the workspace but has not yet attached an workspace channel
+//     (fires after createGrace), or the client's last workspace channel dropped
 //     without an explicit release (fires after detachGrace, giving the
 //     client's reconnect loop a window to re-attach). Either way the
 //     timer releases the claim when it expires.
@@ -189,7 +189,7 @@ type Backend struct {
 //     detach grace for a client that is not coming back.
 //
 // streams and holdTimer are mutually exclusive in practice (the hold
-// timer is stopped the moment an SSE stream attaches), but both being
+// timer is stopped the moment an workspace channel attaches), but both being
 // zero/nil means the entry has been released and should be removed.
 type clientState struct {
 	streams                  int
@@ -378,7 +378,7 @@ func (b *Backend) SetCreateGrace(d time.Duration) {
 }
 
 // SetDetachGrace overrides how long a client's claim survives after its
-// last SSE stream drops. A value <= 0 restores the tear-down-immediately
+// last workspace channel drops. A value <= 0 restores the tear-down-immediately
 // behavior. Intended for tests.
 func (b *Backend) SetDetachGrace(d time.Duration) {
 	b.mu.Lock()
@@ -484,7 +484,7 @@ func (b *Backend) completeWorkspaceResponse(clientID string) {
 //
 // args.ClientID must be a valid UUID identifying the calling client;
 // the resulting workspace registers a creation hold on behalf of that
-// client which is released either by the first SSE attach (which
+// client which is released either by the first workspace channel attach (which
 // converts it into a stream claim) or by the grace window expiring.
 func (b *Backend) CreateWorkspace(args proto.Workspace) (workspace *Workspace, response proto.Workspace, err error) {
 	if b.clientRuntimeOnly && args.AuthorityMode != "client" {
@@ -913,7 +913,7 @@ func skillStatesToProto(states []*skills.SkillState) []proto.SkillState {
 	return out
 }
 
-// AttachClient registers a new SSE stream for the given client on the
+// AttachClient registers a new workspace channel for the given client on the
 // workspace. The stream's deferred cleanup must call DetachClient with
 // the same arguments to release the claim.
 //
@@ -964,7 +964,7 @@ func (b *Backend) AttachClientWithAuthority(workspaceID, clientID, principal str
 		defer ws.clientsMu.Unlock()
 		cs, ok := ws.clients[clientID]
 		if !ok {
-			// Defensive: SSE attach without a prior CreateWorkspace by
+			// Defensive: workspace channel attach without a prior CreateWorkspace by
 			// this client still installs a stream claim so the stream
 			// stays alive for its duration.
 			ws.clients[clientID] = &clientState{streams: 1}
@@ -988,7 +988,7 @@ func (b *Backend) AttachClientWithAuthority(workspaceID, clientID, principal str
 	return admit()
 }
 
-// DetachClient releases one SSE stream's hold on the workspace. When the
+// DetachClient releases one workspace channel's hold on the workspace. When the
 // client has no streams left and no pending creation hold, its claim
 // either enters the detach grace — giving a reconnecting client time to
 // re-attach — or, if the grace is disabled or the client already released
@@ -1378,7 +1378,7 @@ func (b *Backend) CloseIdleWorkspace(id string) error {
 // (streams == 0) is rejected with [ErrClientNotAttached]. This
 // guards against zombie writes from a client that has detached and
 // against ghost presence from a hold-only client that never opened an
-// SSE stream.
+// workspace channel.
 func (b *Backend) SetCurrentSession(workspaceID, clientID, sessionID string) error {
 	return b.SetCurrentSessionSelection(workspaceID, clientID, proto.CurrentSession{SessionID: sessionID})
 }
@@ -1431,7 +1431,7 @@ func (b *Backend) SetCurrentSessionSelection(workspaceID, clientID string, selec
 
 // AttachedClients returns the number of clients currently viewing
 // sessionID in the given workspace. Only clients with at least one live
-// SSE stream (streams > 0) AND a matching currentSessionID are counted;
+// workspace channel (streams > 0) AND a matching currentSessionID are counted;
 // pure creation holds do not contribute. Returns [ErrWorkspaceNotFound]
 // if the workspace is unknown.
 func (b *Backend) AttachedClients(workspaceID, sessionID string) (int, error) {
@@ -1444,7 +1444,7 @@ func (b *Backend) AttachedClients(workspaceID, sessionID string) (int, error) {
 
 // AttachedClientsForSession returns the number of clients in this
 // workspace whose currentSessionID equals sessionID and which have at
-// least one live SSE stream. Hold-only clients (streams == 0) do not
+// least one live workspace channel. Hold-only clients (streams == 0) do not
 // contribute. Acquires the workspace's [clientsMu] briefly; the
 // returned count is a point-in-time snapshot.
 func (w *Workspace) ConnectedClients() int {

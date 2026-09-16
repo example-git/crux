@@ -10,6 +10,8 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
+	"github.com/example-git/crux/internal/proto"
+	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
 )
@@ -17,13 +19,21 @@ import (
 type clientRefreshEvent struct{ deadline int64 }
 
 // HandleClientRefreshEvent is shared by the UI subscription and headless run
-// loop. Work runs asynchronously so token exchange cannot stall SSE draining.
+// loop. Work runs asynchronously so token exchange cannot stall channel draining.
 func (w *ClientWorkspace) HandleClientRefreshEvent(ctx context.Context, event any) bool {
-	ev, ok := event.(pubsub.Event[config.ClientRefreshRequest])
-	if !ok {
+	var request config.ClientRefreshRequest
+	switch value := event.(type) {
+	case pubsub.Event[config.ClientRefreshRequest]:
+		request = value.Payload
+	case proto.PeerProviderRefreshRequest:
+		var ok bool
+		request, ok = w.resolvePeerRefreshRequest(value)
+		if !ok {
+			return true
+		}
+	default:
 		return false
 	}
-	request := ev.Payload
 	a := w.authority
 	if a == nil || request.ID == "" || request.Principal != a.principal || request.Deadline <= time.Now().UnixMilli() {
 		return true
@@ -75,6 +85,60 @@ func (w *ClientWorkspace) HandleClientRefreshEvent(ctx context.Context, event an
 		}
 	}()
 	return true
+}
+
+func (w *ClientWorkspace) resolvePeerRefreshRequest(received proto.PeerProviderRefreshRequest) (config.ClientRefreshRequest, bool) {
+	a := w.authority
+	if a == nil {
+		return config.ClientRefreshRequest{}, false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if received.Revision != a.accepted.Revision || received.Digest != a.accepted.Digest {
+		return config.ClientRefreshRequest{}, false
+	}
+	definitionMatched := false
+	for _, definition := range a.accepted.Providers {
+		if definition.Config.ID != received.Provider.Owner.ProviderID || definition.BundleDigest != received.Provider.BundleDigest {
+			continue
+		}
+		digest, err := definition.Digest()
+		if err != nil || digest != received.Provider.DefinitionDigest {
+			continue
+		}
+		definitionMatched = true
+		break
+	}
+	if !definitionMatched {
+		return config.ClientRefreshRequest{}, false
+	}
+	var matched *config.RemoteCredentialBinding
+	for i := range a.accepted.Credentials {
+		binding := &a.accepted.Credentials[i]
+		if binding.Unavailable || providerauth.PublicOwner(binding.Owner) != received.Provider.Owner {
+			continue
+		}
+		if matched != nil {
+			return config.ClientRefreshRequest{}, false
+		}
+		matched = binding
+	}
+	if matched == nil {
+		return config.ClientRefreshRequest{}, false
+	}
+	request := config.ClientRefreshRequest{
+		ID: received.RequestID, Principal: a.principal, Revision: received.Revision, Digest: received.Digest,
+		Owner: matched.Owner, DefinitionDigest: received.Provider.DefinitionDigest, BundleDigest: received.Provider.BundleDigest, Deadline: received.Deadline,
+	}
+	if matched.Account != nil {
+		request.AccountID = matched.Account.ID
+		request.CredentialID = accounts.CredentialID(*matched.Account)
+	} else if matched.OAuthToken != nil {
+		request.CredentialID = config.OAuthTokenCredentialID(matched.OAuthToken)
+	} else {
+		return config.ClientRefreshRequest{}, false
+	}
+	return request, true
 }
 
 func (w *ClientWorkspace) fulfillClientRefresh(ctx context.Context, request config.ClientRefreshRequest) (config.ClientRefreshCompletion, error) {

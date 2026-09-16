@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bufio"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 )
@@ -52,6 +54,11 @@ func (rrw *recoverResponseWriter) WriteHeader(code int) {
 func (rrw *recoverResponseWriter) Write(b []byte) (int, error) {
 	rrw.wroteHeader = true
 	return rrw.ResponseWriter.Write(b)
+}
+
+func (rrw *recoverResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	rrw.wroteHeader = true
+	return http.NewResponseController(rrw.ResponseWriter).Hijack()
 }
 
 func (rrw *recoverResponseWriter) Unwrap() http.ResponseWriter {

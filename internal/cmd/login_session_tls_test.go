@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +29,7 @@ import (
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/workspace"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
@@ -198,22 +200,52 @@ func testCLIWorkspaceSession(t *testing.T, accountCommands bool) {
 			require.NoError(t, connection.AuthorizeClient(ctx, "cli-owner", identity.Certificate))
 			tlsConfig, err := connection.ServerTLSConfig(ctx)
 			require.NoError(t, err)
+			proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+			require.NoError(t, err)
 			ownerServer := server.NewServer(initial, "tcp", "127.0.0.1:0")
 			ownerServer.Backend().SetCreateGrace(time.Minute)
 			require.NoError(t, ownerServer.EnableNetworkAuth(ctx))
-			handler := ownerServer.Handler()
-			rpc := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
-					if puts.Add(1) == 1 && test.reject || rejectNextPublication.Swap(false) {
-						http.Error(w, "fixture rejected publication", http.StatusConflict)
-						return
+			var proxyMu sync.Mutex
+			var lastServerSequence uint64
+			rpc := startCommandChannelProxy(t, ownerServer.Handler(), tlsConfig, proxyTLS, func(fromClient bool, envelope proto.PeerEnvelope) commandChannelProxyDecision {
+				if !fromClient {
+					proxyMu.Lock()
+					if envelope.Sequence > lastServerSequence {
+						lastServerSequence = envelope.Sequence
 					}
+					proxyMu.Unlock()
+					return commandChannelProxyDecision{}
 				}
-				handler.ServeHTTP(w, r)
-			}))
-			rpc.TLS = tlsConfig
-			rpc.StartTLS()
-			t.Cleanup(func() { rpc.Close(); _ = ownerServer.Close() })
+				if envelope.Type != proto.PeerTypeRuntimeTransaction {
+					return commandChannelProxyDecision{}
+				}
+				proxyMu.Lock()
+				reject := (puts.Add(1) == 1 && test.reject) || rejectNextPublication.Swap(false)
+				if !reject {
+					proxyMu.Unlock()
+					return commandChannelProxyDecision{}
+				}
+				sequence := lastServerSequence + 1
+				lastServerSequence = sequence
+				proxyMu.Unlock()
+				payload, err := json.Marshal(proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic runtime rejection"})
+				if err != nil {
+					return commandChannelProxyDecision{}
+				}
+				reply := &proto.PeerEnvelope{
+					Version:     proto.PeerChannelVersion,
+					Epoch:       envelope.Epoch,
+					Sequence:    sequence,
+					MessageID:   uuid.NewString(),
+					ReplyTo:     envelope.MessageID,
+					Kind:        proto.PeerMessageAcknowledgement,
+					Type:        proto.PeerTypeAcknowledgement,
+					WorkspaceID: envelope.WorkspaceID,
+					Payload:     payload,
+				}
+				return commandChannelProxyDecision{drop: true, close: true, reply: reply}
+			})
+			t.Cleanup(func() { _ = ownerServer.Close() })
 			api, err := client.NewAuthenticatedClient(t.TempDir(), connection.Connection{Address: "tcp://" + rpc.Listener.Addr().String(), ServerCertificate: serverCode, Client: identity})
 			require.NoError(t, err)
 			requested := proto.Workspace{Path: root, DataDir: t.TempDir(), AuthorityMode: test.authority}

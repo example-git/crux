@@ -3,9 +3,11 @@ package client
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,8 +19,70 @@ import (
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
+
+// peerChannelTestServer starts an HTTP server bound to a local unix socket
+// that upgrades /v1/peer-channel to the peer-channel v2 subprotocol, so tests
+// can exercise the real transport without insecure TCP.
+func peerChannelTestServer(t *testing.T, handler func(*websocket.Conn, string)) *Client {
+	t.Helper()
+	root, err := os.MkdirTemp("", "crx-peer-channel-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	address := filepath.Join(root, "channel.sock")
+	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "unix", address)
+	require.NoError(t, err)
+
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/peer-channel", r.URL.Path)
+		connection, err := (&websocket.Upgrader{Subprotocols: []string{proto.PeerChannelProtocol}}).Upgrade(w, r, nil)
+		require.NoError(t, err)
+		defer connection.Close()
+
+		_, data, err := connection.ReadMessage()
+		require.NoError(t, err)
+		hello, err := proto.DecodePeerMessage(data, proto.PeerDirectionClientToServer)
+		require.NoError(t, err)
+		require.Equal(t, proto.PeerTypeHello, hello.Envelope.Type)
+		epoch := hello.Envelope.Epoch
+
+		data, err = proto.EncodePeerMessage(epoch, 1, "server-1", hello.Envelope.MessageID, "", proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+		require.NoError(t, err)
+		require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
+		data, err = proto.EncodePeerMessage(epoch, 2, "server-2", "", "", proto.PeerTypeReady, proto.PeerReady{})
+		require.NoError(t, err)
+		require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
+
+		_, data, err = connection.ReadMessage()
+		require.NoError(t, err)
+		attach, err := proto.DecodePeerMessage(data, proto.PeerDirectionClientToServer)
+		require.NoError(t, err)
+		require.Equal(t, proto.PeerTypeWorkspaceAttach, attach.Envelope.Type)
+
+		data, err = proto.EncodePeerMessage(epoch, 3, "server-3", attach.Envelope.MessageID, attach.Envelope.WorkspaceID, proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+		require.NoError(t, err)
+		require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
+
+		handler(connection, epoch)
+	})}
+	finished := make(chan error, 1)
+	go func() { finished <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = listener.Close()
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("peer channel fixture did not stop")
+		}
+	})
+
+	client, err := NewClient(t.TempDir(), "unix", address)
+	require.NoError(t, err)
+	return client
+}
 
 func TestBrowseAndCloseIdleWorkspace(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -127,54 +191,42 @@ func TestCreateWorkspaceRejectsLegacyForwardingWithoutTransmission(t *testing.T)
 	require.Nil(t, created)
 }
 
-func TestSendEventAfterContextCancelIsIdempotent(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	events := make(chan any, 1)
-	require.False(t, sendEvent(ctx, events, "one"))
-	require.False(t, sendEvent(ctx, events, "two"))
-
-	select {
-	case ev := <-events:
-		require.Failf(t, "unexpected event", "event: %v", ev)
-	default:
-	}
+func TestCreateWorkspaceRejectsUnknownAuthorityModeWithoutTransmission(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		t.Error("invalid authority mode must not be transmitted")
+	}))
+	defer server.Close()
+	created, err := captureClient(t, server).CreateWorkspace(t.Context(), proto.Workspace{AuthorityMode: "unknown"})
+	require.ErrorContains(t, err, "unsupported workspace authority mode")
+	require.Nil(t, created)
 }
 
 func TestSubscribeEventsContextCancelClosesEvents(t *testing.T) {
 	t.Parallel()
 
-	payload := marshalSSEPayload(t)
+	event := proto.PeerResourceEvent[proto.AgentEvent]{Type: string(pubsub.CreatedEvent), Payload: proto.AgentEvent{Type: proto.AgentEventTypeResponse}}
 	firstEventSent := make(chan struct{})
 	writeSecondEvent := make(chan struct{})
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		flusher, ok := w.(http.Flusher)
-		require.True(t, ok)
-
-		_, err := fmt.Fprintf(w, "data: %s\n\n", payload)
+	c := peerChannelTestServer(t, func(connection *websocket.Conn, epoch string) {
+		data, err := proto.EncodePeerMessage(epoch, 4, "server-4", "", "ws1", proto.PeerTypeEventAgent, event)
 		require.NoError(t, err)
-		flusher.Flush()
+		require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
 		close(firstEventSent)
-
 		select {
 		case <-writeSecondEvent:
 		case <-time.After(5 * time.Second):
 			return
 		}
-		_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
-		flusher.Flush()
-	}))
-	defer srv.Close()
+		data, err = proto.EncodePeerMessage(epoch, 5, "server-5", "", "ws1", proto.PeerTypeEventAgent, event)
+		require.NoError(t, err)
+		_ = connection.WriteMessage(websocket.TextMessage, data)
+		_, _, _ = connection.ReadMessage()
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	c := captureClient(t, srv)
 	events, err := c.SubscribeEvents(ctx, "ws1")
 	require.NoError(t, err)
 
@@ -207,30 +259,23 @@ func TestSubscribeEventsPreservesOpaqueMessageMetadata(t *testing.T) {
 	payloadBytes := []byte(`{ "number" : 1.00e+2, "ordered" : [2,1] }`)
 	envelope, err := message.NewProviderMetadataEnvelope("missing.plugin", 17, message.ProviderMetadataScopeContinuation, payloadBytes)
 	require.NoError(t, err)
-	messageEvent, err := json.Marshal(pubsub.Event[proto.Message]{
-		Type: pubsub.UpdatedEvent,
-		Payload: proto.Message{Role: proto.Assistant, Parts: []proto.ContentPart{
-			proto.ProviderMetadataContent{ProviderMetadata: message.ProviderMetadata{envelope}},
-		}},
+	event := proto.PeerResourceEvent[proto.Message]{Type: string(pubsub.UpdatedEvent), Payload: proto.Message{Role: proto.Assistant, Parts: []proto.ContentPart{
+		proto.ProviderMetadataContent{ProviderMetadata: message.ProviderMetadata{envelope}},
+	}}}
+
+	c := peerChannelTestServer(t, func(connection *websocket.Conn, epoch string) {
+		data, err := proto.EncodePeerMessage(epoch, 4, "server-4", "", "ws1", proto.PeerTypeEventMessage, event)
+		require.NoError(t, err)
+		require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
+		_, _, _ = connection.ReadMessage()
 	})
-	require.NoError(t, err)
-	ssePayload, err := json.Marshal(pubsub.Payload{Type: pubsub.PayloadTypeMessage, Payload: messageEvent})
-	require.NoError(t, err)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, writeErr := fmt.Fprintf(w, "data: %s\n\n", ssePayload)
-		require.NoError(t, writeErr)
-	}))
-	defer srv.Close()
-
-	c := captureClient(t, srv)
 	events, err := c.SubscribeEvents(t.Context(), "ws1")
 	require.NoError(t, err)
-	event, ok := <-events
+	event2, ok := <-events
 	require.True(t, ok)
-	decoded, ok := event.(pubsub.Event[proto.Message])
-	require.True(t, ok, "unexpected SSE event %T", event)
+	decoded, ok := event2.(pubsub.Event[proto.Message])
+	require.True(t, ok, "unexpected channel event %T", event2)
 	metadata := decoded.Payload.Parts[0].(proto.ProviderMetadataContent).ProviderMetadata
 	require.Len(t, metadata, 1)
 	require.Equal(t, message.ProviderMetadataScopeContinuation, metadata[0].Scope)
@@ -443,23 +488,4 @@ func TestSendMessageFallsBackOnEmptyErrorBody(t *testing.T) {
 	err := c.SendMessage(context.Background(), "ws1", "sess1", "", "hello")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "status code 500")
-}
-
-func marshalSSEPayload(t *testing.T) []byte {
-	t.Helper()
-
-	eventPayload, err := json.Marshal(pubsub.Event[proto.AgentEvent]{
-		Type: pubsub.CreatedEvent,
-		Payload: proto.AgentEvent{
-			Type: proto.AgentEventTypeResponse,
-		},
-	})
-	require.NoError(t, err)
-
-	payload, err := json.Marshal(pubsub.Payload{
-		Type:    pubsub.PayloadTypeAgentEvent,
-		Payload: eventPayload,
-	})
-	require.NoError(t, err)
-	return payload
 }

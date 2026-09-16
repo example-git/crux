@@ -5,21 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/backend"
 	"github.com/example-git/crux/internal/config"
 	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/proto"
-	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/redact"
 	"github.com/example-git/crux/internal/session"
 	"github.com/google/uuid"
 )
 
 type controllerV1 struct {
-	backend *backend.Backend
-	server  *Server
+	backend         *backend.Backend
+	server          *Server
+	peerExecutionMu sync.Mutex
+	peerJournalMu   sync.Mutex
+	peerJournal     map[string]peerJournalEntry
 }
 
 // handleGetHealth checks server health.
@@ -157,6 +160,10 @@ func (c *controllerV1) handlePostWorkspaces(w http.ResponseWriter, r *http.Reque
 	args.Runtime, args.AuthorityMode = request.Runtime, request.AuthorityMode
 	args.AuthenticatedPrincipal = requestPrincipal(r)
 	args.LocalClientAuthority = c.server.localClientAuthority()
+	if c.server.clientRuntimeOnly() && args.AuthorityMode != "client" {
+		jsonError(w, http.StatusBadRequest, "remote workspaces require client authority")
+		return
+	}
 	if args.Runtime != nil || args.AuthorityMode == "client" {
 		if !c.requireRuntimeProtocol(w, r) {
 			return
@@ -184,11 +191,6 @@ func (c *controllerV1) handlePostWorkspaces(w http.ResponseWriter, r *http.Reque
 		jsonError(w, http.StatusBadRequest, "legacy provider forwarding is unsupported; negotiate the client runtime protocol")
 		return
 	}
-	if args.AuthorityMode != "client" {
-		jsonError(w, http.StatusBadRequest, "server workspaces require client authority")
-		return
-	}
-
 	_, result, complete, err := c.backend.CreateWorkspaceForResponse(args)
 	if err != nil {
 		c.handleError(w, r, err)
@@ -335,115 +337,6 @@ func (c *controllerV1) handleGetWorkspaceProviders(w http.ResponseWriter, r *htt
 		return
 	}
 	jsonEncode(w, providers)
-}
-
-// handleGetWorkspaceEvents streams workspace events as Server-Sent Events.
-//
-//	@Summary		Stream workspace events (SSE)
-//	@Tags			workspaces
-//	@Produce		text/event-stream
-//	@Param			id	path	string	true	"Workspace ID"
-//	@Success		200
-//	@Failure		404	{object}	proto.Error
-//	@Failure		500	{object}	proto.Error
-//
-// @Description The event stream claim must match accepted workspace authority. Client-owned attachment requires the exact mode/revision/digest from a retained creation or replacement acknowledgement. The response echoes the accepted tuple before events. A client UUID or public discovery result alone does not authorize attachment.
-// @Param Crux-Workspace-Authority-Mode header string false "Accepted mode: client or server; required for client-owned attachment"
-// @Param Crux-Workspace-Authority-Revision header string false "Exact accepted decimal revision; required with authority mode"
-// @Param Crux-Workspace-Authority-Digest header string false "Exact accepted runtime digest; required with authority mode"
-// @Header 200 {string} Crux-Workspace-Authority-Mode "Accepted workspace mode"
-// @Header 200 {string} Crux-Workspace-Authority-Revision "Accepted decimal revision"
-// @Header 200 {string} Crux-Workspace-Authority-Digest "Accepted runtime digest"
-// @Failure 403 {object} proto.Error "Client principal does not own the workspace or claim"
-// @Failure 409 {object} proto.Error "Attachment authority differs from the accepted runtime"
-//
-//	@Router			/workspaces/{id}/events [get]
-func (c *controllerV1) handleGetWorkspaceEvents(w http.ResponseWriter, r *http.Request) {
-	flusher := http.NewResponseController(w)
-	id := r.PathValue("id")
-	clientID, ok := c.requireClientID(w, r)
-	if !ok {
-		return
-	}
-	accepted, err := proto.ParseWorkspaceAttachment(r.Header)
-	if err != nil {
-		jsonError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	// Subscribe to the event broker BEFORE attaching the client.
-	// AttachClient bumps the stream count that observers use to
-	// detect a live subscriber; subscribing first guarantees that
-	// once a client appears attached, any published event is
-	// delivered rather than dropped on a not-yet-registered stream.
-	events, err := c.backend.SubscribeEvents(r.Context(), id)
-	if err != nil {
-		c.handleError(w, r, err)
-		return
-	}
-	if err := c.backend.AttachClientWithAuthority(id, clientID, requestPrincipal(r), accepted); err != nil {
-		c.handleError(w, r, err)
-		return
-	}
-	defer c.backend.DetachClient(id, clientID)
-
-	if accepted != nil {
-		accepted.SetHeaders(w.Header())
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	// Flush headers immediately so clients see the 200 response
-	// before any events arrive. Without this, a quiet workspace
-	// keeps the client's SubscribeEvents call blocked on the
-	// initial RoundTrip.
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-	// Subscribe before inspecting pending state so a concurrent request is
-	// delivered by replay or the live broker; request IDs make duplicates safe.
-	if ws, err := c.backend.GetWorkspace(id); err == nil && ws.Cfg != nil && ws.Cfg.RemoteAuthority() != nil {
-		for _, request := range ws.Cfg.PendingClientRefreshes() {
-			wrapped := wrapEvent(pubsub.Event[config.ClientRefreshRequest]{Type: pubsub.CreatedEvent, Payload: request})
-			data, err := json.Marshal(wrapped)
-			if err != nil {
-				return
-			}
-			data, err = redact.JSON(data)
-			if err != nil {
-				return
-			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
-		}
-	}
-
-	for {
-		select {
-		case <-r.Context().Done():
-			c.server.logDebug(r, "Stopping event stream")
-			return
-		case ev, ok := <-events:
-			if !ok {
-				return
-			}
-			wrapped := wrapEvent(ev.Payload)
-			if wrapped == nil {
-				continue
-			}
-			data, err := json.Marshal(wrapped)
-			if err != nil {
-				c.server.logError(r, "Failed to marshal event", "error", err)
-				continue
-			}
-			data, err = redact.JSON(data)
-			if err != nil {
-				c.server.logError(r, "Failed to redact event", "error", err)
-				continue
-			}
-
-			fmt.Fprintf(w, "data: %s\n\n", data)
-			flusher.Flush()
-		}
-	}
 }
 
 // handleGetWorkspaceLSPs lists LSP clients for a workspace.
@@ -1466,7 +1359,7 @@ func (c *controllerV1) handleGetWorkspacePermissionsSkip(w http.ResponseWriter, 
 // Runtime cancellation of an agent run no longer reaches here for the
 // agent-prompt path: SendMessage is fire-and-forget (the handler returns
 // 202 before the run starts) and Backend.runAgent swallows
-// context.Canceled, surfacing the FinishReasonCanceled marker to SSE
+// context.Canceled, surfacing the FinishReasonCanceled marker to the workspace channel
 // subscribers instead. The remaining callers pass synchronous backend
 // errors, so context.Canceled gets no special case and would fall through
 // to the default 500 like any other unexpected error.

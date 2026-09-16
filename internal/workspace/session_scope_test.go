@@ -37,7 +37,7 @@ func TestSessionScopeRejectsRecreatedIDBeforeRPC(t *testing.T) {
 func TestSessionScopeSubscriptionReportsExactIncarnation(t *testing.T) {
 	for _, recreate := range []bool{false, true} {
 		t.Run(map[bool]string{false: "reattach", true: "recreate"}[recreate], func(t *testing.T) {
-			t.Cleanup(SetSSEBackoffForTest(time.Millisecond, 5*time.Millisecond))
+			t.Cleanup(SetChannelBackoffForTest(time.Millisecond, 5*time.Millisecond))
 			server := &recoveryServer{liveID: "ws-1", nextID: "ws-2"}
 			if recreate {
 				server.liveID = ""

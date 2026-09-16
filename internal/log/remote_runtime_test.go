@@ -12,7 +12,7 @@ import (
 )
 
 func TestPrivateRuntimeRoutesNeverPersistBodiesWithoutMarker(t *testing.T) {
-	for _, test := range []struct{ method, path string }{{http.MethodPost, "/v1/workspaces"}, {http.MethodPut, "/v1/workspaces/workspace/runtime"}, {http.MethodPost, "/v1/workspaces/workspace/auth/api-key/check"}, {http.MethodGet, "/v1/workspaces/workspace/auth/api-key/check"}} {
+	for _, test := range []struct{ method, path string }{{http.MethodPost, "/v1/workspaces"}, {http.MethodPost, "/v1/workspaces/workspace/auth/api-key/check"}, {http.MethodGet, "/v1/workspaces/workspace/auth/api-key/check"}} {
 		t.Run(test.method+test.path, func(t *testing.T) {
 			trace, database := testTrafficTrace(t)
 			handler := TraceHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

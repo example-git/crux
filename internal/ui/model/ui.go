@@ -1988,7 +1988,7 @@ func (m *UI) setSessionMessages(msgs []message.Message, nested map[string][]mess
 
 // handleConnectionEvent reports the health of the client-server link and,
 // once it recovers, reloads the open session. A reload is always needed
-// after a degraded episode: events published while the stream was down are
+// after a degraded episode: events published while the channel was down are
 // gone, and if the workspace itself was re-created any run died with it.
 func (m *UI) handleConnectionEvent(msg workspace.ConnectionEvent) []tea.Cmd {
 	if msg.Source == nil || msg.Source != m.com.Workspace || msg.WorkspaceID == "" || msg.WorkspaceID != m.com.Workspace.AuthenticationWorkspaceID() {
@@ -2918,6 +2918,9 @@ func selectedModelOwner(cfg *config.Config, model config.SelectedModel) (provide
 // available. Returns a tea.Cmd that rebuilds the agent models if a
 // switch was made, or nil if no switch was needed.
 func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
+	if authority := cachedWorkspaceAuthority(m.com); authority != nil && authority.Mode == "client" {
+		return nil
+	}
 	var lastAssistant *message.Message
 	for i := len(msgs) - 1; i >= 0; i-- {
 		if msgs[i].Role == message.Assistant && !msgs[i].IsSummaryMessage {
@@ -5165,7 +5168,7 @@ func (m *UI) sendMessage(content string, attachments ...message.Attachment) tea.
 		// AgentRun is fire-and-forget: it returns once the prompt has
 		// been accepted (HTTP 202) or synchronously with a validation
 		// or transport error. Run failures and cancellation surface
-		// through SSE-derived events, not this return value.
+		// through workspace-channel events, not this return value.
 		runCtx := agent.WithSubmissionID(context.Background(), submissionID)
 		runCtx = agent.WithDeliveryMode(runCtx, deliveryMode)
 		err := m.com.Workspace.AgentRun(runCtx, sessionID, content, attachments...)

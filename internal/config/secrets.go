@@ -24,6 +24,14 @@ func registerOAuthTokenSecrets(token *oauth.Token) {
 	}
 }
 
+func RegisterRemoteCredentialSecrets(binding RemoteCredentialBinding) {
+	redact.Register(binding.APIKey)
+	registerOAuthTokenSecrets(binding.OAuthToken)
+	if binding.Account != nil {
+		registerAccountSecrets(*binding.Account)
+	}
+}
+
 func registerProviderSecrets(provider ProviderConfig, registration providerregistry.Registration, registered bool) {
 	redact.Register(provider.APIKey, provider.APIKeyTemplate)
 	for _, binding := range provider.resolvedCredentials {

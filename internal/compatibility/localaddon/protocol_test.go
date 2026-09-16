@@ -114,17 +114,26 @@ func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, s
 					"owner": owner,
 				},
 			})
-		case strings.HasSuffix(path, "/events"):
-			w.Header().Set("Content-Type", "text/event-stream")
-			flusher := w.(http.Flusher)
-			flusher.Flush()
+		case strings.HasSuffix(path, "/channel"):
+			connection, err := (&websocket.Upgrader{Subprotocols: []string{proto.WorkspaceChannelProtocol}}).Upgrade(w, r, nil)
+			require.NoError(t, err)
+			defer connection.Close()
+			closed := make(chan struct{})
+			go func() {
+				defer close(closed)
+				for {
+					if _, _, err := connection.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}()
 			for {
 				select {
 				case event := <-events:
-					payload, _ := json.Marshal(map[string]any{"type": "run_complete", "payload": map[string]any{"type": "updated", "payload": event}})
-					_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
-					flusher.Flush()
-				case <-r.Context().Done():
+					payload, err := json.Marshal(map[string]any{"type": "run_complete", "payload": map[string]any{"type": "updated", "payload": event}})
+					require.NoError(t, err)
+					require.NoError(t, connection.WriteJSON(proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelEventFrame, Event: payload}))
+				case <-closed:
 					return
 				}
 			}

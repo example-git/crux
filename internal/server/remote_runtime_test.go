@@ -34,7 +34,9 @@ func TestRemoteRuntimeTLSAdmissionAndOwnership(t *testing.T) {
 	defer func() {
 		require.Equal(t, serverState, remoteServerState(t), "remote admission must preserve shared server state")
 	}()
-	path, err := filepath.EvalSymlinks(t.TempDir())
+	path := filepath.Join(filepath.Dir(os.Getenv("HOME")), "workspace")
+	require.NoError(t, os.MkdirAll(path, 0o700))
+	path, err := filepath.EvalSymlinks(path)
 	require.NoError(t, err)
 	owner := providerregistry.RegistrationOwner{ProviderID: "client-only"}
 	proposal := config.RemoteRuntimeProposal{
@@ -95,7 +97,7 @@ func TestRemoteRuntimeTLSAdmissionAndOwnership(t *testing.T) {
 	otherRequest.ClientID = uuid.NewString()
 	status, _ = call("revoked", http.MethodPost, "/v1/workspaces", otherRequest)
 	require.Equal(t, http.StatusForbidden, status)
-	for _, route := range []string{"", "/config", "/sessions", "/events", "/tasks"} {
+	for _, route := range []string{"", "/config", "/sessions", "/channel", "/tasks"} {
 		status, _ = call("revoked", http.MethodGet, "/v1/workspaces/"+ws.ID+route, nil)
 		require.Equal(t, http.StatusForbidden, status, route)
 	}
@@ -112,13 +114,20 @@ func TestRemoteRuntimeTLSAdmissionAndOwnership(t *testing.T) {
 	status, _ = call("retained", http.MethodPost, "/v1/workspaces", request)
 	require.Equal(t, http.StatusConflict, status)
 	update := proto.UpdateRemoteRuntimeRequest{ExpectedRevision: 1, Runtime: proposal}
-	status, body = call("retained", http.MethodPut, "/v1/workspaces/"+ws.ID+"/runtime", update)
-	require.Equal(t, http.StatusOK, status, string(body))
-	var ack config.RemoteAuthority
-	require.NoError(t, json.Unmarshal(body, &ack))
-	require.Equal(t, uint64(2), ack.Revision)
-	status, _ = call("retained", http.MethodPut, "/v1/workspaces/"+ws.ID+"/runtime", update)
-	require.Equal(t, http.StatusConflict, status)
+	channel := dialRemoteRuntimeChannel(t, hs.URL, clients["retained"], ws.ID, request.ClientID, ws.Authority)
+	defer channel.Close()
+	command := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelRuntimeReplaceFrame, CommandID: uuid.NewString(), RuntimeReplace: &update}
+	ack := sendRemoteRuntimeCommand(t, channel, command)
+	require.Equal(t, proto.WorkspaceChannelStatusOK, ack.Status)
+	require.NotNil(t, ack.Authority)
+	require.Equal(t, uint64(2), ack.Authority.Revision)
+	ack = sendRemoteRuntimeCommand(t, channel, command)
+	require.Equal(t, proto.WorkspaceChannelStatusConflict, ack.Status)
+	require.Equal(t, "duplicate workspace channel command", ack.Message)
+	command.CommandID = uuid.NewString()
+	ack = sendRemoteRuntimeCommand(t, channel, command)
+	require.Equal(t, proto.WorkspaceChannelStatusConflict, ack.Status)
+	require.Nil(t, ack.Authority)
 	status, body = call("retained", http.MethodGet, "/v1/workspaces/"+ws.ID, nil)
 	require.Equal(t, http.StatusOK, status, string(body))
 	require.NoError(t, json.Unmarshal(body, &ws))

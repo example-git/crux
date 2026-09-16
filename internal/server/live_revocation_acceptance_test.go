@@ -315,7 +315,7 @@ func testLiveCredentialWorkLifetime(t *testing.T, detached, disconnect bool) {
 		require.True(t, ok)
 	}
 	if disconnect {
-		// A second real SSE claim must keep the credential-bearing request
+		// A second real channel claim must keep the credential-bearing request
 		// alive even after the first stream has been absent longer than grace.
 		remainingCtx, cancelRemaining := context.WithCancel(ctx)
 		defer cancelRemaining()
@@ -384,7 +384,7 @@ func testLiveCredentialWorkLifetime(t *testing.T, detached, disconnect bool) {
 	select {
 	case <-streamEnded:
 	case <-time.After(5 * time.Second):
-		t.Fatal("revoked event stream remained open")
+		t.Fatal("revoked workspace channel remained open")
 	}
 	_, err = clients["revoked"].GetWorkspace(ctx, workspaces["revoked"].ID)
 	require.Error(t, err)

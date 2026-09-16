@@ -94,19 +94,6 @@ definitions:
       small:
         $ref: '#/definitions/config.OwnedSelectedModel'
     type: object
-  config.ClientRefreshCompletion:
-    properties:
-      credential_id:
-        type: string
-      digest:
-        type: string
-      failed:
-        type: boolean
-      request_id:
-        type: string
-      revision:
-        type: integer
-    type: object
   config.Completions:
     properties:
       max_depth:
@@ -1477,8 +1464,7 @@ definitions:
       skills:
         description: |-
           Skills carries the snapshot of skill discovery state at workspace
-          creation time. Subsequent updates flow through the SSE event
-          stream.
+          creation time. Subsequent updates flow through the workspace channel.
         items:
           $ref: '#/definitions/proto.SkillState'
         type: array
@@ -2316,13 +2302,6 @@ definitions:
       status:
         type: string
     type: object
-  proto.UpdateRemoteRuntimeRequest:
-    properties:
-      expected_revision:
-        type: integer
-      runtime:
-        $ref: '#/definitions/config.RemoteRuntimeProposal'
-    type: object
   proto.VersionInfo:
     properties:
       build_id:
@@ -2389,8 +2368,7 @@ definitions:
       skills:
         description: |-
           Skills carries the snapshot of skill discovery state at workspace
-          creation time. Subsequent updates flow through the SSE event
-          stream.
+          creation time. Subsequent updates flow through the workspace channel.
         items:
           $ref: '#/definitions/proto.SkillState'
         type: array
@@ -5245,65 +5223,6 @@ paths:
       summary: Set current session for a client
       tags:
       - workspaces
-  /workspaces/{id}/events:
-    get:
-      description: The event stream claim must match accepted workspace authority.
-        Client-owned attachment requires the exact mode/revision/digest from a retained
-        creation or replacement acknowledgement. The response echoes the accepted
-        tuple before events. A client UUID or public discovery result alone does not
-        authorize attachment.
-      parameters:
-      - description: Workspace ID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: 'Accepted mode: client or server; required for client-owned attachment'
-        in: header
-        name: Crux-Workspace-Authority-Mode
-        type: string
-      - description: Exact accepted decimal revision; required with authority mode
-        in: header
-        name: Crux-Workspace-Authority-Revision
-        type: string
-      - description: Exact accepted runtime digest; required with authority mode
-        in: header
-        name: Crux-Workspace-Authority-Digest
-        type: string
-      produces:
-      - text/event-stream
-      responses:
-        "200":
-          description: OK
-          headers:
-            Crux-Workspace-Authority-Digest:
-              description: Accepted runtime digest
-              type: string
-            Crux-Workspace-Authority-Mode:
-              description: Accepted workspace mode
-              type: string
-            Crux-Workspace-Authority-Revision:
-              description: Accepted decimal revision
-              type: string
-        "403":
-          description: Client principal does not own the workspace or claim
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "409":
-          description: Attachment authority differs from the accepted runtime
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/proto.Error'
-      summary: Stream workspace events (SSE)
-      tags:
-      - workspaces
   /workspaces/{id}/filetracker/lastread:
     get:
       parameters:
@@ -6190,136 +6109,6 @@ paths:
       summary: Cancel question batch
       tags:
       - questions
-  /workspaces/{id}/runtime:
-    put:
-      consumes:
-      - application/json
-      description: Stages the complete private proposal and atomically publishes only
-        against expected_revision. Rejected proposals preserve accepted authority.
-        The reply contains no credentials or bundle content.
-      parameters:
-      - description: Exact request and operation identity
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/proto.UpdateRemoteRuntimeRequest'
-      - description: Workspace ID bound to the authenticated principal
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: 'Negotiated protocol: crux-client-runtime-v1'
-        in: header
-        name: Crux-Runtime-Protocol
-        required: true
-        type: string
-      - description: Nonempty marker suppressing private request bodies from traffic
-          logs
-        in: header
-        name: X-Crux-Ephemeral-State
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/config.RemoteAuthority'
-        "400":
-          description: Invalid request; authentication operations may instead return
-            their request-bound response with an error
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "403":
-          description: Principal is unauthorized or does not own this workspace
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "404":
-          description: Workspace is unavailable
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "409":
-          description: Accepted revision or exact refresh identity changed
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "428":
-          description: Runtime protocol negotiation is required
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "500":
-          description: Response unavailable; do not infer whether persistence or publication
-            occurred
-          schema:
-            $ref: '#/definitions/proto.Error'
-      summary: Replace the accepted client runtime
-      tags:
-      - runtime
-  /workspaces/{id}/runtime/refresh-completion:
-    post:
-      consumes:
-      - application/json
-      description: Completes the exact retained refresh request after the owning client
-        persists and publishes its result. Replaying that completion never starts
-        another token exchange.
-      parameters:
-      - description: Exact request and operation identity
-        in: body
-        name: request
-        required: true
-        schema:
-          $ref: '#/definitions/config.ClientRefreshCompletion'
-      - description: Workspace ID bound to the authenticated principal
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: 'Negotiated protocol: crux-client-runtime-v1'
-        in: header
-        name: Crux-Runtime-Protocol
-        required: true
-        type: string
-      - description: Nonempty marker suppressing private request bodies from traffic
-          logs
-        in: header
-        name: X-Crux-Ephemeral-State
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "204":
-          description: Exact completion acknowledged
-        "400":
-          description: Invalid request; authentication operations may instead return
-            their request-bound response with an error
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "403":
-          description: Principal is unauthorized or does not own this workspace
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "404":
-          description: Workspace is unavailable
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "409":
-          description: Accepted revision or exact refresh identity changed
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "428":
-          description: Runtime protocol negotiation is required
-          schema:
-            $ref: '#/definitions/proto.Error'
-        "500":
-          description: Response unavailable; do not infer whether persistence or publication
-            occurred
-          schema:
-            $ref: '#/definitions/proto.Error'
-      summary: Acknowledge a client credential refresh
-      tags:
-      - runtime
   /workspaces/{id}/sessions:
     get:
       parameters:

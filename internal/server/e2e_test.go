@@ -1,14 +1,12 @@
 package server
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -17,11 +15,13 @@ import (
 	"github.com/example-git/crux/internal/app"
 	"github.com/example-git/crux/internal/backend"
 	"github.com/example-git/crux/internal/db"
+	cruxlog "github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,18 +37,18 @@ type e2eHarness struct {
 	app         *app.App
 	shutdownHit atomic.Bool
 
-	// sseWG tracks every SSE reader goroutine spawned by
-	// [e2eHarness.subscribeSSE]. The harness's cleanup hook waits on
+	// channelWG tracks every channel reader goroutine spawned by
+	// [e2eHarness.subscribeChannel]. The harness's cleanup hook waits on
 	// it after the httptest server has been closed so that the test
 	// cannot leave behind background readers (and therefore unclosed
 	// response bodies) after returning.
-	sseWG sync.WaitGroup
+	channelWG sync.WaitGroup
 }
 
 // installServer attaches a fresh Server (with a custom shutdown
 // callback that flips [e2eHarness.shutdownHit]) wrapped in an
 // [httptest.Server] onto h. It registers the cleanup hooks for the
-// httptest server and the SSE reader WaitGroup in the order required
+// httptest server and the channel reader WaitGroup in the order required
 // by the LIFO contract documented on [newE2EHarness].
 //
 // Callers that want a fully synthetic workspace use [newE2EHarness];
@@ -66,12 +66,12 @@ func (h *e2eHarness) installServer(t *testing.T) {
 	// Order matters: t.Cleanup is LIFO and the test's own per-
 	// stream cancels (cancelA/cancelB) run first. After those, we
 	// want hs.Close to fire first (so any handler still parked in
-	// its `select` returns), THEN sseWG.Wait so every reader
+	// its `select` returns), THEN channelWG.Wait so every reader
 	// goroutine exits and closes its response body. Any caller-
 	// owned cleanups registered *before* installServer (e.g. App
 	// teardown for the synthetic harness) therefore run LAST,
 	// after the readers have drained.
-	t.Cleanup(h.sseWG.Wait)
+	t.Cleanup(h.channelWG.Wait)
 	t.Cleanup(hs.Close)
 
 	h.httpSrv = hs
@@ -81,12 +81,12 @@ func (h *e2eHarness) installServer(t *testing.T) {
 
 // newE2EHarness builds an in-process server + a synthetic Workspace
 // whose embedded App is a real [app.App] constructed via
-// [app.NewForTest], so its event broker delivers everything the SSE
+// [app.NewForTest], so its event broker delivers everything the workspace channel
 // pipeline expects. Used by the scenarios that do not need to
 // exercise the path-dedupe behavior of [backend.CreateWorkspace].
 //
-// Cleanup tears down the App's broker only after sseWG.Wait and
-// hs.Close have run, so SSE readers cannot observe a dead broker.
+// Cleanup tears down the App's broker only after channelWG.Wait and
+// hs.Close have run, so channel readers cannot observe a dead broker.
 func newE2EHarness(t *testing.T) *e2eHarness {
 	t.Helper()
 
@@ -94,7 +94,7 @@ func newE2EHarness(t *testing.T) *e2eHarness {
 
 	// Register the App teardown FIRST so LIFO order puts it AFTER
 	// the cleanups that installServer registers below (hs.Close +
-	// sseWG.Wait).
+	// channelWG.Wait).
 	appCtx, cancel := context.WithCancel(context.Background())
 	a := app.NewForTest(appCtx)
 	t.Cleanup(func() {
@@ -164,66 +164,70 @@ func (h *e2eHarness) postWorkspace(t *testing.T, args proto.Workspace) proto.Wor
 	return out
 }
 
-// subscribeSSE opens an SSE stream against the test server for the
+// subscribeChannel opens an workspace channel against the test server for the
 // given workspace and client ID. It returns a channel of decoded
 // envelopes plus a cancel function that closes the stream. The
 // returned channel is closed when the stream ends.
-func (h *e2eHarness) subscribeSSE(t *testing.T, ctx context.Context, workspaceID, clientID string) (<-chan any, context.CancelFunc) {
+func (h *e2eHarness) subscribeChannel(t *testing.T, ctx context.Context, workspaceID, clientID string) (<-chan any, context.CancelFunc) {
 	t.Helper()
-	streamCtx, cancel := context.WithCancel(ctx)
-
-	q := url.Values{"client_id": []string{clientID}}
-	reqURL := h.httpSrv.URL + "/v1/workspaces/" + workspaceID + "/events?" + q.Encode()
-	req, err := http.NewRequestWithContext(streamCtx, http.MethodGet, reqURL, nil)
-	require.NoError(t, err)
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := h.httpSrv.Client().Do(req)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, resp.StatusCode, "SSE subscribe should return 200")
-
+	channelCtx, cancel := context.WithCancel(ctx)
+	endpoint := "ws" + h.httpSrv.URL[len("http"):] + "/v1/workspaces/" + workspaceID + "/channel?client_id=" + clientID
+	headers := http.Header{
+		"Crux-Runtime-Protocol":      {proto.RemoteRuntimeProtocol},
+		cruxlog.EphemeralStateHeader: {"1"},
+	}
+	dialer := websocket.Dialer{Subprotocols: []string{proto.WorkspaceChannelProtocol}}
+	connection, response, err := dialer.DialContext(channelCtx, endpoint, headers)
+	if err != nil {
+		status, body := 0, ""
+		if response != nil {
+			status = response.StatusCode
+			data, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			body = string(data)
+			response.Body.Close()
+		}
+		require.NoErrorf(t, err, "workspace channel handshake status=%d body=%q", status, body)
+	}
+	require.Equal(t, proto.WorkspaceChannelProtocol, connection.Subprotocol())
+	closeChannel := func() {
+		cancel()
+		_ = connection.Close()
+	}
 	out := make(chan any, 64)
-	h.sseWG.Go(func() {
-		defer resp.Body.Close()
+	h.channelWG.Go(func() {
 		defer close(out)
-		reader := bufio.NewReader(resp.Body)
 		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
+			messageType, data, err := connection.ReadMessage()
+			if err != nil || messageType != websocket.TextMessage {
 				return
 			}
-			line = bytes.TrimSpace(line)
-			if len(line) == 0 {
+			frame, err := proto.DecodeWorkspaceChannelFrame(data)
+			if err != nil || frame.Type != proto.WorkspaceChannelEventFrame {
 				continue
 			}
-			data, ok := bytes.CutPrefix(line, []byte("data:"))
-			if !ok {
+			var payload pubsub.Payload
+			if err := json.Unmarshal(frame.Event, &payload); err != nil {
 				continue
 			}
-			data = bytes.TrimSpace(data)
-			var p pubsub.Payload
-			if err := json.Unmarshal(data, &p); err != nil {
-				continue
-			}
-			ev, decoded := decodeSSEEnvelope(p)
+			event, decoded := decodeChannelEnvelope(payload)
 			if !decoded {
 				continue
 			}
 			select {
-			case out <- ev:
-			case <-streamCtx.Done():
+			case out <- event:
+			case <-channelCtx.Done():
 				return
 			}
 		}
 	})
-	return out, cancel
+	return out, closeChannel
 }
 
-// decodeSSEEnvelope decodes the discriminated SSE envelope into the
+// decodeChannelEnvelope decodes the discriminated workspace channel event envelope into the
 // concrete pubsub.Event[proto.X] payload the e2e tests care about.
 // Unknown payload types are skipped so tests can match on type
 // assertions without worrying about envelope noise.
-func decodeSSEEnvelope(p pubsub.Payload) (any, bool) {
+func decodeChannelEnvelope(p pubsub.Payload) (any, bool) {
 	switch p.Type {
 	case pubsub.PayloadTypePermissionRequest:
 		var e pubsub.Event[proto.PermissionRequest]
@@ -339,14 +343,14 @@ func drainUntil[T any](ctx context.Context, evc <-chan any, match func(T) bool) 
 // two clients POST /v1/workspaces with the same Path and observe
 // that the server returns a single workspace (path-dedupe from PLAN
 // item 1) and that an event published on that workspace fans out to
-// both SSE streams.
+// both workspace channels.
 //
 // Cannot run in parallel: it isolates HOME/XDG_* via t.Setenv so
 // config.Init does not read the host machine's real config.
 func TestE2E_TwoClientsReceiveSameMessage(t *testing.T) {
 	h := newRealCreateHarness(t)
 	// Shorten detach cleanup so the pooled DB connection is released quickly
-	// after both SSE streams drop. Keep the production create grace through the
+	// after both workspace channels drop. Keep the production create grace through the
 	// sequential POSTs: reducing it to 200ms before the second request makes
 	// scheduler pressure, rather than path deduplication, decide the outcome.
 	h.backend.SetDetachGrace(200 * time.Millisecond)
@@ -392,9 +396,9 @@ func TestE2E_TwoClientsReceiveSameMessage(t *testing.T) {
 		_ = db.Release(wsDataDir)
 	})
 
-	evcA, cancelA := h.subscribeSSE(t, ctx, ws.ID, cidA)
+	evcA, cancelA := h.subscribeChannel(t, ctx, ws.ID, cidA)
 	t.Cleanup(cancelA)
-	evcB, cancelB := h.subscribeSSE(t, ctx, ws.ID, cidB)
+	evcB, cancelB := h.subscribeChannel(t, ctx, ws.ID, cidB)
 	t.Cleanup(cancelB)
 
 	h.waitForAttachedOn(t, ws, 2)
@@ -440,9 +444,9 @@ func TestE2E_PermissionFlowCrossClient(t *testing.T) {
 	cidA := uuid.New().String()
 	cidB := uuid.New().String()
 
-	evcA, cancelA := h.subscribeSSE(t, ctx, h.workspace.ID, cidA)
+	evcA, cancelA := h.subscribeChannel(t, ctx, h.workspace.ID, cidA)
 	t.Cleanup(cancelA)
-	evcB, cancelB := h.subscribeSSE(t, ctx, h.workspace.ID, cidB)
+	evcB, cancelB := h.subscribeChannel(t, ctx, h.workspace.ID, cidB)
 	t.Cleanup(cancelB)
 
 	h.waitForAttached(t, 2)
@@ -468,7 +472,7 @@ func TestE2E_PermissionFlowCrossClient(t *testing.T) {
 		done <- result{granted: granted, err: err}
 	}()
 
-	// Wait for the PermissionRequest to arrive on client A's SSE
+	// Wait for the PermissionRequest to arrive on client A's workspace channel
 	// stream. We need its ID to drive the grant.
 	// 10s instead of the 3s used elsewhere because this context
 	// bounds three sequential waits, not one.
@@ -515,10 +519,10 @@ func TestE2E_PermissionFlowCrossClient(t *testing.T) {
 	require.False(t, resolvedB, "client B's follow-up grant must report already resolved")
 }
 
-// TestE2E_KillingClientASSEDoesNotBreakClientB covers PLAN item 6
-// scenario 3: terminating client A's SSE stream does not affect
+// TestE2E_KillingClientAChannelDoesNotBreakClientB covers PLAN item 6
+// scenario 3: terminating client A's workspace channel does not affect
 // client B's stream; client B continues to receive events.
-func TestE2E_KillingClientASSEDoesNotBreakClientB(t *testing.T) {
+func TestE2E_KillingClientAChannelDoesNotBreakClientB(t *testing.T) {
 	t.Parallel()
 	h := newE2EHarness(t)
 	ctxB, cancelB := context.WithCancel(t.Context())
@@ -528,9 +532,9 @@ func TestE2E_KillingClientASSEDoesNotBreakClientB(t *testing.T) {
 	cidA := uuid.New().String()
 	cidB := uuid.New().String()
 
-	_, killA := h.subscribeSSE(t, ctxA, h.workspace.ID, cidA)
+	_, killA := h.subscribeChannel(t, ctxA, h.workspace.ID, cidA)
 	t.Cleanup(killA)
-	evcB, killB := h.subscribeSSE(t, ctxB, h.workspace.ID, cidB)
+	evcB, killB := h.subscribeChannel(t, ctxB, h.workspace.ID, cidB)
 	t.Cleanup(killB)
 
 	h.waitForAttached(t, 2)
@@ -594,9 +598,9 @@ func TestE2E_ShutdownCallbackFiresWhenLastClientLeaves(t *testing.T) {
 
 	cidA := uuid.New().String()
 	cidB := uuid.New().String()
-	_, killA := h.subscribeSSE(t, ctxA, h.workspace.ID, cidA)
+	_, killA := h.subscribeChannel(t, ctxA, h.workspace.ID, cidA)
 	t.Cleanup(killA)
-	_, killB := h.subscribeSSE(t, ctxB, h.workspace.ID, cidB)
+	_, killB := h.subscribeChannel(t, ctxB, h.workspace.ID, cidB)
 	t.Cleanup(killB)
 
 	h.waitForAttached(t, 2)

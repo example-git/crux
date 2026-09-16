@@ -37,12 +37,18 @@ type Client struct {
 	clientID               string
 	localRuntimeStore      *config.ConfigStore
 	secure                 bool
+	tlsConfig              *tls.Config
 	authenticationIdentity string
 	attachmentMu           sync.RWMutex
 	attachments            map[string]proto.WorkspaceAttachment
 	presenceMu             sync.Mutex
 	presenceGeneration     uint64
 	presenceSelections     map[string]CurrentSessionSelection
+	channelsMu             sync.Mutex
+	channels               map[string]*workspaceChannel
+	peerOpenMu             sync.Mutex
+	peer                   *peerChannel
+	retired                bool
 }
 
 // DefaultClient creates a new [Client] connected to the default server address.
@@ -119,6 +125,9 @@ func newClient(path, network, address string, tlsConfig *tls.Config) (*Client, e
 	c.addr = address
 	c.clientID = uuid.New().String()
 	c.secure = tlsConfig != nil
+	if tlsConfig != nil {
+		c.tlsConfig = tlsConfig.Clone()
+	}
 	p := &http.Protocols{}
 	p.SetHTTP1(true)
 	p.SetUnencryptedHTTP2(true)
@@ -257,6 +266,7 @@ func (c *Client) ShutdownServer(ctx context.Context) error {
 // Servers predating the endpoint answer 404, reported as
 // [ErrUnsupported] so callers can fall back to releasing by workspace ID.
 func (c *Client) RetireClient(ctx context.Context) error {
+	defer c.closeWorkspaceChannels(errors.New("client retired"))
 	rsp, err := c.delete(ctx, "/clients/"+c.clientID, nil, nil)
 	if err != nil {
 		return err

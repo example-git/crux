@@ -2,6 +2,7 @@ package workspace_test
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -60,14 +61,7 @@ func TestCopilotImportThroughTLS(t *testing.T) {
 			s := server.NewServer(nil, "tcp", "127.0.0.1:0")
 			require.NoError(t, s.EnableNetworkAuth(t.Context()))
 			var puts, receiverImports atomic.Int32
-			remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
-					puts.Add(1)
-					if mode == "rejected-ack" {
-						http.Error(w, "synthetic rejection", http.StatusBadRequest)
-						return
-					}
-				}
+			observed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.Path, "/import-copilot") {
 					receiverImports.Add(1)
 					recorder := httptest.NewRecorder()
@@ -82,10 +76,21 @@ func TestCopilotImportThroughTLS(t *testing.T) {
 					return
 				}
 				s.Handler().ServeHTTP(w, r)
-			}))
-			remote.TLS = tlsConfig
-			remote.StartTLS()
-			t.Cleanup(func() { remote.Close(); _ = s.Close() })
+			})
+			proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+			require.NoError(t, err)
+			remote := startWorkspaceChannelProxyServer(t, observed, tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
+				if !fromClient || frame.Type != proto.WorkspaceChannelRuntimeReplaceFrame {
+					return workspaceChannelProxyDecision{}
+				}
+				puts.Add(1)
+				if mode != "rejected-ack" {
+					return workspaceChannelProxyDecision{}
+				}
+				ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic rejection"}}
+				return workspaceChannelProxyDecision{drop: true, reply: &ack}
+			})
+			t.Cleanup(func() { _ = s.Close() })
 			var exchanges, quotas atomic.Int32
 			var duringExchange atomic.Pointer[func()]
 			github := "synthetic-client-github"

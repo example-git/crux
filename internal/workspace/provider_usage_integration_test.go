@@ -309,7 +309,7 @@ func TestProviderUsageThroughTLS(t *testing.T) {
 			// Restore credentials and tear down while the server is inside quota.
 			require.NoError(t, w.SetProviderAPIKey(config.ScopeGlobal, id, config.ProviderOAuthCredential{Owner: owner, Token: entry.Token()}))
 			wait, done = startBlocked(w.PrepareProviderUsage(owner))
-			require.NoError(t, c.DeleteWorkspace(t.Context(), created.ID))
+			w.Shutdown()
 			select {
 			case err := <-done:
 				require.Error(t, err)

@@ -2,6 +2,7 @@ package workspace_test
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,21 +49,21 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 			require.NoError(t, err)
 			s := server.NewServer(nil, "tcp", "127.0.0.1:0")
 			require.NoError(t, s.EnableNetworkAuth(t.Context()))
+			proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+			require.NoError(t, err)
 			var completions atomic.Int32
-			handler := s.Handler()
-			remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasSuffix(r.URL.Path, "/runtime/refresh-completion") {
-					attempt := completions.Add(1)
-					if mode == "rejected-completion" && attempt == 1 {
-						http.Error(w, "synthetic accepted runtime conflict", http.StatusConflict)
-						return
-					}
+			remote := startWorkspaceChannelProxyServer(t, s.Handler(), tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
+				if !fromClient || frame.Type != proto.WorkspaceChannelRefreshCompleteFrame {
+					return workspaceChannelProxyDecision{}
 				}
-				handler.ServeHTTP(w, r)
-			}))
-			remote.TLS = tlsConfig
-			remote.StartTLS()
-			t.Cleanup(func() { remote.Close(); _ = s.Close() })
+				attempt := completions.Add(1)
+				if mode == "rejected-completion" && attempt == 1 {
+					ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusConflict, Message: "synthetic accepted runtime conflict"}}
+					return workspaceChannelProxyDecision{drop: true, reply: &ack}
+				}
+				return workspaceChannelProxyDecision{}
+			})
+			t.Cleanup(func() { _ = s.Close() })
 
 			var exchanges atomic.Int32
 			var capturedTitleRequests atomic.Int32
@@ -301,7 +302,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 						require.Equal(t, "low", receiver.Cfg.Config().Options.AnalysisEffort)
 						require.Equal(t, "low", receiver.Cfg.Config().Options.ResponseVerbosity)
 						require.NoError(t, c.SendMessageWithPermissionMode(ctx, created.ID, session.ID, "controls-low", "controls-low: return the fixture response.", proto.AgentPermissionDeny))
-						awaitRefreshFixtureRun(t, ctx, events, w, "controls-low")
+						events = awaitRefreshFixtureRun(t, ctx, c, created.ID, events, w, "controls-low")
 						require.EqualValues(t, 1, exchanges.Load())
 					}
 					if mode == "runtime-controls" {
@@ -331,7 +332,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 								}
 							}
 							require.NoError(t, c.SendMessageWithPermissionMode(ctx, created.ID, session.ID, phase, phase+": return the fixture response.", proto.AgentPermissionDeny))
-							awaitRefreshFixtureRun(t, ctx, events, w, phase)
+							events = awaitRefreshFixtureRun(t, ctx, c, created.ID, events, w, phase)
 						}
 						instructions := func() string {
 							snapshot, err := c.GetAgentInstructions(ctx, created.ID)
@@ -346,7 +347,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 						require.NoError(t, w.RemoveConfigField(config.ScopeGlobal, "options.disabled_instruction_sections"))
 						require.Contains(t, instructions(), "You are a token engine.")
 						require.NoError(t, c.SendMessageWithPermissionMode(ctx, created.ID, session.ID, "controls-instructions", "controls-instructions: return the fixture response.", proto.AgentPermissionDeny))
-						awaitRefreshFixtureRun(t, ctx, events, w, "controls-instructions")
+						events = awaitRefreshFixtureRun(t, ctx, c, created.ID, events, w, "controls-instructions")
 						require.EqualValues(t, 1, exchanges.Load())
 					}
 					if mode == "recovery-after-rotation" {
@@ -372,12 +373,26 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 	}
 }
 
-func awaitRefreshFixtureRun(t *testing.T, ctx context.Context, events <-chan any, w *workspace.ClientWorkspace, runID string) {
+func awaitRefreshFixtureRun(t *testing.T, ctx context.Context, c *client.Client, workspaceID string, events <-chan any, w *workspace.ClientWorkspace, runID string) <-chan any {
 	t.Helper()
 	for {
 		select {
 		case event, ok := <-events:
-			require.True(t, ok, "stream ended before control verification completed")
+			if !ok {
+				for {
+					next, err := c.SubscribeEvents(ctx, workspaceID)
+					if err == nil {
+						events = next
+						break
+					}
+					select {
+					case <-time.After(5 * time.Millisecond):
+					case <-ctx.Done():
+						t.Fatal("workspace channel did not recover before control verification completed")
+					}
+				}
+				continue
+			}
 			if w.HandleClientRefreshEvent(ctx, event) {
 				continue
 			}
@@ -387,14 +402,14 @@ func awaitRefreshFixtureRun(t *testing.T, ctx context.Context, events <-chan any
 			}
 			require.Empty(t, finished.Payload.Error)
 			require.Contains(t, finished.Payload.Text, "verified remote refresh")
-			return
+			return events
 		case <-ctx.Done():
 			t.Fatal("runtime-control inference did not complete")
 		}
 	}
 }
 
-func verifyOAuthRecoveryInference(t *testing.T, s *server.Server, remote *httptest.Server, c *client.Client, w *workspace.ClientWorkspace, created *proto.Workspace, sessionID string, expected accounts.Entry) {
+func verifyOAuthRecoveryInference(t *testing.T, s *server.Server, remote *workspaceChannelProxyServer, c *client.Client, w *workspace.ClientWorkspace, created *proto.Workspace, sessionID string, expected accounts.Entry) {
 	t.Helper()
 	// Remove private fields from the public view before exercising the actual
 	// reconnect loop. Recovery must use the client authority controller.
@@ -402,14 +417,14 @@ func verifyOAuthRecoveryInference(t *testing.T, s *server.Server, remote *httpte
 	publicEvents <- pubsub.Event[proto.ConfigChanged]{Payload: proto.ConfigChanged{WorkspaceID: created.ID}}
 	close(publicEvents)
 	w.ConsumeEventsForTest(publicEvents, nil)
-	t.Cleanup(workspace.SetSSEBackoffForTest(5*time.Millisecond, 25*time.Millisecond))
+	t.Cleanup(workspace.SetChannelBackoffForTest(5*time.Millisecond, 25*time.Millisecond))
 	done := make(chan struct{})
 	go func() { w.RunSubscriptionForTest(func(tea.Msg) {}); close(done) }()
 	receiver, err := s.Backend().GetWorkspace(created.ID)
 	require.NoError(t, err)
 	require.Eventually(t, func() bool { return receiver.ConnectedClients() == 1 }, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, c.DeleteWorkspace(t.Context(), created.ID))
-	remote.CloseClientConnections()
+	remote.closeChannelConnections()
 	require.Eventually(t, func() bool { return w.WorkspaceIDForTest() != created.ID }, 10*time.Second, 20*time.Millisecond)
 	recovered, err := c.GetWorkspace(t.Context(), w.WorkspaceIDForTest())
 	require.NoError(t, err)

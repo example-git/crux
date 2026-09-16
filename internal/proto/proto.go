@@ -33,8 +33,7 @@ type Workspace struct {
 	// (from the --channels flag).
 	Channels []string `json:"channels,omitempty"`
 	// Skills carries the snapshot of skill discovery state at workspace
-	// creation time. Subsequent updates flow through the SSE event
-	// stream.
+	// creation time. Subsequent updates flow through the workspace channel.
 	Skills []SkillState `json:"skills,omitempty"`
 	// ProviderSurfaces is the execution host's redacted registry-generated
 	// provider presentation metadata.
@@ -266,7 +265,7 @@ type PermissionGrantResponse struct {
 }
 
 // QuestionRequest is the wire format for a batch question
-// sent from server to client over SSE.
+// sent from server to client over the workspace channel.
 type QuestionRequest struct {
 	ID                 string         `json:"id"`
 	SessionID          string         `json:"session_id"`

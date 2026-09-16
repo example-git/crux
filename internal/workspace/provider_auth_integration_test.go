@@ -1,6 +1,7 @@
 package workspace_test
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -88,14 +89,7 @@ func testProviderAuthenticationThroughTLS(t *testing.T, mode string) {
 	var publications, authReads atomic.Int32
 	var reject atomic.Bool
 	handler := s.Handler()
-	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
-			publications.Add(1)
-			if reject.Load() {
-				http.Error(w, "synthetic publication rejection", http.StatusBadRequest)
-				return
-			}
-		}
+	observed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/auth") || strings.HasSuffix(r.URL.Path, "/auth/accounts") {
 			authReads.Add(1)
 			recorder := httptest.NewRecorder()
@@ -111,10 +105,21 @@ func testProviderAuthenticationThroughTLS(t *testing.T, mode string) {
 			return
 		}
 		handler.ServeHTTP(w, r)
-	}))
-	remote.TLS = tlsConfig
-	remote.StartTLS()
-	t.Cleanup(func() { remote.Close(); _ = s.Close() })
+	})
+	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+	require.NoError(t, err)
+	remote := startWorkspaceChannelProxyServer(t, observed, tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
+		if !fromClient || frame.Type != proto.WorkspaceChannelRuntimeReplaceFrame {
+			return workspaceChannelProxyDecision{}
+		}
+		publications.Add(1)
+		if !reject.Load() {
+			return workspaceChannelProxyDecision{}
+		}
+		ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic publication rejection"}}
+		return workspaceChannelProxyDecision{drop: true, reply: &ack}
+	})
+	t.Cleanup(func() { _ = s.Close() })
 
 	clientConfigDir := t.TempDir()
 	t.Setenv("CRUX_GLOBAL_CONFIG", clientConfigDir)

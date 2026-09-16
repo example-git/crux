@@ -2225,7 +2225,7 @@ func TestServer_ShutsDownAfterLingerWhenIdle(t *testing.T) {
 
 // -- Detach grace --
 //
-// The SSE stream is a client's refcount claim, so a stream that drops
+// The workspace channel is a client's refcount claim, so a channel that drops
 // without an explicit release must not destroy the workspace before the
 // client's reconnect loop can come back. These cover both outcomes of
 // that window plus the fast path a clean exit still gets.

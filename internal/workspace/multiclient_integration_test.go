@@ -157,7 +157,7 @@ func (r *runtimeServer) newClient(t *testing.T, path string) *client.Client {
 	// Retire the client during cleanup so the server releases every
 	// claim it holds and tears the workspace down at once, closing the
 	// pooled DB connection. Without this a test that leaves clients
-	// attached (the SSE cache tests never shut theirs down) keeps the
+	// attached (the channel cache tests never shut theirs down) keeps the
 	// workspace, and its open crux.db, alive past t.TempDir cleanup,
 	// which Windows cannot remove while the file is locked.
 	t.Cleanup(func() { _ = c.RetireClient(context.Background()) })
@@ -193,7 +193,7 @@ func TestClientWorkspace_ConfigChangedRefreshesSiblingCache(t *testing.T) {
 	wsA := workspace.NewClientWorkspace(cA, *wsProto)
 	wsB := workspace.NewClientWorkspace(cB, *wsProtoB)
 
-	// Both clients attach event streams. They run for the
+	// Both clients attach workspace channels. They run for the
 	// lifetime of the test; cancelling via context tears them
 	// down. consumeEvents is exercised by Subscribe in production;
 	// here we run it inline so we don't need a real *tea.Program.
@@ -228,11 +228,11 @@ func TestClientWorkspace_ConfigChangedRefreshesSiblingCache(t *testing.T) {
 		3*time.Second, 25*time.Millisecond,
 		"client A cache must reflect its own compact-mode mutation")
 
-	// Client B must see the same change via the ConfigChanged SSE
+	// Client B must see the same change via the ConfigChanged channel
 	// event triggering its own cached refresh.
 	require.Eventually(t, func() bool { return compactMode(wsB.Config()) },
 		3*time.Second, 25*time.Millisecond,
-		"client B cache must reflect A's compact-mode mutation via SSE")
+		"client B cache must reflect A's compact-mode mutation via the workspace channel")
 }
 
 // compactMode is a tiny accessor that survives nil intermediates so
@@ -245,7 +245,7 @@ func compactMode(cfg *config.Config) bool {
 }
 
 // TestClientWorkspace_ConfigChangedSignalArrives is a smaller test
-// that asserts the SSE wiring delivers a ConfigChanged event to the
+// that asserts the channel wiring delivers a ConfigChanged event to the
 // raw client subscription. It catches breakage in the
 // wrapEvent/decoder bridge independent of the workspace cache.
 func TestClientWorkspace_ConfigChangedSignalArrives(t *testing.T) {
@@ -284,7 +284,7 @@ loop:
 			break loop
 		}
 	}
-	require.True(t, gotConfigChanged, "expected ConfigChanged event over SSE")
+	require.True(t, gotConfigChanged, "expected ConfigChanged event over the workspace channel")
 }
 
 func TestServer_SharedWorkspaceManagedTaskLifecycle(t *testing.T) {
@@ -448,7 +448,7 @@ func TestServer_RefusesShutdownWhileWorkspaceLive(t *testing.T) {
 }
 
 // TestServer_DetachGraceSurvivesStreamBlip is the server-side half of the
-// SSE regression. Cutting the stream used to destroy the workspace
+// channel regression. Cutting the stream used to destroy the workspace
 // instantly, so the client's reconnect — 250ms later — came back to an ID
 // the server no longer knew, and 404'd from then on.
 func TestServer_DetachGraceSurvivesStreamBlip(t *testing.T) {
@@ -490,7 +490,7 @@ func TestServer_DetachGraceSurvivesStreamBlip(t *testing.T) {
 // rather than 404ing forever.
 func TestClientWorkspace_RecoversAfterServerSideTeardown(t *testing.T) {
 	xdgIsolate(t)
-	t.Cleanup(workspace.SetSSEBackoffForTest(5*time.Millisecond, 25*time.Millisecond))
+	t.Cleanup(workspace.SetChannelBackoffForTest(5*time.Millisecond, 25*time.Millisecond))
 
 	rt := newRuntimeServer(t)
 	rt.srv.Backend().SetDetachGrace(0)
@@ -512,7 +512,7 @@ func TestClientWorkspace_RecoversAfterServerSideTeardown(t *testing.T) {
 
 	// The server drops the workspace while the client still holds the
 	// snapshot naming it. That is what an upgrade, or a teardown racing a
-	// stream drop, leaves behind: a live server that answers 404 for the
+	// channel drop, leaves behind: a live server that answers 404 for the
 	// only workspace ID this client knows.
 	require.NoError(t, c.DeleteWorkspace(t.Context(), originalID))
 	_, err = c.GetWorkspace(t.Context(), originalID)

@@ -1,135 +1,129 @@
 package workspace
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	tea "github.com/example-git/crux/foundation/bubbletea"
-	"github.com/example-git/crux/internal/backend"
 	"github.com/example-git/crux/internal/client"
+	"github.com/example-git/crux/internal/connection"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/server"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
 
-// This fixture delays only the transport before dispatch. The registered
-// production route, controller and backend perform every presence write.
-func TestSessionPresenceDelayedHTTPAndReconnectUseNewestIntent(t *testing.T) {
+func TestSessionPresenceUsesPeerChannelAndReconnectsWithNewestIntent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("CRUX_GLOBAL_CONFIG", t.TempDir())
+	t.Setenv("CRUX_GLOBAL_DATA", t.TempDir())
+	t.Setenv("CRUX_CACHE_DIR", t.TempDir())
+	t.Setenv("AI_CLI_DIR", t.TempDir())
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	srv := server.NewServer(nil, "unix", "")
-	oldID, newID := uuid.NewString(), uuid.NewString()
-	for _, id := range []string{oldID, newID} {
-		backend.InsertWorkspaceForTest(srv.Backend(), &backend.Workspace{ID: id, Path: t.TempDir()})
-	}
-	entered, release := make(chan struct{}), make(chan struct{})
-	releaseA := sync.OnceFunc(func() { close(release) })
-	defer releaseA()
-	var delay sync.Once
+	serverCode, err := connection.EnsureServerIdentity(ctx)
+	require.NoError(t, err)
+	identity, err := connection.NewClientIdentity("session-presence-client")
+	require.NoError(t, err)
+	require.NoError(t, connection.AuthorizeClient(ctx, "session-presence-client", identity.Certificate))
+	serverTLS, err := connection.ServerTLSConfig(ctx)
+	require.NoError(t, err)
+	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+	require.NoError(t, err)
+
+	srv := server.NewServer(nil, "tcp", "127.0.0.1:0")
+	require.NoError(t, srv.EnableNetworkAuth(ctx))
+	var httpPresence atomic.Int32
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodPost && strings.HasSuffix(request.URL.Path, "/current-session") {
+			httpPresence.Add(1)
+		}
+		srv.Handler().ServeHTTP(writer, request)
+	})
+	backendServer := httptest.NewUnstartedServer(handler)
+	backendServer.TLS = serverTLS
+	backendServer.StartTLS()
 	observed := make(chan proto.CurrentSession, 20)
-	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			_ = json.NewEncoder(w).Encode(proto.Workspace{ID: strings.TrimPrefix(r.URL.Path, "/v1/workspaces/")})
-			return
-		}
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		var selection proto.CurrentSession
-		if err := json.Unmarshal(body, &selection); err != nil {
-			http.Error(w, err.Error(), 400)
-			return
-		}
-		observed <- selection
-		if selection.SessionID == "A" {
-			delay.Do(func() {
-				close(entered)
-				select {
-				case <-release:
-				case <-ctx.Done():
+	proxyServer := httptest.NewUnstartedServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && strings.HasSuffix(request.URL.Path, "/peer-channel") {
+			proxyPeerChannel(t, writer, request, backendServer.URL, proxyTLS, func(fromClient bool, envelope proto.PeerEnvelope) peerChannelProxyDecision {
+				if fromClient && envelope.Type == proto.PeerTypeSessionCurrentSet {
+					var selection proto.CurrentSession
+					require.NoError(t, json.Unmarshal(envelope.Payload, &selection))
+					observed <- selection
 				}
+				return peerChannelProxyDecision{}
 			})
+			return
 		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-		srv.Handler().ServeHTTP(w, r)
+		handler.ServeHTTP(writer, request)
 	}))
-	defer func() { releaseA(); httpServer.Close() }()
-	endpoint, err := url.Parse(httpServer.URL)
+	proxyServer.TLS = serverTLS
+	proxyServer.StartTLS()
+	t.Cleanup(func() {
+		proxyServer.Close()
+		backendServer.Close()
+		_ = srv.Close()
+	})
+
+	sdk, err := client.NewAuthenticatedClient(t.TempDir(), connection.Connection{Address: "tcp://" + strings.TrimPrefix(proxyServer.URL, "https://"), ServerCertificate: serverCode, Client: identity})
 	require.NoError(t, err)
-	sdk, err := client.NewClient(t.TempDir(), "tcp", endpoint.Host)
+	oldWorkspace, err := sdk.CreateWorkspace(ctx, proto.Workspace{Path: t.TempDir(), AuthorityMode: "server"})
 	require.NoError(t, err)
-	for _, id := range []string{oldID, newID} {
-		require.NoError(t, srv.Backend().AttachClient(id, sdk.ClientID()))
-	}
-	defer func() { _ = srv.Backend().RetireClient(sdk.ClientID()); srv.Backend().Shutdown() }()
-	first := NewClientWorkspace(sdk, proto.Workspace{ID: oldID})
-	second := NewClientWorkspace(sdk, proto.Workspace{ID: oldID})
-	defer first.subCancel()
-	defer second.subCancel()
-	olderDone := make(chan error, 1)
-	go func() { olderDone <- first.SetCurrentSession(ctx, "A") }()
-	select {
-	case <-entered:
-	case <-ctx.Done():
-		t.Fatal("older selection did not enter HTTP")
-	}
+	newWorkspace, err := sdk.CreateWorkspace(ctx, proto.Workspace{Path: t.TempDir(), AuthorityMode: "server"})
+	require.NoError(t, err)
+	oldID, newID := oldWorkspace.ID, newWorkspace.ID
+	first := NewClientWorkspace(sdk, *oldWorkspace)
+	second := NewClientWorkspace(sdk, *oldWorkspace)
+	t.Cleanup(first.Shutdown)
+	t.Cleanup(second.Shutdown)
+
+	require.NoError(t, first.SetCurrentSession(ctx, "A"))
 	require.NoError(t, second.SetCurrentSession(ctx, "B"))
 	selected, ok := sdk.CurrentSessionSelection(oldID, "")
 	require.True(t, ok)
 	require.Equal(t, "B", selected.SessionID)
 	require.EqualValues(t, 2, selected.Generation)
-	releaseA()
-	select {
-	case err := <-olderDone:
-		require.NoError(t, err)
-	case <-ctx.Done():
-		t.Fatal("older selection did not finish")
-	}
 	n, err := srv.Backend().AttachedClients(oldID, "B")
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
 	n, err = srv.Backend().AttachedClients(oldID, "A")
 	require.NoError(t, err)
 	require.Zero(t, n)
-	// The first wrapper must reassert B, not its own earlier A. Reconnect
-	// preserves the exact generation instead of minting a new selection.
-	first.afterReconnect(func(tea.Msg) {})
+
+	require.NoError(t, first.afterReconnect(func(tea.Msg) {}))
 	current, _ := sdk.CurrentSessionSelection(oldID, "")
 	require.Equal(t, selected, current)
 	require.NoError(t, second.SetCurrentSession(ctx, ""))
-	first.afterReconnect(func(tea.Msg) {})
+	require.NoError(t, first.afterReconnect(func(tea.Msg) {}))
 	cleared, _ := sdk.CurrentSessionSelection(oldID, "")
 	require.Empty(t, cleared.SessionID)
 	require.EqualValues(t, 3, cleared.Generation)
+
 	first.mu.Lock()
 	first.ws.ID = newID
 	first.mu.Unlock()
-	first.afterReconnect(func(tea.Msg) {}, oldID)
+	require.NoError(t, first.afterReconnect(func(tea.Msg) {}, oldID))
 	recreated, ok := sdk.CurrentSessionSelection(newID, "")
 	require.True(t, ok)
 	require.Equal(t, cleared, recreated)
 	require.NoError(t, first.SetCurrentSession(ctx, "new-receiver-selection"))
-	first.afterReconnect(func(tea.Msg) {}, oldID)
+	require.NoError(t, first.afterReconnect(func(tea.Msg) {}, oldID))
 	current, _ = sdk.CurrentSessionSelection(newID, "")
 	require.Equal(t, "new-receiver-selection", current.SessionID)
 	require.EqualValues(t, 4, current.Generation)
 	n, err = srv.Backend().AttachedClients(newID, current.SessionID)
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
-	// A scheduled command superseded before SDK capture performs no RPC.
+
 	var generation atomic.Uint64
 	generation.Store(2)
 	stale := ContextWithSessionSelection(ctx, newID, &generation, 1)
@@ -137,6 +131,8 @@ func TestSessionPresenceDelayedHTTPAndReconnectUseNewestIntent(t *testing.T) {
 	canceled, cancelSelection := context.WithCancel(ctx)
 	cancelSelection()
 	require.ErrorIs(t, first.SetCurrentSession(canceled, "canceled-command"), context.Canceled)
+	require.Zero(t, httpPresence.Load())
+
 	close(observed)
 	var selections []proto.CurrentSession
 	for selection := range observed {
@@ -148,8 +144,8 @@ func TestSessionPresenceDelayedHTTPAndReconnectUseNewestIntent(t *testing.T) {
 	}
 	require.Equal(t, "B", selections[2].SessionID)
 	require.EqualValues(t, 2, *selections[2].SelectionGeneration)
-	for _, i := range []int{3, 4, 5} {
-		require.Empty(t, selections[i].SessionID)
-		require.EqualValues(t, 3, *selections[i].SelectionGeneration)
+	for _, index := range []int{3, 4, 5} {
+		require.Empty(t, selections[index].SessionID)
+		require.EqualValues(t, 3, *selections[index].SelectionGeneration)
 	}
 }

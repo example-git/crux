@@ -28,13 +28,13 @@ func (w *ClientWorkspace) WorkspaceIDForTest() string {
 	return w.workspaceID()
 }
 
-// SetSSEBackoffForTest shrinks the subscription reconnect backoff and
+// SetChannelBackoffForTest shrinks the subscription reconnect backoff and
 // returns a restore function for t.Cleanup.
-func SetSSEBackoffForTest(initial, maxBackoff time.Duration) (restore func()) {
-	origInitial, origMax := sseReconnectInitialBackoff, sseReconnectMaxBackoff
-	sseReconnectInitialBackoff, sseReconnectMaxBackoff = initial, maxBackoff
+func SetChannelBackoffForTest(initial, maxBackoff time.Duration) (restore func()) {
+	origInitial, origMax := channelReconnectInitialBackoff, channelReconnectMaxBackoff
+	channelReconnectInitialBackoff, channelReconnectMaxBackoff = initial, maxBackoff
 	return func() {
-		sseReconnectInitialBackoff, sseReconnectMaxBackoff = origInitial, origMax
+		channelReconnectInitialBackoff, channelReconnectMaxBackoff = origInitial, origMax
 	}
 }
 

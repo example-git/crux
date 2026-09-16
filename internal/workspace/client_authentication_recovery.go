@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/config"
-	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerauth"
 )
 
@@ -128,16 +127,12 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 		recovery.err = err
 		return clientAuthenticationOutcome(original, err)
 	}
-	remote, err := w.client.GetWorkspace(ctx, request.Target.WorkspaceID)
+	remote, err := w.client.PeerWorkspaceAuthority(ctx, request.Target.WorkspaceID, original.principal)
 	if err != nil {
-		recovery.err = clientAuthenticationFailure("authentication recovery cannot verify receiver authority", err)
+		recovery.err = clientAuthenticationFailure("authentication recovery cannot verify receiver authority through peer channel", err)
 		return clientAuthenticationOutcome(original, recovery.err)
 	}
-	if remote.ID != request.Target.WorkspaceID {
-		recovery.err = providerauth.ErrStale
-		return clientAuthenticationOutcome(original, recovery.err)
-	}
-	if original.proposal != nil && matchesAuthority(remote.Authority, original.principal, *original.proposal) {
+	if original.proposal != nil && matchesAuthority(remote, original.principal, *original.proposal) {
 		return w.acknowledgeClientAuthenticationRecoveryLocked(ctx, a, original, remote)
 	}
 	if err := w.restoreAuthenticationReceipt(ctx, a, original); err != nil {
@@ -148,7 +143,7 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 		recovery.err = errors.New("authentication recovery has no complete local capture; explicit saved-state reconciliation is required")
 		return clientAuthenticationOutcome(original, recovery.err)
 	}
-	if !matchesAuthority(remote.Authority, original.principal, original.base) || a.accepted.Revision != original.base.Revision || a.accepted.Digest != original.base.Digest {
+	if !matchesAuthority(remote, original.principal, original.base) || a.accepted.Revision != original.base.Revision || a.accepted.Digest != original.base.Digest {
 		recovery.err = errors.New("authentication recovery receiver no longer has the original accepted authority")
 		return clientAuthenticationOutcome(original, recovery.err)
 	}
@@ -185,14 +180,24 @@ func (w *ClientWorkspace) recoverClientAuthentication(ctx context.Context, reque
 		recovery.err = err
 		return clientAuthenticationOutcome(original, err)
 	}
+	previousError, previouslyRejected := original.err, original.remoteRejected
+	original.err = nil
+	original.remoteRejected = false
 	if err := a.persistAuthenticationReceipt(ctx, original); err != nil {
+		original.err, original.remoteRejected = previousError, previouslyRejected
 		return clientAuthenticationOutcome(original, err)
 	}
-	// These fields now describe the authorized recovery attempt; the original
-	// mutation's ordinary retry remains GET-only and cannot resend this PUT.
-	original.err = nil
+	if original.outcome.Change == nil {
+		recovery.err = providerauth.ErrReceiptUnverified
+		return clientAuthenticationOutcome(original, recovery.err)
+	}
+	authentication, err := clientAuthenticationPeerStatesFromCapture(*original.proposal, original.after, original.outcome.Change.Current.Target.Generation)
+	if err != nil {
+		recovery.err = err
+		return clientAuthenticationOutcome(original, err)
+	}
 	a.pending, a.pendingView = original.proposal, original.proposal.CollectionConfig()
-	ack, err := w.client.ReplaceRemoteRuntime(ctx, request.Target.WorkspaceID, original.base.Revision, *original.proposal)
+	ack, err := w.client.PatchRemoteRuntime(ctx, request.Target.WorkspaceID, original.base, *original.proposal, authentication...)
 	if err == nil && matchesAuthority(ack, original.principal, *original.proposal) {
 		return w.completeClientAuthenticationPutLocked(ctx, a, original, ack)
 	}
@@ -237,14 +242,14 @@ func (w *ClientWorkspace) replayClientAuthenticationRecoveryLocked(ctx context.C
 	return w.reconcileClientAuthenticationLocked(ctx, a, original)
 }
 
-func (w *ClientWorkspace) acknowledgeClientAuthenticationRecoveryLocked(ctx context.Context, a *clientAuthority, original *clientAuthenticationReceipt, remote *proto.Workspace) (providerauth.MutationOutcome, error) {
+func (w *ClientWorkspace) acknowledgeClientAuthenticationRecoveryLocked(ctx context.Context, a *clientAuthority, original *clientAuthenticationReceipt, remote *config.RemoteAuthority) (providerauth.MutationOutcome, error) {
 	original.acknowledged = true
+	original.remoteRejected = false
 	original.err = nil
 	if a.accepted.Revision <= original.proposal.Revision {
-		if err := w.adoptClientAuthenticationLocked(ctx, a, original, remote.Authority); err != nil {
+		if err := w.adoptClientAuthenticationLocked(ctx, a, original, remote); err != nil {
 			return clientAuthenticationOutcome(original, err)
 		}
-		w.adoptRuntimeResponse(*remote)
 	}
 	return w.clientAuthenticationAcknowledgedOutcome(ctx, a, original)
 }

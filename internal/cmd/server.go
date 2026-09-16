@@ -101,6 +101,9 @@ func runServer(cmd *cobra.Command, host string, workspaceRoots []string) error {
 	return nil
 }
 
-func loadServerConfig(_ *url.URL, _ string, _ bool) (*config.ConfigStore, error) {
-	return nil, nil
+func loadServerConfig(hostURL *url.URL, dataDir string, debug bool) (*config.ConfigStore, error) {
+	if hostURL.Scheme == "tcp" && !server.IsLoopbackHost(hostURL) {
+		return nil, nil
+	}
+	return config.Load(config.GlobalWorkspaceDir(), dataDir, debug)
 }

@@ -181,7 +181,7 @@ func TestProviderAuthCreateRetainsCollectedSourceAndExactNumbers(t *testing.T) {
 	require.NotSame(t, collected, store.Config())
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/runtime-capabilities" {
-			_ = json.NewEncoder(w).Encode(proto.RemoteRuntimeCapabilities{Protocol: proto.RemoteRuntimeProtocol, RuntimeVersion: config.RemoteRuntimeVersion, Compiler: config.RemoteRuntimeCompiler, Principal: strings.Repeat("a", 64), MaxRequestBytes: config.MaxRemoteRuntimeBytes, MaxBundles: 64, MaxProviders: 64, WorkspaceSharing: "exclusive-certificate"})
+			_ = json.NewEncoder(w).Encode(proto.RemoteRuntimeCapabilities{PeerChannel: proto.PeerChannelProtocol, IncrementalState: true, Protocol: proto.RemoteRuntimeProtocol, RuntimeVersion: config.RemoteRuntimeVersion, Compiler: config.RemoteRuntimeCompiler, Principal: strings.Repeat("a", 64), MaxRequestBytes: config.MaxRemoteRuntimeBytes, MaxBundles: 64, MaxProviders: 64, WorkspaceSharing: "exclusive-certificate"})
 			return
 		}
 		require.Equal(t, http.MethodPost, r.Method)

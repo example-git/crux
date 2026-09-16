@@ -95,6 +95,7 @@ type clientAuthenticationReviewReceipt struct {
 	request                    clientAuthenticationReviewRequest
 	summary                    clientAuthenticationReviewSummary
 	owner                      providerregistry.RegistrationOwner
+	generation                 providerauth.Generation
 	capture                    config.AuthenticationCapture
 	base                       config.RemoteAuthority
 	cache                      config.RemoteAuthority
@@ -359,22 +360,48 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	w.mu.Unlock()
 	review.accepted = config.RemoteAuthority{Mode: "client", Principal: a.principal, Revision: a.accepted.Revision, Digest: a.accepted.Digest}
 	review.priorRemoved = maps.Clone(a.removed)
-	remote, err := w.client.GetWorkspace(ctx, request.target().WorkspaceID)
+	remote, err := w.client.PeerWorkspaceAuthority(ctx, request.target().WorkspaceID, a.principal)
 	if err != nil {
-		return fail(clientAuthenticationFailure("authentication review cannot verify receiver authority", err))
+		return fail(clientAuthenticationFailure("authentication review cannot verify receiver authority through peer channel", err))
 	}
-	if remote.ID != request.target().WorkspaceID || remote.Authority == nil || remote.Authority.Mode != "client" || remote.Authority.Principal != a.principal || remote.Authority.Revision == 0 || remote.Authority.Revision == ^uint64(0) {
+	if remote.Mode != "client" || remote.Principal != a.principal || remote.Revision == 0 || remote.Revision == ^uint64(0) {
 		return fail(providerauth.ErrStale)
 	}
-	digest, err := hex.DecodeString(remote.Authority.Digest)
+	digest, err := hex.DecodeString(remote.Digest)
 	if err != nil || len(digest) != 32 {
 		return fail(providerauth.ErrStale)
 	}
-	review.base = cloneAuthenticationReviewAuthority(*remote.Authority)
+	review.base = cloneAuthenticationReviewAuthority(*remote)
 	review.summary.Receiver = cloneAuthenticationReviewAuthority(review.base)
 	current := freshCapture
 	if !request.FreshSaved {
-		current, err = a.store.CaptureAuthentication(ctx)
+		if original != nil && original.outcome.Change == nil {
+			status, statusErr := a.providerAuth.Status(ctx)
+			if statusErr != nil {
+				err = statusErr
+			} else {
+				currentTarget := providerauth.Target{WorkspaceID: status.WorkspaceID, Owner: providerauth.PublicOwner(owner), Generation: status.Generation}
+				ownerPresent := false
+				for _, provider := range status.Providers {
+					if provider.Owner == currentTarget.Owner {
+						ownerPresent = true
+						break
+					}
+				}
+				if !ownerPresent {
+					err = providerauth.ErrOwner
+				} else {
+					var capturedOwner providerregistry.RegistrationOwner
+					current, capturedOwner, err = a.providerAuth.CaptureSavedAuthentication(ctx, currentTarget)
+					if err == nil && capturedOwner != owner {
+						err = providerauth.ErrOwner
+					}
+					review.generation = currentTarget.Generation
+				}
+			}
+		} else {
+			current, err = a.store.CaptureAuthentication(ctx)
+		}
 	}
 	if err != nil {
 		return fail(clientAuthenticationFailure("authentication review cannot capture saved state", err))
@@ -423,6 +450,16 @@ func (w *ClientWorkspace) reviewClientAuthentication(ctx context.Context, reques
 	var valid bool
 	review.capture, valid = prepared.AuthenticationCapture()
 	if !valid {
+		return fail(providerauth.ErrReceiptUnverified)
+	}
+	if request.FreshSaved {
+		review.generation = request.SavedTarget.Generation
+	} else if original != nil && original.outcome.Change != nil {
+		if original.outcome.Change.Current.Target.Owner != providerauth.PublicOwner(owner) {
+			return fail(providerauth.ErrReceiptUnverified)
+		}
+		review.generation = original.outcome.Change.Current.Target.Generation
+	} else if review.generation.Validate() != nil {
 		return fail(providerauth.ErrReceiptUnverified)
 	}
 	review.removed = maps.Clone(a.removed)
@@ -665,11 +702,11 @@ func (w *ClientWorkspace) applyClientAuthenticationReview(ctx context.Context, r
 	if err := w.verifyAuthenticationReviewCache(ctx, a, review); err != nil {
 		return fail(err)
 	}
-	remote, err := w.client.GetWorkspace(ctx, request.target().WorkspaceID)
+	remote, err := w.client.PeerWorkspaceAuthority(ctx, request.target().WorkspaceID, a.principal)
 	if err != nil {
-		return fail(clientAuthenticationFailure("authentication apply cannot verify receiver authority", err))
+		return fail(clientAuthenticationFailure("authentication apply cannot verify receiver authority through peer channel", err))
 	}
-	if remote.ID != request.target().WorkspaceID || remote.Authority == nil || !authenticationReviewAuthorityEqual(*remote.Authority, review.base) {
+	if !authenticationReviewAuthorityEqual(*remote, review.base) {
 		return fail(errors.New("authentication review receiver changed; review saved state again"))
 	}
 	if err := w.verifyAuthenticationReviewCapture(ctx, a, review); err != nil {
@@ -678,8 +715,10 @@ func (w *ClientWorkspace) applyClientAuthenticationReview(ctx context.Context, r
 	if err := w.verifyAuthenticationReviewCache(ctx, a, review); err != nil {
 		return fail(err)
 	}
-	// This preview permits one attempt. Transport retries only inspect the
-	// receiver for the retained exact proposal; they never re-collect or PUT.
+	authentication, err := clientAuthenticationPeerStatesFromCapture(*review.proposal, review.capture, review.generation)
+	if err != nil {
+		return fail(err)
+	}
 	apply.put = true
 	if err := a.persistAuthenticationReview(ctx, review); err != nil {
 		apply.put = false
@@ -691,8 +730,15 @@ func (w *ClientWorkspace) applyClientAuthenticationReview(ctx context.Context, r
 			return fail(err)
 		}
 	}
+	base := a.accepted
+	if !matchesAuthority(&review.base, a.principal, base) {
+		if a.pending == nil || !matchesAuthority(&review.base, a.principal, *a.pending) {
+			return fail(errors.New("authentication review has no retained receiver runtime base"))
+		}
+		base = *a.pending
+	}
 	a.pending, a.pendingView = review.proposal, review.proposal.CollectionConfig()
-	ack, err := w.client.ReplaceRemoteRuntime(ctx, request.target().WorkspaceID, review.base.Revision, *review.proposal)
+	ack, err := w.client.PatchRemoteRuntime(ctx, request.target().WorkspaceID, base, *review.proposal, authentication...)
 	if err == nil && matchesAuthority(ack, a.principal, *review.proposal) {
 		return w.completeAuthenticationReviewApply(ctx, a, original, review, ack)
 	}
@@ -713,14 +759,14 @@ func (w *ClientWorkspace) replayAuthenticationReviewApply(ctx context.Context, a
 	if err := w.verifyAuthenticationReviewCache(ctx, a, review); err != nil {
 		return apply.outcome, err
 	}
-	remote, err := w.client.GetWorkspace(ctx, review.request.target().WorkspaceID)
+	remote, err := w.client.PeerWorkspaceAuthority(ctx, review.request.target().WorkspaceID, a.principal)
 	if err != nil {
-		return apply.outcome, clientAuthenticationFailure("authentication apply acknowledgement cannot be verified", err)
+		return apply.outcome, clientAuthenticationFailure("authentication apply acknowledgement cannot be verified through peer channel", err)
 	}
-	if remote.ID != review.request.target().WorkspaceID || !matchesAuthority(remote.Authority, a.principal, *review.proposal) {
+	if !matchesAuthority(remote, a.principal, *review.proposal) {
 		return apply.outcome, errors.New("receiver has not acknowledged the exact reviewed authentication proposal")
 	}
-	return w.completeAuthenticationReviewApply(ctx, a, original, review, remote.Authority)
+	return w.completeAuthenticationReviewApply(ctx, a, original, review, remote)
 }
 
 func (w *ClientWorkspace) completeAuthenticationReviewApply(ctx context.Context, a *clientAuthority, original *clientAuthenticationReceipt, review *clientAuthenticationReviewReceipt, ack *config.RemoteAuthority) (clientAuthenticationReconciliationOutcome, error) {

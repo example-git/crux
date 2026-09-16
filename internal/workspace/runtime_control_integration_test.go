@@ -2,6 +2,7 @@ package workspace_test
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -55,30 +56,28 @@ func testRuntimeControlsThroughTLS(t *testing.T, adapter string) {
 	require.NoError(t, s.EnableNetworkAuth(t.Context()))
 	var reject, loseAck atomic.Bool
 	var publications atomic.Int32
-	handler := s.Handler()
-	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
+	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+	require.NoError(t, err)
+	var lostCommands sync.Map
+	remote := startWorkspaceChannelProxyServer(t, s.Handler(), tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, frame proto.WorkspaceChannelFrame) workspaceChannelProxyDecision {
+		if fromClient && frame.Type == proto.WorkspaceChannelRuntimeReplaceFrame {
 			publications.Add(1)
 			if reject.Swap(false) {
-				http.Error(w, "synthetic rejected control publication", http.StatusBadRequest)
-				return
+				ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic rejected control publication"}}
+				return workspaceChannelProxyDecision{drop: true, reply: &ack}
 			}
 			if loseAck.Swap(false) {
-				recorder := httptest.NewRecorder()
-				handler.ServeHTTP(recorder, r)
-				assert.Equal(t, http.StatusOK, recorder.Code)
-				conn, _, err := w.(http.Hijacker).Hijack()
-				if assert.NoError(t, err) {
-					_ = conn.Close()
-				}
-				return
+				lostCommands.Store(frame.CommandID, struct{}{})
 			}
 		}
-		handler.ServeHTTP(w, r)
-	}))
-	remote.TLS = tlsConfig
-	remote.StartTLS()
-	t.Cleanup(func() { remote.Close(); _ = s.Close() })
+		if !fromClient && frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
+			if _, ok := lostCommands.LoadAndDelete(frame.CommandID); ok {
+				return workspaceChannelProxyDecision{drop: true, close: true}
+			}
+		}
+		return workspaceChannelProxyDecision{}
+	})
+	t.Cleanup(func() { _ = s.Close() })
 
 	var requestMu sync.Mutex
 	var requests []string
@@ -202,7 +201,7 @@ func testRuntimeControlsThroughTLS(t *testing.T, adapter string) {
 		require.NoError(t, err)
 		marker := "runtime-control-" + phase
 		require.NoError(t, c.SendMessageWithPermissionMode(ctx, created.ID, session.ID, marker, marker+": Return the fixture response.", proto.AgentPermissionDeny))
-		awaitRefreshFixtureRun(t, ctx, events, w, marker)
+		events = awaitRefreshFixtureRun(t, ctx, c, created.ID, events, w, marker)
 		requestMu.Lock()
 		defer requestMu.Unlock()
 		var matching []string

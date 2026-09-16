@@ -26,11 +26,11 @@ import (
 )
 
 // scriptedCoordinator is an agent.Coordinator stub that mimics the
-// externally-observable contract of a real run over the SSE pipeline
+// externally-observable contract of a real run over the workspace channel
 // without booting a real model, database, or scheduler. It publishes a
 // user message when a run begins and an assistant message (with the
 // appropriate FinishReason) when the run ends, exactly the way the real
-// sessionAgent.Run surfaces a turn to SSE subscribers.
+// sessionAgent.Run surfaces a turn to workspace channel subscribers.
 //
 // A run blocks until either its per-session context is canceled (via
 // Cancel, mirroring the explicit cancel endpoint) or the test releases
@@ -249,10 +249,10 @@ func (c *scriptedCoordinator) GenerateTitle(context.Context, string, string) {}
 
 func (c *scriptedCoordinator) SuggestPrompt(context.Context, string) (string, error) { return "", nil }
 
-// agentE2EHarness extends the SSE harness with a scripted coordinator
+// agentE2EHarness extends the workspace channel harness with a scripted coordinator
 // wired into the workspace's embedded app.App, so POST /agent drives a
 // real backend.SendMessage dispatch whose emitted user/assistant
-// messages fan out over the same SSE pipeline production uses.
+// messages fan out over the same workspace channel production uses.
 type agentE2EHarness struct {
 	*e2eHarness
 	coord *scriptedCoordinator
@@ -390,9 +390,9 @@ func TestE2E_CancelByOtherClientDoesNotErrorPrompter(t *testing.T) {
 
 	cidA := uuid.New().String()
 	cidB := uuid.New().String()
-	evcA, cancelA := h.subscribeSSE(t, ctx, h.workspace.ID, cidA)
+	evcA, cancelA := h.subscribeChannel(t, ctx, h.workspace.ID, cidA)
 	t.Cleanup(cancelA)
-	evcB, cancelB := h.subscribeSSE(t, ctx, h.workspace.ID, cidB)
+	evcB, cancelB := h.subscribeChannel(t, ctx, h.workspace.ID, cidB)
 	t.Cleanup(cancelB)
 	h.waitForAttached(t, 2)
 
@@ -406,7 +406,7 @@ func TestE2E_CancelByOtherClientDoesNotErrorPrompter(t *testing.T) {
 	// B cancels.
 	require.Equal(t, http.StatusOK, h.cancelAgentHTTP(t, ctx, sid))
 
-	// A's SSE stream receives the FinishReasonCanceled assistant
+	// A's workspace channel receives the FinishReasonCanceled assistant
 	// message.
 	pickCtx, pickCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer pickCancel()
@@ -451,8 +451,8 @@ func TestE2E_CancelImmediatelyAfter202IsNotLost(t *testing.T) {
 	t.Cleanup(cancel)
 
 	cid := uuid.New().String()
-	evc, cancelSSE := h.subscribeSSE(t, ctx, h.workspace.ID, cid)
-	t.Cleanup(cancelSSE)
+	evc, cancelChannel := h.subscribeChannel(t, ctx, h.workspace.ID, cid)
+	t.Cleanup(cancelChannel)
 	h.waitForAttached(t, 1)
 
 	const sid = "s-race-cancel"
@@ -500,8 +500,8 @@ func TestE2E_IdleCancelDoesNotPoisonNextPrompt(t *testing.T) {
 	t.Cleanup(cancel)
 
 	cid := uuid.New().String()
-	evc, cancelSSE := h.subscribeSSE(t, ctx, h.workspace.ID, cid)
-	t.Cleanup(cancelSSE)
+	evc, cancelChannel := h.subscribeChannel(t, ctx, h.workspace.ID, cid)
+	t.Cleanup(cancelChannel)
 	h.waitForAttached(t, 1)
 
 	const sid = "s-idle-cancel"
@@ -551,8 +551,8 @@ func TestE2E_CancelBetweenActiveSetAndAssistantCreate(t *testing.T) {
 	t.Cleanup(cancel)
 
 	cid := uuid.New().String()
-	evc, cancelSSE := h.subscribeSSE(t, ctx, h.workspace.ID, cid)
-	t.Cleanup(cancelSSE)
+	evc, cancelChannel := h.subscribeChannel(t, ctx, h.workspace.ID, cid)
+	t.Cleanup(cancelChannel)
 	h.waitForAttached(t, 1)
 
 	const sid = "s-mid-window"
@@ -601,8 +601,8 @@ func TestE2E_PromptRequestContextDoesNotOwnRun(t *testing.T) {
 	t.Cleanup(streamCancel)
 
 	cid := uuid.New().String()
-	evc, cancelSSE := h.subscribeSSE(t, streamCtx, h.workspace.ID, cid)
-	t.Cleanup(cancelSSE)
+	evc, cancelChannel := h.subscribeChannel(t, streamCtx, h.workspace.ID, cid)
+	t.Cleanup(cancelChannel)
 	h.waitForAttached(t, 1)
 
 	const sid = "s-short-req"
@@ -627,7 +627,7 @@ func TestE2E_PromptRequestContextDoesNotOwnRun(t *testing.T) {
 // TestE2E_AgentRunSurvivesAcrossWorkspaceClaims covers PLAN item 3: a
 // run started by client A survives A detaching as long as another
 // client (B) keeps the workspace alive; B observes the run finish via
-// SSE.
+// workspace channel.
 func TestE2E_AgentRunSurvivesAcrossWorkspaceClaims(t *testing.T) {
 	t.Parallel()
 	h := newAgentE2EHarness(t)
@@ -638,9 +638,9 @@ func TestE2E_AgentRunSurvivesAcrossWorkspaceClaims(t *testing.T) {
 
 	cidA := uuid.New().String()
 	cidB := uuid.New().String()
-	_, killA := h.subscribeSSE(t, ctxA, h.workspace.ID, cidA)
+	_, killA := h.subscribeChannel(t, ctxA, h.workspace.ID, cidA)
 	t.Cleanup(killA)
-	evcB, killB := h.subscribeSSE(t, ctxB, h.workspace.ID, cidB)
+	evcB, killB := h.subscribeChannel(t, ctxB, h.workspace.ID, cidB)
 	t.Cleanup(killB)
 	h.waitForAttached(t, 2)
 
@@ -694,8 +694,8 @@ func TestE2E_CancelOfActiveRunAlsoCancelsAcceptedFollowUp(t *testing.T) {
 	t.Cleanup(cancel)
 
 	cid := uuid.New().String()
-	evc, cancelSSE := h.subscribeSSE(t, ctx, h.workspace.ID, cid)
-	t.Cleanup(cancelSSE)
+	evc, cancelChannel := h.subscribeChannel(t, ctx, h.workspace.ID, cid)
+	t.Cleanup(cancelChannel)
 	h.waitForAttached(t, 1)
 
 	const sid = "s-followup"

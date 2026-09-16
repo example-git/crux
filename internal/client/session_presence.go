@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/example-git/crux/internal/proto"
 )
@@ -58,5 +59,25 @@ func (c *Client) SendCurrentSessionSelection(ctx context.Context, workspaceID st
 	if selection.Generation == 0 {
 		return errors.New("current-session selection generation must be positive")
 	}
-	return c.sendCurrentSession(ctx, workspaceID, proto.CurrentSession{SessionID: selection.SessionID, SelectionGeneration: &selection.Generation})
+	channel, err := c.getWorkspaceChannel(ctx, workspaceID)
+	if err != nil {
+		return fmt.Errorf("failed to set current session: %w", err)
+	}
+	channel.mu.Lock()
+	if channel.closed {
+		channel.mu.Unlock()
+		return errors.New("failed to set current session: workspace peer attachment is closed")
+	}
+	channel.pending++
+	channel.mu.Unlock()
+	defer func() {
+		channel.mu.Lock()
+		channel.pending--
+		channel.mu.Unlock()
+	}()
+	_, err = channel.peer.command(ctx, workspaceID, proto.PeerTypeSessionCurrentSet, proto.CurrentSession{SessionID: selection.SessionID, SelectionGeneration: &selection.Generation})
+	if err != nil {
+		return fmt.Errorf("failed to set current session: %w", err)
+	}
+	return nil
 }

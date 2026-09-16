@@ -38,6 +38,7 @@ type clientAuthenticationOriginalRecord struct {
 	Proposal                                            *config.RemoteRuntimeProposal `json:",omitempty"`
 	Observation                                         string
 	LocalFinished, Failed, Acknowledged, Adopted        bool
+	RemoteRejected                                      bool
 	RecoverySequence, ReviewSequence                    uint64
 	ReconciledBy, PendingReview, SavedStateSupersededBy string
 	RemovalSuccessor                                    string
@@ -62,6 +63,7 @@ type clientAuthenticationReviewRecord struct {
 	Request                clientAuthenticationReviewRequest
 	Summary                clientAuthenticationReviewSummary
 	Owner                  providerregistry.RegistrationOwner
+	Generation             providerauth.Generation
 	Base, Cache, Accepted  config.RemoteAuthority
 	PriorRemoved, Removed  []providerregistry.RegistrationOwner
 	Proposal               *config.RemoteRuntimeProposal `json:",omitempty"`
@@ -183,7 +185,7 @@ func (a *clientAuthority) loadAuthenticationJournal(ctx context.Context, workspa
 			continue
 		}
 		if o := record.Original; o != nil {
-			if o.Request.validate() != nil || o.Request.Target.WorkspaceID != workspace || key != a.authenticationJournalKey(workspace, "original", o.Request.OperationID) || o.Outcome.OperationID != o.Request.OperationID || o.Outcome.Previous != o.Request.Target || providerauth.PublicOwner(o.Owner) != o.Request.Target.Owner || o.Adopted && !o.Acknowledged {
+			if o.Request.validate() != nil || o.Request.Target.WorkspaceID != workspace || key != a.authenticationJournalKey(workspace, "original", o.Request.OperationID) || o.Outcome.OperationID != o.Request.OperationID || o.Outcome.Previous != o.Request.Target || providerauth.PublicOwner(o.Owner) != o.Request.Target.Owner || o.Adopted && !o.Acknowledged || o.RemoteRejected && (!o.Failed || o.Acknowledged || o.Proposal == nil) {
 				return errors.New("recorded authentication intent is invalid")
 			}
 			if o.Abandon != nil && (o.Abandon.Validate() != nil || o.Abandon.OperationID != o.Request.OperationID || o.Abandon.Target != o.Request.Target || !entry.Completed()) {
@@ -205,8 +207,10 @@ func (a *clientAuthority) loadAuthenticationJournal(ctx context.Context, workspa
 					return err
 				}
 			}
-			r := &clientAuthenticationReceipt{abandon: o.Abandon, request: o.Request.original(), principal: record.Principal, base: o.Base, outcome: o.Outcome, owner: o.Owner, removed: journalOwnerMap(o.Removed), proposal: o.Proposal, observation: o.Observation, localFinished: o.LocalFinished, acknowledged: o.Acknowledged, adopted: o.Adopted, recoverySequence: o.RecoverySequence, reviewSequence: o.ReviewSequence, reconciledBy: o.ReconciledBy, pendingReview: o.PendingReview, savedStateSupersededBy: o.SavedStateSupersededBy, removalSuccessor: o.RemovalSuccessor, removalActive: o.RemovalActive, removalAdmitted: o.RemovalAdmitted, oauthTokenID: o.OAuthTokenID, credentialEffectID: o.CredentialEffectID, journalRevision: entry.Revision(), journalCompleted: entry.Completed(), restored: true}
-			if o.Failed || !o.LocalFinished {
+			r := &clientAuthenticationReceipt{abandon: o.Abandon, request: o.Request.original(), principal: record.Principal, base: o.Base, outcome: o.Outcome, owner: o.Owner, removed: journalOwnerMap(o.Removed), proposal: o.Proposal, observation: o.Observation, localFinished: o.LocalFinished, acknowledged: o.Acknowledged, adopted: o.Adopted, remoteRejected: o.RemoteRejected, recoverySequence: o.RecoverySequence, reviewSequence: o.ReviewSequence, reconciledBy: o.ReconciledBy, pendingReview: o.PendingReview, savedStateSupersededBy: o.SavedStateSupersededBy, removalSuccessor: o.RemovalSuccessor, removalActive: o.RemovalActive, removalAdmitted: o.RemovalAdmitted, oauthTokenID: o.OAuthTokenID, credentialEffectID: o.CredentialEffectID, journalRevision: entry.Revision(), journalCompleted: entry.Completed(), restored: true}
+			if o.RemoteRejected {
+				r.err = errors.New("recorded authentication publication was rejected by the receiver")
+			} else if o.Failed || !o.LocalFinished {
 				r.err = errors.New("recorded authentication result requires explicit recovery or saved-state review")
 			}
 			a.retainClientAuthentication(r)
@@ -246,8 +250,11 @@ func (a *clientAuthority) loadAuthenticationJournal(ctx context.Context, workspa
 				if err := validateJournalProposal(*r.Proposal); err != nil {
 					return err
 				}
+				if err := r.Generation.Validate(); err != nil {
+					return err
+				}
 			}
-			review := &clientAuthenticationReviewReceipt{abandon: r.Abandon, originalAbandonedBy: r.OriginalAbandonedBy, supersededByReview: r.SupersededByReview, request: r.Request, summary: r.Summary, owner: r.Owner, base: r.Base, cache: r.Cache, accepted: r.Accepted, priorRemoved: journalOwnerMap(r.PriorRemoved), removed: journalOwnerMap(r.Removed), proposal: r.Proposal, observation: r.Observation, savedStateSupersededBy: r.SavedStateSupersededBy, journalRevision: entry.Revision(), journalCompleted: entry.Completed(), restored: true}
+			review := &clientAuthenticationReviewReceipt{abandon: r.Abandon, originalAbandonedBy: r.OriginalAbandonedBy, supersededByReview: r.SupersededByReview, request: r.Request, summary: r.Summary, owner: r.Owner, generation: r.Generation, base: r.Base, cache: r.Cache, accepted: r.Accepted, priorRemoved: journalOwnerMap(r.PriorRemoved), removed: journalOwnerMap(r.Removed), proposal: r.Proposal, observation: r.Observation, savedStateSupersededBy: r.SavedStateSupersededBy, journalRevision: entry.Revision(), journalCompleted: entry.Completed(), restored: true}
 			if r.Failed {
 				review.err = providerauth.ErrReceiptUnverified
 			}
@@ -330,7 +337,7 @@ func (a *clientAuthority) persistAuthenticationReceipt(ctx context.Context, r *c
 		}
 		r.observation = id
 	}
-	o := &clientAuthenticationOriginalRecord{Abandon: r.abandon, Request: clientAuthenticationStored(r.request), Base: r.base, Outcome: r.outcome, Owner: r.owner, Removed: journalOwners(r.removed), Proposal: r.proposal, Observation: r.observation, LocalFinished: r.localFinished, Failed: r.err != nil, Acknowledged: r.acknowledged, Adopted: r.adopted, RecoverySequence: r.recoverySequence, ReviewSequence: r.reviewSequence, ReconciledBy: r.reconciledBy, PendingReview: r.pendingReview, SavedStateSupersededBy: r.savedStateSupersededBy, RemovalSuccessor: r.removalSuccessor, RemovalActive: r.removalActive, RemovalAdmitted: r.removalAdmitted, OAuthTokenID: r.oauthTokenID, CredentialEffectID: r.credentialEffectID}
+	o := &clientAuthenticationOriginalRecord{Abandon: r.abandon, Request: clientAuthenticationStored(r.request), Base: r.base, Outcome: r.outcome, Owner: r.owner, Removed: journalOwners(r.removed), Proposal: r.proposal, Observation: r.observation, LocalFinished: r.localFinished, Failed: r.err != nil, Acknowledged: r.acknowledged, Adopted: r.adopted, RemoteRejected: r.remoteRejected, RecoverySequence: r.recoverySequence, ReviewSequence: r.reviewSequence, ReconciledBy: r.reconciledBy, PendingReview: r.pendingReview, SavedStateSupersededBy: r.savedStateSupersededBy, RemovalSuccessor: r.removalSuccessor, RemovalActive: r.removalActive, RemovalAdmitted: r.removalAdmitted, OAuthTokenID: r.oauthTokenID, CredentialEffectID: r.credentialEffectID}
 	for _, id := range a.authenticationRecoveryIDs {
 		if recovery := a.authenticationRecoveries[id]; recovery != nil && recovery.request.OperationID == r.request.operationID {
 			o.Recoveries = append(o.Recoveries, clientAuthenticationStoredRecovery{recovery.request, recovery.err != nil})
@@ -359,7 +366,7 @@ func (a *clientAuthority) persistAuthenticationReview(ctx context.Context, r *cl
 		}
 		r.observation = id
 	}
-	value := &clientAuthenticationReviewRecord{Abandon: r.abandon, OriginalAbandonedBy: r.originalAbandonedBy, SupersededByReview: r.supersededByReview, Request: r.request, Summary: r.summary, Owner: r.owner, Base: r.base, Cache: r.cache, Accepted: r.accepted, PriorRemoved: journalOwners(r.priorRemoved), Removed: journalOwners(r.removed), Proposal: r.proposal, Observation: r.observation, Failed: r.err != nil, SavedStateSupersededBy: r.savedStateSupersededBy}
+	value := &clientAuthenticationReviewRecord{Abandon: r.abandon, OriginalAbandonedBy: r.originalAbandonedBy, SupersededByReview: r.supersededByReview, Request: r.request, Summary: r.summary, Owner: r.owner, Generation: r.generation, Base: r.base, Cache: r.cache, Accepted: r.accepted, PriorRemoved: journalOwners(r.priorRemoved), Removed: journalOwners(r.removed), Proposal: r.proposal, Observation: r.observation, Failed: r.err != nil, SavedStateSupersededBy: r.savedStateSupersededBy}
 	if p := r.apply; p != nil {
 		value.Apply = &clientAuthenticationStoredApply{Request: p.request, Outcome: p.outcome, Failed: p.err != nil, Put: p.put}
 	}

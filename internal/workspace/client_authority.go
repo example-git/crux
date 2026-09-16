@@ -119,16 +119,13 @@ func (w *ClientWorkspace) reconcileClientAuthority(ctx context.Context, a *clien
 		return nil
 	}
 	id := w.workspaceID()
-	remote, err := w.client.GetWorkspace(ctx, id)
+	remote, err := w.client.PeerWorkspaceAuthority(ctx, id, a.principal)
 	if err != nil {
-		return fmt.Errorf("cannot reconcile pending client runtime: %w", err)
-	}
-	if remote.Config != nil {
-		remote.Config.SetupAgents()
+		return fmt.Errorf("cannot reconcile pending client runtime through peer channel: %w", err)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if remote.ID != id || w.ws.ID != id {
+	if w.ws.ID != id {
 		return errors.New("pending client runtime response belongs to a different workspace")
 	}
 	if err := ctx.Err(); err != nil {
@@ -137,15 +134,17 @@ func (w *ClientWorkspace) reconcileClientAuthority(ctx context.Context, a *clien
 	if !matchesAuthority(w.ws.Authority, a.principal, a.accepted) && !matchesAuthority(w.ws.Authority, a.principal, *a.pending) {
 		return errors.New("cached client authority changed during pending runtime reconciliation")
 	}
-	if matchesAuthority(remote.Authority, a.principal, *a.pending) {
+	if matchesAuthority(remote, a.principal, *a.pending) {
 		a.accepted = *a.pending
 		a.view.Store(a.pendingView)
-		w.noteClientAuthenticationAcknowledgementLocked(a, remote.ID, a.accepted)
+		w.noteClientAuthenticationAcknowledgementLocked(a, id, a.accepted)
 		a.pending, a.pendingView = nil, nil
-		w.ws, w.appliedRefresh = *remote, w.refreshSequence.Add(1)
+		w.ws.Authority = remote
+		w.ws.Config = a.configView()
+		w.appliedRefresh = w.refreshSequence.Add(1)
 		return nil
 	}
-	if matchesAuthority(remote.Authority, a.principal, a.accepted) {
+	if matchesAuthority(remote, a.principal, a.accepted) {
 		if !matchesAuthority(w.ws.Authority, a.principal, a.accepted) {
 			return errors.New("pending runtime response predates the cached acknowledgement")
 		}
@@ -220,16 +219,12 @@ func (w *ClientWorkspace) publishClientAuthorityLocked(ctx context.Context, a *c
 	if err != nil {
 		return fmt.Errorf("client state saved; remote runtime was not updated: %w", err)
 	}
-	a.pending, a.pendingView = &proposal, clientCollectionConfig(proposal, a.store)
-	ack, err := w.client.ReplaceRemoteRuntime(ctx, w.workspaceID(), a.accepted.Revision, proposal)
+	authentication, err := w.clientAuthenticationPeerStates(ctx, a, proposal)
 	if err != nil {
-		// A committed request may lose its response. Only its exact content
-		// acknowledgement can turn that ambiguity into success.
-		if remote, lookupErr := w.client.GetWorkspace(ctx, w.workspaceID()); lookupErr == nil && matchesAuthority(remote.Authority, a.principal, proposal) {
-			ack, err = remote.Authority, nil
-			w.adoptRuntimeResponse(*remote)
-		}
+		return fmt.Errorf("client state saved; provider authentication state was not captured: %w", err)
 	}
+	a.pending, a.pendingView = &proposal, clientCollectionConfig(proposal, a.store)
+	ack, err := w.client.PatchRemoteRuntime(ctx, w.workspaceID(), a.accepted, proposal, authentication...)
 	if err != nil {
 		return fmt.Errorf("client state saved; remote runtime acknowledgement is pending: %w", err)
 	}
@@ -245,6 +240,57 @@ func (w *ClientWorkspace) publishClientAuthorityLocked(ctx context.Context, a *c
 	w.appliedRefresh = w.refreshSequence.Add(1)
 	w.mu.Unlock()
 	return nil
+}
+
+func clientAuthenticationPeerStatesFromCapture(proposal config.RemoteRuntimeProposal, capture config.AuthenticationCapture, generation providerauth.Generation) ([]proto.PeerProviderAuthentication, error) {
+	if err := generation.Validate(); err != nil {
+		return nil, err
+	}
+	statuses := map[providerregistry.RegistrationOwner]config.AuthenticationProvider{}
+	for _, status := range capture.Providers() {
+		statuses[status.Owner] = status
+	}
+	result := make([]proto.PeerProviderAuthentication, 0, len(proposal.Credentials))
+	for _, credential := range proposal.Credentials {
+		status, found := statuses[credential.Owner]
+		if !found {
+			return nil, fmt.Errorf("provider %q authentication state is unavailable", credential.Owner.ProviderID)
+		}
+		provider, err := proto.ProviderRefForRuntime(proposal, credential.Owner.ProviderID)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, proto.PeerProviderAuthentication{Provider: provider, Generation: generation, Available: !credential.Unavailable, AccountState: status.AccountState})
+	}
+	return result, nil
+}
+
+func (w *ClientWorkspace) clientAuthenticationPeerStates(ctx context.Context, authority *clientAuthority, proposal config.RemoteRuntimeProposal) ([]proto.PeerProviderAuthentication, error) {
+	workspaceID := w.workspaceID()
+	if err := w.prepareClientProviderAuth(ctx, workspaceID); err != nil {
+		return nil, err
+	}
+	snapshot, err := authority.providerAuth.Status(ctx)
+	if err != nil {
+		return nil, err
+	}
+	statuses := map[providerauth.Owner]providerauth.Status{}
+	for _, status := range snapshot.Providers {
+		statuses[status.Owner] = status
+	}
+	result := make([]proto.PeerProviderAuthentication, 0, len(proposal.Credentials))
+	for _, credential := range proposal.Credentials {
+		provider, err := proto.ProviderRefForRuntime(proposal, credential.Owner.ProviderID)
+		if err != nil {
+			return nil, err
+		}
+		status, found := statuses[provider.Owner]
+		if !found {
+			return nil, fmt.Errorf("provider %q authentication state is unavailable", credential.Owner.ProviderID)
+		}
+		result = append(result, proto.PeerProviderAuthentication{Provider: provider, Generation: snapshot.Generation, Available: !credential.Unavailable, AccountState: status.AccountState})
+	}
+	return result, nil
 }
 
 type clientCredentialEditor struct{ a *clientAuthority }

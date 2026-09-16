@@ -195,6 +195,10 @@ func (s *Server) localClientAuthority() bool {
 	return s.tlsConfig == nil && !s.remoteManagement()
 }
 
+func (s *Server) clientRuntimeOnly() bool {
+	return s.remoteManagement()
+}
+
 func IsLoopbackHost(hostURL *url.URL) bool {
 	if hostURL.Scheme != "tcp" {
 		return true
@@ -214,7 +218,7 @@ func DefaultServer(cfg *config.ConfigStore) *Server {
 }
 
 // NewServer creates a new [Server] with the given network and address.
-func NewServer(_ *config.ConfigStore, network, address string) *Server {
+func NewServer(cfg *config.ConfigStore, network, address string) *Server {
 	s := new(Server)
 	s.Addr = address
 	s.network = network
@@ -222,7 +226,7 @@ func NewServer(_ *config.ConfigStore, network, address string) *Server {
 	// The backend is created with a shutdown callback that triggers
 	// a graceful server shutdown (e.g. when the last workspace is
 	// removed).
-	s.backend = backend.New(context.Background(), nil, func() {
+	s.backend = backend.New(context.Background(), cfg, func() {
 		go func() {
 			slog.Info("Shutting down server...")
 			if err := s.Shutdown(context.Background()); err != nil {
@@ -230,7 +234,9 @@ func NewServer(_ *config.ConfigStore, network, address string) *Server {
 			}
 		}()
 	})
-	s.backend.RequireClientRuntime()
+	if s.clientRuntimeOnly() {
+		s.backend.RequireClientRuntime()
+	}
 	if err := s.SetWorkspaceRoots(nil); err != nil {
 		slog.Warn("Failed to configure default workspace root", "error", err)
 	}
@@ -256,8 +262,8 @@ func (s *Server) installHandler() {
 	route("GET /v1/authorization", c.handleGetAuthorization)
 	route("GET /v1/version", c.handleGetVersion)
 	route("GET /v1/runtime-capabilities", c.handleGetRemoteRuntimeCapabilities)
-	route("PUT /v1/workspaces/{id}/runtime", c.handlePutWorkspaceRuntime)
-	route("POST /v1/workspaces/{id}/runtime/refresh-completion", c.handlePostClientRefreshCompletion)
+	route("GET /v1/peer-channel", c.handleGetPeerChannel)
+	route("GET /v1/workspaces/{id}/channel", c.handleGetWorkspaceChannel)
 	route("GET /v1/plugins", c.handleGetPlugins)
 	route("GET /v1/config", c.handleGetConfig)
 	route("POST /v1/control", c.handlePostControl)
@@ -289,7 +295,6 @@ func (s *Server) installHandler() {
 	route("POST /v1/workspaces/{id}/auth/oauth/complete", c.handlePostWorkspaceOAuthLoginComplete)
 	route("GET /v1/workspaces/{id}/codebase-index", c.handleGetWorkspaceCodebaseIndex)
 	route("POST /v1/workspaces/{id}/codebase-index", c.handlePostWorkspaceCodebaseIndex)
-	route("GET /v1/workspaces/{id}/events", c.handleGetWorkspaceEvents)
 	route("GET /v1/workspaces/{id}/providers", c.handleGetWorkspaceProviders)
 	route("GET /v1/workspaces/{id}/sessions", c.handleGetWorkspaceSessions)
 	route("POST /v1/workspaces/{id}/sessions", c.handlePostWorkspaceSessions)

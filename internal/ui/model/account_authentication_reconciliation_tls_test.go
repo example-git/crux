@@ -77,37 +77,38 @@ func newAuthenticationReconciliationTLSFixture(t *testing.T, barrier bool) *auth
 	f.s = server.NewServer(nil, "tcp", "127.0.0.1:0")
 	require.NoError(t, f.s.EnableNetworkAuth(t.Context()))
 	handler := f.s.Handler()
+	backend := httptest.NewUnstartedServer(handler)
+	backend.TLS = tlsConfig
+	backend.StartTLS()
+	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+	require.NoError(t, err)
+	var runtimeCommands sync.Map
 	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.requests.Add(1)
-		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
-			f.puts.Add(1)
-			switch f.putMode.Load() {
-			case 1:
-				http.Error(w, "synthetic rejection", http.StatusBadRequest)
-				return
-			case 2:
-				recorder := httptest.NewRecorder()
-				handler.ServeHTTP(recorder, r)
-				if recorder.Code != http.StatusOK {
-					t.Errorf("committed PUT failed: %d %s", recorder.Code, recorder.Body.String())
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/channel") {
+			proxyModelWorkspaceChannel(t, w, r, backend.URL, proxyTLS, func(fromClient bool, frame proto.WorkspaceChannelFrame) modelWorkspaceChannelProxyDecision {
+				if fromClient && frame.Type == proto.WorkspaceChannelRuntimeReplaceFrame {
+					f.puts.Add(1)
+					runtimeCommands.Store(frame.CommandID, struct{}{})
+					if f.putMode.Load() == 1 {
+						runtimeCommands.Delete(frame.CommandID)
+						ack := proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelAcknowledgementFrame, CommandID: frame.CommandID, Acknowledgement: &proto.WorkspaceChannelAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic rejection"}}
+						return modelWorkspaceChannelProxyDecision{drop: true, reply: &ack}
+					}
 				}
-				if change := f.afterPut.Load(); change != nil {
-					(*change)()
+				if !fromClient && frame.Type == proto.WorkspaceChannelAcknowledgementFrame {
+					if _, ok := runtimeCommands.LoadAndDelete(frame.CommandID); ok {
+						if change := f.afterPut.Load(); change != nil {
+							(*change)()
+						}
+						if f.putMode.Load() == 2 {
+							return modelWorkspaceChannelProxyDecision{drop: true, close: true}
+						}
+					}
 				}
-				http.Error(w, "synthetic lost response", http.StatusBadGateway)
-				return
-			}
-			if change := f.afterPut.Load(); change != nil {
-				recorder := httptest.NewRecorder()
-				handler.ServeHTTP(recorder, r)
-				(*change)()
-				for key, values := range recorder.Header() {
-					w.Header()[key] = values
-				}
-				w.WriteHeader(recorder.Code)
-				_, _ = w.Write(recorder.Body.Bytes())
-				return
-			}
+				return modelWorkspaceChannelProxyDecision{}
+			})
+			return
 		}
 		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/workspaces/") {
 			switch f.getMode.Load() {
@@ -142,7 +143,7 @@ func newAuthenticationReconciliationTLSFixture(t *testing.T, barrier bool) *auth
 	}))
 	remote.TLS = tlsConfig
 	remote.StartTLS()
-	t.Cleanup(func() { remote.Close(); _ = f.s.Close() })
+	t.Cleanup(func() { remote.Close(); backend.Close(); _ = f.s.Close() })
 	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		f.mu.Lock()
@@ -346,7 +347,7 @@ func TestAuthenticationUIReconciliationThroughTLS(t *testing.T) {
 				originalApply := applied.request
 				applied = run(tea.KeyPressMsg{Code: 't', Mod: tea.ModCtrl}).(authenticationApplyCompletedMsg)
 				require.Equal(t, originalApply, applied.request)
-				require.EqualValues(t, 2, f.puts.Load(), "one original rejected PUT and one reviewed PUT; UI retry is GET-only")
+				require.EqualValues(t, 2, f.puts.Load(), "one original rejected command and one reviewed command; UI retry is GET-only")
 			}
 			require.NoError(t, applied.err)
 			require.True(t, applied.outcome.RemoteAcknowledged && applied.outcome.Adopted)

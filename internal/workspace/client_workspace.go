@@ -73,18 +73,18 @@ type ClientWorkspace struct {
 	herdrClient *herdr.Client
 }
 
-// SSE reconnect backoff bounds for the workspace event stream. Declared
+// Reconnect backoff bounds for the workspace channel. Declared
 // as vars (not consts) so tests can shrink the delays.
 var (
-	sseReconnectInitialBackoff = 250 * time.Millisecond
-	sseReconnectMaxBackoff     = 10 * time.Second
+	channelReconnectInitialBackoff = 250 * time.Millisecond
+	channelReconnectMaxBackoff     = 10 * time.Second
 )
 
 // NewClientWorkspace creates a new ClientWorkspace that proxies all
 // operations through the given client SDK. The ws parameter is the
 // proto.Workspace snapshot returned by the server at creation time. The
 // snapshot's Skills field seeds a process-local skills.Manager so the
-// TUI sees discovery state before the first SSE event arrives. The
+// TUI sees discovery state before the first channel event arrives. The
 // manager is constructed with WithGlobalMirror because the client
 // process represents exactly one workspace and the TUI reads
 // skills.GetLatestStates directly at construction time.
@@ -1083,23 +1083,23 @@ const maxRecoveryEscalate = 20
 // A var, not a const, so tests can shrink it.
 var recoveryCreateTimeout = 30 * time.Second
 
-// runSubscription subscribes to the workspace event stream and forwards
+// runSubscription subscribes to the workspace channel and forwards
 // translated events to send, reconnecting with capped exponential
-// backoff whenever the stream drops. It returns only when the
+// backoff whenever the channel drops. It returns only when the
 // subscription context is cancelled (via Shutdown). Split out from
 // Subscribe so it can be tested without a real *tea.Program.
 //
 // Two failures need more than a retry. A 404 means the server no longer
 // knows this workspace, so resubscribing with the same ID can never
-// succeed and the loop re-registers instead. And any stream that closes
+// succeed and the loop re-registers instead. And any channel that closes
 // loses whatever was published while the client was away, so every
-// re-established stream — even one that reconnects on the first try —
+// re-established channel — even one that reconnects on the first try —
 // re-asserts the client's session and asks the UI to resync.
 func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 	w.subStarted.Store(true)
 	defer close(w.subDone)
 
-	backoff := sseReconnectInitialBackoff
+	backoff := channelReconnectInitialBackoff
 	degraded := false
 	recoveryFailures := 0
 	recreatedFrom := ""
@@ -1143,7 +1143,7 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 			} else if recoverLostWorkspace() {
 				// Re-registered: resubscribe immediately under the fresh
 				// workspace ID.
-				backoff = sseReconnectInitialBackoff
+				backoff = channelReconnectInitialBackoff
 				continue
 			} else if w.subCtx.Err() == nil {
 				recoveryFailures++
@@ -1154,7 +1154,7 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 			if !w.sleepOrDone(backoff) {
 				return
 			}
-			backoff = min(backoff*2, sseReconnectMaxBackoff)
+			backoff = min(backoff*2, channelReconnectMaxBackoff)
 			continue
 		}
 
@@ -1163,24 +1163,24 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 			recoveryFailures = 0
 			recreatedFrom = ""
 		}
-		backoff = sseReconnectInitialBackoff
+		backoff = channelReconnectInitialBackoff
 		w.consumeEvents(evc, send)
 		cancelAttempt()
 
-		// The event channel closed: the server restarted, the stream was
-		// interrupted, or the workspace briefly went away. Reconnect
+		// The workspace channel closed: the server restarted, the connection
+		// was interrupted, or the workspace briefly went away. Reconnect
 		// after a short delay instead of leaving the TUI permanently
 		// orphaned, which is what surfaced as a stuck "coder agent is
 		// offline".
 		if w.subCtx.Err() != nil {
 			return
 		}
-		markDegraded(ErrStreamClosed, false)
-		slog.Warn("Workspace event stream closed; reconnecting", "retry_in", backoff)
+		markDegraded(ErrChannelClosed, false)
+		slog.Warn("Workspace channel closed; reconnecting", "retry_in", backoff)
 		if !w.sleepOrDone(backoff) {
 			return
 		}
-		backoff = min(backoff*2, sseReconnectMaxBackoff)
+		backoff = min(backoff*2, channelReconnectMaxBackoff)
 	}
 }
 
@@ -1268,13 +1268,29 @@ func (w *ClientWorkspace) recreateArgs() proto.Workspace {
 // re-asserts the client's current-session selection, since the server's
 // presence entry (or the whole workspace) may have been re-created while we
 // were away, and tells the UI to resync state published while detached. The
-// SSE handler attaches the client before writing its 200, so the presence
+// Channel handler attaches the client before completing its upgrade, so the presence
 // call cannot be rejected as not-attached here.
 func (w *ClientWorkspace) afterReconnect(send func(tea.Msg), recreatedFrom ...string) error {
 	ctx, cancel := context.WithTimeout(w.subCtx, recoveryCreateTimeout)
-	err := w.refreshWorkspaceContext(ctx)
-	cancel()
-	if err != nil {
+	defer cancel()
+	if a := w.authority; a != nil {
+		a.mu.Lock()
+		remote, err := w.client.PeerWorkspaceAuthority(ctx, w.workspaceID(), a.principal)
+		if err == nil && !matchesAuthority(remote, a.principal, a.accepted) {
+			err = errors.New("peer channel reconnected with a different client runtime authority")
+		}
+		if err == nil {
+			w.mu.Lock()
+			copy := *remote
+			w.ws.Authority = &copy
+			w.appliedRefresh = w.refreshSequence.Add(1)
+			w.mu.Unlock()
+		}
+		a.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	} else if err := w.refreshWorkspaceContext(ctx); err != nil {
 		return err
 	}
 	id := w.workspaceID()
@@ -1283,8 +1299,6 @@ func (w *ClientWorkspace) afterReconnect(send func(tea.Msg), recreatedFrom ...st
 		previousID = recreatedFrom[0]
 	}
 	if selection, ok := w.client.CurrentSessionSelection(id, previousID); ok {
-		// Preserve the original generation. A delayed reconnect request must
-		// not become a newer selection than a concurrently accepted UI intent.
 		if err := w.client.SendCurrentSessionSelection(w.subCtx, id, selection); err != nil {
 			slog.Warn("Failed to re-assert current session after reconnect", "error", err)
 		}
@@ -1326,7 +1340,9 @@ func (w *ClientWorkspace) consumeEvents(evc <-chan any, send func(tea.Msg)) {
 		}
 
 		if _, ok := ev.(pubsub.Event[proto.ConfigChanged]); ok {
-			w.refreshWorkspace()
+			if !w.clientOwned() {
+				w.refreshWorkspace()
+			}
 			continue
 		}
 		translated := w.translateEvent(ev)
@@ -1396,7 +1412,7 @@ func (w *ClientWorkspace) awaitSubscription() {
 	}
 }
 
-// translateEvent converts proto-typed SSE events into the domain types
+// translateEvent converts proto-typed channel events into the domain types
 // that the TUI's Update() method expects. Skills events also update the
 // process-local skills.Manager so callers reading
 // skills.GetLatestStates see fresh data.
@@ -1532,6 +1548,8 @@ func (w *ClientWorkspace) translateEvent(ev any) tea.Msg {
 			Type:    e.Type,
 			Payload: skills.Event{States: states},
 		}
+	case proto.PeerProviderAuthentication, proto.PeerModelSelectionChanged, proto.PeerRuntimePatchApplied:
+		return nil
 	default:
 		slog.Warn("Unknown event type in translateEvent", "type", fmt.Sprintf("%T", ev))
 		return nil

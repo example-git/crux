@@ -12,8 +12,94 @@ import (
 
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/proto"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
+
+func workspaceChannelTestCapabilities(principal string) proto.RemoteRuntimeCapabilities {
+	return proto.RemoteRuntimeCapabilities{
+		PeerChannel:      proto.PeerChannelProtocol,
+		IncrementalState: true,
+		Protocol:         proto.RemoteRuntimeProtocol,
+		RuntimeVersion:   config.RemoteRuntimeVersion,
+		Compiler:         config.RemoteRuntimeCompiler,
+		Principal:        principal,
+		MaxRequestBytes:  config.MaxRemoteRuntimeBytes,
+		MaxBundles:       64,
+		MaxProviders:     64,
+		WorkspaceSharing: proto.RemoteRuntimeCertificateSharing,
+	}
+}
+
+func workspaceChannelTestMessage(status proto.WorkspaceChannelStatus) string {
+	if status == proto.WorkspaceChannelStatusOK {
+		return ""
+	}
+	return "synthetic command rejection"
+}
+
+// newWorkspaceChannelTestServer starts a TLS test server that negotiates
+// runtime capabilities over HTTP and then serves a single peer-channel v2
+// connection: hello/ready handshake advertising workspaceAuthority (if any),
+// a workspace.attach handshake, and finally one client command decoded and
+// handed to acknowledge for a caller-supplied response.
+func newWorkspaceChannelTestServer(t *testing.T, principal string, workspaceAuthority *config.RemoteAuthority, acknowledge func(proto.PeerDecodedMessage) proto.PeerAcknowledgement) *httptest.Server {
+	t.Helper()
+	upgrader := websocket.Upgrader{
+		Subprotocols: []string{proto.PeerChannelProtocol},
+		CheckOrigin:  func(*http.Request) bool { return true },
+	}
+	return httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/runtime-capabilities" {
+			require.NoError(t, json.NewEncoder(w).Encode(workspaceChannelTestCapabilities(principal)))
+			return
+		}
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/v1/peer-channel", r.URL.Path)
+		require.Equal(t, "test", r.URL.Query().Get("client_id"))
+		require.Equal(t, proto.RemoteRuntimeProtocol, r.Header.Get("Crux-Runtime-Protocol"))
+		connection, err := upgrader.Upgrade(w, r, nil)
+		require.NoError(t, err)
+		defer connection.Close()
+
+		_, data, err := connection.ReadMessage()
+		require.NoError(t, err)
+		hello, err := proto.DecodePeerMessage(data, proto.PeerDirectionClientToServer)
+		require.NoError(t, err)
+		require.Equal(t, proto.PeerTypeHello, hello.Envelope.Type)
+		epoch := hello.Envelope.Epoch
+
+		data, err = proto.EncodePeerMessage(epoch, 1, "server-1", hello.Envelope.MessageID, "", proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+		require.NoError(t, err)
+		require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
+		var ready proto.PeerReady
+		if workspaceAuthority != nil {
+			ready.Workspaces = []proto.PeerWorkspaceSummary{{WorkspaceID: "workspace", Revision: workspaceAuthority.Revision, Digest: workspaceAuthority.Digest}}
+		}
+		data, err = proto.EncodePeerMessage(epoch, 2, "server-2", "", "", proto.PeerTypeReady, ready)
+		require.NoError(t, err)
+		require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
+
+		_, data, err = connection.ReadMessage()
+		require.NoError(t, err)
+		attach, err := proto.DecodePeerMessage(data, proto.PeerDirectionClientToServer)
+		require.NoError(t, err)
+		require.Equal(t, proto.PeerTypeWorkspaceAttach, attach.Envelope.Type)
+
+		data, err = proto.EncodePeerMessage(epoch, 3, "server-3", attach.Envelope.MessageID, attach.Envelope.WorkspaceID, proto.PeerTypeAcknowledgement, proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK})
+		require.NoError(t, err)
+		require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
+
+		_, data, err = connection.ReadMessage()
+		require.NoError(t, err)
+		command, err := proto.DecodePeerMessage(data, proto.PeerDirectionClientToServer)
+		require.NoError(t, err)
+		acknowledgement := acknowledge(command)
+		data, err = proto.EncodePeerMessage(epoch, 4, "server-4", command.Envelope.MessageID, command.Envelope.WorkspaceID, proto.PeerTypeAcknowledgement, acknowledgement)
+		require.NoError(t, err)
+		require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
+	}))
+}
 
 func TestClientRuntimeNegotiationReportsHTTPFailureBeforePrivateRequest(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable} {
@@ -68,26 +154,36 @@ func TestClientRuntimeNegotiationReportsHTTPFailureBeforePrivateRequest(t *testi
 }
 
 func TestClientRefreshCompletionAcknowledgementStatus(t *testing.T) {
-	for _, status := range []int{http.StatusNoContent, http.StatusConflict, http.StatusNotFound, http.StatusBadGateway} {
-		t.Run(strconv.Itoa(status), func(t *testing.T) {
-			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				require.Equal(t, http.MethodPost, r.Method)
-				require.Equal(t, "/v1/workspaces/workspace/runtime/refresh-completion", r.URL.Path)
-				require.Equal(t, proto.RemoteRuntimeProtocol, r.Header.Get("Crux-Runtime-Protocol"))
-				w.WriteHeader(status)
-			}))
+	for _, status := range []proto.WorkspaceChannelStatus{
+		proto.WorkspaceChannelStatusOK,
+		proto.WorkspaceChannelStatusConflict,
+		proto.WorkspaceChannelStatusNotFound,
+		proto.WorkspaceChannelStatusInternal,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			principal := strings.Repeat("a", 64)
+			priorProposal := config.RemoteRuntimeProposal{Version: 1, Revision: 1}
+			priorProposal.Digest, _ = config.RemoteRuntimeDigest(priorProposal)
+			prior := &config.RemoteAuthority{Mode: "client", Principal: principal, Revision: priorProposal.Revision, Digest: priorProposal.Digest}
+			server := newWorkspaceChannelTestServer(t, principal, prior, func(message proto.PeerDecodedMessage) proto.PeerAcknowledgement {
+				require.Equal(t, proto.PeerTypeProviderRefreshCompleted, message.Envelope.Type)
+				completion := message.Payload.(*proto.PeerProviderRefreshCompletion)
+				require.Equal(t, "request", completion.RequestID)
+				require.True(t, completion.Failed)
+				return proto.PeerAcknowledgement{Status: status, Message: workspaceChannelTestMessage(status)}
+			})
 			defer server.Close()
 			c := &Client{h: server.Client(), network: "tcp", addr: strings.TrimPrefix(server.URL, "https://"), secure: true, clientID: "test"}
+			c.retainWorkspaceAttachment("workspace", prior)
 			err := c.CompleteClientRefresh(t.Context(), "workspace", config.ClientRefreshCompletion{RequestID: "request", Failed: true})
-			switch status {
-			case http.StatusNoContent:
+			if status == proto.WorkspaceChannelStatusOK {
 				require.NoError(t, err)
-			case http.StatusConflict, http.StatusNotFound:
-				require.ErrorIs(t, err, ErrClientRefreshRejected)
-			default:
-				require.Error(t, err)
-				require.NotErrorIs(t, err, ErrClientRefreshRejected)
+				return
 			}
+			require.ErrorIs(t, err, ErrClientRefreshRejected)
+			var commandErr *WorkspaceChannelCommandError
+			require.ErrorAs(t, err, &commandErr)
+			require.Equal(t, status, commandErr.Status)
 		})
 	}
 }
@@ -105,7 +201,7 @@ func TestClientRuntimeNegotiatesBeforePrivatePost(t *testing.T) {
 						w.WriteHeader(http.StatusNotFound)
 						return
 					}
-					value := proto.RemoteRuntimeCapabilities{Protocol: proto.RemoteRuntimeProtocol, RuntimeVersion: config.RemoteRuntimeVersion, Compiler: config.RemoteRuntimeCompiler, Principal: strings.Repeat("a", 64), MaxRequestBytes: config.MaxRemoteRuntimeBytes, MaxBundles: 64, MaxProviders: 64, WorkspaceSharing: "exclusive-certificate"}
+					value := proto.RemoteRuntimeCapabilities{PeerChannel: proto.PeerChannelProtocol, IncrementalState: true, Protocol: proto.RemoteRuntimeProtocol, RuntimeVersion: config.RemoteRuntimeVersion, Compiler: config.RemoteRuntimeCompiler, Principal: strings.Repeat("a", 64), MaxRequestBytes: config.MaxRemoteRuntimeBytes, MaxBundles: 64, MaxProviders: 64, WorkspaceSharing: "exclusive-certificate"}
 					value.CodebaseIndex = kind == "codebase-supported"
 					if kind == "different-development-version" {
 						value.HostVersion = "v0.93.1-0.20260901000000-111111111111"
@@ -172,38 +268,53 @@ func TestClientRuntimeAcknowledgementIdentifiesMismatchedFields(t *testing.T) {
 			t.Run(operation+"/"+field, func(t *testing.T) {
 				principal := strings.Repeat("a", 64)
 				proposal := config.RemoteRuntimeProposal{Version: 1, Revision: 1}
+				if operation == "replace" {
+					proposal.Revision = 2
+				}
 				proposal.Digest, _ = config.RemoteRuntimeDigest(proposal)
-				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/v1/runtime-capabilities" {
-						require.NoError(t, json.NewEncoder(w).Encode(proto.RemoteRuntimeCapabilities{Protocol: proto.RemoteRuntimeProtocol, RuntimeVersion: config.RemoteRuntimeVersion, Compiler: config.RemoteRuntimeCompiler, Principal: principal, MaxRequestBytes: config.MaxRemoteRuntimeBytes, MaxBundles: 64, MaxProviders: 64, WorkspaceSharing: "exclusive-certificate"}))
-						return
-					}
-					ack := &config.RemoteAuthority{Mode: "client", Principal: principal, Revision: proposal.Revision, Digest: proposal.Digest}
-					switch field {
-					case "missing":
-						ack = nil
-					case "mode":
-						ack.Mode = "server"
-					case "principal":
-						ack.Principal = "unexpected-private-response"
-					case "revision":
-						ack.Revision++
-					case "digest":
-						ack.Digest = "unexpected-private-response"
-					}
-					if operation == "create" {
+				ack := &config.RemoteAuthority{Mode: "client", Principal: principal, Revision: proposal.Revision, Digest: proposal.Digest}
+				switch field {
+				case "missing":
+					ack = nil
+				case "mode":
+					ack.Mode = "server"
+				case "principal":
+					ack.Principal = "unexpected-private-response"
+				case "revision":
+					ack.Revision++
+				case "digest":
+					ack.Digest = "unexpected-private-response"
+				}
+				var server *httptest.Server
+				if operation == "create" {
+					server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path == "/v1/runtime-capabilities" {
+							require.NoError(t, json.NewEncoder(w).Encode(workspaceChannelTestCapabilities(principal)))
+							return
+						}
 						require.NoError(t, json.NewEncoder(w).Encode(proto.Workspace{ID: "workspace", Authority: ack}))
-					} else {
-						require.NoError(t, json.NewEncoder(w).Encode(ack))
-					}
-				}))
+					}))
+				} else {
+					priorProposal := config.RemoteRuntimeProposal{Version: 1, Revision: 1}
+					priorProposal.Digest, _ = config.RemoteRuntimeDigest(priorProposal)
+					server = newWorkspaceChannelTestServer(t, principal, &config.RemoteAuthority{Mode: "client", Principal: principal, Revision: priorProposal.Revision, Digest: priorProposal.Digest}, func(message proto.PeerDecodedMessage) proto.PeerAcknowledgement {
+						require.Equal(t, proto.PeerTypeRuntimeReplace, message.Envelope.Type)
+						replace := message.Payload.(*proto.PeerRuntimeReplace)
+						require.Equal(t, uint64(1), replace.ExpectedRevision)
+						require.Equal(t, proposal, replace.Runtime)
+						return proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusOK, Authority: ack}
+					})
+				}
 				defer server.Close()
 				c := &Client{h: server.Client(), network: "tcp", addr: strings.TrimPrefix(server.URL, "https://"), secure: true, clientID: "test"}
 				var err error
 				if operation == "create" {
 					_, err = c.CreateWorkspace(t.Context(), proto.Workspace{Path: "/workspace", Runtime: &proposal})
 				} else {
-					_, err = c.ReplaceRemoteRuntime(t.Context(), "workspace", 0, proposal)
+					priorProposal := config.RemoteRuntimeProposal{Version: 1, Revision: 1}
+					priorProposal.Digest, _ = config.RemoteRuntimeDigest(priorProposal)
+					c.retainWorkspaceAttachment("workspace", &config.RemoteAuthority{Mode: "client", Principal: principal, Revision: priorProposal.Revision, Digest: priorProposal.Digest})
+					_, err = c.ReplaceRemoteRuntime(t.Context(), "workspace", 1, proposal)
 				}
 				if field == "matching" {
 					require.NoError(t, err)

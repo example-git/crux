@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bufio"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -46,6 +48,11 @@ type loggingResponseWriter struct {
 func (lrw *loggingResponseWriter) WriteHeader(code int) {
 	lrw.statusCode = code
 	lrw.ResponseWriter.WriteHeader(code)
+}
+
+func (lrw *loggingResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	lrw.statusCode = http.StatusSwitchingProtocols
+	return http.NewResponseController(lrw.ResponseWriter).Hijack()
 }
 
 func (lrw *loggingResponseWriter) Unwrap() http.ResponseWriter {

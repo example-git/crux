@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,6 +26,7 @@ import (
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/workspace"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,6 +57,7 @@ func testHeadlessClientModelOverrideThroughTLS(t *testing.T, mode string) {
 	var mu sync.Mutex
 	var requests []inferenceRequest
 	var proposals []config.RemoteRuntimeProposal
+	var runtimeState config.RemoteRuntimeProposal
 	var exchanges, refreshCompletions, providerRequests, agentInitializations atomic.Int32
 	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		providerRequests.Add(1)
@@ -111,44 +114,68 @@ func testHeadlessClientModelOverrideThroughTLS(t *testing.T, mode string) {
 	require.NoError(t, connection.AuthorizeClient(t.Context(), "headless-client", identity.Certificate))
 	tlsConfig, err := connection.ServerTLSConfig(t.Context())
 	require.NoError(t, err)
+	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+	require.NoError(t, err)
 	s := server.NewServer(nil, "tcp", "127.0.0.1:0")
 	require.NoError(t, s.EnableNetworkAuth(t.Context()))
-	handler := s.Handler()
-	remote := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/agent/init") {
 			agentInitializations.Add(1)
 		}
-		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
-			body, err := io.ReadAll(r.Body)
-			if !assert.NoError(t, err) {
-				http.Error(w, "fixture read failed", http.StatusBadRequest)
-				return
-			}
-			r.Body = io.NopCloser(strings.NewReader(string(body)))
-			var update proto.UpdateRemoteRuntimeRequest
-			assert.NoError(t, json.Unmarshal(body, &update))
+		s.Handler().ServeHTTP(w, r)
+	})
+	var lastServerSequence uint64
+	remote := startCommandChannelProxy(t, handler, tlsConfig, proxyTLS, func(fromClient bool, envelope proto.PeerEnvelope) commandChannelProxyDecision {
+		if !fromClient {
 			mu.Lock()
-			proposals = append(proposals, update.Runtime)
-			mu.Unlock()
-			if mode == "rejected-ack" {
-				http.Error(w, "synthetic runtime rejection", http.StatusBadRequest)
-				return
+			if envelope.Sequence > lastServerSequence {
+				lastServerSequence = envelope.Sequence
 			}
+			mu.Unlock()
+			return commandChannelProxyDecision{}
 		}
-		if strings.HasSuffix(r.URL.Path, "/runtime/refresh-completion") {
+		switch envelope.Type {
+		case proto.PeerTypeRuntimeTransaction:
+			var transaction proto.PeerRuntimeTransaction
+			if json.Unmarshal(envelope.Payload, &transaction) == nil {
+				mu.Lock()
+				next := applyPeerRuntimeOperations(runtimeState, transaction)
+				proposals = append(proposals, next)
+				if mode != "rejected-ack" {
+					runtimeState = next
+				}
+				sequence := lastServerSequence + 1
+				mu.Unlock()
+				if mode == "rejected-ack" {
+					payload, err := json.Marshal(proto.PeerAcknowledgement{Status: proto.WorkspaceChannelStatusInvalid, Message: "synthetic runtime rejection"})
+					if err == nil {
+						reply := &proto.PeerEnvelope{
+							Version:     proto.PeerChannelVersion,
+							Epoch:       envelope.Epoch,
+							Sequence:    sequence,
+							MessageID:   uuid.NewString(),
+							ReplyTo:     envelope.MessageID,
+							Kind:        proto.PeerMessageAcknowledgement,
+							Type:        proto.PeerTypeAcknowledgement,
+							WorkspaceID: envelope.WorkspaceID,
+							Payload:     payload,
+						}
+						return commandChannelProxyDecision{drop: true, close: true, reply: reply}
+					}
+				}
+			}
+		case proto.PeerTypeProviderRefreshCompleted:
 			refreshCompletions.Add(1)
 		}
-		handler.ServeHTTP(w, r)
-	}))
-	remote.TLS = tlsConfig
-	remote.StartTLS()
-	t.Cleanup(func() { remote.Close(); _ = s.Close() })
+		return commandChannelProxyDecision{}
+	})
+	t.Cleanup(func() { _ = s.Close() })
 
 	clientConfig, clientData, clientCache := t.TempDir(), t.TempDir(), t.TempDir()
 	t.Setenv("CRUX_GLOBAL_CONFIG", clientConfig)
 	t.Setenv("CRUX_GLOBAL_DATA", clientData)
 	t.Setenv("CRUX_CACHE_DIR", clientCache)
-	installHeadlessAuthorityPlugin(t, provider.URL, clientData, clientCache)
+	trustedBundleDigest := installHeadlessAuthorityPlugin(t, provider.URL, clientData, clientCache)
 	require.NoError(t, accounts.Save(t.Context(), "example.responses", accounts.Entry{
 		ID: "selected", AccessToken: "synthetic-headless-old-access", RefreshToken: "synthetic-headless-old-refresh", ExpiresAt: time.Now().Add(time.Hour).UnixMilli(),
 	}))
@@ -177,13 +204,23 @@ func testHeadlessClientModelOverrideThroughTLS(t *testing.T, mode string) {
 	require.Len(t, proposal.Providers, 1)
 	if modelsPrepared {
 		require.Equal(t, "example-responses", proposal.Providers[0].Config.ID)
+		require.Equal(t, trustedBundleDigest, proposal.Providers[0].BundleDigest)
 		require.Len(t, proposal.Bundles, 1)
+		require.Equal(t, trustedBundleDigest, proposal.Bundles[0].Digest)
+		require.Len(t, proposal.Credentials, 1)
+		require.Equal(t, "example.responses", proposal.Credentials[0].Owner.AccountNamespace)
+		require.NotNil(t, proposal.Credentials[0].Account)
+		require.Equal(t, "selected", proposal.Credentials[0].Account.ID)
+		require.Equal(t, "synthetic-headless-old-access", proposal.Credentials[0].Account.AccessToken)
 		require.Equal(t, "example-reasoner", proposal.Models[config.SelectedModelTypeLarge].Model)
 		require.Equal(t, "example-small", proposal.Models[config.SelectedModelTypeSmall].Model)
 	} else {
 		require.Equal(t, "initial", proposal.Providers[0].Config.ID)
 		require.Empty(t, proposal.Bundles, "the flag-selected plugin must be absent from the initial receiver runtime")
 	}
+	mu.Lock()
+	runtimeState = proposal
+	mu.Unlock()
 	api, err := client.NewAuthenticatedClient(t.TempDir(), connection.Connection{
 		Address: "tcp://" + strings.TrimPrefix(remote.URL, "https://"), ServerCertificate: serverCode, Client: identity,
 	})
@@ -293,7 +330,20 @@ func testHeadlessClientModelOverrideThroughTLS(t *testing.T, mode string) {
 		require.Equal(t, "example-small", update.Models[config.SelectedModelTypeSmall].Model)
 		require.Len(t, update.Providers, 1)
 		require.Equal(t, "example-responses", update.Providers[0].Config.ID)
+		require.Equal(t, trustedBundleDigest, update.Providers[0].BundleDigest)
 		require.Len(t, update.Bundles, 1)
+		require.Equal(t, trustedBundleDigest, update.Bundles[0].Digest)
+		require.Len(t, update.Credentials, 1)
+		require.Equal(t, "example.responses", update.Credentials[0].Owner.AccountNamespace)
+		require.NotNil(t, update.Credentials[0].Account)
+		require.Equal(t, "selected", update.Credentials[0].Account.ID)
+		require.Contains(t, []string{"synthetic-headless-old-access", "synthetic-headless-new-access"}, update.Credentials[0].Account.AccessToken)
+	}
+	if modelsPrepared {
+		require.Equal(t, "synthetic-headless-new-access", proposals[0].Credentials[0].Account.AccessToken)
+	} else {
+		require.Equal(t, "synthetic-headless-old-access", proposals[0].Credentials[0].Account.AccessToken)
+		require.Equal(t, "synthetic-headless-new-access", proposals[len(proposals)-1].Credentials[0].Account.AccessToken)
 	}
 	var observedMain bool
 	for _, request := range requests {
@@ -323,11 +373,114 @@ func testHeadlessClientModelOverrideThroughTLS(t *testing.T, mode string) {
 	}
 }
 
+// applyPeerRuntimeOperations reconstructs the resulting client-authoritative
+// runtime proposal a receiver would accept from an incremental
+// runtime.transaction.apply command, so tests can assert against the full
+// proposal shape without the wire format needing to carry it directly.
+func applyPeerRuntimeOperations(base config.RemoteRuntimeProposal, transaction proto.PeerRuntimeTransaction) config.RemoteRuntimeProposal {
+	next := base
+	next.Providers = append([]config.RemoteProviderDefinition(nil), base.Providers...)
+	next.Bundles = append([]providerplugin.TransportBundle(nil), base.Bundles...)
+	next.Credentials = append([]config.RemoteCredentialBinding(nil), base.Credentials...)
+	next.Models = maps.Clone(base.Models)
+	if next.Models == nil {
+		next.Models = map[config.SelectedModelType]config.SelectedModel{}
+	}
+	next.Revision = transaction.Runtime.ResultRevision
+	next.Digest = transaction.Runtime.ResultDigest
+	for _, op := range transaction.Operations {
+		switch op.Type {
+		case proto.PeerTypeProviderDefinitionPut:
+			put := op.DefinitionPut
+			if put == nil {
+				continue
+			}
+			replaced := false
+			for i, definition := range next.Providers {
+				if definition.Config.ID == put.Definition.Config.ID {
+					next.Providers[i] = put.Definition
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				next.Providers = append(next.Providers, put.Definition)
+			}
+			if put.Bundle != nil {
+				hasBundle := false
+				for _, bundle := range next.Bundles {
+					if bundle.Digest == put.Bundle.Digest {
+						hasBundle = true
+						break
+					}
+				}
+				if !hasBundle {
+					next.Bundles = append(next.Bundles, *put.Bundle)
+				}
+			}
+		case proto.PeerTypeProviderDefinitionRemove:
+			if op.DefinitionRemove == nil {
+				continue
+			}
+			providerID := op.DefinitionRemove.Provider.Owner.ProviderID
+			filteredProviders := next.Providers[:0]
+			for _, definition := range next.Providers {
+				if definition.Config.ID != providerID {
+					filteredProviders = append(filteredProviders, definition)
+				}
+			}
+			next.Providers = filteredProviders
+			filteredCredentials := next.Credentials[:0]
+			for _, credential := range next.Credentials {
+				if credential.Owner.ProviderID != providerID {
+					filteredCredentials = append(filteredCredentials, credential)
+				}
+			}
+			next.Credentials = filteredCredentials
+		case proto.PeerTypeProviderCredentialReplace:
+			if op.CredentialReplace == nil {
+				continue
+			}
+			replaced := false
+			for i, credential := range next.Credentials {
+				if credential.Owner.ProviderID == op.CredentialReplace.Credential.Owner.ProviderID {
+					next.Credentials[i] = op.CredentialReplace.Credential
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				next.Credentials = append(next.Credentials, op.CredentialReplace.Credential)
+			}
+		case proto.PeerTypeProviderCredentialInvalidate:
+			if op.CredentialInvalidate == nil {
+				continue
+			}
+			providerID := op.CredentialInvalidate.Provider.Owner.ProviderID
+			for i, credential := range next.Credentials {
+				if credential.Owner.ProviderID == providerID {
+					next.Credentials[i].Unavailable = true
+				}
+			}
+		case proto.PeerTypeModelSelectionSet:
+			if op.ModelSelection == nil {
+				continue
+			}
+			next.Models[op.ModelSelection.ModelType] = op.ModelSelection.Settings
+		case proto.PeerTypeRuntimeControlsPatch:
+			if op.Controls != nil {
+				next.Controls = *op.Controls
+			}
+		}
+	}
+	return next
+}
+
 type headlessAuthorityTransport func(*http.Request) (*http.Response, error)
 
 func (f headlessAuthorityTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func installHeadlessAuthorityPlugin(t *testing.T, endpoint, dataDir, cacheDir string) {
+func installHeadlessAuthorityPlugin(t *testing.T, endpoint, dataDir, cacheDir string) string {
 	t.Helper()
 	source := filepath.Join(t.TempDir(), "headless.plugin")
 	require.NoError(t, os.MkdirAll(source, 0o700))
@@ -353,8 +506,14 @@ func installHeadlessAuthorityPlugin(t *testing.T, endpoint, dataDir, cacheDir st
 	manager, err := providerplugin.NewManager(t.Context(), providerplugin.DefaultPaths(dataDir, cacheDir))
 	require.NoError(t, err)
 	defer manager.Close()
-	_, err = manager.Install(t.Context(), providerplugin.InstallRequest{Source: source, Trust: true, ExpectedRevision: manager.Snapshot().Revision})
+	snapshot, err := manager.Install(t.Context(), providerplugin.InstallRequest{Source: source, Trust: true, ExpectedRevision: manager.Snapshot().Revision})
 	require.NoError(t, err)
+	require.Len(t, snapshot.Plugins, 1)
+	require.Equal(t, "example-responses", snapshot.Plugins[0].ProviderID)
+	require.Equal(t, providerplugin.TrustTrusted, snapshot.Plugins[0].Trust)
+	require.Equal(t, providerplugin.StateRegistered, snapshot.Plugins[0].State)
+	require.NotEmpty(t, snapshot.Plugins[0].Digest)
+	return snapshot.Plugins[0].Digest
 }
 
 func writeHeadlessAuthoritySSE(w http.ResponseWriter, id string) {

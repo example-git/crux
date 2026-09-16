@@ -2,6 +2,7 @@ package workspace_test
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -76,40 +78,47 @@ func TestClientAuthorityTransactionsThroughTLS(t *testing.T) {
 	require.NoError(t, err)
 	s := server.NewServer(nil, "tcp", "127.0.0.1:0")
 	require.NoError(t, s.EnableNetworkAuth(t.Context()))
+	proxyTLS, err := connection.ClientTLSConfig(connection.Connection{ServerCertificate: serverCode, Client: identity})
+	require.NoError(t, err)
 	var loseAck, reject atomic.Bool
 	var puts atomic.Int32
 	var loseCompletion atomic.Bool
 	var completions atomic.Int32
-	hs := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/runtime/refresh-completion") {
-			completions.Add(1)
-			if loseCompletion.Swap(false) {
-				recorder := httptest.NewRecorder()
-				s.Handler().ServeHTTP(recorder, r)
-				require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
-				http.Error(w, "synthetic completion acknowledgement lost", http.StatusBadGateway)
-				return
+	var dropped sync.Map
+	hs := startPeerChannelProxyServer(t, s.Handler(), tlsConfig, func(*http.Request) *tls.Config { return proxyTLS }, func(fromClient bool, envelope proto.PeerEnvelope) workspaceChannelProxyDecision {
+		if fromClient {
+			switch envelope.Type {
+			case proto.PeerTypeRuntimeTransaction:
+				puts.Add(1)
+				if loseAck.Swap(false) {
+					dropped.Store(envelope.MessageID, struct{}{})
+				}
+			case proto.PeerTypeModelSelectionSet:
+				if reject.Load() {
+					var request proto.PeerModelSelectionSet
+					require.NoError(t, json.Unmarshal(envelope.Payload, &request))
+					request.Runtime.ResultDigest = strings.Repeat("0", 64)
+					payload, marshalErr := json.Marshal(request)
+					require.NoError(t, marshalErr)
+					envelope.Payload = payload
+					return workspaceChannelProxyDecision{replacement: &envelope}
+				}
+			case proto.PeerTypeProviderRefreshCompleted:
+				completions.Add(1)
+				if loseCompletion.Swap(false) {
+					dropped.Store(envelope.MessageID, struct{}{})
+				}
+			}
+			return workspaceChannelProxyDecision{}
+		}
+		if envelope.Type == proto.PeerTypeAcknowledgement {
+			if _, ok := dropped.LoadAndDelete(envelope.ReplyTo); ok {
+				return workspaceChannelProxyDecision{drop: true, close: true}
 			}
 		}
-		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/runtime") {
-			puts.Add(1)
-			if reject.Load() {
-				http.Error(w, "synthetic rejection", http.StatusBadRequest)
-				return
-			}
-			if loseAck.Swap(false) {
-				recorder := httptest.NewRecorder()
-				s.Handler().ServeHTTP(recorder, r)
-				require.Equal(t, http.StatusOK, recorder.Code, recorder.Body.String())
-				http.Error(w, "synthetic response lost after commit", http.StatusBadGateway)
-				return
-			}
-		}
-		s.Handler().ServeHTTP(w, r)
-	}))
-	hs.TLS = tlsConfig
-	hs.StartTLS()
-	t.Cleanup(func() { hs.Close(); _ = s.Close() })
+		return workspaceChannelProxyDecision{}
+	})
+	t.Cleanup(func() { _ = s.Close() })
 
 	// Only this client configuration is persisted by the client transaction. The
 	// server has already loaded its identity and compiles detached runtimes.
@@ -223,6 +232,10 @@ assertNoChange:
 	active, _ := received.Cfg.Config().Providers.Get(owner.ProviderID)
 	require.False(t, active.Disable)
 	require.Equal(t, "synthetic-second", active.APIKey)
+	require.NoError(t, w.InitCoderAgent(t.Context()))
+	coordinator := received.CurrentAgentCoordinator()
+	require.NotNil(t, coordinator)
+	require.Equal(t, owner.ProviderID, coordinator.Model().ModelCfg.Provider)
 	additionalOwner, ok := w.Config().ProviderOwner("additional-client-provider")
 	require.True(t, ok)
 	_, alreadyPresent := received.Cfg.Config().Providers.Get(additionalOwner.ProviderID)
@@ -235,6 +248,12 @@ assertNoChange:
 	added, found := received.Cfg.Config().Providers.Get(additionalOwner.ProviderID)
 	require.True(t, found)
 	require.Equal(t, "synthetic-unselected", added.APIKey)
+	require.Equal(t, additionalOwner.ProviderID, coordinator.Model().ModelCfg.Provider)
+	seenSurfaces := map[string]bool{}
+	for _, surface := range config.ProviderSurfaces(received.Cfg.Config()) {
+		require.False(t, seenSurfaces[surface.ID], "provider surface %q is duplicated after incremental definition synchronization", surface.ID)
+		seenSurfaces[surface.ID] = true
+	}
 
 	// A synthetic Codex bundle supplies the account and OAuth endpoint policy.
 	t.Setenv("CRUX_PROVIDER_PROFILE", "plugin-compat")
@@ -417,12 +436,40 @@ waitingForRefresh:
 	close(publicEvents)
 	w.ConsumeEventsForTest(publicEvents, nil)
 	require.NoError(t, store.SetProviderAPIKey(config.ScopeGlobal, additionalOwner.ProviderID, config.ProviderAPIKeyCredential{Owner: additionalOwner, APIKey: "synthetic-recollected-after-loss"}))
-	t.Cleanup(workspace.SetSSEBackoffForTest(5*time.Millisecond, 25*time.Millisecond))
+	seenSurfaces = map[string]bool{}
+	for _, surface := range config.ProviderSurfaces(received.Cfg.Config()) {
+		require.False(t, seenSurfaces[surface.ID], "provider surface %q changed after unrelated provider installation", surface.ID)
+		seenSurfaces[surface.ID] = true
+	}
+	recollected, err := store.CollectRemoteRuntime(t.Context(), w.AcceptedAuthority().Revision+1)
+	require.NoError(t, err)
+	seenProviders := map[string]bool{}
+	for _, definition := range recollected.Providers {
+		require.False(t, seenProviders[definition.Config.ID], "recovery provider %q is duplicated", definition.Config.ID)
+		seenProviders[definition.Config.ID] = true
+	}
+	t.Cleanup(workspace.SetChannelBackoffForTest(5*time.Millisecond, 25*time.Millisecond))
 	done := make(chan struct{})
 	go func() { w.RunSubscriptionForTest(func(tea.Msg) {}); close(done) }()
 	require.Eventually(t, func() bool { return received.ConnectedClients() == 1 }, 5*time.Second, 10*time.Millisecond)
 	require.NoError(t, c.DeleteWorkspace(t.Context(), created.ID))
-	hs.CloseClientConnections()
+	hs.closeChannelConnections()
+	var serverRecovered *proto.Workspace
+	require.Eventually(t, func() bool {
+		for _, candidate := range s.Backend().ListWorkspacesForPrincipal(capabilities.Principal) {
+			if candidate.Path == created.Path && candidate.ID != created.ID {
+				copy := candidate
+				serverRecovered = &copy
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond)
+	seenSurfaces = map[string]bool{}
+	for _, surface := range serverRecovered.ProviderSurfaces {
+		require.False(t, seenSurfaces[surface.ID], "server recovery surface %q is duplicated", surface.ID)
+		seenSurfaces[surface.ID] = true
+	}
 	require.Eventually(t, func() bool { return w.WorkspaceIDForTest() != created.ID }, 10*time.Second, 20*time.Millisecond)
 	recovered, err := c.GetWorkspace(t.Context(), w.WorkspaceIDForTest())
 	require.NoError(t, err)

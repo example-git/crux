@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,9 +28,13 @@ type queuedSelectionWorkspace struct {
 	entered, release chan struct{}
 	writes           atomic.Int32
 	fail             bool
+	authority        *config.RemoteAuthority
 }
 
 func (w *queuedSelectionWorkspace) Config() *config.Config { return w.store.Config() }
+func (w *queuedSelectionWorkspace) AcceptedAuthority() *config.RemoteAuthority {
+	return w.authority
+}
 func (w *queuedSelectionWorkspace) ProviderSurfaces() []providerregistry.Surface {
 	return config.ProviderSurfaces(w.Config())
 }
@@ -208,4 +213,11 @@ func TestModelSelectionQueueControlsAndSessionRestore(t *testing.T) {
 	require.Equal(t, "small", ws.Config().Models[config.SelectedModelTypeSmall].Model)
 	_, _ = ui.Update(restored)
 	require.Empty(t, ui.modelSelectionLanes)
+
+	ws.authority = &config.RemoteAuthority{Mode: "client", Principal: "client-principal", Revision: 2, Digest: strings.Repeat("a", 64)}
+	writes = ws.writes.Load()
+	command = ui.restoreModelFromSession([]message.Message{{Role: message.Assistant, Provider: "queue", Model: "first"}})
+	require.Nil(t, command)
+	require.Equal(t, writes, ws.writes.Load())
+	require.Equal(t, "second", ws.Config().Models[config.SelectedModelTypeLarge].Model)
 }

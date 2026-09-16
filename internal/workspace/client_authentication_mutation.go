@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 
+	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/providerauth"
 	"github.com/example-git/crux/internal/providerregistry"
@@ -44,6 +45,7 @@ type clientAuthenticationReceipt struct {
 	proposal                                  *config.RemoteRuntimeProposal
 	acknowledged                              bool
 	adopted                                   bool
+	remoteRejected                            bool
 	recoverySequence                          uint64
 	reviewSequence                            uint64
 	savedStateSupersededBy                    string
@@ -291,6 +293,15 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		return clientAuthenticationOutcome(receipt, receipt.err)
 	}
 	receipt.proposal = &proposal
+	if receipt.outcome.Change == nil {
+		receipt.err = providerauth.ErrReceiptUnverified
+		return clientAuthenticationOutcome(receipt, receipt.err)
+	}
+	authentication, err := clientAuthenticationPeerStatesFromCapture(proposal, receipt.after, receipt.outcome.Change.Current.Target.Generation)
+	if err != nil {
+		receipt.err = err
+		return clientAuthenticationOutcome(receipt, err)
+	}
 	if err := a.persistAuthenticationReceipt(ctx, receipt); err != nil {
 		return clientAuthenticationOutcome(receipt, err)
 	}
@@ -303,12 +314,20 @@ func (w *ClientWorkspace) mutateClientAuthentication(ctx context.Context, reques
 		return clientAuthenticationOutcome(receipt, err)
 	}
 	a.pending, a.pendingView = receipt.proposal, proposal.CollectionConfig()
-	ack, err := w.client.ReplaceRemoteRuntime(ctx, request.target.WorkspaceID, receipt.base.Revision, proposal)
+	ack, err := w.client.PatchRemoteRuntime(ctx, request.target.WorkspaceID, receipt.base, proposal, authentication...)
 	if err == nil && matchesAuthority(ack, receipt.principal, proposal) {
 		return w.completeClientAuthenticationPutLocked(ctx, a, receipt, ack)
 	}
-	// Exactly one PUT is attempted for this operation. Even a visibly rejected
-	// PUT is retained; retries can prove a missed acknowledgement only by GET.
+	var rejection *client.WorkspaceChannelCommandError
+	if errors.As(err, &rejection) {
+		receipt.remoteRejected = true
+		receipt.err = clientAuthenticationFailure("client authentication saved; receiver has not acknowledged this exact operation", err)
+		a.pending, a.pendingView = nil, nil
+		if persistErr := a.persistAuthenticationReceipt(ctx, receipt); persistErr != nil {
+			return clientAuthenticationOutcome(receipt, errors.Join(receipt.err, persistErr))
+		}
+		return clientAuthenticationOutcome(receipt, receipt.err)
+	}
 	return w.reconcileClientAuthenticationLocked(ctx, a, receipt)
 }
 
@@ -320,6 +339,7 @@ func (w *ClientWorkspace) completeClientAuthenticationPutLocked(ctx context.Cont
 	// prevents local adoption. The separate adopted flag keeps generic paths
 	// from publishing until the accepted view and removal intent are installed.
 	receipt.acknowledged = true
+	receipt.remoteRejected = false
 	if err := w.adoptClientAuthenticationLocked(ctx, a, receipt, ack); err != nil {
 		return clientAuthenticationOutcome(receipt, err)
 	}
@@ -372,6 +392,9 @@ func (w *ClientWorkspace) replayClientAuthenticationLocked(ctx context.Context, 
 	if a.pendingAuthenticationReview(receipt.request.target.WorkspaceID) {
 		return clientAuthenticationOutcome(receipt, errors.New("acknowledge the reviewed authentication publication through its apply action"))
 	}
+	if receipt.remoteRejected {
+		return clientAuthenticationOutcome(receipt, receipt.err)
+	}
 	if receipt.err != nil && (!receipt.restored || receipt.proposal == nil) {
 		return clientAuthenticationOutcome(receipt, receipt.err)
 	}
@@ -395,23 +418,21 @@ func (w *ClientWorkspace) reconcileClientAuthenticationLocked(ctx context.Contex
 	if !matchesAuthority(current.Authority, a.principal, a.accepted) && !matchesAuthority(current.Authority, a.principal, *receipt.proposal) {
 		return clientAuthenticationOutcome(receipt, errors.New("cached client authentication authority changed; reconcile or reconnect explicitly"))
 	}
-	remote, err := w.client.GetWorkspace(ctx, receipt.request.target.WorkspaceID)
+	remote, err := w.client.PeerWorkspaceAuthority(ctx, receipt.request.target.WorkspaceID, receipt.principal)
 	if err != nil {
 		return clientAuthenticationOutcome(receipt, clientAuthenticationFailure("client authentication saved; receiver acknowledgement is pending", err))
 	}
-	if remote.ID != receipt.request.target.WorkspaceID || !matchesAuthority(remote.Authority, receipt.principal, *receipt.proposal) {
+	if !matchesAuthority(remote, receipt.principal, *receipt.proposal) {
 		return clientAuthenticationOutcome(receipt, errors.New("client authentication saved; receiver has not acknowledged this exact operation"))
 	}
 	receipt.acknowledged = true
 	if err := ctx.Err(); err != nil {
 		return clientAuthenticationOutcome(receipt, err)
 	}
-	// A historical proof must not roll back a later accepted runtime.
 	if a.accepted.Revision <= receipt.proposal.Revision {
-		if err := w.adoptClientAuthenticationLocked(ctx, a, receipt, remote.Authority); err != nil {
+		if err := w.adoptClientAuthenticationLocked(ctx, a, receipt, remote); err != nil {
 			return clientAuthenticationOutcome(receipt, err)
 		}
-		w.adoptRuntimeResponse(*remote)
 	}
 	return w.clientAuthenticationAcknowledgedOutcome(ctx, a, receipt)
 }
