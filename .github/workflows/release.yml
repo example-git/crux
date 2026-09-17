@@ -10,6 +10,12 @@ on:
         description: "Tag to release (e.g. v0.95.0). Defaults to the ref that triggered this run."
         required: false
         type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (e.g. v0.95.0). Defaults to the ref this is run on."
+        required: false
+        type: string
 
 permissions:
   contents: read
