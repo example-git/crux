@@ -4,7 +4,15 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - ".github/workflows/**"
+      - "assets/**"
+      - "docs/assets/**"
   pull_request:
+    paths-ignore:
+      - ".github/workflows/**"
+      - "assets/**"
+      - "docs/assets/**"
   workflow_dispatch:
   schedule:
     # Nightly, independent of push/PR activity.
