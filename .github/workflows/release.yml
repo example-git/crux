@@ -4,9 +4,18 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.95.0). Defaults to the ref that triggered this run."
+        required: false
+        type: string
 
 permissions:
   contents: read
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   # Mirrors the checks a maintainer must pass locally before tagging (see
@@ -19,6 +28,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -67,6 +77,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -78,12 +89,12 @@ jobs:
       - name: Resolve release notes file
         id: notes
         run: |
-          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          notes_file="docs/releases/${RELEASE_TAG}.md"
           if [ -f "$notes_file" ]; then
             echo "Using release notes from $notes_file"
             echo "args=--release-notes=$notes_file" >> "$GITHUB_OUTPUT"
           else
-            echo "No docs/releases/${GITHUB_REF_NAME}.md found; using GoReleaser's default changelog"
+            echo "No docs/releases/${RELEASE_TAG}.md found; using GoReleaser's default changelog"
             echo "args=" >> "$GITHUB_OUTPUT"
           fi
 

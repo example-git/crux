@@ -1,0 +1,135 @@
+name: Release management
+
+# Manually triggered only: cutting a release or committing a new release-notes
+# stub to main is significant enough that it should never happen implicitly
+# from a push or schedule.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Looks at docs/releases/vX.Y.Z.md files (the same convention used by
+  # release.yml) and decides which of the two things this run needs to do:
+  #   - the latest notes file has no matching tag yet -> cut that release
+  #   - every notes file already has a matching tag    -> scaffold the next one
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      notes_version: ${{ steps.notes.outputs.notes_version }}
+      has_tag: ${{ steps.tagcheck.outputs.has_tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Find latest release notes file
+        id: notes
+        run: |
+          latest=$(ls docs/releases | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+\.md$' | sed 's/\.md$//' | sort -V | tail -1)
+          if [ -z "$latest" ]; then
+            echo "No docs/releases/vX.Y.Z.md files found" >&2
+            exit 1
+          fi
+          echo "Latest release notes file: docs/releases/$latest.md"
+          echo "notes_version=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether that version is already tagged
+        id: tagcheck
+        run: |
+          if git rev-parse "${{ steps.notes.outputs.notes_version }}" >/dev/null 2>&1; then
+            echo "${{ steps.notes.outputs.notes_version }} already has a tag"
+            echo "has_tag=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "${{ steps.notes.outputs.notes_version }} has no tag yet"
+            echo "has_tag=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Tags the version described by the pending notes file. Separate from
+  # `plan` so that only this job (and `release` below) needs write access.
+  tag:
+    needs: plan
+    if: needs.plan.outputs.has_tag == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Create and push release tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "${{ needs.plan.outputs.notes_version }}"
+          git push origin "${{ needs.plan.outputs.notes_version }}"
+
+  # Invokes release.yml directly as a reusable workflow instead of relying on
+  # its tag-push trigger: GitHub does not fire other workflows off of a tag
+  # pushed using the default GITHUB_TOKEN (loop prevention), so `tag` above
+  # would never actually kick off the release otherwise.
+  release:
+    needs: [plan, tag]
+    if: needs.plan.outputs.has_tag == 'false'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.plan.outputs.notes_version }}
+    secrets: inherit
+
+  # Every existing notes file already has a release: scaffold a stub for the
+  # next patch version so there's always a pending docs/releases/vX.Y.Z.md
+  # file to fill in and, eventually, release via the job above.
+  scaffold-next-notes:
+    needs: plan
+    if: needs.plan.outputs.has_tag == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Compute next patch version and scaffold notes file
+        id: scaffold
+        run: |
+          latest="${{ needs.plan.outputs.notes_version }}"
+          version="${latest#v}"
+          major="${version%%.*}"
+          rest="${version#*.}"
+          minor="${rest%%.*}"
+          patch="${rest#*.}"
+          next="v${major}.${minor}.$((patch + 1))"
+          next_file="docs/releases/${next}.md"
+
+          if [ -f "$next_file" ]; then
+            echo "$next_file already exists" >&2
+            exit 1
+          fi
+
+          cat > "$next_file" <<EOF
+          # Crux ${next}
+
+          <!-- TODO: summarize this release. -->
+
+          ## Section heading
+
+          - TODO
+          EOF
+
+          echo "next_version=${next}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push new release notes stub
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "docs/releases/${{ steps.scaffold.outputs.next_version }}.md"
+          git commit -m "docs: scaffold ${{ steps.scaffold.outputs.next_version }} release notes"
+          git push origin HEAD:main
