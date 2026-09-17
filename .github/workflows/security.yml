@@ -1,94 +1,102 @@
-name: "security"
+name: Security
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+  pull_request:
   workflow_dispatch:
   schedule:
-    - cron: "0 2 * * *"
+    # Nightly, independent of push/PR activity.
+    - cron: "17 3 * * *"
 
 permissions:
   contents: read
 
-concurrency:
-  group: security-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
+  # CodeQL for this repo's real languages: Go source and the GitHub Actions
+  # workflows themselves.
   codeql:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     strategy:
       fail-fast: false
       matrix:
-        language: ["go", "actions"]
-    permissions:
-      actions: read
-      contents: read
-      pull-requests: read
-      security-events: write
+        language: [go, actions]
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           languages: ${{ matrix.language }}
-      - uses: github/codeql-action/autobuild@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
-      - uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
+          build-mode: ${{ matrix.language == 'go' && 'autobuild' || 'none' }}
 
-  grype:
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
-          persist-credentials: false
-      - uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
-        id: scan
-        with:
-          path: "."
-          fail-build: true
-          severity-cutoff: critical
-      - uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
-        with:
-          sarif_file: ${{ steps.scan.outputs.sarif }}
+          category: "/language:${{ matrix.language }}"
 
+  # Go-specific known-vulnerability scan against the module graph and
+  # standard library used by go.mod.
   govulncheck:
     runs-on: ubuntu-latest
     permissions:
-      security-events: write
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: stable
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - name: Run govulncheck
-        run: |
-          govulncheck -C . -format sarif ./... > results.sarif
-      - uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81 # v4.37.3
-        with:
-          sarif_file: results.sarif
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
-  dependency-review:
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1.1.0
+        with:
+          go-version-file: go.mod
+
+  # Filesystem vulnerability scan (dependencies, misconfigurations) with
+  # SARIF uploaded to the Security tab.
+  trivy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Run Trivy filesystem scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+
+      - name: Upload Trivy SARIF results
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
+        with:
+          sarif_file: trivy-results.sarif
+
+  # Blocks pull requests that introduce newly-known-vulnerable or
+  # disallowed-license dependencies. Only meaningful with a base ref to diff
+  # against, so it is gated to pull_request.
+  dependency-review:
     if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
-        with:
-          fail-on-severity: critical
-          allow-licenses: BSD-2-Clause, BSD-3-Clause, MIT, MIT-0, Apache-2.0, MPL-2.0, ISC, LicenseRef-scancode-google-patent-license-golang, Unlicense
-          allow-dependencies-licenses: pkg:pypi/backports.zstd@1.7.0
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Dependency review
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0

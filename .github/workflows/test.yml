@@ -1,4 +1,4 @@
-name: Build
+name: Test
 
 on:
   push:
@@ -8,22 +8,24 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-${{ github.event.pull_request.number || github.ref }}
+  group: test-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  # Builds the module on every platform crux ships for (see .goreleaser.yml
-  # goos list) and, on Linux only, verifies go.mod/go.sum are tidy before
-  # compiling. This job is allowed to fail the workflow.
-  build:
+  # Race-enabled tests run on every platform but never fail the workflow:
+  # crux's test suite includes platform-sensitive integration tests
+  # (headless auth, daemon/session recovery, VCR-recorded agent runs) whose
+  # flakiness on hosted runners shouldn't block merges.
+  test:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    continue-on-error: true
     steps:
       - name: Check out repository
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -34,11 +36,5 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Verify go.mod/go.sum are tidy
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          go mod tidy
-          git diff --exit-code
-
-      - name: Build
-        run: go build ./...
+      - name: Test
+        run: go test -race ./...

@@ -1,0 +1,52 @@
+name: Generated Files Drift
+
+on:
+  pull_request:
+    paths:
+      # Feeds internal/cmd/schema.go's configuration/provider-plugin schemas.
+      - "internal/cmd/schema.go"
+      - "internal/config/**"
+      - "internal/discover/**"
+      - "internal/providerplugin/manifest/**"
+      - "internal/providerregistry/**"
+      # Feeds the swag-generated OpenAPI spec (Taskfile.yaml `swag` sources).
+      - "internal/server/**"
+      - "internal/proto/**"
+      - "main.go"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Regenerates the same schema and swagger artifacts as the release
+  # validate job and fails if the checked-in files would change, catching
+  # drift before it reaches a tagged release.
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Regenerate configuration and provider-plugin schemas
+        run: |
+          go run main.go schema > schema.json
+          go run main.go schema provider-plugin > provider-plugin.schema.json
+          go run main.go schema provider-preset-plugin > provider-preset-plugin.schema.json
+          go run main.go schema image-provider-plugin > image-provider-plugin.schema.json
+          go run main.go schema provider-branding > provider-branding.schema.json
+          go run main.go schema remote-runtime > remote-workspace-runtime.schema.json
+
+      - name: Regenerate swagger spec
+        run: go run github.com/swaggo/swag/cmd/swag@v1.16.6 init --generalInfo main.go --dir . --output internal/swagger --packageName swagger --parseDependency --parseInternal --parseDepth 5
+
+      - name: Fail on generated file drift
+        run: git diff --exit-code

@@ -1,4 +1,4 @@
-name: snapshot
+name: Snapshot
 
 on:
   workflow_dispatch:
@@ -6,33 +6,38 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: snapshot-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
+  # Builds a local, unpublished GoReleaser snapshot (no tag required) and
+  # uploads the resulting archives/checksums as a workflow artifact. Per
+  # RELEASES.md, GoReleaser matrix builds are blocked on Apple Silicon
+  # (scripts/guard-goreleaser.sh), so this always runs on Linux.
   snapshot:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
-      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94
+          cache: true
+
+      - name: Run GoReleaser snapshot build
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
-          version: "~> v2"
+          version: latest
           args: release --snapshot --clean
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+
+      - name: Upload snapshot archives and checksums
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: snapshot-${{ github.sha }}
+          name: crux-snapshot
           path: |
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
           if-no-files-found: error
-          retention-days: 14
-          compression-level: 0

@@ -1,27 +1,32 @@
-name: lint
+name: Lint
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: lint-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  lint:
+  # Runs the repository's real golangci-lint configuration (.golangci.yml,
+  # schema version 2) with the same flags used by `task lint` in Taskfile.yaml.
+  golangci-lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
-      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
-      - run: golangci-lint run --path-mode=abs --config=.golangci.yml --timeout=10m
+          cache: true
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+          args: --path-mode=abs --config=.golangci.yml --timeout=5m

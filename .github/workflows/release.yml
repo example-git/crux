@@ -1,4 +1,4 @@
-name: release
+name: Release
 
 on:
   push:
@@ -8,51 +8,90 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
+  # Mirrors the checks a maintainer must pass locally before tagging (see
+  # RELEASES.md "Release process"): tidy modules, the full race test suite,
+  # lint, and regeneration of every generated schema/swagger artifact
+  # (Taskfile.yaml `schema` and `swag` tasks), then fail if anything is stale.
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
-      - run: go mod tidy
-      - run: go test -race -failfast -timeout=30m ./...
-      - run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.1
-      - run: golangci-lint run --path-mode=abs --config=.golangci.yml --timeout=10m
-      - run: go run . schema > schema.json
-      - run: go run . schema provider-plugin > provider-plugin.schema.json
-      - run: go run . schema provider-preset-plugin > provider-preset-plugin.schema.json
-      - run: go run . schema image-provider-plugin > image-provider-plugin.schema.json
-      - run: go run . schema provider-branding > provider-branding.schema.json
-      - run: go run . schema remote-runtime > remote-workspace-runtime.schema.json
-      - run: go run github.com/swaggo/swag/cmd/swag@v1.16.6 init --generalInfo main.go --dir . --output internal/swagger --packageName swagger --parseDependency --parseInternal --parseDepth 5
-      - run: git diff --exit-code
+          cache: true
 
+      - name: Tidy modules
+        run: go mod tidy
+
+      - name: Run race test suite
+        run: go test -race ./...
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+          args: --path-mode=abs --config=.golangci.yml --timeout=5m
+
+      - name: Regenerate configuration and provider-plugin schemas
+        run: |
+          go run main.go schema > schema.json
+          go run main.go schema provider-plugin > provider-plugin.schema.json
+          go run main.go schema provider-preset-plugin > provider-preset-plugin.schema.json
+          go run main.go schema image-provider-plugin > image-provider-plugin.schema.json
+          go run main.go schema provider-branding > provider-branding.schema.json
+          go run main.go schema remote-runtime > remote-workspace-runtime.schema.json
+
+      - name: Regenerate swagger spec
+        run: go run github.com/swaggo/swag/cmd/swag@v1.16.6 init --generalInfo main.go --dir . --output internal/swagger --packageName swagger --parseDependency --parseInternal --parseDepth 5
+
+      - name: Fail on generated file drift
+        run: git diff --exit-code
+
+  # Cuts the GitHub release with GoReleaser using the repository's own
+  # .goreleaser.yml. If a matching docs/releases/<tag>.md notes file exists
+  # (the convention used for v0.93.0.md, v0.94.0.md, ...), it is passed as
+  # the release notes; otherwise GoReleaser falls back to its own changelog.
   release:
     needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
         with:
           go-version-file: go.mod
-      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94
+          cache: true
+
+      - name: Resolve release notes file
+        id: notes
+        run: |
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ -f "$notes_file" ]; then
+            echo "Using release notes from $notes_file"
+            echo "args=--release-notes=$notes_file" >> "$GITHUB_OUTPUT"
+          else
+            echo "No docs/releases/${GITHUB_REF_NAME}.md found; using GoReleaser's default changelog"
+            echo "args=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           distribution: goreleaser
-          version: "~> v2"
-          args: release --clean --release-notes docs/releases/${{ github.ref_name }}.md
+          version: latest
+          args: release --clean ${{ steps.notes.outputs.args }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
