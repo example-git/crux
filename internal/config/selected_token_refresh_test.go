@@ -415,9 +415,14 @@ func TestSelectedTokenRefreshConcurrentFirstExchange(t *testing.T) {
 func TestSelectedTokenRefreshRetainsSuccessorWhileWriterExceedsCompletionDeadline(t *testing.T) {
 	// Shrink the real completion deadline so this test observes the exact
 	// same production DeadlineExceeded path without waiting out a full
-	// minute of real time on every run.
+	// minute of real time on every run. This same deadline also bounds the
+	// real local HTTP/TLS OAuth exchange below (registration.OAuth.Refresh
+	// runs under it), not just the writeMu wait this test means to trip, so
+	// it must stay generous enough to survive that round trip under CI
+	// load rather than being shrunk to the smallest value that passes
+	// quickly on an idle machine.
 	originalTimeout := selectedTokenCompletionTimeout
-	selectedTokenCompletionTimeout = 50 * time.Millisecond
+	selectedTokenCompletionTimeout = 3 * time.Second
 	t.Cleanup(func() { selectedTokenCompletionTimeout = originalTimeout })
 	f := newSelectedTokenFixture(t, true)
 	admitted := f.store.RuntimeSnapshot()
