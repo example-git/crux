@@ -6124,6 +6124,10 @@ const docTemplate = `{
                         "$ref": "#/definitions/config.RemoteAccountIdentity"
                     }
                 },
+                "allow_secondary_owners": {
+                    "description": "AllowSecondaryOwners mirrors RemoteRuntimeProposal.AllowSecondaryOwners\nfrom the primary owner's currently accepted proposal. It is the sole\ngate backend.checkWorkspaceReuse consults before permitting a distinct\nprincipal to attempt secondary-owner admission on this workspace.",
+                    "type": "boolean"
+                },
                 "digest": {
                     "type": "string"
                 },
@@ -6279,6 +6283,10 @@ const docTemplate = `{
         "config.RemoteRuntimeProposal": {
             "type": "object",
             "properties": {
+                "allow_secondary_owners": {
+                    "description": "AllowSecondaryOwners is an explicit, primary-owner-controlled opt-in.\nIt must be true on the primary owner's own accepted proposal before\nany other authenticated principal may join this client-authority\nworkspace as a secondary owner (see AdmitSecondaryClientAuthority).\nWithout it, a distinct principal targeting the same workspace path is\nflatly rejected (backend.ErrWorkspaceAuthority) exactly as if no\nmulti-owner support existed, preserving workspace isolation between\nunrelated authenticated clients by default.",
+                    "type": "boolean"
+                },
                 "bundles": {
                     "type": "array",
                     "items": {
@@ -8442,6 +8450,9 @@ const docTemplate = `{
                 "host_version": {
                     "type": "string"
                 },
+                "incremental_state": {
+                    "type": "boolean"
+                },
                 "max_bundles": {
                     "type": "integer"
                 },
@@ -8450,6 +8461,9 @@ const docTemplate = `{
                 },
                 "max_request_bytes": {
                     "type": "integer"
+                },
+                "peer_channel": {
+                    "type": "string"
                 },
                 "principal": {
                     "type": "string"

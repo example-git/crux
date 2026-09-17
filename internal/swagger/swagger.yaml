@@ -589,6 +589,13 @@ definitions:
         items:
           $ref: '#/definitions/config.RemoteAccountIdentity'
         type: array
+      allow_secondary_owners:
+        description: |-
+          AllowSecondaryOwners mirrors RemoteRuntimeProposal.AllowSecondaryOwners
+          from the primary owner's currently accepted proposal. It is the sole
+          gate backend.checkWorkspaceReuse consults before permitting a distinct
+          principal to attempt secondary-owner admission on this workspace.
+        type: boolean
       digest:
         type: string
       mode:
@@ -690,6 +697,17 @@ definitions:
     type: object
   config.RemoteRuntimeProposal:
     properties:
+      allow_secondary_owners:
+        description: |-
+          AllowSecondaryOwners is an explicit, primary-owner-controlled opt-in.
+          It must be true on the primary owner's own accepted proposal before
+          any other authenticated principal may join this client-authority
+          workspace as a secondary owner (see AdmitSecondaryClientAuthority).
+          Without it, a distinct principal targeting the same workspace path is
+          flatly rejected (backend.ErrWorkspaceAuthority) exactly as if no
+          multi-owner support existed, preserving workspace isolation between
+          unrelated authenticated clients by default.
+        type: boolean
       bundles:
         items:
           $ref: '#/definitions/providerplugin.TransportBundle'
@@ -2148,12 +2166,16 @@ definitions:
         type: integer
       host_version:
         type: string
+      incremental_state:
+        type: boolean
       max_bundles:
         type: integer
       max_providers:
         type: integer
       max_request_bytes:
         type: integer
+      peer_channel:
+        type: string
       principal:
         type: string
       protocol:

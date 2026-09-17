@@ -747,6 +747,9 @@
             "type": "string"
           },
           "type": "object"
+        },
+        "allow_secondary_owners": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false,
