@@ -1,0 +1,35 @@
+name: Test (race)
+
+# Manually triggered only: the race detector suite is slower and more prone
+# to platform-sensitive flakiness on hosted runners than test.yml's default
+# non-race run, so it shouldn't run automatically on every push/PR.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: test-race-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-race:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    continue-on-error: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test (race)
+        run: go test -race ./...

@@ -15,10 +15,12 @@ permissions:
   contents: read
 
 jobs:
-  # Race-enabled tests run on every platform but never fail the workflow:
-  # crux's test suite includes platform-sensitive integration tests
-  # (headless auth, daemon/session recovery, VCR-recorded agent runs) whose
-  # flakiness on hosted runners shouldn't block merges.
+  # Non-race tests run on every push/PR by default: they're quicker and far
+  # more stable than the race-instrumented suite. They never fail the
+  # workflow: crux's test suite includes platform-sensitive integration
+  # tests (headless auth, daemon/session recovery, VCR-recorded agent runs)
+  # whose flakiness on hosted runners shouldn't block merges. For the race
+  # detector, see test-race.yml (manually triggered only).
   test:
     strategy:
       fail-fast: false
@@ -37,4 +39,4 @@ jobs:
           cache: true
 
       - name: Test
-        run: go test -race ./...
+        run: go test ./...
