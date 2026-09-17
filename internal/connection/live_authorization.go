@@ -170,19 +170,9 @@ func (l *liveAuthorization) reconcileLocked(grants map[string]string) {
 			}
 		}
 	}
-	// Diagnostic only: this distinguishes a legitimate per-principal grant
-	// change from the fail-closed case below, where every current principal
-	// is revoked together because the authorization store could not be read
-	// at all. Remove once the CI-only revocation-scope investigation closes.
-	if grants == nil && len(l.current) > 0 {
-		slog.Warn("live authorization background reconcile is failing closed: revoking every current principal because the authorization store was unreadable", "current_principals", len(l.current))
-	}
 	for principal, entry := range l.current {
 		grant, ok := grants[principal]
 		if !ok || grant != entry.grantID {
-			if grants == nil {
-				slog.Warn("revoking principal due to fail-closed reconcile", "principal", principal)
-			}
 			l.revokeLocked(entry)
 		}
 	}
@@ -281,11 +271,19 @@ func (l *liveAuthorization) watch() {
 			if err == nil {
 				grants, err = l.authorization.grants(data) // Nil grants on any failure.
 			}
-			// Diagnostic only: pinpoints the exact transient read error behind
-			// a fail-closed reconcile, for the CI-only revocation-scope
-			// investigation. Remove once that investigation closes.
-			if err != nil && len(l.current) > 0 {
-				slog.Warn("live authorization background reconcile could not read the authorization store", "error", err, "current_principals", len(l.current))
+			// Diagnostic only: pinpoints a fail-closed reconcile that fires
+			// during ordinary background polling, as opposed to the same
+			// call made unconditionally (and expectedly) from beginClose on
+			// daemon shutdown. Gated on l.ctx.Err() == nil so a read racing
+			// an intentional shutdown isn't misreported as a live misfire.
+			// For the CI-only revocation-scope investigation; remove once
+			// that investigation closes.
+			if err != nil && len(l.current) > 0 && l.ctx.Err() == nil {
+				principals := make([]string, 0, len(l.current))
+				for principal := range l.current {
+					principals = append(principals, principal)
+				}
+				slog.Warn("live authorization background reconcile is failing closed while the daemon is still active", "error", err, "principals", principals)
 			}
 			l.reconcileLocked(grants) // Unreadable or replaced authority fails closed.
 			l.mu.Unlock()
