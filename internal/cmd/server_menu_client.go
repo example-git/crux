@@ -23,7 +23,7 @@ var _ dialog.ServerMenuClient = serverMenuClient{}
 
 // RefreshWorkspaces implements [dialog.ServerMenuClient].
 func (c serverMenuClient) RefreshWorkspaces(ctx context.Context) ([]proto.Workspace, error) {
-	workspaces, err := c.Client.RefreshWorkspacesViaPeer(ctx)
+	workspaces, err := c.RefreshWorkspacesViaPeer(ctx)
 	if err == nil {
 		return workspaces, nil
 	}
@@ -32,7 +32,7 @@ func (c serverMenuClient) RefreshWorkspaces(ctx context.Context) ([]proto.Worksp
 
 // Browse implements [dialog.ServerMenuClient].
 func (c serverMenuClient) Browse(ctx context.Context, path string) (proto.BrowserListing, error) {
-	listing, err := c.Client.BrowseViaPeer(ctx, path)
+	listing, err := c.BrowseViaPeer(ctx, path)
 	if err == nil {
 		return listing, nil
 	}

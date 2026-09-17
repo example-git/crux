@@ -22,8 +22,10 @@ type workspaceChannelProxyDecision struct {
 	replacement *proto.PeerEnvelope
 }
 
-type workspaceChannelProxyInterceptor func(bool, proto.WorkspaceChannelFrame) workspaceChannelProxyDecision
-type peerChannelProxyInterceptor func(bool, proto.PeerEnvelope) workspaceChannelProxyDecision
+type (
+	workspaceChannelProxyInterceptor func(bool, proto.WorkspaceChannelFrame) workspaceChannelProxyDecision
+	peerChannelProxyInterceptor      func(bool, proto.PeerEnvelope) workspaceChannelProxyDecision
+)
 
 type workspaceChannelProxyServer struct {
 	*httptest.Server

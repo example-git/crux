@@ -357,7 +357,7 @@ func TestClientOAuthRefreshInferenceThroughTLS(t *testing.T) {
 						require.NoError(t, w.RemoveConfigField(config.ScopeGlobal, "options.disabled_instruction_sections"))
 						require.Contains(t, instructions(), "You are a token engine.")
 						require.NoError(t, c.SendMessageWithPermissionMode(ctx, created.ID, session.ID, "controls-instructions", "controls-instructions: return the fixture response.", proto.AgentPermissionDeny))
-						events = awaitRefreshFixtureRun(t, ctx, c, created.ID, events, w, "controls-instructions")
+						awaitRefreshFixtureRun(t, ctx, c, created.ID, events, w, "controls-instructions")
 						require.EqualValues(t, 1, exchanges.Load())
 					}
 					if mode == "recovery-after-rotation" {

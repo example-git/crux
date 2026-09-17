@@ -984,15 +984,15 @@ func (s *recoveryServer) start(t *testing.T) *client.Client {
 				}
 				msg, err := proto.DecodePeerMessage(raw, proto.PeerDirectionClientToServer)
 				require.NoError(t, err)
-				switch {
-				case msg.Envelope.Type == proto.PeerTypeWorkspaceAttach:
+				switch msg.Envelope.Type {
+				case proto.PeerTypeWorkspaceAttach:
 					// A retried attach for a (possibly different, freshly
 					// re-created) workspace ID, sent over the same
 					// connection as the original rejected attach.
 					if !ackAttach(msg.Envelope) {
 						return
 					}
-				case msg.Envelope.Type == proto.PeerTypeSessionCurrentSet:
+				case proto.PeerTypeSessionCurrentSet:
 					if sess, ok := msg.Payload.(*proto.CurrentSession); ok {
 						s.mu.Lock()
 						s.sessionPosts = append(s.sessionPosts, sess.SessionID)

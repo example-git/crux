@@ -653,7 +653,7 @@ func (peer *peerChannel) runReader() {
 			summary := message.Payload.(*proto.PeerStateSummary)
 			workspaces := make([]proto.PeerWorkspaceSummary, 0, len(summary.Workspaces))
 			for _, workspace := range summary.Workspaces {
-				workspaces = append(workspaces, proto.PeerWorkspaceSummary{WorkspaceID: workspace.WorkspaceID, Revision: workspace.Revision, Digest: workspace.Digest})
+				workspaces = append(workspaces, proto.PeerWorkspaceSummary(workspace))
 			}
 			peer.replaceWorkspaceSummaries(workspaces)
 			peer.lastHeartbeat.Store(time.Now().UnixNano())

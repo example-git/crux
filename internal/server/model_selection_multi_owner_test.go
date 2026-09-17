@@ -74,7 +74,7 @@ func TestSetModelSelectionEnforcesAsymmetricOwnershipLock(t *testing.T) {
 	newPeer := func(principal string) *serverPeerChannel {
 		return &serverPeerChannel{
 			controller: &controllerV1{}, principal: principal,
-			ctx: t.Context(),
+			ctx:       t.Context(),
 			critical:  make(chan peerChannelOutbound, 16),
 			state:     make(chan peerChannelOutbound, 16),
 			workspace: make(chan peerChannelOutbound, 16),

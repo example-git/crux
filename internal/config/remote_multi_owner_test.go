@@ -263,4 +263,3 @@ func TestPatchOwnedModelSelectionsPrimaryDelegatesToExistingPath(t *testing.T) {
 	_, ok := snapshot.Config().Providers.Get(secondaryProposal.Providers[0].Config.ID)
 	require.True(t, ok, "the primary's own model-selection patch must not drop the secondary owner's provider")
 }
-

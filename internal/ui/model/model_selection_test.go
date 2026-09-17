@@ -35,6 +35,7 @@ func (w *queuedSelectionWorkspace) Config() *config.Config { return w.store.Conf
 func (w *queuedSelectionWorkspace) AcceptedAuthority() *config.RemoteAuthority {
 	return w.authority
 }
+
 func (w *queuedSelectionWorkspace) ProviderSurfaces() []providerregistry.Surface {
 	return config.ProviderSurfaces(w.Config())
 }
