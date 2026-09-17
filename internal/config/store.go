@@ -43,8 +43,10 @@ const configLockDeadline = 5 * time.Second
 // to finish and publish its result, which we then adopt instead of
 // running our own exchange. Running our own would reuse an
 // already-rotated refresh token and trip the provider's reuse detection,
-// revoking the whole token family.
-const refreshLockDeadline = 45 * time.Second
+// revoking the whole token family. It is a var (not a const) solely so
+// tests that must observe real lock contention can shrink it instead of
+// waiting out the production value on every run.
+var refreshLockDeadline = 45 * time.Second
 
 // credentialWriteLockDeadline bounds how long a credential write (e.g.
 // storing the token from a fresh interactive login) waits for the

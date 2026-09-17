@@ -60,14 +60,18 @@ func TestGetRgUsesEmbeddedBinary(t *testing.T) {
 }
 
 func TestMaterializeRipgrepReplacesInvalidCache(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	// materializeRipgrep takes its cache root as an explicit argument (see
+	// ripgrepCacheRoot's doc comment on why getRg resolves it once at
+	// package init instead of reading the environment lazily), so this
+	// test exercises it directly against a disposable directory rather
+	// than mutating HOME/XDG_CACHE_HOME.
+	cacheDirectory := t.TempDir()
 	binary, ok := embeddedRipgrep(runtime.GOOS, runtime.GOARCH)
 	if !ok {
 		t.Skip("current platform has no embedded ripgrep")
 	}
 
-	path, err := materializeRipgrep(binary, runtime.GOOS, runtime.GOARCH)
+	path, err := materializeRipgrep(cacheDirectory, binary, runtime.GOOS, runtime.GOARCH)
 	require.NoError(t, err)
 	info, err := os.Stat(path)
 	require.NoError(t, err)
@@ -77,7 +81,7 @@ func TestMaterializeRipgrepReplacesInvalidCache(t *testing.T) {
 	require.Contains(t, string(output), "ripgrep "+embeddedRipgrepVersion)
 
 	require.NoError(t, os.WriteFile(path, []byte("invalid"), 0o700))
-	restored, err := materializeRipgrep(binary, runtime.GOOS, runtime.GOARCH)
+	restored, err := materializeRipgrep(cacheDirectory, binary, runtime.GOOS, runtime.GOARCH)
 	require.NoError(t, err)
 	require.Equal(t, path, restored)
 	require.True(t, validRipgrepFile(restored, binary))

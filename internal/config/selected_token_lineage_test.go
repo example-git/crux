@@ -201,6 +201,15 @@ func TestSelectedTokenDurableInstalledConcurrentStores(t *testing.T) {
 }
 
 func TestSelectedTokenDurableInstalledRestartKnownSuccessor(t *testing.T) {
+	// "returned-before-config" holds the global config file lock for the
+	// whole subtest, forcing the commit step's lock.File wait to run out
+	// its real deadline (selectedTokenCompletionTimeout, normally a full
+	// minute) before the retained-successor error is returned. Shrink it
+	// so this test observes the exact same production timeout path
+	// without waiting out a full minute of real time on every run.
+	originalTimeout := selectedTokenCompletionTimeout
+	selectedTokenCompletionTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { selectedTokenCompletionTimeout = originalTimeout })
 	for _, mode := range []string{"saved", "returned-before-config"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newInstalledLineageFixture(t)

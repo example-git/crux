@@ -222,7 +222,12 @@ waiting:
 	for {
 		select {
 		case <-ticker.C:
-			if _, err := os.Stat(entered); err == nil {
+			// Wait for the script to have actually written its "x" byte, not
+			// merely for the append redirect to have created the file: the
+			// interpreter opens redirect targets before running the command,
+			// so Stat-only readiness can observe an empty file and cancel
+			// before the write happens, undercounting this evaluation.
+			if b, err := os.ReadFile(entered); err == nil && len(b) > 0 {
 				break waiting
 			}
 		case err := <-done:

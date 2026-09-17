@@ -17,12 +17,32 @@ import (
 
 const embeddedRipgrepVersion = "15.2.0"
 
+// ripgrepCacheRoot is resolved once, during package initialization, rather
+// than lazily on first use. getRg is process-wide memoized (sync.OnceValue)
+// and only ever runs its materialization once for the life of the process;
+// if it instead re-read os.UserCacheDir() lazily, the very first tool call
+// that happens to trigger it would permanently bind this cache path to
+// whatever HOME/XDG_CACHE_HOME was active at that arbitrary moment. In a
+// long-running process that never changes its environment this is
+// harmless, but it is a latent hazard for anything that legitimately
+// changes HOME after startup, and it made cross-package Go test binaries
+// that isolate HOME per test (via t.Setenv) racy: whichever test happened
+// to be first to touch a search tool would nondeterministically leak a
+// real on-disk write into its own ephemeral, isolated HOME.
+var ripgrepCacheRoot, ripgrepCacheRootErr = os.UserCacheDir()
+
 var getRg = sync.OnceValue(func() string {
 	binary, ok := embeddedRipgrep(runtime.GOOS, runtime.GOARCH)
 	if !ok {
 		return ""
 	}
-	path, err := materializeRipgrep(binary, runtime.GOOS, runtime.GOARCH)
+	if ripgrepCacheRootErr != nil {
+		if log.Initialized() {
+			slog.Warn("Embedded ripgrep is unavailable; using the native search fallback", "error", ripgrepCacheRootErr)
+		}
+		return ""
+	}
+	path, err := materializeRipgrep(ripgrepCacheRoot, binary, runtime.GOOS, runtime.GOARCH)
 	if err != nil {
 		if log.Initialized() {
 			slog.Warn("Embedded ripgrep is unavailable; using the native search fallback", "error", err)
@@ -39,11 +59,7 @@ func embeddedRipgrep(goos, goarch string) ([]byte, bool) {
 	return embeddedRipgrepBinary, true
 }
 
-func materializeRipgrep(binary []byte, goos, goarch string) (string, error) {
-	cacheDirectory, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user cache directory: %w", err)
-	}
+func materializeRipgrep(cacheDirectory string, binary []byte, goos, goarch string) (string, error) {
 	directory := filepath.Join(cacheDirectory, "crux", "bin")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return "", fmt.Errorf("create ripgrep cache directory: %w", err)

@@ -307,6 +307,17 @@ func TestClientAuthenticationReviewCapacityRetainsPendingUntilExplicitAbandonmen
 		_, probeErr := f.w.client.PeerWorkspaceAuthority(t.Context(), f.w.workspaceID(), f.w.authority.principal)
 		return probeErr != nil
 	}, 5*time.Second, 5*time.Millisecond, "client must redial and observe the synthetic peer channel outage")
+	// This loop deliberately performs clientAuthenticationReceiptLimit+1
+	// real peer-channel dial attempts (one per reviewClientAuthentication
+	// call, all rejected by getMode's synthetic fault) to fill the bounded
+	// review ledger. That is clientAuthenticationReceiptLimit consecutive
+	// full TLS handshakes against the mock receiver, which is slow enough
+	// under -race (and on loaded CI runners) to consume most of a minute
+	// by itself -- confirmed by measurement, not assumed. That is longer
+	// than the backend's default 10s detach grace, which would otherwise
+	// tear the workspace down mid-loop and make the recovery wait below
+	// fail forever instead of just slowly; newClientAuthenticationFixture
+	// raises the grace so the workspace survives regardless of loop speed.
 	for sequence := uint64(2); sequence <= clientAuthenticationReceiptLimit+2; sequence++ {
 		_, err = f.w.reviewClientAuthentication(t.Context(), authenticationReviewAction(request.OperationID, request.Target, sequence))
 		require.Error(t, err)
@@ -340,6 +351,19 @@ func TestClientAuthenticationReviewCapacityRetainsPendingUntilExplicitAbandonmen
 	requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)
 	f.getMode.Store(0)
 	f.putMode.Store(0)
+	// Clearing the synthetic fault does not itself reconnect the peer
+	// channel: the client only redials on the next network-touching call,
+	// so that next call can still race an in-flight redial and observe a
+	// transient failure. Wait for an actual successful round trip first,
+	// mirroring the outage-detection wait above. newClientAuthenticationFixture
+	// raises the backend's detach grace well past this loop's real-TLS-dial
+	// cost so the workspace survives the outage regardless of how slow an
+	// individual dial is under -race or a loaded CI runner; this wait only
+	// has to absorb ordinary redial latency, not a race against teardown.
+	require.Eventually(t, func() bool {
+		_, probeErr := f.w.client.PeerWorkspaceAuthority(t.Context(), f.w.workspaceID(), f.w.authority.principal)
+		return probeErr == nil
+	}, 5*time.Second, 5*time.Millisecond, "client must redial and recover once the synthetic peer channel outage clears")
 	review = authenticationReviewAction(request.OperationID, request.Target, clientAuthenticationReceiptLimit+3)
 	summary, err = f.w.reviewClientAuthentication(t.Context(), review)
 	require.NoError(t, err, "bounded retention is not a capacity veto")

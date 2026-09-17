@@ -191,8 +191,15 @@ type coordinator struct {
 	codebaseIndexLifecycleCtx    context.Context
 	codebaseIndexLifecycleCancel context.CancelFunc
 	codebaseIndexLifecycleDone   <-chan struct{}
-	reconcileCodebaseIndexFn     func(context.Context) (codebaseindex.StoreStatus, error)
-	generationBoundary           func()
+	// codebaseIndexReconcileWG tracks dispatched reconcile goroutines (see
+	// scheduleCodebaseIndexReconcile) so stopCodebaseIndexLifecycle can join
+	// them. Without this, a reconcile that is still writing into the
+	// codebase-index store directory (under the workspace's DataDirectory)
+	// can outlive shutdown and race a caller that removes or reuses that
+	// directory immediately after CloseContext/DrainCredentialWork returns.
+	codebaseIndexReconcileWG sync.WaitGroup
+	reconcileCodebaseIndexFn func(context.Context) (codebaseindex.StoreStatus, error)
+	generationBoundary       func()
 }
 
 // CoordinatorOptions holds the dependencies for NewCoordinator. Using a
@@ -411,13 +418,35 @@ func (c *coordinator) stopCodebaseIndexLifecycle(ctx context.Context) {
 	c.codebaseIndexLifecycleCancel = nil
 	c.codebaseIndexLifecycleDone = nil
 	c.codebaseIndexLifecycleCtx = nil
+	// Cancel while still holding the mutex so scheduleCodebaseIndexReconcile
+	// cannot observe a not-yet-canceled context, decide to dispatch a new
+	// reconcile, and register it with codebaseIndexReconcileWG concurrently
+	// with (or after) the Wait below.
+	if cancel != nil {
+		cancel()
+	}
 	c.codebaseIndexReconcileMu.Unlock()
 	if cancel == nil {
 		return
 	}
-	cancel()
 	select {
 	case <-done:
+	case <-ctx.Done():
+		return
+	}
+	// The ticker loop exiting only proves no *new* reconcile will be
+	// scheduled; a reconcile dispatched just before cancellation can still
+	// be writing into the codebase-index store directory. Join it before
+	// returning so callers that immediately tear down or reuse that
+	// directory (workspace shutdown, tests removing their TempDir) never
+	// race a still-running write.
+	reconcileDone := make(chan struct{})
+	go func() {
+		c.codebaseIndexReconcileWG.Wait()
+		close(reconcileDone)
+	}()
+	select {
+	case <-reconcileDone:
 	case <-ctx.Done():
 	}
 }
@@ -457,6 +486,7 @@ func (c *coordinator) scheduleCodebaseIndexReconcile() {
 	if reconcile == nil {
 		reconcile = func(ctx context.Context) (codebaseindex.StoreStatus, error) { return c.reconcileCodebaseIndex(ctx) }
 	}
+	c.codebaseIndexReconcileWG.Add(1)
 	c.codebaseIndexReconcileMu.Unlock()
 
 	go func() {
@@ -464,6 +494,7 @@ func (c *coordinator) scheduleCodebaseIndexReconcile() {
 			c.codebaseIndexReconcileMu.Lock()
 			c.codebaseIndexReconciling = false
 			c.codebaseIndexReconcileMu.Unlock()
+			c.codebaseIndexReconcileWG.Done()
 		}()
 		if _, err := reconcile(ctx); err != nil && ctx.Err() == nil {
 			slog.Warn("Could not reconcile background codebase indexing", "error", err)

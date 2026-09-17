@@ -413,6 +413,12 @@ func TestSelectedTokenRefreshConcurrentFirstExchange(t *testing.T) {
 }
 
 func TestSelectedTokenRefreshRetainsSuccessorWhileWriterExceedsCompletionDeadline(t *testing.T) {
+	// Shrink the real completion deadline so this test observes the exact
+	// same production DeadlineExceeded path without waiting out a full
+	// minute of real time on every run.
+	originalTimeout := selectedTokenCompletionTimeout
+	selectedTokenCompletionTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { selectedTokenCompletionTimeout = originalTimeout })
 	f := newSelectedTokenFixture(t, true)
 	admitted := f.store.RuntimeSnapshot()
 	held := make(chan struct{})
@@ -453,7 +459,7 @@ func TestSelectedTokenRefreshRetainsSuccessorWhileWriterExceedsCompletionDeadlin
 		require.ErrorIs(t, got.err, context.DeadlineExceeded)
 		require.ErrorContains(t, got.err, "rotated and retained")
 		require.Equal(t, f.successor.AccessToken, got.token.AccessToken)
-	case <-time.After(time.Minute + 5*time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("global writer exceeded the bounded OAuth completion deadline")
 	}
 	require.Same(t, admitted.Config(), f.store.Config())

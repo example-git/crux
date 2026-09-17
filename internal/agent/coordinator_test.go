@@ -900,6 +900,50 @@ drained:
 	}
 }
 
+// TestStopCodebaseIndexLifecycleJoinsInFlightReconcile guards against a
+// regression where stopCodebaseIndexLifecycle only waited for the periodic
+// ticker goroutine to exit, not for a reconcile it had already dispatched.
+// A caller that tears down (or a test that removes) the codebase-index
+// store directory immediately after this call returns must never race a
+// reconcile goroutine still writing into it.
+func TestStopCodebaseIndexLifecycleJoinsInFlightReconcile(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	coord := &coordinator{
+		reconcileCodebaseIndexFn: func(context.Context) (codebaseindex.StoreStatus, error) {
+			close(started)
+			<-release
+			return codebaseindex.StoreStatus{}, nil
+		},
+	}
+	coord.startCodebaseIndexLifecycle(t.Context(), time.Hour)
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("startup index reconciliation did not run")
+	}
+
+	stopped := make(chan struct{})
+	go func() {
+		coord.stopCodebaseIndexLifecycle(t.Context())
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+		t.Fatal("stopCodebaseIndexLifecycle returned before the in-flight reconcile finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("stopCodebaseIndexLifecycle did not join the in-flight reconcile after it finished")
+	}
+}
+
 func TestCodebaseIndexSearchReconciliationIsThrottled(t *testing.T) {
 	started := make(chan struct{}, 4)
 	coord := &coordinator{

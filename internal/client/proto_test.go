@@ -245,11 +245,22 @@ func TestSubscribeEventsContextCancelClosesEvents(t *testing.T) {
 	cancel()
 	close(writeSecondEvent)
 
-	select {
-	case _, ok := <-events:
-		require.False(t, ok)
-	case <-time.After(5 * time.Second):
-		require.Fail(t, "timed out waiting for event channel close")
+	// Unsubscription runs asynchronously relative to the context
+	// cancellation, so a message already in flight from the server (the
+	// second event, released above) may still land on the channel before
+	// the subscriber is removed. Drain any such in-flight events and only
+	// require that the channel eventually closes.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case _, ok := <-events:
+			if !ok {
+				return
+			}
+		case <-deadline:
+			require.Fail(t, "timed out waiting for event channel close")
+			return
+		}
 	}
 }
 

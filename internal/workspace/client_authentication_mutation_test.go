@@ -84,6 +84,29 @@ func newClientAuthenticationFixture(t *testing.T, barrier bool) *clientAuthentic
 	require.NoError(t, err)
 	f.s = server.NewServer(nil, "tcp", "127.0.0.1:0")
 	require.NoError(t, f.s.EnableNetworkAuth(t.Context()))
+	// A loopback address makes EnableNetworkAuth treat this as local (not
+	// remote) management, so it never calls SetPersistent(true) itself,
+	// leaving the backend's default 60s idle-shutdown timer armed, and its
+	// default 10s detach grace in effect. Several tests in this file
+	// deliberately force the workspace's peer channel closed and hold it
+	// disconnected across many operations (forceDisconnect / getMode fault
+	// injection) before expecting a plain redial to recover it. Confirmed
+	// by measurement: TestClientAuthenticationReviewCapacityRetainsPending
+	// UntilExplicitAbandonment alone drives clientAuthenticationReceiptLimit
+	// consecutive real TLS dial attempts to fill a bounded ledger, which
+	// took up to ~90s under -race -- far longer than the 10s detach grace.
+	// Once that grace elapses, DetachClient tears the workspace down for
+	// real (internal/backend's holdTimer/detachStream), so the *workspace*
+	// is actually gone by the time the fault clears: every later redial
+	// legitimately gets "not found" forever, not a slow-but-recoverable
+	// transient. That is a real teardown, not a race in this test file, so
+	// the fix is to give the workspace enough grace to outlive the loop
+	// instead of trying to make the loop or the recovery wait faster.
+	// Persistent mode plus a generous detach grace matches how
+	// internal/backend/workspace_management_test.go's own fixture tunes
+	// this backend for tests that need a workspace to survive on purpose.
+	f.s.Backend().SetPersistent(true)
+	f.s.Backend().SetDetachGrace(5 * time.Minute)
 	handler := f.s.Handler()
 	backend := httptest.NewUnstartedServer(handler)
 	backend.TLS = tlsConfig

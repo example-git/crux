@@ -83,6 +83,14 @@ func TestCreateWorkspaceAdmitsDisjointSecondaryPrincipalAsOwner(t *testing.T) {
 	require.True(t, ok)
 	_, ok = second.Cfg.RuntimeSnapshot().Config().Providers.Get("fixture-b")
 	require.True(t, ok)
+
+	// Drain synchronously before returning: releasing a workspace hold can
+	// still write into path's tree, and t.Cleanup alone cannot guarantee
+	// this runs before the TempDir removals registered later in this test
+	// (Cleanup funcs run LIFO, and clientAuthorityArgs allocates further
+	// TempDirs after the drainBackend cleanup above was registered).
+	first.Shutdown()
+	drainBackend(t, b)
 }
 
 func TestCreateWorkspaceRejectsCollidingSecondaryPrincipalProvider(t *testing.T) {
@@ -105,6 +113,10 @@ func TestCreateWorkspaceRejectsCollidingSecondaryPrincipalProvider(t *testing.T)
 
 	_, _, err = b.CreateWorkspace(clientAuthorityArgs(t, path, principalB, "fixture-a"))
 	require.ErrorIs(t, err, ErrRuntimeConflict)
+
+	// See the drain comment in TestCreateWorkspaceAdmitsDisjointSecondaryPrincipalAsOwner.
+	first.Shutdown()
+	drainBackend(t, b)
 }
 
 func TestCreateWorkspaceSamePrincipalStillRequiresExactRuntimeMatch(t *testing.T) {
@@ -126,4 +138,8 @@ func TestCreateWorkspaceSamePrincipalStillRequiresExactRuntimeMatch(t *testing.T
 
 	_, _, err = b.CreateWorkspace(clientAuthorityArgs(t, path, principalA, "fixture-b"))
 	require.ErrorIs(t, err, ErrRuntimeConflict, "the same principal reattaching with a different runtime must still require an explicit revision update, not a silent merge")
+
+	// See the drain comment in TestCreateWorkspaceAdmitsDisjointSecondaryPrincipalAsOwner.
+	first.Shutdown()
+	drainBackend(t, b)
 }

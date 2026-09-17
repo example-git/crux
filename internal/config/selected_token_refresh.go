@@ -24,6 +24,14 @@ import (
 
 const selectedTokenRotationLimit = 64
 
+// selectedTokenCompletionTimeout bounds how long a caller's disconnection can
+// be outlived by an in-flight OAuth exchange/commit before its successor is
+// retained and the caller sees context.DeadlineExceeded instead of hanging
+// forever. It is a var (not a const) solely so tests that must observe this
+// real deadline firing can shrink it instead of waiting out the production
+// value on every run.
+var selectedTokenCompletionTimeout = time.Minute
+
 // A receipt retains the process-local publication state around a private durable
 // exchange lineage. Cross-store recovery requires that exact lineage and its
 // captured input proof; an arbitrary newer disk token is never a successor.
@@ -204,7 +212,7 @@ func (s *ConfigStore) refreshProviderOAuthTokenAtPath(ctx context.Context, path 
 	s.writeMu.Unlock()
 
 	// Once exchange starts, caller disconnection cannot discard its successor.
-	finish, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+	finish, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), selectedTokenCompletionTimeout)
 	defer cancelFinish()
 	finish, cancelRuntime := s.BindRuntimeContext(finish)
 	defer cancelRuntime()

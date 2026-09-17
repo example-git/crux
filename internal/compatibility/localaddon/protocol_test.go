@@ -192,6 +192,11 @@ func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, s
 			seq := uint64(4)
 			for {
 				select {
+				case <-closed:
+					return
+				default:
+				}
+				select {
 				case event := <-events:
 					// The v2 protocol requires a distinct message type per
 					// terminal run status (run.completed only for success,
@@ -209,7 +214,24 @@ func nativeAPIFixture(t *testing.T, responseText string, onRun ...func(string, s
 					data, err := proto.EncodePeerMessage(epoch, seq, fmt.Sprintf("server-%d", seq), "", workspaceID, messageType, resource)
 					require.NoError(t, err)
 					seq++
-					require.NoError(t, connection.WriteMessage(websocket.TextMessage, data))
+					// A per-turn timeout (see TestAgyStreamJSONAppliesPerTurnTimeout)
+					// lets the client give up locally while this connection
+					// stays open for later turns; the delayed run-completion
+					// event above can still arrive right as the client
+					// retires and closes its side. That write racing a
+					// closing connection is an expected outcome of the
+					// fixture's own timing, not a fixture bug, and the
+					// select above cannot fully order it ahead of <-closed
+					// (both can become ready together). Do not assert this
+					// specific write with require/t: a background goroutine
+					// calling into *testing.T after the test function has
+					// already returned panics the whole binary ("Fail in
+					// goroutine after Test has completed"), which is far
+					// worse than silently ending the relay on a dying
+					// connection.
+					if err := connection.WriteMessage(websocket.TextMessage, data); err != nil {
+						return
+					}
 				case <-closed:
 					return
 				}
