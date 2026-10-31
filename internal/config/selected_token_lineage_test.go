@@ -207,26 +207,17 @@ func TestSelectedTokenDurableInstalledRestartKnownSuccessor(t *testing.T) {
 			store := f.load(t)
 			path := store.globalDataPath
 			var release func()
+			originalTimeout := selectedTokenCompletionTimeout
 			if mode == "returned-before-config" {
 				var err error
 				release, err = lock.File(t.Context(), path+".lock")
 				require.NoError(t, err)
 				defer release()
-				// Holding the global config file lock for this subtest
-				// forces the commit step's lock.File wait to run out its
-				// real deadline (selectedTokenCompletionTimeout, normally
-				// a full minute) before the retained-successor error is
-				// returned. Shrink it only for this subtest so it
-				// observes the exact same production timeout path
-				// without waiting out a full minute of real time on
-				// every run. The "saved" subtest takes the fast/normal
-				// path and must keep the production timeout so it can't
-				// spuriously trip a deadline under CI load.
-				originalTimeout := selectedTokenCompletionTimeout
 				selectedTokenCompletionTimeout = 200 * time.Millisecond
 				t.Cleanup(func() { selectedTokenCompletionTimeout = originalTimeout })
 			}
 			fresh, err := store.RefreshProviderOAuthTokenForRuntime(t.Context(), ScopeGlobal, f.owner, f.original, store.RuntimeSnapshot())
+			selectedTokenCompletionTimeout = originalTimeout
 			if mode == "returned-before-config" {
 				require.ErrorContains(t, err, "rotated and retained")
 				require.NotNil(t, fresh)

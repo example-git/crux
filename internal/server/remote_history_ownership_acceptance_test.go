@@ -42,7 +42,7 @@ func TestRemoteHistoryPrincipalIsolationAfterRetirementThroughMTLS(t *testing.T)
 			releaseFile := filepath.Join(root, "release-synthetic-shell")
 			const outputMarker = "principal-A-persisted-task-output"
 			const callID = "call_principal_history_shell"
-			command := "printf '" + outputMarker + "\\n'; while [ ! -f " + remoteOwnershipAcceptanceShellQuote(releaseFile) + " ]; do sleep 0.02; done"
+			command := "printf '" + outputMarker + "\\n'; while [ ! -f " + remoteOwnershipAcceptanceShellQuote(filepath.ToSlash(releaseFile)) + " ]; do sleep 0.02; done"
 			var toolCalls, wrongCredentials atomic.Int32
 			provider := remoteOwnershipAcceptanceProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, err := io.ReadAll(r.Body)

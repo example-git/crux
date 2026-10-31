@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -112,8 +113,9 @@ func TestPeerChannelWorkspaceListRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	dataDir := t.TempDir()
 	clientID := uuid.NewString()
-	_, _, complete, err := server.backend.CreateWorkspaceForResponse(proto.Workspace{Path: workspaceDir, DataDir: dataDir, ClientID: clientID})
+	workspace, _, complete, err := server.backend.CreateWorkspaceForResponse(proto.Workspace{Path: workspaceDir, DataDir: dataDir, ClientID: clientID})
 	require.NoError(t, err)
+	defer workspace.Shutdown()
 	defer complete()
 
 	conn, epoch := dialTestPeerChannel(t, testServer.URL, clientID)
@@ -230,7 +232,7 @@ func TestPeerChannelMenuCommandsRequireAuthenticatedManagement(t *testing.T) {
 // PeerTypeWorkspaceListChanged event to every other open peer channel
 // belonging to the same principal, without that connection polling.
 func TestPeerChannelNotifiesWorkspaceListChangedOnCreate(t *testing.T) {
-	_, testServer := newTestPeerChannelServer(t)
+	server, testServer := newTestPeerChannelServer(t)
 	watcherConn, watcherEpoch := dialTestPeerChannel(t, testServer.URL, uuid.NewString())
 	defer watcherConn.Close()
 	var watcherSequence uint64 = 1
@@ -238,14 +240,20 @@ func TestPeerChannelNotifiesWorkspaceListChangedOnCreate(t *testing.T) {
 	workspaceDir, err := filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
 	dataDir := t.TempDir()
-	body := strings.NewReader(`{"path":"` + workspaceDir + `","data_dir":"` + dataDir + `","client_id":"` + uuid.NewString() + `"}`)
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, testServer.URL+"/v1/workspaces", body)
+	body, err := json.Marshal(proto.Workspace{Path: workspaceDir, DataDir: dataDir, ClientID: uuid.NewString()})
+	require.NoError(t, err)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, testServer.URL+"/v1/workspaces", bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Content-Type", "application/json")
 	response, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	defer response.Body.Close()
 	require.Equal(t, http.StatusOK, response.StatusCode)
+	var created proto.Workspace
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&created))
+	workspace, err := server.backend.GetWorkspace(created.ID)
+	require.NoError(t, err)
+	defer workspace.Shutdown()
 
 	readTestPeerEvent(t, watcherConn, proto.PeerTypeWorkspaceListChanged)
 

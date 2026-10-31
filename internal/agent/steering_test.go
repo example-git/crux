@@ -159,14 +159,7 @@ func TestSteeringInterruptsGenerationBeforeCoordinatorPreparation(t *testing.T) 
 				}
 			}
 			require.True(t, persisted)
-			var replacement fantasy.Call
-			select {
-			case replacement = <-model.calls:
-			case err := <-done:
-				t.Fatalf("turn ended before replacement request: %v", err)
-			case <-time.After(5 * time.Second):
-				t.Fatal("replacement request did not arrive after partial generation")
-			}
+			replacement := steeringCall(t, model.calls)
 			request := steeringPrompt(replacement)
 			require.Contains(t, request, "new direction")
 			require.Contains(t, request, "partial response before steering")

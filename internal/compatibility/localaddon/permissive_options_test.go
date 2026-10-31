@@ -2,6 +2,7 @@ package localaddon
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -93,18 +94,20 @@ func TestCodexIgnoresUnknownConfigKeysAlongsideSupportedSettings(t *testing.T) {
 }
 
 func TestCodexProtocolParsersIgnoreUnknownOptions(t *testing.T) {
+	workingDir := t.TempDir()
+	outputDir := filepath.Join(t.TempDir(), "output")
 	for _, test := range []struct {
 		args     []string
 		protocol compatibility.RealtimeProtocol
 	}{
 		{[]string{"--future-root", "--config", "model=first", "--config", "model=second", "app-server", "--future-option", "value", "--stdio", "--ws-auth", "--another="}, compatibility.ProtocolCodexAppServer},
-		{[]string{"app-server", "generate-json-schema", "--future-option", "value", "--out", "/output", "--prettier", "--another"}, compatibility.ProtocolCodexSchema},
+		{[]string{"app-server", "generate-json-schema", "--future-option", "value", "--out", outputDir, "--prettier", "--another"}, compatibility.ProtocolCodexSchema},
 	} {
-		request, err := (codexAdapter{}).Translate(t.Context(), compatibility.Invocation{Args: test.args, WorkingDir: "/workspace"})
+		request, err := (codexAdapter{}).Translate(t.Context(), compatibility.Invocation{Args: test.args, WorkingDir: workingDir})
 		require.NoError(t, err)
 		require.Equal(t, test.protocol, request.Protocol)
 		if test.protocol == compatibility.ProtocolCodexSchema {
-			require.Equal(t, "/output", request.Metadata["schema-out"])
+			require.Equal(t, outputDir, request.Metadata["schema-out"])
 		}
 	}
 }

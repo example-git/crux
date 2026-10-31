@@ -224,6 +224,10 @@ func TestCaptureProcessExecFailureIsVisible(t *testing.T) {
 		Name: "missing", Command: []string{"/no/such/capture-test-process"}, Executable: "/no/such/capture-test-process",
 		WorkingDir: directory, Environment: environmentMap(os.Environ()), LogPath: filepath.Join(directory, "target.log"),
 	})
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		require.ErrorContains(t, err, "capture process management requires macOS or Linux")
+		return
+	}
 	require.ErrorContains(t, err, "no such file")
 }
 

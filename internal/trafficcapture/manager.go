@@ -100,6 +100,7 @@ func startCaptureProcess(nativeExecutable string, spec captureProcessSpec) (*cap
 		_ = output.Close()
 		return nil, err
 	}
+	_ = slave.Close()
 	_ = statusWriter.Close()
 	process := &captureProcess{
 		spec: spec, command: command, terminal: terminal, statusPipe: statusReader,

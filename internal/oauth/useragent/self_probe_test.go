@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/example-git/crux/internal/oauth"
@@ -13,7 +14,11 @@ import (
 func TestVersionProbeRejectsCurrentExecutable(t *testing.T) {
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	alias := filepath.Join(t.TempDir(), "codex")
+	name := "codex"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	alias := filepath.Join(t.TempDir(), name)
 	require.NoError(t, os.Link(executable, alias))
 	for _, ctx := range []context.Context{t.Context(), oauth.ContextWithEnvironment(t.Context(), []string{})} {
 		_, err := commandOutputForContext(ctx, alias, "--version")
