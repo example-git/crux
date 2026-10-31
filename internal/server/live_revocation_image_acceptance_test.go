@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +36,9 @@ import (
 )
 
 func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
+	logger := slog.Default()
+	slog.SetDefault(slog.New(liveImagePeerLogHandler{Handler: logger.Handler(), test: t}))
+	t.Cleanup(func() { slog.SetDefault(logger) })
 	// A credential from another workspace can match JSON punctuation. The
 	// real task-output response must retain a decodable embedded JobResult.
 	redact.Register(":true")
@@ -218,6 +222,7 @@ func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
 			close(ended)
 		}()
 		clients[name], workspaces[name], sessions[name], streamEnds[name] = c, ws, session.ID, ended
+		t.Logf("%s event stream client: %s", name, c.ClientID())
 	}
 	// This test explicitly authorizes only its synthetic tool run. The actual
 	// imagegen permission service and queue remain in the production call path.
@@ -324,6 +329,30 @@ func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
 		t.Fatal("retained principal's stream closed after another principal's revocation")
 	default:
 	}
+}
+
+type liveImagePeerLogHandler struct {
+	slog.Handler
+	test *testing.T
+}
+
+func (handler liveImagePeerLogHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level == slog.LevelDebug || handler.Handler.Enabled(ctx, level)
+}
+
+func (handler liveImagePeerLogHandler) Handle(ctx context.Context, record slog.Record) error {
+	if record.Level == slog.LevelDebug && record.Message == "Peer channel closed" {
+		var values []any
+		record.Attrs(func(attribute slog.Attr) bool {
+			values = append(values, attribute.Key, attribute.Value.String())
+			return true
+		})
+		handler.test.Log(record.Message, values)
+	}
+	if handler.Handler.Enabled(ctx, record.Level) {
+		return handler.Handler.Handle(ctx, record)
+	}
+	return nil
 }
 
 func liveImageWriteChunk(w http.ResponseWriter, delta map[string]any, finish any) {
