@@ -767,9 +767,15 @@ func (h *HookConfig) TimeoutDuration() time.Duration {
 	return time.Duration(h.Timeout) * time.Second
 }
 
+type Memories struct {
+	ConsolidationModel *string `json:"consolidation_model,omitempty" jsonschema:"description=Model used for memory consolidation workflows"`
+}
+
 // Config holds the configuration for crux.
 type Config struct {
 	Schema string `json:"$schema,omitempty"`
+
+	ClientSettings map[string]map[string]any `json:"client_settings,omitempty" jsonschema:"description=Persistent native state for external client interfaces"`
 
 	// We currently only support large/small as values here.
 	Models map[SelectedModelType]SelectedModel `json:"models,omitempty" jsonschema:"description=Model configurations for different model types,example={\"large\":{\"model\":\"gpt-4o\",\"provider\":\"openai\"}}"`
@@ -781,6 +787,8 @@ type Config struct {
 	Providers *csync.Map[string, ProviderConfig] `json:"providers,omitempty" jsonschema:"description=AI provider configurations"`
 
 	Images *ImageConfiguration `json:"images,omitempty" jsonschema:"description=Installed image provider selection and execution-host configuration"`
+
+	Memories *Memories `json:"memories,omitempty" jsonschema:"description=Memory workflow configuration"`
 
 	MCP MCPs `json:"mcp,omitempty" jsonschema:"description=Model Context Protocol server configurations"`
 
@@ -836,6 +844,7 @@ func (c *Config) cloneForWrite() *Config {
 		nc.authenticationCandidates[id] = cloneProviderConfig(provider)
 	}
 	nc.Images = cloneImageConfiguration(c.Images)
+	nc.Memories = cloneMemories(c.Memories)
 	nc.Models = maps.Clone(c.Models)
 	nc.transportProviderOwners = maps.Clone(c.transportProviderOwners)
 	nc.authenticationRevocations = maps.Clone(c.authenticationRevocations)
@@ -863,6 +872,15 @@ func (c *Config) cloneForWrite() *Config {
 		nc.Options = &opts
 	}
 	return &nc
+}
+
+func cloneMemories(value *Memories) *Memories {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.ConsolidationModel = clonePointer(value.ConsolidationModel)
+	return &clone
 }
 
 func cloneProviderConfig(provider ProviderConfig) ProviderConfig {

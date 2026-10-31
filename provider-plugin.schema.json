@@ -266,6 +266,9 @@
           "type": "array",
           "maxItems": 32
         },
+        "external_auth": {
+          "$ref": "#/$defs/ExternalAuthPolicy"
+        },
         "oauth": {
           "items": {
             "$ref": "#/$defs/OAuthFlow"
@@ -918,6 +921,39 @@
       "required": [
         "source",
         "event"
+      ]
+    },
+    "ExternalAuthPolicy": {
+      "properties": {
+        "service": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9_-]*$"
+        },
+        "credential": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "method": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+        },
+        "token_export": {
+          "type": "string",
+          "enum": [
+            "never",
+            "access-token"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "service",
+        "credential",
+        "method",
+        "token_export"
       ]
     },
     "FieldDisplay": {

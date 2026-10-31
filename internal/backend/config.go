@@ -37,6 +37,10 @@ func publishConfigChanged(ws *Workspace) {
 	})
 }
 
+func (b *Backend) ConfigRequirements() proto.ConfigRequirements {
+	return proto.ConfigRequirements{}
+}
+
 // MCPResourceContents holds the contents of an MCP resource returned
 // by the backend.
 type MCPResourceContents struct {
@@ -241,6 +245,51 @@ func (b *Backend) ListSkills(workspaceID string) ([]proto.SkillInfo, error) {
 			Label:         entry.Label,
 			Source:        string(entry.Source),
 			UserInvocable: entry.UserInvocable,
+		}
+	}
+	return result, nil
+}
+
+func (b *Backend) SkillCatalog(ctx context.Context, workspaceID string, forceReload bool) (proto.SkillCatalogResponse, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return proto.SkillCatalogResponse{}, err
+	}
+	if forceReload {
+		if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil {
+			if err := coordinator.UpdateModels(ctx); err != nil {
+				return proto.SkillCatalogResponse{}, err
+			}
+		} else {
+			discovery := skillsDiscoveryConfig(ws.Cfg)
+			allSkills, activeSkills, states := skills.DiscoverFromConfig(discovery)
+			ws.Skills.ReplaceSnapshot(skills.Snapshot{
+				AllSkills:     allSkills,
+				ActiveSkills:  activeSkills,
+				States:        states,
+				ResolvedPaths: discovery.ResolvePaths(),
+			})
+		}
+	}
+	snapshot := ws.Skills.Snapshot()
+	active := make(map[string]struct{}, len(snapshot.ActiveSkills))
+	for _, skill := range snapshot.ActiveSkills {
+		active[skill.SkillFilePath] = struct{}{}
+	}
+	catalog := skills.Catalog(snapshot.AllSkills, snapshot.ResolvedPaths, ws.Skills.WorkingDir())
+	result := proto.SkillCatalogResponse{
+		Skills: make([]proto.SkillCatalogEntry, len(catalog)),
+		States: skillStatesToProto(snapshot.States),
+	}
+	for i, entry := range catalog {
+		_, enabled := active[entry.ID]
+		result.Skills[i] = proto.SkillCatalogEntry{
+			ID:            entry.ID,
+			Name:          entry.Name,
+			Description:   entry.Description,
+			Source:        string(entry.Source),
+			UserInvocable: entry.UserInvocable,
+			Enabled:       enabled,
 		}
 	}
 	return result, nil

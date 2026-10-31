@@ -3,21 +3,13 @@
 package foundation
 
 import (
-	"fmt"
 	"strings"
 )
-
-// DefaultUserAgent returns the default User-Agent string for the SDK.
-// The result is "Crux-Foundation/<version>".
-func DefaultUserAgent(version string) string {
-	return fmt.Sprintf("Crux-Foundation/%s", version)
-}
 
 // ResolveHeaders returns a new header map, with a User-Agent field.
 //
 // Setting the value via WithUserAgent() takes precedence, however the user
-// agent can also be set via HTTP headers (i.e. WithHeaders()). Otherwise, the
-// default user agent will be used, i.e. Crux-Foundation/0.41.1.
+// agent can also be set via HTTP headers (i.e. WithHeaders()).
 //
 // Also note that the input map is never mutated.
 func ResolveHeaders(headers map[string]string, explicitUA, defaultUA string) map[string]string {
@@ -43,7 +35,7 @@ func ResolveHeaders(headers map[string]string, explicitUA, defaultUA string) map
 			delete(out, k)
 		}
 		out["User-Agent"] = val
-	default:
+	case defaultUA != "":
 		out["User-Agent"] = defaultUA
 	}
 

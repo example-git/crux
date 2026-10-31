@@ -170,6 +170,22 @@ func (c *Client) GetGlobalConfig(ctx context.Context) (*config.Config, error) {
 	return &cfg, nil
 }
 
+func (c *Client) GetConfigRequirements(ctx context.Context) (proto.ConfigRequirements, error) {
+	rsp, err := c.get(ctx, "/config-requirements", nil, nil)
+	if err != nil {
+		return proto.ConfigRequirements{}, err
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return proto.ConfigRequirements{}, err
+	}
+	var requirements proto.ConfigRequirements
+	if err := json.NewDecoder(rsp.Body).Decode(&requirements); err != nil {
+		return proto.ConfigRequirements{}, err
+	}
+	return requirements, nil
+}
+
 // Health checks the server's health status.
 func (c *Client) Health(ctx context.Context) error {
 	rsp, err := c.get(ctx, "/health", nil, nil)

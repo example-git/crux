@@ -18,7 +18,7 @@ import (
 	"github.com/google/uuid"
 )
 
-func runCopilotSDK(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) error {
+func runCopilotSDK(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) (returnErr error) {
 	type sessionState struct {
 		workingDir  string
 		turns       int
@@ -47,7 +47,7 @@ func runCopilotSDK(ctx context.Context, invocation compatibility.Invocation, req
 	if err != nil {
 		return err
 	}
-	defer bridge.Close()
+	defer func() { returnErr = errors.Join(returnErr, bridge.Close()) }()
 	output := &protocolOutput{writer: invocation.Stdout, contentLength: true}
 	lines := make(chan []byte)
 	scanErrors := make(chan error, 1)
@@ -436,17 +436,17 @@ func runCopilotSDK(ctx context.Context, invocation compatibility.Invocation, req
 				if sessionID == "" {
 					sessionID = nativeSession.session.ID
 				}
-				sessionsMu.Lock()
-				sessions[sessionID] = &sessionState{workingDir: workingDir, native: nativeSession, streaming: streaming}
-				sessionsMu.Unlock()
 				if params.SessionID != "" {
-					if bindingErr := saveCopilotBinding(nativeSession.workspace.value, sessionID, nativeSession.session.ID); bindingErr != nil {
+					if bindingErr := persistCopilotBinding(bridge, nativeSession, sessionID); bindingErr != nil {
 						if err := writeRPCError(output, message.ID, -32000, bindingErr.Error()); err != nil {
 							return err
 						}
 						continue
 					}
 				}
+				sessionsMu.Lock()
+				sessions[sessionID] = &sessionState{workingDir: workingDir, native: nativeSession, streaming: streaming}
+				sessionsMu.Unlock()
 				if err := writeRPCResult(output, message.ID, map[string]any{"status": "ready", "sessionId": sessionID, "capabilities": map[string]any{}, "workspacePath": workingDir, "startupPrompts": []any{}}); err != nil {
 					return err
 				}

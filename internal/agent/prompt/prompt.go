@@ -57,8 +57,11 @@ const (
 )
 
 type Lifecycle struct {
-	Stage LifecycleStage
-	Plan  string
+	Stage          LifecycleStage
+	Plan           string
+	GoalObjective  string
+	GoalStatus     string
+	GoalGeneration int64
 }
 
 type PromptDat struct {
@@ -85,6 +88,17 @@ type ContextFile struct {
 }
 
 type Option func(*Prompt)
+
+type instructionIsolationContextKey struct{}
+
+func WithInstructionIsolation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, instructionIsolationContextKey{}, true)
+}
+
+func instructionIsolationFromContext(ctx context.Context) bool {
+	isolated, _ := ctx.Value(instructionIsolationContextKey{}).(bool)
+	return isolated
+}
 
 func WithTimeFunc(fn func() time.Time) Option {
 	return func(p *Prompt) {
@@ -246,7 +260,7 @@ func (p *Prompt) buildLifecycleInstructions(ctx context.Context, provider, model
 		Text:      builder.String(),
 	}
 	var providerInstructions string
-	if p.name == "coder" && provider != "" {
+	if p.name == "coder" && provider != "" && !instructionIsolationFromContext(ctx) {
 		var handled bool
 		providerInstructions, handled, err = snapshot.ClientProviderContextInstructions(provider)
 		if !handled {
@@ -273,9 +287,13 @@ func (p *Prompt) buildLifecycleInstructions(ctx context.Context, provider, model
 			fantasy.DynamicInstruction(fantasy.InstructionKindRuntime, runtimeInstructions),
 		)
 	}
-	instructions, err = p.appendCoderContextInstructions(ctx, instructions, store)
-	if err != nil {
-		return fantasy.Instructions{}, err
+	if !instructionIsolationFromContext(ctx) {
+		instructions, err = p.appendCoderContextInstructions(ctx, instructions, store)
+		if err != nil {
+			return fantasy.Instructions{}, err
+		}
+	} else {
+		instructions = fantasy.Instructions{}
 	}
 	return instructions, nil
 }
@@ -474,8 +492,12 @@ func (p *Prompt) promptData(ctx context.Context, provider, model string, store *
 
 	contextFiles := loadContextFiles(cfg.Options.ContextPaths, store, resolve)
 	globalContextFiles := loadContextFiles(cfg.Options.GlobalContextPaths, store, resolve)
-
 	availSkillXML := p.availableSkillXML(store, cfg, resolve)
+	if instructionIsolationFromContext(ctx) {
+		contextFiles = nil
+		globalContextFiles = nil
+		availSkillXML = ""
+	}
 
 	var nativeSections string
 	mode := cmp.Or(cfg.Options.InstructionMode, "all")

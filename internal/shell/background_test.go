@@ -2,6 +2,7 @@ package shell
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -534,6 +535,55 @@ func TestBackgroundShellManagerRecoversPersistedTasks(t *testing.T) {
 	require.Equal(t, "persisted", stdout)
 	require.Empty(t, stderr)
 	require.Equal(t, 0, recovered.ActiveCount())
+}
+
+func TestBackgroundShellManagerRecoversAlongsideImageMetadata(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	outputStore, err := task.NewOutputStore(filepath.Join(root, "output"), task.OutputStoreOptions{})
+	require.NoError(t, err)
+	recordStore, err := task.NewStore(filepath.Join(root, "metadata"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, recordStore.Close()) })
+	image := task.Record{
+		Version:   task.RecordVersion,
+		ID:        "i0qaufpxi",
+		Type:      task.TypeImage,
+		Ownership: task.Ownership{WorkspaceID: "workspace", ParentSessionID: "parent"},
+		State:     task.StateToRecord(task.State{Status: task.StatusCompleted, EndedAt: time.Now()}),
+		OutputRef: "file:" + filepath.Join(root, "image.png"),
+		Image:     &task.ImageRecord{Mode: "generate", Backend: "flow", Count: 1, OutputPaths: []string{filepath.Join(root, "image.png")}},
+	}
+	data, err := json.Marshal(image)
+	require.NoError(t, err)
+	imagePath := filepath.Join(root, "metadata", image.ID+".task.json")
+	require.NoError(t, os.WriteFile(imagePath, data, 0o600))
+	output, err := outputStore.Create("b12345678")
+	require.NoError(t, err)
+	require.NoError(t, output.Close())
+	require.NoError(t, recordStore.Put(task.Record{
+		ID:        "b12345678",
+		Type:      task.TypeShell,
+		Ownership: image.Ownership,
+		State:     task.StateToRecord(task.State{Status: task.StatusCompleted, EndedAt: time.Now()}),
+		OutputRef: "task-output:b12345678",
+		Shell:     &task.ShellRecord{Command: "printf done", WorkingDirectory: root, Backgrounded: true},
+	}))
+
+	manager, err := NewBackgroundShellManagerWithStores("workspace", outputStore, recordStore)
+	require.NoError(t, err)
+	t.Cleanup(func() { manager.KillAll(t.Context()) })
+	require.Len(t, manager.List(), 1)
+	backgroundShell, ok := manager.Get("b12345678")
+	require.True(t, ok)
+	require.Equal(t, task.StatusCompleted, backgroundShell.State().Status)
+	after, err := os.ReadFile(imagePath)
+	require.NoError(t, err)
+	require.Equal(t, data, after)
+	records, err := recordStore.List()
+	require.NoError(t, err)
+	require.Len(t, records, 2)
 }
 
 func TestBackgroundShellManagerGracefulShutdownPersistsKilledAcrossRestart(t *testing.T) {

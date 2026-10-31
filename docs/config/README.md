@@ -24,7 +24,7 @@ Default user locations are:
 
 | Purpose | Unix-like default | Windows default |
 | --- | --- | --- |
-| User configuration | `~/.ai-cli/crux/` | `%USERPROFILE%\.config\crux\` |
+| User configuration | `~/.ai-cli/crux/` | `%USERPROFILE%\.ai-cli\crux\` |
 | Mutable data | `~/.ai-cli/data/crux/` | `%LOCALAPPDATA%\crux\` |
 | Cache | `~/.cache/crux/` | `%LOCALAPPDATA%\crux\cache\` |
 | Project state | `<project>/.crux/` | `<project>\.crux\` |
@@ -46,7 +46,7 @@ provider add deepseek \
   --api-key "${DEEPSEEK_API_KEY:?set DEEPSEEK_API_KEY}"
 
 model large deepseek/deepseek-chat
-permissions allow view ls grep
+permissions allow view ls search
 option skill-path ./skills
 ```
 
@@ -106,7 +106,7 @@ See [`../hooks/README.md`](../hooks/README.md) for the complete hook contract.
 ### Permissions
 
 ```bash
-permissions allow view ls grep edit
+permissions allow view ls search edit
 permissions deny bash
 ```
 

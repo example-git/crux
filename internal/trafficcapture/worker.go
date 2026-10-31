@@ -59,10 +59,17 @@ func RunWorker(configPath string) error {
 		return fmt.Errorf("enter approved target working directory: %w", err)
 	}
 	config.Output = fmt.Sprintf("/dev/fd/%d", output.Fd())
+	config.OriginalCommand = append([]string{}, config.Command...)
 	if err := bindWorkerExecutable(&config, executable); err != nil {
 		return err
 	}
 	config.WorkingDir = ""
+	manager, err := newCaptureManager(config, executable)
+	if err != nil {
+		return fmt.Errorf("start native capture manager: %w", err)
+	}
+	defer manager.close()
+	config.ControlSocket = manager.listener.Addr().String()
 	if err := writePrivateJSON(configPath, config); err != nil {
 		return fmt.Errorf("bind traffic capture worker config: %w", err)
 	}
@@ -76,13 +83,28 @@ func RunWorker(configPath string) error {
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
-		select {
-		case <-signals:
-			_ = os.WriteFile(config.StopPath, nil, 0o600)
-		case <-done:
+		for {
+			select {
+			case received := <-signals:
+				if received != os.Interrupt {
+					_ = os.WriteFile(config.StopPath, nil, 0o600)
+					return
+				}
+			case <-done:
+				return
+			}
 		}
 	}()
-	return runEmbeddedPython(embeddedWorker)
+	if err := runEmbeddedPython(embeddedWorker); err != nil {
+		return err
+	}
+	if status, ok := readWorkerStatus(config.StatusPath); ok && status.State == "failed" {
+		if status.ExitCode == 130 && status.Error == "" {
+			return nil
+		}
+		return workerFailure(status)
+	}
+	return nil
 }
 
 func openVerifiedCapturePath(path string, expected pathIdentity, flag int) (*os.File, error) {

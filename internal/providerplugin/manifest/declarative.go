@@ -11,6 +11,13 @@ type Credential struct {
 	LegacyFields   []string `json:"legacy_fields,omitempty" jsonschema:"uniqueItems=true,maxItems=32"`
 }
 
+type ExternalAuthPolicy struct {
+	Service     string `json:"service" jsonschema:"required,pattern=^[a-z][a-z0-9_-]*$,maxLength=64"`
+	Credential  string `json:"credential" jsonschema:"required,maxLength=64"`
+	Method      string `json:"method" jsonschema:"required,pattern=^[a-zA-Z][a-zA-Z0-9_-]*$,maxLength=64"`
+	TokenExport string `json:"token_export" jsonschema:"required,enum=never,enum=access-token"`
+}
+
 type OAuthFlow struct {
 	ID                    string          `json:"id" jsonschema:"required,pattern=^[a-z][a-z0-9_-]*$,maxLength=64"`
 	Credential            string          `json:"credential" jsonschema:"required,maxLength=64"`

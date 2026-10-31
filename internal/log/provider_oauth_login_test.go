@@ -14,7 +14,7 @@ import (
 )
 
 func TestProviderOAuthRoutesSuppressBothPayloadDirectionsForEveryMethod(t *testing.T) {
-	for _, action := range []string{"oauth/begin", "oauth/bind", "oauth/code", "oauth/wait", "oauth/cancel", "oauth/complete", "remove"} {
+	for _, action := range []string{"oauth/begin", "oauth/bind", "oauth/code", "oauth/wait", "oauth/cancel", "oauth/complete", "remove", "external"} {
 		for _, method := range []string{http.MethodPost, http.MethodGet} {
 			t.Run(action+"/"+method, func(t *testing.T) {
 				trace, database := testTrafficTrace(t)

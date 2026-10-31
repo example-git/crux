@@ -25,7 +25,6 @@ import (
 	"github.com/example-git/crux/internal/csync"
 	"github.com/example-git/crux/internal/discover"
 	"github.com/example-git/crux/internal/env"
-	"github.com/example-git/crux/internal/filepathext"
 	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/home"
 	"github.com/example-git/crux/internal/lock"
@@ -94,9 +93,10 @@ func LoadRemoteClient(debug bool) (*ConfigStore, error) {
 }
 
 type configLoadOptions struct {
-	previewReadOnly    bool
-	globalOnly         bool
-	bindRemoteAccounts bool
+	providerDiscoveryOnly bool
+	previewReadOnly       bool
+	globalOnly            bool
+	bindRemoteAccounts    bool
 }
 
 func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment env.Env, publishProcessState bool, options configLoadOptions) (*ConfigStore, error) {
@@ -141,6 +141,7 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 	// Load workspace config last so it has highest priority.
 	wsData, workspaceReadErr := os.ReadFile(store.workspacePath)
 	basis.source(store.workspacePath, wsData, wsData, workspaceReadErr == nil)
+	basis.assignReadRoles(baseEnvironment, store.workspacePath)
 	if workspaceReadErr != nil && !errors.Is(workspaceReadErr, os.ErrNotExist) {
 		basis.valid = false
 	}
@@ -205,6 +206,10 @@ func loadWithEnvironment(workingDir, dataDir string, debug bool, baseEnvironment
 		store.providerRegistry = scan.Registry.Clone()
 	}
 	store.resolver = valueResolver
+	if options.providerDiscoveryOnly {
+		store.effectiveEnvironment = cloneEnvironment(candidateEnv)
+		return store, nil
+	}
 
 	store.writeMu.Lock()
 	defer store.writeMu.Unlock()
@@ -1042,16 +1047,7 @@ func (c *Config) setDefaultsFromEnvironment(workingDir, dataDir string, environm
 	slices.Sort(c.Options.GlobalContextPaths)
 	c.Options.GlobalContextPaths = slices.Compact(c.Options.GlobalContextPaths)
 
-	if dataDir != "" {
-		c.Options.DataDirectory = dataDir
-	} else if c.Options.DataDirectory == "" {
-		if path, ok := fsext.LookupClosestBounded(workingDir, projectBoundary(workingDir), defaultDataDirectory); ok {
-			c.Options.DataDirectory = path
-		} else {
-			c.Options.DataDirectory = filepath.Join(workingDir, defaultDataDirectory)
-		}
-	}
-	c.Options.DataDirectory = filepath.Clean(filepathext.SmartJoin(workingDir, c.Options.DataDirectory))
+	c.Options.DataDirectory = resolveDataDirectory(workingDir, dataDir, c.Options.DataDirectory)
 	if c.Providers == nil {
 		c.Providers = csync.NewMap[string, ProviderConfig]()
 	}
@@ -1488,7 +1484,7 @@ func lookupConfigsFromEnvironment(cwd string, environment env.Env, globalOnly ..
 		shellConfigSibling(globalConfigPath),
 		globalConfigDataFromEnvironment(appName, environment),
 	}
-	configPaths = slices.DeleteFunc(configPaths, func(path string) bool { return path == "" })
+	configPaths = uniqueCleanConfigPaths(configPaths)
 	if len(globalOnly) > 0 && globalOnly[0] {
 		return configPaths
 	}
@@ -1513,7 +1509,24 @@ func lookupConfigsFromEnvironment(cwd string, environment env.Env, globalOnly ..
 	// reverse order so last config has more priority
 	slices.Reverse(foundConfigs)
 
-	return append(configPaths, foundConfigs...)
+	return uniqueCleanConfigPaths(append(configPaths, foundConfigs...))
+}
+
+func uniqueCleanConfigPaths(paths []string) []string {
+	result := make([]string, 0, len(paths))
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		path = filepath.Clean(path)
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		result = append(result, path)
+	}
+	return result
 }
 
 func loadFromConfigPaths(ctx context.Context, configPaths []string) (*Config, []string, error) {
@@ -1608,6 +1621,7 @@ func loadFromConfigPathsObserved(ctx context.Context, configPaths []string, over
 		}
 	}
 
+	basis.assignReadRoles(environment, "")
 	cfg, err := loadFromBytes(configs)
 	if err != nil {
 		return nil, nil, err

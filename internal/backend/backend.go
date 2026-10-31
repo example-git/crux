@@ -153,6 +153,8 @@ type Backend struct {
 	// complete, so server-side serialization does not consume createGrace.
 	pendingResponses map[string]int
 	mu               sync.Mutex
+	fileSearchMu     sync.Mutex
+	fileSearch       map[string]*workspaceFileSearchSession
 
 	cfg             *config.ConfigStore
 	initConfig      func(string, string, bool) (*config.ConfigStore, error)
@@ -1264,6 +1266,7 @@ func (b *Backend) teardown(ws *Workspace) error {
 	// The draining reservation keeps the daemon non-idle until cleanup joins.
 	b.mu.Unlock()
 
+	b.closeWorkspaceFileSearchSessions(ws.ID)
 	ws.invokeShutdown()
 	b.releasePrincipalWorkspace(ws)
 	return ws.shutdownErr
@@ -1363,6 +1366,7 @@ func (b *Backend) CloseIdleWorkspace(id string) error {
 	}
 	b.drainingPaths[ws.resolvedPath] = ws
 	b.mu.Unlock()
+	b.closeWorkspaceFileSearchSessions(ws.ID)
 	ws.invokeShutdown()
 	b.releasePrincipalWorkspace(ws)
 	return ws.shutdownErr
@@ -1498,6 +1502,7 @@ func (b *Backend) Config() *config.ConfigStore {
 
 // Shutdown initiates a graceful server shutdown.
 func (b *Backend) Shutdown() {
+	b.closeAllWorkspaceFileSearchSessions()
 	b.mu.Lock()
 	b.closing = true
 	fn := b.shutdownFn

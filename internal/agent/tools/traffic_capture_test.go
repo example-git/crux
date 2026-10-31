@@ -80,15 +80,30 @@ func TestPrepareTrafficCaptureParamsTracksExplicitWorkingDirectory(t *testing.T)
 func TestTrafficCaptureResponseExposesUsableViewerURL(t *testing.T) {
 	viewerURL := "http://127.0.0.1:8081/?token=plain-user-token"
 	result, metadata := trafficCaptureResponse(trafficcapture.Metadata{
-		Session:     "capture-session",
-		CapturePath: "/private/capture.mitm",
-		StatusPath:  "/private/status.json",
-		PaneLogPath: "/private/pane.log",
-		ViewerURL:   viewerURL,
+		Session:       "capture-session",
+		CapturePath:   "/private/capture.mitm",
+		StatusPath:    "/private/status.json",
+		PaneLogPath:   "/private/pane.log",
+		TargetLogPath: "/private/target.log",
+		ControlSocket: "/private/control.sock",
+		ViewerURL:     viewerURL,
 	})
 
 	require.Contains(t, result, "Viewer: "+viewerURL)
 	require.Equal(t, viewerURL, metadata.ViewerURL)
+	require.Equal(t, "/private/target.log", metadata.TargetLogPath)
+	require.Equal(t, "/private/control.sock", metadata.ControlSocket)
+	require.Contains(t, result, "cap logs main -f")
+	require.Contains(t, result, "management shell")
+	require.Contains(t, result, "Target log: /private/target.log")
+}
+
+func TestTrafficCaptureResponseReportsTargetExitWithoutClosingShell(t *testing.T) {
+	code := 0
+	result, metadata := trafficCaptureResponse(trafficcapture.Metadata{Session: "capture", TargetExitCode: &code})
+	require.Contains(t, result, "Selected target exit code: 0; the management shell remains available")
+	require.NotNil(t, metadata.TargetExitCode)
+	require.Zero(t, *metadata.TargetExitCode)
 }
 
 func TestTrafficCaptureDescriptionUsesEmbeddedRuntime(t *testing.T) {

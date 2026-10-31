@@ -14,6 +14,7 @@ import (
 	"charm.land/log/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/term"
+	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/client"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/format"
@@ -63,13 +64,15 @@ crux run --continue "Follow up on your last response"
   `,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var (
-			quiet, _          = cmd.Flags().GetBool("quiet")
-			verbose, _        = cmd.Flags().GetBool("verbose")
-			largeModel, _     = cmd.Flags().GetString("model")
-			smallModel, _     = cmd.Flags().GetString("small-model")
-			sessionID, _      = cmd.Flags().GetString("session")
-			useLast, _        = cmd.Flags().GetBool("continue")
-			permissionMode, _ = cmd.Flags().GetString("compatibility-permission-mode")
+			quiet, _                    = cmd.Flags().GetBool("quiet")
+			verbose, _                  = cmd.Flags().GetBool("verbose")
+			largeModel, _               = cmd.Flags().GetString("model")
+			smallModel, _               = cmd.Flags().GetString("small-model")
+			sessionID, _                = cmd.Flags().GetString("session")
+			useLast, _                  = cmd.Flags().GetBool("continue")
+			permissionMode, _           = cmd.Flags().GetString("compatibility-permission-mode")
+			isolatedInstructionsFile, _ = cmd.Flags().GetString("isolated-instructions-file")
+			isolatedTools, _            = cmd.Flags().GetStringSlice("isolated-tool")
 		)
 
 		// Cancel on SIGINT or SIGTERM.
@@ -84,6 +87,25 @@ crux run --continue "Follow up on your last response"
 
 		if permissionMode != string(proto.AgentPermissionDeny) && permissionMode != string(proto.AgentPermissionBypass) {
 			return fmt.Errorf("invalid compatibility permission mode %q", permissionMode)
+		}
+		if isolatedInstructionsFile == "" && len(isolatedTools) > 0 {
+			return fmt.Errorf("--isolated-tool requires --isolated-instructions-file")
+		}
+		if isolatedInstructionsFile != "" {
+			if sessionID != "" || useLast {
+				return fmt.Errorf("--isolated-instructions-file cannot be combined with --session or --continue")
+			}
+			instructions, err := os.ReadFile(isolatedInstructionsFile)
+			if err != nil {
+				return fmt.Errorf("read isolated instructions: %w", err)
+			}
+			if strings.TrimSpace(string(instructions)) == "" {
+				return fmt.Errorf("isolated instructions file is empty")
+			}
+			ctx = agent.WithTurnInstructions(ctx, string(instructions))
+			ctx = agent.WithInstructionIsolation(ctx)
+			ctx = agent.WithInstructionIsolationTools(ctx, isolatedTools)
+			cmd.SetContext(ctx)
 		}
 
 		prompt := strings.Join(args, " ")
@@ -159,6 +181,8 @@ func init() {
 	runCmd.Flags().BoolP("continue", "C", false, "Continue the most recent session")
 	runCmd.Flags().String("compatibility-permission-mode", string(proto.AgentPermissionBypass), "Set non-interactive permission behavior")
 	_ = runCmd.Flags().MarkHidden("compatibility-permission-mode")
+	runCmd.Flags().String("isolated-instructions-file", "", "Use a file as the only non-tool instructions for a fresh run")
+	runCmd.Flags().StringSlice("isolated-tool", nil, "Tool name to retain with isolated instructions (repeatable)")
 	runCmd.MarkFlagsMutuallyExclusive("session", "continue")
 }
 

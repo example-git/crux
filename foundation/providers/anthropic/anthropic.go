@@ -217,8 +217,7 @@ func (a *provider) LanguageModel(ctx context.Context, modelID string) (fantasy.L
 	if a.options.baseURL != "" {
 		clientOptions = append(clientOptions, option.WithBaseURL(a.options.baseURL))
 	}
-	defaultUA := fantasy.DefaultUserAgent(fantasy.Version)
-	resolved := fantasy.ResolveHeaders(a.options.headers, a.options.userAgent, defaultUA)
+	resolved := fantasy.ResolveHeaders(a.options.headers, a.options.userAgent, "")
 	for key, value := range resolved {
 		clientOptions = append(clientOptions, option.WithHeader(key, value))
 	}

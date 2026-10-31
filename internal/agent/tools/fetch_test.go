@@ -26,6 +26,24 @@ func runFetchTest(t *testing.T, tool fantasy.AgentTool, session string, params F
 	return response
 }
 
+func TestBrowserFetchIdentityAlwaysUsesRecentGoogleChrome(t *testing.T) {
+	for _, test := range []struct {
+		goos, platform, clientHint string
+	}{
+		{goos: "darwin", platform: "Macintosh; Intel Mac OS X 10_15_7", clientHint: "macOS"},
+		{goos: "windows", platform: "Windows NT 10.0; Win64; x64", clientHint: "Windows"},
+		{goos: "linux", platform: "X11; Linux x86_64", clientHint: "Linux"},
+	} {
+		t.Run(test.goos, func(t *testing.T) {
+			userAgent, clientHint := browserFetchIdentity(test.goos)
+			require.Contains(t, userAgent, "Mozilla/5.0 ("+test.platform+")")
+			require.Contains(t, userAgent, "Chrome/157.0.0.0")
+			require.NotContains(t, strings.ToLower(userAgent), "crux")
+			require.Equal(t, test.clientHint, clientHint)
+		})
+	}
+}
+
 func TestFetchParentCancellationRemainsFatal(t *testing.T) {
 	for _, phase := range []string{"headers", "body"} {
 		t.Run(phase, func(t *testing.T) {
@@ -87,8 +105,19 @@ three()
 			http.Redirect(w, r, "/docs/guide", http.StatusFound)
 			return
 		}
-		if r.Header.Get("Cookie") != "" || r.UserAgent() != "crux/1.0" {
-			t.Error("normal fetch changed its anonymous request identity")
+		if r.Header.Get("Cookie") != "" {
+			t.Error("normal fetch sent browser-session cookies")
+		}
+		if r.UserAgent() != BrowserUserAgent || strings.Contains(strings.ToLower(r.UserAgent()), "crux") {
+			t.Errorf("normal fetch did not use an anonymous browser identity: %q", r.UserAgent())
+		}
+		for name, value := range map[string]string{
+			"Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Site": "none",
+			"Sec-Fetch-User": "?1", "Upgrade-Insecure-Requests": "1",
+		} {
+			if r.Header.Get(name) != value {
+				t.Errorf("normal fetch header %s = %q, want %q", name, r.Header.Get(name), value)
+			}
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = fmt.Fprint(w, page)

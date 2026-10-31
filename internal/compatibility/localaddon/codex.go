@@ -3,18 +3,21 @@ package localaddon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 
 	"github.com/example-git/crux/internal/compatibility"
+	"github.com/example-git/crux/internal/oauth/codex"
+	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
 	"github.com/example-git/crux/internal/proto"
 )
 
 type codexAdapter struct{}
 
-func (codexAdapter) Translate(_ context.Context, invocation compatibility.Invocation) (compatibility.Request, error) {
+func (codexAdapter) Translate(ctx context.Context, invocation compatibility.Invocation) (compatibility.Request, error) {
 	request := compatibility.Request{
 		Source:     "codex",
 		Style:      compatibility.ExecutionInteractive,
@@ -29,6 +32,8 @@ func (codexAdapter) Translate(_ context.Context, invocation compatibility.Invoca
 	parser := parser{args: arguments}
 	var prompt []string
 	readStdin := false
+	configOverrides := make(map[string]string)
+	var duplicateConfigOverrides []string
 	for parser.more() {
 		argument := parser.next()
 		name := optionName(argument)
@@ -36,22 +41,44 @@ func (codexAdapter) Translate(_ context.Context, invocation compatibility.Invoca
 		case "-h", "--help":
 			return compatibility.Request{}, successOutput("Usage: codex [OPTIONS] [PROMPT]\n       codex exec [OPTIONS] [PROMPT]\n", false)
 		case "-V", "--version":
-			return compatibility.Request{}, successOutput("codex-cli 0.149.1\n", false)
+			return compatibility.Request{}, compatibilityVersionOutput(ctx, invocation, "codex")
 		case "-m", "--model":
 			value, err := parser.value(name, argument)
 			if err != nil {
 				return compatibility.Request{}, codexParseError(err)
 			}
 			request.Model = value
-		case "-c", "--config", "--enable", "--disable", "--remote", "--remote-auth-token-env", "--local-provider", "-p", "--profile", "--thread-source", "--color":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
+		case "-c", "--config":
+			value, err := parser.value(name, argument)
+			if err != nil {
 				return compatibility.Request{}, codexParseError(err)
 			}
-		case "--strict-config", "--oss", "--approve-for-me", "--dangerously-bypass-hook-trust", "--search", "--ignore-user-config", "--ignore-rules", "--codex-run-as-apply-patch", "--codex-run-as-arg0-exec-helper", "--codex-run-as-fs-helper", "--all", "--include-non-interactive", "--uncommitted":
+			key, value, err := parseCodexConfigOverride(value)
+			if err != nil {
+				return compatibility.Request{}, codexParseError(err)
+			}
+			if _, exists := configOverrides[key]; exists {
+				duplicateConfigOverrides = append(duplicateConfigOverrides, key)
+			}
+			configOverrides[key] = value
+		case "--thread-source":
+			value, err := parser.value(name, argument)
+			if err != nil {
+				return compatibility.Request{}, codexParseError(err)
+			}
+			if !enum(value, "cli", "computer_history") {
+				return compatibility.Request{}, codexParseError(fmt.Errorf("unsupported --thread-source value %q", value))
+			}
+			request.ThreadSource = value
+		case "--enable", "--disable", "--remote", "--remote-auth-token-env", "--local-provider", "-p", "--profile", "--color":
+			consumeNoopOptionalValue(&parser, argument)
+		case "--strict-config", "--oss", "--approve-for-me", "--dangerously-bypass-hook-trust", "--search", "--codex-run-as-apply-patch", "--codex-run-as-arg0-exec-helper", "--codex-run-as-fs-helper", "--all", "--include-non-interactive", "--uncommitted":
+		case "--ignore-user-config":
+			request.IgnoreUserConfig = true
+		case "--ignore-rules":
+			request.IgnoreRules = true
 		case "--base", "--commit", "--title":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
-				return compatibility.Request{}, codexParseError(err)
-			}
+			consumeNoopOptionalValue(&parser, argument)
 		case "-C", "--cd":
 			value, err := parser.value(name, argument)
 			if err != nil {
@@ -59,11 +86,7 @@ func (codexAdapter) Translate(_ context.Context, invocation compatibility.Invoca
 			}
 			request.WorkingDir = absoluteFrom(invocation.WorkingDir, value)
 		case "--add-dir":
-			value, err := parser.value(name, argument)
-			if err != nil {
-				return compatibility.Request{}, codexParseError(err)
-			}
-			request.AdditionalDirectories = append(request.AdditionalDirectories, value)
+			consumeNoopOptionalValue(&parser, argument)
 		case "-i", "--image":
 			value, err := parser.value(name, argument)
 			if err != nil {
@@ -118,7 +141,7 @@ func (codexAdapter) Translate(_ context.Context, invocation compatibility.Invoca
 			}
 		default:
 			if strings.HasPrefix(argument, "-") {
-				return compatibility.Request{}, parseError(2, "error: unexpected argument %q found\n\nUsage: codex [OPTIONS] [PROMPT]\n", argument)
+				continue
 			}
 			if len(prompt) == 0 && !subcommandResolved {
 				switch argument {
@@ -195,20 +218,136 @@ func (codexAdapter) Translate(_ context.Context, invocation compatibility.Invoca
 	if request.Style == compatibility.ExecutionHeadless && strings.TrimSpace(request.Prompt.Text) == "" {
 		return compatibility.Request{}, parseError(2, "error: no prompt provided\n\nUsage: codex exec [OPTIONS] [PROMPT]\n")
 	}
+	for _, key := range duplicateConfigOverrides {
+		_, fixed := codexSkySightFixedOverrides[key]
+		if fixed || enum(key, "model", "model_reasoning_effort", "developer_instructions") {
+			return compatibility.Request{}, codexParseError(fmt.Errorf("duplicate --config override %s", key))
+		}
+	}
+	if err := applyCodexConfigOverrides(&request, configOverrides); err != nil {
+		return compatibility.Request{}, codexParseError(err)
+	}
 	if err := normalizeCodexCLIPolicy(&request); err != nil {
 		return compatibility.Request{}, codexParseError(err)
 	}
 	return request, nil
 }
 
+func parseCodexConfigOverride(override string) (string, string, error) {
+	key, value, ok := strings.Cut(override, "=")
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if !ok || key == "" || value == "" {
+		return "", "", fmt.Errorf("invalid --config override %q", override)
+	}
+	if strings.HasPrefix(value, `"`) {
+		decoded, err := strconv.Unquote(value)
+		if err != nil {
+			return "", "", fmt.Errorf("invalid value for --config %s: %w", key, err)
+		}
+		value = decoded
+	}
+	return key, value, nil
+}
+
+var codexSkySightFixedOverrides = map[string]string{
+	"model_provider":                                     "openai-memgen",
+	"model_providers.openai-memgen.name":                 "OpenAI",
+	"model_providers.openai-memgen.requires_openai_auth": "true",
+	"model_providers.openai-memgen.supports_websockets":  "true",
+	"model_providers.openai-memgen.http_headers":         `{ "X-OpenAI-Memgen-Request" = "true" }`,
+	"features.memories":                                  "false",
+	"features.apps":                                      "false",
+	"features.plugins":                                   "false",
+	"features.multi_agent":                               "false",
+	"features.tool_search":                               "false",
+	"features.tool_suggest":                              "false",
+	"web_search":                                         "disabled",
+	"mcp_servers":                                        "{}",
+	"plugins":                                            "{}",
+	"apps._default.enabled":                              "false",
+	"analytics.enabled":                                  "false",
+	"otel.exporter":                                      "none",
+	"otel.trace_exporter":                                "none",
+	"otel.metrics_exporter":                              "none",
+	"project_doc_max_bytes":                              "0",
+	"skills.bundled.enabled":                             "false",
+	"skills.config":                                      "[]",
+}
+
+func applyCodexConfigOverrides(request *compatibility.Request, overrides map[string]string) error {
+	if len(overrides) == 0 {
+		return nil
+	}
+	bundlePresent := false
+	for key := range overrides {
+		if _, fixed := codexSkySightFixedOverrides[key]; fixed || key == "model_reasoning_effort" || key == "developer_instructions" {
+			bundlePresent = true
+			break
+		}
+	}
+	for key, value := range overrides {
+		switch key {
+		case "model":
+		case "model_reasoning_effort":
+			if !enum(value, "none", "low", "medium", "high", "xhigh", "max") {
+				return fmt.Errorf("unsupported model_reasoning_effort value %q", value)
+			}
+		case "developer_instructions":
+			if value == "" {
+				return errors.New("developer_instructions must not be empty")
+			}
+		default:
+			expected, supported := codexSkySightFixedOverrides[key]
+			if !supported {
+				continue
+			}
+			normalized := value
+			if key == "model_providers.openai-memgen.http_headers" {
+				normalized = strings.Join(strings.Fields(value), " ")
+			}
+			if normalized != expected {
+				return fmt.Errorf("unsupported --config %s value %q", key, value)
+			}
+		}
+	}
+	if bundlePresent {
+		for key := range codexSkySightFixedOverrides {
+			if _, present := overrides[key]; !present {
+				return errors.New("the SkySight Memgen override must include its complete atomic contract")
+			}
+		}
+		if _, present := overrides["model_reasoning_effort"]; !present {
+			return errors.New("the SkySight Memgen override must include its complete atomic contract")
+		}
+		if _, present := overrides["developer_instructions"]; !present {
+			return errors.New("the SkySight Memgen override must include its complete atomic contract")
+		}
+	}
+	if model, present := overrides["model"]; present && request.Model == "" {
+		request.Model = model
+	}
+	if bundlePresent {
+		request.AnalysisEffort = overrides["model_reasoning_effort"]
+		request.SystemPrompt = overrides["developer_instructions"]
+		request.InstructionIsolation = true
+		request.ModelProvider = codex.ID
+		request.ProviderOperation = codexresponses.OperationMemgen
+	}
+	return nil
+}
+
 func normalizeCodexCLIPolicy(request *compatibility.Request) error {
 	approval := string(request.Permissions.Mode)
-	if approval == "" {
-		approval = "on-request"
-	}
 	sandbox := string(request.Permissions.Sandbox)
 	if sandbox == "" {
 		sandbox = "workspace-write"
+	}
+	if approval == "" {
+		approval = "on-request"
+		if request.Style == compatibility.ExecutionHeadless && sandbox == "read-only" {
+			approval = "never"
+		}
 	}
 	if request.Permissions.Bypass {
 		if (request.Permissions.Mode != "" && approval != "never") || (request.Permissions.Sandbox != "" && sandbox != "danger-full-access") {
@@ -252,11 +391,13 @@ func translateCodexAppServer(invocation compatibility.Invocation, base compatibi
 				return compatibility.Request{}, parseError(2, "error: only the app-server stdio transport is supported by the Crux compatibility layer\n")
 			}
 		case "-c", "--config", "--enable", "--disable", "--code-mode-host", "--ws-auth", "--ws-token-file", "--ws-token-sha256", "--ws-shared-secret-file", "--ws-issuer", "--ws-audience", "--ws-max-clock-skew-seconds":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
-				return compatibility.Request{}, codexParseError(err)
-			}
+			consumeNoopOptionalValue(&parser, argument)
 		default:
-			return compatibility.Request{}, parseError(2, "error: app-server option %q is not supported by the Crux compatibility layer\n", argument)
+			if strings.HasPrefix(argument, "-") {
+				consumeNoopOptionalValue(&parser, argument)
+				continue
+			}
+			return compatibility.Request{}, parseError(2, "error: app-server command %q is not supported by the Crux compatibility layer\n", argument)
 		}
 	}
 	base.Source = "codex"
@@ -284,12 +425,14 @@ func translateCodexSchemaGenerator(invocation compatibility.Invocation, command 
 			}
 			out = absoluteFrom(invocation.WorkingDir, value)
 		case "-c", "--config", "--enable", "--disable", "-p", "--prettier":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
-				return compatibility.Request{}, codexParseError(err)
-			}
+			consumeNoopOptionalValue(&parser, argument)
 		case "--experimental":
 		default:
-			return compatibility.Request{}, parseError(2, "error: app-server schema option %q is not supported by the Crux compatibility layer\n", argument)
+			if strings.HasPrefix(argument, "-") {
+				consumeNoopOptionalValue(&parser, argument)
+				continue
+			}
+			return compatibility.Request{}, parseError(2, "error: unexpected app-server schema argument %q\n", argument)
 		}
 	}
 	if out == "" {

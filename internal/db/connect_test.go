@@ -7,8 +7,72 @@ import (
 	"testing"
 
 	"github.com/example-git/crux/internal/lock"
+	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 )
+
+func TestConnect_MigratesLegacyMessagesWithEmptySubmissionID(t *testing.T) {
+	t.Cleanup(ResetPool)
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	legacy, err := openDB(filepath.Join(dataDir, "crux.db"))
+	require.NoError(t, err)
+	require.NoError(t, initGoose())
+	require.NoError(t, goose.UpTo(legacy, "migrations", 20260921000000))
+	_, err = legacy.ExecContext(ctx, `INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`, "session-1", "Legacy", 1, 1)
+	require.NoError(t, err)
+	_, err = legacy.ExecContext(ctx, `INSERT INTO messages (id, session_id, role, parts, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, "message-1", "session-1", "user", `[]`, 1, 1)
+	require.NoError(t, err)
+	require.NoError(t, legacy.Close())
+
+	conn, err := Connect(ctx, dataDir)
+	require.NoError(t, err)
+	message, err := New(conn).GetMessage(ctx, "message-1")
+	require.NoError(t, err)
+	require.Empty(t, message.SubmissionID)
+	require.NoError(t, Release(dataDir))
+}
+
+func TestConnect_MigratesLegacySessionsWithEmptyAnalysisEffort(t *testing.T) {
+	t.Cleanup(ResetPool)
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	legacy, err := openDB(filepath.Join(dataDir, "crux.db"))
+	require.NoError(t, err)
+	require.NoError(t, initGoose())
+	require.NoError(t, goose.UpTo(legacy, "migrations", 20260921010000))
+	_, err = legacy.ExecContext(ctx, `INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`, "session-1", "Legacy", 1, 1)
+	require.NoError(t, err)
+	require.NoError(t, legacy.Close())
+
+	conn, err := Connect(ctx, dataDir)
+	require.NoError(t, err)
+	current, err := New(conn).GetSessionByID(ctx, "session-1")
+	require.NoError(t, err)
+	require.Empty(t, current.AnalysisEffort)
+	require.NoError(t, Release(dataDir))
+}
+
+func TestConnect_MigratesLegacySessionsWithEmptyModelSelection(t *testing.T) {
+	t.Cleanup(ResetPool)
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	legacy, err := openDB(filepath.Join(dataDir, "crux.db"))
+	require.NoError(t, err)
+	require.NoError(t, initGoose())
+	require.NoError(t, goose.UpTo(legacy, "migrations", 20260921030000))
+	_, err = legacy.ExecContext(ctx, `INSERT INTO sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`, "session-1", "Legacy", 1, 1)
+	require.NoError(t, err)
+	require.NoError(t, legacy.Close())
+
+	conn, err := Connect(ctx, dataDir)
+	require.NoError(t, err)
+	current, err := New(conn).GetSessionByID(ctx, "session-1")
+	require.NoError(t, err)
+	require.Empty(t, current.Model)
+	require.Empty(t, current.Provider)
+	require.NoError(t, Release(dataDir))
+}
 
 func TestConnect_SharesConnectionForSameDataDir(t *testing.T) {
 	t.Cleanup(ResetPool)

@@ -44,18 +44,19 @@ type AgentUsage struct {
 }
 
 type View struct {
-	ID             string     `json:"id"`
-	Type           Type       `json:"type"`
-	Description    string     `json:"description"`
-	Command        string     `json:"command,omitempty"`
-	Ownership      Ownership  `json:"ownership"`
-	State          State      `json:"state"`
-	OutputRef      string     `json:"output_ref,omitempty"`
-	ChildSessionID string     `json:"child_session_id,omitempty"`
-	ContinuationOf string     `json:"continuation_of,omitempty"`
-	AgentType      string     `json:"agent_type,omitempty"`
-	FinalOutput    string     `json:"final_output,omitempty"`
-	Usage          AgentUsage `json:"usage"`
+	ID               string     `json:"id"`
+	Type             Type       `json:"type"`
+	Description      string     `json:"description"`
+	Command          string     `json:"command,omitempty"`
+	WorkingDirectory string     `json:"working_directory,omitempty"`
+	Ownership        Ownership  `json:"ownership"`
+	State            State      `json:"state"`
+	OutputRef        string     `json:"output_ref,omitempty"`
+	ChildSessionID   string     `json:"child_session_id,omitempty"`
+	ContinuationOf   string     `json:"continuation_of,omitempty"`
+	AgentType        string     `json:"agent_type,omitempty"`
+	FinalOutput      string     `json:"final_output,omitempty"`
+	Usage            AgentUsage `json:"usage"`
 }
 
 type OutputResult struct {

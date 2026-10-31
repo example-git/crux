@@ -390,6 +390,11 @@ definitions:
     additionalProperties:
       $ref: '#/definitions/config.MCPConfig'
     type: object
+  config.Memories:
+    properties:
+      consolidation_model:
+        type: string
+    type: object
   config.NativeIdentity:
     properties:
       originator:
@@ -736,6 +741,8 @@ definitions:
         type: array
       images:
         $ref: '#/definitions/config.ImageConfiguration'
+      memories:
+        $ref: '#/definitions/config.Memories'
       models:
         additionalProperties:
           $ref: '#/definitions/config.SelectedModel'
@@ -971,6 +978,11 @@ definitions:
     properties:
       $schema:
         type: string
+      client_settings:
+        additionalProperties:
+          additionalProperties: {}
+          type: object
+        type: object
       env:
         additionalProperties:
           type: string
@@ -988,6 +1000,8 @@ definitions:
         $ref: '#/definitions/config.LSPs'
       mcp:
         $ref: '#/definitions/config.MCPs'
+      memories:
+        $ref: '#/definitions/config.Memories'
       models:
         additionalProperties:
           $ref: '#/definitions/config.SelectedModel'
@@ -1219,24 +1233,62 @@ definitions:
       model_cfg:
         $ref: '#/definitions/config.SelectedModel'
     type: object
+  proto.AgentInputPart:
+    properties:
+      path:
+        type: string
+      text:
+        type: string
+      text_elements:
+        items: {}
+        type: array
+      type:
+        type: string
+    type: object
   proto.AgentMessage:
     properties:
+      analysis_effort:
+        type: string
+      assistant_item_id:
+        type: string
       attachments:
         items:
           $ref: '#/definitions/proto.Attachment'
         type: array
       delivery_mode:
         type: string
+      input_parts:
+        items:
+          $ref: '#/definitions/proto.AgentInputPart'
+        type: array
+      instruction_isolation:
+        type: boolean
+      instruction_isolation_tools:
+        items:
+          type: string
+        type: array
+      message_run_id:
+        type: string
       permission_mode:
         $ref: '#/definitions/proto.AgentPermissionMode'
       prompt:
         type: string
+      provider_operation:
+        type: string
+      require_active_run:
+        type: boolean
       run_id:
         type: string
       session_id:
         type: string
       submission_id:
         type: string
+      turn_instructions:
+        type: string
+      user_message_id:
+        type: string
+      wait_for_admission:
+        type: boolean
     type: object
   proto.AgentPermissionMode:
     enum:
@@ -1250,6 +1302,10 @@ definitions:
     - AgentPermissionBypass
   proto.AgentSession:
     properties:
+      analysis_effort:
+        type: string
+      archived:
+        type: boolean
       attached_clients:
         type: integer
       completion_tokens:
@@ -1260,6 +1316,10 @@ definitions:
         type: integer
       estimated_usage:
         type: boolean
+      forked_from_session_id:
+        type: string
+      goal:
+        $ref: '#/definitions/proto.Goal'
       id:
         type: string
       is_busy:
@@ -1268,12 +1328,16 @@ definitions:
         type: integer
       mode:
         type: string
+      model:
+        type: string
       parent_session_id:
         type: string
       plan:
         type: string
       prompt_tokens:
         type: integer
+      provider:
+        type: string
       summary_message_id:
         type: string
       title:
@@ -1532,6 +1596,19 @@ definitions:
       session_id:
         type: string
     type: object
+  proto.Goal:
+    properties:
+      error:
+        type: string
+      generation:
+        type: integer
+      objective:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: integer
+    type: object
   proto.ImportCopilotRequest:
     properties:
       owner:
@@ -1668,6 +1745,8 @@ definitions:
         type: string
       is_summary_message:
         type: boolean
+      item_id:
+        type: string
       model:
         type: string
       parts:
@@ -1677,7 +1756,11 @@ definitions:
         type: string
       role:
         $ref: '#/definitions/proto.MessageRole'
+      run_id:
+        type: string
       session_id:
+        type: string
+      submission_id:
         type: string
       updated_at:
         type: integer
@@ -2206,6 +2289,10 @@ definitions:
     type: object
   proto.Session:
     properties:
+      analysis_effort:
+        type: string
+      archived:
+        type: boolean
       attached_clients:
         type: integer
       completion_tokens:
@@ -2216,6 +2303,10 @@ definitions:
         type: integer
       estimated_usage:
         type: boolean
+      forked_from_session_id:
+        type: string
+      goal:
+        $ref: '#/definitions/proto.Goal'
       id:
         type: string
       is_busy:
@@ -2224,12 +2315,16 @@ definitions:
         type: integer
       mode:
         type: string
+      model:
+        type: string
       parent_session_id:
         type: string
       plan:
         type: string
       prompt_tokens:
         type: integer
+      provider:
+        type: string
       summary_message_id:
         type: string
       title:

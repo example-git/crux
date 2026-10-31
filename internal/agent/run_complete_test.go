@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -193,12 +195,52 @@ func TestDrainQueueForStep_ReportsCanceledRunIDDrops(t *testing.T) {
 // on PublishMustDeliver to apply bounded-blocking semantics so a
 // momentarily-full subscriber buffer can't silently drop the
 // authoritative end-of-run event.
-func TestCanceledQueueDropInvokesDiscardCallbackWithoutRunID(t *testing.T) {
+func TestCanceledQueueDropInvokesCallbacksWithoutRunID(t *testing.T) {
 	env := testEnv(t)
 	agent := NewSessionAgent(SessionAgentOptions{Sessions: env.sessions, Messages: env.messages}).(*sessionAgent)
 	called := 0
-	agent.publishCanceledQueueDrops([]SessionAgentCall{{OnDiscarded: func() { called++ }}})
+	var admissionErr error
+	agent.publishCanceledQueueDrops([]SessionAgentCall{{
+		OnAdmitted:  func(err error) { admissionErr = err },
+		OnDiscarded: func() { called++ },
+	}})
+	require.ErrorIs(t, admissionErr, context.Canceled)
 	require.Equal(t, 1, called)
+}
+
+func TestClearQueueSerializesWithDrainAndResolvesAdmissionOnce(t *testing.T) {
+	env := testEnv(t)
+	agent := NewSessionAgent(SessionAgentOptions{Sessions: env.sessions, Messages: env.messages}).(*sessionAgent)
+	const sessionID = "clear-drain-race"
+
+	for range 100 {
+		var callbacks atomic.Int32
+		agent.messageQueue.Set(sessionID, []SessionAgentCall{{
+			SessionID:    sessionID,
+			DeliveryMode: DeliverySteer,
+			OnAdmitted:   func(error) { callbacks.Add(1) },
+		}})
+		start := make(chan struct{})
+		var wait sync.WaitGroup
+		wait.Add(2)
+		go func() {
+			defer wait.Done()
+			<-start
+			agent.ClearQueue(sessionID)
+		}()
+		go func() {
+			defer wait.Done()
+			<-start
+			fold, canceled := agent.drainQueueForStep(sessionID)
+			agent.publishCanceledQueueDrops(canceled)
+			for _, call := range fold {
+				call.OnAdmitted(nil)
+			}
+		}()
+		close(start)
+		wait.Wait()
+		require.Equal(t, int32(1), callbacks.Load())
+	}
 }
 
 func TestRunCompletePublisher_MustDeliverOverTakesPublish(t *testing.T) {

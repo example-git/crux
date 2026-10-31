@@ -3911,7 +3911,8 @@ func TestUserAgent(t *testing.T) {
 		_, _ = model.Generate(t.Context(), fantasy.Call{Prompt: testPrompt})
 
 		require.Len(t, server.calls, 1)
-		assert.Equal(t, "Crux-Foundation/"+fantasy.Version, server.calls[0].headers["User-Agent"])
+		assert.Regexp(t, `^OpenAI/Go [0-9]+\.[0-9]+\.[0-9]+`, server.calls[0].headers["User-Agent"])
+		assert.NotContains(t, server.calls[0].headers["User-Agent"], "Crux")
 	})
 
 	t.Run("WithHeaders User-Agent wins over default", func(t *testing.T) {

@@ -173,6 +173,62 @@ func TestLookupConfigs_BoundedByProject(t *testing.T) {
 		require.NotContains(t, got, shellConfigSibling(GlobalConfigData()))
 	})
 
+	t.Run("global data is not repeated as project config", func(t *testing.T) {
+		environment := env.New()
+		globalData := globalConfigDataFromEnvironment(appName, environment)
+		require.NoError(t, os.WriteFile(globalData, []byte(`{"images":{"preferred":[{"backend":"fixture"}]}}`), 0o600))
+
+		got := lookupConfigsFromEnvironment(filepath.Dir(globalData), environment)
+
+		var count int
+		for _, path := range got {
+			if path == globalData {
+				count++
+			}
+		}
+		require.Equal(t, 1, count)
+	})
+
+	t.Run("global-only paths are unique", func(t *testing.T) {
+		root := t.TempDir()
+		environment := env.NewFromMap(map[string]string{
+			"CRUX_GLOBAL_CONFIG": root,
+			"CRUX_GLOBAL_DATA":   root,
+		})
+		shared := filepath.Join(root, "crux.json")
+
+		got := lookupConfigsFromEnvironment(root, environment, true)
+
+		var count int
+		for _, path := range got {
+			if path == shared {
+				count++
+			}
+		}
+		require.Equal(t, 1, count)
+	})
+
+	t.Run("lookup failure retains unique global paths", func(t *testing.T) {
+		root := t.TempDir()
+		environment := env.NewFromMap(map[string]string{
+			"CRUX_GLOBAL_CONFIG": root,
+			"CRUX_GLOBAL_DATA":   root,
+		})
+		shared := filepath.Join(root, "crux.json")
+		invalidCWD := filepath.Join(root, "not-a-directory")
+		require.NoError(t, os.WriteFile(invalidCWD, []byte("fixture"), 0o600))
+
+		got := lookupConfigsFromEnvironment(invalidCWD, environment)
+
+		var count int
+		for _, path := range got {
+			if path == shared {
+				count++
+			}
+		}
+		require.Equal(t, 1, count)
+	})
+
 	t.Run("project cruxrc and .cruxrc are discovered", func(t *testing.T) {
 		project := t.TempDir()
 		require.NoError(t, os.WriteFile(filepath.Join(project, "cruxrc"), []byte(""), 0o644))

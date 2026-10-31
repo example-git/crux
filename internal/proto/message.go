@@ -24,6 +24,9 @@ type Message struct {
 	ID               string        `json:"id"`
 	Role             MessageRole   `json:"role"`
 	SessionID        string        `json:"session_id"`
+	SubmissionID     string        `json:"submission_id,omitempty"`
+	RunID            string        `json:"run_id,omitempty"`
+	ItemID           string        `json:"item_id,omitempty"`
 	Parts            []ContentPart `json:"parts"`
 	Model            string        `json:"model"`
 	Provider         string        `json:"provider"`
@@ -108,6 +111,7 @@ func (ReasoningContent) isPart() {}
 type TextContent struct {
 	Context          message.UserTurnContext  `json:"context,omitzero"`
 	Text             string                   `json:"text"`
+	TextElements     []any                    `json:"text_elements,omitempty"`
 	ProviderMetadata message.ProviderMetadata `json:"provider_metadata,omitempty"`
 }
 
@@ -117,6 +121,14 @@ func (tc TextContent) String() string {
 }
 
 func (TextContent) isPart() {}
+
+type SkillContent struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Content []byte `json:"content"`
+}
+
+func (SkillContent) isPart() {}
 
 // ImageURLContent represents an image URL part of a message.
 type ImageURLContent struct {
@@ -492,6 +504,7 @@ type partType string
 const (
 	reasoningType        partType = "reasoning"
 	textType             partType = "text"
+	skillType            partType = "skill"
 	imageURLType         partType = "image_url"
 	binaryType           partType = "binary"
 	toolCallType         partType = "tool_call"
@@ -519,6 +532,8 @@ func MarshalParts(parts []ContentPart) ([]byte, error) {
 			typ = reasoningType
 		case TextContent:
 			typ = textType
+		case SkillContent:
+			typ = skillType
 		case ImageURLContent:
 			typ = imageURLType
 		case BinaryContent:
@@ -576,6 +591,12 @@ func UnmarshalParts(data []byte) ([]ContentPart, error) {
 			parts = append(parts, part)
 		case textType:
 			part := TextContent{}
+			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
+				return nil, err
+			}
+			parts = append(parts, part)
+		case skillType:
+			part := SkillContent{}
 			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
 				return nil, err
 			}

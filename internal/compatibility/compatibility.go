@@ -122,9 +122,16 @@ type Request struct {
 	WorkingDir            string
 	AdditionalDirectories []string
 	Model                 string
+	ModelProvider         string
 	SmallModel            string
 	Agent                 string
 	Effort                string
+	AnalysisEffort        string
+	InstructionIsolation  bool
+	IgnoreUserConfig      bool
+	IgnoreRules           bool
+	ThreadSource          string
+	ProviderOperation     string
 	Session               Session
 	Permissions           PermissionPolicy
 	Output                Output

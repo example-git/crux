@@ -131,6 +131,34 @@ func (s *Shell) ExecStream(ctx context.Context, command string, stdout, stderr i
 	return s.execStream(ctx, command, stdout, stderr)
 }
 
+func (s *Shell) ExecTTY(ctx context.Context, command string, terminal *os.File, output io.Writer) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	restore, err := prepareTTY(terminal)
+	if err != nil {
+		return err
+	}
+	defer restore()
+
+	var runner *interp.Runner
+	defer func() {
+		if runner != nil {
+			s.updateShellFromRunner(runner)
+		}
+	}()
+
+	line, err := syntax.NewParser().Parse(strings.NewReader(command), "")
+	if err != nil {
+		return fmt.Errorf("could not parse command: %w", err)
+	}
+
+	runner, err = newTTYRunner(s.cwd, s.env, terminal, output, s.blockFuncs)
+	if err != nil {
+		return fmt.Errorf("could not run command in TTY: %w", err)
+	}
+	return runner.Run(ctx, line)
+}
+
 // GetWorkingDir returns the current working directory
 func (s *Shell) GetWorkingDir() string {
 	s.mu.Lock()

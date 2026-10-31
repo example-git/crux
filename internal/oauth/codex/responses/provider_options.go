@@ -8,6 +8,9 @@ import (
 
 // Global type identifiers for Codex-specific provider data.
 const (
+	OperationMemgen = "codex-memgen"
+	MemgenHeader    = "X-OpenAI-Memgen-Request"
+
 	TypeProviderOptions   = Name + ".options"
 	TypeReasoningMetadata = Name + ".reasoning_metadata"
 	TypeToolCallMetadata  = Name + ".tool_call_metadata"
@@ -49,10 +52,11 @@ func init() {
 type ProviderOptions struct {
 	// ReasoningEffort is one of "none", "low", "medium", "high", "xhigh", "max".
 	// Defaults to "medium".
-	ReasoningEffort   string `json:"reasoning_effort,omitempty"`
-	ResponseVerbosity string `json:"response_verbosity,omitempty"`
-	DisableReasoning  bool   `json:"disable_reasoning,omitempty"`
-	FastMode          bool   `json:"fast_mode,omitempty"`
+	ReasoningEffort   string            `json:"reasoning_effort,omitempty"`
+	ResponseVerbosity string            `json:"response_verbosity,omitempty"`
+	DisableReasoning  bool              `json:"disable_reasoning,omitempty"`
+	FastMode          bool              `json:"fast_mode,omitempty"`
+	RequestHeaders    map[string]string `json:"request_headers,omitempty"`
 }
 
 // Options implements fantasy.ProviderOptionsData.

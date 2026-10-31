@@ -111,6 +111,10 @@ func (m *mockSessionAgent) BeginAccepted(sessionID string) *AcceptedRun {
 	return &AcceptedRun{sessionID: sessionID}
 }
 
+func (m *mockSessionAgent) BeginIdleAccepted(sessionID string) (*AcceptedRun, bool) {
+	return &AcceptedRun{sessionID: sessionID}, true
+}
+
 func (m *mockSessionAgent) Model() Model                                      { return m.model }
 func (m *mockSessionAgent) SetModels(large, small Model)                      {}
 func (m *mockSessionAgent) SetTools(tools, planModeTools []fantasy.AgentTool) {}
@@ -1480,6 +1484,33 @@ func TestUpdateParentSessionCost(t *testing.T) {
 	})
 }
 
+func TestSessionAnalysisEffortPrecedence(t *testing.T) {
+	env := testEnv(t)
+	coord := &coordinator{sessions: env.sessions}
+	created, err := env.sessions.Create(t.Context(), "test")
+	require.NoError(t, err)
+	require.NoError(t, env.sessions.SetAnalysisEffort(t.Context(), created.ID, "high"))
+
+	persisted, err := coord.withSessionAnalysisEffort(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "high", AnalysisEffortFromContext(persisted))
+	persistedOptions := turnRuntimeOptions(persisted, &config.Options{AnalysisEffort: "medium"})
+	require.Equal(t, "high", persistedOptions.AnalysisEffort)
+
+	explicit, err := coord.withSessionAnalysisEffort(WithAnalysisEffort(t.Context(), "low"), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, "low", AnalysisEffortFromContext(explicit))
+	explicitOptions := turnRuntimeOptions(explicit, &config.Options{AnalysisEffort: "medium"})
+	require.Equal(t, "low", explicitOptions.AnalysisEffort)
+
+	require.NoError(t, env.sessions.SetAnalysisEffort(t.Context(), created.ID, ""))
+	cleared, err := coord.withSessionAnalysisEffort(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.Empty(t, AnalysisEffortFromContext(cleared))
+	workspaceOptions := &config.Options{AnalysisEffort: "medium"}
+	require.Same(t, workspaceOptions, turnRuntimeOptions(cleared, workspaceOptions))
+}
+
 func TestApplyCodexRuntimeOptions(t *testing.T) {
 	configured := &config.Options{ResponseVerbosity: "high", AnalysisEffort: "max"}
 
@@ -1494,6 +1525,55 @@ func TestApplyCodexRuntimeOptions(t *testing.T) {
 			assert.False(t, parsed.DisableReasoning)
 		})
 	}
+}
+
+func TestApplyTurnProviderOperation(t *testing.T) {
+	t.Run("absent operation preserves options", func(t *testing.T) {
+		options := fantasy.ProviderOptions{codexresponses.Name: &codexresponses.ProviderOptions{ResponseVerbosity: "high"}}
+		result, err := applyTurnProviderOperation(t.Context(), codex.ID, options)
+		require.NoError(t, err)
+		require.Equal(t, options, result)
+	})
+
+	t.Run("memgen adds a copied per-call header", func(t *testing.T) {
+		original := &codexresponses.ProviderOptions{
+			ResponseVerbosity: "high",
+			RequestHeaders:    map[string]string{"existing": "value"},
+		}
+		options := fantasy.ProviderOptions{codexresponses.Name: original}
+		ctx := WithProviderOperation(t.Context(), codexresponses.OperationMemgen)
+		result, err := applyTurnProviderOperation(ctx, codex.ID, options)
+		require.NoError(t, err)
+		applied, ok := result[codexresponses.Name].(*codexresponses.ProviderOptions)
+		require.True(t, ok)
+		require.NotSame(t, original, applied)
+		require.Equal(t, "high", applied.ResponseVerbosity)
+		require.Equal(t, "value", applied.RequestHeaders["existing"])
+		require.Equal(t, "true", applied.RequestHeaders[codexresponses.MemgenHeader])
+		require.NotContains(t, original.RequestHeaders, codexresponses.MemgenHeader)
+		applied.RequestHeaders["existing"] = "changed"
+		require.Equal(t, "value", original.RequestHeaders["existing"])
+	})
+
+	t.Run("rejects wrong provider", func(t *testing.T) {
+		ctx := WithProviderOperation(t.Context(), codexresponses.OperationMemgen)
+		_, err := applyTurnProviderOperation(ctx, "anthropic", nil)
+		require.ErrorContains(t, err, "requires provider")
+	})
+
+	t.Run("rejects unknown operation", func(t *testing.T) {
+		ctx := WithProviderOperation(t.Context(), "unknown")
+		_, err := applyTurnProviderOperation(ctx, codex.ID, nil)
+		require.ErrorContains(t, err, "unsupported provider operation")
+	})
+
+	t.Run("rejects malformed provider options", func(t *testing.T) {
+		ctx := WithProviderOperation(t.Context(), codexresponses.OperationMemgen)
+		_, err := applyTurnProviderOperation(ctx, codex.ID, fantasy.ProviderOptions{
+			codexresponses.Name: &openai.ProviderOptions{},
+		})
+		require.ErrorContains(t, err, "invalid codex options")
+	})
 }
 
 func TestApplyCodexRuntimeOptionsIsRestrictedToCodexGPT56(t *testing.T) {

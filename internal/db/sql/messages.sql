@@ -33,10 +33,13 @@ INSERT INTO messages (
     model,
     provider,
     is_summary_message,
+    submission_id,
+    run_id,
+    item_id,
     created_at,
     updated_at
 ) VALUES (
-    ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
+    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now')
 )
 RETURNING *;
 

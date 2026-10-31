@@ -69,6 +69,31 @@ func TestAcceptedRun_MultipleReservations(t *testing.T) {
 	require.Equal(t, 0, sa.acceptedCount("sid"))
 }
 
+func TestBeginIdleAcceptedRequiresIdleSession(t *testing.T) {
+	t.Parallel()
+	sa, _ := newCancelTestAgent(t)
+
+	accepted, ok := sa.BeginIdleAccepted("idle")
+	require.True(t, ok)
+	require.NotNil(t, accepted)
+	require.Equal(t, 1, sa.acceptedCount("idle"))
+
+	second, ok := sa.BeginIdleAccepted("idle")
+	require.False(t, ok)
+	require.Nil(t, second)
+	accepted.Close()
+
+	sa.activeRequests.Set("active", &activeCancel{cancel: func() {}})
+	active, ok := sa.BeginIdleAccepted("active")
+	require.False(t, ok)
+	require.Nil(t, active)
+
+	sa.messageQueue.Set("queued", []SessionAgentCall{{SessionID: "queued", Prompt: "later"}})
+	queued, ok := sa.BeginIdleAccepted("queued")
+	require.False(t, ok)
+	require.Nil(t, queued)
+}
+
 func TestAcceptedRun_NilSafe(t *testing.T) {
 	t.Parallel()
 	var accept *AcceptedRun
@@ -143,6 +168,29 @@ func TestRun_CancelOnEntryPersistsCanceledTurn(t *testing.T) {
 	assert.Equal(t, message.User, msgs[0].Role)
 	assert.Equal(t, message.Assistant, msgs[1].Role)
 	assert.Equal(t, message.FinishReasonCanceled, msgs[1].FinishReason())
+}
+
+func TestRun_InternalCancelOnEntryDoesNotPersistTrigger(t *testing.T) {
+	t.Parallel()
+	sa, env := newCancelTestAgent(t)
+
+	sess, err := env.sessions.Create(t.Context(), "session")
+	require.NoError(t, err)
+	accept := sa.BeginAccepted(sess.ID)
+	sa.Cancel(sess.ID)
+
+	result, err := sa.Run(t.Context(), SessionAgentCall{
+		SessionID: sess.ID,
+		Prompt:    "continue the persisted goal",
+		Accepted:  accept,
+		Internal:  true,
+	})
+	require.NoError(t, err)
+	require.Nil(t, result)
+
+	msgs, err := env.messages.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Empty(t, msgs)
 }
 
 func TestPersistCanceledTurn_WritesBothWhenUserMissing(t *testing.T) {

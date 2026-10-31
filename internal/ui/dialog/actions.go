@@ -78,16 +78,19 @@ func (a ActionSelectModel) ValidateProviderOwner(cfg *config.Config) error {
 
 // Messages for commands
 type (
-	ActionNewSession              struct{}
-	ActionToggleHelp              struct{}
-	ActionToggleCompactMode       struct{}
-	ActionToggleThinking          struct{}
-	ActionTogglePills             struct{}
-	ActionExternalEditor          struct{}
-	ActionToggleDeliveryMode      struct{}
-	ActionToggleYoloMode          struct{}
-	ActionTogglePlanMode          struct{}
-	ActionCancelPlanMode          struct{}
+	ActionNewSession         struct{}
+	ActionToggleHelp         struct{}
+	ActionToggleCompactMode  struct{}
+	ActionToggleThinking     struct{}
+	ActionTogglePills        struct{}
+	ActionExternalEditor     struct{}
+	ActionToggleDeliveryMode struct{}
+	ActionToggleYoloMode     struct{}
+	ActionTogglePlanMode     struct{}
+	ActionCancelPlanMode     struct{}
+	ActionInsertCommand      struct {
+		Value string
+	}
 	ActionToggleNotifications     struct{}
 	ActionSelectNotificationStyle struct {
 		Style string

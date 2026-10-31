@@ -99,6 +99,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.listAllUserMessagesStmt, err = db.PrepareContext(ctx, listAllUserMessages); err != nil {
 		return nil, fmt.Errorf("error preparing query ListAllUserMessages: %w", err)
 	}
+	if q.listArchivedSessionsStmt, err = db.PrepareContext(ctx, listArchivedSessions); err != nil {
+		return nil, fmt.Errorf("error preparing query ListArchivedSessions: %w", err)
+	}
+	if q.listChildSessionsStmt, err = db.PrepareContext(ctx, listChildSessions); err != nil {
+		return nil, fmt.Errorf("error preparing query ListChildSessions: %w", err)
+	}
 	if q.listFilesByPathStmt, err = db.PrepareContext(ctx, listFilesByPath); err != nil {
 		return nil, fmt.Errorf("error preparing query ListFilesByPath: %w", err)
 	}
@@ -131,6 +137,12 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.renameSessionStmt, err = db.PrepareContext(ctx, renameSession); err != nil {
 		return nil, fmt.Errorf("error preparing query RenameSession: %w", err)
+	}
+	if q.setSessionAnalysisEffortStmt, err = db.PrepareContext(ctx, setSessionAnalysisEffort); err != nil {
+		return nil, fmt.Errorf("error preparing query SetSessionAnalysisEffort: %w", err)
+	}
+	if q.setSessionArchivedStmt, err = db.PrepareContext(ctx, setSessionArchived); err != nil {
+		return nil, fmt.Errorf("error preparing query SetSessionArchived: %w", err)
 	}
 	if q.setSessionPlanStateStmt, err = db.PrepareContext(ctx, setSessionPlanState); err != nil {
 		return nil, fmt.Errorf("error preparing query SetSessionPlanState: %w", err)
@@ -277,6 +289,16 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing listAllUserMessagesStmt: %w", cerr)
 		}
 	}
+	if q.listArchivedSessionsStmt != nil {
+		if cerr := q.listArchivedSessionsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listArchivedSessionsStmt: %w", cerr)
+		}
+	}
+	if q.listChildSessionsStmt != nil {
+		if cerr := q.listChildSessionsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing listChildSessionsStmt: %w", cerr)
+		}
+	}
 	if q.listFilesByPathStmt != nil {
 		if cerr := q.listFilesByPathStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing listFilesByPathStmt: %w", cerr)
@@ -330,6 +352,16 @@ func (q *Queries) Close() error {
 	if q.renameSessionStmt != nil {
 		if cerr := q.renameSessionStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing renameSessionStmt: %w", cerr)
+		}
+	}
+	if q.setSessionAnalysisEffortStmt != nil {
+		if cerr := q.setSessionAnalysisEffortStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setSessionAnalysisEffortStmt: %w", cerr)
+		}
+	}
+	if q.setSessionArchivedStmt != nil {
+		if cerr := q.setSessionArchivedStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing setSessionArchivedStmt: %w", cerr)
 		}
 	}
 	if q.setSessionPlanStateStmt != nil {
@@ -421,6 +453,8 @@ type Queries struct {
 	getUsageByHourStmt                   *sql.Stmt
 	getUsageByModelStmt                  *sql.Stmt
 	listAllUserMessagesStmt              *sql.Stmt
+	listArchivedSessionsStmt             *sql.Stmt
+	listChildSessionsStmt                *sql.Stmt
 	listFilesByPathStmt                  *sql.Stmt
 	listFilesBySessionStmt               *sql.Stmt
 	listLatestSessionFilesStmt           *sql.Stmt
@@ -432,6 +466,8 @@ type Queries struct {
 	listUserMessagesBySessionStmt        *sql.Stmt
 	recordFileReadStmt                   *sql.Stmt
 	renameSessionStmt                    *sql.Stmt
+	setSessionAnalysisEffortStmt         *sql.Stmt
+	setSessionArchivedStmt               *sql.Stmt
 	setSessionPlanStateStmt              *sql.Stmt
 	updateMessageStmt                    *sql.Stmt
 	updateSessionStmt                    *sql.Stmt
@@ -468,6 +504,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		getUsageByHourStmt:                   q.getUsageByHourStmt,
 		getUsageByModelStmt:                  q.getUsageByModelStmt,
 		listAllUserMessagesStmt:              q.listAllUserMessagesStmt,
+		listArchivedSessionsStmt:             q.listArchivedSessionsStmt,
+		listChildSessionsStmt:                q.listChildSessionsStmt,
 		listFilesByPathStmt:                  q.listFilesByPathStmt,
 		listFilesBySessionStmt:               q.listFilesBySessionStmt,
 		listLatestSessionFilesStmt:           q.listLatestSessionFilesStmt,
@@ -479,6 +517,8 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		listUserMessagesBySessionStmt:        q.listUserMessagesBySessionStmt,
 		recordFileReadStmt:                   q.recordFileReadStmt,
 		renameSessionStmt:                    q.renameSessionStmt,
+		setSessionAnalysisEffortStmt:         q.setSessionAnalysisEffortStmt,
+		setSessionArchivedStmt:               q.setSessionArchivedStmt,
 		setSessionPlanStateStmt:              q.setSessionPlanStateStmt,
 		updateMessageStmt:                    q.updateMessageStmt,
 		updateSessionStmt:                    q.updateSessionStmt,

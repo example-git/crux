@@ -2,6 +2,7 @@ package localaddon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,6 +55,16 @@ func saveCopilotBinding(workspace *proto.Workspace, externalID, nativeID string)
 	}
 	bindings[externalID] = nativeID
 	return writeCopilotBindingsLocked(workspace, bindings)
+}
+
+func persistCopilotBinding(bridge *nativeCompatBridge, session *nativeCompatSession, externalID string) error {
+	if err := saveCopilotBinding(session.workspace.value, externalID, session.session.ID); err != nil {
+		if cleanupErr := bridge.deleteSession(session); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("delete session %s after binding persistence failed: %w", session.session.ID, cleanupErr))
+		}
+		return err
+	}
+	return nil
 }
 
 func deleteCopilotBinding(workspace *proto.Workspace, externalID string) error {

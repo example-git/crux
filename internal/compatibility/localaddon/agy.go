@@ -12,7 +12,7 @@ import (
 
 type agyAdapter struct{}
 
-func (agyAdapter) Translate(_ context.Context, invocation compatibility.Invocation) (compatibility.Request, error) {
+func (agyAdapter) Translate(ctx context.Context, invocation compatibility.Invocation) (compatibility.Request, error) {
 	request := compatibility.Request{
 		Source:     "agy",
 		Style:      compatibility.ExecutionInteractive,
@@ -33,7 +33,7 @@ func (agyAdapter) Translate(_ context.Context, invocation compatibility.Invocati
 		case "-h", "--help":
 			return compatibility.Request{}, successOutput("Usage of agy:\n  -p, --print, --prompt string\n  -i, --prompt-interactive string\n  --output-format string\n", true)
 		case "-v", "--version":
-			return compatibility.Request{}, successOutput("1.1.20\n", false)
+			return compatibility.Request{}, compatibilityVersionOutput(ctx, invocation, "agy")
 		case "-p", "--print", "--prompt":
 			value, err := parser.value(name, argument)
 			if err != nil {
@@ -146,9 +146,7 @@ func (agyAdapter) Translate(_ context.Context, invocation compatibility.Invocati
 				return compatibility.Request{}, agyFlagError("invalid duration %q", value)
 			}
 			request.Limits.Timeout = duration
-		case "--disable-slash-commands":
-		case "--remote-control", "--bg-updater":
-			return compatibility.Request{}, agyFlagError("%s is not supported by the Crux compatibility layer", name)
+		case "--disable-slash-commands", "--remote-control", "--bg-updater":
 		case "--log-file":
 			value, err := parser.value(name, argument)
 			if err != nil {
@@ -157,7 +155,11 @@ func (agyAdapter) Translate(_ context.Context, invocation compatibility.Invocati
 			request.Metadata = ensureMetadata(request.Metadata)
 			request.Metadata["log-file"] = value
 		default:
-			return compatibility.Request{}, agyFlagError("flag provided but not defined: %s", argument)
+			if strings.HasPrefix(argument, "-") {
+				consumeNoopOptionalValue(&parser, argument)
+				continue
+			}
+			return compatibility.Request{}, agyFlagError("unexpected argument: %s", argument)
 		}
 	}
 	if inputFormat == "stream-json" {

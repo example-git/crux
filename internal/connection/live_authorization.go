@@ -283,7 +283,7 @@ func (l *liveAuthorization) watch() {
 				for principal := range l.current {
 					principals = append(principals, principal)
 				}
-				slog.Warn("live authorization background reconcile is failing closed while the daemon is still active", "error", err, "principals", principals)
+				slog.Warn("Live authorization background reconcile is failing closed while the daemon is still active", "error", err, "principals", principals)
 			}
 			l.reconcileLocked(grants) // Unreadable or replaced authority fails closed.
 			l.mu.Unlock()

@@ -17,6 +17,20 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConfigRequirementsEndpointReturnsNativeState(t *testing.T) {
+	harness := newE2EHarness(t)
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, harness.httpSrv.URL+"/v1/config-requirements", nil)
+	require.NoError(t, err)
+	response, err := harness.httpSrv.Client().Do(request)
+	require.NoError(t, err)
+	defer response.Body.Close()
+	require.Equal(t, http.StatusOK, response.StatusCode)
+
+	var requirements proto.ConfigRequirements
+	require.NoError(t, json.NewDecoder(response.Body).Decode(&requirements))
+	require.Nil(t, requirements.Requirements)
+}
+
 func TestProviderCredentialRemovalEndpointEnforcesExactOwner(t *testing.T) {
 	root := t.TempDir()
 	dataRoot := filepath.Join(root, "data")

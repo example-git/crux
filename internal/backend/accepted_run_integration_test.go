@@ -82,53 +82,92 @@ func newRealCoordinator(t *testing.T) (*gatedCoordinator, session.Service, messa
 // to stream the model). In either case no FinishReasonCanceled turn
 // would be persisted.
 func TestSendMessage_AcceptedCancelRace_RealMachinery(t *testing.T) {
-	b, _ := newTestBackend(t)
+	for _, mode := range []agent.DeliveryMode{agent.DeliveryQueue, agent.DeliverySteer} {
+		t.Run(string(mode), func(t *testing.T) {
+			b, _ := newTestBackend(t)
 
+			coord, sessions, messages := newRealCoordinator(t)
+			sess, err := sessions.Create(t.Context(), "session")
+			require.NoError(t, err)
+
+			ws := insertAgentWorkspace(t, b, coord)
+
+			require.NoError(t, b.SendMessage(ws.ID, proto.AgentMessage{SessionID: sess.ID, Prompt: "hi", DeliveryMode: string(mode)}))
+
+			// Coordinator.BeginAccepted ran synchronously inside SendMessage
+			// before dispatch; the dispatched run has now entered the gate but
+			// has not yet called the real RunAccepted, so the accept handle is
+			// not yet consumed: the prompt is accepted but not active.
+			select {
+			case <-coord.entered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("dispatched run never entered RunAccepted")
+			}
+
+			// A cancel arriving now lands in the accepted-but-not-yet-active
+			// window and is only recorded because BeginAccepted incremented the
+			// accept counter.
+			require.NoError(t, b.CancelSession(ws.ID, sess.ID))
+
+			// Release the gate so the real RunAccepted threads the handle into
+			// sessionAgent.Run, which drives cancel-on-entry.
+			close(coord.gate)
+
+			// The dispatched run returns nil (cancel-on-entry), so runWG drains.
+			waited := make(chan struct{})
+			go func() {
+				ws.runWG.Wait()
+				close(waited)
+			}()
+			select {
+			case <-waited:
+			case <-time.After(5 * time.Second):
+				t.Fatal("runWG.Wait did not complete after the canceled run returned")
+			}
+
+			// The accepted-but-not-yet-active cancel persisted a canceled turn
+			// rather than streaming a real response.
+			msgs, err := messages.List(t.Context(), sess.ID)
+			require.NoError(t, err)
+			require.Len(t, msgs, 2)
+			require.Equal(t, message.User, msgs[0].Role)
+			require.Equal(t, message.Assistant, msgs[1].Role)
+			require.Equal(t, message.FinishReasonCanceled, msgs[1].FinishReason())
+		})
+	}
+}
+
+func TestSendMessageActiveOnlySteeringRejectsIdleSession(t *testing.T) {
+	b, _ := newTestBackend(t)
 	coord, sessions, messages := newRealCoordinator(t)
+	close(coord.gate)
 	sess, err := sessions.Create(t.Context(), "session")
 	require.NoError(t, err)
-
 	ws := insertAgentWorkspace(t, b, coord)
 
-	require.NoError(t, b.SendMessage(ws.ID, proto.AgentMessage{SessionID: sess.ID, Prompt: "hi"}))
-
-	// Coordinator.BeginAccepted ran synchronously inside SendMessage
-	// before dispatch; the dispatched run has now entered the gate but
-	// has not yet called the real RunAccepted, so the accept handle is
-	// not yet consumed: the prompt is accepted but not active.
-	select {
-	case <-coord.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("dispatched run never entered RunAccepted")
+	for _, mode := range []string{"", string(agent.DeliveryQueue)} {
+		require.ErrorContains(t, b.SendMessage(ws.ID, proto.AgentMessage{
+			SessionID: sess.ID, Prompt: "invalid request", DeliveryMode: mode, RequireActiveRun: true,
+		}), "requiring an active run is only supported for steer delivery")
 	}
 
-	// A cancel arriving now lands in the accepted-but-not-yet-active
-	// window and is only recorded because BeginAccepted incremented the
-	// accept counter.
-	require.NoError(t, b.CancelSession(ws.ID, sess.ID))
-
-	// Release the gate so the real RunAccepted threads the handle into
-	// sessionAgent.Run, which drives cancel-on-entry.
-	close(coord.gate)
-
-	// The dispatched run returns nil (cancel-on-entry), so runWG drains.
-	waited := make(chan struct{})
+	result := make(chan error, 1)
 	go func() {
-		ws.runWG.Wait()
-		close(waited)
+		result <- b.SendMessage(ws.ID, proto.AgentMessage{
+			SessionID: sess.ID, Prompt: "stale direction", DeliveryMode: string(agent.DeliverySteer),
+			RequireActiveRun: true, WaitForAdmission: true,
+		})
 	}()
 	select {
-	case <-waited:
+	case err := <-result:
+		require.ErrorIs(t, err, agent.ErrNoActiveRunToSteer)
 	case <-time.After(5 * time.Second):
-		t.Fatal("runWG.Wait did not complete after the canceled run returned")
+		t.Fatal("active-only steering did not resolve admission")
 	}
-
-	// The accepted-but-not-yet-active cancel persisted a canceled turn
-	// rather than streaming a real response.
-	msgs, err := messages.List(t.Context(), sess.ID)
+	ws.runWG.Wait()
+	stored, err := messages.List(t.Context(), sess.ID)
 	require.NoError(t, err)
-	require.Len(t, msgs, 2)
-	require.Equal(t, message.User, msgs[0].Role)
-	require.Equal(t, message.Assistant, msgs[1].Role)
-	require.Equal(t, message.FinishReasonCanceled, msgs[1].FinishReason())
+	require.Empty(t, stored)
+	require.False(t, coord.IsSessionBusy(sess.ID))
+	require.Zero(t, coord.QueuedPrompts(sess.ID))
 }

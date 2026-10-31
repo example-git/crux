@@ -110,6 +110,14 @@ func jsonEncodeTest(t *testing.T, writer http.ResponseWriter, value any) {
 	require.NoError(t, json.NewEncoder(writer).Encode(value))
 }
 
+func TestGetSessionTypesNotFound(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+
+	_, err := captureClient(t, server).GetSession(t.Context(), "workspace", "missing")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestWorkspaceResponsesBindExactProviderOwners(t *testing.T) {
 	owner := providerregistry.RegistrationOwner{
 		ProviderID:           "same",
@@ -407,7 +415,42 @@ func TestSendMessagePropagatesSubmissionID(t *testing.T) {
 		require.NoError(t, c.SendMessageWithPermissionMode(ctx, "ws1", "sess1", "", "hello", proto.AgentPermissionDeny))
 		require.Equal(t, "submission-id", received.SubmissionID)
 		require.Equal(t, string(mode), received.DeliveryMode)
+		require.False(t, received.RequireActiveRun)
 		require.Equal(t, proto.AgentPermissionDeny, received.PermissionMode)
+	}
+}
+
+func TestSendAgentMessagePropagatesActiveRunRequirement(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name            string
+		contextRequired bool
+		requestRequired bool
+	}{
+		{name: "ordinary"},
+		{name: "context", contextRequired: true},
+		{name: "request", requestRequired: true},
+		{name: "both", contextRequired: true, requestRequired: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var received proto.AgentMessage
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			defer srv.Close()
+			ctx := agent.WithDeliveryMode(t.Context(), agent.DeliverySteer)
+			if test.contextRequired {
+				ctx = agent.WithRequireActiveRun(ctx)
+			}
+			c := captureClient(t, srv)
+			require.NoError(t, c.SendAgentMessage(ctx, "ws1", proto.AgentMessage{
+				SessionID: "sess1", Prompt: "input", RequireActiveRun: test.requestRequired,
+			}))
+			require.Equal(t, string(agent.DeliverySteer), received.DeliveryMode)
+			require.Equal(t, test.contextRequired || test.requestRequired, received.RequireActiveRun)
+		})
 	}
 }
 
@@ -421,9 +464,108 @@ func TestSendMessagePropagatesPermissionMode(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	ctx := agent.WithTurnInstructions(context.Background(), "isolated instructions")
+	ctx = agent.WithInstructionIsolation(ctx)
+	ctx = agent.WithInstructionIsolationTools(ctx, []string{"bash"})
 	c := captureClient(t, srv)
-	require.NoError(t, c.SendMessageWithPermissionMode(context.Background(), "ws1", "sess1", "", "hello", proto.AgentPermissionDeny))
+	require.NoError(t, c.SendMessageWithPermissionMode(ctx, "ws1", "sess1", "", "hello", proto.AgentPermissionDeny))
 	require.Equal(t, proto.AgentPermissionDeny, received.PermissionMode)
+	require.Equal(t, "isolated instructions", received.TurnInstructions)
+	require.True(t, received.InstructionIsolation)
+	require.Equal(t, []string{"bash"}, received.InstructionIsolationTools)
+}
+
+func TestSendAgentMessagePreservesTurnInstructions(t *testing.T) {
+	t.Parallel()
+
+	var received proto.AgentMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/workspaces/ws1/agent", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	ctx := agent.WithSubmissionID(context.Background(), "submission-id")
+	ctx = agent.WithDeliveryMode(ctx, agent.DeliverySteer)
+	c := captureClient(t, srv)
+	require.NoError(t, c.SendAgentMessage(ctx, "ws1", proto.AgentMessage{
+		SessionID:                 "sess1",
+		RunID:                     "run1",
+		Prompt:                    "user prompt",
+		TurnInstructions:          "turn instructions",
+		InstructionIsolation:      true,
+		InstructionIsolationTools: []string{"bash"},
+		AnalysisEffort:            "medium",
+		ProviderOperation:         "codex-memgen",
+		PermissionMode:            proto.AgentPermissionDeny,
+	}))
+	require.Equal(t, "user prompt", received.Prompt)
+	require.Equal(t, "turn instructions", received.TurnInstructions)
+	require.True(t, received.InstructionIsolation)
+	require.Equal(t, []string{"bash"}, received.InstructionIsolationTools)
+	require.Equal(t, "medium", received.AnalysisEffort)
+	require.Equal(t, "codex-memgen", received.ProviderOperation)
+	require.Equal(t, "submission-id", received.SubmissionID)
+	require.Equal(t, string(agent.DeliverySteer), received.DeliveryMode)
+}
+
+func TestSendAgentMessageAppliesContextAnalysisEffort(t *testing.T) {
+	t.Parallel()
+
+	var received proto.AgentMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/workspaces/ws1/agent", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&received))
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	require.NoError(t, c.SendAgentMessage(context.Background(), "ws1", proto.AgentMessage{SessionID: "sess1", AnalysisEffort: "medium"}))
+	require.Equal(t, "medium", received.AnalysisEffort)
+
+	ctx := agent.WithAnalysisEffort(context.Background(), "high")
+	require.NoError(t, c.SendAgentMessage(ctx, "ws1", proto.AgentMessage{SessionID: "sess1", AnalysisEffort: "medium"}))
+	require.Equal(t, "high", received.AnalysisEffort)
+}
+
+func TestSetSessionAnalysisEffortUsesNativeSessionRoute(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPut, r.Method)
+		require.Equal(t, "/v1/workspaces/ws1/sessions/sess1/analysis-effort", r.URL.Path)
+		var request proto.Session
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		require.Equal(t, "xhigh", request.AnalysisEffort)
+		_ = json.NewEncoder(w).Encode(proto.Session{ID: "sess1", AnalysisEffort: request.AnalysisEffort})
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	saved, err := c.SetSessionAnalysisEffort(context.Background(), "ws1", "sess1", "xhigh")
+	require.NoError(t, err)
+	require.Equal(t, "xhigh", saved.AnalysisEffort)
+}
+
+func TestRenameSessionUsesNativeSessionTitleRoute(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPut, r.Method)
+		require.Equal(t, "/v1/workspaces/ws1/sessions/sess1/title", r.URL.Path)
+		var request proto.Session
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		require.Equal(t, "renamed", request.Title)
+		_ = json.NewEncoder(w).Encode(proto.Session{ID: "sess1", Title: request.Title})
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	saved, err := c.RenameSession(context.Background(), "ws1", "sess1", "renamed")
+	require.NoError(t, err)
+	require.Equal(t, "renamed", saved.Title)
 }
 
 func TestForkSessionPreservesEstimatedUsageMetadata(t *testing.T) {
@@ -441,6 +583,40 @@ func TestForkSessionPreservesEstimatedUsageMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "forked", forked.ID)
 	require.True(t, forked.EstimatedUsage)
+}
+
+func TestRunShellCommandDecodesErrorBody(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/v1/workspaces/ws1/agent/sessions/sess1/shell", r.URL.Path)
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(proto.Error{Message: "thread sess1 already has an active writer"})
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	_, err := c.RunShellCommand(context.Background(), "ws1", "sess1", "echo hi", 80)
+	require.ErrorContains(t, err, "status code 409")
+	require.ErrorContains(t, err, "thread sess1 already has an active writer")
+}
+
+func TestAgentSummarizeSessionDecodesErrorBody(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/v1/workspaces/ws1/agent/sessions/sess1/summarize", r.URL.Path)
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(proto.Error{Message: "thread sess1 already has an active writer"})
+	}))
+	defer srv.Close()
+
+	c := captureClient(t, srv)
+	err := c.AgentSummarizeSession(context.Background(), "ws1", "sess1")
+	require.ErrorContains(t, err, "status code 409")
+	require.ErrorContains(t, err, "thread sess1 already has an active writer")
 }
 
 func TestSendMessageAcceptsStatusOK(t *testing.T) {

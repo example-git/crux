@@ -10,9 +10,44 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerauth"
 )
+
+func (c *Client) ExternalAuthentication(ctx context.Context, id string, request config.ExternalAuthenticationRequest) (config.ExternalAuthentication, error) {
+	if err := request.Validate(); err != nil {
+		return config.ExternalAuthentication{}, err
+	}
+	if id == "" || strings.TrimSpace(id) != id || strings.ContainsAny(id, "/\\") {
+		return config.ExternalAuthentication{}, fmt.Errorf("external authentication workspace is required")
+	}
+	if store := c.LocalRuntimeStore(); store != nil {
+		return store.ExternalAuthentication(ctx, request)
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return config.ExternalAuthentication{}, err
+	}
+	response, err := c.sendReq(ctx, http.MethodPost, "/workspaces/"+url.PathEscape(id)+"/auth/external", nil, bytes.NewReader(body), http.Header{"Content-Type": {"application/json"}})
+	if err != nil {
+		return config.ExternalAuthentication{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		bounded := *response
+		bounded.Body = io.NopCloser(io.LimitReader(response.Body, proto.MaxProviderAuthRequestBytes))
+		return config.ExternalAuthentication{}, checkStatus(&bounded)
+	}
+	body, err = io.ReadAll(io.LimitReader(response.Body, proto.MaxProviderAuthResponseBytes+1))
+	if err != nil {
+		return config.ExternalAuthentication{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return config.ExternalAuthentication{}, err
+	}
+	return proto.DecodeExternalAuthenticationResponse(body, id, request)
+}
 
 func (c *Client) ProviderAuthentication(ctx context.Context, id string) (providerauth.Snapshot, error) {
 	body, err := c.providerAuthRequest(ctx, id, nil)

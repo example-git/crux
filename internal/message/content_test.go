@@ -118,6 +118,34 @@ func TestToAIMessage_ASCIIButInvalidBase64(t *testing.T) {
 	require.Equal(t, mediaLoadFailedPlaceholder, textContent.Text)
 }
 
+func TestToAIMessage_UserPartsPreserveMixedOrderAndExplicitEmpty(t *testing.T) {
+	t.Parallel()
+
+	msg := &Message{
+		Role: User,
+		Parts: []ContentPart{
+			TextContent{Text: "before"},
+			BinaryContent{Path: "first.png", MIMEType: "image/png", Data: []byte("first")},
+			TextContent{Text: "after"},
+			BinaryContent{Path: "second.png", MIMEType: "image/png", Data: []byte("second")},
+		},
+	}
+
+	messages := msg.ToAIMessage()
+	require.Len(t, messages, 1)
+	require.Equal(t, []fantasy.MessagePart{
+		fantasy.TextPart{Text: "before"},
+		fantasy.FilePart{Filename: "first.png", MediaType: "image/png", Data: []byte("first")},
+		fantasy.TextPart{Text: "after"},
+		fantasy.FilePart{Filename: "second.png", MediaType: "image/png", Data: []byte("second")},
+	}, messages[0].Content)
+
+	empty := (&Message{Role: User, Parts: []ContentPart{}}).ToAIMessage()
+	require.Len(t, empty, 1)
+	require.NotNil(t, empty[0].Content)
+	require.Empty(t, empty[0].Content)
+}
+
 func TestToAIMessage_CodexReasoningMetadata(t *testing.T) {
 	t.Parallel()
 

@@ -48,6 +48,7 @@ func TestManagedTaskOutputFollowsRealShellPastReadWindow(t *testing.T) {
 		return err == nil && strings.Contains(latest.Output, "latest-stdout") && strings.Contains(latest.Output, "latest-stderr")
 	}, 10*time.Second, 50*time.Millisecond)
 	require.False(t, background.IsDone())
+	require.Equal(t, background.WorkingDir, latest.Task.WorkingDirectory)
 	require.True(t, latest.OutputTruncated)
 	require.Greater(t, latest.NextOffset, int64(managedtask.DefaultReadBytes))
 	require.Len(t, latest.Output, managedtask.DefaultReadBytes)
@@ -678,9 +679,20 @@ func TestManagedTaskViewsReconstructAcrossSessionsAndManagers(t *testing.T) {
 	require.Len(t, first, 2)
 	require.ElementsMatch(t, []string{"a12345678", "b12345678"}, []string{first[0].ID, first[1].ID})
 	for _, task := range first {
-		require.Empty(t, task.Ownership)
-		require.Empty(t, task.Command)
-		require.Empty(t, task.OutputRef)
+		require.Equal(t, "workspace", task.Ownership.WorkspaceID)
+		require.False(t, task.State.EndedAt.IsZero())
+		require.Empty(t, task.FinalOutput)
+		if task.Type == managedtask.TypeShell {
+			require.Equal(t, "parent-one", task.Ownership.ParentSessionID)
+			require.Equal(t, "printf persisted", task.Command)
+			require.Equal(t, root, task.WorkingDirectory)
+			require.Equal(t, "task-output:b12345678", task.OutputRef)
+			require.Equal(t, &exitCode, task.State.ExitCode)
+		} else {
+			require.Equal(t, "parent-two", task.Ownership.ParentSessionID)
+			require.Equal(t, "child", task.ChildSessionID)
+			require.Equal(t, "session:child", task.OutputRef)
+		}
 	}
 	result, ok := secondShells.Get("b12345678")
 	require.True(t, ok)
@@ -820,9 +832,11 @@ func TestStartBackgroundSubAgentPersistsAndReturnsImmediately(t *testing.T) {
 	require.Len(t, listed, 1)
 	require.Equal(t, output.Task.ID, listed[0].ID)
 	require.Equal(t, output.Task.State.Status, listed[0].State.Status)
-	require.True(t, listed[0].State.StartedAt.IsZero())
+	require.Equal(t, output.Task.State.StartedAt, listed[0].State.StartedAt)
+	require.Equal(t, output.Task.State.EndedAt, listed[0].State.EndedAt)
 	require.Empty(t, listed[0].FinalOutput)
-	require.Empty(t, listed[0].ChildSessionID)
+	require.Equal(t, output.Task.ChildSessionID, listed[0].ChildSessionID)
+	require.Equal(t, parent.ID, listed[0].Ownership.ParentSessionID)
 }
 
 func TestStartBackgroundSubAgentsFromSameParentRunConcurrently(t *testing.T) {

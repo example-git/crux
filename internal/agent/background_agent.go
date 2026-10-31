@@ -706,7 +706,7 @@ func (c *coordinator) RestartTask(ctx context.Context, id string) (managedtask.V
 	if err != nil {
 		return managedtask.View{}, err
 	}
-	return managedtask.View{ID: restarted.ID, Type: managedtask.TypeShell, Description: restarted.Description, Command: restarted.Command, Ownership: restarted.Ownership, State: restarted.State(), OutputRef: restarted.OutputRef()}, nil
+	return managedtask.View{ID: restarted.ID, Type: managedtask.TypeShell, Description: restarted.Description, Command: restarted.Command, WorkingDirectory: restarted.WorkingDir, Ownership: restarted.Ownership, State: restarted.State(), OutputRef: restarted.OutputRef()}, nil
 }
 
 func (c *coordinator) StopTask(ctx context.Context, id string) (managedtask.View, error) {
@@ -776,22 +776,22 @@ func (c *coordinator) listManagedTasks() []ManagedTaskInfo {
 				continue
 			}
 			appendTask(ManagedTaskInfo{
-				ID:          id,
-				Type:        managedtask.TypeShell,
-				Description: backgroundShell.Description,
-				State:       backgroundShell.State(),
+				ID:               id,
+				Type:             managedtask.TypeShell,
+				Description:      backgroundShell.Description,
+				Command:          backgroundShell.Command,
+				WorkingDirectory: backgroundShell.WorkingDir,
+				Ownership:        backgroundShell.Ownership,
+				State:            backgroundShell.State(),
+				OutputRef:        backgroundShell.OutputRef(),
 			})
 		}
 	}
 	if c.backgroundAgents != nil {
 		for _, backgroundAgent := range c.backgroundAgents.List() {
-			appendTask(ManagedTaskInfo{
-				ID:          backgroundAgent.ID,
-				Type:        managedtask.TypeAgent,
-				Description: backgroundAgent.Description,
-				State:       backgroundAgent.State,
-				AgentType:   backgroundAgent.AgentType,
-			})
+			view := managedAgentInfo(backgroundAgent)
+			view.FinalOutput = ""
+			appendTask(view)
 		}
 	}
 	if c.backgroundImages != nil {
@@ -808,11 +808,7 @@ func (c *coordinator) listManagedTasks() []ManagedTaskInfo {
 	if len(terminal) > managedtask.RecentTerminalLimit {
 		terminal = terminal[:managedtask.RecentTerminalLimit]
 	}
-	tasks := append(active, terminal...)
-	for index := range tasks {
-		tasks[index].State = managedtask.State{Status: tasks[index].State.Status}
-	}
-	return tasks
+	return append(active, terminal...)
 }
 
 func (c *coordinator) managedTaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (ManagedTaskOutput, error) {
@@ -833,13 +829,14 @@ func (c *coordinator) managedTaskOutput(ctx context.Context, id string, wait boo
 		result, status, err := backgroundShell.ReadOutput(ctx, managedtask.ReadOptions{Stream: managedtask.OutputStreamMerged, TailBytes: &tailBytes}, wait, timeout)
 		return ManagedTaskOutput{
 			Task: ManagedTaskInfo{
-				ID:          id,
-				Type:        managedtask.TypeShell,
-				Description: backgroundShell.Description,
-				Command:     backgroundShell.Command,
-				Ownership:   backgroundShell.Ownership,
-				State:       backgroundShell.State(),
-				OutputRef:   backgroundShell.OutputRef(),
+				ID:               id,
+				Type:             managedtask.TypeShell,
+				Description:      backgroundShell.Description,
+				Command:          backgroundShell.Command,
+				WorkingDirectory: backgroundShell.WorkingDir,
+				Ownership:        backgroundShell.Ownership,
+				State:            backgroundShell.State(),
+				OutputRef:        backgroundShell.OutputRef(),
 			},
 			Output:          string(result.Output),
 			RetrievalStatus: status,
@@ -885,7 +882,7 @@ func (c *coordinator) stopManagedTask(ctx context.Context, id string) (ManagedTa
 			return ManagedTaskInfo{}, err
 		}
 		backgroundShell, _ := c.backgroundShells.Get(id)
-		return ManagedTaskInfo{ID: id, Type: managedtask.TypeShell, Description: backgroundShell.Description, Command: backgroundShell.Command, Ownership: backgroundShell.Ownership, State: state, OutputRef: backgroundShell.OutputRef()}, nil
+		return ManagedTaskInfo{ID: id, Type: managedtask.TypeShell, Description: backgroundShell.Description, Command: backgroundShell.Command, WorkingDirectory: backgroundShell.WorkingDir, Ownership: backgroundShell.Ownership, State: state, OutputRef: backgroundShell.OutputRef()}, nil
 	case managedtask.TypeAgent:
 		if c.backgroundAgents == nil {
 			return ManagedTaskInfo{}, fmt.Errorf("background agent not found: %s", id)

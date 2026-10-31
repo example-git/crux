@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -487,6 +489,43 @@ func TestDispatch_UnreadableFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "permission") {
 		t.Fatalf("expected 'permission' in error, got: %v", err)
+	}
+}
+
+func TestDispatch_UserOwnedExecuteOnlyFileDoesNotBypassProbe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permission model")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file mode permission checks")
+	}
+	dir := t.TempDir()
+	script := writeScript(t, dir, "execute-only.sh", "echo nope\n")
+	if err := os.Chmod(script, 0o111); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(script, 0o644) })
+
+	err := Run(t.Context(), RunOptions{Command: script, Cwd: dir})
+	if err == nil || !strings.Contains(err.Error(), "permission") {
+		t.Fatalf("expected probe permission error, got: %v", err)
+	}
+}
+
+func TestDispatch_RootSetuidExecutableCanBypassUnreadableProbe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX setuid permission model")
+	}
+	path := "/usr/bin/sudo"
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Skipf("%s unavailable: %v", path, err)
+	}
+	if _, err := probeFile(path); err == nil || !errors.Is(err, fs.ErrPermission) {
+		t.Skipf("%s is readable on this platform or account", path)
+	}
+	if !trustedSetuidExecutable(info) {
+		t.Fatalf("expected %s to qualify as a trusted root-owned setuid executable", path)
 	}
 }
 

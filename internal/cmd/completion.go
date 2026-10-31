@@ -140,6 +140,7 @@ func executeShellCompletion(root *cobra.Command, executable string, args []strin
 	if !handled {
 		return false, nil
 	}
+	configureDynamicShellCompletions(root)
 	// argv[0] preserves the invoked name, including a renamed executable or
 	// symlink. Resolving the target would register the wrong shell command.
 	root.Use = filepath.Base(executable)

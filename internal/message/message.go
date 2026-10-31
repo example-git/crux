@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -23,7 +24,11 @@ import (
 const defaultUpdateDebounce = 33 * time.Millisecond
 
 type CreateMessageParams struct {
+	ID               string
 	Role             MessageRole
+	SubmissionID     string
+	RunID            string
+	ItemID           string
 	Parts            []ContentPart
 	Model            string
 	Provider         string
@@ -44,6 +49,18 @@ type CommitCompactionParams struct {
 	EstimatedUsage   bool
 }
 
+type RollbackResult struct {
+	Session  session.Session
+	Messages []Message
+	Deleted  []Message
+}
+
+type CloneSessionParams struct {
+	Source       session.Session
+	Messages     []Message
+	RecordOrigin bool
+}
+
 // Service is the public interface to the message store.
 //
 // [Service.Update] is eventually consistent: it accepts new state into
@@ -62,7 +79,9 @@ type CommitCompactionParams struct {
 type Service interface {
 	pubsub.Subscriber[Message]
 	Create(ctx context.Context, sessionID string, params CreateMessageParams) (Message, error)
+	CloneSession(ctx context.Context, params CloneSessionParams) (session.Session, error)
 	CommitCompaction(ctx context.Context, params CommitCompactionParams) (Message, error)
+	Rollback(ctx context.Context, sessionID, messageID string) (RollbackResult, error)
 	Update(ctx context.Context, message Message) error
 	Get(ctx context.Context, id string) (Message, error)
 	List(ctx context.Context, sessionID string) ([]Message, error)
@@ -201,14 +220,21 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	if params.IsSummaryMessage {
 		isSummary = 1
 	}
+	messageID := params.ID
+	if messageID == "" {
+		messageID = uuid.New().String()
+	}
 	dbMessage, err := s.q.CreateMessage(ctx, db.CreateMessageParams{
-		ID:               uuid.New().String(),
+		ID:               messageID,
 		SessionID:        sessionID,
 		Role:             string(params.Role),
 		Parts:            string(partsJSON),
 		Model:            sql.NullString{String: string(params.Model), Valid: true},
 		Provider:         sql.NullString{String: params.Provider, Valid: params.Provider != ""},
 		IsSummaryMessage: isSummary,
+		SubmissionID:     params.SubmissionID,
+		RunID:            params.RunID,
+		ItemID:           params.ItemID,
 	})
 	if err != nil {
 		return Message{}, err
@@ -221,6 +247,128 @@ func (s *service) Create(ctx context.Context, sessionID string, params CreateMes
 	// concurrent modifications to the Parts slice.
 	s.Publish(pubsub.CreatedEvent, message.Clone())
 	return message, nil
+}
+
+func (s *service) CloneSession(ctx context.Context, params CloneSessionParams) (result session.Session, returnErr error) {
+	if s.db == nil || s.sessions == nil {
+		return session.Session{}, fmt.Errorf("atomic session cloning is not configured")
+	}
+	todos := ""
+	if len(params.Source.Todos) != 0 {
+		data, err := json.Marshal(params.Source.Todos)
+		if err != nil {
+			return session.Session{}, err
+		}
+		todos = string(data)
+	}
+	type clonedMessage struct {
+		params db.CreateMessageParams
+		value  Message
+	}
+	cloned := make([]clonedMessage, 0, len(params.Messages))
+	messageIDs := make(map[string]string, len(params.Messages))
+	itemIDs := make(map[string]string)
+	forkID := uuid.NewString()
+	for _, original := range params.Messages {
+		messageID := uuid.NewString()
+		itemID := ""
+		if original.ItemID == original.ID {
+			itemID = messageID
+		} else if original.ItemID != "" {
+			itemID = itemIDs[original.ItemID]
+			if itemID == "" {
+				itemID = uuid.NewString()
+				itemIDs[original.ItemID] = itemID
+			}
+		}
+		parts, err := marshalParts(original.Clone().Parts)
+		if err != nil {
+			return session.Session{}, err
+		}
+		cloned = append(cloned, clonedMessage{params: db.CreateMessageParams{
+			ID: messageID, SessionID: forkID, Role: string(original.Role), Parts: string(parts),
+			Model:            sql.NullString{String: string(original.Model), Valid: true},
+			Provider:         sql.NullString{String: original.Provider, Valid: original.Provider != ""},
+			IsSummaryMessage: boolToInt64(original.IsSummaryMessage), SubmissionID: original.SubmissionID,
+			ItemID: itemID,
+		}})
+		messageIDs[original.ID] = messageID
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return session.Session{}, fmt.Errorf("beginning fork transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rollbackErr := tx.Rollback(); rollbackErr != nil {
+				returnErr = errors.Join(returnErr, fmt.Errorf("rolling back fork transaction: %w", rollbackErr))
+			}
+		}
+	}()
+	qtx := db.New(tx)
+	forkedFrom := sql.NullString{}
+	if params.RecordOrigin {
+		forkedFrom = sql.NullString{String: params.Source.ID, Valid: true}
+	}
+	dbSession, err := qtx.CreateSession(ctx, db.CreateSessionParams{
+		ID: forkID, ForkedFromSessionID: forkedFrom, Title: params.Source.Title,
+	})
+	if err != nil {
+		return session.Session{}, err
+	}
+	createdMessages := make([]Message, 0, len(cloned))
+	for index := range cloned {
+		dbMessage, createErr := qtx.CreateMessage(ctx, cloned[index].params)
+		if createErr != nil {
+			return session.Session{}, createErr
+		}
+		value, convertErr := s.fromDBItem(dbMessage)
+		if convertErr != nil {
+			return session.Session{}, convertErr
+		}
+		cloned[index].value = value
+		createdMessages = append(createdMessages, value)
+	}
+	summaryMessageID := messageIDs[params.Source.SummaryMessageID]
+	dbSession, err = qtx.UpdateSession(ctx, db.UpdateSessionParams{
+		Title: params.Source.Title, PromptTokens: params.Source.PromptTokens,
+		CompletionTokens: params.Source.CompletionTokens,
+		SummaryMessageID: sql.NullString{String: summaryMessageID, Valid: summaryMessageID != ""},
+		Cost:             params.Source.Cost, Todos: sql.NullString{String: todos, Valid: todos != ""},
+		EstimatedUsage:    boolToInt64(params.Source.EstimatedUsage),
+		UnseenLocalTokens: params.Source.UnseenLocalTokens, Model: params.Source.Model,
+		Provider: params.Source.Provider, ID: forkID,
+	})
+	if err != nil {
+		return session.Session{}, err
+	}
+	if err := qtx.SetSessionPlanState(ctx, db.SetSessionPlanStateParams{ID: forkID, Mode: string(params.Source.Mode), Plan: params.Source.Plan}); err != nil {
+		return session.Session{}, err
+	}
+	if err := qtx.SetSessionAnalysisEffort(ctx, db.SetSessionAnalysisEffortParams{ID: forkID, AnalysisEffort: params.Source.AnalysisEffort}); err != nil {
+		return session.Session{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return session.Session{}, fmt.Errorf("committing fork transaction: %w", err)
+	}
+	committed = true
+	result = session.Session{
+		ID: forkID, ForkedFromSessionID: forkedFrom.String, Title: params.Source.Title,
+		MessageCount: int64(len(createdMessages)), PromptTokens: params.Source.PromptTokens,
+		CompletionTokens: params.Source.CompletionTokens, UnseenLocalTokens: params.Source.UnseenLocalTokens,
+		EstimatedUsage: params.Source.EstimatedUsage, SummaryMessageID: summaryMessageID,
+		Cost: params.Source.Cost, Todos: append([]session.Todo(nil), params.Source.Todos...),
+		Mode: params.Source.Mode, Plan: params.Source.Plan, AnalysisEffort: params.Source.AnalysisEffort,
+		Model: params.Source.Model, Provider: params.Source.Provider,
+		CreatedAt: dbSession.CreatedAt, UpdatedAt: dbSession.UpdatedAt,
+	}
+	s.sessions.PublishCreated(result)
+	for _, created := range createdMessages {
+		s.Publish(pubsub.CreatedEvent, created.Clone())
+	}
+	return result, nil
 }
 
 func (s *service) CommitCompaction(ctx context.Context, params CommitCompactionParams) (Message, error) {
@@ -292,6 +440,112 @@ func (s *service) CommitCompaction(ctx context.Context, params CommitCompactionP
 		slog.Error("Failed to publish committed compaction", "error", err, "session_id", params.SessionID)
 	}
 	return message, nil
+}
+
+func (s *service) Rollback(ctx context.Context, sessionID, messageID string) (RollbackResult, error) {
+	if s.db == nil || s.sessions == nil {
+		return RollbackResult{}, fmt.Errorf("atomic rollback persistence is not configured")
+	}
+	if messageID == "" {
+		return RollbackResult{}, fmt.Errorf("rollback message ID is required")
+	}
+	persistedSession, err := s.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return RollbackResult{}, err
+	}
+	if err := s.FlushAll(ctx); err != nil {
+		return RollbackResult{}, fmt.Errorf("flushing messages before rollback: %w", err)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RollbackResult{}, fmt.Errorf("beginning rollback transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	qtx := db.New(tx)
+	dbSession, err := qtx.GetSessionByID(ctx, sessionID)
+	if err != nil {
+		return RollbackResult{}, err
+	}
+	dbMessages, err := qtx.ListMessagesBySession(ctx, sessionID)
+	if err != nil {
+		return RollbackResult{}, fmt.Errorf("loading rollback history: %w", err)
+	}
+	messages := make([]Message, len(dbMessages))
+	cutoff := -1
+	for i, dbMessage := range dbMessages {
+		messages[i], err = s.fromDBItem(dbMessage)
+		if err != nil {
+			return RollbackResult{}, err
+		}
+		if dbMessage.ID == messageID {
+			cutoff = i
+		}
+	}
+	if cutoff < 0 {
+		return RollbackResult{}, fmt.Errorf("message %q not found in session %q", messageID, sessionID)
+	}
+	deleted := append([]Message(nil), messages[cutoff:]...)
+	retained := append([]Message(nil), messages[:cutoff]...)
+	for _, deletedMessage := range deleted {
+		if err := qtx.DeleteMessage(ctx, deletedMessage.ID); err != nil {
+			return RollbackResult{}, fmt.Errorf("deleting rollback history: %w", err)
+		}
+	}
+	summaryMessageID := dbSession.SummaryMessageID
+	for _, deletedMessage := range deleted {
+		if deletedMessage.ID == summaryMessageID.String {
+			summaryMessageID = sql.NullString{}
+			break
+		}
+	}
+	dbSession, err = qtx.UpdateSession(ctx, db.UpdateSessionParams{
+		ID:                dbSession.ID,
+		Title:             dbSession.Title,
+		PromptTokens:      0,
+		CompletionTokens:  0,
+		SummaryMessageID:  summaryMessageID,
+		Cost:              dbSession.Cost,
+		Todos:             dbSession.Todos,
+		EstimatedUsage:    1,
+		UnseenLocalTokens: 0,
+		Model:             dbSession.Model,
+		Provider:          dbSession.Provider,
+	})
+	if err != nil {
+		return RollbackResult{}, fmt.Errorf("repairing rollback session state: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return RollbackResult{}, fmt.Errorf("committing rollback: %w", err)
+	}
+
+	s.mu.Lock()
+	for _, deletedMessage := range deleted {
+		if pending, ok := s.pending[deletedMessage.ID]; ok {
+			if pending.timer != nil {
+				pending.timer.Stop()
+			}
+			delete(s.pending, deletedMessage.ID)
+		}
+	}
+	s.mu.Unlock()
+	for _, deletedMessage := range deleted {
+		s.Publish(pubsub.DeletedEvent, deletedMessage.Clone())
+	}
+	committedSession, publishErr := s.sessions.PublishRollback(ctx, sessionID)
+	if publishErr != nil {
+		slog.Error("Failed to publish committed rollback", "error", publishErr, "session_id", sessionID)
+		persistedSession.MessageCount = dbSession.MessageCount
+		persistedSession.PromptTokens = 0
+		persistedSession.CompletionTokens = 0
+		persistedSession.UnseenLocalTokens = 0
+		persistedSession.EstimatedUsage = true
+		persistedSession.SummaryMessageID = summaryMessageID.String
+		persistedSession.UpdatedAt = dbSession.UpdatedAt
+		committedSession = persistedSession
+	}
+	return RollbackResult{Session: committedSession, Messages: retained, Deleted: deleted}, nil
 }
 
 func boolToInt64(value bool) int64 {
@@ -638,6 +892,9 @@ func (s *service) fromDBItem(item db.Message) (Message, error) {
 	return Message{
 		ID:               item.ID,
 		SessionID:        item.SessionID,
+		SubmissionID:     item.SubmissionID,
+		RunID:            item.RunID,
+		ItemID:           item.ItemID,
 		Role:             MessageRole(item.Role),
 		Parts:            parts,
 		Model:            item.Model.String,
@@ -653,6 +910,7 @@ type partType string
 const (
 	reasoningType        partType = "reasoning"
 	textType             partType = "text"
+	skillType            partType = "skill"
 	imageURLType         partType = "image_url"
 	binaryType           partType = "binary"
 	toolCallType         partType = "tool_call"
@@ -679,6 +937,8 @@ func marshalParts(parts []ContentPart) ([]byte, error) {
 			typ = reasoningType
 		case TextContent:
 			typ = textType
+		case SkillContent:
+			typ = skillType
 		case ImageURLContent:
 			typ = imageURLType
 		case BinaryContent:
@@ -743,6 +1003,12 @@ func unmarshalParts(data []byte) ([]ContentPart, error) {
 			}
 			if err := migrateLegacyTextMetadata(wrapper.Data, &part); err != nil {
 				return nil, fmt.Errorf("migrate legacy text metadata: %w", err)
+			}
+			parts = append(parts, part)
+		case skillType:
+			part := SkillContent{}
+			if err := json.Unmarshal(wrapper.Data, &part); err != nil {
+				return nil, err
 			}
 			parts = append(parts, part)
 		case imageURLType:

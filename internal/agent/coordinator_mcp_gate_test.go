@@ -84,7 +84,7 @@ func TestRunWaitsForMCPOnlyWhenNonInteractive(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		defer cancel()
 
-		_, err := coord.run(ctx, nil, "test-session", "hello")
+		_, err := coord.run(ctx, nil, false, "test-session", "hello")
 		require.ErrorContains(t, err, "MCP initialization",
 			"non-interactive run must block on MCP initialization")
 	})
@@ -97,7 +97,7 @@ func TestRunWaitsForMCPOnlyWhenNonInteractive(t *testing.T) {
 
 		done := make(chan error, 1)
 		go func() {
-			_, err := coord.run(context.Background(), nil, "test-session", "hello")
+			_, err := coord.run(context.Background(), nil, false, "test-session", "hello")
 			done <- err
 		}()
 

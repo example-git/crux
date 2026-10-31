@@ -41,6 +41,10 @@ type ConfigCompactRequest struct {
 	Enabled bool         `json:"enabled"`
 }
 
+type ConfigRequirements struct {
+	Requirements map[string]any `json:"requirements"`
+}
+
 type AgentDefinitionScriptVariable struct {
 	Flag     string   `json:"flag,omitempty"`
 	Required bool     `json:"required,omitempty"`

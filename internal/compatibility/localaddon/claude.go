@@ -13,7 +13,7 @@ import (
 
 type claudeAdapter struct{}
 
-func (claudeAdapter) Translate(_ context.Context, invocation compatibility.Invocation) (compatibility.Request, error) {
+func (claudeAdapter) Translate(ctx context.Context, invocation compatibility.Invocation) (compatibility.Request, error) {
 	request := compatibility.Request{
 		Source:     "claude",
 		Style:      compatibility.ExecutionInteractive,
@@ -38,13 +38,11 @@ func (claudeAdapter) Translate(_ context.Context, invocation compatibility.Invoc
 		case "-h", "--help":
 			return compatibility.Request{}, successOutput("Usage: claude [options] [prompt]\n\nOptions:\n  -p, --print\n  --input-format <text|stream-json>\n  --output-format <text|json|stream-json>\n", false)
 		case "-v", "--version":
-			return compatibility.Request{}, successOutput("2.1.245 (Claude Code)\n", false)
+			return compatibility.Request{}, compatibilityVersionOutput(ctx, invocation, "claude")
 		case "-p", "--print":
 			request.Style = compatibility.ExecutionHeadless
 		case "--agents", "--autocompact", "--max-thinking-tokens":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
-				return compatibility.Request{}, claudeError(err.Error())
-			}
+			consumeNoopOptionalValue(&parser, argument)
 		case "--model", "--fallback-model", "--effort", "--agent":
 			value, err := parser.value(name, argument)
 			if err != nil {
@@ -180,13 +178,9 @@ func (claudeAdapter) Translate(_ context.Context, invocation compatibility.Invoc
 			includePartial = includePartial || name == "--include-partial-messages"
 			replayMessages = replayMessages || name == "--replay-user-messages"
 		case "--setting-sources":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
-				return compatibility.Request{}, claudeError(err.Error())
-			}
+			consumeNoopOptionalValue(&parser, argument)
 		case "--file":
-			if err := consumeNoopVariadic(&parser, name, argument); err != nil {
-				return compatibility.Request{}, claudeError(err.Error())
-			}
+			consumeNoopVariadic(&parser)
 		case "--from-pr", "-w", "--worktree", "--teleport", "--remote-control", "--rc", "-d", "--debug":
 			consumeNoopOptionalValue(&parser, argument)
 		case "--sdk-url":
@@ -212,9 +206,7 @@ func (claudeAdapter) Translate(_ context.Context, invocation compatibility.Invoc
 			verbose = true
 			request.Output.Verbose = true
 		case "-n", "--name", "--betas", "--tools", "--permission-prompt-tool", "--settings", "--plugin-dir", "--plugin-url", "--mcp-config", "--environment", "--cloud", "--remote", "--pool", "--remote-control-session-name-prefix", "--debug-file", "--thinking", "--thinking-display", "--append-subagent-system-prompt", "--plan-mode-instructions", "--resume-session-at", "--watch-artifact", "--prefill", "--prefill-b64", "--deep-link-origin", "--deep-link-repo", "--deep-link-last-fetch", "--deep-link-cwd-b64", "--plugin-dir-no-mcp", "--advisor", "--messaging-socket-path", "--channels", "--correlation-id", "--ref", "--on-branch", "--session-mirror", "--task-budget", "--workload", "--managed-settings", "--handle-uri", "--agent-id", "--agent-name", "--team-name", "--agent-color", "--parent-session-id", "--teammate-mode", "--agent-type":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
-				return compatibility.Request{}, claudeError(err.Error())
-			}
+			consumeNoopOptionalValue(&parser, argument)
 		case "--tmux", "--allow-dangerously-skip-permissions", "--forward-subagent-text", "--prompt-suggestions", "--exclude-dynamic-system-prompt-sections", "--bare", "--safe-mode", "--disable-slash-commands", "--strict-mcp-config", "--ide", "--chrome", "--no-chrome", "--brief", "--ax-screen-reader", "--init", "--init-only", "--maintenance", "-d2e", "--debug-to-stderr", "--enable-auth-status", "--resume-drops-turn", "--reply-on-resume", "--rewind-files", "--watch-artifact-no-autoreact", "--enable-auto-mode", "--dangerously-load-development-channels", "--no-home-settings", "--plan-mode-required":
 		case "--":
 			for parser.more() {
@@ -222,7 +214,7 @@ func (claudeAdapter) Translate(_ context.Context, invocation compatibility.Invoc
 			}
 		default:
 			if strings.HasPrefix(argument, "-") {
-				return compatibility.Request{}, claudeError("unknown option %q", argument)
+				continue
 			}
 			prompt = append(prompt, argument)
 		}

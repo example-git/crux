@@ -151,12 +151,19 @@ func TestInstallVerifiesCompatibilityExecutable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-only")
 	}
-	compatible := testExecutable(t, "crux", "#!/bin/sh\nprintf 'codex-cli 0.149.1\\n'\n")
+	t.Setenv("CODEX_VERSION", "8.7.6")
+	compatible := testExecutable(t, "crux", "#!/bin/sh\nprintf 'codex-cli %s\\n' \"$CODEX_VERSION\"\n")
 	manager, err := New(filepath.Join(t.TempDir(), "compatibility"))
 	require.NoError(t, err)
 	status, err := manager.Install(Options{Executable: compatible, SkipPath: true, VerifyCompatibility: true})
 	require.NoError(t, err)
 	require.True(t, status.Installed)
+
+	stale := testExecutable(t, "crux", "#!/bin/sh\nprintf 'codex-cli 0.149.1\\n'\n")
+	staleManager, err := New(filepath.Join(t.TempDir(), "compatibility"))
+	require.NoError(t, err)
+	_, err = staleManager.Install(Options{Executable: stale, SkipPath: true, VerifyCompatibility: true})
+	require.ErrorContains(t, err, "does not provide the compatibility layer")
 
 	incompatible := testExecutable(t, "crux", "#!/bin/sh\nprintf 'crux development\\n'\n")
 	root := filepath.Join(t.TempDir(), "compatibility")

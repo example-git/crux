@@ -25,6 +25,7 @@ import (
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/foundation/object"
 	"github.com/example-git/crux/foundation/schema"
+	"github.com/example-git/crux/internal/oauth/useragent"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/google/uuid"
 )
@@ -181,8 +182,15 @@ type languageModel struct {
 }
 
 // LanguageModel implements fantasy.Provider.
-func (a *provider) LanguageModel(_ context.Context, modelID string) (fantasy.LanguageModel, error) {
-	resolved := resolveHeaders(a.options.headers, a.options.userAgent, defaultUserAgent(fantasy.Version))
+func (a *provider) LanguageModel(ctx context.Context, modelID string) (fantasy.LanguageModel, error) {
+	resolved := resolveHeaders(a.options.headers, a.options.userAgent, "")
+	if resolved["User-Agent"] == "" {
+		nativeUserAgent, err := useragent.GeminiForContext(ctx)
+		if err != nil {
+			return nil, err
+		}
+		resolved["User-Agent"] = nativeUserAgent
+	}
 	userAgent := resolved["User-Agent"]
 	delete(resolved, "User-Agent")
 

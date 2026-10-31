@@ -51,6 +51,7 @@ import (
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/providertransport"
 	anthropictransport "github.com/example-git/crux/internal/providertransport/anthropic"
+	"github.com/example-git/crux/internal/providertransport/clientidentity"
 	declarativetransport "github.com/example-git/crux/internal/providertransport/declarative"
 	openairesponsestransport "github.com/example-git/crux/internal/providertransport/openairesponses"
 	"github.com/example-git/crux/internal/pubsub"
@@ -113,6 +114,7 @@ type Coordinator interface {
 	// INFO: (kujtim) this is not used yet we will use this when we have multiple agents
 	// SetMainAgent(string)
 	Run(ctx context.Context, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
+	BeginAccepted(sessionID string) *AcceptedRun
 	// RunAccepted runs a call that was already accepted via
 	// BeginAccepted on the fire-and-forget dispatch path. The handle is
 	// the only carrier of accept-state across the backend.runAgent /
@@ -120,8 +122,8 @@ type Coordinator interface {
 	// sessionAgent.Run as SessionAgentCall.Accepted, where it is
 	// consumed under dispatchMu once the accepted -> (cancel-on-entry |
 	// queued | active) transition is chosen.
-	RunAccepted(ctx context.Context, accept *AcceptedRun, sessionID, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
-	BeginAccepted(sessionID string) *AcceptedRun
+	RunAccepted(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error)
+
 	Cancel(sessionID string)
 	CancelAll()
 	IsSessionBusy(sessionID string) bool
@@ -184,6 +186,7 @@ type coordinator struct {
 	codexSessions          *codexresponses.SessionStore
 	responsesContinuations *openairesponsestransport.ContinuationStore
 	memoryWorker           *automemory.Worker
+	goalScheduler          *goalScheduler
 
 	codebaseIndexReconcileMu     sync.Mutex
 	codebaseIndexReconciling     bool
@@ -324,6 +327,8 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 		return nil, err
 	}
 	c.startCodebaseIndexLifecycle(ctx, codebaseIndexReconcileInterval)
+	c.goalScheduler = newGoalScheduler(c)
+	c.goalScheduler.start(ctx)
 	c.cfg.SetRuntimeGenerationPreparer(c.prepareRuntimeGeneration)
 	constructed = true
 	return c, nil
@@ -627,12 +632,12 @@ func (c *coordinator) reconcileCodebaseIndex(ctx context.Context, snapshots ...c
 
 // Run implements Coordinator.
 func (c *coordinator) Run(ctx context.Context, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
-	return c.run(ctx, nil, sessionID, prompt, attachments...)
+	return c.run(ctx, nil, false, sessionID, prompt, attachments...)
 }
 
 // RunAccepted implements Coordinator.
 func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
-	return c.run(ctx, accept, sessionID, prompt, attachments...)
+	return c.run(ctx, accept, false, sessionID, prompt, attachments...)
 }
 
 // run is the shared implementation behind Run and RunAccepted. When
@@ -640,13 +645,16 @@ func (c *coordinator) RunAccepted(ctx context.Context, accept *AcceptedRun, sess
 // Accepted so sessionAgent.Run can consume the accept reservation under
 // dispatchMu; when nil (the in-process/local path) no accept tracking
 // applies.
-func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
+func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, internal bool, sessionID string, prompt string, attachments ...message.Attachment) (*fantasy.AgentResult, error) {
 	ctx = log.WithTrafficContext(ctx, c.trafficContext)
-	if DeliveryModeFromContext(ctx) == DeliverySteer {
+	if DeliveryModeFromContext(ctx) == DeliverySteer || RequireActiveRunFromContext(ctx) {
 		call := SessionAgentCall{
-			SessionID: sessionID, Prompt: prompt, Attachments: attachments,
-			DeliveryMode: DeliverySteer, SubmissionID: SubmissionIDFromContext(ctx),
-			RunID: RunIDFromContext(ctx), Accepted: accept,
+			SessionID: sessionID, Prompt: prompt, Attachments: attachments, InputParts: InputPartsFromContext(ctx),
+			DeliveryMode: DeliveryModeFromContext(ctx), RequireActiveRun: RequireActiveRunFromContext(ctx), SubmissionID: SubmissionIDFromContext(ctx),
+			RunID: RunIDFromContext(ctx), MessageRunID: MessageRunIDFromContext(ctx),
+			UserMessageID: UserMessageIDFromContext(ctx), AssistantItemID: AssistantItemIDFromContext(ctx),
+			TurnInstructions:     TurnInstructionsFromContext(ctx),
+			InstructionIsolation: InstructionIsolationFromContext(ctx), InstructionIsolationTools: InstructionIsolationToolsFromContext(ctx), InputMaterializer: InputMaterializerFromContext(ctx), OnAdmitted: AdmissionCallbackFromContext(ctx), Accepted: accept,
 		}
 		if err := ValidateCall(call); err != nil {
 			return nil, err
@@ -657,13 +665,21 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		if active, ok := c.currentAgent.(interface{ queueActivePrompt(SessionAgentCall) bool }); ok && active.queueActivePrompt(call) {
 			return nil, nil
 		}
+		if call.RequireActiveRun {
+			return nil, ErrNoActiveRunToSteer
+		}
 	}
 	if err := c.readyWg.Wait(); err != nil {
 		return nil, err
 	}
 	c.memoryWorker.Interrupt()
 
+	instructionIsolation := InstructionIsolationFromContext(ctx)
 	codebaseContext := c.startAutomaticCodebaseContext(ctx, prompt)
+	if instructionIsolation && codebaseContext != nil {
+		codebaseContext.cancel()
+		codebaseContext = nil
+	}
 	if codebaseContext != nil {
 		defer codebaseContext.cancel()
 	}
@@ -682,10 +698,14 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	// do wait for initialization to settle. The wait is bounded by each
 	// server's own connect timeout, so a hung server cannot stall the run
 	// indefinitely.
-	if !c.interactive {
+	if !c.interactive && !instructionIsolation {
 		if err := mcp.For(c.cfg).WaitForInit(ctx); err != nil {
 			return nil, fmt.Errorf("failed to wait for MCP initialization: %w", err)
 		}
+	}
+	ctx, err := c.withSessionAnalysisEffort(ctx, sessionID)
+	if err != nil {
+		return nil, err
 	}
 
 	// refresh models before each run
@@ -720,7 +740,11 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		return nil, fmt.Errorf("provider %s options: %w", model.ModelCfg.Provider, err)
 	}
 	mergedOptions = c.oauthReasoningOptionsForRegistration(model.ModelCfg.Provider, model.ModelCfg.Model, registration, registered, mergedOptions)
-	mergedOptions = applyRegisteredRuntimeOptions(model.ModelCfg.Model, cfg.Options, registration, registered, mergedOptions)
+	mergedOptions = applyRegisteredRuntimeOptions(model.ModelCfg.Model, turnRuntimeOptions(ctx, cfg.Options), registration, registered, mergedOptions)
+	mergedOptions, err = applyTurnProviderOperation(ctx, model.ModelCfg.Provider, mergedOptions)
+	if err != nil {
+		return nil, err
+	}
 
 	// Coalesce per-attempt RunComplete payloads so only the final
 	// outcome reaches subscribers. Without this, the first attempt's
@@ -751,10 +775,14 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		submissionID = uuid.NewString()
 	}
 	codebaseInstructions := codebaseContext.wait()
-	memoryInstructions, memoryErr := automemory.RelevantForStore(ctx, c.cfg, prompt, time.Now())
-	if memoryErr != nil {
-		slog.Debug("Could not load relevant auto-memory", "error", memoryErr)
-		memoryInstructions = ""
+	memoryInstructions := ""
+	if !instructionIsolation {
+		var memoryErr error
+		memoryInstructions, memoryErr = automemory.RelevantForStore(ctx, c.cfg, prompt, time.Now())
+		if memoryErr != nil {
+			slog.Debug("Could not load relevant auto-memory", "error", memoryErr)
+			memoryInstructions = ""
+		}
 	}
 	prepareRuntime := func(stepContext context.Context, next InstalledRuntime) (fantasy.StepModelSettings, error) {
 		nextModel := next.LargeModel
@@ -770,7 +798,11 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 			return fantasy.StepModelSettings{}, err
 		}
 		nextOptions = c.oauthReasoningOptionsForRegistration(nextModel.ModelCfg.Provider, nextModel.ModelCfg.Model, nextRegistration, nextRegistered, nextOptions)
-		nextOptions = applyRegisteredRuntimeOptions(nextModel.ModelCfg.Model, nextConfig.Options, nextRegistration, nextRegistered, nextOptions)
+		nextOptions = applyRegisteredRuntimeOptions(nextModel.ModelCfg.Model, turnRuntimeOptions(ctx, nextConfig.Options), nextRegistration, nextRegistered, nextOptions)
+		nextOptions, err = applyTurnProviderOperation(ctx, nextModel.ModelCfg.Provider, nextOptions)
+		if err != nil {
+			return fantasy.StepModelSettings{}, err
+		}
 		runtime, model, cfg = next, nextModel, nextConfig
 		providerCfg, registration, registered = nextProvider, nextRegistration, nextRegistered
 		mergedOptions, temp, topP, topK, freqPenalty, presPenalty = nextOptions, nextTemp, nextTopP, nextTopK, nextFreq, nextPres
@@ -793,27 +825,37 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 	}
 	run := func() (*fantasy.AgentResult, error) {
 		return c.currentAgent.Run(ctx, SessionAgentCall{
-			PrepareRuntime:       prepareRuntime,
-			SessionID:            sessionID,
-			SubmissionID:         submissionID,
-			DeliveryMode:         DeliveryModeFromContext(ctx),
-			RunID:                runID,
-			Prompt:               prompt,
-			CodebaseInstructions: codebaseInstructions,
-			MemoryInstructions:   memoryInstructions,
-			Attachments:          attachments,
-			MaxOutputTokens:      maxTokens,
-			ProviderOptions:      mergedOptions,
-			Temperature:          temp,
-			TopP:                 topP,
-			TopK:                 topK,
-			FrequencyPenalty:     freqPenalty,
-			PresencePenalty:      presPenalty,
-			OnComplete:           onComplete,
+			PrepareRuntime:            prepareRuntime,
+			SessionID:                 sessionID,
+			SubmissionID:              submissionID,
+			DeliveryMode:              DeliveryModeFromContext(ctx),
+			RunID:                     runID,
+			MessageRunID:              MessageRunIDFromContext(ctx),
+			UserMessageID:             UserMessageIDFromContext(ctx),
+			AssistantItemID:           AssistantItemIDFromContext(ctx),
+			Prompt:                    prompt,
+			CodebaseInstructions:      codebaseInstructions,
+			MemoryInstructions:        memoryInstructions,
+			TurnInstructions:          TurnInstructionsFromContext(ctx),
+			InstructionIsolation:      instructionIsolation,
+			InstructionIsolationTools: InstructionIsolationToolsFromContext(ctx),
+			Attachments:               attachments,
+			InputParts:                InputPartsFromContext(ctx),
+			InputMaterializer:         InputMaterializerFromContext(ctx),
+			MaxOutputTokens:           maxTokens,
+			ProviderOptions:           mergedOptions,
+			Temperature:               temp,
+			TopP:                      topP,
+			TopK:                      topK,
+			FrequencyPenalty:          freqPenalty,
+			PresencePenalty:           presPenalty,
+			OnComplete:                onComplete,
+			OnAdmitted:                AdmissionCallbackFromContext(ctx),
 			OnProviderWarning: func(w fantasy.CallWarning) {
 				c.disableOAuthReasoningForRegistration(model.ModelCfg.Provider, model.ModelCfg.Model, registration, registered, w.Message)
 			},
 			Accepted:      accept,
+			Internal:      internal,
 			OnAuthRefresh: c.makeAuthRefreshCallback(runtime.Snapshot, providerCfg),
 			runtime:       &runtime,
 		})
@@ -828,7 +870,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		c.disableOAuthReasoningForRegistration(model.ModelCfg.Provider, model.ModelCfg.Model, registration, registered, originalErr.Error())
 	}
 	logTurnSkillUsage(sessionID, prompt, turnSkills, turnTracker, beforeLoaded)
-	if originalErr == nil {
+	if originalErr == nil && !instructionIsolation {
 		c.memoryWorker.Enqueue(sessionID)
 	}
 
@@ -841,6 +883,67 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, sessionID st
 		MarkRunCompletePublished(ctx)
 	}
 	return result, originalErr
+}
+
+func (c *coordinator) withSessionAnalysisEffort(ctx context.Context, sessionID string) (context.Context, error) {
+	if AnalysisEffortFromContext(ctx) != "" {
+		return ctx, nil
+	}
+	currentSession, err := c.sessions.Get(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if currentSession.AnalysisEffort == "" {
+		return ctx, nil
+	}
+	return WithAnalysisEffort(ctx, currentSession.AnalysisEffort), nil
+}
+
+func turnRuntimeOptions(ctx context.Context, options *config.Options) *config.Options {
+	effort := AnalysisEffortFromContext(ctx)
+	if effort == "" {
+		return options
+	}
+	if options == nil {
+		return &config.Options{AnalysisEffort: effort}
+	}
+	turnOptions := *options
+	turnOptions.AnalysisEffort = effort
+	return &turnOptions
+}
+
+func applyTurnProviderOperation(ctx context.Context, providerID string, options fantasy.ProviderOptions) (fantasy.ProviderOptions, error) {
+	operation := ProviderOperationFromContext(ctx)
+	if operation == "" {
+		return options, nil
+	}
+	if operation != codexresponses.OperationMemgen {
+		return nil, fmt.Errorf("unsupported provider operation %q", operation)
+	}
+	if providerID != codex.ID {
+		return nil, fmt.Errorf("provider operation %q requires provider %q, got %q", operation, codex.ID, providerID)
+	}
+
+	result := maps.Clone(options)
+	if result == nil {
+		result = make(fantasy.ProviderOptions)
+	}
+	providerOptions := &codexresponses.ProviderOptions{}
+	if current, ok := result[codexresponses.Name]; ok {
+		typed, ok := current.(*codexresponses.ProviderOptions)
+		if !ok || typed == nil {
+			return nil, fmt.Errorf("provider operation %q received invalid codex options for codex.responses", operation)
+		}
+		clone := *typed
+		clone.RequestHeaders = maps.Clone(typed.RequestHeaders)
+		providerOptions = &clone
+	}
+	if providerOptions.RequestHeaders == nil {
+		providerOptions.RequestHeaders = make(map[string]string)
+	}
+	providerOptions.RequestHeaders[codexresponses.MemgenHeader] = "true"
+	result[codexresponses.Name] = providerOptions
+	return result, nil
 }
 
 // effectiveReasoningEffort returns the reasoning effort to apply for provider calls.
@@ -1193,6 +1296,9 @@ func (c *coordinator) currentSubagentPromptTemplate() (*prompt.Prompt, error) {
 
 func (c *coordinator) systemPromptBuilder(promptTemplate *prompt.Prompt, snapshot config.RuntimeSnapshot, isSubAgent bool, roleInstructions string) SystemPromptBuilder {
 	return func(ctx context.Context, current session.Session, model Model) (fantasy.Instructions, error) {
+		if InstructionIsolationFromContext(ctx) {
+			ctx = prompt.WithInstructionIsolation(ctx)
+		}
 		lifecycle, err := promptLifecycle(current)
 		if err != nil {
 			return fantasy.Instructions{}, err
@@ -1206,7 +1312,12 @@ func (c *coordinator) systemPromptBuilder(promptTemplate *prompt.Prompt, snapsho
 }
 
 func promptLifecycle(current session.Session) (prompt.Lifecycle, error) {
-	lifecycle := prompt.Lifecycle{Plan: current.Plan}
+	lifecycle := prompt.Lifecycle{
+		Plan:           current.Plan,
+		GoalObjective:  current.Goal.Objective,
+		GoalStatus:     string(current.Goal.Status),
+		GoalGeneration: current.Goal.Generation,
+	}
 	switch current.Mode {
 	case "", session.ModeDefault:
 		lifecycle.Stage = prompt.LifecycleDefault
@@ -1419,6 +1530,7 @@ func (c *coordinator) buildToolsForSkills(ctx context.Context, agent config.Agen
 		tools.NewSkillLoadTool(snapshot.ActiveSkills, snapshot.ResolvedPaths, c.cfg.WorkingDir(), tracker),
 		tools.NewSourcegraphTool(nil),
 		tools.NewTodosTool(c.sessions),
+		tools.NewUpdateGoalTool(c.sessions),
 		tools.NewViewTool(c.lspManager, c.permissions, c.filetracker, tracker, c.cfg.WorkingDir(), snapshot.ResolvedPaths...),
 		tools.NewWriteTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 	)
@@ -2001,7 +2113,7 @@ func manifestTemplateValues(registration providerregistry.Registration, provider
 	values := providertransport.TemplateValues{
 		Config:      maps.Clone(providerCfg.Configuration),
 		Credentials: map[string]string{},
-		Context:     map[string]string{"client.user_agent": "Crux", "oauth.access_token": apiKey},
+		Context:     map[string]string{"oauth.access_token": apiKey},
 	}
 	if registration.Manifest == nil {
 		return values, nil
@@ -2158,6 +2270,24 @@ func (c *coordinator) buildProviderWithOptions(snapshot config.RuntimeSnapshot, 
 			return nil, fmt.Errorf("provider %s: %w", providerCfg.ID, err)
 		}
 		values.Context["client.version"] = fantasy.Version
+		if declaration := registration.Operation.ClientIdentity; declaration != nil {
+			if snapshot.IsClientOwned() {
+				identity, err := snapshot.ClientProviderIdentity(providerCfg.ID, declaration)
+				if err != nil {
+					return nil, err
+				}
+				values.Context["client.user_agent"] = identity.UserAgent
+				values.Context["client.version"] = identity.Version
+			} else {
+				identityContext := providertransport.ContextWithOwnerValidator(context.Background(), validateOwner)
+				identityVersion, userAgent, err := clientidentity.ResolveWithEnvironment(identityContext, declaration, snapshot.Environment())
+				if err != nil {
+					return nil, err
+				}
+				values.Context["client.user_agent"] = userAgent
+				values.Context["client.version"] = identityVersion
+			}
+		}
 		values.Context["session.id"] = uuid.NewString()
 		if registration.Construction != providerregistry.ConstructionAnthropicMessages {
 			headers, err = registration.Operation.ApplyHeadersWithValues(headers, values)
@@ -2269,6 +2399,16 @@ func (c *coordinator) BeginAccepted(sessionID string) *AcceptedRun {
 	return c.currentAgent.BeginAccepted(sessionID)
 }
 
+func (c *coordinator) BeginSessionMutation(sessionID string) (func(), error) {
+	mutator, ok := c.currentAgent.(interface {
+		beginSessionMutation(string) (func(), error)
+	})
+	if !ok {
+		return nil, errors.New("session mutation is unavailable")
+	}
+	return mutator.beginSessionMutation(sessionID)
+}
+
 func (c *coordinator) Cancel(sessionID string) {
 	c.currentAgent.Cancel(sessionID)
 }
@@ -2293,6 +2433,9 @@ func (c *coordinator) CancelAll() {
 
 func (c *coordinator) CloseContext(ctx context.Context) {
 	c.stopReadiness()
+	if c.goalScheduler != nil {
+		c.goalScheduler.stop(ctx)
+	}
 	c.auxiliary.close()
 	c.stopCodebaseIndexLifecycle(ctx)
 	if c.backgroundAgents != nil {

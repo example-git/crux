@@ -4,10 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/example-git/crux/internal/compatibility"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
@@ -49,14 +55,18 @@ func newNativeCompatBridge(ctx context.Context, invocation compatibility.Invocat
 	return &nativeCompatBridge{base: base, ephemeral: make(map[*nativeCompatSession]struct{})}, nil
 }
 
-func (b *nativeCompatBridge) Close() {
+func (b *nativeCompatBridge) Close() error {
 	if b == nil || b.base == nil {
-		return
+		return nil
 	}
+	var cleanupErrors []error
 	for session := range b.ephemeral {
-		_ = session.workspace.client.DeleteSession(context.Background(), session.workspace.value.ID, session.session.ID)
+		if err := b.deleteSession(session); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("delete ephemeral session %s: %w", session.session.ID, err))
+		}
 	}
-	b.base.Close()
+	cleanupErrors = append(cleanupErrors, b.base.Close())
+	return errors.Join(cleanupErrors...)
 }
 
 func (b *nativeCompatBridge) markEphemeral(session *nativeCompatSession) {
@@ -64,6 +74,19 @@ func (b *nativeCompatBridge) markEphemeral(session *nativeCompatSession) {
 		session.deleteOnClose = true
 		b.ephemeral[session] = struct{}{}
 	}
+}
+
+func (b *nativeCompatBridge) deleteSession(session *nativeCompatSession) error {
+	if session == nil || session.workspace == nil || session.session == nil {
+		return nil
+	}
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), codexServerReadyTimeout)
+	defer cancelCleanup()
+	if err := session.workspace.client.DeleteSession(cleanupCtx, session.workspace.value.ID, session.session.ID); err != nil {
+		return err
+	}
+	delete(b.ephemeral, session)
+	return nil
 }
 
 func (b *nativeCompatBridge) resolveSession(ctx context.Context, request compatibility.Request) (*nativeCompatSession, error) {
@@ -119,10 +142,15 @@ func (b *nativeCompatBridge) resolveSession(ctx context.Context, request compati
 	if err != nil {
 		return nil, err
 	}
-	selection, err := b.base.selectModel(ctx, workspace, request.Model, "")
+	selection, err := b.base.selectModel(ctx, workspace, request.Model, request.ModelProvider)
 	if err != nil {
 		if deleteOnClose && sess != nil {
-			_ = workspace.client.DeleteSession(context.Background(), workspace.value.ID, sess.ID)
+			cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), codexServerReadyTimeout)
+			cleanupErr := workspace.client.DeleteSession(cleanupCtx, workspace.value.ID, sess.ID)
+			cancelCleanup()
+			if cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("delete ephemeral session %s after model selection failed: %w", sess.ID, cleanupErr))
+			}
 		}
 		return nil, err
 	}
@@ -159,6 +187,9 @@ func (b *nativeCompatBridge) createSession(ctx context.Context, cwd, title, mode
 	}
 	selection, err := b.base.selectModel(ctx, workspace, model, "")
 	if err != nil {
+		if cleanupErr := b.deleteSession(&nativeCompatSession{workspace: workspace, session: sess}); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("delete session %s after model selection failed: %w", sess.ID, cleanupErr))
+		}
 		return nil, err
 	}
 	return &nativeCompatSession{workspace: workspace, session: sess, model: selection}, nil
@@ -244,12 +275,12 @@ func (b *nativeCompatBridge) cancel(ctx context.Context, session *nativeCompatSe
 	return session.workspace.client.CancelAgentSession(ctx, session.workspace.value.ID, session.session.ID)
 }
 
-func runInteractiveCodexFork(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) error {
+func runInteractiveCodexFork(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) (returnErr error) {
 	bridge, err := newNativeCompatBridge(ctx, invocation, request)
 	if err != nil {
 		return err
 	}
-	defer bridge.Close()
+	defer func() { returnErr = errors.Join(returnErr, bridge.Close()) }()
 	forked, err := bridge.resolveSession(ctx, request)
 	if err != nil {
 		return fmt.Errorf("fork Codex session %q: %w", request.Session.ID, err)
@@ -259,12 +290,51 @@ func runInteractiveCodexFork(ctx context.Context, invocation compatibility.Invoc
 	return runNative(ctx, invocation, request.WorkingDir, arguments, invocation.Stdin, invocation.Stdout, invocation.Stderr)
 }
 
+func codexAttachments(request compatibility.Request) ([]message.Attachment, error) {
+	if request.Source != "codex" {
+		return nil, nil
+	}
+	return codexAttachmentPaths(request.WorkingDir, request.Attachments)
+}
+
+func codexAttachmentPaths(workingDir string, paths []string) ([]message.Attachment, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	attachments := make([]message.Attachment, 0, len(paths))
+	for _, value := range paths {
+		path := value
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workingDir, path)
+		}
+		path = filepath.Clean(path)
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("inspect attachment %q: %w", value, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("attachment %q is not a regular file", value)
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read attachment %q: %w", value, err)
+		}
+		attachments = append(attachments, message.Attachment{
+			FilePath: path,
+			FileName: filepath.Base(path),
+			MimeType: http.DetectContentType(content),
+			Content:  content,
+		})
+	}
+	return attachments, nil
+}
+
 func runNativeCompatibilityOneShot(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) (runErr error) {
 	bridge, err := newNativeCompatBridge(ctx, invocation, request)
 	if err != nil {
 		return err
 	}
-	defer bridge.Close()
+	defer func() { runErr = errors.Join(runErr, bridge.Close()) }()
 	session, err := bridge.resolveSession(ctx, request)
 	if err != nil {
 		if request.Output.Mode != "" && request.Output.Mode != compatibility.OutputText {
@@ -274,16 +344,16 @@ func runNativeCompatibilityOneShot(ctx context.Context, invocation compatibility
 		return err
 	}
 	request.Model = session.model.Provider + "/" + session.model.Model
+	attachments, err := codexAttachments(request)
+	if err != nil {
+		if request.Output.Mode != "" && request.Output.Mode != compatibility.OutputText {
+			_ = writeNativeOneShotError(invocation, request, session.session.ID, err.Error())
+			return &compatibility.ExitError{Code: 1}
+		}
+		return err
+	}
 	prompt := request.Prompt.Text
-	if len(request.Output.Schema) != 0 {
-		prompt = "Return only JSON matching this JSON Schema:\n" + string(request.Output.Schema) + "\n\n" + prompt
-	}
-	if request.SystemPrompt != "" {
-		prompt = "<system>\n" + request.SystemPrompt + "\n</system>\n\n" + prompt
-	}
-	if request.AppendSystemPrompt != "" {
-		prompt = "<additional-system>\n" + request.AppendSystemPrompt + "\n</additional-system>\n\n" + prompt
-	}
+	turnInstructions := nativeOneShotTurnInstructions(request)
 	var stream *oneShotStream
 	var onChunk func(string) error
 	if usesOneShotStream(request) {
@@ -297,7 +367,7 @@ func runNativeCompatibilityOneShot(ctx context.Context, invocation compatibility
 			return err
 		}
 	}
-	turn := bridge.runTurn(ctx, session, prompt, nativeAgentPermissionMode(request), onChunk)
+	turn := bridge.runTurnWithInstructions(ctx, session, prompt, turnInstructions, request.InstructionIsolation, request.AnalysisEffort, request.ProviderOperation, nativeAgentPermissionMode(request), onChunk, attachments...)
 	if stream != nil {
 		stream.usage = turn.Usage
 	}
@@ -380,7 +450,25 @@ func writeNativeOneShotError(invocation compatibility.Invocation, request compat
 	}
 }
 
-func (b *nativeCompatBridge) runTurn(ctx context.Context, session *nativeCompatSession, prompt string, permissionMode proto.AgentPermissionMode, onChunk func(string) error) nativeCompatTurnResult {
+func nativeOneShotTurnInstructions(request compatibility.Request) string {
+	instructions := make([]string, 0, 3)
+	if request.SystemPrompt != "" {
+		instructions = append(instructions, request.SystemPrompt)
+	}
+	if request.AppendSystemPrompt != "" {
+		instructions = append(instructions, request.AppendSystemPrompt)
+	}
+	if len(request.Output.Schema) != 0 {
+		instructions = append(instructions, "Return only JSON matching this JSON Schema:\n"+string(request.Output.Schema))
+	}
+	return strings.Join(instructions, "\n\n")
+}
+
+func (b *nativeCompatBridge) runTurn(ctx context.Context, session *nativeCompatSession, prompt string, permissionMode proto.AgentPermissionMode, onChunk func(string) error, attachments ...message.Attachment) nativeCompatTurnResult {
+	return b.runTurnWithInstructions(ctx, session, prompt, "", false, "", "", permissionMode, onChunk, attachments...)
+}
+
+func (b *nativeCompatBridge) runTurnWithInstructions(ctx context.Context, session *nativeCompatSession, prompt, turnInstructions string, instructionIsolation bool, analysisEffort, providerOperation string, permissionMode proto.AgentPermissionMode, onChunk func(string) error, attachments ...message.Attachment) nativeCompatTurnResult {
 	result := nativeCompatTurnResult{}
 	if err := b.base.ensureAgent(ctx, session.workspace); err != nil {
 		result.Err = err
@@ -391,21 +479,63 @@ func (b *nativeCompatBridge) runTurn(ctx context.Context, session *nativeCompatS
 		result.Err = err
 		return result
 	}
+	eventCtx, cancelEvents := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelEvents()
+	events, err := session.workspace.client.SubscribeEvents(eventCtx, session.workspace.value.ID)
+	if err != nil {
+		result.Err = err
+		return result
+	}
 	runID := uuid.NewString()
-	if err := session.workspace.client.SendMessageWithPermissionMode(ctx, session.workspace.value.ID, session.session.ID, runID, prompt, permissionMode); err != nil {
+	if err := session.workspace.client.SendAgentMessage(ctx, session.workspace.value.ID, proto.AgentMessage{
+		SessionID:            session.session.ID,
+		RunID:                runID,
+		Prompt:               prompt,
+		TurnInstructions:     turnInstructions,
+		InstructionIsolation: instructionIsolation,
+		AnalysisEffort:       analysisEffort,
+		ProviderOperation:    providerOperation,
+		Attachments:          proto.AttachmentsFromMessage(attachments),
+		PermissionMode:       permissionMode,
+	}); err != nil {
 		result.Err = err
 		return result
 	}
 	read := make(map[string]int)
+	ctxDone := ctx.Done()
+	var drainTimer *time.Timer
+	var drainDone <-chan time.Time
+	defer func() {
+		if drainTimer != nil {
+			drainTimer.Stop()
+		}
+	}()
+	cancelAndDrain := func(cause error, cancelled bool) {
+		if drainDone != nil {
+			return
+		}
+		result.Err = errors.Join(result.Err, cause)
+		result.Cancelled = cancelled
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), codexServerReadyTimeout)
+		if cancelErr := b.cancel(cleanupCtx, session); cancelErr != nil {
+			result.Err = errors.Join(result.Err, fmt.Errorf("cancel native run: %w", cancelErr))
+		}
+		cancelCleanup()
+		onChunk = nil
+		ctxDone = nil
+		drainTimer = time.NewTimer(codexServerReadyTimeout)
+		drainDone = drainTimer.C
+	}
 	for {
 		select {
-		case <-ctx.Done():
-			_ = b.cancel(context.Background(), session)
-			result.Cancelled = true
+		case <-ctxDone:
+			cancelAndDrain(nil, true)
+		case <-drainDone:
+			result.Err = errors.Join(result.Err, errors.New("timed out waiting for canceled native run to finish"))
 			return result
-		case event, ok := <-session.workspace.events:
+		case event, ok := <-events:
 			if !ok {
-				result.Err = errors.New("Crux event stream closed")
+				result.Err = errors.Join(result.Err, errors.New("Crux event stream closed"))
 				return result
 			}
 			switch value := event.(type) {
@@ -425,8 +555,7 @@ func (b *nativeCompatBridge) runTurn(ctx context.Context, session *nativeCompatS
 					result.Text += delta
 					if onChunk != nil {
 						if err := onChunk(delta); err != nil {
-							result.Err = err
-							return result
+							cancelAndDrain(err, false)
 						}
 					}
 				}
@@ -440,16 +569,19 @@ func (b *nativeCompatBridge) runTurn(ctx context.Context, session *nativeCompatS
 					result.Text = complete.Text
 					if delta != "" && onChunk != nil {
 						if err := onChunk(delta); err != nil {
-							result.Err = err
-							return result
+							result.Err = errors.Join(result.Err, err)
 						}
 					}
 				}
-				result.Cancelled = complete.Cancelled
-				if complete.Error != "" && !complete.Cancelled {
-					result.Err = errors.New(complete.Error)
+				if result.Err == nil {
+					result.Cancelled = complete.Cancelled
+					if complete.Error != "" && !complete.Cancelled {
+						result.Err = errors.New(complete.Error)
+					}
 				}
-				after, getErr := session.workspace.client.GetSession(context.Background(), session.workspace.value.ID, session.session.ID)
+				getCtx, cancelGet := context.WithTimeout(context.Background(), codexServerReadyTimeout)
+				after, getErr := session.workspace.client.GetSession(getCtx, session.workspace.value.ID, session.session.ID)
+				cancelGet()
 				if getErr == nil {
 					session.session = after
 					result.Usage = nativeCompatUsage{
@@ -461,7 +593,7 @@ func (b *nativeCompatBridge) runTurn(ctx context.Context, session *nativeCompatS
 				return result
 			case pubsub.Event[proto.AgentEvent]:
 				if value.Payload.Error != nil && value.Payload.RunID == runID {
-					result.Err = fmt.Errorf("agent run failed: %w", value.Payload.Error)
+					result.Err = errors.Join(result.Err, fmt.Errorf("agent run failed: %w", value.Payload.Error))
 					return result
 				}
 			}

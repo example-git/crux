@@ -4,10 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 
 	"github.com/example-git/crux/internal/agent"
 	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/imageattachment"
+	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
@@ -15,12 +24,11 @@ import (
 )
 
 // SendMessage validates and accepts a prompt for the workspace's agent,
-// then dispatches the run on a goroutine bound to the workspace context
-// and returns immediately. It does not wait for the LLM turn to
-// complete: the run's lifetime is owned by the workspace, not by the
-// caller. Errors from the dispatched run reach observers through the
-// agent event channels (a notify.TypeAgentError notification), not
-// through this return value.
+// then dispatches the run on a goroutine bound to the workspace context.
+// By default it returns immediately. WaitForAdmission waits until the native
+// user message is persisted or admission fails, but never waits for the LLM
+// turn to complete. The run's lifetime is owned by the workspace, not by the
+// caller. Later errors reach observers through the agent event channels.
 //
 // SendMessage returns synchronously when the request cannot be accepted:
 // ErrWorkspaceNotFound if the workspace is missing, ErrAgentNotInitialized
@@ -39,12 +47,37 @@ func (b *Backend) SendMessage(workspaceID string, msg proto.AgentMessage) error 
 		return ErrAgentNotInitialized
 	}
 
+	deliveryMode := agent.DeliveryMode(msg.DeliveryMode)
+	attachments := proto.AttachmentsToMessage(msg.Attachments)
+	var inputParts []message.ContentPart
+	var inputMaterializer agent.InputMaterializer
+	if deliveryMode == agent.DeliverySteer {
+		if err := validateAgentInputParts(msg.InputParts); err != nil {
+			return err
+		}
+		if msg.InputParts != nil {
+			rawInputParts := append([]proto.AgentInputPart(nil), msg.InputParts...)
+			inputMaterializer = func(ctx context.Context) ([]message.ContentPart, []message.Attachment, error) {
+				return b.materializeAgentInputParts(ctx, ws, rawInputParts)
+			}
+		}
+	} else {
+		var skillAttachments []message.Attachment
+		inputParts, skillAttachments, err = b.materializeAgentInputParts(ws.ctx, ws, msg.InputParts)
+		if err != nil {
+			return err
+		}
+		attachments = append(attachments, skillAttachments...)
+	}
 	if err := agent.ValidateCall(agent.SessionAgentCall{
-		SessionID:    msg.SessionID,
-		RunID:        msg.RunID,
-		DeliveryMode: agent.DeliveryMode(msg.DeliveryMode),
-		Prompt:       msg.Prompt,
-		Attachments:  proto.AttachmentsToMessage(msg.Attachments),
+		SessionID:         msg.SessionID,
+		RunID:             msg.RunID,
+		DeliveryMode:      deliveryMode,
+		RequireActiveRun:  msg.RequireActiveRun,
+		Prompt:            msg.Prompt,
+		Attachments:       attachments,
+		InputParts:        inputParts,
+		InputMaterializer: inputMaterializer,
 	}); err != nil {
 		return err
 	}
@@ -62,8 +95,146 @@ func (b *Backend) SendMessage(workspaceID string, msg proto.AgentMessage) error 
 	ws.runWG.Add(1)
 	ws.runMu.Unlock()
 
-	go b.runAgent(ws, coordinator, msg, accept)
+	var admission chan error
+	var resolveAdmission func(error)
+	if msg.WaitForAdmission {
+		admission = make(chan error, 1)
+		var once sync.Once
+		resolveAdmission = func(err error) {
+			once.Do(func() { admission <- err })
+		}
+	}
+	go b.runAgent(ws, coordinator, msg, inputParts, inputMaterializer, attachments, accept, resolveAdmission)
+	if admission != nil {
+		return <-admission
+	}
 	return nil
+}
+
+func validateAgentInputParts(input []proto.AgentInputPart) error {
+	for _, part := range input {
+		switch part.Type {
+		case "text":
+		case "local_file":
+			if part.Path == "" {
+				return errors.New("local file path must not be empty")
+			}
+		case "skill":
+			if part.Path == "" {
+				return errors.New("skill path must not be empty")
+			}
+			if part.Text == "" {
+				return errors.New("skill name must not be empty")
+			}
+		default:
+			return fmt.Errorf("unsupported agent input part type %q", part.Type)
+		}
+	}
+	return nil
+}
+
+func (b *Backend) materializeAgentInputParts(ctx context.Context, ws *Workspace, input []proto.AgentInputPart) ([]message.ContentPart, []message.Attachment, error) {
+	if input == nil {
+		return nil, nil, nil
+	}
+	parts := make([]message.ContentPart, 0, len(input))
+	var attachments []message.Attachment
+	for _, part := range input {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		switch part.Type {
+		case "text":
+			parts = append(parts, message.TextContent{Text: part.Text, TextElements: part.TextElements})
+		case "local_file":
+			content, err := readWorkspaceImage(ctx, ws, part.Path)
+			if err != nil {
+				return nil, nil, err
+			}
+			parts = append(parts, content)
+		case "skill":
+			if part.Path == "" {
+				return nil, nil, errors.New("skill path must not be empty")
+			}
+			if part.Text == "" {
+				return nil, nil, errors.New("skill name must not be empty")
+			}
+			content, result, err := b.ReadSkill(ctx, ws.ID, part.Path)
+			if err != nil {
+				return nil, nil, err
+			}
+			if result.Name != part.Text {
+				return nil, nil, fmt.Errorf("skill name %q does not match selected skill %q", part.Text, result.Name)
+			}
+			parts = append(parts, message.SkillContent{Name: result.Name, Path: part.Path, Content: content})
+		default:
+			return nil, nil, fmt.Errorf("unsupported agent input part type %q", part.Type)
+		}
+	}
+	return parts, attachments, nil
+}
+
+func readWorkspaceImage(ctx context.Context, ws *Workspace, path string) (message.BinaryContent, error) {
+	if err := ctx.Err(); err != nil {
+		return message.BinaryContent{}, err
+	}
+	if path == "" {
+		return message.BinaryContent{}, errors.New("local file path must not be empty")
+	}
+	rootPath, err := fsext.CanonicalPath(ws.resolvedPath)
+	if err != nil {
+		return message.BinaryContent{}, fmt.Errorf("resolve workspace root: %w", err)
+	}
+	candidate := path
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(rootPath, candidate)
+	}
+	resolved, err := fsext.CanonicalPath(candidate)
+	if err != nil {
+		return message.BinaryContent{}, fmt.Errorf("resolve local file %q: %w", path, err)
+	}
+	relative, err := filepath.Rel(rootPath, resolved)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return message.BinaryContent{}, fmt.Errorf("local file %q is outside the workspace", path)
+	}
+	root, err := os.OpenRoot(rootPath)
+	if err != nil {
+		return message.BinaryContent{}, fmt.Errorf("open workspace root: %w", err)
+	}
+	defer root.Close()
+	file, err := root.Open(relative)
+	if err != nil {
+		return message.BinaryContent{}, fmt.Errorf("open local file %q: %w", path, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return message.BinaryContent{}, fmt.Errorf("inspect local file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return message.BinaryContent{}, fmt.Errorf("local file %q is not a regular file", path)
+	}
+	if info.Size() > imageattachment.MaxSourceBytes {
+		return message.BinaryContent{}, fmt.Errorf("local file %q exceeds %d bytes", path, imageattachment.MaxSourceBytes)
+	}
+	if err := ctx.Err(); err != nil {
+		return message.BinaryContent{}, err
+	}
+	data, err := io.ReadAll(io.LimitReader(file, imageattachment.MaxSourceBytes+1))
+	if err != nil {
+		return message.BinaryContent{}, fmt.Errorf("read local file %q: %w", path, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return message.BinaryContent{}, err
+	}
+	if int64(len(data)) > imageattachment.MaxSourceBytes {
+		return message.BinaryContent{}, fmt.Errorf("local file %q exceeds %d bytes", path, imageattachment.MaxSourceBytes)
+	}
+	mediaType := http.DetectContentType(data)
+	if !strings.HasPrefix(mediaType, "image/") {
+		return message.BinaryContent{}, fmt.Errorf("local file %q is not an image", path)
+	}
+	return message.BinaryContent{Path: path, MIMEType: mediaType, Data: data}, nil
 }
 
 // runAgent executes an accepted agent run for the workspace. It owns the
@@ -90,11 +261,14 @@ func (b *Backend) SendMessage(workspaceID string, msg proto.AgentMessage) error 
 // notify.RunComplete event with that correlator. A run-complete marker
 // is also attached so the coordinator can report whether it published
 // the terminal event, letting runAgent avoid a duplicate fallback.
-func (b *Backend) runAgent(ws *Workspace, coordinator agent.Coordinator, msg proto.AgentMessage, accept *agent.AcceptedRun) {
+func (b *Backend) runAgent(ws *Workspace, coordinator agent.Coordinator, msg proto.AgentMessage, inputParts []message.ContentPart, inputMaterializer agent.InputMaterializer, attachments []message.Attachment, accept *agent.AcceptedRun, resolveAdmission func(error)) {
 	defer ws.runWG.Done()
 	defer accept.Close()
 
 	ctx := agent.WithDeliveryMode(ws.ctx, agent.DeliveryMode(msg.DeliveryMode))
+	if msg.RequireActiveRun {
+		ctx = agent.WithRequireActiveRun(ctx)
+	}
 	switch msg.PermissionMode {
 	case proto.AgentPermissionBypass:
 		ctx = permission.WithRunApproval(ctx)
@@ -107,23 +281,64 @@ func (b *Backend) runAgent(ws *Workspace, coordinator agent.Coordinator, msg pro
 	if msg.RunID != "" {
 		ctx = agent.WithRunID(ctx, msg.RunID)
 	}
+	messageRunID := msg.MessageRunID
+	if messageRunID == "" {
+		messageRunID = msg.RunID
+	}
+	if messageRunID != "" {
+		ctx = agent.WithMessageRunID(ctx, messageRunID)
+	}
+	if msg.UserMessageID != "" {
+		ctx = agent.WithUserMessageID(ctx, msg.UserMessageID)
+	}
+	if msg.AssistantItemID != "" {
+		ctx = agent.WithAssistantItemID(ctx, msg.AssistantItemID)
+	}
+	if msg.TurnInstructions != "" {
+		ctx = agent.WithTurnInstructions(ctx, msg.TurnInstructions)
+	}
+	if msg.InstructionIsolation {
+		ctx = agent.WithInstructionIsolation(ctx)
+	}
+	if len(msg.InstructionIsolationTools) > 0 {
+		ctx = agent.WithInstructionIsolationTools(ctx, msg.InstructionIsolationTools)
+	}
+	if msg.AnalysisEffort != "" {
+		ctx = agent.WithAnalysisEffort(ctx, msg.AnalysisEffort)
+	}
+	if msg.ProviderOperation != "" {
+		ctx = agent.WithProviderOperation(ctx, msg.ProviderOperation)
+	}
+	if msg.InputParts != nil && inputMaterializer == nil {
+		ctx = agent.WithInputParts(ctx, inputParts)
+	}
+	if inputMaterializer != nil {
+		ctx = agent.WithInputMaterializer(ctx, inputMaterializer)
+	}
 	ctx = agent.WithRunCompleteMarker(ctx)
+	if resolveAdmission != nil {
+		ctx = agent.WithAdmissionCallback(ctx, resolveAdmission)
+	}
 
-	_, err := coordinator.RunAccepted(ctx, accept, msg.SessionID, msg.Prompt, proto.AttachmentsToMessage(msg.Attachments)...)
+	_, err := coordinator.RunAccepted(ctx, accept, msg.SessionID, msg.Prompt, attachments...)
+	if resolveAdmission != nil && err != nil {
+		resolveAdmission(err)
+	}
 	if err == nil || errors.Is(err, context.Canceled) {
 		return
 	}
 
+	eventRunID := msg.RunID
+	if eventRunID == "" {
+		eventRunID = msg.MessageRunID
+	}
 	ws.AgentNotifications().Publish(pubsub.CreatedEvent, notify.Notification{
 		SessionID: msg.SessionID,
-		RunID:     msg.RunID,
+		RunID:     eventRunID,
 		Type:      notify.TypeAgentError,
 		Message:   err.Error(),
 	})
 
-	// Reliable terminal fallback. Only needed when a RunID waiter
-	// exists and the coordinator has not already emitted the run's
-	// terminal RunComplete; otherwise this would be a duplicate.
 	if msg.RunID == "" || agent.RunCompletePublished(ctx) {
 		return
 	}
@@ -260,6 +475,14 @@ func (b *Backend) RewindSession(ctx context.Context, workspaceID, sessionID, mes
 	}
 
 	return ws.RewindSession(ctx, sessionID, messageID, summarize, restoreFiles)
+}
+
+func (b *Backend) RollbackSession(ctx context.Context, workspaceID, sessionID, messageID string) (message.RollbackResult, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return message.RollbackResult{}, err
+	}
+	return ws.RollbackSession(ctx, sessionID, messageID)
 }
 
 // SuggestPrompt predicts the user's likely next message for a session.

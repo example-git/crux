@@ -366,6 +366,20 @@ func (c *controllerV1) handleGetWorkspaceSkills(w http.ResponseWriter, r *http.R
 	jsonEncode(w, skills)
 }
 
+func (c *controllerV1) handlePostWorkspaceSkillCatalog(w http.ResponseWriter, r *http.Request) {
+	var request proto.SkillCatalogRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	result, err := c.backend.SkillCatalog(r.Context(), r.PathValue("id"), request.ForceReload)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, result)
+}
+
 // handlePostWorkspaceSkillRead reads a skill's content by ID.
 //
 //	@Summary		Read skill content

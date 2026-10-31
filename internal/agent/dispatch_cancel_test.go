@@ -70,6 +70,27 @@ func newStreamTestAgent(t *testing.T) (*sessionAgent, fakeEnv) {
 // been accepted (acceptedRuns > 0). A single Cancel must fire both: it
 // invokes the active cancel func and records a pending cancel for the
 // accepted follow-up.
+func TestRun_InternalBusyDoesNotQueue(t *testing.T) {
+	t.Parallel()
+	sa, env := newCancelTestAgent(t)
+
+	sess, err := env.sessions.Create(t.Context(), "session")
+	require.NoError(t, err)
+	sa.activeRequests.Set(sess.ID, &activeCancel{cancel: func() {}})
+	accept := sa.BeginAccepted(sess.ID)
+
+	result, err := sa.Run(t.Context(), SessionAgentCall{
+		SessionID: sess.ID,
+		Prompt:    "continue the persisted goal",
+		Accepted:  accept,
+		Internal:  true,
+	})
+	require.ErrorIs(t, err, ErrSessionBusy)
+	require.Nil(t, result)
+	require.Zero(t, sa.QueuedPrompts(sess.ID))
+	require.Zero(t, sa.acceptedCount(sess.ID))
+}
+
 func TestCancel_ActiveAndAcceptedFiresBothBranches(t *testing.T) {
 	t.Parallel()
 	sa, _ := newCancelTestAgent(t)

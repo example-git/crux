@@ -23,7 +23,7 @@ func AccountIdentity(operation *Operation, credentials []manifest.Credential) fu
 	}
 }
 
-func ExecuteAccountIdentity(ctx context.Context, operation *Operation, credentials []manifest.Credential, accessToken string) (id string, display string, raw json.RawMessage, err error) {
+func ExecuteAccountIdentity(ctx context.Context, operation *Operation, credentials []manifest.Credential, accessToken string, identities ...map[string]string) (id string, display string, raw json.RawMessage, err error) {
 	if operation == nil || operation.Kind != "account" {
 		return "", "", nil, fmt.Errorf("account operation is unavailable")
 	}
@@ -44,7 +44,14 @@ func ExecuteAccountIdentity(ctx context.Context, operation *Operation, credentia
 			credentialValues[credential.ID] = accessToken
 		}
 	}
-	values := TemplateValues{Credentials: credentialValues, Context: map[string]string{"oauth.access_token": accessToken, "client.user_agent": "Crux"}}
+	values := TemplateValues{Credentials: credentialValues, Context: map[string]string{"oauth.access_token": accessToken}}
+	for _, identity := range identities {
+		for _, key := range []string{"client.user_agent", "client.version"} {
+			if value, exists := identity[key]; exists {
+				values.Context[key] = value
+			}
+		}
+	}
 	headers, err := operation.ApplyHeadersWithValues(nil, values)
 	if err != nil {
 		return "", "", nil, err

@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 
@@ -25,8 +26,23 @@ import (
 	"golang.org/x/net/html/charset"
 )
 
-// BrowserUserAgent is a realistic browser User-Agent for better compatibility.
-const BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+const browserChromeVersion = "157.0.0.0"
+
+var BrowserUserAgent, browserClientHintPlatform = browserFetchIdentity(runtime.GOOS)
+
+func browserFetchIdentity(goos string) (string, string) {
+	platform := "X11; Linux x86_64"
+	clientHint := "Linux"
+	switch goos {
+	case "darwin":
+		platform = "Macintosh; Intel Mac OS X 10_15_7"
+		clientHint = "macOS"
+	case "windows":
+		platform = "Windows NT 10.0; Win64; x64"
+		clientHint = "Windows"
+	}
+	return fmt.Sprintf("Mozilla/5.0 (%s) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s Safari/537.36", platform, browserChromeVersion), clientHint
+}
 
 const maxFetchInputSize = 5 * 1024 * 1024
 
@@ -78,9 +94,9 @@ func fetchURLAndConvert(ctx context.Context, client *http.Client, address string
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", BrowserUserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+	if !userMode {
+		setBrowserFetchHeaders(req)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

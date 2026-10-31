@@ -6,6 +6,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
@@ -34,6 +35,8 @@ type Querier interface {
 	GetUsageByHour(ctx context.Context) ([]GetUsageByHourRow, error)
 	GetUsageByModel(ctx context.Context) ([]GetUsageByModelRow, error)
 	ListAllUserMessages(ctx context.Context) ([]Message, error)
+	ListArchivedSessions(ctx context.Context) ([]Session, error)
+	ListChildSessions(ctx context.Context, parentSessionID sql.NullString) ([]Session, error)
 	ListFilesByPath(ctx context.Context, path string) ([]File, error)
 	ListFilesBySession(ctx context.Context, sessionID string) ([]File, error)
 	ListLatestSessionFiles(ctx context.Context, sessionID string) ([]File, error)
@@ -45,6 +48,8 @@ type Querier interface {
 	ListUserMessagesBySession(ctx context.Context, sessionID string) ([]Message, error)
 	RecordFileRead(ctx context.Context, arg RecordFileReadParams) error
 	RenameSession(ctx context.Context, arg RenameSessionParams) error
+	SetSessionAnalysisEffort(ctx context.Context, arg SetSessionAnalysisEffortParams) error
+	SetSessionArchived(ctx context.Context, arg SetSessionArchivedParams) (Session, error)
 	SetSessionPlanState(ctx context.Context, arg SetSessionPlanStateParams) error
 	UpdateMessage(ctx context.Context, arg UpdateMessageParams) error
 	UpdateSession(ctx context.Context, arg UpdateSessionParams) (Session, error)

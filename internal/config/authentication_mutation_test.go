@@ -400,14 +400,14 @@ func TestAuthenticationMutationCreatedScopesAndAliases(t *testing.T) {
 			require.Equal(t, old.Models, f.store.Config().Models)
 			require.Equal(t, old.Agents, f.store.Config().Agents)
 			if topology == "workspace at cwd" || topology == "global at cwd" {
-				require.Equal(t, len(before.inputs.order)+1, len(result.After.inputs.order))
+				require.Equal(t, len(before.inputs.order), len(result.After.inputs.order))
 				count := 0
 				for _, path := range result.After.inputs.order {
 					if path == f.path {
 						count++
 					}
 				}
-				require.Equal(t, 2, count)
+				require.Equal(t, 1, count)
 			}
 			loggedOut, err := f.store.LogoutAuthentication(ctx, f.scope, result.After, f.owner)
 			require.NoError(t, err)

@@ -20,16 +20,24 @@ type pathIdentity struct {
 }
 
 type Metadata struct {
-	Session     string
-	CapturePath string
-	StatusPath  string
-	PaneLogPath string
-	Attach      string
-	ViewerURL   string
+	Session        string
+	CapturePath    string
+	StatusPath     string
+	PaneLogPath    string
+	TargetLogPath  string
+	ControlSocket  string
+	TargetExitCode *int
+	Attach         string
+	ViewerURL      string
 }
 
 type workerConfig struct {
 	Command            []string          `json:"command"`
+	OriginalCommand    []string          `json:"original_command"`
+	ControlSocket      string            `json:"control_socket"`
+	Managed            bool              `json:"managed"`
+	DetachedTerminal   bool              `json:"detached_terminal"`
+	WireGuardPort      int               `json:"wireguard_port"`
 	Environment        map[string]string `json:"environment"`
 	WorkingDir         string            `json:"cwd"`
 	WorkingDirIdentity pathIdentity      `json:"cwd_identity"`
@@ -51,8 +59,10 @@ type workerConfig struct {
 }
 
 type workerStatus struct {
-	State     string `json:"state"`
-	Error     string `json:"error"`
-	ExitCode  int    `json:"exit_code"`
-	ViewerURL string `json:"viewer_url"`
+	State          string `json:"state"`
+	Error          string `json:"error"`
+	ExitCode       int    `json:"exit_code"`
+	ViewerURL      string `json:"viewer_url"`
+	ControlSocket  string `json:"control_socket"`
+	TargetExitCode *int   `json:"target_exit_code,omitempty"`
 }

@@ -65,6 +65,65 @@ type BrowserEntry struct {
 	Directory bool   `json:"directory"`
 }
 
+type WorkspaceFileSearchRequest struct {
+	Query string   `json:"query"`
+	Roots []string `json:"roots"`
+	Limit int      `json:"limit"`
+}
+
+type WorkspaceFileSearchMatch struct {
+	Root      string   `json:"root"`
+	Path      string   `json:"path"`
+	MatchType string   `json:"match_type"`
+	FileName  string   `json:"file_name"`
+	Score     uint32   `json:"score"`
+	Indices   []uint32 `json:"indices,omitempty"`
+}
+
+type WorkspaceFileSearchResponse struct {
+	Roots []string                   `json:"roots"`
+	Files []WorkspaceFileSearchMatch `json:"files"`
+}
+
+type WorkspaceFileSearchSessionStartRequest struct {
+	Owner     string   `json:"owner"`
+	SessionID string   `json:"session_id"`
+	Roots     []string `json:"roots"`
+}
+
+type WorkspaceFileSearchSessionBeginRequest struct {
+	Owner     string `json:"owner"`
+	SessionID string `json:"session_id"`
+	Query     string `json:"query"`
+	Limit     int    `json:"limit"`
+}
+
+type WorkspaceFileSearchSessionBeginResponse struct {
+	UpdateID string `json:"update_id"`
+}
+
+type WorkspaceFileSearchSessionCompleteRequest struct {
+	Owner     string `json:"owner"`
+	SessionID string `json:"session_id"`
+	UpdateID  string `json:"update_id"`
+}
+
+type WorkspaceFileSearchSessionCompleteResponse struct {
+	Accepted bool                       `json:"accepted"`
+	Query    string                     `json:"query"`
+	Files    []WorkspaceFileSearchMatch `json:"files"`
+	Error    string                     `json:"error,omitempty"`
+}
+
+type WorkspaceFileSearchSessionRequest struct {
+	Owner     string `json:"owner"`
+	SessionID string `json:"session_id"`
+}
+
+type WorkspaceFileSearchOwnerRequest struct {
+	Owner string `json:"owner"`
+}
+
 // Error represents an error response.
 type Error struct {
 	Message string `json:"message"`
@@ -134,6 +193,24 @@ type SkillInfo struct {
 	UserInvocable bool   `json:"user_invocable"`
 }
 
+type SkillCatalogRequest struct {
+	ForceReload bool `json:"force_reload"`
+}
+
+type SkillCatalogEntry struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Source        string `json:"source"`
+	UserInvocable bool   `json:"user_invocable"`
+	Enabled       bool   `json:"enabled"`
+}
+
+type SkillCatalogResponse struct {
+	Skills []SkillCatalogEntry `json:"skills"`
+	States []SkillState        `json:"states"`
+}
+
 // ReadSkillRequest is the request body for reading a skill's content.
 type ReadSkillRequest struct {
 	SkillID string `json:"skill_id"`
@@ -189,14 +266,32 @@ const (
 	AgentPermissionBypass      AgentPermissionMode = "bypass"
 )
 
+type AgentInputPart struct {
+	Type         string `json:"type"`
+	Text         string `json:"text,omitempty"`
+	Path         string `json:"path,omitempty"`
+	TextElements []any  `json:"text_elements,omitempty"`
+}
+
 type AgentMessage struct {
-	DeliveryMode   string              `json:"delivery_mode,omitempty"`
-	SessionID      string              `json:"session_id"`
-	SubmissionID   string              `json:"submission_id,omitempty"`
-	RunID          string              `json:"run_id,omitempty"`
-	Prompt         string              `json:"prompt"`
-	Attachments    []Attachment        `json:"attachments,omitempty"`
-	PermissionMode AgentPermissionMode `json:"permission_mode,omitempty"`
+	DeliveryMode              string              `json:"delivery_mode,omitempty"`
+	RequireActiveRun          bool                `json:"require_active_run,omitempty"`
+	SessionID                 string              `json:"session_id"`
+	SubmissionID              string              `json:"submission_id,omitempty"`
+	RunID                     string              `json:"run_id,omitempty"`
+	MessageRunID              string              `json:"message_run_id,omitempty"`
+	UserMessageID             string              `json:"user_message_id,omitempty"`
+	AssistantItemID           string              `json:"assistant_item_id,omitempty"`
+	WaitForAdmission          bool                `json:"wait_for_admission,omitempty"`
+	Prompt                    string              `json:"prompt"`
+	InputParts                []AgentInputPart    `json:"input_parts"`
+	TurnInstructions          string              `json:"turn_instructions,omitempty"`
+	InstructionIsolation      bool                `json:"instruction_isolation,omitempty"`
+	InstructionIsolationTools []string            `json:"instruction_isolation_tools,omitempty"`
+	AnalysisEffort            string              `json:"analysis_effort,omitempty"`
+	ProviderOperation         string              `json:"provider_operation,omitempty"`
+	Attachments               []Attachment        `json:"attachments,omitempty"`
+	PermissionMode            AgentPermissionMode `json:"permission_mode,omitempty"`
 }
 
 type QueuedPrompt struct {

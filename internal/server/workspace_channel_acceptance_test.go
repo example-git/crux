@@ -63,7 +63,9 @@ func createRefreshChannelWorkspace(t *testing.T) (*httptest.Server, map[string]*
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Crux-Runtime-Protocol", proto.RemoteRuntimeProtocol)
 	request.Header.Set(cruxlog.EphemeralStateHeader, "1")
-	response, err := clients["retained"].Do(request)
+	workspaceClient := *clients["retained"]
+	workspaceClient.Timeout = 30 * time.Second
+	response, err := workspaceClient.Do(request)
 	require.NoError(t, err)
 	defer response.Body.Close()
 	data, err := io.ReadAll(response.Body)

@@ -28,6 +28,13 @@
         "$schema": {
           "type": "string"
         },
+        "client_settings": {
+          "additionalProperties": {
+            "type": "object"
+          },
+          "description": "Persistent native state for external client interfaces",
+          "type": "object"
+        },
         "env": {
           "additionalProperties": {
             "type": "string"
@@ -56,6 +63,10 @@
         "mcp": {
           "$ref": "#/$defs/MCPs",
           "description": "Model Context Protocol server configurations"
+        },
+        "memories": {
+          "$ref": "#/$defs/Memories",
+          "description": "Memory workflow configuration"
         },
         "models": {
           "additionalProperties": {
@@ -383,6 +394,16 @@
     "MCPs": {
       "additionalProperties": {
         "$ref": "#/$defs/MCPConfig"
+      },
+      "type": "object"
+    },
+    "Memories": {
+      "additionalProperties": false,
+      "properties": {
+        "consolidation_model": {
+          "description": "Model used for memory consolidation workflows",
+          "type": "string"
+        }
       },
       "type": "object"
     },

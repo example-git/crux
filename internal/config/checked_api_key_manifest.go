@@ -64,7 +64,7 @@ func checkedCredentialCatalogAudience(snapshot RuntimeSnapshot, provider Provide
 }
 
 func checkedAPIKeyManifestValues(snapshot RuntimeSnapshot, provider ProviderConfig, operation *providertransport.Operation) (providertransport.TemplateValues, error) {
-	values := providertransport.TemplateValues{Config: cloneProviderOptions(provider.Configuration), Credentials: map[string]string{}, Context: map[string]string{"client.user_agent": "Crux"}}
+	values := providertransport.TemplateValues{Config: cloneProviderOptions(provider.Configuration), Credentials: map[string]string{}, Context: map[string]string{}}
 	registration, ok := snapshot.ProviderRegistrationFor(provider.ID, provider)
 	if !ok || registration.Manifest == nil {
 		return values, errors.New("checked provider manifest is unavailable")

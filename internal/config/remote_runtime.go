@@ -69,9 +69,9 @@ func (s *ConfigStore) RegisterRemoteRuntimeSecrets() {
 
 const (
 	RemoteRuntimeVersion = 1
-	// v24 also requires client-resolved provider identity metadata. Older
-	// receivers may resolve identity on the server, so negotiation rejects them.
-	RemoteRuntimeCompiler     = "crux-declarative-runtime-v24"
+	// v25 also transports the distinct optional memory consolidation model.
+	// Older receivers silently drop it, so negotiation rejects them.
+	RemoteRuntimeCompiler     = "crux-declarative-runtime-v25"
 	MaxRemoteRuntimeBytes     = 96 << 20
 	MaxRemoteRuntimeBundles   = 64
 	MaxRemoteRuntimeProviders = 64
@@ -93,6 +93,7 @@ type RemoteRuntimeProposal struct {
 	Controls                    RemoteRuntimeControls               `json:"controls"`
 	Credentials                 []RemoteCredentialBinding           `json:"credentials"`
 	Images                      *ImageConfiguration                 `json:"images,omitempty"`
+	Memories                    *Memories                           `json:"memories,omitempty"`
 	ImageBrowserCredentials     []RemoteImageBrowserCredential      `json:"image_browser_credentials,omitempty"`
 	ImageClientIdentities       []RemoteImageClientIdentity         `json:"image_client_identities,omitempty"`
 	CredentialEnvironment       map[string]string                   `json:"credential_environment,omitempty"`
@@ -306,6 +307,7 @@ func (s *ConfigStore) ReplaceRemoteRuntime(ctx context.Context, proposal RemoteR
 	next.Providers = candidate.config.Providers
 	next.Models = candidate.config.Models
 	next.Images = candidate.config.Images
+	next.Memories = candidate.config.Memories
 	next.Tools.CodebaseSearch = cloneCodebaseSettings(candidate.config.Tools.CodebaseSearch)
 	proposal.Controls.apply(next.Options)
 	next.bindProviderScan(*candidate.config.providerScan)
@@ -589,11 +591,15 @@ func compileClientRuntime(workingDir, dataDir string, debug bool, proposal Remot
 		default:
 			return nil, errors.New("client provider authority is unsupported")
 		}
-		if provider.Owner.Construction == providerregistry.ConstructionAnthropicMessages {
-			if executableRegistration == nil || executableRegistration.Operation == nil || executableRegistration.Operation.Anthropic == nil {
-				return nil, errors.New("client Anthropic identity declaration is unavailable")
-			}
-			if err := validateResolvedProviderClientIdentity(executableRegistration.Operation.Anthropic.ClientIdentity, definition.ClientIdentity); err != nil {
+		if provider.Owner.Construction == providerregistry.ConstructionAnthropicMessages && (executableRegistration == nil || executableRegistration.Operation == nil || executableRegistration.Operation.Anthropic == nil) {
+			return nil, errors.New("client Anthropic identity declaration is unavailable")
+		}
+		var identityDeclaration *manifest.ResolvedClientIdentity
+		if executableRegistration != nil {
+			identityDeclaration = providerregistry.ClientIdentityForOperation(executableRegistration.Operation)
+		}
+		if identityDeclaration != nil || provider.Owner.Construction == providerregistry.ConstructionAnthropicMessages {
+			if err := validateResolvedProviderClientIdentity(identityDeclaration, definition.ClientIdentity); err != nil {
 				return nil, err
 			}
 		} else if definition.ClientIdentity != nil {
@@ -635,7 +641,7 @@ func compileClientRuntime(workingDir, dataDir string, debug bool, proposal Remot
 	if err != nil {
 		return nil, err
 	}
-	cfg := &Config{Providers: providers, Models: maps.Clone(proposal.Models), Images: proposal.Images, Options: options}
+	cfg := &Config{Providers: providers, Models: maps.Clone(proposal.Models), Images: cloneImageConfiguration(proposal.Images), Memories: cloneMemories(proposal.Memories), Options: options}
 	if baseEnvironment == nil {
 		baseEnvironment = env.NewFromMap(map[string]string{})
 	}

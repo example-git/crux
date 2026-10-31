@@ -5867,6 +5867,14 @@ const docTemplate = `{
                 "$ref": "#/definitions/config.MCPConfig"
             }
         },
+        "config.Memories": {
+            "type": "object",
+            "properties": {
+                "consolidation_model": {
+                    "type": "string"
+                }
+            }
+        },
         "config.NativeIdentity": {
             "type": "object",
             "properties": {
@@ -6329,6 +6337,9 @@ const docTemplate = `{
                 "images": {
                     "$ref": "#/definitions/config.ImageConfiguration"
                 },
+                "memories": {
+                    "$ref": "#/definitions/config.Memories"
+                },
                 "models": {
                     "type": "object",
                     "additionalProperties": {
@@ -6676,6 +6687,13 @@ const docTemplate = `{
                 "$schema": {
                     "type": "string"
                 },
+                "client_settings": {
+                    "type": "object",
+                    "additionalProperties": {
+                        "type": "object",
+                        "additionalProperties": {}
+                    }
+                },
                 "env": {
                     "description": "Env is a map of environment variables set on startup.",
                     "type": "object",
@@ -6700,6 +6718,9 @@ const docTemplate = `{
                 },
                 "mcp": {
                     "$ref": "#/definitions/config.MCPs"
+                },
+                "memories": {
+                    "$ref": "#/definitions/config.Memories"
                 },
                 "models": {
                     "description": "We currently only support large/small as values here.",
@@ -7025,9 +7046,33 @@ const docTemplate = `{
                 }
             }
         },
+        "proto.AgentInputPart": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string"
+                },
+                "text": {
+                    "type": "string"
+                },
+                "text_elements": {
+                    "type": "array",
+                    "items": {}
+                },
+                "type": {
+                    "type": "string"
+                }
+            }
+        },
         "proto.AgentMessage": {
             "type": "object",
             "properties": {
+                "analysis_effort": {
+                    "type": "string"
+                },
+                "assistant_item_id": {
+                    "type": "string"
+                },
                 "attachments": {
                     "type": "array",
                     "items": {
@@ -7037,11 +7082,35 @@ const docTemplate = `{
                 "delivery_mode": {
                     "type": "string"
                 },
+                "input_parts": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/proto.AgentInputPart"
+                    }
+                },
+                "instruction_isolation": {
+                    "type": "boolean"
+                },
+                "instruction_isolation_tools": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "message_run_id": {
+                    "type": "string"
+                },
                 "permission_mode": {
                     "$ref": "#/definitions/proto.AgentPermissionMode"
                 },
                 "prompt": {
                     "type": "string"
+                },
+                "provider_operation": {
+                    "type": "string"
+                },
+                "require_active_run": {
+                    "type": "boolean"
                 },
                 "run_id": {
                     "type": "string"
@@ -7051,6 +7120,15 @@ const docTemplate = `{
                 },
                 "submission_id": {
                     "type": "string"
+                },
+                "turn_instructions": {
+                    "type": "string"
+                },
+                "user_message_id": {
+                    "type": "string"
+                },
+                "wait_for_admission": {
+                    "type": "boolean"
                 }
             }
         },
@@ -7070,6 +7148,12 @@ const docTemplate = `{
         "proto.AgentSession": {
             "type": "object",
             "properties": {
+                "analysis_effort": {
+                    "type": "string"
+                },
+                "archived": {
+                    "type": "boolean"
+                },
                 "attached_clients": {
                     "type": "integer"
                 },
@@ -7085,6 +7169,12 @@ const docTemplate = `{
                 "estimated_usage": {
                     "type": "boolean"
                 },
+                "forked_from_session_id": {
+                    "type": "string"
+                },
+                "goal": {
+                    "$ref": "#/definitions/proto.Goal"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -7097,6 +7187,9 @@ const docTemplate = `{
                 "mode": {
                     "type": "string"
                 },
+                "model": {
+                    "type": "string"
+                },
                 "parent_session_id": {
                     "type": "string"
                 },
@@ -7105,6 +7198,9 @@ const docTemplate = `{
                 },
                 "prompt_tokens": {
                     "type": "integer"
+                },
+                "provider": {
+                    "type": "string"
                 },
                 "summary_message_id": {
                     "type": "string"
@@ -7486,6 +7582,26 @@ const docTemplate = `{
                 }
             }
         },
+        "proto.Goal": {
+            "type": "object",
+            "properties": {
+                "error": {
+                    "type": "string"
+                },
+                "generation": {
+                    "type": "integer"
+                },
+                "objective": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "integer"
+                }
+            }
+        },
         "proto.ImportCopilotRequest": {
             "type": "object",
             "properties": {
@@ -7688,6 +7804,9 @@ const docTemplate = `{
                 "is_summary_message": {
                     "type": "boolean"
                 },
+                "item_id": {
+                    "type": "string"
+                },
                 "model": {
                     "type": "string"
                 },
@@ -7701,7 +7820,13 @@ const docTemplate = `{
                 "role": {
                     "$ref": "#/definitions/proto.MessageRole"
                 },
+                "run_id": {
+                    "type": "string"
+                },
                 "session_id": {
+                    "type": "string"
+                },
+                "submission_id": {
                     "type": "string"
                 },
                 "updated_at": {
@@ -8512,6 +8637,12 @@ const docTemplate = `{
         "proto.Session": {
             "type": "object",
             "properties": {
+                "analysis_effort": {
+                    "type": "string"
+                },
+                "archived": {
+                    "type": "boolean"
+                },
                 "attached_clients": {
                     "type": "integer"
                 },
@@ -8527,6 +8658,12 @@ const docTemplate = `{
                 "estimated_usage": {
                     "type": "boolean"
                 },
+                "forked_from_session_id": {
+                    "type": "string"
+                },
+                "goal": {
+                    "$ref": "#/definitions/proto.Goal"
+                },
                 "id": {
                     "type": "string"
                 },
@@ -8539,6 +8676,9 @@ const docTemplate = `{
                 "mode": {
                     "type": "string"
                 },
+                "model": {
+                    "type": "string"
+                },
                 "parent_session_id": {
                     "type": "string"
                 },
@@ -8547,6 +8687,9 @@ const docTemplate = `{
                 },
                 "prompt_tokens": {
                     "type": "integer"
+                },
+                "provider": {
+                    "type": "string"
                 },
                 "summary_message_id": {
                     "type": "string"

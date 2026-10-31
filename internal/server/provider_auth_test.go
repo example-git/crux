@@ -69,12 +69,14 @@ func TestProviderAuthDetachedReceiverRejectsReadsBeforeIO(t *testing.T) {
 	target := providerauth.Target{WorkspaceID: harness.workspace.ID, Owner: providerauth.PublicOwner(owner), Generation: providerauth.Generation{Epoch: strings.Repeat("a", 32), Sequence: 1}}
 	encoded, err := json.Marshal(target)
 	require.NoError(t, err)
-	for _, operation := range []string{"status", "accounts", "switch", "logout", "key-check", "key-save"} {
+	for _, operation := range []string{"status", "accounts", "switch", "logout", "key-check", "key-save", "external", "config-view"} {
 		body, method := "", http.MethodGet
 		if operation == "accounts" {
 			body, method = string(encoded), http.MethodPost
 		}
 		switch operation {
+		case "external":
+			body, method = `{"service":"openai","include_token":true}`, http.MethodPost
 		case "switch":
 			selected := target
 			selected.Owner.HasOAuth = true
@@ -103,6 +105,10 @@ func TestProviderAuthDetachedReceiverRejectsReadsBeforeIO(t *testing.T) {
 		switch operation {
 		case "status":
 			controller.handleGetWorkspaceProviderAuthentication(response, r)
+		case "external":
+			controller.handlePostWorkspaceExternalAuthentication(response, r)
+		case "config-view":
+			controller.handleGetConfigReadView(response, r)
 		case "switch":
 			controller.handlePostWorkspaceProviderSwitch(response, r)
 		case "key-check":

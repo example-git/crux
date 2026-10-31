@@ -47,6 +47,22 @@ func TestCoderPromptBuildsLifecycleProfilesCentrally(t *testing.T) {
 	require.Contains(t, execution, "<editing_files>")
 }
 
+func TestCoderPromptInstructionIsolationRemovesBaseInstructions(t *testing.T) {
+	workingDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(workingDir, "AGENTS.md"), []byte("inherited project instructions"), 0o600))
+	store := config.NewTestStore(&config.Config{Options: &config.Options{
+		InstructionMode: "all",
+		ContextPaths:    []string{"AGENTS.md"},
+	}})
+	coder, err := coderPrompt(prompt.WithWorkingDir(workingDir))
+	require.NoError(t, err)
+
+	ctx := prompt.WithInstructionIsolation(t.Context())
+	result, err := coder.Build(ctx, "codex", "gpt-5.6-sol", store)
+	require.NoError(t, err)
+	require.Empty(t, result)
+}
+
 func TestCoderPromptUsesEvidenceBasedCorrectionGuidance(t *testing.T) {
 	t.Setenv("CRUX_DISABLE_AUTO_MEMORY", "true")
 	store := config.NewTestStore(&config.Config{Options: &config.Options{InstructionMode: "native"}})

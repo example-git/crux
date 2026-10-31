@@ -93,3 +93,71 @@ func TestAskCanCancelWhileQueued(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 }
+
+func TestPendingQuestionResolution(t *testing.T) {
+	service := NewService()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	events := service.Subscribe(ctx)
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.Ask(ctx, Request{ID: "current", Questions: []Question{{Type: TypeYesNo, Text: "Proceed?", Description: "Current request"}}})
+		done <- err
+	}()
+	select {
+	case <-events:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	require.Equal(t, "current", service.Pending().ID)
+	require.False(t, service.AnswerRequest("old", nil))
+	require.False(t, service.AnswerRequest("", nil))
+	require.NotNil(t, service.Pending())
+	results := make(chan bool, 20)
+	for i := range 20 {
+		go func() {
+			if i%2 == 0 {
+				results <- service.Cancel()
+			} else {
+				results <- service.AnswerRequest("current", nil)
+			}
+		}()
+	}
+	winners := 0
+	for range 20 {
+		if <-results {
+			winners++
+		}
+	}
+	require.Equal(t, 1, winners)
+	select {
+	case err := <-done:
+		if err != nil {
+			require.ErrorIs(t, err, ErrCancelled)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	require.Nil(t, service.Pending())
+}
+
+func TestPendingQuestionClearedOnContextCancellation(t *testing.T) {
+	service := NewService()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	events := service.Subscribe(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.Ask(ctx, Request{Questions: []Question{{Type: TypeYesNo, Text: "Proceed?", Description: "Cancelled request"}}})
+		done <- err
+	}()
+	select {
+	case <-events:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no question event")
+	}
+	require.NotNil(t, service.Pending())
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Nil(t, service.Pending())
+}

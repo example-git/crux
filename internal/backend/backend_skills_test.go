@@ -122,6 +122,81 @@ func TestBackend_WorkspaceSkillsIsolation(t *testing.T) {
 		"workspace B's Manager.States() leaked workspace A's republish")
 }
 
+func TestBackendSkillCatalogReloadsWithoutAgent(t *testing.T) {
+	hostHome := t.TempDir()
+	t.Setenv("HOME", hostHome)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(hostHome, ".config"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(hostHome, ".local", "share"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(hostHome, ".cache"))
+	t.Setenv("CRUX_SKILLS_DIR", t.TempDir())
+
+	workingDir := t.TempDir()
+	writeSkill(t, workingDir, "first-skill", "First skill.")
+	srvCfg, err := config.Init(workingDir, "", false)
+	require.NoError(t, err)
+	b := backend.New(t.Context(), srvCfg, nil)
+	clientID := uuid.NewString()
+	workspace, _, err := b.CreateWorkspace(proto.Workspace{ClientID: clientID, Path: workingDir, DataDir: filepath.Join(workingDir, ".crux")})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = b.DeleteWorkspace(workspace.ID, clientID) })
+
+	catalog, err := b.SkillCatalog(t.Context(), workspace.ID, false)
+	require.NoError(t, err)
+	first := catalogEntryByName(t, catalog, "first-skill")
+	require.True(t, first.Enabled)
+	require.Equal(t, "project", first.Source)
+	require.True(t, filepath.IsAbs(first.ID))
+
+	writeSkill(t, workingDir, "second-skill", "Second skill.")
+	invalidDir := filepath.Join(workingDir, ".agents", "skills", "invalid-skill")
+	require.NoError(t, os.MkdirAll(invalidDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(invalidDir, "SKILL.md"), []byte("---\nname: invalid-skill\n---\n"), 0o644))
+	catalog, err = b.SkillCatalog(t.Context(), workspace.ID, false)
+	require.NoError(t, err)
+	require.False(t, catalogContainsName(catalog, "second-skill"))
+
+	require.NoError(t, b.SetConfigField(workspace.ID, config.ScopeWorkspace, "options.disabled_skills", []string{"first-skill"}))
+	catalog, err = b.SkillCatalog(t.Context(), workspace.ID, true)
+	require.NoError(t, err)
+	require.False(t, catalogEntryByName(t, catalog, "first-skill").Enabled)
+	require.True(t, catalogEntryByName(t, catalog, "second-skill").Enabled)
+	invalid := catalogStateByName(t, catalog, "invalid-skill")
+	require.Equal(t, proto.SkillStateError, invalid.State)
+	require.Equal(t, "description is required", invalid.Error)
+	require.Equal(t, "SKILL.md", filepath.Base(invalid.Path))
+}
+
+func catalogStateByName(t *testing.T, catalog proto.SkillCatalogResponse, name string) proto.SkillState {
+	t.Helper()
+	for _, state := range catalog.States {
+		if state.Name == name {
+			return state
+		}
+	}
+	t.Fatalf("skill state %q not found", name)
+	return proto.SkillState{}
+}
+
+func catalogEntryByName(t *testing.T, catalog proto.SkillCatalogResponse, name string) proto.SkillCatalogEntry {
+	t.Helper()
+	for _, entry := range catalog.Skills {
+		if entry.Name == name {
+			return entry
+		}
+	}
+	t.Fatalf("skill %q not found", name)
+	return proto.SkillCatalogEntry{}
+}
+
+func catalogContainsName(catalog proto.SkillCatalogResponse, name string) bool {
+	for _, entry := range catalog.Skills {
+		if entry.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func writeSkill(t *testing.T, workingDir, name, desc string) {
 	t.Helper()
 	skillDir := filepath.Join(workingDir, ".agents", "skills", name)

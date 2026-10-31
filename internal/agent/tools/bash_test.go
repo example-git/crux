@@ -43,6 +43,8 @@ func (m *mockBashPermissionService) SkipRequests() bool {
 	return false
 }
 
+func (m *mockBashPermissionService) Pending() *permission.PermissionRequest { return nil }
+
 func (m *mockBashPermissionService) SubscribeNotifications(ctx context.Context) <-chan pubsub.Event[permission.PermissionNotification] {
 	return make(<-chan pubsub.Event[permission.PermissionNotification])
 }
@@ -83,6 +85,45 @@ func TestBashToolSubagentPolicy(t *testing.T) {
 		require.Equal(t, permission.ErrSubagentBackgroundTask.Error(), response.Content)
 		require.Zero(t, manager.ActiveCount())
 	})
+}
+
+func TestBashToolSudoIsNotBlocked(t *testing.T) {
+	for _, block := range blockFuncs() {
+		require.False(t, block([]string{"sudo", "-n", "true"}))
+	}
+	require.NotContains(t, bannedCommands, "sudo")
+
+	doasBlocked := false
+	for _, block := range blockFuncs() {
+		doasBlocked = doasBlocked || block([]string{"doas", "true"})
+	}
+	require.True(t, doasBlocked)
+}
+
+func TestBashToolExposesTTYSchema(t *testing.T) {
+	tool := newBashToolForTest(t.TempDir())
+	info := tool.Info()
+	tty, ok := info.Parameters["tty"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "boolean", tty["type"])
+	require.Contains(t, tty["description"], "real interactive terminal")
+	require.NotContains(t, info.Required, "tty")
+}
+
+func TestBashToolRejectsBackgroundTTY(t *testing.T) {
+	workingDir := t.TempDir()
+	tool := newBashToolForTest(workingDir)
+	ctx := context.WithValue(context.Background(), SessionIDContextKey, "test-session")
+
+	response := runBashTool(t, tool, ctx, BashParams{
+		Description:     "invalid tty background",
+		Command:         "echo no",
+		RunInBackground: true,
+		TTY:             true,
+	})
+
+	require.True(t, response.IsError)
+	require.Equal(t, "tty=true cannot be combined with run_in_background=true", response.Content)
 }
 
 func TestBashTool_TimeoutKillsCommand(t *testing.T) {
@@ -228,6 +269,8 @@ func (m *recordingPermissionService) SetSkipRequests(skip bool) {}
 func (m *recordingPermissionService) SkipRequests() bool {
 	return false
 }
+
+func (m *recordingPermissionService) Pending() *permission.PermissionRequest { return nil }
 
 func (m *recordingPermissionService) SubscribeNotifications(ctx context.Context) <-chan pubsub.Event[permission.PermissionNotification] {
 	return make(<-chan pubsub.Event[permission.PermissionNotification])

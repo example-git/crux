@@ -92,6 +92,17 @@ func (m *mockLanguageModel) StreamObject(ctx context.Context, call ObjectCall) (
 	return nil, fmt.Errorf("mock StreamObject not implemented")
 }
 
+func TestCreatePromptAcceptsExplicitEmptyUserParts(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := (&agent{}).createPrompt("", "", nil, []MessagePart{})
+	require.NoError(t, err)
+	require.Equal(t, Prompt{{Role: MessageRoleUser, Content: []MessagePart{}}}, prompt)
+
+	_, err = (&agent{}).createPrompt("", "", nil, nil)
+	require.ErrorContains(t, err, "prompt can't be empty")
+}
+
 // Test result.content - comprehensive content types (matches TS test)
 func TestAgent_Generate_ResultContent_AllTypes(t *testing.T) {
 	t.Parallel()

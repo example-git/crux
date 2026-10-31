@@ -196,7 +196,10 @@ func newRunner(cwd string, env []string, stdin io.Reader, stdout, stderr io.Writ
 // standard Crux middleware chain (builtins, script dispatch, block list)
 // on top of a process-group-isolated base exec handler.
 func execHandlerOption(blockFuncs []BlockFunc) interp.RunnerOption {
-	base := processGroupExecHandler(defaultKillTimeout)
+	return execHandlerOptionWithBase(blockFuncs, processGroupExecHandler(defaultKillTimeout))
+}
+
+func execHandlerOptionWithBase(blockFuncs []BlockFunc, base interp.ExecHandlerFunc) interp.RunnerOption {
 	handlers := standardHandlers(blockFuncs)
 	handlers = append(handlers, func(interp.ExecHandlerFunc) interp.ExecHandlerFunc {
 		return base

@@ -98,3 +98,12 @@ docs/compatibility/references/*
 REMOTE_WORKSPACE_PROVIDER_AND_PAIRING_DESIGN.md
 VISUALS-MAP.md
 *\~
+# Agent scratch scripts, notes, reference checkouts, and temporary artifacts.
+scratch/**
+!docs/CRUX_VS_UPSTREAM.md
+AGENTS.md
+/web/
+/internal/webclient/
+/internal/cmd/web.go
+/internal/server/web_local.go
+/Crux Desktop.command

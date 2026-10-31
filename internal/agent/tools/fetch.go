@@ -150,9 +150,14 @@ func NewFetchTool(permissions permission.Service, workingDir string, client *htt
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to create request: %w", err)
 			}
 
-			req.Header.Set("User-Agent", "crux/1.0")
+			if params.Mode != "user" {
+				setBrowserFetchHeaders(req)
+			}
 
 			resp, err := requestClient.Do(req)
+			if errors.Is(err, question.ErrCancelled) {
+				return NewPermissionDeniedResponse(), nil
+			}
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("failed to fetch URL: %w", err)
 			}

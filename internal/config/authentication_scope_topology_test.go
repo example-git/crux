@@ -104,8 +104,8 @@ func TestAuthenticationScopeTopologyCreationMatchesCapture(t *testing.T) {
 			topology := authenticationTopologyPrepare(t, store, inputs, path)
 			require.NoFileExists(t, path)
 			require.Equal(t, []string{path}, topology.writtenPaths)
-			if test.location != "outside/nested" {
-				require.Equal(t, len(inputs.order)+1, len(topology.inputs.order))
+			require.Equal(t, len(inputs.order), len(topology.inputs.order))
+			if test.location != "outside/nested" && test.scope == "workspace" {
 				// Reverse lookup order: crux.json precedes the existing siblings.
 				globals, err := authenticationGlobalInputPaths(store.baseEnvironment)
 				require.NoError(t, err)
@@ -139,8 +139,14 @@ func TestAuthenticationScopeTopologyActualLoadSameWorkspaceDirectory(t *testing.
 	require.NoFileExists(t, store.workspacePath)
 	inputs := authenticationTopologyCapture(t, store)
 	topology := authenticationTopologyPrepare(t, store, inputs, store.workspacePath)
-	require.Equal(t, len(inputs.order)+1, len(topology.inputs.order))
-	require.Equal(t, []string{store.workspacePath, store.workspacePath}, topology.inputs.order[len(topology.inputs.order)-2:])
+	require.Equal(t, len(inputs.order), len(topology.inputs.order))
+	var count int
+	for _, path := range topology.inputs.order {
+		if path == store.workspacePath {
+			count++
+		}
+	}
+	require.Equal(t, 1, count)
 	authenticationTopologyReplace(t, store, topology, store.workspacePath)
 }
 

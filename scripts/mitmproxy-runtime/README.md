@@ -21,6 +21,21 @@ package, so the workflow excludes only `pkg:pypi/backports.zstd@1.7.0` from lice
 classification. Package versions and wheel contents remain constrained by the target
 lock hashes. Urwid is not excepted and is excluded from the web-only runtime.
 
+## Capture-local TLS behavior
+
+Capture deliberately relaxes TLS verification without changing host Keychains or
+uncaptured processes. The embedded proxy accepts upstream certificates, Node uses
+`NODE_TLS_REJECT_UNAUTHORIZED=0`, and Git uses `GIT_SSL_NO_VERIFY=true`. A private,
+session-local Python `sitecustomize` hook makes the default HTTPS context
+unverified while chaining any existing customization. Session CA bundles remain
+available through standard client environment variables. Explicit `unset_env`
+entries take precedence over these settings.
+
+This is not a universal certificate-pinning bypass. Go/macOS-native clients that
+ignore environment-provided roots, explicitly configured TLS contexts, and Python
+`-I`/`-S` startup need application-specific support. Captured processes must not be
+used for unrelated sensitive browsing or transactions.
+
 ## Build and test
 
 From the repository root, using Python 3.12 or newer with pip and venv:
@@ -30,8 +45,15 @@ python3 scripts/build-embedded-mitmproxy.py --target current
 GOMAXPROCS=2 go test -race -p 2 -tags embedded_mitmproxy ./internal/trafficcapture -count=1 -timeout=5m
 ```
 
-The tagged integration test needs tmux. It exercises the embedded proxy,
-HTTPS trust, authenticated viewer access, capture output, and shutdown.
+The native per-app integration tests require macOS, tmux, and xcrun with a Swift
+compiler and macOS SDK. They build ad-hoc-signed capture apps and may request
+approval for their scoped VPN configurations. The tests exercise the embedded
+proxy, HTTPS trust and capture-local TLS relaxation, the authenticated viewer,
+management-shell interaction, capture output, and shutdown. Enforcement tests
+verify that direct parent/helper requests appear in mitmproxy and cannot bypass
+capture after WireGuard server loss or packet-provider termination, while an
+uncaptured control remains connected. A public-endpoint diagnostic also needs
+Internet access. Test policies are removed during cleanup.
 Only native runtime execution is validated by this command. Linux lock metadata
 and wheel availability do not establish Linux runtime compatibility.
 

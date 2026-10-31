@@ -25,6 +25,7 @@ import (
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/pubsub"
+	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/skills"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
@@ -40,6 +41,82 @@ func TestSessionProtocolPreservesContextOccupancy(t *testing.T) {
 	require.EqualValues(t, 136000, current.ContextTokens())
 	require.True(t, current.ContextEstimated())
 	require.Equal(t, wire, sessionToProto(current))
+}
+
+func TestClientWorkspaceSessionGoalMutations(t *testing.T) {
+	requests := make([]proto.SessionGoalRequest, 0, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPut, r.Method)
+		require.Equal(t, "/v1/workspaces/ws-1/sessions/session-1/goal", r.URL.Path)
+		var request proto.SessionGoalRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		requests = append(requests, request)
+
+		goal := proto.Goal{}
+		switch request.Action {
+		case "set":
+			goal = proto.Goal{
+				Objective:  request.Objective,
+				Status:     string(session.GoalStatusActive),
+				Generation: 1,
+			}
+		case "status":
+			goal = proto.Goal{
+				Objective:  "ship the feature",
+				Status:     request.Status,
+				Generation: request.Generation,
+				Error:      request.Error,
+			}
+		case "stop":
+			goal = proto.Goal{Objective: "ship the feature", Status: string(session.GoalStatusPaused), Generation: request.Generation + 1}
+		case "clear":
+			goal.Generation = 3
+		default:
+			t.Fatalf("unexpected goal action %q", request.Action)
+		}
+		require.NoError(t, json.NewEncoder(w).Encode(proto.Session{
+			ID:   "session-1",
+			Goal: goal,
+		}))
+	}))
+	defer srv.Close()
+
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	remote, err := client.NewClient(t.TempDir(), "tcp", u.Host)
+	require.NoError(t, err)
+	workspace := NewClientWorkspace(remote, proto.Workspace{ID: "ws-1"})
+
+	set, err := workspace.SetSessionGoal(t.Context(), "session-1", "ship the feature")
+	require.NoError(t, err)
+	require.Equal(t, session.Goal{
+		Objective:  "ship the feature",
+		Status:     session.GoalStatusActive,
+		Generation: 1,
+	}, set.Goal)
+
+	paused, err := workspace.SetSessionGoalStatus(t.Context(), "session-1", 1, session.GoalStatusPaused, "waiting")
+	require.NoError(t, err)
+	require.Equal(t, session.Goal{
+		Objective:  "ship the feature",
+		Status:     session.GoalStatusPaused,
+		Generation: 1,
+		Error:      "waiting",
+	}, paused.Goal)
+
+	stopped, err := workspace.StopSessionGoal(t.Context(), "session-1", 1)
+	require.NoError(t, err)
+	require.Equal(t, session.Goal{Objective: "ship the feature", Status: session.GoalStatusPaused, Generation: 2}, stopped.Goal)
+
+	cleared, err := workspace.ClearSessionGoal(t.Context(), "session-1")
+	require.NoError(t, err)
+	require.Equal(t, session.Goal{Generation: 3}, cleared.Goal)
+	require.Equal(t, []proto.SessionGoalRequest{
+		{Action: "set", Objective: "ship the feature"},
+		{Action: "status", Status: string(session.GoalStatusPaused), Generation: 1, Error: "waiting"},
+		{Action: "stop", Generation: 1},
+		{Action: "clear"},
+	}, requests)
 }
 
 func TestClientWorkspaceRefreshRejectsReverseOrderOwnerSnapshot(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/example-git/crux/foundation/catalog"
+	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/stretchr/testify/require"
 )
@@ -77,4 +78,39 @@ func TestSurfacesMarkHostOwnedRuntimeControlsAvailable(t *testing.T) {
 	auxiliary := registry.Surfaces([]catalog.Provider{{ID: "integrated", Models: []catalog.Model{{ID: "unsupported"}, {ID: "supported"}}}}, map[string]string{"integrated": "unsupported"})[0]
 	require.False(t, auxiliary.RuntimeControls[0].Available)
 	require.Equal(t, []string{"supported"}, auxiliary.RuntimeControls[0].AvailableModels)
+}
+
+func TestCodexRuntimeControlsSupportCurrentModels(t *testing.T) {
+	registration := testDelegatedRegistration(t, "codex")
+	registry, err := New(registration)
+	require.NoError(t, err)
+
+	for _, modelID := range []string{"gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol"} {
+		t.Run(modelID, func(t *testing.T) {
+			surfaces := registry.Surfaces([]catalog.Provider{{ID: "codex", Models: []catalog.Model{{ID: modelID}}}}, map[string]string{"codex": modelID})
+			require.Len(t, surfaces, 1)
+			require.Len(t, surfaces[0].RuntimeControls, 2)
+			for _, control := range surfaces[0].RuntimeControls {
+				require.True(t, control.Available)
+				require.NotNil(t, control.Binding)
+				require.NotEmpty(t, control.DescriptorDigest)
+				require.Equal(t, []string{modelID}, control.AvailableModels)
+			}
+			options := registration.Runtime.Apply(RuntimeValues{AnalysisEffort: "max", ResponseVerbosity: "low"}, nil)
+			applied, ok := options[codexresponses.Name].(*codexresponses.ProviderOptions)
+			require.True(t, ok)
+			require.Equal(t, "max", applied.ReasoningEffort)
+			require.Equal(t, "low", applied.ResponseVerbosity)
+		})
+	}
+
+	for _, modelID := range []string{"", "gpt-5.5", "gpt-6", "gpt-6-sol-unknown", "gpt-6.1-sol-unknown", "unknown"} {
+		t.Run("unsupported/"+modelID, func(t *testing.T) {
+			surface := registry.Surfaces(nil, map[string]string{"codex": modelID})[0]
+			for _, control := range surface.RuntimeControls {
+				require.False(t, control.Available)
+				require.Empty(t, control.AvailableModels)
+			}
+		})
+	}
 }

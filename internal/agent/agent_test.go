@@ -174,11 +174,13 @@ func TestModelSelectionDuringToolAppliesToNextResponse(t *testing.T) {
 
 type promptCaptureModel struct {
 	*finishStreamModel
-	prompt fantasy.Prompt
+	prompt    fantasy.Prompt
+	toolCount int
 }
 
 func (m *promptCaptureModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.StreamResponse, error) {
 	m.prompt = cloneFantasyMessages(call.Prompt)
+	m.toolCount = len(call.Tools)
 	return m.finishStreamModel.Stream(ctx, call)
 }
 
@@ -559,6 +561,53 @@ func TestOmitAgedImageHistoryPreservesTextAndNonImageFiles(t *testing.T) {
 	require.True(t, secondImageStillPresent)
 }
 
+func TestRunInstructionIsolationSuppressesTurnTools(t *testing.T) {
+	env := testEnv(t)
+	currentSession, err := env.sessions.Create(t.Context(), "isolated turn tools")
+	require.NoError(t, err)
+	model := &promptCaptureModel{finishStreamModel: &finishStreamModel{text: "done"}}
+	configuredModel := Model{
+		Model: model,
+		CatalogModel: catalog.Model{
+			ContextWindow:    200000,
+			DefaultMaxTokens: 10000,
+		},
+	}
+	tool := fantasy.NewAgentTool("fixture", "Fixture tool", func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		return fantasy.NewTextResponse("fixture"), nil
+	})
+	agent := NewSessionAgent(SessionAgentOptions{
+		LargeModel:   configuredModel,
+		SmallModel:   configuredModel,
+		SystemPrompt: "system",
+		IsYolo:       true,
+		Sessions:     env.sessions,
+		Messages:     env.messages,
+		Tools:        []fantasy.AgentTool{tool},
+	})
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{SessionID: currentSession.ID, Prompt: "ordinary"})
+	require.NoError(t, err)
+	require.Equal(t, 1, model.toolCount)
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{
+		SessionID: currentSession.ID, Prompt: "isolated", InstructionIsolation: true,
+	})
+	require.NoError(t, err)
+	require.Zero(t, model.toolCount)
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{
+		SessionID: currentSession.ID, Prompt: "isolated with fixture", InstructionIsolation: true, InstructionIsolationTools: []string{"fixture"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, model.toolCount)
+
+	_, err = agent.Run(t.Context(), SessionAgentCall{
+		SessionID: currentSession.ID, Prompt: "isolated with unknown", InstructionIsolation: true, InstructionIsolationTools: []string{"missing"},
+	})
+	require.ErrorContains(t, err, `isolated tool "missing" is unavailable`)
+}
+
 func TestRunOmitsAgedImagesOnlyFromProviderPrompt(t *testing.T) {
 	env := testEnv(t)
 	ctx := t.Context()
@@ -800,6 +849,68 @@ func TestStepProviderMetadataPersistsContinuationAndMessageScopes(t *testing.T) 
 	require.Len(t, replayed, 1)
 	require.Contains(t, replayed[0].ProviderOptions, openai.Name)
 	require.Contains(t, replayed[0].ProviderOptions, continuationNamespace)
+}
+
+func TestRunPersistsCompatibilityMessageIdentity(t *testing.T) {
+	env := testEnv(t)
+	model := &finishStreamModel{text: "done"}
+	agent := testSessionAgent(env, model, model, "system")
+	ctx := t.Context()
+	sess, err := env.sessions.Create(ctx, "test")
+	require.NoError(t, err)
+
+	_, err = agent.Run(ctx, SessionAgentCall{
+		SessionID:       sess.ID,
+		Prompt:          "hello",
+		MessageRunID:    "message-run",
+		UserMessageID:   "user-message",
+		AssistantItemID: "assistant-item",
+	})
+	require.NoError(t, err)
+	require.NoError(t, env.messages.FlushAll(ctx))
+
+	stored, err := env.messages.List(ctx, sess.ID)
+	require.NoError(t, err)
+	require.Len(t, stored, 2)
+	require.Equal(t, "user-message", stored[0].ID)
+	require.Equal(t, "message-run", stored[0].RunID)
+	require.Equal(t, "user-message", stored[0].ItemID)
+	require.Equal(t, message.Assistant, stored[1].Role)
+	require.Equal(t, "message-run", stored[1].RunID)
+	require.Equal(t, "assistant-item", stored[1].ItemID)
+	require.Equal(t, "done", stored[1].Content().Text)
+}
+
+func TestCreateUserMessagePersistsOrderedInputPartsAndExplicitEmpty(t *testing.T) {
+	env := testEnv(t)
+	agent := testSessionAgent(env, nil, nil, "test prompt").(*sessionAgent)
+	ctx := t.Context()
+	sess, err := env.sessions.Create(ctx, "test")
+	require.NoError(t, err)
+
+	parts := []message.ContentPart{
+		message.TextContent{Text: "before"},
+		message.BinaryContent{Path: "first.png", MIMEType: "image/png", Data: []byte("first")},
+		message.TextContent{Text: "after"},
+		message.BinaryContent{Path: "second.png", MIMEType: "image/png", Data: []byte("second")},
+	}
+	created, err := agent.createUserMessage(ctx, SessionAgentCall{SessionID: sess.ID, InputParts: parts})
+	require.NoError(t, err)
+	reloaded, err := env.messages.Get(ctx, created.ID)
+	require.NoError(t, err)
+	require.Len(t, reloaded.Parts, len(parts)+1)
+	require.Equal(t, parts, reloaded.Parts[:len(parts)])
+	require.Equal(t, message.FinishReason("stop"), reloaded.Parts[len(parts)].(message.Finish).Reason)
+
+	empty, err := agent.createUserMessage(ctx, SessionAgentCall{SessionID: sess.ID, InputParts: []message.ContentPart{}})
+	require.NoError(t, err)
+	reloadedEmpty, err := env.messages.Get(ctx, empty.ID)
+	require.NoError(t, err)
+	require.Equal(t, []message.ContentPart{message.Finish{Reason: message.FinishReason("stop")}}, reloadedEmpty.Parts)
+	projected := reloadedEmpty.ToAIMessage()
+	require.Len(t, projected, 1)
+	require.NotNil(t, projected[0].Content)
+	require.Empty(t, projected[0].Content)
 }
 
 func TestCreateUserMessage_RetainsAllAttachments(t *testing.T) {

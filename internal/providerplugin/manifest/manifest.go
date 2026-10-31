@@ -125,6 +125,7 @@ type FieldDisplay struct {
 type Capabilities struct {
 	Compatibility    *CompatibilityAdapter             `json:"compatibility_adapter,omitempty"`
 	Credentials      []Credential                      `json:"credentials,omitempty" jsonschema:"maxItems=32"`
+	ExternalAuth     *ExternalAuthPolicy               `json:"external_auth,omitempty"`
 	OAuth            []OAuthFlow                       `json:"oauth,omitempty" jsonschema:"maxItems=16"`
 	ClientIdentities map[string]ResolvedClientIdentity `json:"client_identities,omitempty"`
 	Endpoints        []Endpoint                        `json:"endpoints" jsonschema:"required,minItems=1,maxItems=64"`

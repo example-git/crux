@@ -265,8 +265,8 @@ func TestClientReconnectsAfterAbnormalClosureAndResumesProcessing(t *testing.T) 
 }
 
 func TestAbnormalClosureRetryDelayIsCapped(t *testing.T) {
-	require.Equal(t, 100*time.Millisecond, abnormalClosureRetryDelay(1))
-	require.Equal(t, 5*time.Second, abnormalClosureRetryDelay(1_000_000))
+	require.Equal(t, 100*time.Millisecond, connectionRecoveryRetryDelay(1))
+	require.Equal(t, 5*time.Second, connectionRecoveryRetryDelay(1_000_000))
 }
 
 func TestClientKeepsRecoveringAfterAbnormalClosuresBeyondRetryLimit(t *testing.T) {

@@ -75,7 +75,7 @@ func (controls RemoteRuntimeControls) apply(options *Options) {
 // the receiver, or are presentation preferences read from the client view.
 func ClientRuntimeSetting(key string) bool {
 	switch key {
-	case "options.disable_auto_summarize", "options.summarization_context_cap", "options.summarization_max_tokens", "options.summarization_fast_mode", "options.codex_compaction_v2",
+	case "options.disable_auto_summarize", "options.summarization_context_cap", "options.summarization_max_tokens", "options.summarization_fast_mode", "options.codex_compaction_v2", "memories.consolidation_model",
 		"options.instruction_mode", "options.disabled_instruction_sections", "options.response_verbosity", "options.analysis_effort",
 		"options.tui.compact_mode", "options.tui.transparent", "options.tui.delivery_mode", "options.notifications", "options.progress":
 		return true
@@ -116,6 +116,12 @@ func ValidateClientRuntimeSetting(key string, value any) error {
 		return errors.New("unsupported client runtime setting")
 	}
 	if ClientPresentationSetting(key) {
+		return nil
+	}
+	if key == "memories.consolidation_model" {
+		if _, ok := value.(string); !ok {
+			return errors.New("invalid client runtime setting type")
+		}
 		return nil
 	}
 	data, err := json.Marshal(map[string]any{strings.TrimPrefix(key, "options."): value})

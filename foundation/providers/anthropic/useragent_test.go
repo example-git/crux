@@ -50,7 +50,8 @@ func TestUserAgent(t *testing.T) {
 		_, _ = model.Generate(t.Context(), fantasy.Call{Prompt: prompt})
 
 		require.Len(t, *captured, 1)
-		assert.Equal(t, "Crux-Foundation/"+fantasy.Version, (*captured)[0]["User-Agent"])
+		assert.Regexp(t, `^Anthropic/Go [0-9]+\.[0-9]+\.[0-9]+`, (*captured)[0]["User-Agent"])
+		assert.NotContains(t, (*captured)[0]["User-Agent"], "Crux")
 	})
 
 	t.Run("WithUserAgent wins over both", func(t *testing.T) {

@@ -322,6 +322,28 @@ func validateCapabilities(m Manifest, add func(string, ...any)) {
 			}
 		}
 	}
+	if policy := c.ExternalAuth; policy != nil {
+		requireRef("external_auth.credential", policy.Credential, credentials, add)
+		if !localIDPattern.MatchString(policy.Service) || len(policy.Service) > 64 {
+			add("external_auth.service is invalid")
+		}
+		if !toolPrefixPattern.MatchString(policy.Method) || len(policy.Method) > 64 {
+			add("external_auth.method is invalid")
+		}
+		if policy.TokenExport != "never" && policy.TokenExport != "access-token" {
+			add("external_auth.token_export must be never or access-token")
+		}
+		credential := credentialValues[policy.Credential]
+		if credential.Kind != "oauth2" && credential.Kind != "api-key" && credential.Kind != "bearer" {
+			add("external_auth.credential must name a scalar authentication credential")
+		}
+		if credential.Kind == "oauth2" && credential.ConfigProperty != "" {
+			add("external_auth OAuth credential cannot use config_property")
+		}
+		if credential.Kind == "oauth2" && (len(c.OAuth) == 0 || c.OAuth[0].Credential != policy.Credential) {
+			add("external_auth OAuth credential must match the active OAuth flow")
+		}
+	}
 	for i, endpoint := range c.Endpoints {
 		validateEndpoint(i, endpoint, credentials, add)
 		if endpoint.Credential != "" {

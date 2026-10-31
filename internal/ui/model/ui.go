@@ -1001,6 +1001,23 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 			status = "enabled"
 		}
 		cmds = append(cmds, util.ReportInfo("Plan mode "+status))
+	case goalCommandResultMsg:
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+			break
+		}
+		if msg.session != nil {
+			m.session = msg.session
+			m.setEditorPrompt(m.yoloModeCached())
+			if msg.created {
+				m.forceCompactMode, m.forceSidebar = false, false
+				m.setState(uiChat, m.focus)
+				cmds = append(cmds, m.loadSession(msg.session.ID))
+			}
+		}
+		if msg.notice != "" {
+			cmds = append(cmds, util.ReportInfo(msg.notice))
+		}
 	case lspStatesMsg:
 		if cmd := m.applyLSPStates(msg); cmd != nil {
 			cmds = append(cmds, cmd)
@@ -2592,6 +2609,16 @@ func (m *UI) handleDialogAction(action dialog.Action) tea.Cmd {
 	case dialog.ActionCancelPlanMode:
 		cmds = append(cmds, m.cancelPlanMode())
 		m.dialog.CloseDialog(dialog.CommandsID)
+	case dialog.ActionInsertCommand:
+		m.dialog.CloseDialog(dialog.CommandsID)
+		prevHeight := m.textarea.Height()
+		m.textarea.SetValue(msg.Value)
+		m.textarea.MoveToEnd()
+		m.setState(m.state, uiFocusEditor)
+		m.textarea.Focus()
+		if cmd := m.handleTextareaHeightChange(prevHeight); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case dialog.ActionAuthenticationSelect:
 		cmds = append(cmds, m.beginAuthenticationOperation(msg))
 	case dialog.ActionAuthenticationReload:
@@ -3143,6 +3170,10 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 		return tea.Batch(cmds...)
 	}
 
+	if key.Matches(msg, m.keyMap.Chat.Cancel) && m.session != nil && m.session.Goal.Active() {
+		return runGoalCommand(m.com.Workspace, m.session, goalCommand{kind: goalCommandStop})
+	}
+
 	if m.taskPanelVisible() {
 		return m.handleTaskPanelMsg(msg)
 	}
@@ -3296,6 +3327,25 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					break
 				}
 
+				value = strings.TrimSpace(value)
+				if !m.bangMode {
+					command, recognized, err := parseGoalCommand(value)
+					if recognized {
+						m.textarea.Reset()
+						if cmd := m.handleTextareaHeightChange(prevHeight); cmd != nil {
+							cmds = append(cmds, cmd)
+						}
+						m.randomizePlaceholders()
+						m.historyReset()
+						if err != nil {
+							cmds = append(cmds, util.ReportError(err))
+							return tea.Batch(cmds...)
+						}
+						cmds = append(cmds, runGoalCommand(m.com.Workspace, m.session, command))
+						return tea.Batch(cmds...)
+					}
+				}
+
 				// Otherwise, send the message
 				if err := validateQueuedPromptAttachments(m.attachments.List(), m.currentImageSourceLimit()); err != nil {
 					return util.ReportError(err)
@@ -3305,7 +3355,6 @@ func (m *UI) handleKeyPressMsg(msg tea.KeyPressMsg) tea.Cmd {
 					cmds = append(cmds, cmd)
 				}
 
-				value = strings.TrimSpace(value)
 				if value == "exit" || value == "quit" {
 					return m.openQuitDialog()
 				}

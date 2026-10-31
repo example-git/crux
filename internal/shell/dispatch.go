@@ -58,6 +58,12 @@ func scriptDispatchHandler(blockFuncs []BlockFunc) execMiddleware {
 			scriptPath := filepathext.SmartJoin(interp.HandlerCtx(ctx).Dir, args[0])
 			probe, err := probeFile(scriptPath)
 			if err != nil {
+				if errors.Is(err, fs.ErrPermission) {
+					info, statErr := os.Stat(scriptPath)
+					if statErr == nil && trustedSetuidExecutable(info) {
+						return next(ctx, args)
+					}
+				}
 				return err
 			}
 

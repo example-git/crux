@@ -28,6 +28,10 @@ func (m *mockSessionService) Create(_ context.Context, title string) (session.Se
 	return s, nil
 }
 
+func (m *mockSessionService) CreateFork(context.Context, string, string) (session.Session, error) {
+	return session.Session{}, nil
+}
+
 func (m *mockSessionService) CreateTitleSession(context.Context, string) (session.Session, error) {
 	return session.Session{}, nil
 }
@@ -56,6 +60,22 @@ func (m *mockSessionService) List(context.Context) ([]session.Session, error) {
 	return m.sessions, nil
 }
 
+func (m *mockSessionService) ListArchived(context.Context) ([]session.Session, error) {
+	return nil, nil
+}
+
+func (m *mockSessionService) Subtree(context.Context, string) ([]session.Session, error) {
+	return nil, nil
+}
+
+func (m *mockSessionService) Archive(context.Context, string) ([]session.Session, error) {
+	return nil, nil
+}
+
+func (m *mockSessionService) Unarchive(context.Context, string) (session.Session, error) {
+	return session.Session{}, nil
+}
+
 func (m *mockSessionService) Save(_ context.Context, s session.Session) (session.Session, error) {
 	return s, nil
 }
@@ -64,16 +84,94 @@ func (m *mockSessionService) SetMode(context.Context, string, session.Mode) erro
 	return nil
 }
 
+func (m *mockSessionService) SetAnalysisEffort(context.Context, string, string) error {
+	return nil
+}
+
 func (m *mockSessionService) SetPlanState(context.Context, string, session.Mode, string) error {
 	return nil
+}
+
+func (m *mockSessionService) SetGoal(_ context.Context, sessionID, objective string) (session.Session, error) {
+	objective = strings.TrimSpace(objective)
+	if objective == "" {
+		return session.Session{}, fmt.Errorf("goal objective is required")
+	}
+	for index := range m.sessions {
+		if m.sessions[index].ID != sessionID {
+			continue
+		}
+		generation := m.sessions[index].Goal.Generation + 1
+		if generation < 1 {
+			generation = 1
+		}
+		m.sessions[index].Goal = session.Goal{
+			Objective:  objective,
+			Status:     session.GoalStatusActive,
+			Generation: generation,
+		}
+		return m.sessions[index], nil
+	}
+	return session.Session{}, sql.ErrNoRows
+}
+
+func (m *mockSessionService) SetGoalStatus(_ context.Context, sessionID string, generation int64, status session.GoalStatus, goalError string) (session.Session, error) {
+	for index := range m.sessions {
+		if m.sessions[index].ID != sessionID {
+			continue
+		}
+		goal := &m.sessions[index].Goal
+		if goal.Objective == "" || goal.Generation != generation {
+			return session.Session{}, session.ErrGoalChanged
+		}
+		goal.Status = status
+		goal.Error = strings.TrimSpace(goalError)
+		return m.sessions[index], nil
+	}
+	return session.Session{}, session.ErrGoalChanged
+}
+
+func (m *mockSessionService) StopGoal(ctx context.Context, sessionID string, generation int64) (session.Session, error) {
+	updated, err := m.SetGoalStatus(ctx, sessionID, generation, session.GoalStatusPaused, "")
+	if err != nil {
+		return session.Session{}, err
+	}
+	for index := range m.sessions {
+		if m.sessions[index].ID == sessionID {
+			m.sessions[index].Goal.Generation++
+			return m.sessions[index], nil
+		}
+	}
+	return updated, nil
+}
+
+func (m *mockSessionService) ClearGoal(_ context.Context, sessionID string) (session.Session, error) {
+	for index := range m.sessions {
+		if m.sessions[index].ID != sessionID {
+			continue
+		}
+		generation := m.sessions[index].Goal.Generation + 1
+		if generation < 1 {
+			generation = 1
+		}
+		m.sessions[index].Goal = session.Goal{Generation: generation}
+		return m.sessions[index], nil
+	}
+	return session.Session{}, sql.ErrNoRows
 }
 
 func (m *mockSessionService) UpdateTitleAndCost(context.Context, string, string, float64) error {
 	return nil
 }
 
+func (m *mockSessionService) PublishCreated(session.Session) {}
+
 func (m *mockSessionService) PublishCompaction(context.Context, string, bool) error {
 	return nil
+}
+
+func (m *mockSessionService) PublishRollback(ctx context.Context, sessionID string) (session.Session, error) {
+	return m.Get(ctx, sessionID)
 }
 
 func (m *mockSessionService) Rename(context.Context, string, string) error {
@@ -82,6 +180,10 @@ func (m *mockSessionService) Rename(context.Context, string, string) error {
 
 func (m *mockSessionService) Delete(context.Context, string) error {
 	return nil
+}
+
+func (m *mockSessionService) DeleteSubtree(context.Context, string) ([]session.Session, error) {
+	return nil, nil
 }
 
 func (m *mockSessionService) CreateAgentToolSessionID(messageID, toolCallID string) string {

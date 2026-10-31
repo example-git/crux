@@ -46,11 +46,6 @@ func optionName(argument string) string {
 	return name
 }
 
-func consumeNoopValue(p *parser, name, argument string) error {
-	_, err := p.value(name, argument)
-	return err
-}
-
 func consumeNoopOptionalValue(p *parser, argument string) {
 	if strings.Contains(argument, "=") {
 		return
@@ -60,14 +55,10 @@ func consumeNoopOptionalValue(p *parser, argument string) {
 	}
 }
 
-func consumeNoopVariadic(p *parser, name, argument string) error {
-	if _, err := p.value(name, argument); err != nil {
-		return err
-	}
+func consumeNoopVariadic(p *parser) {
 	for p.more() && !strings.HasPrefix(p.args[p.index], "-") {
 		p.next()
 	}
-	return nil
 }
 
 func enum(value string, allowed ...string) bool {

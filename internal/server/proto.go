@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/example-git/crux/internal/agent"
@@ -139,6 +141,10 @@ func (c *controllerV1) handlePostControl(w http.ResponseWriter, r *http.Request)
 //	@Router			/config [get]
 func (c *controllerV1) handleGetConfig(w http.ResponseWriter, _ *http.Request) {
 	jsonEncode(w, c.backend.Config())
+}
+
+func (c *controllerV1) handleGetConfigRequirements(w http.ResponseWriter, _ *http.Request) {
+	jsonEncode(w, c.backend.ConfigRequirements())
 }
 
 // handleGetWorkspaces lists all workspaces.
@@ -371,6 +377,87 @@ func (c *controllerV1) handleGetWorkspaceConfig(w http.ResponseWriter, r *http.R
 	jsonEncode(w, cfg)
 }
 
+func (c *controllerV1) handlePostWorkspaceFileSearch(w http.ResponseWriter, r *http.Request) {
+	var request proto.WorkspaceFileSearchRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	response, err := c.backend.SearchWorkspaceFiles(r.Context(), r.PathValue("id"), request)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, response)
+}
+
+func (c *controllerV1) handlePostWorkspaceFileSearchSessionStart(w http.ResponseWriter, r *http.Request) {
+	var request proto.WorkspaceFileSearchSessionStartRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	if err := c.backend.StartWorkspaceFileSearchSession(r.Context(), r.PathValue("id"), request); err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, struct{}{})
+}
+
+func (c *controllerV1) handlePostWorkspaceFileSearchSessionBegin(w http.ResponseWriter, r *http.Request) {
+	var request proto.WorkspaceFileSearchSessionBeginRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	response, err := c.backend.BeginWorkspaceFileSearchSessionUpdate(r.PathValue("id"), request)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, response)
+}
+
+func (c *controllerV1) handlePostWorkspaceFileSearchSessionComplete(w http.ResponseWriter, r *http.Request) {
+	var request proto.WorkspaceFileSearchSessionCompleteRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	response, err := c.backend.CompleteWorkspaceFileSearchSessionUpdate(r.PathValue("id"), request)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, response)
+}
+
+func (c *controllerV1) handlePostWorkspaceFileSearchSessionStop(w http.ResponseWriter, r *http.Request) {
+	var request proto.WorkspaceFileSearchSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	if err := c.backend.StopWorkspaceFileSearchSession(r.PathValue("id"), request); err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, struct{}{})
+}
+
+func (c *controllerV1) handlePostWorkspaceFileSearchOwnerClose(w http.ResponseWriter, r *http.Request) {
+	var request proto.WorkspaceFileSearchOwnerRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	if err := c.backend.CloseWorkspaceFileSearchOwner(request.Owner); err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, struct{}{})
+}
+
 // handleGetWorkspaceProviders lists available providers for a workspace.
 //
 //	@Summary		Get workspace providers
@@ -455,7 +542,21 @@ func (c *controllerV1) handleGetWorkspaceLSPDiagnostics(w http.ResponseWriter, r
 //	@Router			/workspaces/{id}/sessions [get]
 func (c *controllerV1) handleGetWorkspaceSessions(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	sessions, err := c.backend.ListSessions(r.Context(), id)
+	archived := false
+	if value, supplied := r.URL.Query()["archived"]; supplied {
+		if len(value) != 1 || (value[0] != "true" && value[0] != "false") {
+			jsonError(w, http.StatusBadRequest, "archived must be true or false")
+			return
+		}
+		archived, _ = strconv.ParseBool(value[0])
+	}
+	var sessions []session.Session
+	var err error
+	if archived {
+		sessions, err = c.backend.ListArchivedSessions(r.Context(), id)
+	} else {
+		sessions, err = c.backend.ListSessions(r.Context(), id)
+	}
 	if err != nil {
 		c.handleError(w, r, err)
 		return
@@ -665,6 +766,153 @@ func (c *controllerV1) handlePutWorkspaceSessionMode(w http.ResponseWriter, r *h
 //	@Failure		404	{object}	proto.Error
 //	@Failure		500	{object}	proto.Error
 //	@Router			/workspaces/{id}/sessions/{sid} [delete]
+func (c *controllerV1) handlePostWorkspaceSessionArchive(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	archived, err := c.backend.ArchiveSession(r.Context(), id, sid)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	result := make([]proto.Session, len(archived))
+	for index, current := range archived {
+		result[index] = sessionToProto(current)
+	}
+	jsonEncode(w, result)
+}
+
+func (c *controllerV1) handlePostWorkspaceSessionUnarchive(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	unarchived, err := c.backend.UnarchiveSession(r.Context(), id, sid)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, sessionToProto(unarchived))
+}
+
+func (c *controllerV1) handlePostWorkspaceSessionDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sid := r.PathValue("sid")
+	deleted, err := c.backend.DeleteSessionSubtree(r.Context(), id, sid)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	result := make([]proto.Session, len(deleted))
+	for index, current := range deleted {
+		result[index] = sessionToProto(current)
+	}
+	jsonEncode(w, result)
+}
+
+func (c *controllerV1) handlePutWorkspaceSessionAnalysisEffort(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sessionID := r.PathValue("sid")
+
+	var request proto.Session
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	saved, err := c.backend.SetSessionAnalysisEffort(r.Context(), id, sessionID, request.AnalysisEffort)
+	if err != nil {
+		if strings.HasPrefix(err.Error(), "invalid analysis effort ") {
+			jsonError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		c.handleError(w, r, err)
+		return
+	}
+	ws, _ := c.backend.GetWorkspace(id)
+	out := sessionToProto(saved)
+	out.IsBusy = isSessionBusy(ws, saved.ID)
+	out.AttachedClients = attachedClients(ws, saved.ID)
+	jsonEncode(w, out)
+}
+
+func (c *controllerV1) handlePutWorkspaceSessionGoal(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sessionID := r.PathValue("sid")
+
+	var request proto.SessionGoalRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+
+	var (
+		saved session.Session
+		err   error
+	)
+	switch request.Action {
+	case "set":
+		if strings.TrimSpace(request.Objective) == "" {
+			jsonError(w, http.StatusBadRequest, "goal objective is required")
+			return
+		}
+		saved, err = c.backend.SetSessionGoal(r.Context(), id, sessionID, request.Objective)
+	case "status":
+		if request.Generation <= 0 {
+			jsonError(w, http.StatusBadRequest, "goal generation must be positive")
+			return
+		}
+		status := session.GoalStatus(request.Status)
+		switch status {
+		case session.GoalStatusActive, session.GoalStatusPaused, session.GoalStatusBlocked, session.GoalStatusComplete:
+		default:
+			jsonError(w, http.StatusBadRequest, fmt.Sprintf("invalid goal status %q", request.Status))
+			return
+		}
+		saved, err = c.backend.SetSessionGoalStatus(r.Context(), id, sessionID, request.Generation, status, request.Error)
+	case "stop":
+		if request.Generation <= 0 {
+			jsonError(w, http.StatusBadRequest, "goal generation must be positive")
+			return
+		}
+		saved, err = c.backend.StopSessionGoal(r.Context(), id, sessionID, request.Generation)
+	case "clear":
+		saved, err = c.backend.ClearSessionGoal(r.Context(), id, sessionID)
+	default:
+		jsonError(w, http.StatusBadRequest, fmt.Sprintf("invalid goal action %q", request.Action))
+		return
+	}
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	ws, _ := c.backend.GetWorkspace(id)
+	out := sessionToProto(saved)
+	out.IsBusy = isSessionBusy(ws, saved.ID)
+	out.AttachedClients = attachedClients(ws, saved.ID)
+	jsonEncode(w, out)
+}
+
+func (c *controllerV1) handlePutWorkspaceSessionTitle(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sessionID := r.PathValue("sid")
+
+	var request proto.Session
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		c.server.logError(r, "Failed to decode request", "error", err)
+		jsonError(w, http.StatusBadRequest, "failed to decode request")
+		return
+	}
+	saved, err := c.backend.RenameSession(r.Context(), id, sessionID, request.Title)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	ws, _ := c.backend.GetWorkspace(id)
+	out := sessionToProto(saved)
+	out.IsBusy = isSessionBusy(ws, saved.ID)
+	out.AttachedClients = attachedClients(ws, saved.ID)
+	jsonEncode(w, out)
+}
+
 func (c *controllerV1) handleDeleteWorkspaceSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sid := r.PathValue("sid")
@@ -1121,11 +1369,37 @@ func (c *controllerV1) handlePostWorkspaceSessionRewind(w http.ResponseWriter, r
 	w.WriteHeader(http.StatusOK)
 }
 
+func (c *controllerV1) handlePostWorkspaceSessionRollback(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	result, err := c.backend.RollbackSession(r.Context(), r.PathValue("id"), r.PathValue("sid"), req.MessageID)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, proto.SessionRollbackResponse{Session: sessionToProto(result.Session), Messages: messagesToProto(result.Messages)})
+}
+
 // handlePostWorkspaceSessionFork creates a persisted, independent copy of a session.
 func (c *controllerV1) handlePostWorkspaceSessionFork(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sid := r.PathValue("sid")
-	forked, err := c.backend.ForkSession(r.Context(), id, sid)
+	var forked session.Session
+	var err error
+	switch r.URL.Query().Get("record_origin") {
+	case "", "false":
+		forked, err = c.backend.ForkSession(r.Context(), id, sid)
+	case "true":
+		forked, err = c.backend.ForkSessionWithOrigin(r.Context(), id, sid)
+	default:
+		http.Error(w, "record_origin must be true or false", http.StatusBadRequest)
+		return
+	}
 	if err != nil {
 		c.handleError(w, r, err)
 		return
@@ -1422,7 +1696,14 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 		status = http.StatusBadRequest
 	case errors.Is(err, backend.ErrWorkspaceAuthority):
 		status = http.StatusForbidden
-	case errors.Is(err, backend.ErrRuntimeConflict), errors.Is(err, config.ErrRemoteRuntimeRevision):
+	case errors.Is(err, backend.ErrRuntimeConflict),
+		errors.Is(err, config.ErrRemoteRuntimeRevision),
+		errors.Is(err, agent.ErrSessionBusy),
+		errors.Is(err, agent.ErrSessionMutationInProgress),
+		errors.Is(err, backend.ErrSessionActiveWriter),
+		errors.Is(err, session.ErrGoalChanged),
+		errors.Is(err, session.ErrAlreadyArchived),
+		errors.Is(err, session.ErrNotArchived):
 		status = http.StatusConflict
 	case errors.Is(err, backend.ErrWorkspaceNotFound):
 		status = http.StatusNotFound
@@ -1434,7 +1715,7 @@ func (c *controllerV1) handleError(w http.ResponseWriter, r *http.Request, err e
 		status = http.StatusBadRequest
 	case errors.Is(err, agent.ErrAgentDefinitionExists):
 		status = http.StatusConflict
-	case errors.Is(err, backend.ErrPathRequired):
+	case errors.Is(err, backend.ErrPathRequired), errors.Is(err, backend.ErrInvalidFileSearch):
 		status = http.StatusBadRequest
 	case errors.Is(err, backend.ErrInvalidPermissionAction):
 		status = http.StatusBadRequest

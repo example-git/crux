@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"fmt"
 	"html/template"
+	"io"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -26,6 +27,7 @@ type BashParams struct {
 	Command         string `json:"command" description:"The command to execute"`
 	WorkingDir      string `json:"working_dir,omitempty" description:"The working directory to execute the command in (defaults to current directory)"`
 	RunInBackground bool   `json:"run_in_background,omitempty" description:"Set to true (boolean) to run this command in the background. Use task_output to read the output later."`
+	TTY             bool   `json:"tty,omitempty" description:"Set to true (boolean) to run this foreground command in a real interactive terminal. Use this for sudo and other commands that require a TTY or terminal input."`
 	Timeout         int    `json:"timeout,omitempty" description:"Seconds to wait for the command to finish before it is killed and the call fails (default: 120, max: 600)"`
 }
 
@@ -34,6 +36,7 @@ type BashPermissionsParams struct {
 	Command         string `json:"command"`
 	WorkingDir      string `json:"working_dir"`
 	RunInBackground bool   `json:"run_in_background"`
+	TTY             bool   `json:"tty"`
 	Timeout         int    `json:"timeout"`
 }
 
@@ -71,6 +74,11 @@ type bashDescriptionData struct {
 	GhAvailable     bool
 }
 
+var policyOverrides = []string{
+	"ssh",
+	"scp",
+}
+
 var bannedCommands = []string{
 	// Network/Download tools
 	"alias",
@@ -86,8 +94,6 @@ var bannedCommands = []string{
 	"lynx",
 	"nc",
 	"safari",
-	"scp",
-	"ssh",
 	"telnet",
 	"w3m",
 	"wget",
@@ -96,7 +102,6 @@ var bannedCommands = []string{
 	// System administration
 	"doas",
 	"su",
-	"sudo",
 
 	// Package managers
 	"apk",
@@ -162,7 +167,6 @@ func bashDescription() string {
 func blockFuncs() []shell.BlockFunc {
 	return []shell.BlockFunc{
 		shell.CommandsBlocker(bannedCommands),
-
 		// System package managers
 		shell.ArgumentsBlocker("apk", []string{"add"}, nil),
 		shell.ArgumentsBlocker("apt", []string{"install"}, nil),
@@ -200,6 +204,9 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 		BashToolName,
 		string(bashDescription()),
 		func(ctx context.Context, params BashParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+			if params.TTY && params.RunInBackground {
+				return fantasy.NewTextErrorResponse("tty=true cannot be combined with run_in_background=true"), nil
+			}
 			if params.RunInBackground && permission.IsSubagent(ctx) {
 				return fantasy.NewTextErrorResponse(permission.ErrSubagentBackgroundTask.Error()), nil
 			}
@@ -252,6 +259,53 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 				if !p {
 					return NewPermissionDeniedResponse(), nil
 				}
+			}
+
+			if params.TTY {
+				startTime := time.Now()
+				timeoutSecs := cmp.Or(params.Timeout, DefaultBashTimeout)
+				timeoutSecs = min(timeoutSecs, MaxBashTimeout)
+				execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
+				defer cancel()
+
+				terminal, err := openAgentTerminal()
+				if err != nil {
+					return fantasy.NewTextErrorResponse(fmt.Sprintf("Interactive TTY unavailable: %v", err)), nil
+				}
+				defer terminal.Close()
+
+				var output bytes.Buffer
+				commandShell := shell.NewShell(&shell.Options{
+					WorkingDir: execWorkingDir,
+					Env:        environment,
+					BlockFuncs: blockFuncs(),
+				})
+				execErr := commandShell.ExecTTY(execCtx, params.Command, terminal, io.MultiWriter(terminal, &output))
+				if execCtx.Err() == context.DeadlineExceeded {
+					partial := truncateOutput(output.String())
+					message := fmt.Sprintf("Command timed out after %d seconds and was killed.", timeoutSecs)
+					if partial != "" {
+						message += "\n\nPartial output before the kill:\n\n" + partial
+					}
+					return fantasy.NewTextErrorResponse(message), nil
+				}
+				if execCtx.Err() != nil {
+					return fantasy.ToolResponse{}, execCtx.Err()
+				}
+
+				stdout := formatOutput(output.String(), "", execErr)
+				metadata := BashResponseMetadata{
+					StartTime:        startTime.UnixMilli(),
+					EndTime:          time.Now().UnixMilli(),
+					Output:           stdout,
+					Description:      params.Description,
+					WorkingDirectory: commandShell.GetWorkingDir(),
+				}
+				if stdout == "" {
+					return fantasy.WithResponseMetadata(fantasy.NewTextResponse(BashNoOutput), metadata), nil
+				}
+				stdout += fmt.Sprintf("\n\n<cwd>%s</cwd>", normalizeWorkingDir(commandShell.GetWorkingDir()))
+				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(stdout), metadata), nil
 			}
 
 			// If explicitly requested as background, start immediately with detached context

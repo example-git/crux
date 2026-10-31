@@ -82,7 +82,14 @@ func launchPrepared(ctx context.Context, prepared *PreparedRequest) (Metadata, e
 			return Metadata{}, err
 		}
 	}
+	packetListener, err := (&net.ListenConfig{}).ListenPacket(ctx, "udp4", "127.0.0.1:0")
+	if err != nil {
+		return Metadata{}, fmt.Errorf("select WireGuard listen port: %w", err)
+	}
+	wireGuardPort := packetListener.LocalAddr().(*net.UDPAddr).Port
+	_ = packetListener.Close()
 	config := workerConfig{
+		WireGuardPort:      wireGuardPort,
 		Command:            target.Command,
 		Environment:        target.Environment,
 		WorkingDir:         target.WorkingDir,
@@ -119,8 +126,8 @@ func launchPrepared(ctx context.Context, prepared *PreparedRequest) (Metadata, e
 			killTmuxSession(tmux, session)
 		}
 	}()
-	if _, err := runTmux(ctx, tmux, "set-option", "-t", session, "remain-on-exit", "off"); err != nil {
-		return Metadata{}, fmt.Errorf("disable tmux remain-on-exit: %w", err)
+	if err := configureCaptureSession(ctx, tmux, session); err != nil {
+		return Metadata{}, err
 	}
 	paneCommand := shellJoin(executable, "__traffic-capture-pane-log", paneLogPath)
 	if _, err := runTmux(ctx, tmux, "pipe-pane", "-o", "-t", session+":0.0", paneCommand); err != nil {
@@ -134,12 +141,15 @@ func launchPrepared(ctx context.Context, prepared *PreparedRequest) (Metadata, e
 		return Metadata{}, err
 	}
 	metadata := Metadata{
-		Session:     session,
-		CapturePath: request.CapturePath,
-		StatusPath:  statusPath,
-		PaneLogPath: paneLogPath,
-		Attach:      fmt.Sprintf("tmux -L %s attach -t %s", TmuxSocket, session),
-		ViewerURL:   status.ViewerURL,
+		Session:        session,
+		CapturePath:    request.CapturePath,
+		StatusPath:     statusPath,
+		PaneLogPath:    paneLogPath,
+		TargetLogPath:  filepath.Join(runtimePath, "target.log"),
+		ControlSocket:  status.ControlSocket,
+		TargetExitCode: status.TargetExitCode,
+		Attach:         fmt.Sprintf("tmux -L %s attach -t %s", TmuxSocket, session),
+		ViewerURL:      status.ViewerURL,
 	}
 	if status.State == "failed" {
 		return Metadata{}, workerFailure(status)
@@ -154,8 +164,31 @@ func launchPrepared(ctx context.Context, prepared *PreparedRequest) (Metadata, e
 			return Metadata{}, workerFailure(status)
 		}
 		metadata.ViewerURL = status.ViewerURL
+		metadata.TargetExitCode = status.TargetExitCode
+		if status.TargetExitCode != nil && *status.TargetExitCode != 0 {
+			return Metadata{}, fmt.Errorf("captured target exited with code %d; management shell remains in tmux session %s", *status.TargetExitCode, session)
+		}
 	}
 	return metadata, nil
+}
+
+func configureCaptureSession(ctx context.Context, tmux, session string) error {
+	keyTable := session + "-keys"
+	commands := [][]string{
+		{"set-option", "-t", session, "remain-on-exit", "off"},
+		{"set-option", "-t", session, "destroy-unattached", "off"},
+		{"set-option", "-t", session, "prefix", "C-b"},
+		{"bind-key", "-T", keyTable, "F12", "detach-client"},
+		{"set-option", "-t", session, "key-table", keyTable},
+		{"set-option", "-t", session, "status", "on"},
+		{"set-option", "-t", session, "status-right", "F12: detach | Ctrl-b d: detach | cap logs main -f: output"},
+	}
+	for _, arguments := range commands {
+		if _, err := runTmux(ctx, tmux, arguments...); err != nil {
+			return fmt.Errorf("configure capture management shell: %w", err)
+		}
+	}
+	return nil
 }
 
 func chooseLoopbackPort(ctx context.Context) (int, error) {
@@ -282,7 +315,7 @@ func waitForCompletion(ctx context.Context, tmux, session, statusPath string) (w
 			return workerStatus{}, ctx.Err()
 		case <-ticker.C:
 			status, ok := readWorkerStatus(statusPath)
-			if ok && (status.State == "completed" || status.State == "failed") {
+			if ok && (status.TargetExitCode != nil || status.State == "completed" || status.State == "failed") {
 				return status, nil
 			}
 			exists, err := tmuxSessionExists(ctx, tmux, session)

@@ -40,9 +40,9 @@ func (s *stubCoordinator) RunAccepted(ctx context.Context, accept *agent.Accepte
 func (s *stubCoordinator) BeginAccepted(sessionID string) *agent.AcceptedRun {
 	return nil
 }
-func (s *stubCoordinator) Cancel(string) {}
-func (s *stubCoordinator) CancelAll()    {}
-func (s *stubCoordinator) IsBusy() bool  { return false }
+func (s *stubCoordinator) Cancel(id string) { s.busy[id] = false }
+func (s *stubCoordinator) CancelAll()       {}
+func (s *stubCoordinator) IsBusy() bool     { return false }
 func (s *stubCoordinator) IsSessionBusy(id string) bool {
 	return s.busy[id]
 }
@@ -86,6 +86,16 @@ func (s *stubSessions) SetMode(ctx context.Context, id string, mode session.Mode
 	return s.SetPlanState(ctx, id, mode, "")
 }
 
+func (s *stubSessions) Rename(_ context.Context, id, title string) error {
+	for i := range s.all {
+		if s.all[i].ID == id {
+			s.all[i].Title = title
+			return nil
+		}
+	}
+	return errors.New("not found")
+}
+
 func (s *stubSessions) SetPlanState(_ context.Context, id string, mode session.Mode, plan string) error {
 	for i := range s.all {
 		if s.all[i].ID == id {
@@ -95,6 +105,58 @@ func (s *stubSessions) SetPlanState(_ context.Context, id string, mode session.M
 		}
 	}
 	return errors.New("not found")
+}
+
+func (s *stubSessions) SetGoal(_ context.Context, id, objective string) (session.Session, error) {
+	for i := range s.all {
+		if s.all[i].ID == id {
+			s.all[i].Goal = session.Goal{
+				Objective:  objective,
+				Status:     session.GoalStatusActive,
+				Generation: s.all[i].Goal.Generation + 1,
+			}
+			return s.all[i], nil
+		}
+	}
+	return session.Session{}, errors.New("not found")
+}
+
+func (s *stubSessions) SetGoalStatus(_ context.Context, id string, generation int64, status session.GoalStatus, goalError string) (session.Session, error) {
+	for i := range s.all {
+		if s.all[i].ID == id {
+			if s.all[i].Goal.Generation != generation {
+				return session.Session{}, session.ErrGoalChanged
+			}
+			s.all[i].Goal.Status = status
+			s.all[i].Goal.Error = goalError
+			return s.all[i], nil
+		}
+	}
+	return session.Session{}, errors.New("not found")
+}
+
+func (s *stubSessions) StopGoal(ctx context.Context, id string, generation int64) (session.Session, error) {
+	current, err := s.SetGoalStatus(ctx, id, generation, session.GoalStatusPaused, "")
+	if err != nil {
+		return session.Session{}, err
+	}
+	for i := range s.all {
+		if s.all[i].ID == id {
+			s.all[i].Goal.Generation++
+			return s.all[i], nil
+		}
+	}
+	return current, nil
+}
+
+func (s *stubSessions) ClearGoal(_ context.Context, id string) (session.Session, error) {
+	for i := range s.all {
+		if s.all[i].ID == id {
+			s.all[i].Goal = session.Goal{Generation: s.all[i].Goal.Generation + 1}
+			return s.all[i], nil
+		}
+	}
+	return session.Session{}, errors.New("not found")
 }
 
 // buildBusyWorkspace returns a controller wired to a backend that owns
@@ -189,6 +251,96 @@ func TestPutWorkspaceSessionMode(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, sessionID, got.ID)
 	require.Equal(t, string(session.ModePlan), got.Mode)
+}
+
+func TestPutWorkspaceSessionGoalLifecycle(t *testing.T) {
+	const sessionID = "s-goal"
+	controller, workspaceID := buildBusyWorkspace(t, sessionID, false)
+
+	set := putWorkspaceSessionGoal(t, controller, workspaceID, sessionID, `{"action":"set","objective":"finish the work"}`)
+	require.Equal(t, "finish the work", set.Goal.Objective)
+	require.Equal(t, string(session.GoalStatusActive), set.Goal.Status)
+	require.EqualValues(t, 1, set.Goal.Generation)
+
+	blocked := putWorkspaceSessionGoal(t, controller, workspaceID, sessionID, `{"action":"status","generation":1,"status":"blocked","error":"required service is unavailable"}`)
+	require.Equal(t, set.Goal.Objective, blocked.Goal.Objective)
+	require.Equal(t, string(session.GoalStatusBlocked), blocked.Goal.Status)
+	require.EqualValues(t, 1, blocked.Goal.Generation)
+	require.Equal(t, "required service is unavailable", blocked.Goal.Error)
+
+	cleared := putWorkspaceSessionGoal(t, controller, workspaceID, sessionID, `{"action":"clear"}`)
+	require.Empty(t, cleared.Goal.Objective)
+	require.Empty(t, cleared.Goal.Status)
+	require.EqualValues(t, 2, cleared.Goal.Generation)
+	require.Empty(t, cleared.Goal.Error)
+}
+
+func TestPutWorkspaceSessionGoalRejectsInvalidRequests(t *testing.T) {
+	const sessionID = "s-goal"
+	tests := []struct {
+		name    string
+		body    string
+		message string
+	}{
+		{name: "missing objective", body: `{"action":"set","objective":" "}`, message: "goal objective is required"},
+		{name: "missing generation", body: `{"action":"status","status":"paused"}`, message: "goal generation must be positive"},
+		{name: "stop missing generation", body: `{"action":"stop"}`, message: "goal generation must be positive"},
+		{name: "invalid status", body: `{"action":"status","generation":1,"status":"done"}`, message: `invalid goal status "done"`},
+		{name: "invalid action", body: `{"action":"replace"}`, message: `invalid goal action "replace"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			controller, workspaceID := buildBusyWorkspace(t, sessionID, false)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/v1/workspaces/"+workspaceID+"/sessions/"+sessionID+"/goal", bytes.NewBufferString(test.body))
+			req.SetPathValue("id", workspaceID)
+			req.SetPathValue("sid", sessionID)
+			rec := httptest.NewRecorder()
+
+			controller.handlePutWorkspaceSessionGoal(rec, req)
+			require.Equal(t, http.StatusBadRequest, rec.Code)
+			var got proto.Error
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+			require.Equal(t, test.message, got.Message)
+		})
+	}
+}
+
+func putWorkspaceSessionGoal(t *testing.T, controller *controllerV1, workspaceID, sessionID, body string) proto.Session {
+	t.Helper()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/v1/workspaces/"+workspaceID+"/sessions/"+sessionID+"/goal", bytes.NewBufferString(body))
+	req.SetPathValue("id", workspaceID)
+	req.SetPathValue("sid", sessionID)
+	rec := httptest.NewRecorder()
+
+	controller.handlePutWorkspaceSessionGoal(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	var got proto.Session
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	return got
+}
+
+func TestPutWorkspaceSessionTitlePreservesOtherFields(t *testing.T) {
+	const sessionID = "s-title"
+	controller, workspaceID := buildBusyWorkspace(t, sessionID, false)
+	workspace, err := controller.backend.GetWorkspace(workspaceID)
+	require.NoError(t, err)
+	workspace.App.Sessions.(*stubSessions).all[0].Mode = session.ModePlan
+	workspace.App.Sessions.(*stubSessions).all[0].Plan = "keep this plan"
+	body := bytes.NewBufferString(`{"title":"renamed"}`)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodPut, "/v1/workspaces/"+workspaceID+"/sessions/"+sessionID+"/title", body)
+	req.SetPathValue("id", workspaceID)
+	req.SetPathValue("sid", sessionID)
+	rec := httptest.NewRecorder()
+
+	controller.handlePutWorkspaceSessionTitle(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var got proto.Session
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, sessionID, got.ID)
+	require.Equal(t, "renamed", got.Title)
+	require.Equal(t, string(session.ModePlan), got.Mode)
+	require.Equal(t, "keep this plan", got.Plan)
 }
 
 func TestPutWorkspaceSessionModeRejectsInvalidMode(t *testing.T) {
@@ -387,4 +539,16 @@ func TestSessionGetIncludesAttachedClients(t *testing.T) {
 	var got proto.Session
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
 	require.Equal(t, 1, got.AttachedClients)
+}
+
+func TestStopWorkspaceGoalCancelsBusySession(t *testing.T) {
+	const sessionID = "running-goal"
+	controller, workspaceID := buildBusyWorkspace(t, sessionID, true)
+	set := putWorkspaceSessionGoal(t, controller, workspaceID, sessionID, `{"action":"set","objective":"finish the work"}`)
+	require.True(t, set.IsBusy)
+	stopped := putWorkspaceSessionGoal(t, controller, workspaceID, sessionID, `{"action":"stop","generation":1}`)
+	require.False(t, stopped.IsBusy)
+	require.Equal(t, set.Goal.Objective, stopped.Goal.Objective)
+	require.Equal(t, string(session.GoalStatusPaused), stopped.Goal.Status)
+	require.EqualValues(t, 2, stopped.Goal.Generation)
 }

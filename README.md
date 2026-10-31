@@ -131,9 +131,27 @@ Installation preserves the file's existing contents and prints the command to lo
 
 Generation and Tab-completion requests use the current CLI command tree and skip normal application startup, including dotenv loading, compatibility dispatch, profiling, and workspace initialization. Zsh's generated script initializes `compinit` only when completion support has not already been enabled. Add `--no-descriptions` to a generation command to omit completion descriptions.
 
+Dynamic values are loaded when you press Tab:
+
+- `crux --session <Tab>` and `crux run --session <Tab>` suggest session IDs with titles. UUID and session-hash prefixes are supported.
+- `crux session show|delete|rename <Tab>` completes the session ID argument.
+- `crux --connection <Tab>` suggests saved connection names with server addresses.
+- `crux --cwd <Tab>` suggests known project directories, falling back to directory completion when none match. `--data-dir` completes directories.
+
+Local session completion respects `--cwd`, `--data-dir`, and configured data-directory precedence. Without an explicit `--data-dir`, it reads configuration, including evaluating trusted `cruxrc` files, but does not initialize providers or migrate the session database. With `--connection` or an explicit `--host`, session flags query the selected server's existing workspace for the requested path. Completion never starts a server or creates a remote workspace; a missing workspace or unavailable server reports a completion error rather than suggesting unrelated local sessions. The `session` management subcommands remain local, matching their execution behavior.
+
 ### Local CLI compatibility
 
 The built-in, unofficial compatibility layer can expose collision-safe `codex`, `claude`, `agy`, and `copilot` hard links for automation that expects those command contracts. All researched root flags are accepted, with unenforceable options documented as no-ops. Alias installation is explicit, reversible, and toggleable; normal `crux` invocation is unchanged. See [`docs/compatibility/README.md`](docs/compatibility/README.md) for installation, flags and protocols, no-op behavior, PATH management, removal, and non-affiliation terms.
+
+```sh
+crux alias install --all
+crux alias install codex
+crux alias uninstall codex
+crux alias uninstall --all
+```
+
+Alias management is included in the core executable. Select one provider (`codex`, `claude`, `antigravity`/`agy`, or `copilot`) or `--all`; removing one alias preserves the others.
 
 ## Configuration
 

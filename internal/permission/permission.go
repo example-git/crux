@@ -137,6 +137,7 @@ type Service interface {
 	SetSkipRequests(skip bool)
 	SkipRequests() bool
 	SubscribeNotifications(ctx context.Context) <-chan pubsub.Event[PermissionNotification]
+	Pending() *PermissionRequest
 }
 
 // PermissionKey is a composite key for session permission lookups.
@@ -164,6 +165,16 @@ type permissionService struct {
 	requestMu       sync.Mutex
 	activeRequest   *PermissionRequest
 	activeRequestMu sync.Mutex
+}
+
+func (s *permissionService) Pending() *PermissionRequest {
+	s.activeRequestMu.Lock()
+	defer s.activeRequestMu.Unlock()
+	if s.activeRequest == nil {
+		return nil
+	}
+	request := *s.activeRequest
+	return &request
 }
 
 // resolve atomically removes the pending request entry for the given
@@ -327,6 +338,13 @@ func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRe
 	s.activeRequestMu.Lock()
 	s.activeRequest = &permission
 	s.activeRequestMu.Unlock()
+	defer func() {
+		s.activeRequestMu.Lock()
+		if s.activeRequest != nil && s.activeRequest.ID == permission.ID {
+			s.activeRequest = nil
+		}
+		s.activeRequestMu.Unlock()
+	}()
 
 	respCh := make(chan bool, 1)
 	s.pendingRequests.Set(permission.ID, respCh)

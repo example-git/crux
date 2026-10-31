@@ -14,6 +14,7 @@ const createSession = `-- name: CreateSession :one
 INSERT INTO sessions (
     id,
     parent_session_id,
+    forked_from_session_id,
     title,
     message_count,
     prompt_tokens,
@@ -32,28 +33,31 @@ INSERT INTO sessions (
     ?,
     ?,
     ?,
+    ?,
     null,
     'default',
     '',
     strftime('%s', 'now'),
     strftime('%s', 'now')
-) RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens
+) RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens, forked_from_session_id, archived, analysis_effort, model, provider
 `
 
 type CreateSessionParams struct {
-	ID               string         `json:"id"`
-	ParentSessionID  sql.NullString `json:"parent_session_id"`
-	Title            string         `json:"title"`
-	MessageCount     int64          `json:"message_count"`
-	PromptTokens     int64          `json:"prompt_tokens"`
-	CompletionTokens int64          `json:"completion_tokens"`
-	Cost             float64        `json:"cost"`
+	ID                  string         `json:"id"`
+	ParentSessionID     sql.NullString `json:"parent_session_id"`
+	ForkedFromSessionID sql.NullString `json:"forked_from_session_id"`
+	Title               string         `json:"title"`
+	MessageCount        int64          `json:"message_count"`
+	PromptTokens        int64          `json:"prompt_tokens"`
+	CompletionTokens    int64          `json:"completion_tokens"`
+	Cost                float64        `json:"cost"`
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {
 	row := q.queryRow(ctx, q.createSessionStmt, createSession,
 		arg.ID,
 		arg.ParentSessionID,
+		arg.ForkedFromSessionID,
 		arg.Title,
 		arg.MessageCount,
 		arg.PromptTokens,
@@ -77,6 +81,11 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 		&i.Plan,
 		&i.EstimatedUsage,
 		&i.UnseenLocalTokens,
+		&i.ForkedFromSessionID,
+		&i.Archived,
+		&i.AnalysisEffort,
+		&i.Model,
+		&i.Provider,
 	)
 	return i, err
 }
@@ -92,8 +101,9 @@ func (q *Queries) DeleteSession(ctx context.Context, id string) error {
 }
 
 const getLastSession = `-- name: GetLastSession :one
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens, forked_from_session_id, archived, analysis_effort, model, provider
 FROM sessions
+WHERE archived = 0
 ORDER BY updated_at DESC
 LIMIT 1
 `
@@ -117,12 +127,17 @@ func (q *Queries) GetLastSession(ctx context.Context) (Session, error) {
 		&i.Plan,
 		&i.EstimatedUsage,
 		&i.UnseenLocalTokens,
+		&i.ForkedFromSessionID,
+		&i.Archived,
+		&i.AnalysisEffort,
+		&i.Model,
+		&i.Provider,
 	)
 	return i, err
 }
 
 const getSessionByID = `-- name: GetSessionByID :one
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens, forked_from_session_id, archived, analysis_effort, model, provider
 FROM sessions
 WHERE id = ? LIMIT 1
 `
@@ -146,14 +161,121 @@ func (q *Queries) GetSessionByID(ctx context.Context, id string) (Session, error
 		&i.Plan,
 		&i.EstimatedUsage,
 		&i.UnseenLocalTokens,
+		&i.ForkedFromSessionID,
+		&i.Archived,
+		&i.AnalysisEffort,
+		&i.Model,
+		&i.Provider,
 	)
 	return i, err
 }
 
-const listSessions = `-- name: ListSessions :many
-SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens
+const listArchivedSessions = `-- name: ListArchivedSessions :many
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens, forked_from_session_id, archived, analysis_effort, model, provider
 FROM sessions
-WHERE parent_session_id is NULL
+WHERE parent_session_id is NULL AND archived = 1
+ORDER BY updated_at DESC
+`
+
+func (q *Queries) ListArchivedSessions(ctx context.Context) ([]Session, error) {
+	rows, err := q.query(ctx, q.listArchivedSessionsStmt, listArchivedSessions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Session{}
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.ParentSessionID,
+			&i.Title,
+			&i.MessageCount,
+			&i.PromptTokens,
+			&i.CompletionTokens,
+			&i.Cost,
+			&i.UpdatedAt,
+			&i.CreatedAt,
+			&i.SummaryMessageID,
+			&i.Todos,
+			&i.Mode,
+			&i.Plan,
+			&i.EstimatedUsage,
+			&i.UnseenLocalTokens,
+			&i.ForkedFromSessionID,
+			&i.Archived,
+			&i.AnalysisEffort,
+			&i.Model,
+			&i.Provider,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChildSessions = `-- name: ListChildSessions :many
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens, forked_from_session_id, archived, analysis_effort, model, provider
+FROM sessions
+WHERE parent_session_id = ?
+ORDER BY created_at ASC, id ASC
+`
+
+func (q *Queries) ListChildSessions(ctx context.Context, parentSessionID sql.NullString) ([]Session, error) {
+	rows, err := q.query(ctx, q.listChildSessionsStmt, listChildSessions, parentSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Session{}
+	for rows.Next() {
+		var i Session
+		if err := rows.Scan(
+			&i.ID,
+			&i.ParentSessionID,
+			&i.Title,
+			&i.MessageCount,
+			&i.PromptTokens,
+			&i.CompletionTokens,
+			&i.Cost,
+			&i.UpdatedAt,
+			&i.CreatedAt,
+			&i.SummaryMessageID,
+			&i.Todos,
+			&i.Mode,
+			&i.Plan,
+			&i.EstimatedUsage,
+			&i.UnseenLocalTokens,
+			&i.ForkedFromSessionID,
+			&i.Archived,
+			&i.AnalysisEffort,
+			&i.Model,
+			&i.Provider,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSessions = `-- name: ListSessions :many
+SELECT id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens, forked_from_session_id, archived, analysis_effort, model, provider
+FROM sessions
+WHERE parent_session_id is NULL AND archived = 0
 ORDER BY updated_at DESC
 `
 
@@ -182,6 +304,11 @@ func (q *Queries) ListSessions(ctx context.Context) ([]Session, error) {
 			&i.Plan,
 			&i.EstimatedUsage,
 			&i.UnseenLocalTokens,
+			&i.ForkedFromSessionID,
+			&i.Archived,
+			&i.AnalysisEffort,
+			&i.Model,
+			&i.Provider,
 		); err != nil {
 			return nil, err
 		}
@@ -211,6 +338,64 @@ type RenameSessionParams struct {
 func (q *Queries) RenameSession(ctx context.Context, arg RenameSessionParams) error {
 	_, err := q.exec(ctx, q.renameSessionStmt, renameSession, arg.Title, arg.ID)
 	return err
+}
+
+const setSessionAnalysisEffort = `-- name: SetSessionAnalysisEffort :exec
+UPDATE sessions
+SET
+    analysis_effort = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?
+`
+
+type SetSessionAnalysisEffortParams struct {
+	AnalysisEffort string `json:"analysis_effort"`
+	ID             string `json:"id"`
+}
+
+func (q *Queries) SetSessionAnalysisEffort(ctx context.Context, arg SetSessionAnalysisEffortParams) error {
+	_, err := q.exec(ctx, q.setSessionAnalysisEffortStmt, setSessionAnalysisEffort, arg.AnalysisEffort, arg.ID)
+	return err
+}
+
+const setSessionArchived = `-- name: SetSessionArchived :one
+UPDATE sessions
+SET archived = ?
+WHERE id = ?
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens, forked_from_session_id, archived, analysis_effort, model, provider
+`
+
+type SetSessionArchivedParams struct {
+	Archived int64  `json:"archived"`
+	ID       string `json:"id"`
+}
+
+func (q *Queries) SetSessionArchived(ctx context.Context, arg SetSessionArchivedParams) (Session, error) {
+	row := q.queryRow(ctx, q.setSessionArchivedStmt, setSessionArchived, arg.Archived, arg.ID)
+	var i Session
+	err := row.Scan(
+		&i.ID,
+		&i.ParentSessionID,
+		&i.Title,
+		&i.MessageCount,
+		&i.PromptTokens,
+		&i.CompletionTokens,
+		&i.Cost,
+		&i.UpdatedAt,
+		&i.CreatedAt,
+		&i.SummaryMessageID,
+		&i.Todos,
+		&i.Mode,
+		&i.Plan,
+		&i.EstimatedUsage,
+		&i.UnseenLocalTokens,
+		&i.ForkedFromSessionID,
+		&i.Archived,
+		&i.AnalysisEffort,
+		&i.Model,
+		&i.Provider,
+	)
+	return i, err
 }
 
 const setSessionPlanState = `-- name: SetSessionPlanState :exec
@@ -243,9 +428,11 @@ SET
     cost = ?,
     todos = ?,
     estimated_usage = ?,
-    unseen_local_tokens = ?
+    unseen_local_tokens = ?,
+    model = ?,
+    provider = ?
 WHERE id = ?
-RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens, forked_from_session_id, archived, analysis_effort, model, provider
 `
 
 type UpdateSessionParams struct {
@@ -257,6 +444,8 @@ type UpdateSessionParams struct {
 	Todos             sql.NullString `json:"todos"`
 	EstimatedUsage    int64          `json:"estimated_usage"`
 	UnseenLocalTokens int64          `json:"unseen_local_tokens"`
+	Model             string         `json:"model"`
+	Provider          string         `json:"provider"`
 	ID                string         `json:"id"`
 }
 
@@ -270,6 +459,8 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 		arg.Todos,
 		arg.EstimatedUsage,
 		arg.UnseenLocalTokens,
+		arg.Model,
+		arg.Provider,
 		arg.ID,
 	)
 	var i Session
@@ -289,6 +480,11 @@ func (q *Queries) UpdateSession(ctx context.Context, arg UpdateSessionParams) (S
 		&i.Plan,
 		&i.EstimatedUsage,
 		&i.UnseenLocalTokens,
+		&i.ForkedFromSessionID,
+		&i.Archived,
+		&i.AnalysisEffort,
+		&i.Model,
+		&i.Provider,
 	)
 	return i, err
 }
@@ -303,7 +499,7 @@ SET
     estimated_usage = ?,
     unseen_local_tokens = 0
 WHERE id = ?
-RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens
+RETURNING id, parent_session_id, title, message_count, prompt_tokens, completion_tokens, cost, updated_at, created_at, summary_message_id, todos, mode, "plan", estimated_usage, unseen_local_tokens, forked_from_session_id, archived, analysis_effort, model, provider
 `
 
 type UpdateSessionCompactionParams struct {
@@ -341,6 +537,11 @@ func (q *Queries) UpdateSessionCompaction(ctx context.Context, arg UpdateSession
 		&i.Plan,
 		&i.EstimatedUsage,
 		&i.UnseenLocalTokens,
+		&i.ForkedFromSessionID,
+		&i.Archived,
+		&i.AnalysisEffort,
+		&i.Model,
+		&i.Provider,
 	)
 	return i, err
 }

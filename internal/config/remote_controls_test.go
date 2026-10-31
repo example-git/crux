@@ -23,6 +23,7 @@ func TestCollectRemoteRuntimePreservesClientControls(t *testing.T) {
 		"options.disabled_instruction_sections": []string{"identity", "memory"},
 		"options.response_verbosity":            "high",
 		"options.analysis_effort":               "max",
+		"memories.consolidation_model":          "gpt-memory",
 	}))
 	proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
 	require.NoError(t, err)
@@ -32,6 +33,7 @@ func TestCollectRemoteRuntimePreservesClientControls(t *testing.T) {
 		DisabledInstructionSections: []string{"identity", "memory"}, ResponseVerbosity: "high", AnalysisEffort: "max",
 	}
 	require.Equal(t, want, proposal.Controls)
+	require.Equal(t, "gpt-memory", *proposal.Memories.ConsolidationModel)
 	root := t.TempDir()
 	receiver, err := CompileRemoteRuntime(root, filepath.Join(root, "scoped-data"), false, proposal, strings.Repeat("a", 64), env.NewFromMap(map[string]string{}))
 	require.NoError(t, err)
@@ -45,17 +47,57 @@ func TestCollectRemoteRuntimePreservesClientControls(t *testing.T) {
 	require.Equal(t, []string{"identity", "memory"}, options.DisabledInstructionSections)
 	require.Equal(t, "high", options.ResponseVerbosity)
 	require.Equal(t, "max", options.AnalysisEffort)
+	require.Equal(t, "gpt-memory", *receiver.Config().Memories.ConsolidationModel)
 	require.Equal(t, filepath.Join(root, "scoped-data"), options.DataDirectory)
 	proposal.Controls.DisabledInstructionSections[0] = "mutated"
+	*proposal.Memories.ConsolidationModel = "mutated"
 	require.Equal(t, []string{"identity", "memory"}, options.DisabledInstructionSections)
+	require.Equal(t, "gpt-memory", *receiver.Config().Memories.ConsolidationModel)
 	again, err := store.CollectRemoteRuntime(t.Context(), 1)
 	require.NoError(t, err)
 	require.Equal(t, want, again.Controls)
+	require.Equal(t, "gpt-memory", *again.Memories.ConsolidationModel)
+}
+
+func TestRemoteRuntimePreservesConsolidationModelPresence(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		model *string
+	}{
+		{name: "absent"},
+		{name: "explicit empty", model: new(string)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("USERPROFILE", t.TempDir())
+			store, _, _, _ := setupReloadPluginStore(t)
+			if test.model != nil {
+				require.NoError(t, store.SetConfigFields(ScopeGlobal, map[string]any{"memories.consolidation_model": *test.model}))
+			}
+			proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
+			require.NoError(t, err)
+			root := t.TempDir()
+			receiver, err := CompileRemoteRuntime(root, filepath.Join(root, "data"), false, proposal, strings.Repeat("a", 64), env.NewFromMap(map[string]string{}))
+			require.NoError(t, err)
+			if test.model == nil {
+				require.Nil(t, proposal.Memories)
+				require.Nil(t, receiver.Config().Memories)
+				return
+			}
+			require.NotNil(t, proposal.Memories)
+			require.NotNil(t, proposal.Memories.ConsolidationModel)
+			require.Equal(t, "", *proposal.Memories.ConsolidationModel)
+			require.NotNil(t, receiver.Config().Memories)
+			require.NotNil(t, receiver.Config().Memories.ConsolidationModel)
+			require.Equal(t, "", *receiver.Config().Memories.ConsolidationModel)
+		})
+	}
 }
 
 func TestRemoteRuntimeControlsRejectInvalidReplacement(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("USERPROFILE", t.TempDir())
+
 	proposal := remoteRuntimeFixture(t, "minimal.plugin")
 	proposal.Controls = RemoteRuntimeControls{InstructionMode: "project", AnalysisEffort: "high"}
 	proposal = sealRemoteRuntime(t, proposal)
@@ -100,11 +142,14 @@ func TestClientRuntimeSettingValidation(t *testing.T) {
 		"options.summarization_context_cap":     -1,
 		"options.summarization_max_tokens":      1.5,
 		"options.disabled_instruction_sections": []int{1},
+		"memories.consolidation_model":          true,
 	} {
 		require.Error(t, ValidateClientRuntimeSetting(key, value), key)
 	}
 	require.NoError(t, ValidateClientRuntimeSetting("options.analysis_effort", "none"))
 	require.NoError(t, ValidateClientRuntimeSetting("options.summarization_context_cap", 0))
 	require.NoError(t, ValidateClientRuntimeSetting("options.disable_auto_summarize", false))
+	require.NoError(t, ValidateClientRuntimeSetting("memories.consolidation_model", ""))
+	require.NoError(t, ValidateClientRuntimeSetting("memories.consolidation_model", "gpt-memory"))
 	require.Error(t, ValidateClientRuntimeSetting("authorization", true))
 }

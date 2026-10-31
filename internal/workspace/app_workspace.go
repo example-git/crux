@@ -91,6 +91,34 @@ func (w *AppWorkspace) SetSessionMode(ctx context.Context, sessionID string, mod
 	return w.app.Sessions.Get(ctx, sessionID)
 }
 
+func (w *AppWorkspace) SetSessionAnalysisEffort(ctx context.Context, sessionID, effort string) (session.Session, error) {
+	if err := w.app.Sessions.SetAnalysisEffort(ctx, sessionID, effort); err != nil {
+		return session.Session{}, err
+	}
+	return w.app.Sessions.Get(ctx, sessionID)
+}
+
+func (w *AppWorkspace) SetSessionGoal(ctx context.Context, sessionID, objective string) (session.Session, error) {
+	return w.app.Sessions.SetGoal(ctx, sessionID, objective)
+}
+
+func (w *AppWorkspace) SetSessionGoalStatus(ctx context.Context, sessionID string, generation int64, status session.GoalStatus, goalError string) (session.Session, error) {
+	return w.app.Sessions.SetGoalStatus(ctx, sessionID, generation, status, goalError)
+}
+
+func (w *AppWorkspace) StopSessionGoal(ctx context.Context, sessionID string, generation int64) (session.Session, error) {
+	updated, err := w.app.Sessions.StopGoal(ctx, sessionID, generation)
+	if err != nil {
+		return session.Session{}, err
+	}
+	w.AgentCancel(sessionID)
+	return updated, nil
+}
+
+func (w *AppWorkspace) ClearSessionGoal(ctx context.Context, sessionID string) (session.Session, error) {
+	return w.app.Sessions.ClearGoal(ctx, sessionID)
+}
+
 func (w *AppWorkspace) DeleteSession(ctx context.Context, sessionID string) error {
 	if err := w.app.Sessions.Delete(ctx, sessionID); err != nil {
 		return err
@@ -297,6 +325,10 @@ func (w *AppWorkspace) AgentSummarize(ctx context.Context, sessionID string) err
 
 func (w *AppWorkspace) SessionRewind(ctx context.Context, sessionID, messageID string, summarize, restoreFiles bool) error {
 	return w.app.RewindSession(ctx, sessionID, messageID, summarize, restoreFiles)
+}
+
+func (w *AppWorkspace) SessionRollback(ctx context.Context, sessionID, messageID string) (message.RollbackResult, error) {
+	return w.app.RollbackSession(ctx, sessionID, messageID)
 }
 
 func (w *AppWorkspace) AgentSuggestPrompt(ctx context.Context, sessionID string) (string, error) {

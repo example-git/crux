@@ -141,6 +141,16 @@
         "owner"
       ]
     },
+    "Memories": {
+      "properties": {
+        "consolidation_model": {
+          "type": "string",
+          "description": "Model used for memory consolidation workflows"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
+    },
     "Model": {
       "properties": {
         "id": {
@@ -723,6 +733,9 @@
         },
         "images": {
           "$ref": "#/$defs/ImageConfiguration"
+        },
+        "memories": {
+          "$ref": "#/$defs/Memories"
         },
         "image_browser_credentials": {
           "items": {

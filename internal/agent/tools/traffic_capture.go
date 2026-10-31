@@ -46,12 +46,15 @@ type TrafficCapturePermissionsParams struct {
 }
 
 type TrafficCaptureResponseMetadata struct {
-	Session     string `json:"session"`
-	CapturePath string `json:"capture_path"`
-	StatusPath  string `json:"status_path"`
-	PaneLogPath string `json:"pane_log_path"`
-	Attach      string `json:"attach"`
-	ViewerURL   string `json:"viewer_url,omitempty"`
+	Session        string `json:"session"`
+	CapturePath    string `json:"capture_path"`
+	StatusPath     string `json:"status_path"`
+	PaneLogPath    string `json:"pane_log_path"`
+	TargetLogPath  string `json:"target_log_path"`
+	ControlSocket  string `json:"control_socket"`
+	TargetExitCode *int   `json:"target_exit_code,omitempty"`
+	Attach         string `json:"attach"`
+	ViewerURL      string `json:"viewer_url,omitempty"`
 }
 
 func NewTrafficCaptureTool(permissions permission.Service, workingDir string) fantasy.AgentTool {
@@ -132,18 +135,28 @@ func NewTrafficCaptureTool(permissions permission.Service, workingDir string) fa
 
 func trafficCaptureResponse(metadata trafficcapture.Metadata) (string, TrafficCaptureResponseMetadata) {
 	responseMetadata := TrafficCaptureResponseMetadata{
-		Session:     metadata.Session,
-		CapturePath: metadata.CapturePath,
-		StatusPath:  metadata.StatusPath,
-		PaneLogPath: metadata.PaneLogPath,
-		Attach:      metadata.Attach,
-		ViewerURL:   metadata.ViewerURL,
+		Session:        metadata.Session,
+		CapturePath:    metadata.CapturePath,
+		StatusPath:     metadata.StatusPath,
+		PaneLogPath:    metadata.PaneLogPath,
+		TargetLogPath:  metadata.TargetLogPath,
+		ControlSocket:  metadata.ControlSocket,
+		TargetExitCode: metadata.TargetExitCode,
+		Attach:         metadata.Attach,
+		ViewerURL:      metadata.ViewerURL,
 	}
 	parts := []string{
-		fmt.Sprintf("Traffic capture started in tmux session %s. Use the Crux tmux sessions menu to attach.", metadata.Session),
+		fmt.Sprintf("Traffic capture started in tmux session %s. Use the Crux tmux sessions menu to attach to its management shell.", metadata.Session),
+		"The selected target runs silently as main. Use cap logs main -f for output, cap list for processes, and cap help for controls.",
+		"Networking uses the native per-app WireGuard capture. TLS verification is relaxed inside the capture environment; host trust stores are unchanged.",
+		"Detach with F12 or Ctrl+B then D. Exiting the shell ends the capture and stops its processes.",
 		"Capture: " + metadata.CapturePath,
 		"Status: " + metadata.StatusPath,
 		"Pane log: " + metadata.PaneLogPath,
+		"Target log: " + metadata.TargetLogPath,
+	}
+	if metadata.TargetExitCode != nil {
+		parts = append(parts, fmt.Sprintf("Selected target exit code: %d; the management shell remains available.", *metadata.TargetExitCode))
 	}
 	if metadata.ViewerURL != "" {
 		parts = append(parts, "Viewer: "+metadata.ViewerURL)

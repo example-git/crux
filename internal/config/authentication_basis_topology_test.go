@@ -121,7 +121,7 @@ func TestAuthenticationBasisStartupAndReloadAuthoredTopology(t *testing.T) {
 							count++
 						}
 					}
-					require.Equal(t, 2, count, "the created global file is also a project layer")
+					require.Equal(t, 1, count, "the created global file is loaded once")
 				default:
 					configData, err := os.ReadFile(filepath.Join(root, "config", "crux.json"))
 					require.NoError(t, err)

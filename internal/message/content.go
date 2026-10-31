@@ -77,6 +77,7 @@ type UserTurnContext struct {
 type TextContent struct {
 	Context          UserTurnContext  `json:"context,omitzero"`
 	Text             string           `json:"text"`
+	TextElements     []any            `json:"text_elements,omitempty"`
 	ProviderMetadata ProviderMetadata `json:"provider_metadata,omitempty"`
 }
 
@@ -85,6 +86,14 @@ func (tc TextContent) String() string {
 }
 
 func (TextContent) isPart() {}
+
+type SkillContent struct {
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Content []byte `json:"content"`
+}
+
+func (SkillContent) isPart() {}
 
 type ImageURLContent struct {
 	URL    string `json:"url"`
@@ -186,6 +195,9 @@ type Message struct {
 	ID               string
 	Role             MessageRole
 	SessionID        string
+	SubmissionID     string
+	RunID            string
+	ItemID           string
 	Parts            []ContentPart
 	Model            string
 	Provider         string
@@ -613,48 +625,41 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 	var messages []fantasy.Message
 	switch m.Role {
 	case User:
-		var parts []fantasy.MessagePart
+		parts := make([]fantasy.MessagePart, 0, len(m.Parts))
 		if reminder := m.Content().Context.TodoReminder; reminder != "" {
 			parts = append(parts, fantasy.TextPart{Text: reminder})
 		}
-		text := strings.TrimSpace(m.Content().Text)
-		var textAttachments []Attachment
-		for _, content := range m.BinaryContent() {
-			if !strings.HasPrefix(content.MIMEType, "text/") {
-				continue
+		for _, part := range m.Parts {
+			switch content := part.(type) {
+			case TextContent:
+				textPart := fantasy.TextPart{Text: strings.TrimSpace(content.Text)}
+				textPart.ProviderOptions = mergeProviderOptions(content.ProviderMetadata.FantasyOptions(ProviderMetadataScopeText), content.ProviderMetadata.FantasyOptions(ProviderMetadataScopeCompaction))
+				parts = append(parts, textPart)
+			case SkillContent:
+				attachment := []Attachment{{FilePath: content.Name, FileName: content.Name, MimeType: "text/markdown", Content: content.Content}}
+				parts = append(parts, fantasy.TextPart{Text: PromptWithTextAttachments("", attachment)})
+			case BinaryContent:
+				if strings.HasPrefix(content.MIMEType, "text/") {
+					attachment := []Attachment{{FilePath: content.Path, MimeType: content.MIMEType, Content: content.Data}}
+					if len(parts) > 0 {
+						if previous, ok := parts[len(parts)-1].(fantasy.TextPart); ok {
+							previous.Text = PromptWithTextAttachments(previous.Text, attachment)
+							parts[len(parts)-1] = previous
+							continue
+						}
+					}
+					parts = append(parts, fantasy.TextPart{Text: PromptWithTextAttachments("", attachment)})
+					continue
+				}
+				parts = append(parts, fantasy.FilePart{
+					Filename:  content.Path,
+					Data:      content.Data,
+					MediaType: content.MIMEType,
+				})
 			}
-			textAttachments = append(textAttachments, Attachment{
-				FilePath: content.Path,
-				MimeType: content.MIMEType,
-				Content:  content.Data,
-			})
 		}
-		text = PromptWithTextAttachments(text, textAttachments)
-		// Include bang-mode shell commands as context for the agent.
 		for _, sc := range m.ShellCommands() {
-			shellText := fmt.Sprintf("$ %s\n%s\n(exit code %d)", sc.Command, ansi.Strip(sc.Output), sc.ExitCode)
-			if text != "" {
-				text += "\n\n" + shellText
-			} else {
-				text = shellText
-			}
-		}
-		if text != "" {
-			content := m.Content()
-			textPart := fantasy.TextPart{Text: text}
-			textPart.ProviderOptions = mergeProviderOptions(content.ProviderMetadata.FantasyOptions(ProviderMetadataScopeText), content.ProviderMetadata.FantasyOptions(ProviderMetadataScopeCompaction))
-			parts = append(parts, textPart)
-		}
-		for _, content := range m.BinaryContent() {
-			// skip text attachements
-			if strings.HasPrefix(content.MIMEType, "text/") {
-				continue
-			}
-			parts = append(parts, fantasy.FilePart{
-				Filename:  content.Path,
-				Data:      content.Data,
-				MediaType: content.MIMEType,
-			})
+			parts = append(parts, fantasy.TextPart{Text: fmt.Sprintf("$ %s\n%s\n(exit code %d)", sc.Command, ansi.Strip(sc.Output), sc.ExitCode)})
 		}
 		messages = append(messages, fantasy.Message{
 			Role:            fantasy.MessageRoleUser,

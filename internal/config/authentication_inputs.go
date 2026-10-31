@@ -194,7 +194,7 @@ func (s *ConfigStore) authenticationInputPathsLocked(ctx context.Context, snapsh
 		return result, nil
 	}
 	var err error
-	order, err = clean(order, false)
+	order, err = clean(order, true)
 	if err != nil {
 		return nil, nil, err
 	}

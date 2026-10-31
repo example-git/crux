@@ -2,11 +2,27 @@ package backend
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/session"
 )
+
+var ErrSessionActiveWriter = errors.New("session has an active writer")
+
+type sessionActiveWriterError struct {
+	id string
+}
+
+func (e sessionActiveWriterError) Error() string {
+	return fmt.Sprintf("thread %s already has an active writer", e.id)
+}
+
+func (e sessionActiveWriterError) Is(target error) bool {
+	return target == ErrSessionActiveWriter
+}
 
 // CreateSession creates a new session in the given workspace.
 func (b *Backend) CreateSession(ctx context.Context, workspaceID, title string) (session.Session, error) {
@@ -21,9 +37,20 @@ func (b *Backend) CreateSession(ctx context.Context, workspaceID, title string) 
 // ForkSession creates a new top-level session containing an independent copy
 // of the source session's persisted messages and metadata.
 func (b *Backend) ForkSession(ctx context.Context, workspaceID, sessionID string) (session.Session, error) {
+	return b.forkSession(ctx, workspaceID, sessionID, false)
+}
+
+func (b *Backend) ForkSessionWithOrigin(ctx context.Context, workspaceID, sessionID string) (session.Session, error) {
+	return b.forkSession(ctx, workspaceID, sessionID, true)
+}
+
+func (b *Backend) forkSession(ctx context.Context, workspaceID, sessionID string, recordOrigin bool) (session.Session, error) {
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {
 		return session.Session{}, err
+	}
+	if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil && coordinator.IsSessionBusy(sessionID) {
+		return session.Session{}, sessionActiveWriterError{id: sessionID}
 	}
 	if err := ws.Messages.FlushAll(ctx); err != nil {
 		return session.Session{}, err
@@ -36,48 +63,9 @@ func (b *Backend) ForkSession(ctx context.Context, workspaceID, sessionID string
 	if err != nil {
 		return session.Session{}, err
 	}
-	forked, err := ws.Sessions.Create(ctx, source.Title)
-	if err != nil {
-		return session.Session{}, err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = ws.Sessions.Delete(context.Background(), forked.ID)
-		}
-	}()
-	messageIDs := make(map[string]string, len(messages))
-	for _, original := range messages {
-		cloned, createErr := ws.Messages.Create(ctx, forked.ID, message.CreateMessageParams{
-			Role: original.Role, Parts: original.Clone().Parts, Model: original.Model,
-			Provider: original.Provider, IsSummaryMessage: original.IsSummaryMessage,
-			PreserveParts: true,
-		})
-		if createErr != nil {
-			return session.Session{}, createErr
-		}
-		messageIDs[original.ID] = cloned.ID
-	}
-	forked.PromptTokens = source.PromptTokens
-	forked.CompletionTokens = source.CompletionTokens
-	forked.UnseenLocalTokens = source.UnseenLocalTokens
-	forked.EstimatedUsage = source.EstimatedUsage
-	forked.Cost = source.Cost
-	forked.Todos = append([]session.Todo(nil), source.Todos...)
-	forked.SummaryMessageID = messageIDs[source.SummaryMessageID]
-	forked, err = ws.Sessions.Save(ctx, forked)
-	if err != nil {
-		return session.Session{}, err
-	}
-	if err := ws.Sessions.SetPlanState(ctx, forked.ID, source.Mode, source.Plan); err != nil {
-		return session.Session{}, err
-	}
-	forked, err = ws.Sessions.Get(ctx, forked.ID)
-	if err != nil {
-		return session.Session{}, err
-	}
-	committed = true
-	return forked, nil
+	return ws.Messages.CloneSession(ctx, message.CloneSessionParams{
+		Source: source, Messages: messages, RecordOrigin: recordOrigin,
+	})
 }
 
 // GetSession retrieves a session by workspace and session ID.
@@ -98,6 +86,51 @@ func (b *Backend) ListSessions(ctx context.Context, workspaceID string) ([]sessi
 	}
 
 	return ws.Sessions.List(ctx)
+}
+
+func (b *Backend) ListArchivedSessions(ctx context.Context, workspaceID string) ([]session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return ws.Sessions.ListArchived(ctx)
+}
+
+func (b *Backend) ArchiveSession(ctx context.Context, workspaceID, sessionID string) ([]session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	subtree, err := ws.Sessions.Subtree(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil {
+		for _, current := range subtree {
+			if coordinator.IsSessionBusy(current.ID) {
+				return nil, sessionActiveWriterError{id: current.ID}
+			}
+		}
+	}
+	archived, err := ws.Sessions.Archive(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, current := range archived {
+		ws.ResetAgentSession(current.ID)
+	}
+	return archived, nil
+}
+
+func (b *Backend) UnarchiveSession(ctx context.Context, workspaceID, sessionID string) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil && coordinator.IsSessionBusy(sessionID) {
+		return session.Session{}, sessionActiveWriterError{id: sessionID}
+	}
+	return ws.Sessions.Unarchive(ctx, sessionID)
 }
 
 // GetAgentSession returns session metadata with the agent's busy
@@ -187,6 +220,67 @@ func (b *Backend) SetSessionMode(ctx context.Context, workspaceID, sessionID str
 	return ws.Sessions.Get(ctx, sessionID)
 }
 
+func (b *Backend) SetSessionAnalysisEffort(ctx context.Context, workspaceID, sessionID, effort string) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if err := ws.Sessions.SetAnalysisEffort(ctx, sessionID, effort); err != nil {
+		return session.Session{}, err
+	}
+	return ws.Sessions.Get(ctx, sessionID)
+}
+
+func (b *Backend) SetSessionGoal(ctx context.Context, workspaceID, sessionID, objective string) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	return ws.Sessions.SetGoal(ctx, sessionID, objective)
+}
+
+func (b *Backend) SetSessionGoalStatus(ctx context.Context, workspaceID, sessionID string, generation int64, status session.GoalStatus, goalError string) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	return ws.Sessions.SetGoalStatus(ctx, sessionID, generation, status, goalError)
+}
+
+func (b *Backend) StopSessionGoal(ctx context.Context, workspaceID, sessionID string, generation int64) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	updated, err := ws.Sessions.StopGoal(ctx, sessionID, generation)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil {
+		coordinator.Cancel(sessionID)
+	}
+	return updated, nil
+}
+
+func (b *Backend) ClearSessionGoal(ctx context.Context, workspaceID, sessionID string) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	return ws.Sessions.ClearGoal(ctx, sessionID)
+}
+
+func (b *Backend) RenameSession(ctx context.Context, workspaceID, sessionID, title string) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if err := ws.Sessions.Rename(ctx, sessionID, title); err != nil {
+		return session.Session{}, err
+	}
+	return ws.Sessions.Get(ctx, sessionID)
+}
+
 // DeleteSession deletes a session from the given workspace.
 func (b *Backend) DeleteSession(ctx context.Context, workspaceID, sessionID string) error {
 	ws, err := b.GetWorkspace(workspaceID)
@@ -199,6 +293,32 @@ func (b *Backend) DeleteSession(ctx context.Context, workspaceID, sessionID stri
 	}
 	ws.ResetAgentSession(sessionID)
 	return nil
+}
+
+func (b *Backend) DeleteSessionSubtree(ctx context.Context, workspaceID, sessionID string) ([]session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	subtree, err := ws.Sessions.Subtree(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if coordinator := ws.CurrentAgentCoordinator(); coordinator != nil {
+		for _, current := range subtree {
+			if coordinator.IsSessionBusy(current.ID) {
+				return nil, sessionActiveWriterError{id: current.ID}
+			}
+		}
+	}
+	deleted, err := ws.Sessions.DeleteSubtree(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, current := range deleted {
+		ws.ResetAgentSession(current.ID)
+	}
+	return deleted, nil
 }
 
 // ListUserMessages returns user-role messages for a session.

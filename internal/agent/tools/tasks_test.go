@@ -144,8 +144,10 @@ func TestTaskListKeepsActiveAndRecentTerminalTasksCompact(t *testing.T) {
 	}
 	for i := range 25 {
 		tasks = append(tasks, managedtask.View{
-			ID:          fmt.Sprintf("a-terminal-%02d", i),
-			FinalOutput: strings.Repeat("large-output", 1000),
+			ID:             fmt.Sprintf("a-terminal-%02d", i),
+			Ownership:      managedtask.Ownership{ParentSessionID: "parent"},
+			ChildSessionID: "child",
+			FinalOutput:    strings.Repeat("large-output", 1000),
 			State: managedtask.State{
 				Status:  managedtask.StatusCompleted,
 				EndedAt: base.Add(time.Duration(i) * time.Minute),
@@ -165,6 +167,15 @@ func TestTaskListKeepsActiveAndRecentTerminalTasksCompact(t *testing.T) {
 	var listed []taskListView
 	require.NoError(t, json.Unmarshal([]byte(response.Content), &listed))
 	require.Len(t, listed, 17)
+	var fields []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(response.Content), &fields))
+	for _, entry := range fields {
+		require.Len(t, entry, 4)
+		require.Contains(t, entry, "id")
+		require.Contains(t, entry, "type")
+		require.Contains(t, entry, "description")
+		require.Contains(t, entry, "status")
+	}
 }
 
 func TestTaskToolsRejectInvalidExplicitInputs(t *testing.T) {

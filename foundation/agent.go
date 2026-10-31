@@ -192,9 +192,10 @@ type agentSettings struct {
 
 // AgentCall represents a call to an agent.
 type AgentCall struct {
-	Prompt           string     `json:"prompt"`
-	Files            []FilePart `json:"files"`
-	Messages         []Message  `json:"messages"`
+	Prompt           string        `json:"prompt"`
+	UserParts        []MessagePart `json:"user_parts"`
+	Files            []FilePart    `json:"files"`
+	Messages         []Message     `json:"messages"`
 	MaxOutputTokens  *int64
 	Temperature      *float64    `json:"temperature"`
 	TopP             *float64    `json:"top_p"`
@@ -301,9 +302,10 @@ type (
 
 // AgentStreamCall represents a streaming call to an agent.
 type AgentStreamCall struct {
-	Prompt           string     `json:"prompt"`
-	Files            []FilePart `json:"files"`
-	Messages         []Message  `json:"messages"`
+	Prompt           string        `json:"prompt"`
+	UserParts        []MessagePart `json:"user_parts"`
+	Files            []FilePart    `json:"files"`
+	Messages         []Message     `json:"messages"`
 	MaxOutputTokens  *int64
 	Temperature      *float64    `json:"temperature"`
 	TopP             *float64    `json:"top_p"`
@@ -469,7 +471,7 @@ func (a *agent) prepareCall(call AgentCall) AgentCall {
 // Generate implements Agent.
 func (a *agent) Generate(ctx context.Context, opts AgentCall) (*AgentResult, error) {
 	opts = a.prepareCall(opts)
-	initialPrompt, err := a.createPrompt(a.settings.systemPrompt, opts.Prompt, opts.Messages, opts.Files...)
+	initialPrompt, err := a.createPrompt(a.settings.systemPrompt, opts.Prompt, opts.Messages, opts.UserParts, opts.Files...)
 	if err != nil {
 		return nil, err
 	}
@@ -529,7 +531,7 @@ func (a *agent) Generate(ctx context.Context, opts AgentCall) (*AgentResult, err
 
 		// Recreate prompt with potentially modified system prompt
 		if stepSystemPrompt != a.settings.systemPrompt {
-			stepPrompt, err := a.createPrompt(stepSystemPrompt, opts.Prompt, opts.Messages, opts.Files...)
+			stepPrompt, err := a.createPrompt(stepSystemPrompt, opts.Prompt, opts.Messages, opts.UserParts, opts.Files...)
 			if err != nil {
 				return nil, err
 			}
@@ -925,6 +927,7 @@ func (a *agent) Stream(ctx context.Context, opts AgentStreamCall) (*AgentResult,
 	// Convert AgentStreamCall to AgentCall for preparation
 	call := AgentCall{
 		Prompt:           opts.Prompt,
+		UserParts:        opts.UserParts,
 		Files:            opts.Files,
 		Messages:         opts.Messages,
 		MaxOutputTokens:  opts.MaxOutputTokens,
@@ -948,7 +951,7 @@ func (a *agent) Stream(ctx context.Context, opts AgentStreamCall) (*AgentResult,
 
 	call = a.prepareCall(call)
 
-	initialPrompt, err := a.createPrompt(a.settings.systemPrompt, call.Prompt, call.Messages, call.Files...)
+	initialPrompt, err := a.createPrompt(a.settings.systemPrompt, call.Prompt, call.Messages, call.UserParts, call.Files...)
 	if err != nil {
 		return nil, err
 	}
@@ -1014,7 +1017,7 @@ func (a *agent) Stream(ctx context.Context, opts AgentStreamCall) (*AgentResult,
 
 		// Recreate prompt with potentially modified system prompt
 		if stepSystemPrompt != a.settings.systemPrompt {
-			stepPrompt, err := a.createPrompt(stepSystemPrompt, call.Prompt, call.Messages, call.Files...)
+			stepPrompt, err := a.createPrompt(stepSystemPrompt, call.Prompt, call.Messages, call.UserParts, call.Files...)
 			if err != nil {
 				return nil, err
 			}
@@ -1270,10 +1273,10 @@ func (a *agent) validateToolCall(toolCall ToolCallContent, availableTools []Agen
 	return nil
 }
 
-func (a *agent) createPrompt(system, prompt string, messages []Message, files ...FilePart) (Prompt, error) {
+func (a *agent) createPrompt(system, prompt string, messages []Message, userParts []MessagePart, files ...FilePart) (Prompt, error) {
 	// Validation: empty prompt is only allowed when there are messages,
 	// no files to attach, and the last message is a user or tool message.
-	if prompt == "" {
+	if prompt == "" && userParts == nil {
 		lastMessage, hasMessages := slice.Last(messages)
 
 		if !hasMessages {
@@ -1312,7 +1315,11 @@ func (a *agent) createPrompt(system, prompt string, messages []Message, files ..
 		}
 	}
 	preparedPrompt = append(preparedPrompt, messages...)
-	if prompt != "" {
+	if userParts != nil {
+		content := make([]MessagePart, len(userParts))
+		copy(content, userParts)
+		preparedPrompt = append(preparedPrompt, Message{Role: MessageRoleUser, Content: content})
+	} else if prompt != "" {
 		preparedPrompt = append(preparedPrompt, NewUserMessage(prompt, files...))
 	}
 	return preparedPrompt, nil

@@ -65,6 +65,79 @@ func TestBuildLifecycleRebuildsFromCurrentState(t *testing.T) {
 	require.NotContains(t, execution, "First plan")
 }
 
+func TestBuildLifecycleRendersActiveGoalAsSystemInstructions(t *testing.T) {
+	store := config.NewTestStore(&config.Config{Options: &config.Options{InstructionMode: "all"}})
+	builder, err := NewPrompt("coder", lifecycleTestTemplate, WithWorkingDir(t.TempDir()))
+	require.NoError(t, err)
+
+	instructions, err := builder.BuildLifecycle(t.Context(), "openai", "model", store, Lifecycle{
+		Stage:          LifecycleDefault,
+		GoalObjective:  `<ship & "verify">`,
+		GoalStatus:     "active",
+		GoalGeneration: 4,
+	})
+	require.NoError(t, err)
+	require.Contains(t, instructions, `<goal_lifecycle status="active" generation="4">`)
+	require.Contains(t, instructions, `&lt;ship &amp; &#34;verify&#34;&gt;`)
+	require.NotContains(t, instructions, `<ship & "verify">`)
+	require.Contains(t, instructions, "Continue working autonomously toward the persisted goal")
+	require.Contains(t, instructions, "Continue from verified current state instead of replaying uncertain operations")
+	require.Contains(t, instructions, `update_goal with status="complete"`)
+}
+
+func TestBuildLifecycleDoesNotActivateInactiveGoal(t *testing.T) {
+	store := config.NewTestStore(&config.Config{Options: &config.Options{InstructionMode: "all"}})
+	builder, err := NewPrompt("coder", lifecycleTestTemplate, WithWorkingDir(t.TempDir()))
+	require.NoError(t, err)
+
+	for _, status := range []string{"paused", "blocked", "complete"} {
+		t.Run(status, func(t *testing.T) {
+			instructions, buildErr := builder.BuildLifecycle(t.Context(), "openai", "model", store, Lifecycle{
+				Stage:          LifecycleDefault,
+				GoalObjective:  "Finish the integration",
+				GoalStatus:     status,
+				GoalGeneration: 2,
+			})
+			require.NoError(t, buildErr)
+			require.Contains(t, instructions, `status="`+status+`"`)
+			require.NotContains(t, instructions, "Continue working autonomously")
+			require.Contains(t, instructions, "Finish the integration")
+		})
+	}
+}
+
+func TestBuildLifecycleSuspendsGoalDuringPlanMode(t *testing.T) {
+	store := config.NewTestStore(&config.Config{Options: &config.Options{InstructionMode: "all"}})
+	builder, err := NewPrompt("coder", lifecycleTestTemplate, WithWorkingDir(t.TempDir()))
+	require.NoError(t, err)
+
+	instructions, err := builder.BuildLifecycle(t.Context(), "openai", "model", store, Lifecycle{
+		Stage:          LifecycleExecution,
+		Plan:           "Implement the approved plan",
+		GoalObjective:  "Finish the integration",
+		GoalStatus:     "active",
+		GoalGeneration: 3,
+	})
+	require.NoError(t, err)
+	require.Contains(t, instructions, `stage="execution"`)
+	require.Contains(t, instructions, `status="active" generation="3" suspended="plan"`)
+	require.Contains(t, instructions, "Follow the plan lifecycle only")
+	require.NotContains(t, instructions, "Continue working autonomously")
+}
+
+func TestBuildLifecycleRejectsInvalidGoalState(t *testing.T) {
+	store := config.NewTestStore(&config.Config{Options: &config.Options{}})
+	builder, err := NewPrompt("coder", lifecycleTestTemplate, WithWorkingDir(t.TempDir()))
+	require.NoError(t, err)
+
+	_, err = builder.BuildLifecycle(t.Context(), "openai", "model", store, Lifecycle{Stage: LifecycleDefault, GoalStatus: "active", GoalGeneration: 1})
+	require.ErrorContains(t, err, "require an objective")
+	_, err = builder.BuildLifecycle(t.Context(), "openai", "model", store, Lifecycle{Stage: LifecycleDefault, GoalObjective: "goal", GoalStatus: "active"})
+	require.ErrorContains(t, err, "requires a positive generation")
+	_, err = builder.BuildLifecycle(t.Context(), "openai", "model", store, Lifecycle{Stage: LifecycleDefault, GoalObjective: "goal", GoalStatus: "unknown", GoalGeneration: 1})
+	require.ErrorContains(t, err, "invalid goal status")
+}
+
 func TestBuildLifecycleAppendsProviderInstructionsWithoutReplacingLifecycle(t *testing.T) {
 	providerDirectory := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(providerDirectory, "codex.txt"), []byte("provider context"), 0o600))

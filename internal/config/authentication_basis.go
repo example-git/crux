@@ -28,6 +28,7 @@ type authenticationLoadBasis struct {
 	noUnset      bool
 	order        []string
 	sources      map[string]authenticationBasisSource
+	roles        map[string]string
 	deliveryPath string
 	delivery     authenticationBasisSource
 	configured   []byte
@@ -63,7 +64,9 @@ func (b *authenticationLoadBasis) source(path string, raw, evaluated []byte, exi
 		return
 	}
 	path = filepath.Clean(path)
-	b.order = append(b.order, path)
+	if !slices.Contains(b.order, path) {
+		b.order = append(b.order, path)
+	}
 	value := authenticationBasisSource{exists: exists, raw: bytes.Clone(raw), evaluated: bytes.Clone(evaluated)}
 	if previous, found := b.sources[path]; found && (previous.exists != value.exists || !bytes.Equal(previous.raw, value.raw) || !bytes.Equal(previous.evaluated, value.evaluated)) {
 		// Two reads of one path cannot establish one accepted preimage when
@@ -105,6 +108,7 @@ func (b *authenticationLoadBasis) clone() *authenticationLoadBasis {
 	next := *b
 	next.order = slices.Clone(b.order)
 	next.sources = maps.Clone(b.sources)
+	next.roles = maps.Clone(b.roles)
 	// Source slices are immutable. Every replacement allocates its own bytes.
 	next.configured = bytes.Clone(b.configured)
 	return &next

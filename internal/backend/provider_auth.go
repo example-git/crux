@@ -8,6 +8,15 @@ import (
 	"github.com/example-git/crux/internal/providerauth"
 )
 
+func (b *Backend) ExternalAuthentication(ctx context.Context, workspaceID string, request config.ExternalAuthenticationRequest) (config.ExternalAuthentication, error) {
+	ws, ctx, done, err := b.beginProviderAuthRead(ctx, workspaceID)
+	if err != nil {
+		return config.ExternalAuthentication{}, err
+	}
+	defer done()
+	return ws.Cfg.ExternalAuthentication(ctx, request)
+}
+
 func (b *Backend) ProviderAuthentication(ctx context.Context, workspaceID string) (providerauth.Snapshot, error) {
 	ws, ctx, done, err := b.beginProviderAuthRead(ctx, workspaceID)
 	if err != nil {

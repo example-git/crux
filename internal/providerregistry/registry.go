@@ -727,7 +727,12 @@ func FromManifest(value manifest.Manifest, staticFiles ...map[string]string) (Re
 	}
 	for _, declaration := range value.Capabilities.Operations {
 		if declaration.Kind == "account" {
-			registration.Identity = providertransport.AccountIdentity(operations[declaration.ID], value.Capabilities.Credentials)
+			operation := operations[declaration.ID]
+			credentials := slices.Clone(value.Capabilities.Credentials)
+			registration.Identity = func(ctx context.Context, token string) (string, string, json.RawMessage) {
+				id, display, raw, _ := ExecuteAccountOperation(ctx, operation, credentials, token)
+				return id, display, raw
+			}
 			break
 		}
 	}
@@ -837,7 +842,7 @@ func codexRuntimeControls() []manifest.RuntimeControl {
 func codexRuntimeCapability() *RuntimeCapability {
 	return &RuntimeCapability{
 		Available: func(modelID string) bool {
-			return modelID == "gpt-5.6" || strings.HasPrefix(modelID, "gpt-5.6-") || modelID == "gpt-6-astra"
+			return modelID == "gpt-5.6" || strings.HasPrefix(modelID, "gpt-5.6-") || modelID == "gpt-6-astra" || modelID == "gpt-6-sol" || modelID == "gpt-6-luna" || modelID == "gpt-6.1-sol"
 		},
 		Apply: func(values RuntimeValues, options fantasy.ProviderOptions) fantasy.ProviderOptions {
 			result := maps.Clone(options)

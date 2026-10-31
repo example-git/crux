@@ -135,6 +135,11 @@ type Workspace interface {
 	ListSessions(ctx context.Context) ([]session.Session, error)
 	SaveSession(ctx context.Context, sess session.Session) (session.Session, error)
 	SetSessionMode(ctx context.Context, sessionID string, mode session.Mode) (session.Session, error)
+	SetSessionAnalysisEffort(ctx context.Context, sessionID, effort string) (session.Session, error)
+	SetSessionGoal(ctx context.Context, sessionID, objective string) (session.Session, error)
+	SetSessionGoalStatus(ctx context.Context, sessionID string, generation int64, status session.GoalStatus, goalError string) (session.Session, error)
+	StopSessionGoal(ctx context.Context, sessionID string, generation int64) (session.Session, error)
+	ClearSessionGoal(ctx context.Context, sessionID string) (session.Session, error)
 	DeleteSession(ctx context.Context, sessionID string) error
 	CreateAgentToolSessionID(messageID, toolCallID string) string
 	ParseAgentToolSessionID(sessionID string) (messageID string, toolCallID string, ok bool)
@@ -181,6 +186,7 @@ type Workspace interface {
 	// it. When summarize is true the conversation is summarized first
 	// and the summary message is kept.
 	SessionRewind(ctx context.Context, sessionID, messageID string, summarize, restoreFiles bool) error
+	SessionRollback(ctx context.Context, sessionID, messageID string) (message.RollbackResult, error)
 	UpdateAgentModel(ctx context.Context, expected config.AgentModelState) error
 	CreateAgentDefinition(ctx context.Context, request proto.CreateAgentDefinitionRequest) (string, error)
 	InitCoderAgent(ctx context.Context) error

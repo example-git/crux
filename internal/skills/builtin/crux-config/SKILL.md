@@ -19,7 +19,7 @@ Both are discovered together and deep-merged. Priority (highest to lowest):
    closer-to-cwd wins; Windows uses `.\.cruxrc` / `.\cruxrc`)
 2. `$XDG_CONFIG_HOME/crux/cruxrc` or `~/.ai-cli/crux/cruxrc`
    (`%XDG_CONFIG_HOME%\crux\cruxrc` or
-   `%USERPROFILE%\.config\crux\cruxrc` on Windows)
+   `%USERPROFILE%\.ai-cli\crux\cruxrc` on Windows)
 
 Data directories (`~/.ai-cli/data/crux` and `%LOCALAPPDATA%\crux`) contain
 machine-owned JSON state only; Crux does not discover or execute a `cruxrc`

@@ -18,6 +18,7 @@ import (
 )
 
 var supportedFeatures = map[string]struct{}{
+	"authentication.external-status":    {},
 	"continuation.previous-response":    {},
 	"operation.model-catalog-http":      {},
 	"transport.anthropic-messages-http": {},
@@ -285,6 +286,7 @@ func capabilityIDs(value manifest.Manifest) []string {
 		}
 	}
 	add(len(c.Credentials) > 0, "credentials")
+	add(c.ExternalAuth != nil, "external-auth")
 	add(len(c.OAuth) > 0, "oauth")
 	add(len(c.Endpoints) > 0, "endpoints")
 	add(len(c.Operations) > 0, "operations")

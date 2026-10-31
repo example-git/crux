@@ -84,18 +84,13 @@ func prepareAuthenticationScopeTopology(ctx context.Context, snapshot RuntimeSna
 		currentOrder = append(currentOrder, workspacePath)
 		projectedOrder = append(projectedOrder, workspacePath)
 	}
-	for i := range currentOrder {
-		currentOrder[i] = filepath.Clean(currentOrder[i])
-	}
-	for i := range projectedOrder {
-		projectedOrder[i] = filepath.Clean(projectedOrder[i])
-	}
+	currentOrder = uniqueCleanConfigPaths(currentOrder)
+	projectedOrder = uniqueCleanConfigPaths(projectedOrder)
 	if !slices.Equal(inputs.order, currentOrder) {
 		return authenticationScopeTopology{}, errAuthenticationInputsChanged
 	}
 	// Discovery order comes first; previously observed loaded/persistence paths
-	// remain in their original tail order. Keep duplicate layer occurrences but
-	// only one observation of each lexical path, just like normal capture.
+	// remain in their original tail order.
 	paths := slices.Clone(projectedOrder)
 	for _, file := range inputs.files {
 		if !slices.Contains(paths, file.path) {

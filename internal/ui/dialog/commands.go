@@ -479,6 +479,13 @@ func (c *Commands) SetWindowWidth(width int) {
 func (c *Commands) defaultCommands() []*CommandItem {
 	commands := []*CommandItem{
 		NewCommandItem(c.com.Styles, "new_session", "New Session", "ctrl+n", ActionNewSession{}).WithAliases("clear"),
+		NewCommandItem(c.com.Styles, "goal", "Set or Manage Goal", "", ActionInsertCommand{Value: "/goal "}).WithDescription("/goal <objective> or /goal set <objective> starts a goal."),
+		NewCommandItem(c.com.Styles, "goal-status", "Goal Status", "", ActionInsertCommand{Value: "/goal status"}).WithDescription("/goal or /goal status shows the objective and state."),
+		NewCommandItem(c.com.Styles, "goal-stop", "Stop Goal", "esc", ActionInsertCommand{Value: "/goal stop"}).WithDescription("/goal stop cancels now; /goal resume continues later."),
+		NewCommandItem(c.com.Styles, "goal-pause", "Pause Goal", "", ActionInsertCommand{Value: "/goal pause"}).WithDescription("/goal pause lets this turn finish, then pauses."),
+		NewCommandItem(c.com.Styles, "goal-resume", "Resume Goal", "", ActionInsertCommand{Value: "/goal resume"}).WithDescription("/goal resume continues the saved goal."),
+		NewCommandItem(c.com.Styles, "goal-complete", "Complete Goal", "", ActionInsertCommand{Value: "/goal complete"}).WithDescription("/goal complete marks the goal as finished."),
+		NewCommandItem(c.com.Styles, "goal-clear", "Clear Goal", "", ActionInsertCommand{Value: "/goal clear"}).WithDescription("/goal clear removes the saved goal."),
 		NewCommandItem(c.com.Styles, "switch_session", "Sessions", "ctrl+s", ActionOpenDialog{SessionsID}),
 		NewCommandItem(c.com.Styles, "switch_model", "Switch Model", "ctrl+l", ActionOpenDialog{ModelsID}),
 	}

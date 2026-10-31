@@ -938,3 +938,24 @@ func TestPermissionService_ResolveIdempotency(t *testing.T) {
 		}
 	})
 }
+
+func TestPendingPermissionClearedOnCancellation(t *testing.T) {
+	service := NewPermissionService(t.TempDir(), false, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	events := service.Subscribe(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.Request(ctx, CreatePermissionRequest{SessionID: "session", ToolCallID: "call", ToolName: "bash", Action: "execute", RequireExplicitApproval: true})
+		done <- err
+	}()
+	select {
+	case event := <-events:
+		require.Equal(t, event.Payload.ID, service.Pending().ID)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no permission event")
+	}
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.Nil(t, service.Pending())
+}

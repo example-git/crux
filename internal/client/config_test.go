@@ -27,6 +27,35 @@ func captureClient(t *testing.T, srv *httptest.Server) *Client {
 	return c
 }
 
+func TestGetConfigRequirementsUsesNativeEndpoint(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodGet, r.Method)
+		require.Equal(t, "/v1/config-requirements", r.URL.Path)
+		require.NoError(t, json.NewEncoder(w).Encode(proto.ConfigRequirements{}))
+	}))
+	defer srv.Close()
+
+	requirements, err := captureClient(t, srv).GetConfigRequirements(t.Context())
+	require.NoError(t, err)
+	require.Nil(t, requirements.Requirements)
+}
+
+func TestGetConfigRequirementsReturnsNativeFailure(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		require.NoError(t, json.NewEncoder(w).Encode(proto.Error{Message: "managed requirements unavailable"}))
+	}))
+	defer srv.Close()
+
+	_, err := captureClient(t, srv).GetConfigRequirements(t.Context())
+	require.ErrorContains(t, err, "managed requirements unavailable")
+}
+
 func TestSetProviderAPIKeyStringSendsKind(t *testing.T) {
 	t.Parallel()
 

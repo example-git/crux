@@ -552,11 +552,41 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	}
 }
 
-// RewindSession rewinds a session to the given user message: every
-// message from that point onward (inclusive) is deleted. When
-// summarize is true, the conversation is summarized first and the
-// summary message is preserved so the agent keeps condensed context. File
-// snapshots are restored only when restoreFiles is true.
+func (app *App) RollbackSession(ctx context.Context, sessionID, messageID string) (message.RollbackResult, error) {
+	coordinator := app.CurrentAgentCoordinator()
+	var release func()
+	if coordinator != nil {
+		mutator, ok := coordinator.(interface {
+			BeginSessionMutation(string) (func(), error)
+		})
+		if !ok {
+			return message.RollbackResult{}, errors.New("session mutation is unavailable")
+		}
+		var err error
+		release, err = mutator.BeginSessionMutation(sessionID)
+		if err != nil {
+			return message.RollbackResult{}, err
+		}
+		defer release()
+	}
+
+	result, err := app.Messages.Rollback(ctx, sessionID, messageID)
+	if err != nil {
+		return message.RollbackResult{}, err
+	}
+	app.ResetAgentSession(sessionID)
+	checkpointTurnIDs := make([]string, 0, len(result.Deleted))
+	for _, deletedMessage := range result.Deleted {
+		if deletedMessage.Role == message.User {
+			checkpointTurnIDs = append(checkpointTurnIDs, deletedMessage.ID)
+		}
+	}
+	if err := app.History.RewindCheckpoints(ctx, sessionID, checkpointTurnIDs, false); err != nil {
+		slog.Error("Failed to remove rolled back checkpoints", "error", err, "session_id", sessionID)
+	}
+	return result, nil
+}
+
 func (app *App) RewindSession(ctx context.Context, sessionID, messageID string, summarize, restoreFiles bool) error {
 	coordinator := app.CurrentAgentCoordinator()
 	if coordinator != nil && coordinator.IsSessionBusy(sessionID) {

@@ -8,25 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDefaultUserAgent(t *testing.T) {
+func TestResolveHeadersRetainsTargetSDKDefault(t *testing.T) {
 	t.Parallel()
-
-	tests := []struct {
-		name    string
-		version string
-		want    string
-	}{
-		{name: "basic version", version: "0.11.0", want: "Crux-Foundation/0.11.0"},
-		{name: "another version", version: "1.0.0", want: "Crux-Foundation/1.0.0"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := DefaultUserAgent(tt.version)
-			assert.Equal(t, tt.want, got)
-		})
-	}
+	headers := map[string]string{"X-Custom": "kept"}
+	resolved := ResolveHeaders(headers, "", "")
+	require.NotContains(t, resolved, "User-Agent")
+	require.Equal(t, headers, resolved)
 }
 
 func TestResolveHeaders_Precedence(t *testing.T) {

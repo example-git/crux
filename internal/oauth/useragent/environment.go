@@ -59,6 +59,17 @@ func persistedForContext(ctx context.Context, key string) string {
 	return versions[key]
 }
 
+func persistForContext(ctx context.Context, key, version string) {
+	if ctx.Err() != nil || providertransport.ValidateContextOwner(ctx) != nil {
+		return
+	}
+	home, err := userHomeForContext(ctx)
+	if err != nil {
+		return
+	}
+	persistAtPath(filepath.Join(home, ".ai-cli", "useragent-versions.json"), key, version)
+}
+
 // Probe commands inherit only the environment bound to the owner. In
 // particular an absent PATH cannot select an executable from the process PATH.
 func commandOutputForContext(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -77,33 +88,42 @@ func commandResultForContext(ctx context.Context, combined bool, name string, ar
 		return nil, err
 	}
 	entries, bound := oauth.EnvironmentFromContext(ctx)
+	var command *exec.Cmd
 	if !bound {
-		command := exec.CommandContext(ctx, name, args...)
-		if combined {
-			return command.CombinedOutput()
+		command = exec.CommandContext(ctx, name, args...)
+	} else {
+		path := environmentOrForContext(ctx, "PATH", "")
+		if path == "" && !filepath.IsAbs(name) {
+			return nil, exec.ErrNotFound
 		}
-		return command.Output()
-	}
-	path := environmentOrForContext(ctx, "PATH", "")
-	if path == "" && !filepath.IsAbs(name) {
-		return nil, exec.ErrNotFound
-	}
-	directory := environmentOrForContext(ctx, "PWD", "")
-	resolved, err := interp.LookPathDir(directory, expand.ListEnviron(entries...), name)
-	if err != nil {
-		return nil, err
-	}
-	// Avoid exec.CommandContext performing a second lookup against process PATH.
-	if !filepath.IsAbs(resolved) {
-		resolved, err = filepath.Abs(resolved)
+		directory := environmentOrForContext(ctx, "PWD", "")
+		resolved, err := interp.LookPathDir(directory, expand.ListEnviron(entries...), name)
 		if err != nil {
 			return nil, err
 		}
+		if !filepath.IsAbs(resolved) {
+			resolved, err = filepath.Abs(resolved)
+			if err != nil {
+				return nil, err
+			}
+		}
+		command = exec.CommandContext(ctx, resolved, args...)
+		command.Env = entries
+		command.Dir = directory
 	}
-	command := exec.CommandContext(ctx, resolved, args...)
-	command.Env = entries
-	command.Dir = directory
+	if len(args) == 1 && args[0] == "--version" {
+		executable, err := os.Executable()
+		if err != nil {
+			return nil, err
+		}
+		current, currentErr := os.Stat(executable)
+		target, targetErr := os.Stat(command.Path)
+		if currentErr == nil && targetErr == nil && os.SameFile(current, target) {
+			return nil, errors.New("cannot probe the current executable for a provider version")
+		}
+	}
 	var output []byte
+	var err error
 	if combined {
 		output, err = command.CombinedOutput()
 	} else {

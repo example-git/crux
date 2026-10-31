@@ -742,7 +742,7 @@ func isPrivateProviderAuthentication(request *http.Request) bool {
 	if !strings.HasPrefix(request.URL.Path, "/v1/workspaces/") {
 		return false
 	}
-	if strings.HasSuffix(request.URL.Path, "/auth/api-key/check") || strings.HasSuffix(request.URL.Path, "/auth/remove") || strings.HasSuffix(request.URL.Path, "/auth/local-repair") {
+	if strings.HasSuffix(request.URL.Path, "/auth/external") || strings.HasSuffix(request.URL.Path, "/auth/api-key/check") || strings.HasSuffix(request.URL.Path, "/auth/remove") || strings.HasSuffix(request.URL.Path, "/auth/local-repair") {
 		return true
 	}
 	for _, action := range []string{"begin", "bind", "code", "wait", "cancel", "complete"} {

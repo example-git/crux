@@ -55,6 +55,32 @@ func TestTimeoutOptionsProjectToLanguageModelClient(t *testing.T) {
 	require.Equal(t, "server", model.client.compaction.errors[0].Class)
 }
 
+func TestPerCallRequestHeadersReachHandshakeWithoutLeaking(t *testing.T) {
+	headers := make(chan string, 2)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers <- r.Header.Get(MemgenHeader)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		require.NoError(t, err)
+		defer conn.Close()
+		var request requestFrame
+		require.NoError(t, conn.ReadJSON(&request))
+		require.NoError(t, conn.WriteJSON(map[string]any{"type": "response.completed", "response": map[string]any{"id": "response"}}))
+	}))
+	defer server.Close()
+
+	model := &languageModel{client: &client{url: strings.Replace(server.URL, "http://", "ws://", 1)}}
+	_, err := model.Generate(t.Context(), fantasy.Call{ProviderOptions: fantasy.ProviderOptions{
+		Name: &ProviderOptions{RequestHeaders: map[string]string{MemgenHeader: "true"}},
+	}})
+	require.NoError(t, err)
+	_, err = model.Generate(t.Context(), fantasy.Call{})
+	require.NoError(t, err)
+	require.Equal(t, "true", <-headers)
+	require.Empty(t, <-headers)
+	require.Empty(t, model.client.headers)
+}
+
 func TestGenerateRejectsOversizedWebSocketEventWithoutReplay(t *testing.T) {
 	var connections atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -157,50 +183,230 @@ func TestMappedTerminalErrorRetriesBeforeOutput(t *testing.T) {
 	require.Equal(t, int32(2), attempts.Load())
 }
 
-func TestMappedTerminalErrorDoesNotRetryAfterOutput(t *testing.T) {
-	var attempts atomic.Int32
-	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts.Add(1)
-		conn, err := upgrader.Upgrade(w, r, nil)
-		require.NoError(t, err)
-		defer conn.Close()
-		var request requestFrame
-		require.NoError(t, conn.ReadJSON(&request))
-		require.NoError(t, conn.WriteJSON(map[string]any{"type": "response.output_text.delta", "delta": "partial"}))
-		require.NoError(t, conn.WriteJSON(map[string]any{
-			"type": "response.failed",
-			"response": map[string]any{"error": map[string]any{
-				"code":    "temporary_capacity",
-				"message": "stop request",
-			}},
-		}))
-	}))
-	defer server.Close()
-
-	model := &languageModel{client: &client{
-		url: strings.Replace(server.URL, "http://", "ws://", 1),
-		retry: manifest.RetryPolicy{
-			MaxAttempts:       2,
-			Authentication:    "never",
-			ReplayRequirement: "before-first-event",
+func TestConnectionRecoveryErrorsDoNotReplayAfterOutput(t *testing.T) {
+	tests := []struct {
+		name              string
+		event             map[string]any
+		errorMappings     []manifest.ErrorMapping
+		wantConnectionErr bool
+		wantClass         fantasy.ProviderErrorClass
+	}{
+		{
+			name: "connection limit",
+			event: map[string]any{
+				"type":    "error",
+				"code":    "websocket_connection_limit_reached",
+				"message": fantasy.ConnectionLimitMessage,
+			},
+			wantConnectionErr: true,
 		},
-		errors: []manifest.ErrorMapping{{
-			Class:          "capacity",
-			Codes:          []string{"temporary_capacity"},
-			CodePointer:    "/response/error/code",
-			MessagePointer: "/response/error/message",
-			Retryable:      true,
-		}},
-	}}
-	_, err := model.Generate(t.Context(), fantasy.Call{})
-	require.Error(t, err)
-	require.Equal(t, int32(1), attempts.Load())
-	var providerErr *fantasy.ProviderError
-	require.ErrorAs(t, err, &providerErr)
-	require.Equal(t, fantasy.ProviderErrorClassCapacity, providerErr.Class)
-	require.Equal(t, "stop request", providerErr.Message)
-	require.True(t, providerErr.IsRetryable())
+		{
+			name: "mapped capacity",
+			event: map[string]any{
+				"type": "response.failed",
+				"response": map[string]any{"error": map[string]any{
+					"code":    "temporary_capacity",
+					"message": "stop request",
+				}},
+			},
+			errorMappings: []manifest.ErrorMapping{{
+				Class:          "capacity",
+				Codes:          []string{"temporary_capacity"},
+				CodePointer:    "/response/error/code",
+				MessagePointer: "/response/error/message",
+				Retryable:      true,
+			}},
+			wantClass: fantasy.ProviderErrorClassCapacity,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				conn, err := upgrader.Upgrade(w, r, nil)
+				require.NoError(t, err)
+				defer conn.Close()
+				var request requestFrame
+				require.NoError(t, conn.ReadJSON(&request))
+				require.NoError(t, conn.WriteJSON(map[string]any{
+					"type":  "response.output_text.delta",
+					"delta": "partial",
+				}))
+				require.NoError(t, conn.WriteJSON(test.event))
+			}))
+			defer server.Close()
+
+			model := &languageModel{client: &client{
+				url:    strings.Replace(server.URL, "http://", "ws://", 1),
+				errors: test.errorMappings,
+			}}
+			retry := fantasy.RetryWithExponentialBackoffRespectingRetryHeaders[*fantasy.Response](fantasy.RetryOptions{
+				MaxRetries:     2,
+				InitialDelayIn: time.Millisecond,
+				BackoffFactor:  1,
+			})
+			_, err := retry(t.Context(), func() (*fantasy.Response, error) {
+				return model.Generate(t.Context(), fantasy.Call{})
+			})
+			require.Error(t, err)
+			require.Equal(t, int32(1), attempts.Load())
+			var nonRetryable interface{ NonRetryable() bool }
+			require.ErrorAs(t, err, &nonRetryable)
+			require.True(t, nonRetryable.NonRetryable())
+			var providerErr *fantasy.ProviderError
+			require.ErrorAs(t, err, &providerErr)
+			require.True(t, providerErr.IsRetryable())
+			if test.wantConnectionErr {
+				require.True(t, fantasy.IsConnectionLimitError(err))
+			}
+			if test.wantClass != "" {
+				require.Equal(t, test.wantClass, providerErr.Class)
+			}
+		})
+	}
+}
+
+func TestStreamDoesNotUseConnectionRecoveryForAccountOrAccessErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		event       map[string]any
+		mapping     manifest.ErrorMapping
+		wantClass   fantasy.ProviderErrorClass
+		wantMessage string
+	}{
+		{
+			name: "account usage limit",
+			event: map[string]any{
+				"type":   "error",
+				"status": 429,
+				"error": map[string]any{
+					"type":    "usage_limit_reached",
+					"message": "The usage limit has been reached",
+				},
+			},
+			mapping: manifest.ErrorMapping{
+				Class:          "rate-limit",
+				Codes:          []string{"usage_limit_reached"},
+				CodePointer:    "/error/type",
+				MessagePointer: "/error/message",
+				Retryable:      true,
+			},
+			wantClass:   fantasy.ProviderErrorClassRateLimit,
+			wantMessage: "The usage limit has been reached",
+		},
+		{
+			name: "rate limit",
+			event: map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"code":    "rate_limit_exceeded",
+					"message": "request rate exceeded",
+				},
+			},
+			mapping: manifest.ErrorMapping{
+				Class:          "rate-limit",
+				Codes:          []string{"rate_limit_exceeded"},
+				CodePointer:    "/error/code",
+				MessagePointer: "/error/message",
+				Retryable:      true,
+			},
+			wantClass:   fantasy.ProviderErrorClassRateLimit,
+			wantMessage: "request rate exceeded",
+		},
+		{
+			name: "account credits",
+			event: map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"code":    "insufficient_quota",
+					"message": "account credits exhausted",
+				},
+			},
+			mapping: manifest.ErrorMapping{
+				Class:          "rate-limit",
+				Codes:          []string{"insufficient_quota"},
+				CodePointer:    "/error/code",
+				MessagePointer: "/error/message",
+				Retryable:      true,
+			},
+			wantClass:   fantasy.ProviderErrorClassRateLimit,
+			wantMessage: "account credits exhausted",
+		},
+		{
+			name: "authentication",
+			event: map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"code":    "invalid_api_key",
+					"message": "authentication failed",
+				},
+			},
+			mapping: manifest.ErrorMapping{
+				Class:          "authentication",
+				Codes:          []string{"invalid_api_key"},
+				CodePointer:    "/error/code",
+				MessagePointer: "/error/message",
+				Retryable:      true,
+			},
+			wantClass:   fantasy.ProviderErrorClassAuthentication,
+			wantMessage: "authentication failed",
+		},
+		{
+			name: "authorization",
+			event: map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"code":    "account_not_allowed",
+					"message": "authorization failed",
+				},
+			},
+			mapping: manifest.ErrorMapping{
+				Class:          "authorization",
+				Codes:          []string{"account_not_allowed"},
+				CodePointer:    "/error/code",
+				MessagePointer: "/error/message",
+				Retryable:      true,
+			},
+			wantClass:   fantasy.ProviderErrorClassAuthorization,
+			wantMessage: "authorization failed",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				conn, err := upgrader.Upgrade(w, r, nil)
+				require.NoError(t, err)
+				defer conn.Close()
+				var request requestFrame
+				require.NoError(t, conn.ReadJSON(&request))
+				require.NoError(t, conn.WriteJSON(test.event))
+			}))
+			defer server.Close()
+
+			model := &languageModel{client: &client{
+				url: strings.Replace(server.URL, "http://", "ws://", 1),
+				retry: manifest.RetryPolicy{
+					MaxAttempts:       1,
+					Authentication:    "never",
+					ReplayRequirement: "before-first-event",
+				},
+				errors: []manifest.ErrorMapping{test.mapping},
+			}}
+			_, err := model.Generate(t.Context(), fantasy.Call{})
+			require.Error(t, err)
+			require.Equal(t, int32(1), attempts.Load())
+			var providerErr *fantasy.ProviderError
+			require.ErrorAs(t, err, &providerErr)
+			require.Equal(t, test.wantClass, providerErr.Class)
+			require.Equal(t, test.wantMessage, providerErr.Message)
+			require.True(t, providerErr.IsRetryable())
+		})
+	}
 }
 
 func TestStreamWarnsForUnknownEvent(t *testing.T) {
@@ -309,9 +515,9 @@ func TestStreamMarksContextLengthErrors(t *testing.T) {
 	require.True(t, providerError.IsContextTooLarge())
 }
 
-func TestStreamClassifiesServerOverloadFrames(t *testing.T) {
-	t.Parallel()
-
+func TestStreamRecoversServerOverloadBeforeOutput(t *testing.T) {
+	requests := make(chan requestFrame, 2)
+	var attempts atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -319,34 +525,55 @@ func TestStreamClassifiesServerOverloadFrames(t *testing.T) {
 		defer conn.Close()
 		var request requestFrame
 		require.NoError(t, conn.ReadJSON(&request))
-		payload := `{"type":"error","message":"` + fantasy.ServerOverloadMessage + `"}`
-		require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(payload)))
+		requests <- request
+		if attempts.Add(1) == 1 {
+			payload := `{"type":"error","message":"` + fantasy.ServerOverloadMessage + `"}`
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(payload)))
+			return
+		}
+		require.NoError(t, conn.WriteJSON(map[string]any{
+			"type":  "response.output_text.delta",
+			"delta": "recovered",
+		}))
+		require.NoError(t, conn.WriteJSON(map[string]any{
+			"type":     "response.completed",
+			"response": map[string]any{"id": "response"},
+		}))
 	}))
 	defer server.Close()
 
 	model := &languageModel{client: &client{url: strings.Replace(server.URL, "http://", "ws://", 1)}}
-	_, err := model.Generate(context.Background(), fantasy.Call{})
-	require.True(t, fantasy.IsServerOverloadError(err))
-	var providerError *fantasy.ProviderError
-	require.ErrorAs(t, err, &providerError)
-	require.True(t, providerError.IsRetryable())
+	response, err := model.Generate(t.Context(), fantasy.Call{
+		Prompt: fantasy.Prompt{fantasy.NewUserMessage("first")},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "recovered", response.Content.Text())
+	require.Equal(t, int32(2), attempts.Load())
+	for range 2 {
+		request := <-requests
+		require.Empty(t, request.PreviousResponseID)
+		require.Equal(t, []inputItem{testMessageItem("user", "first")}, request.Input)
+	}
 }
 
-func TestStreamClassifiesConnectionLimitFrames(t *testing.T) {
-	t.Parallel()
-
+func TestStreamRecoversConnectionLimitBeforeOutput(t *testing.T) {
 	tests := map[string]func(conn *websocket.Conn){
 		"text frame": func(conn *websocket.Conn) {
 			payload := `{"type":"error","message":"` + fantasy.ConnectionLimitMessage + `"}`
-			_ = conn.WriteMessage(websocket.TextMessage, []byte(payload))
+			require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(payload)))
 		},
 		"close reason": func(conn *websocket.Conn) {
-			_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, fantasy.ConnectionLimitMessage), time.Now().Add(time.Second))
+			require.NoError(t, conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, fantasy.ConnectionLimitMessage),
+				time.Now().Add(time.Second),
+			))
 		},
 	}
 	for name, respond := range tests {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+			requests := make(chan requestFrame, 2)
+			var attempts atomic.Int32
 			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				conn, err := upgrader.Upgrade(w, r, nil)
@@ -354,16 +581,34 @@ func TestStreamClassifiesConnectionLimitFrames(t *testing.T) {
 				defer conn.Close()
 				var request requestFrame
 				require.NoError(t, conn.ReadJSON(&request))
-				respond(conn)
+				requests <- request
+				if attempts.Add(1) == 1 {
+					respond(conn)
+					return
+				}
+				require.NoError(t, conn.WriteJSON(map[string]any{
+					"type":  "response.output_text.delta",
+					"delta": "recovered",
+				}))
+				require.NoError(t, conn.WriteJSON(map[string]any{
+					"type":     "response.completed",
+					"response": map[string]any{"id": "response"},
+				}))
 			}))
 			defer server.Close()
 
 			model := &languageModel{client: &client{url: strings.Replace(server.URL, "http://", "ws://", 1)}}
-			_, err := model.Generate(context.Background(), fantasy.Call{})
-			require.True(t, fantasy.IsConnectionLimitError(err))
-			var providerError *fantasy.ProviderError
-			require.ErrorAs(t, err, &providerError)
-			require.True(t, providerError.IsRetryable())
+			response, err := model.Generate(t.Context(), fantasy.Call{
+				Prompt: fantasy.Prompt{fantasy.NewUserMessage("first")},
+			})
+			require.NoError(t, err)
+			require.Equal(t, "recovered", response.Content.Text())
+			require.Equal(t, int32(2), attempts.Load())
+			for range 2 {
+				request := <-requests
+				require.Empty(t, request.PreviousResponseID)
+				require.Equal(t, []inputItem{testMessageItem("user", "first")}, request.Input)
+			}
 		})
 	}
 }

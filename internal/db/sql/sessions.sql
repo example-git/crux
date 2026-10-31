@@ -2,6 +2,7 @@
 INSERT INTO sessions (
     id,
     parent_session_id,
+    forked_from_session_id,
     title,
     message_count,
     prompt_tokens,
@@ -13,6 +14,7 @@ INSERT INTO sessions (
     updated_at,
     created_at
 ) VALUES (
+    ?,
     ?,
     ?,
     ?,
@@ -35,14 +37,33 @@ WHERE id = ? LIMIT 1;
 -- name: GetLastSession :one
 SELECT *
 FROM sessions
+WHERE archived = 0
 ORDER BY updated_at DESC
 LIMIT 1;
 
 -- name: ListSessions :many
 SELECT *
 FROM sessions
-WHERE parent_session_id is NULL
+WHERE parent_session_id is NULL AND archived = 0
 ORDER BY updated_at DESC;
+
+-- name: ListArchivedSessions :many
+SELECT *
+FROM sessions
+WHERE parent_session_id is NULL AND archived = 1
+ORDER BY updated_at DESC;
+
+-- name: ListChildSessions :many
+SELECT *
+FROM sessions
+WHERE parent_session_id = ?
+ORDER BY created_at ASC, id ASC;
+
+-- name: SetSessionArchived :one
+UPDATE sessions
+SET archived = ?
+WHERE id = ?
+RETURNING *;
 
 -- name: UpdateSession :one
 UPDATE sessions
@@ -54,7 +75,9 @@ SET
     cost = ?,
     todos = ?,
     estimated_usage = ?,
-    unseen_local_tokens = ?
+    unseen_local_tokens = ?,
+    model = ?,
+    provider = ?
 WHERE id = ?
 RETURNING *;
 
@@ -63,6 +86,13 @@ UPDATE sessions
 SET
     mode = ?,
     plan = ?,
+    updated_at = strftime('%s', 'now')
+WHERE id = ?;
+
+-- name: SetSessionAnalysisEffort :exec
+UPDATE sessions
+SET
+    analysis_effort = ?,
     updated_at = strftime('%s', 'now')
 WHERE id = ?;
 

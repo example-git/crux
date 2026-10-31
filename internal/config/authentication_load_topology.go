@@ -75,21 +75,14 @@ func projectAuthenticationBasisWrites(ctx context.Context, original *authenticat
 	}
 	slices.Reverse(current)
 	slices.Reverse(projected)
-	current = append(append(slices.Clone(globals), current...), workspacePath)
-	projected = append(append(slices.Clone(globals), projected...), workspacePath)
-	current = slices.DeleteFunc(current, func(path string) bool { return path == "" })
-	projected = slices.DeleteFunc(projected, func(path string) bool { return path == "" })
-	for i := range current {
-		current[i] = filepath.Clean(current[i])
-	}
-	for i := range projected {
-		projected[i] = filepath.Clean(projected[i])
-	}
+	current = uniqueCleanConfigPaths(append(append(slices.Clone(globals), current...), workspacePath))
+	projected = uniqueCleanConfigPaths(append(append(slices.Clone(globals), projected...), workspacePath))
 	if !slices.Equal(original.order, current) {
 		return nil, nil, errAuthenticationInputsChanged
 	}
 	next := original.clone()
 	next.order = projected
+	next.assignReadRoles(base, workspacePath)
 	allPaths := slices.Clone(projected)
 	for path := range original.sources {
 		if !slices.Contains(allPaths, path) {
@@ -133,11 +126,7 @@ func verifyAuthenticationWriteTopology(ctx context.Context, basis *authenticatio
 	if len(writtenPaths) == 0 {
 		return nil
 	}
-	order := append(lookupConfigsFromEnvironment(workingDir, base, globalOnly...), workspacePath)
-	order = slices.DeleteFunc(order, func(path string) bool { return path == "" })
-	for i := range order {
-		order[i] = filepath.Clean(order[i])
-	}
+	order := uniqueCleanConfigPaths(append(lookupConfigsFromEnvironment(workingDir, base, globalOnly...), workspacePath))
 	if basis == nil || !slices.Equal(order, basis.order) {
 		return errAuthenticationInputsChanged
 	}

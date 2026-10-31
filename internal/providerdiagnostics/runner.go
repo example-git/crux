@@ -409,7 +409,7 @@ func runAccountCheck(ctx context.Context, runtime diagnosticRuntime, token strin
 				continue
 			}
 			operation := runtime.registration.Operations[declaration.ID]
-			_, _, _, err := providertransport.ExecuteAccountIdentity(ctx, operation, runtime.registration.Manifest.Capabilities.Credentials, token)
+			_, _, _, err := providerregistry.ExecuteAccountOperation(ctx, operation, runtime.registration.Manifest.Capabilities.Credentials, token)
 			return err
 		}
 	}

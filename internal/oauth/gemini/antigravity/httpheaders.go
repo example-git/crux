@@ -1,18 +1,12 @@
 package antigravity
 
 import (
-	"fmt"
 	"strings"
 )
 
 // The helpers below mirror the integrated foundation HTTP header behavior,
 // which cannot be imported from outside the fantasy module. They are inlined
 // here so this provider stands alone.
-
-// defaultUserAgent returns the default User-Agent string for the SDK.
-func defaultUserAgent(version string) string {
-	return fmt.Sprintf("Crux-Foundation/%s", version)
-}
 
 // resolveHeaders returns a new header map with a User-Agent field.
 //
@@ -42,7 +36,7 @@ func resolveHeaders(headers map[string]string, explicitUA, defaultUA string) map
 			delete(out, k)
 		}
 		out["User-Agent"] = val
-	default:
+	case defaultUA != "":
 		out["User-Agent"] = defaultUA
 	}
 

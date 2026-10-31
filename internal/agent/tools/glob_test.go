@@ -24,7 +24,7 @@ func TestGlobFilesScopedPrefixMatchesUnscoped(t *testing.T) {
 	mkfile("a/other.txt")
 	mkfile("z/three.go")
 
-	got, _, err := globFiles(context.Background(), "a/**/*.go", root, 100)
+	got, _, err := GlobFiles(context.Background(), "a/**/*.go", root, 100)
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 	for _, p := range got {
@@ -47,7 +47,7 @@ func TestGlobFilesDoesNotFollowSymlinkEscape(t *testing.T) {
 		t.Skipf("symlinks unsupported: %v", err)
 	}
 
-	got, _, err := globFiles(context.Background(), "**/*.go", project, 100)
+	got, _, err := GlobFiles(context.Background(), "**/*.go", project, 100)
 	require.NoError(t, err)
 	for _, p := range got {
 		require.NotContains(t, p, "secret.go", "glob followed a symlink out of the search root")
@@ -74,7 +74,7 @@ func TestGlobFilesHonorsRootIgnoreFilesOutsideGitRepository(t *testing.T) {
 	}
 
 	for name, search := range map[string]func(context.Context, string, string, int) ([]string, bool, error){
-		"automatic": globFiles,
+		"automatic": GlobFiles,
 		"native":    fsext.GlobGitignoreAwareCtx,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -103,7 +103,7 @@ func TestGlobFilesCapsResultsOnLargeTree(t *testing.T) {
 		require.NoError(t, os.WriteFile(name, []byte("x"), 0o644))
 	}
 
-	got, truncated, err := globFiles(context.Background(), "**/*.go", root, 10)
+	got, truncated, err := GlobFiles(context.Background(), "**/*.go", root, 10)
 	require.NoError(t, err)
 	require.LessOrEqual(t, len(got), 10, "must not exceed limit")
 	require.True(t, truncated, "should report truncation on an over-limit tree")

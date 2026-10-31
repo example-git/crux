@@ -2,6 +2,7 @@ package useragent
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -117,6 +118,47 @@ func TestCodexContextVersionNeverDowngradesPersistedVersion(t *testing.T) {
 	version, err := CodexVersionForContext(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "0.152.0", version)
+}
+
+func TestCodexContextVersionPersistsOnlyToCapturedHome(t *testing.T) {
+	ambient := t.TempDir()
+	t.Setenv("HOME", ambient)
+	t.Setenv("USERPROFILE", ambient)
+	for _, bound := range []bool{false, true} {
+		t.Run(fmt.Sprint(bound), func(t *testing.T) {
+			home := t.TempDir()
+			entries := []string{}
+			if bound {
+				entries = []string{"HOME=" + home, "USERPROFILE=" + home}
+			}
+			ctx := oauth.ContextWithEnvironment(t.Context(), entries)
+			version, err := resolveNewestForContext(ctx, "codex", staticCodexVersion, func(context.Context) string { return "0.159.2" })
+			require.NoError(t, err)
+			require.Equal(t, "0.159.2", version)
+			require.NoDirExists(t, filepath.Join(ambient, ".ai-cli"))
+			if bound {
+				require.Equal(t, "0.159.2", persistedForContext(ctx, "codex"))
+				version, err = resolveNewestForContext(ctx, "codex", staticCodexVersion, func(context.Context) string { return "0.148.0" })
+				require.NoError(t, err)
+				require.Equal(t, "0.159.2", version)
+				require.Equal(t, "0.159.2", persistedForContext(ctx, "codex"))
+			} else {
+				require.Empty(t, persistedForContext(ctx, "codex"))
+			}
+		})
+	}
+}
+
+func TestCodexContextVersionDoesNotPersistAfterCancellation(t *testing.T) {
+	home := t.TempDir()
+	ctx, cancel := context.WithCancel(oauth.ContextWithEnvironment(t.Context(), []string{"HOME=" + home, "USERPROFILE=" + home}))
+	defer cancel()
+	_, err := resolveNewestForContext(ctx, "codex", staticCodexVersion, func(context.Context) string {
+		cancel()
+		return "0.159.2"
+	})
+	require.ErrorIs(t, err, context.Canceled)
+	require.NoDirExists(t, filepath.Join(home, ".ai-cli"))
 }
 
 func TestCodexVersionUsesGitHubLatestReleaseRedirect(t *testing.T) {

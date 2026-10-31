@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"runtime"
 	"slices"
 	"sync"
@@ -27,6 +28,25 @@ type ResolvedProviderClientIdentity struct {
 	UserAgent string `json:"user_agent"`
 	OS        string `json:"os"`
 	Arch      string `json:"arch"`
+}
+
+func ResolveProviderClientVersion(ctx context.Context, workingDir, providerID string, environment env.Env) (string, error) {
+	if environment == nil {
+		return "", errors.New("provider client version requires an environment")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	store, err := loadWithEnvironment(workingDir, "", false, cloneEnvironment(environment), false, configLoadOptions{providerDiscoveryOnly: true})
+	if err != nil {
+		return "", err
+	}
+	registration, ok := store.providerRegistry.Lookup(providerID)
+	if !ok || registration.ProviderID != providerID || registration.Construction != providerregistry.ConstructionAnthropicMessages || registration.Operation == nil || registration.Operation.Anthropic == nil || registration.Operation.Anthropic.ClientIdentity == nil {
+		return "", fmt.Errorf("provider %q requires an active trusted client identity declaration", providerID)
+	}
+	version, _, err := clientidentity.ResolveWithEnvironment(ctx, registration.Operation.Anthropic.ClientIdentity, store.effectiveEnvironment.Env())
+	return version, err
 }
 
 type nativeIdentityCapture struct {
@@ -237,17 +257,18 @@ func (snapshot RuntimeSnapshot) prepareNativeIdentities(ctx context.Context) err
 				return err
 			}
 		}
-		if owner.Construction == providerregistry.ConstructionAnthropicMessages {
+		{
 			provider, _ := snapshot.config.authenticationCollectionProvider(id)
 			registration, ok := snapshot.ProviderRegistrationFor(id, provider)
-			if ok && registration.Operation != nil && registration.Operation.Anthropic != nil && registration.Operation.Anthropic.ClientIdentity != nil {
+			declaration := providerregistry.ClientIdentityForOperation(registration.Operation)
+			if ok && declaration != nil {
 				identityContext := ctx
 				if snapshot.publicationStore != nil {
 					identityContext = providertransport.ContextWithOwnerValidator(ctx, func() error {
 						return snapshot.publicationStore.ValidateRegistrationOwner(owner)
 					})
 				}
-				if _, err := snapshot.nativeIdentities.resolveProvider(identityContext, registration.Operation.Anthropic.ClientIdentity); err != nil {
+				if _, err := snapshot.nativeIdentities.resolveProvider(identityContext, declaration); err != nil {
 					return err
 				}
 			}

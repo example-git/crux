@@ -24,7 +24,7 @@ func TestUserTurnContextSurvivesDatabaseRestart(t *testing.T) {
 	current, err := sessions.Create(t.Context(), "turn context")
 	require.NoError(t, err)
 	turn := UserTurnContext{TodoState: "empty", TodoReminder: "original reminder"}
-	created, err := NewService(queries).Create(t.Context(), current.ID, CreateMessageParams{Role: User, Parts: []ContentPart{TextContent{Text: "user text", Context: turn}}})
+	created, err := NewService(queries).Create(t.Context(), current.ID, CreateMessageParams{ID: "native-message", Role: User, SubmissionID: "desktop-message", RunID: "native-run", ItemID: "native-item", Parts: []ContentPart{TextContent{Text: "user text", Context: turn}}})
 	require.NoError(t, err)
 	require.NoError(t, db.Release(dir))
 	conn, err = db.Connect(t.Context(), dir)
@@ -32,11 +32,38 @@ func TestUserTurnContextSurvivesDatabaseRestart(t *testing.T) {
 	t.Cleanup(func() { _ = db.Release(dir) })
 	loaded, err := NewService(db.New(conn)).Get(t.Context(), created.ID)
 	require.NoError(t, err)
+	require.Equal(t, "native-message", loaded.ID)
 	require.Equal(t, turn, loaded.Content().Context)
+	require.Equal(t, "desktop-message", loaded.SubmissionID)
+	require.Equal(t, "native-run", loaded.RunID)
+	require.Equal(t, "native-item", loaded.ItemID)
 	require.Equal(t, "user text", loaded.Content().Text)
 	clone := loaded.Clone()
 	require.Equal(t, loaded.ToAIMessage(), clone.ToAIMessage())
 	require.Len(t, loaded.ToAIMessage()[0].Content, 2)
+}
+
+func TestCodexTurnInputsSurviveDatabaseRestart(t *testing.T) {
+	dir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dir)
+	require.NoError(t, err)
+	queries := db.New(conn)
+	sessions := session.NewService(queries, conn)
+	current, err := sessions.Create(t.Context(), "Codex turn inputs")
+	require.NoError(t, err)
+	parts := []ContentPart{
+		TextContent{Text: "prompt", TextElements: []any{"mention", map[string]any{"type": "reference", "value": "file.go"}}},
+		SkillContent{Name: "fixture", Path: "/skills/fixture/SKILL.md", Content: []byte("skill body")},
+	}
+	created, err := NewService(queries).Create(t.Context(), current.ID, CreateMessageParams{Role: User, Parts: parts})
+	require.NoError(t, err)
+	require.NoError(t, db.Release(dir))
+	conn, err = db.Connect(t.Context(), dir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Release(dir) })
+	loaded, err := NewService(db.New(conn)).Get(t.Context(), created.ID)
+	require.NoError(t, err)
+	require.Equal(t, parts, loaded.Parts[:len(parts)])
 }
 
 func TestAllProviderMetadataScopesSurviveDatabaseRestart(t *testing.T) {
@@ -336,6 +363,164 @@ func TestCommitCompactionRollsBackWhenCheckpointUpdateFails(t *testing.T) {
 		t.Fatalf("unexpected session event: %#v", event)
 	default:
 	}
+}
+
+func TestRollbackAtomicallyDeletesSuffixAndRepairsSession(t *testing.T) {
+	conn, err := db.Connect(t.Context(), t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	q := db.New(conn)
+	sessions := session.NewService(q, conn)
+	sess, err := sessions.Create(t.Context(), "original title")
+	require.NoError(t, err)
+	svc := NewService(q, WithCompactionStore(conn, sessions))
+
+	first, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{Role: User, Parts: []ContentPart{TextContent{Text: "first"}}})
+	require.NoError(t, err)
+	second, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{Role: Assistant, Parts: []ContentPart{TextContent{Text: "answer"}}})
+	require.NoError(t, err)
+	cutoff, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{Role: User, Parts: []ContentPart{TextContent{Text: "remove"}}})
+	require.NoError(t, err)
+	summary, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{Role: Assistant, Parts: []ContentPart{TextContent{Text: "summary"}}, IsSummaryMessage: true})
+	require.NoError(t, err)
+
+	sess.SummaryMessageID = summary.ID
+	sess.PromptTokens = 90
+	sess.CompletionTokens = 10
+	sess.UnseenLocalTokens = 5
+	sess.EstimatedUsage = false
+	sess.Cost = 2.5
+	sess.Todos = []session.Todo{{Content: "keep", Status: session.TodoStatusInProgress, ActiveForm: "Keeping"}}
+	_, err = sessions.Save(t.Context(), sess)
+	require.NoError(t, err)
+	require.NoError(t, sessions.SetPlanState(t.Context(), sess.ID, session.ModePlanExecution, "approved plan"))
+
+	messageEvents := svc.Subscribe(t.Context())
+	sessionEvents := sessions.Subscribe(t.Context())
+	result, err := svc.Rollback(t.Context(), sess.ID, cutoff.ID)
+	require.NoError(t, err)
+
+	require.Equal(t, []string{first.ID, second.ID}, []string{result.Messages[0].ID, result.Messages[1].ID})
+	require.Equal(t, []string{cutoff.ID, summary.ID}, []string{result.Deleted[0].ID, result.Deleted[1].ID})
+	storedMessages, err := svc.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{first.ID, second.ID}, []string{storedMessages[0].ID, storedMessages[1].ID})
+
+	storedSession, err := sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), storedSession.MessageCount)
+	require.Zero(t, storedSession.PromptTokens)
+	require.Zero(t, storedSession.CompletionTokens)
+	require.Zero(t, storedSession.UnseenLocalTokens)
+	require.True(t, storedSession.EstimatedUsage)
+	require.Empty(t, storedSession.SummaryMessageID)
+	require.Equal(t, "original title", storedSession.Title)
+	require.Equal(t, 2.5, storedSession.Cost)
+	require.Equal(t, sess.Todos, storedSession.Todos)
+	require.Equal(t, session.ModePlanExecution, storedSession.Mode)
+	require.Equal(t, "approved plan", storedSession.Plan)
+	require.Equal(t, storedSession, result.Session)
+
+	firstDeleted := <-messageEvents
+	require.Equal(t, pubsub.DeletedEvent, firstDeleted.Type)
+	require.Equal(t, cutoff.ID, firstDeleted.Payload.ID)
+	secondDeleted := <-messageEvents
+	require.Equal(t, pubsub.DeletedEvent, secondDeleted.Type)
+	require.Equal(t, summary.ID, secondDeleted.Payload.ID)
+	sessionEvent := <-sessionEvents
+	require.Equal(t, pubsub.UpdatedEvent, sessionEvent.Type)
+	require.Equal(t, storedSession, sessionEvent.Payload)
+}
+
+func TestRollbackLeavesHistoryUntouchedWhenSessionRepairFails(t *testing.T) {
+	conn, err := db.Connect(t.Context(), t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	q := db.New(conn)
+	sessions := session.NewService(q, conn)
+	sess, err := sessions.Create(t.Context(), "test")
+	require.NoError(t, err)
+	sess.PromptTokens = 11
+	sess.CompletionTokens = 7
+	sess.Cost = 3
+	sess, err = sessions.Save(t.Context(), sess)
+	require.NoError(t, err)
+	svc := NewService(q, WithCompactionStore(conn, sessions))
+	first, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{Role: User, Parts: []ContentPart{TextContent{Text: "first"}}})
+	require.NoError(t, err)
+	second, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{Role: Assistant, Parts: []ContentPart{TextContent{Text: "second"}}})
+	require.NoError(t, err)
+
+	_, err = conn.ExecContext(t.Context(), `
+		CREATE TRIGGER reject_rollback
+		BEFORE UPDATE OF prompt_tokens ON sessions
+		WHEN old.prompt_tokens <> 0 AND new.prompt_tokens = 0
+		BEGIN
+			SELECT RAISE(ABORT, 'rejected rollback');
+		END;
+	`)
+	require.NoError(t, err)
+	messageEvents := svc.Subscribe(t.Context())
+	sessionEvents := sessions.Subscribe(t.Context())
+
+	_, err = svc.Rollback(t.Context(), sess.ID, first.ID)
+	require.ErrorContains(t, err, "repairing rollback session state")
+
+	storedMessages, err := svc.List(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, []string{first.ID, second.ID}, []string{storedMessages[0].ID, storedMessages[1].ID})
+	storedSession, err := sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), storedSession.MessageCount)
+	require.Equal(t, int64(11), storedSession.PromptTokens)
+	require.Equal(t, int64(7), storedSession.CompletionTokens)
+	require.Equal(t, 3.0, storedSession.Cost)
+	select {
+	case event := <-messageEvents:
+		t.Fatalf("unexpected message event: %#v", event)
+	default:
+	}
+	select {
+	case event := <-sessionEvents:
+		t.Fatalf("unexpected session event: %#v", event)
+	default:
+	}
+}
+
+func TestRollbackDrainsPendingUpdateWithoutResurrection(t *testing.T) {
+	conn, err := db.Connect(t.Context(), t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	q := db.New(conn)
+	sessions := session.NewService(q, conn)
+	sess, err := sessions.Create(t.Context(), "test")
+	require.NoError(t, err)
+	svc := NewService(q, WithCompactionStore(conn, sessions), WithDebounce(50*time.Millisecond))
+	_, err = svc.Create(t.Context(), sess.ID, CreateMessageParams{Role: User, Parts: []ContentPart{TextContent{Text: "keep"}}})
+	require.NoError(t, err)
+	cutoff, err := svc.Create(t.Context(), sess.ID, CreateMessageParams{Role: Assistant})
+	require.NoError(t, err)
+	cutoff.AppendContent("buffered")
+	require.NoError(t, svc.Update(t.Context(), cutoff))
+
+	_, err = svc.Rollback(t.Context(), sess.ID, cutoff.ID)
+	require.NoError(t, err)
+	concrete := svc.(*service)
+	concrete.mu.Lock()
+	_, pending := concrete.pending[cutoff.ID]
+	concrete.mu.Unlock()
+	require.False(t, pending)
+
+	time.Sleep(100 * time.Millisecond)
+	require.NoError(t, svc.Flush(t.Context(), cutoff.ID))
+	_, err = svc.Get(t.Context(), cutoff.ID)
+	require.ErrorIs(t, err, sql.ErrNoRows)
+	storedSession, err := sessions.Get(t.Context(), sess.ID)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), storedSession.MessageCount)
 }
 
 func newTestService(t *testing.T, opts ...ServiceOption) (Service, string) {

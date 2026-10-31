@@ -14,7 +14,7 @@ const LargeContentThreshold = 50000 // 50KB
 
 // AgenticFetchParams defines the parameters for the agentic fetch tool.
 type AgenticFetchParams struct {
-	Mode   string `json:"mode,omitempty" description:"normal (default) or user. User mode uses explicit browser-session consent for the initial URL and all delegated page fetches; web searches remain anonymous." jsonschema:"enum=normal,enum=user"`
+	Mode   string `json:"mode,omitempty" description:"normal (default) or user. All page requests use recent Google Chrome navigation headers. User mode adds explicitly approved browser-profile cookies to the initial URL and every delegated page fetch; web searches remain anonymous." jsonschema:"enum=normal,enum=user"`
 	URL    string `json:"url,omitempty" description:"The URL to fetch content from (optional - if not provided, the agent will search the web)"`
 	Prompt string `json:"prompt" description:"The prompt describing what information to find or extract"`
 }
@@ -42,7 +42,7 @@ type FetchParams struct {
 	URL     string `json:"url" description:"The URL to fetch content from"`
 	Format  string `json:"format,omitempty" description:"Output format: markdown (default, compact HTML conversion), text, or html" jsonschema:"enum=markdown,enum=text,enum=html"`
 	Timeout int    `json:"timeout,omitempty" description:"Optional timeout in seconds (max 120)"`
-	Mode    string `json:"mode,omitempty" description:"normal (default) or user. User mode requests explicit consent to copy browser cookies and use a matching browser user agent." jsonschema:"enum=normal,enum=user"`
+	Mode    string `json:"mode,omitempty" description:"normal (default) or user. All requests use recent Google Chrome navigation headers. User mode additionally requests explicit consent to copy browser-profile cookies and relay Cloudflare checks through the user's browser." jsonschema:"enum=normal,enum=user"`
 }
 
 // FetchPermissionsParams defines the permission parameters for the simple fetch tool.

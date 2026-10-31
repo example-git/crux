@@ -219,7 +219,7 @@ func collectRemoteRuntime(ctx context.Context, snapshot RuntimeSnapshot, revisio
 		return RemoteRuntimeProposal{}, errors.New("collect runtime on its owning client")
 	}
 	cfg := snapshot.Config()
-	proposal := RemoteRuntimeProposal{Version: RemoteRuntimeVersion, Revision: revision, Models: maps.Clone(cfg.Models), Images: cloneImageConfiguration(cfg.Images), Controls: remoteControlsFromOptions(cfg.Options)}
+	proposal := RemoteRuntimeProposal{Version: RemoteRuntimeVersion, Revision: revision, Models: maps.Clone(cfg.Models), Images: cloneImageConfiguration(cfg.Images), Memories: cloneMemories(cfg.Memories), Controls: remoteControlsFromOptions(cfg.Options)}
 	proposal.CodebaseIndex = snapshot.collectCodebaseIndex(ctx)
 	var err error
 	proposal.ProviderContextInstructions, err = collectProviderContextInstructions(ctx, snapshot, proposal.Models)

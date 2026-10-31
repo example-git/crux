@@ -493,15 +493,26 @@ func (c *Client) SendMessage(ctx context.Context, id string, sessionID, runID, p
 }
 
 func (c *Client) SendMessageWithPermissionMode(ctx context.Context, id string, sessionID, runID, prompt string, permissionMode proto.AgentPermissionMode, attachments ...message.Attachment) error {
-	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent", id), nil, jsonBody(proto.AgentMessage{
-		SessionID:      sessionID,
-		SubmissionID:   agent.SubmissionIDFromContext(ctx),
-		DeliveryMode:   string(agent.DeliveryModeFromContext(ctx)),
-		RunID:          runID,
-		Prompt:         prompt,
-		Attachments:    proto.AttachmentsFromMessage(attachments),
-		PermissionMode: permissionMode,
-	}), http.Header{"Content-Type": []string{"application/json"}})
+	return c.SendAgentMessage(ctx, id, proto.AgentMessage{
+		SessionID:                 sessionID,
+		RunID:                     runID,
+		Prompt:                    prompt,
+		TurnInstructions:          agent.TurnInstructionsFromContext(ctx),
+		InstructionIsolation:      agent.InstructionIsolationFromContext(ctx),
+		InstructionIsolationTools: agent.InstructionIsolationToolsFromContext(ctx),
+		Attachments:               proto.AttachmentsFromMessage(attachments),
+		PermissionMode:            permissionMode,
+	})
+}
+
+func (c *Client) SendAgentMessage(ctx context.Context, id string, request proto.AgentMessage) error {
+	request.SubmissionID = agent.SubmissionIDFromContext(ctx)
+	request.DeliveryMode = string(agent.DeliveryModeFromContext(ctx))
+	request.RequireActiveRun = request.RequireActiveRun || agent.RequireActiveRunFromContext(ctx)
+	if effort := agent.AnalysisEffortFromContext(ctx); effort != "" {
+		request.AnalysisEffort = effort
+	}
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/agent", id), nil, jsonBody(request), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {
 		return fmt.Errorf("failed to send message to agent: %w", err)
 	}
@@ -538,8 +549,8 @@ func (c *Client) RunShellCommand(ctx context.Context, id, sessionID, command str
 		return proto.ShellCommandResponse{}, fmt.Errorf("failed to run shell command: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return proto.ShellCommandResponse{}, fmt.Errorf("failed to run shell command: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return proto.ShellCommandResponse{}, fmt.Errorf("failed to run shell command: %w", err)
 	}
 	var resp proto.ShellCommandResponse
 	if err := json.NewDecoder(rsp.Body).Decode(&resp); err != nil {
@@ -572,8 +583,8 @@ func (c *Client) AgentSummarizeSession(ctx context.Context, id string, sessionID
 		return fmt.Errorf("failed to summarize session: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to summarize session: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to summarize session: %w", err)
 	}
 	return nil
 }
@@ -591,6 +602,23 @@ func (c *Client) SessionRewind(ctx context.Context, id, sessionID, messageID str
 		return fmt.Errorf("failed to rewind session: status code %d", rsp.StatusCode)
 	}
 	return nil
+}
+
+func (c *Client) SessionRollback(ctx context.Context, id, sessionID, messageID string) (proto.SessionRollbackResponse, error) {
+	body := jsonBody(map[string]string{"message_id": messageID})
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/rollback", id, sessionID), nil, body, http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return proto.SessionRollbackResponse{}, fmt.Errorf("failed to rollback session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return proto.SessionRollbackResponse{}, fmt.Errorf("failed to rollback session: %w", err)
+	}
+	var result proto.SessionRollbackResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&result); err != nil {
+		return proto.SessionRollbackResponse{}, fmt.Errorf("failed to decode rollback response: %w", err)
+	}
+	return result, nil
 }
 
 // AgentSuggestPrompt requests a predicted next user message for a session.
@@ -696,8 +724,8 @@ func (c *Client) GetSession(ctx context.Context, id string, sessionID string) (*
 		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get session: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to get session: %w", err)
 	}
 	var sess proto.Session
 	if err := json.NewDecoder(rsp.Body).Decode(&sess); err != nil {
@@ -742,7 +770,15 @@ func (c *Client) CreateSession(ctx context.Context, id string, title string) (*p
 
 // ForkSession creates a persisted copy of a session and its messages.
 func (c *Client) ForkSession(ctx context.Context, id, sessionID string) (*proto.Session, error) {
-	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/fork", id, sessionID), nil, nil, nil)
+	return c.forkSession(ctx, id, sessionID, nil)
+}
+
+func (c *Client) ForkSessionWithOrigin(ctx context.Context, id, sessionID string) (*proto.Session, error) {
+	return c.forkSession(ctx, id, sessionID, url.Values{"record_origin": {"true"}})
+}
+
+func (c *Client) forkSession(ctx context.Context, id, sessionID string, query url.Values) (*proto.Session, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/fork", id, sessionID), query, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fork session: %w", err)
 	}
@@ -759,13 +795,21 @@ func (c *Client) ForkSession(ctx context.Context, id, sessionID string) (*proto.
 
 // ListSessions lists all sessions in a workspace as proto types.
 func (c *Client) ListSessions(ctx context.Context, id string) ([]proto.Session, error) {
-	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/sessions", id), nil, nil)
+	return c.listSessions(ctx, id, nil)
+}
+
+func (c *Client) ListArchivedSessions(ctx context.Context, id string) ([]proto.Session, error) {
+	return c.listSessions(ctx, id, url.Values{"archived": {"true"}})
+}
+
+func (c *Client) listSessions(ctx context.Context, id string, query url.Values) ([]proto.Session, error) {
+	rsp, err := c.get(ctx, fmt.Sprintf("/workspaces/%s/sessions", id), query, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get sessions: %w", err)
 	}
 	defer rsp.Body.Close()
-	if rsp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get sessions: status code %d", rsp.StatusCode)
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to get sessions: %w", err)
 	}
 	var sessions []proto.Session
 	if err := json.NewDecoder(rsp.Body).Decode(&sessions); err != nil {
@@ -920,6 +964,86 @@ func (c *Client) SetSessionMode(ctx context.Context, id, sessionID, mode string)
 	return &saved, nil
 }
 
+func (c *Client) SetSessionAnalysisEffort(ctx context.Context, id, sessionID, effort string) (*proto.Session, error) {
+	rsp, err := c.put(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/analysis-effort", id, sessionID), nil, jsonBody(proto.Session{AnalysisEffort: effort}), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return nil, fmt.Errorf("failed to set session analysis effort: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to set session analysis effort: %w", err)
+	}
+	var saved proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&saved); err != nil {
+		return nil, fmt.Errorf("failed to decode session: %w", err)
+	}
+	return &saved, nil
+}
+
+func (c *Client) UpdateSessionGoal(ctx context.Context, id, sessionID string, request proto.SessionGoalRequest) (*proto.Session, error) {
+	rsp, err := c.put(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/goal", id, sessionID), nil, jsonBody(request), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return nil, fmt.Errorf("failed to update session goal: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to update session goal: %w", err)
+	}
+	var saved proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&saved); err != nil {
+		return nil, fmt.Errorf("failed to decode session: %w", err)
+	}
+	return &saved, nil
+}
+
+func (c *Client) RenameSession(ctx context.Context, id, sessionID, title string) (*proto.Session, error) {
+	rsp, err := c.put(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/title", id, sessionID), nil, jsonBody(proto.Session{Title: title}), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return nil, fmt.Errorf("failed to rename session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to rename session: %w", err)
+	}
+	var saved proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&saved); err != nil {
+		return nil, fmt.Errorf("failed to decode renamed session: %w", err)
+	}
+	return &saved, nil
+}
+
+func (c *Client) ArchiveSession(ctx context.Context, id, sessionID string) ([]proto.Session, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/archive", id, sessionID), nil, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to archive session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to archive session: %w", err)
+	}
+	var sessions []proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&sessions); err != nil {
+		return nil, fmt.Errorf("failed to decode archived sessions: %w", err)
+	}
+	return sessions, nil
+}
+
+func (c *Client) UnarchiveSession(ctx context.Context, id, sessionID string) (*proto.Session, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/unarchive", id, sessionID), nil, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unarchive session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to unarchive session: %w", err)
+	}
+	var current proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&current); err != nil {
+		return nil, fmt.Errorf("failed to decode unarchived session: %w", err)
+	}
+	return &current, nil
+}
+
 // DeleteSession deletes a session from a workspace.
 func (c *Client) DeleteSession(ctx context.Context, id string, sessionID string) error {
 	rsp, err := c.delete(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s", id, sessionID), nil, nil)
@@ -931,6 +1055,22 @@ func (c *Client) DeleteSession(ctx context.Context, id string, sessionID string)
 		return fmt.Errorf("failed to delete session: status code %d", rsp.StatusCode)
 	}
 	return nil
+}
+
+func (c *Client) DeleteSessionSubtree(ctx context.Context, id, sessionID string) ([]proto.Session, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/delete", id, sessionID), nil, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to delete session subtree: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return nil, fmt.Errorf("failed to delete session subtree: %w", err)
+	}
+	var sessions []proto.Session
+	if err := json.NewDecoder(rsp.Body).Decode(&sessions); err != nil {
+		return nil, fmt.Errorf("failed to decode deleted sessions: %w", err)
+	}
+	return sessions, nil
 }
 
 // ListUserMessages retrieves user-role messages for a session as proto types.
@@ -1014,7 +1154,90 @@ func (c *Client) GetDefaultSmallModel(ctx context.Context, id string, providerID
 	return &model, nil
 }
 
-// FileTrackerRecordRead records a file read for a session.
+func (c *Client) SearchWorkspaceFiles(ctx context.Context, id string, request proto.WorkspaceFileSearchRequest) (proto.WorkspaceFileSearchResponse, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/files/search", id), nil, jsonBody(request), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return proto.WorkspaceFileSearchResponse{}, fmt.Errorf("failed to search workspace files: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return proto.WorkspaceFileSearchResponse{}, fmt.Errorf("failed to search workspace files: %w", err)
+	}
+	var response proto.WorkspaceFileSearchResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&response); err != nil {
+		return proto.WorkspaceFileSearchResponse{}, fmt.Errorf("failed to decode workspace file search: %w", err)
+	}
+	return response, nil
+}
+
+func (c *Client) StartWorkspaceFileSearchSession(ctx context.Context, id string, request proto.WorkspaceFileSearchSessionStartRequest) error {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/files/search/sessions/start", id), nil, jsonBody(request), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return fmt.Errorf("failed to start workspace file search session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to start workspace file search session: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) BeginWorkspaceFileSearchSessionUpdate(ctx context.Context, id string, request proto.WorkspaceFileSearchSessionBeginRequest) (proto.WorkspaceFileSearchSessionBeginResponse, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/files/search/sessions/begin", id), nil, jsonBody(request), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return proto.WorkspaceFileSearchSessionBeginResponse{}, fmt.Errorf("failed to update workspace file search session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return proto.WorkspaceFileSearchSessionBeginResponse{}, fmt.Errorf("failed to update workspace file search session: %w", err)
+	}
+	var response proto.WorkspaceFileSearchSessionBeginResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&response); err != nil {
+		return proto.WorkspaceFileSearchSessionBeginResponse{}, fmt.Errorf("failed to decode workspace file search session update: %w", err)
+	}
+	return response, nil
+}
+
+func (c *Client) CompleteWorkspaceFileSearchSessionUpdate(ctx context.Context, id string, request proto.WorkspaceFileSearchSessionCompleteRequest) (proto.WorkspaceFileSearchSessionCompleteResponse, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/files/search/sessions/complete", id), nil, jsonBody(request), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return proto.WorkspaceFileSearchSessionCompleteResponse{}, fmt.Errorf("failed to complete workspace file search session update: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return proto.WorkspaceFileSearchSessionCompleteResponse{}, fmt.Errorf("failed to complete workspace file search session update: %w", err)
+	}
+	var response proto.WorkspaceFileSearchSessionCompleteResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&response); err != nil {
+		return proto.WorkspaceFileSearchSessionCompleteResponse{}, fmt.Errorf("failed to decode workspace file search session result: %w", err)
+	}
+	return response, nil
+}
+
+func (c *Client) StopWorkspaceFileSearchSession(ctx context.Context, id string, request proto.WorkspaceFileSearchSessionRequest) error {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/files/search/sessions/stop", id), nil, jsonBody(request), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return fmt.Errorf("failed to stop workspace file search session: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to stop workspace file search session: %w", err)
+	}
+	return nil
+}
+
+func (c *Client) CloseWorkspaceFileSearchOwner(ctx context.Context, request proto.WorkspaceFileSearchOwnerRequest) error {
+	rsp, err := c.post(ctx, "/files/search/owners/close", nil, jsonBody(request), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return fmt.Errorf("failed to close workspace file search owner: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return fmt.Errorf("failed to close workspace file search owner: %w", err)
+	}
+	return nil
+}
+
 func (c *Client) FileTrackerRecordRead(ctx context.Context, id string, sessionID, path string) error {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/filetracker/read", id), nil, jsonBody(struct {
 		SessionID string `json:"session_id"`

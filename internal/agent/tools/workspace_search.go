@@ -105,7 +105,7 @@ func NewSearchTool(permissions permission.Service, workingDir string, cfg config
 }
 
 func searchFilePaths(ctx context.Context, params SearchParams, searchPath string) (fantasy.ToolResponse, error) {
-	files, truncated, err := globFiles(ctx, params.Pattern, searchPath, maxSearchResults)
+	files, truncated, err := GlobFiles(ctx, params.Pattern, searchPath, maxSearchResults)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(fmt.Sprintf("error finding files: %v", err)), nil
 	}

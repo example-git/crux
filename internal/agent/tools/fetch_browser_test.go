@@ -27,6 +27,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func requireChromeFetchHeaders(t *testing.T, request *http.Request, fetchSite string) {
+	t.Helper()
+	require.Equal(t, BrowserUserAgent, request.UserAgent())
+	require.NotContains(t, strings.ToLower(request.UserAgent()), "crux")
+	for name, value := range map[string]string{
+		"Accept-Language":           "en-US,en;q=0.9",
+		"Cache-Control":             "max-age=0",
+		"Priority":                  "u=0, i",
+		"Sec-Ch-Ua":                 `"Chromium";v="157", "Not_A Brand";v="99", "Google Chrome";v="157"`,
+		"Sec-Ch-Ua-Mobile":          "?0",
+		"Sec-Ch-Ua-Platform":        fmt.Sprintf("%q", browserClientHintPlatform),
+		"Sec-Fetch-Dest":            "document",
+		"Sec-Fetch-Mode":            "navigate",
+		"Sec-Fetch-Site":            fetchSite,
+		"Sec-Fetch-User":            "?1",
+		"Upgrade-Insecure-Requests": "1",
+	} {
+		require.Equal(t, value, request.Header.Get(name), name)
+	}
+}
+
 func TestFetchBrowserConsentAndCopiedCookies(t *testing.T) {
 	const initial = "synthetic*fetch*original-cookie-81903"
 	const rotated = "synthetic*fetch*rotated-cookie-74981"
@@ -57,14 +78,10 @@ func TestFetchBrowserConsentAndCopiedCookies(t *testing.T) {
 	environment := []string{"HOME=" + home, "APPDATA=" + home, "LOCALAPPDATA=" + home}
 	profiles := cookieutil.BrowserProfiles(environment)
 	require.Len(t, profiles, 1)
-	expectedUA, err := profiles[0].UserAgent(t.Context())
-	require.NoError(t, err)
 	var requests atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		if r.UserAgent() != expectedUA {
-			t.Errorf("browser user agent not preserved: %s", r.UserAgent())
-		}
+		requireChromeFetchHeaders(t, r, map[string]string{"/start": "none", "/result": "same-origin"}[r.URL.Path])
 		cookie, err := r.Cookie("session")
 		if err != nil {
 			t.Error("missing browser cookie")
@@ -174,18 +191,16 @@ func (s fetchQuestionService) Ask(_ context.Context, request question.Request) (
 }
 
 func TestFetchBrowserProfileSelectionAndFailures(t *testing.T) {
-	var reads, prompts int
+	var prompts int
 	profiles := make([]browserFetchProfile, 7)
 	for i := range profiles {
 		profiles[i] = browserFetchProfile{
 			id: fmt.Sprintf("profile-%d", i), name: fmt.Sprintf("Browser %d / ", i) + strings.Repeat("界", 200),
-			userAgent: func(context.Context) (string, error) { reads++; return "SelectedBrowser/144", nil },
-			cookies:   func(context.Context, *url.URL) (http.CookieJar, error) { return cookiejar.New(nil) },
+			cookies: func(context.Context, *url.URL) (http.CookieJar, error) { return cookiejar.New(nil) },
 		}
 	}
 	selections := []string{"next", "next", "previous", "profile-4", "once"}
 	questions := fetchQuestionService{ask: func(req question.Request) ([]question.Answer, error) {
-		require.Zero(t, reads)
 		selection := selections[prompts]
 		prompts++
 		return []question.Answer{{QuestionID: req.Questions[0].ID, SelectedIDs: []string{selection}}}, nil
@@ -196,37 +211,142 @@ func TestFetchBrowserProfileSelectionAndFailures(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "profile-4", client.Transport.(*browserFetchTransport).profile.id)
 	require.Equal(t, len(selections), prompts)
-	require.Equal(t, 1, reads)
 	for _, test := range []struct {
 		name, selection string
 		interactive     bool
-		profileError    bool
 	}{
-		{"denied", "deny", true, false},
-		{"unknown-answer", "allow-everything", true, false},
-		{"noninteractive", "once", false, false},
-		{"identity-unavailable", "once", true, true},
+		{"denied", "deny", true},
+		{"unknown-answer", "allow-everything", true},
+		{"noninteractive", "once", false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			reads = 0
 			q := fetchQuestionService{ask: func(req question.Request) ([]question.Answer, error) {
 				return []question.Answer{{QuestionID: req.Questions[0].ID, SelectedIDs: []string{test.selection}}}, nil
 			}}
 			service := NewBrowserFetchService(q, test.interactive)
-			profile := profiles[0]
-			profile.userAgent = func(context.Context) (string, error) {
-				reads++
-				return "", errors.New("selected profile version unavailable")
-			}
-			service.profiles = func([]string) []browserFetchProfile { return []browserFetchProfile{profile} }
+			service.profiles = func([]string) []browserFetchProfile { return []browserFetchProfile{profiles[0]} }
 			client, err := service.client(t.Context(), "session", "call", "https://example.test", nil, http.DefaultClient)
 			require.Error(t, err)
 			require.Nil(t, client)
-			if !test.profileError {
-				require.Zero(t, reads)
-			}
 		})
 	}
+}
+
+func TestFetchBrowserCloudflareRelayRefreshesCookiesForLaterFetches(t *testing.T) {
+	target, err := url.Parse("https://protected.example.test/account")
+	require.NoError(t, err)
+	var cookieCopies atomic.Int32
+	var requests atomic.Int32
+	var opened atomic.Int32
+	var clearanceReady atomic.Bool
+	profile := browserFetchProfile{id: "chrome-default", name: "Chrome / Default", cookies: func(_ context.Context, requested *url.URL) (http.CookieJar, error) {
+		cookieCopies.Add(1)
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			return nil, err
+		}
+		value := "stale-clearance"
+		if clearanceReady.Load() {
+			value = "fresh-clearance"
+		}
+		jar.SetCookies(requested, []*http.Cookie{{Name: "cf_clearance", Value: value, Path: "/", Secure: true, HttpOnly: true}})
+		return jar, nil
+	}}
+	selections := []string{"session", "completed"}
+	prompts := 0
+	questions := fetchQuestionService{ask: func(request question.Request) ([]question.Answer, error) {
+		selection := selections[prompts]
+		prompts++
+		return []question.Answer{{QuestionID: request.Questions[0].ID, SelectedIDs: []string{selection}}}, nil
+	}}
+	browserService := NewBrowserFetchService(questions, true)
+	browserService.profiles = func([]string) []browserFetchProfile { return []browserFetchProfile{profile} }
+	browserService.openURL = func(address string) error {
+		opened.Add(1)
+		require.Equal(t, target.String(), address)
+		clearanceReady.Store(true)
+		return nil
+	}
+	base := sourcegraphRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requestNumber := requests.Add(1)
+		requireChromeFetchHeaders(t, request, "none")
+		cookie, err := request.Cookie("cf_clearance")
+		require.NoError(t, err)
+		header := http.Header{"Content-Type": []string{"text/html; charset=utf-8"}}
+		status := http.StatusOK
+		body := "<h1>Authenticated page</h1>"
+		if cookie.Value != "fresh-clearance" {
+			require.Equal(t, int32(1), requestNumber)
+			status = http.StatusForbidden
+			header.Set("Cf-Mitigated", "challenge")
+			body = "<title>Just a moment...</title>"
+		}
+		return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})
+	tool := NewWebFetchToolWithIdentity(t.TempDir(), &http.Client{Transport: base}, FetchIdentity{Mode: "user", Browser: browserService, SessionID: "fetch-session"})
+	run := func(callID string) fantasy.ToolResponse {
+		input, err := json.Marshal(WebFetchParams{URL: target.String()})
+		require.NoError(t, err)
+		response, err := tool.Run(t.Context(), fantasy.ToolCall{ID: callID, Name: WebFetchToolName, Input: string(input)})
+		require.NoError(t, err)
+		return response
+	}
+	first := run("first-page")
+	require.False(t, first.IsError, first.Content)
+	require.Contains(t, first.Content, "# Authenticated page")
+	require.Equal(t, int32(2), requests.Load())
+	require.Equal(t, int32(2), cookieCopies.Load())
+	require.Equal(t, int32(1), opened.Load())
+	require.Equal(t, 2, prompts)
+
+	second := run("delegated-page")
+	require.False(t, second.IsError, second.Content)
+	require.Contains(t, second.Content, "# Authenticated page")
+	require.Equal(t, int32(3), requests.Load())
+	require.Equal(t, int32(3), cookieCopies.Load())
+	require.Equal(t, int32(1), opened.Load())
+	require.Equal(t, 2, prompts)
+}
+
+func TestFetchBrowserCloudflareRelayCancellationStopsBeforeRetry(t *testing.T) {
+	target, err := url.Parse("https://protected.example.test/account")
+	require.NoError(t, err)
+	profile := browserFetchProfile{id: "chrome-default", name: "Chrome / Default", cookies: func(_ context.Context, requested *url.URL) (http.CookieJar, error) {
+		jar, err := cookiejar.New(nil)
+		if err == nil {
+			jar.SetCookies(requested, []*http.Cookie{{Name: "cf_clearance", Value: "stale", Path: "/", Secure: true}})
+		}
+		return jar, err
+	}}
+	selections := []string{"once", "cancel"}
+	prompts := 0
+	questions := fetchQuestionService{ask: func(request question.Request) ([]question.Answer, error) {
+		selection := selections[prompts]
+		prompts++
+		return []question.Answer{{QuestionID: request.Questions[0].ID, SelectedIDs: []string{selection}}}, nil
+	}}
+	browserService := NewBrowserFetchService(questions, true)
+	browserService.profiles = func([]string) []browserFetchProfile { return []browserFetchProfile{profile} }
+	var opened, requests atomic.Int32
+	browserService.openURL = func(address string) error {
+		opened.Add(1)
+		require.Equal(t, target.String(), address)
+		return nil
+	}
+	base := sourcegraphRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		requireChromeFetchHeaders(t, request, "none")
+		return &http.Response{StatusCode: http.StatusForbidden, Header: http.Header{"Cf-Mitigated": []string{"challenge"}}, Body: io.NopCloser(strings.NewReader("challenge")), Request: request}, nil
+	})
+	tool := NewWebFetchToolWithIdentity(t.TempDir(), &http.Client{Transport: base}, FetchIdentity{Mode: "user", Browser: browserService, SessionID: "fetch-session"})
+	input, err := json.Marshal(WebFetchParams{URL: target.String()})
+	require.NoError(t, err)
+	response, err := tool.Run(t.Context(), fantasy.ToolCall{ID: "cancelled-page", Name: WebFetchToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.True(t, response.StopTurn)
+	require.Equal(t, int32(1), requests.Load())
+	require.Equal(t, int32(1), opened.Load())
+	require.Equal(t, 2, prompts)
 }
 
 func TestFetchBrowserRedirectCookieIsolationAndImportFailure(t *testing.T) {
@@ -240,12 +360,12 @@ func TestFetchBrowserRedirectCookieIsolationAndImportFailure(t *testing.T) {
 		jar.SetCookies(target, []*http.Cookie{{Name: "session", Value: target.Host, Path: "/"}})
 		return jar, nil
 	}}
-	transport := &browserFetchTransport{profile: profile, userAgent: "SelectedBrowser/144", jars: make(map[string]http.CookieJar)}
+	transport := &browserFetchTransport{profile: profile, jars: make(map[string]http.CookieJar)}
 	transport.base = sourcegraphRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		cookie, err := req.Cookie("session")
 		require.NoError(t, err)
 		require.Equal(t, req.URL.Host, cookie.Value)
-		require.Equal(t, "SelectedBrowser/144", req.UserAgent())
+		requireChromeFetchHeaders(t, req, map[string]string{"first.test": "none", "second.test": "cross-site"}[req.URL.Host])
 		header := http.Header{}
 		status := http.StatusOK
 		if req.URL.Host == "first.test" {

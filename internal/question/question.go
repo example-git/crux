@@ -2,9 +2,6 @@
 // via the TUI and blocking until an answer is received. It mirrors
 // the permission service pattern: publish a request over pubsub,
 // block on a channel, and resolve when the UI sends back answers.
-//
-// Only one question can be pending at a time (the tool blocks until
-// answered), so no correlation IDs are needed in the domain model.
 package question
 
 import (
@@ -185,10 +182,12 @@ type Service interface {
 
 	// Answer resolves the pending question with the given answers.
 	Answer(answers []Answer) bool
+	AnswerRequest(id string, answers []Answer) bool
 
 	// Cancel cancels the pending question. Returns false if no
 	// question is pending.
 	Cancel() bool
+	Pending() *Request
 }
 
 type questionService struct {
@@ -199,6 +198,18 @@ type questionService struct {
 	pending            chan []Answer
 	cancelled          chan struct{}
 	pendingID          string
+	pendingRequest     *Request
+	resolved           bool
+}
+
+func (s *questionService) Pending() *Request {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.pending == nil || s.pendingRequest == nil || s.resolved {
+		return nil
+	}
+	request := *s.pendingRequest
+	return &request
 }
 
 // NewService creates a new question service.
@@ -260,6 +271,9 @@ func (s *questionService) Ask(ctx context.Context, req Request) ([]Answer, error
 	s.pending = make(chan []Answer, 1)
 	s.cancelled = make(chan struct{})
 	s.pendingID = req.ID
+	s.pendingRequest = &req
+	s.resolved = false
+	pending, cancelled := s.pending, s.cancelled
 	s.mu.Unlock()
 
 	defer func() {
@@ -267,6 +281,7 @@ func (s *questionService) Ask(ctx context.Context, req Request) ([]Answer, error
 		s.pending = nil
 		s.cancelled = nil
 		s.pendingID = ""
+		s.pendingRequest = nil
 		s.mu.Unlock()
 	}()
 
@@ -276,9 +291,9 @@ func (s *questionService) Ask(ctx context.Context, req Request) ([]Answer, error
 	case <-ctx.Done():
 		s.notificationBroker.Publish(pubsub.CreatedEvent, Notification{BatchID: req.ID})
 		return nil, ctx.Err()
-	case <-s.cancelled:
+	case <-cancelled:
 		return nil, ErrCancelled
-	case answers := <-s.pending:
+	case answers := <-pending:
 		return answers, nil
 	}
 }
@@ -286,15 +301,27 @@ func (s *questionService) Ask(ctx context.Context, req Request) ([]Answer, error
 // Answer resolves the pending question. Returns false if no
 // question is pending (already answered or cancelled).
 func (s *questionService) Answer(answers []Answer) bool {
+	return s.answer("", answers)
+}
+
+func (s *questionService) AnswerRequest(id string, answers []Answer) bool {
+	if id == "" {
+		return false
+	}
+	return s.answer(id, answers)
+}
+
+func (s *questionService) answer(id string, answers []Answer) bool {
 	s.mu.Lock()
 	batchID := s.pendingID
 	ch := s.pending
-	s.mu.Unlock()
-
-	if ch == nil {
+	if ch == nil || s.resolved || (id != "" && id != batchID) {
+		s.mu.Unlock()
 		return false
 	}
+	s.resolved = true
 	ch <- answers
+	s.mu.Unlock()
 
 	// Publish a notification so non-answering clients can dismiss
 	// their open question forms.
@@ -312,12 +339,13 @@ func (s *questionService) Cancel() bool {
 	s.mu.Lock()
 	batchID := s.pendingID
 	cancelCh := s.cancelled
-	s.mu.Unlock()
-
-	if cancelCh == nil {
+	if cancelCh == nil || s.resolved {
+		s.mu.Unlock()
 		return false
 	}
+	s.resolved = true
 	close(cancelCh)
+	s.mu.Unlock()
 
 	// Publish a notification so non-answering clients can dismiss
 	// their open question forms.

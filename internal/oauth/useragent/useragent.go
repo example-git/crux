@@ -332,6 +332,9 @@ func resolveNewestForContext(ctx context.Context, key, fallback string, detect f
 		return "", err
 	}
 	if selected := newestVersion(detected, cached); selected != "" {
+		if selected == detected && selected != cached {
+			persistForContext(ctx, key, selected)
+		}
 		return selected, nil
 	}
 	return fallback, nil
@@ -340,16 +343,7 @@ func resolveNewestForContext(ctx context.Context, key, fallback string, detect f
 // runToolVersion runs `tool --version` and parses the first semver-like
 // token. Returns "" on any failure.
 func runToolVersion(tool string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, tool, "--version").Output()
-	if err != nil {
-		return ""
-	}
-	if m := versionRe.FindStringSubmatch(string(out)); m != nil {
-		return m[1]
-	}
-	return ""
+	return runToolVersionForContext(context.Background(), tool)
 }
 
 func runToolVersionForContext(ctx context.Context, tool string) string {
@@ -396,20 +390,30 @@ func persisted(key string) string {
 // persist stores a valid version for key. Failures are silent: persistence
 // is an optimization, never a requirement.
 func persist(key, version string) {
+	path, err := cachePath()
+	if err != nil {
+		return
+	}
+	persistAtPath(path, key, version)
+}
+
+func persistAtPath(path, key, version string) {
 	if !fullVersionRe.MatchString(version) {
 		return
 	}
 	persistMu.Lock()
 	defer persistMu.Unlock()
-	versions := readCache()
+	versions := map[string]string{}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &versions)
+	}
+	if versions == nil {
+		versions = map[string]string{}
+	}
 	if versions[key] == version {
 		return
 	}
 	versions[key] = version
-	path, err := cachePath()
-	if err != nil {
-		return
-	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}

@@ -49,14 +49,15 @@ func (snapshot RuntimeSnapshot) clientProviderDefinition(ctx context.Context, id
 		definition.NativeIdentity = &identity
 	}
 	provider, _ := snapshot.config.authenticationCollectionProvider(id)
-	if owner.Construction == providerregistry.ConstructionAnthropicMessages {
-		registration, ok := snapshot.ProviderRegistrationFor(id, provider)
-		if !ok || registration.Operation == nil || registration.Operation.Anthropic == nil {
-			return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, errors.New("selected client Anthropic identity declaration is unavailable")
-		}
+	registration, registered := snapshot.ProviderRegistrationFor(id, provider)
+	if owner.Construction == providerregistry.ConstructionAnthropicMessages && (!registered || registration.Operation == nil || registration.Operation.Anthropic == nil) {
+		return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, errors.New("selected client Anthropic identity declaration is unavailable")
+	}
+	declaration := providerregistry.ClientIdentityForOperation(registration.Operation)
+	if declaration != nil || owner.Construction == providerregistry.ConstructionAnthropicMessages {
 		identity := ResolvedProviderClientIdentity{}
-		if registration.Operation.Anthropic.ClientIdentity != nil {
-			identity, err = snapshot.nativeIdentities.resolveProvider(ctx, registration.Operation.Anthropic.ClientIdentity)
+		if declaration != nil {
+			identity, err = snapshot.nativeIdentities.resolveProvider(ctx, declaration)
 			if err != nil {
 				return RemoteProviderDefinition{}, providerregistry.RegistrationOwner{}, err
 			}

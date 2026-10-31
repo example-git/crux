@@ -333,13 +333,13 @@ func streamContent(raw json.RawMessage) (string, error) {
 	return strings.Join(parts, ""), nil
 }
 
-func runAgyStream(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) error {
+func runAgyStream(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) (returnErr error) {
 	output := &protocolOutput{writer: invocation.Stdout}
 	bridge, err := newNativeCompatBridge(ctx, invocation, request)
 	if err != nil {
 		return err
 	}
-	defer bridge.Close()
+	defer func() { returnErr = errors.Join(returnErr, bridge.Close()) }()
 	nativeSession, err := bridge.resolveSession(ctx, request)
 	if err != nil {
 		return err
@@ -501,7 +501,7 @@ func claudeSettingsResult(request compatibility.Request) map[string]any {
 	}
 }
 
-func runClaudeStream(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) error {
+func runClaudeStream(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) (returnErr error) {
 	type queuedPrompt struct {
 		uuid   string
 		prompt string
@@ -521,7 +521,7 @@ func runClaudeStream(ctx context.Context, invocation compatibility.Invocation, r
 	if err != nil {
 		return err
 	}
-	defer bridge.Close()
+	defer func() { returnErr = errors.Join(returnErr, bridge.Close()) }()
 	nativeSession, err := bridge.resolveSession(ctx, request)
 	if err != nil {
 		return err
@@ -818,12 +818,12 @@ func protocolTextBlocks(raw json.RawMessage) (string, error) {
 	return strings.Join(parts, ""), nil
 }
 
-func runCopilotACP(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) error {
+func runCopilotACP(ctx context.Context, invocation compatibility.Invocation, request compatibility.Request) (returnErr error) {
 	bridge, err := newNativeCompatBridge(ctx, invocation, request)
 	if err != nil {
 		return err
 	}
-	defer bridge.Close()
+	defer func() { returnErr = errors.Join(returnErr, bridge.Close()) }()
 	type sessionState struct {
 		turns      int
 		workingDir string

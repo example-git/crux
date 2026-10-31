@@ -15,7 +15,7 @@ import (
 	"github.com/example-git/crux/internal/fsext"
 )
 
-func globFiles(ctx context.Context, pattern, searchPath string, limit int) ([]string, bool, error) {
+func GlobFiles(ctx context.Context, pattern, searchPath string, limit int) ([]string, bool, error) {
 	// Scope the walk to the pattern's literal directory prefix. A pattern
 	// like "internal/agent/*.go" only needs to walk "internal/agent", so we
 	// start there instead of enumerating the entire tree and filtering.

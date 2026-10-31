@@ -3,6 +3,7 @@ package dialog
 import (
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/stretchr/testify/require"
 
 	"github.com/example-git/crux/internal/config"
@@ -26,6 +27,63 @@ func TestCommandsIncludesAgentDefinitionCreator(t *testing.T) {
 		break
 	}
 	require.True(t, found)
+}
+
+func TestCommandsGoalInsertsGoalCommand(t *testing.T) {
+	theme := styles.ThemeForProvider("")
+	ws := &mcpServersTestWorkspace{cfg: &config.Config{}}
+	commands, err := NewCommands(&common.Common{Workspace: ws, Styles: &theme}, "", false, false, false, nil, nil)
+	require.NoError(t, err)
+
+	for _, item := range commands.defaultCommands() {
+		if item.ID() != "goal" {
+			continue
+		}
+		action, ok := item.Action().(ActionInsertCommand)
+		require.True(t, ok)
+		require.Equal(t, "/goal ", action.Value)
+		return
+	}
+	t.Fatal("goal command not found")
+}
+
+func TestCommandsGoalControlsShowUsage(t *testing.T) {
+	theme := styles.ThemeForProvider("")
+	ws := &mcpServersTestWorkspace{cfg: &config.Config{}}
+	commands, err := NewCommands(&common.Common{Workspace: ws, Styles: &theme}, "s1", true, false, false, nil, nil)
+	require.NoError(t, err)
+	items := make(map[string]*CommandItem)
+	for _, item := range commands.defaultCommands() {
+		items[item.ID()] = item
+	}
+	for _, test := range []struct {
+		id, command, usage, meaning string
+	}{
+		{"goal", "/goal ", "/goal <objective> or /goal set <objective>", "starts a goal"},
+		{"goal-status", "/goal status", "/goal or /goal status", "objective and state"},
+		{"goal-stop", "/goal stop", "/goal stop", "cancels now; /goal resume continues later"},
+		{"goal-pause", "/goal pause", "/goal pause", "lets this turn finish, then pauses"},
+		{"goal-resume", "/goal resume", "/goal resume", "continues the saved goal"},
+		{"goal-complete", "/goal complete", "/goal complete", "marks the goal as finished"},
+		{"goal-clear", "/goal clear", "/goal clear", "removes the saved goal"},
+	} {
+		t.Run(test.id, func(t *testing.T) {
+			require.Contains(t, items, test.id)
+			item := items[test.id]
+			action, ok := item.Action().(ActionInsertCommand)
+			require.True(t, ok)
+			require.Equal(t, test.command, action.Value)
+			require.Contains(t, item.Filter(), test.usage)
+			for _, width := range []int{60, 80} {
+				rendered := ansi.Strip(item.Render(width))
+				require.Contains(t, rendered, test.usage)
+				require.Contains(t, rendered, test.meaning)
+			}
+			if test.id == "goal-stop" {
+				require.Equal(t, "esc", item.Shortcut())
+			}
+		})
+	}
 }
 
 func TestCommandsIncludesTmuxSessionsPicker(t *testing.T) {
@@ -114,4 +172,20 @@ func TestCommandsIncludesPlanToggleForActiveSession(t *testing.T) {
 	for _, item := range withoutSession.defaultCommands() {
 		require.NotEqual(t, "toggle_plan", item.id)
 	}
+}
+
+func TestCommandsStopGoalInsertsStopCommand(t *testing.T) {
+	theme := styles.ThemeForProvider("")
+	ws := &mcpServersTestWorkspace{cfg: &config.Config{}}
+	commands, err := NewCommands(&common.Common{Workspace: ws, Styles: &theme}, "s1", true, false, false, nil, nil)
+	require.NoError(t, err)
+	for _, item := range commands.defaultCommands() {
+		if item.ID() == "goal-stop" {
+			action, ok := item.Action().(ActionInsertCommand)
+			require.True(t, ok)
+			require.Equal(t, "/goal stop", action.Value)
+			return
+		}
+	}
+	t.Fatal("stop goal command not found")
 }

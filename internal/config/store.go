@@ -19,6 +19,7 @@ import (
 
 	"github.com/example-git/crux/foundation/catalog"
 	"github.com/example-git/crux/internal/env"
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/oauth"
 	"github.com/example-git/crux/internal/oauth/accounts"
@@ -2742,6 +2743,7 @@ func (s *ConfigStore) loadReloadConfigInputs(
 		workspaceData, workspaceErr = os.ReadFile(workspacePath)
 	}
 	basis.source(workspacePath, workspaceData, workspaceData, workspaceErr == nil)
+	basis.assignReadRoles(baseEnvironment, workspacePath)
 	if basis != nil && workspaceErr != nil && !errors.Is(workspaceErr, os.ErrNotExist) {
 		basis.valid = false
 	}
@@ -2968,7 +2970,24 @@ func (s *ConfigStore) reloadFromDiskWithCredentialCaptureLocked(ctx context.Cont
 	}
 	cfg.authenticationBasis = basis
 	if len(authoredPaths) > 0 {
-		configPaths = slices.Clone(basis.order[:len(basis.order)-1])
+		configPaths, err = authenticationGlobalInputPaths(baseEnvironment)
+		if err != nil {
+			return err
+		}
+		if !s.globalOnly {
+			boundary := s.workingDir
+			if cached, ok := worktreeRootCache.Load(s.workingDir); ok && cached.(string) != "" {
+				boundary = cached.(string)
+			}
+			_, projected, lookupErr := fsext.LookupBoundedWithCreatedFiles(ctx, s.workingDir, boundary, authoredPaths,
+				"."+appName+"rc", appName+"rc", "."+appName+".json", appName+".json")
+			if lookupErr != nil {
+				return lookupErr
+			}
+			slices.Reverse(projected)
+			configPaths = append(configPaths, projected...)
+		}
+		configPaths = uniqueCleanConfigPaths(configPaths)
 	}
 
 	s.configMu.Lock()

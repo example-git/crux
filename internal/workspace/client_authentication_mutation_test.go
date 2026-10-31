@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -732,6 +733,18 @@ func TestClientAuthenticationMutationGenericReconcileRejectsChangedCache(t *test
 	}
 }
 
+func TestClientAuthenticationMutationRepeatedCurrentAccount(t *testing.T) {
+	f := newClientAuthenticationFixture(t, false)
+	f.attach(t)
+	request := providerauth.SwitchRequest{OperationID: strings.Repeat("a", 32), Target: f.target(t), AccountID: f.second.ID}
+	_, err := f.w.switchClientAuthentication(t.Context(), request)
+	require.NoError(t, err)
+	current := f.target(t)
+	outcome, err := f.w.switchClientAuthentication(t.Context(), providerauth.SwitchRequest{OperationID: strings.Repeat("b", 32), Target: current, AccountID: f.second.ID})
+	require.NoError(t, err, "repeated current account selection failed: deadline=%t canceled=%t progress=%+v", errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled), outcome.Progress)
+	require.EqualValues(t, 2, f.puts.Load())
+}
+
 func TestClientAuthenticationMutationEvictedTargetCannotRecollect(t *testing.T) {
 	f := newClientAuthenticationFixture(t, false)
 	f.attach(t)
@@ -750,8 +763,8 @@ func TestClientAuthenticationMutationEvictedTargetCannotRecollect(t *testing.T) 
 	require.ErrorIs(t, err, providerauth.ErrStale)
 	require.EqualValues(t, 1, f.puts.Load())
 	requireClientAuthenticationFilesUnchanged(t, paths, infos, bodies)
-	_, err = f.w.switchClientAuthentication(t.Context(), providerauth.SwitchRequest{OperationID: strings.Repeat("b", 32), Target: current, AccountID: f.second.ID})
-	require.NoError(t, err, "bounded retention must not veto a valid current target")
+	outcome, err := f.w.switchClientAuthentication(t.Context(), providerauth.SwitchRequest{OperationID: strings.Repeat("b", 32), Target: current, AccountID: f.second.ID})
+	require.NoError(t, err, "bounded retention must not veto a valid current target: deadline=%t canceled=%t progress=%+v", errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled), outcome.Progress)
 	require.EqualValues(t, 2, f.puts.Load())
 }
 

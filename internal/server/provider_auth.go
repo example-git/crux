@@ -76,6 +76,27 @@ func (c *controllerV1) handlePostWorkspaceProviderAccounts(w http.ResponseWriter
 	writeProviderAuthResponse(w, state)
 }
 
+func (c *controllerV1) handlePostWorkspaceExternalAuthentication(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, proto.MaxProviderAuthRequestBytes))
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid external authentication request")
+		return
+	}
+	request, err := proto.DecodeExternalAuthenticationRequest(body)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid external authentication request")
+		return
+	}
+	workspaceID := r.PathValue("id")
+	state, err := c.backend.ExternalAuthentication(r.Context(), workspaceID, request)
+	if err != nil {
+		c.providerAuthError(w, r, err)
+		return
+	}
+	writeProviderAuthResponse(w, proto.ExternalAuthenticationResponse{WorkspaceID: workspaceID, Service: request.Service, Authentication: state})
+}
+
 func (c *controllerV1) providerAuthError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, backend.ErrWorkspaceNotFound), errors.Is(err, backend.ErrWorkspaceClosing):

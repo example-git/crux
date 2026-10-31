@@ -201,21 +201,33 @@ func mcpEventTypeToProto(t mcp.EventType) proto.MCPEventType {
 
 func sessionToProto(s session.Session) proto.Session {
 	return proto.Session{
-		ID:                s.ID,
-		ParentSessionID:   s.ParentSessionID,
-		Title:             s.Title,
-		SummaryMessageID:  s.SummaryMessageID,
-		MessageCount:      s.MessageCount,
-		PromptTokens:      s.PromptTokens,
-		CompletionTokens:  s.CompletionTokens,
-		EstimatedUsage:    s.EstimatedUsage,
-		UnseenLocalTokens: s.UnseenLocalTokens,
-		Cost:              s.Cost,
-		Todos:             todosToProto(s.Todos),
-		Mode:              string(s.Mode),
-		Plan:              s.Plan,
-		CreatedAt:         s.CreatedAt,
-		UpdatedAt:         s.UpdatedAt,
+		ID:                  s.ID,
+		ParentSessionID:     s.ParentSessionID,
+		ForkedFromSessionID: s.ForkedFromSessionID,
+		Archived:            s.Archived,
+		Title:               s.Title,
+		SummaryMessageID:    s.SummaryMessageID,
+		MessageCount:        s.MessageCount,
+		PromptTokens:        s.PromptTokens,
+		CompletionTokens:    s.CompletionTokens,
+		EstimatedUsage:      s.EstimatedUsage,
+		UnseenLocalTokens:   s.UnseenLocalTokens,
+		Cost:                s.Cost,
+		Todos:               todosToProto(s.Todos),
+		Mode:                string(s.Mode),
+		Plan:                s.Plan,
+		Goal: proto.Goal{
+			Objective:  s.Goal.Objective,
+			Status:     string(s.Goal.Status),
+			Generation: s.Goal.Generation,
+			Error:      s.Goal.Error,
+			UpdatedAt:  s.Goal.UpdatedAt,
+		},
+		AnalysisEffort: s.AnalysisEffort,
+		Model:          s.Model,
+		Provider:       s.Provider,
+		CreatedAt:      s.CreatedAt,
+		UpdatedAt:      s.UpdatedAt,
 	}
 }
 
@@ -275,6 +287,9 @@ func messageToProto(m message.Message) proto.Message {
 	msg := proto.Message{
 		ID:               m.ID,
 		SessionID:        m.SessionID,
+		SubmissionID:     m.SubmissionID,
+		RunID:            m.RunID,
+		ItemID:           m.ItemID,
 		Role:             proto.MessageRole(m.Role),
 		Model:            m.Model,
 		Provider:         m.Provider,
@@ -289,8 +304,11 @@ func messageToProto(m message.Message) proto.Message {
 			msg.Parts = append(msg.Parts, proto.TextContent{
 				Context:          v.Context,
 				Text:             v.Text,
+				TextElements:     v.TextElements,
 				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
+		case message.SkillContent:
+			msg.Parts = append(msg.Parts, proto.SkillContent{Name: v.Name, Path: v.Path, Content: v.Content})
 		case message.ReasoningContent:
 			msg.Parts = append(msg.Parts, proto.ReasoningContent{
 				Thinking:         v.Thinking,

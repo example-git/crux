@@ -123,7 +123,7 @@ fi
 
 ```jsonc
 {
-  "matcher": "^(view|ls|grep|glob)$",
+  "matcher": "^(view|ls|search)$",
   "command": "echo '{\"decision\":\"allow\"}'"
 }
 ```

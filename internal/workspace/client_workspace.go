@@ -202,6 +202,54 @@ func (w *ClientWorkspace) SetSessionMode(ctx context.Context, sessionID string, 
 	return protoToSession(*saved), nil
 }
 
+func (w *ClientWorkspace) SetSessionAnalysisEffort(ctx context.Context, sessionID, effort string) (session.Session, error) {
+	saved, err := w.client.SetSessionAnalysisEffort(ctx, w.workspaceID(), sessionID, effort)
+	if err != nil {
+		return session.Session{}, err
+	}
+	return protoToSession(*saved), nil
+}
+
+func (w *ClientWorkspace) SetSessionGoal(ctx context.Context, sessionID, objective string) (session.Session, error) {
+	saved, err := w.client.UpdateSessionGoal(ctx, w.workspaceID(), sessionID, proto.SessionGoalRequest{
+		Action:    "set",
+		Objective: objective,
+	})
+	if err != nil {
+		return session.Session{}, err
+	}
+	return protoToSession(*saved), nil
+}
+
+func (w *ClientWorkspace) SetSessionGoalStatus(ctx context.Context, sessionID string, generation int64, status session.GoalStatus, goalError string) (session.Session, error) {
+	saved, err := w.client.UpdateSessionGoal(ctx, w.workspaceID(), sessionID, proto.SessionGoalRequest{
+		Action:     "status",
+		Status:     string(status),
+		Generation: generation,
+		Error:      goalError,
+	})
+	if err != nil {
+		return session.Session{}, err
+	}
+	return protoToSession(*saved), nil
+}
+
+func (w *ClientWorkspace) StopSessionGoal(ctx context.Context, sessionID string, generation int64) (session.Session, error) {
+	saved, err := w.client.UpdateSessionGoal(ctx, w.workspaceID(), sessionID, proto.SessionGoalRequest{Action: "stop", Generation: generation})
+	if err != nil {
+		return session.Session{}, err
+	}
+	return protoToSession(*saved), nil
+}
+
+func (w *ClientWorkspace) ClearSessionGoal(ctx context.Context, sessionID string) (session.Session, error) {
+	saved, err := w.client.UpdateSessionGoal(ctx, w.workspaceID(), sessionID, proto.SessionGoalRequest{Action: "clear"})
+	if err != nil {
+		return session.Session{}, err
+	}
+	return protoToSession(*saved), nil
+}
+
 func (w *ClientWorkspace) DeleteSession(ctx context.Context, sessionID string) error {
 	return w.client.DeleteSession(ctx, w.workspaceID(), sessionID)
 }
@@ -405,6 +453,14 @@ func (w *ClientWorkspace) AgentSummarize(ctx context.Context, sessionID string) 
 
 func (w *ClientWorkspace) SessionRewind(ctx context.Context, sessionID, messageID string, summarize, restoreFiles bool) error {
 	return w.client.SessionRewind(ctx, w.workspaceID(), sessionID, messageID, summarize, restoreFiles)
+}
+
+func (w *ClientWorkspace) SessionRollback(ctx context.Context, sessionID, messageID string) (message.RollbackResult, error) {
+	result, err := w.client.SessionRollback(ctx, w.workspaceID(), sessionID, messageID)
+	if err != nil {
+		return message.RollbackResult{}, err
+	}
+	return message.RollbackResult{Session: protoToSession(result.Session), Messages: protoToMessages(result.Messages)}, nil
 }
 
 func (w *ClientWorkspace) AgentSuggestPrompt(ctx context.Context, sessionID string) (string, error) {
@@ -1581,21 +1637,33 @@ func protoToMCPEventType(t proto.MCPEventType) mcp.EventType {
 // payload directly before this conversion runs.
 func protoToSession(s proto.Session) session.Session {
 	return session.Session{
-		ID:                s.ID,
-		ParentSessionID:   s.ParentSessionID,
-		Title:             s.Title,
-		SummaryMessageID:  s.SummaryMessageID,
-		MessageCount:      s.MessageCount,
-		PromptTokens:      s.PromptTokens,
-		CompletionTokens:  s.CompletionTokens,
-		EstimatedUsage:    s.EstimatedUsage,
-		UnseenLocalTokens: s.UnseenLocalTokens,
-		Cost:              s.Cost,
-		Todos:             protoToTodos(s.Todos),
-		Mode:              session.Mode(s.Mode),
-		Plan:              s.Plan,
-		CreatedAt:         s.CreatedAt,
-		UpdatedAt:         s.UpdatedAt,
+		ID:                  s.ID,
+		ParentSessionID:     s.ParentSessionID,
+		ForkedFromSessionID: s.ForkedFromSessionID,
+		Archived:            s.Archived,
+		Title:               s.Title,
+		SummaryMessageID:    s.SummaryMessageID,
+		MessageCount:        s.MessageCount,
+		PromptTokens:        s.PromptTokens,
+		CompletionTokens:    s.CompletionTokens,
+		EstimatedUsage:      s.EstimatedUsage,
+		UnseenLocalTokens:   s.UnseenLocalTokens,
+		Cost:                s.Cost,
+		Todos:               protoToTodos(s.Todos),
+		Mode:                session.Mode(s.Mode),
+		Plan:                s.Plan,
+		Goal: session.Goal{
+			Objective:  s.Goal.Objective,
+			Status:     session.GoalStatus(s.Goal.Status),
+			Generation: s.Goal.Generation,
+			Error:      s.Goal.Error,
+			UpdatedAt:  s.Goal.UpdatedAt,
+		},
+		AnalysisEffort: s.AnalysisEffort,
+		Model:          s.Model,
+		Provider:       s.Provider,
+		CreatedAt:      s.CreatedAt,
+		UpdatedAt:      s.UpdatedAt,
 	}
 }
 
@@ -1631,6 +1699,9 @@ func protoToMessage(m proto.Message) message.Message {
 	msg := message.Message{
 		ID:               m.ID,
 		SessionID:        m.SessionID,
+		SubmissionID:     m.SubmissionID,
+		RunID:            m.RunID,
+		ItemID:           m.ItemID,
 		Role:             message.MessageRole(m.Role),
 		Model:            m.Model,
 		Provider:         m.Provider,
@@ -1645,8 +1716,11 @@ func protoToMessage(m proto.Message) message.Message {
 			msg.Parts = append(msg.Parts, message.TextContent{
 				Context:          v.Context,
 				Text:             v.Text,
+				TextElements:     v.TextElements,
 				ProviderMetadata: v.ProviderMetadata.Clone(),
 			})
+		case proto.SkillContent:
+			msg.Parts = append(msg.Parts, message.SkillContent{Name: v.Name, Path: v.Path, Content: v.Content})
 		case proto.ReasoningContent:
 			msg.Parts = append(msg.Parts, message.ReasoningContent{
 				Thinking:         v.Thinking,
@@ -1722,21 +1796,33 @@ func protoToFiles(files []proto.File) []history.File {
 
 func sessionToProto(s session.Session) proto.Session {
 	return proto.Session{
-		ID:                s.ID,
-		ParentSessionID:   s.ParentSessionID,
-		Title:             s.Title,
-		SummaryMessageID:  s.SummaryMessageID,
-		MessageCount:      s.MessageCount,
-		PromptTokens:      s.PromptTokens,
-		CompletionTokens:  s.CompletionTokens,
-		EstimatedUsage:    s.EstimatedUsage,
-		UnseenLocalTokens: s.UnseenLocalTokens,
-		Cost:              s.Cost,
-		Todos:             todosToProto(s.Todos),
-		Mode:              string(s.Mode),
-		Plan:              s.Plan,
-		CreatedAt:         s.CreatedAt,
-		UpdatedAt:         s.UpdatedAt,
+		ID:                  s.ID,
+		ParentSessionID:     s.ParentSessionID,
+		ForkedFromSessionID: s.ForkedFromSessionID,
+		Archived:            s.Archived,
+		Title:               s.Title,
+		SummaryMessageID:    s.SummaryMessageID,
+		MessageCount:        s.MessageCount,
+		PromptTokens:        s.PromptTokens,
+		CompletionTokens:    s.CompletionTokens,
+		EstimatedUsage:      s.EstimatedUsage,
+		UnseenLocalTokens:   s.UnseenLocalTokens,
+		Cost:                s.Cost,
+		Todos:               todosToProto(s.Todos),
+		Mode:                string(s.Mode),
+		Plan:                s.Plan,
+		Goal: proto.Goal{
+			Objective:  s.Goal.Objective,
+			Status:     string(s.Goal.Status),
+			Generation: s.Goal.Generation,
+			Error:      s.Goal.Error,
+			UpdatedAt:  s.Goal.UpdatedAt,
+		},
+		AnalysisEffort: s.AnalysisEffort,
+		Model:          s.Model,
+		Provider:       s.Provider,
+		CreatedAt:      s.CreatedAt,
+		UpdatedAt:      s.UpdatedAt,
 	}
 }
 

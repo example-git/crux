@@ -56,6 +56,48 @@ func TestCodexExecutionPoliciesMapWithoutApproximation(t *testing.T) {
 	require.ErrorContains(t, err, "reviewer")
 }
 
+func TestCodexTurnSandboxPoliciesParseWithoutApproximation(t *testing.T) {
+	inherited := defaultCodexExecutionPolicy()
+	for _, test := range []struct {
+		name       string
+		policy     string
+		approval   string
+		wantMode   proto.AgentPermissionMode
+		wantErr    string
+		wantPolicy codexExecutionPolicy
+	}{
+		{name: "omitted inherits", wantPolicy: inherited},
+		{name: "null inherits", policy: `null`, wantPolicy: inherited},
+		{name: "read only", policy: `{"type":"readOnly"}`, approval: "never", wantMode: proto.AgentPermissionDeny},
+		{name: "workspace write", policy: `{"type":"workspaceWrite","writableRoots":[],"networkAccess":false,"excludeTmpdirEnvVar":false,"excludeSlashTmp":false}`, wantMode: proto.AgentPermissionInteractive},
+		{name: "danger full access", policy: `{"type":"dangerFullAccess"}`, approval: "never", wantMode: proto.AgentPermissionBypass},
+		{name: "not object", policy: `"readOnly"`, wantErr: "sandboxPolicy must be an object with a type"},
+		{name: "missing type", policy: `{}`, wantErr: "sandboxPolicy.type is required"},
+		{name: "external sandbox", policy: `{"type":"externalSandbox"}`, wantErr: `sandbox policy "externalSandbox" is not supported`},
+		{name: "network access", policy: `{"type":"readOnly","networkAccess":true}`, wantErr: "sandboxPolicy.networkAccess is not supported"},
+		{name: "writable roots", policy: `{"type":"workspaceWrite","writableRoots":["/tmp"]}`, wantErr: "sandboxPolicy.writableRoots is not supported"},
+		{name: "unknown field", policy: `{"type":"readOnly","unknown":false}`, wantErr: "sandboxPolicy.unknown is not supported"},
+		{name: "invalid boolean", policy: `{"type":"readOnly","networkAccess":"false"}`, wantErr: "sandboxPolicy.networkAccess must be a boolean"},
+		{name: "invalid roots", policy: `{"type":"workspaceWrite","writableRoots":false}`, wantErr: "sandboxPolicy.writableRoots must be an array of paths"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			policy, err := parseCodexTurnSandboxPolicy(json.RawMessage(test.policy), inherited)
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if test.policy == "" || test.policy == "null" {
+				require.Equal(t, test.wantPolicy, policy)
+				return
+			}
+			policy, err = parseCodexExecutionPolicy(test.approval, "", nil, policy)
+			require.NoError(t, err)
+			require.Equal(t, test.wantMode, policy.permissionMode)
+		})
+	}
+}
+
 func TestCodexAppServerReportsEnforcedPoliciesAndRejectsUnsupportedPolicy(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -74,17 +116,18 @@ func TestCodexAppServerReportsEnforcedPoliciesAndRejectsUnsupportedPolicy(t *tes
 			workingDir := codexNativeAPIFixture(t)
 			var input bytes.Buffer
 			encoder := json.NewEncoder(&input)
-			require.NoError(t, encoder.Encode(map[string]any{"id": 1, "method": "initialize", "params": map[string]any{}}))
+			require.NoError(t, encoder.Encode(map[string]any{"id": 1, "method": "initialize", "params": map[string]any{"clientInfo": map[string]any{"name": "test", "version": "1"}}}))
 			require.NoError(t, encoder.Encode(map[string]any{"id": 2, "method": "thread/start", "params": map[string]any{
 				"cwd": workingDir, "approvalPolicy": test.approval, "approvalsReviewer": "user", "sandbox": test.sandbox, "ephemeral": test.ephemeral,
 			}}))
 			var output bytes.Buffer
+			stdin := io.NopCloser(&input)
 			request := compatibility.Request{
 				Source: "codex", Protocol: compatibility.ProtocolCodexAppServer, Style: compatibility.ExecutionHeadless,
-				WorkingDir: workingDir, Prompt: compatibility.Prompt{Source: compatibility.PromptStreamJSON, Stdin: &input},
+				WorkingDir: workingDir, Prompt: compatibility.Prompt{Source: compatibility.PromptStreamJSON, Stdin: stdin},
 				Session: compatibility.Session{Mode: compatibility.SessionNew, Persistent: true},
 			}
-			require.NoError(t, runCodexAppServer(t.Context(), protocolInvocation("unused", workingDir, &input, &output), request))
+			require.NoError(t, runCodexAppServer(t.Context(), protocolInvocation("unused", workingDir, stdin, &output), request))
 			responses := decodeJSONLines(t, output.Bytes())
 			require.GreaterOrEqual(t, len(responses), 2)
 			if test.wantError {
@@ -113,9 +156,58 @@ func TestCodexItemStatusesValidateAgainstGeneratedSchema(t *testing.T) {
 		result := compiled.ValidateJSON(item)
 		require.True(t, result.IsValid(), "status %s: %+v", status, result.Errors)
 	}
+	userMessage, err := json.Marshal(map[string]any{"id": "user", "type": "userMessage", "clientId": nil, "content": []any{
+		map[string]any{"type": "text", "text": "hello", "textElements": []any{"mention", map[string]any{"kind": "file"}}},
+		map[string]any{"type": "skill", "name": "fixture", "path": "/skill"},
+	}})
+	require.NoError(t, err)
+	require.True(t, compiled.ValidateJSON(userMessage).IsValid())
+	compaction, err := json.Marshal(map[string]any{"id": "item", "type": "contextCompaction"})
+	require.NoError(t, err)
+	require.True(t, compiled.ValidateJSON(compaction).IsValid())
+	compactionWithStatus, err := json.Marshal(map[string]any{"id": "item", "type": "contextCompaction", "status": "completed"})
+	require.NoError(t, err)
+	require.False(t, compiled.ValidateJSON(compactionWithStatus).IsValid())
 	missing, err := json.Marshal(map[string]any{"id": "item", "type": "agentMessage", "text": "text"})
 	require.NoError(t, err)
 	require.False(t, compiled.ValidateJSON(missing).IsValid())
+}
+
+func TestCodexRuntimeNotificationsValidateAgainstGeneratedSchema(t *testing.T) {
+	schemaData, err := json.Marshal(codexServerNotificationSchema())
+	require.NoError(t, err)
+	compiled, err := validator.NewCompiler().Compile(schemaData)
+	require.NoError(t, err)
+
+	thread := map[string]any{
+		"id": "thread", "sessionId": "session", "forkedFromId": nil, "parentThreadId": nil,
+		"name": nil, "model": nil, "modelProvider": "fixture", "status": map[string]any{"type": "idle"}, "turns": []any{},
+	}
+	turn := map[string]any{"id": "turn", "status": "inProgress", "items": []any{}, "error": nil}
+	userItem := map[string]any{
+		"id": "user", "type": "userMessage", "clientId": nil,
+		"content": []any{
+			map[string]any{"type": "text", "text": "hello", "textElements": []any{"mention", map[string]any{"kind": "file"}}},
+			map[string]any{"type": "skill", "name": "fixture", "path": "/skill"},
+		},
+	}
+	agentItem := map[string]any{"id": "agent", "type": "agentMessage", "status": "inProgress", "text": ""}
+	for _, notification := range []map[string]any{
+		{"method": "thread/started", "params": map[string]any{"thread": thread}},
+		{"method": "thread/status/changed", "params": map[string]any{"threadId": "thread", "status": map[string]any{"type": "active", "activeFlags": []any{}}}},
+		{"method": "thread/closed", "params": map[string]any{"threadId": "thread"}},
+		{"method": "turn/started", "params": map[string]any{"threadId": "thread", "turn": turn}},
+		{"method": "item/started", "params": map[string]any{"threadId": "thread", "turnId": "turn", "item": userItem}},
+		{"method": "item/agentMessage/delta", "params": map[string]any{"threadId": "thread", "turnId": "turn", "itemId": "agent", "delta": "hello"}},
+		{"method": "item/commandExecution/outputDelta", "params": map[string]any{"threadId": "thread", "turnId": "turn", "itemId": "command", "delta": "output"}},
+		{"method": "item/completed", "params": map[string]any{"threadId": "thread", "turnId": "turn", "item": agentItem}},
+		{"method": "turn/completed", "params": map[string]any{"threadId": "thread", "turn": turn}},
+	} {
+		data, marshalErr := json.Marshal(notification)
+		require.NoError(t, marshalErr)
+		result := compiled.ValidateJSON(data)
+		require.True(t, result.IsValid(), "%s: %+v", notification["method"], result.Errors)
+	}
 }
 
 func TestCodexAppServerAdapterPreservesGlobalEphemeralFlag(t *testing.T) {
@@ -219,6 +311,45 @@ func TestCodexSchemaGenerationIsByteDeterministic(t *testing.T) {
 		methods = append(methods, method)
 	}
 	require.IsIncreasing(t, methods)
+}
+
+func TestCodexGeneratedMethodsMatchSupportedManifest(t *testing.T) {
+	generated := t.TempDir()
+	require.NoError(t, writeCodexJSONSchemas(generated))
+
+	var clientSchema map[string]any
+	clientData, err := os.ReadFile(filepath.Join(generated, "ClientRequest.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(clientData, &clientSchema))
+	requestMethods := make([]string, 0)
+	requestMethodSet := make(map[string]struct{})
+	for _, raw := range clientSchema["oneOf"].([]any) {
+		method := raw.(map[string]any)["properties"].(map[string]any)["method"].(map[string]any)["enum"].([]any)[0].(string)
+		requestMethods = append(requestMethods, method)
+		requestMethodSet[method] = struct{}{}
+	}
+	require.Len(t, requestMethodSet, len(requestMethods))
+
+	supportedRequests := make([]string, 0)
+	for _, method := range codexSupportedMethods() {
+		if method != "initialized" {
+			supportedRequests = append(supportedRequests, method)
+		}
+	}
+	require.ElementsMatch(t, supportedRequests, requestMethods)
+
+	var manifest struct {
+		Methods []string `json:"methods"`
+	}
+	manifestData, err := os.ReadFile(filepath.Join(generated, "crux_compatibility.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(manifestData, &manifest))
+	manifestMethodSet := make(map[string]struct{}, len(manifest.Methods))
+	for _, method := range manifest.Methods {
+		manifestMethodSet[method] = struct{}{}
+	}
+	require.Len(t, manifestMethodSet, len(manifest.Methods))
+	require.ElementsMatch(t, codexSupportedMethods(), manifest.Methods)
 }
 
 func listFixtureSessions(t *testing.T, workingDir string) []proto.Session {

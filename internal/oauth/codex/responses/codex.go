@@ -447,7 +447,19 @@ func (g *languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.
 			}
 		}
 
-		events := g.client.stream(ctx, frame, g.provider, conversationID, purpose)
+		client := g.client
+		if value, ok := call.ProviderOptions[Name].(*ProviderOptions); ok && len(value.RequestHeaders) != 0 {
+			cloned := *g.client
+			cloned.headers = make(map[string]string, len(g.client.headers)+len(value.RequestHeaders))
+			for key, headerValue := range g.client.headers {
+				cloned.headers[key] = headerValue
+			}
+			for key, headerValue := range value.RequestHeaders {
+				cloned.headers[key] = headerValue
+			}
+			client = &cloned
+		}
+		events := client.stream(ctx, frame, g.provider, conversationID, purpose)
 
 		var blockCounter int
 		var textActive bool

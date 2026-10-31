@@ -9,7 +9,7 @@ import (
 
 type copilotAdapter struct{}
 
-func (copilotAdapter) Translate(_ context.Context, invocation compatibility.Invocation) (compatibility.Request, error) {
+func (copilotAdapter) Translate(ctx context.Context, invocation compatibility.Invocation) (compatibility.Request, error) {
 	request := compatibility.Request{
 		Source:     "copilot",
 		Style:      compatibility.ExecutionInteractive,
@@ -19,7 +19,7 @@ func (copilotAdapter) Translate(_ context.Context, invocation compatibility.Invo
 	}
 	if len(invocation.Args) != 0 && !strings.HasPrefix(invocation.Args[0], "-") && enum(invocation.Args[0], "completion", "help", "init", "login", "mcp", "plugin", "plugins", "skill", "update", "version", "app") {
 		if invocation.Args[0] == "version" {
-			return compatibility.Request{}, successOutput("GitHub Copilot CLI 1.0.80\n", false)
+			return compatibility.Request{}, compatibilityVersionOutput(ctx, invocation, "copilot")
 		}
 		return compatibility.Request{}, copilotError("command %q is not supported by the Crux compatibility layer", invocation.Args[0])
 	}
@@ -36,7 +36,7 @@ func (copilotAdapter) Translate(_ context.Context, invocation compatibility.Invo
 		case "-h", "--help":
 			return compatibility.Request{}, successOutput("Usage: copilot [options]\n\nOptions:\n  -i, --interactive <prompt>\n  -p, --prompt <prompt>\n  --output-format <text|json>\n", false)
 		case "-v", "--version":
-			return compatibility.Request{}, successOutput("GitHub Copilot CLI 1.0.80\n", false)
+			return compatibility.Request{}, compatibilityVersionOutput(ctx, invocation, "copilot")
 		case "-p", "--prompt":
 			value, err := parser.value(name, argument)
 			if err != nil {
@@ -59,9 +59,7 @@ func (copilotAdapter) Translate(_ context.Context, invocation compatibility.Invo
 			promptSet = true
 			request.Prompt = compatibility.Prompt{Source: compatibility.PromptArguments, Text: value}
 		case "--context":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
-				return compatibility.Request{}, copilotError(err.Error())
-			}
+			consumeNoopOptionalValue(&parser, argument)
 		case "--connect", "--share", "-w", "--worktree":
 			consumeNoopOptionalValue(&parser, argument)
 		case "-C":
@@ -114,13 +112,9 @@ func (copilotAdapter) Translate(_ context.Context, invocation compatibility.Invo
 			request.Metadata = ensureMetadata(request.Metadata)
 			request.Metadata["max_autopilot_continues"] = value
 		case "--max-ai-credits", "--session-idle-timeout":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
-				return compatibility.Request{}, copilotError(err.Error())
-			}
+			consumeNoopOptionalValue(&parser, argument)
 		case "--dynamic-retrieval":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
-				return compatibility.Request{}, copilotError(err.Error())
-			}
+			consumeNoopOptionalValue(&parser, argument)
 		case "--continue":
 			request.Session.Mode = compatibility.SessionLatest
 		case "-r", "--resume":
@@ -188,9 +182,7 @@ func (copilotAdapter) Translate(_ context.Context, invocation compatibility.Invo
 			request.Metadata = ensureMetadata(request.Metadata)
 			request.Metadata[strings.TrimPrefix(name, "--")] = value
 		case "-n", "--name", "--secret-env-vars", "--plugin-dir", "--extension-sdk-path", "--log-dir", "--log-level", "--config-dir", "--prefer-version", "--host", "--auth-token-env":
-			if err := consumeNoopValue(&parser, name, argument); err != nil {
-				return compatibility.Request{}, copilotError(err.Error())
-			}
+			consumeNoopOptionalValue(&parser, argument)
 		case "--enable-memory", "--enable-reasoning-summaries", "--share-gist", "--allow-all-mcp-server-instructions", "--enable-all-github-mcp-tools", "--disable-builtin-mcps", "--banner", "--no-banner", "--bash-env", "--no-bash-env", "--mouse", "--no-mouse", "--no-color", "--no-auto-update", "--plain-diff", "--screen-reader", "--no-custom-instructions", "--disallow-temp-dir", "--no-ask-user", "--experimental", "--no-experimental", "--sandbox", "--no-sandbox", "--remote", "--no-remote", "--remote-export", "--no-remote-export", "--cloud", "--print-debug-info", "--with-token", "--binary-version", "--managed-server", "--no-auto-login":
 		case "--server", "--headless", "--ui-server":
 			serverMode = true
@@ -202,10 +194,7 @@ func (copilotAdapter) Translate(_ context.Context, invocation compatibility.Invo
 		case "--stdio":
 			stdioMode = true
 		case "--port":
-			if _, err := parser.value(name, argument); err != nil {
-				return compatibility.Request{}, copilotError(err.Error())
-			}
-			return compatibility.Request{}, copilotError("TCP transport is not supported by the Crux compatibility layer")
+			consumeNoopOptionalValue(&parser, argument)
 		case "--stream":
 			value, err := parser.value(name, argument)
 			if err != nil || !enum(value, "on", "off") {
@@ -214,7 +203,11 @@ func (copilotAdapter) Translate(_ context.Context, invocation compatibility.Invo
 			request.Metadata = ensureMetadata(request.Metadata)
 			request.Metadata["stream"] = value
 		default:
-			return compatibility.Request{}, copilotError("unknown option %q\nTry 'copilot --help' for more information.", argument)
+			if strings.HasPrefix(argument, "-") {
+				consumeNoopOptionalValue(&parser, argument)
+				continue
+			}
+			return compatibility.Request{}, copilotError("unexpected argument %q\nTry 'copilot --help' for more information.", argument)
 		}
 	}
 	if request.Protocol == "" && serverMode && !promptSet {

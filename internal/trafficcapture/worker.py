@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
+import re
 from pathlib import Path
 import platform
 import secrets
-import subprocess
+import signal
+import socket
 import tempfile
 import time
 import urllib.parse
@@ -15,6 +18,7 @@ import urllib.parse
 from argon2 import PasswordHasher
 import certifi
 from mitmproxy import options
+from mitmproxy.proxy import mode_servers
 from mitmproxy.tools.web.master import WebMaster
 
 PROXY_VARIABLES = (
@@ -35,6 +39,13 @@ TRUST_BUNDLE_VARIABLES = (
 )
 
 
+class WireGuardLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = re.sub(r"(?m)^(\s*PrivateKey\s*=).*$", r"\1 [redacted]", record.getMessage())
+        record.args = ()
+        return True
+
+
 def write_json(path: Path, value: dict[str, object]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=True))
@@ -42,15 +53,15 @@ def write_json(path: Path, value: dict[str, object]) -> None:
     temporary.replace(path)
 
 
-def terminate(process: subprocess.Popen[bytes] | None) -> None:
-    if process is None or process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=5)
+def manager_request(address: str, action: str, **values: object) -> dict:
+    with socket.socket(socket.AF_UNIX) as connection:
+        connection.connect(address)
+        connection.sendall((json.dumps({"action": action, **values}) + "\n").encode())
+        with connection.makefile("r") as response_file:
+            response = json.loads(response_file.readline())
+    if response.get("error"):
+        raise RuntimeError(response["error"])
+    return response.get("result") or {}
 
 
 def combined_bundle(certificate: Path, destination: Path) -> Path:
@@ -77,6 +88,32 @@ def target_environment(
         environment[name] = str(trust_bundle)
     environment["NODE_EXTRA_CA_CERTS"] = str(certificate)
     environment["DENO_CERT"] = str(trust_bundle)
+    environment["NODE_TLS_REJECT_UNAUTHORIZED"] = "0"
+    environment["GIT_SSL_NO_VERIFY"] = "true"
+    environment["PYTHONHTTPSVERIFY"] = "0"
+    hook_directory = trust_bundle.parent / "python-capture-tls"
+    hook_directory.mkdir(mode=0o700, exist_ok=True)
+    hook = hook_directory / "sitecustomize.py"
+    hook.write_text(
+        "import importlib.machinery\n"
+        "import importlib.util\n"
+        "import os\n"
+        "import ssl\n"
+        "import sys\n"
+        "_here = os.path.realpath(os.path.dirname(__file__))\n"
+        "_paths = [p for p in sys.path if os.path.realpath(p) != _here]\n"
+        "_spec = importlib.machinery.PathFinder.find_spec('sitecustomize', _paths)\n"
+        "if _spec is not None and _spec.loader is not None:\n"
+        "    _original = importlib.util.module_from_spec(_spec)\n"
+        "    sys.modules[__name__] = _original\n"
+        "    _spec.loader.exec_module(_original)\n"
+        "ssl._create_default_https_context = ssl._create_unverified_context\n"
+    )
+    hook.chmod(0o600)
+    inherited_python_path = environment.get("PYTHONPATH", "")
+    environment["PYTHONPATH"] = str(hook_directory) + (
+        os.pathsep + inherited_python_path if inherited_python_path else ""
+    )
     if platform.system() == "Darwin":
         setting = "x509sslcertoverrideplatform"
         entries = [
@@ -86,6 +123,8 @@ def target_environment(
         ]
         entries.append(setting + "=1")
         environment["GODEBUG"] = ",".join(entries)
+    for name in unset_names or []:
+        environment.pop(name, None)
     return environment
 
 
@@ -148,6 +187,8 @@ async def wait_for_parent_ready(path: Path) -> None:
 
 
 async def run_worker() -> int:
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    logging.getLogger("mitmproxy.proxy.mode_servers").addFilter(WireGuardLogFilter())
     config_path = Path(os.environ.pop("CRUX_TRAFFIC_CAPTURE_CONFIG"))
     try:
         config = json.loads(config_path.read_text())
@@ -165,9 +206,10 @@ async def run_worker() -> int:
         "tmux_socket": "crux-capture",
         "capture": str(capture_path),
         "pane_log": config["pane_log"],
+        "target_log": str(runtime_path / "target.log"),
+        "control_socket": config["control_socket"],
     }
     write_json(status_path, status)
-    target: subprocess.Popen[bytes] | None = None
     master: WebMaster | None = None
     master_task: asyncio.Task[None] | None = None
     return_code = 1
@@ -186,10 +228,12 @@ async def run_worker() -> int:
             master = WebMaster(opts, with_termlog=True)
             opts.update(
                 confdir=str(ca_path),
+                mode=["regular", f"wireguard:{runtime_path / 'wireguard-keys.json'}@{config['wireguard_port']}"],
                 listen_host=config["host"],
                 listen_port=int(config["port"]),
                 save_stream_file=str(output),
                 termlog_verbosity="info",
+                ssl_insecure=True,
                 web_host=config["host"],
                 web_open_browser=False,
                 web_password=PasswordHasher().hash(token),
@@ -219,26 +263,38 @@ async def run_worker() -> int:
                 trust_bundle,
                 config["unset_env"],
             )
-            target = subprocess.Popen(
-                config["command"],
-                cwd=config.get("cwd") or None,
-                env=environment,
-                pass_fds=tuple(config.get("pass_fds", ())),
+            wireguard_configuration = None
+            for instance in master.proxyserver.servers:
+                if isinstance(instance, mode_servers.WireGuardServerInstance):
+                    wireguard_configuration = instance.client_conf()
+            if not wireguard_configuration:
+                raise RuntimeError("WireGuard server did not provide its client configuration")
+            (runtime_path / "wireguard-keys.json").chmod(0o600)
+            for name in PROXY_VARIABLES:
+                environment.pop(name, None)
+            session = await asyncio.to_thread(
+                manager_request,
+                config["control_socket"],
+                "initialize",
+                environment=environment,
+                wireguard_configuration=wireguard_configuration,
             )
             status.update(
                 {
                     "state": "running",
                     "proxy_pid": os.getpid(),
-                    "target_pid": target.pid,
+                    "target_pid": session["target_pid"],
+                    "shell_pid": session["shell_pid"],
+                    "target_exit_code": session.get("target_exit_code"),
+                    "tls_verification": "relaxed-capture-environment",
                     "proxy": proxy_url,
                     "viewer_url": viewer_url,
                 }
             )
             write_json(status_path, status)
             print(f"Capture proxy: {proxy_url}")
-            while target.poll() is None:
+            while session.get("shell_exit_code") is None:
                 if stop_path.exists():
-                    terminate(target)
                     return_code = 130
                     break
                 if master_task.done():
@@ -247,8 +303,14 @@ async def run_worker() -> int:
                         "embedded mitmweb exited during capture"
                     )
                 await asyncio.sleep(0.1)
+                session = await asyncio.to_thread(
+                    manager_request, config["control_socket"], "session"
+                )
+                if status.get("target_exit_code") != session.get("target_exit_code"):
+                    status["target_exit_code"] = session.get("target_exit_code")
+                    write_json(status_path, status)
             else:
-                return_code = int(target.returncode or 0)
+                return_code = int(session["shell_exit_code"])
     except BaseException as error:
         return_code = 130 if isinstance(error, KeyboardInterrupt) else 1
         status.pop("viewer_url", None)
@@ -262,7 +324,13 @@ async def run_worker() -> int:
         write_json(status_path, status)
         raise
     finally:
-        terminate(target)
+        try:
+            await asyncio.to_thread(
+                manager_request, config["control_socket"], "shutdown"
+            )
+        except (OSError, RuntimeError) as error:
+            status["error"] = f"close capture manager: {error}"
+            return_code = 1
         if master is not None:
             master.shutdown()
         if master_task is not None:
@@ -287,4 +355,4 @@ async def run_worker() -> int:
     return return_code
 
 
-raise SystemExit(asyncio.run(run_worker()))
+asyncio.run(run_worker())

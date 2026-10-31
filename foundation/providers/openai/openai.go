@@ -174,8 +174,7 @@ func (o *provider) LanguageModel(_ context.Context, modelID string) (fantasy.Lan
 		openaiClientOptions = append(openaiClientOptions, option.WithBaseURL(o.options.baseURL))
 	}
 
-	defaultUA := fantasy.DefaultUserAgent(fantasy.Version)
-	resolved := fantasy.ResolveHeaders(o.options.headers, o.options.userAgent, defaultUA)
+	resolved := fantasy.ResolveHeaders(o.options.headers, o.options.userAgent, "")
 	for key, value := range resolved {
 		openaiClientOptions = append(openaiClientOptions, option.WithHeader(key, value))
 	}

@@ -32,15 +32,15 @@ type TokenSource = func() string
 type AccountIDSource = func() string
 
 const (
-	openaiBeta                       = "responses_websockets=2026-02-06"
-	remoteCompactionV2BetaFeature    = "remote_compaction_v2"
-	defaultWriteTimeout              = 30 * time.Second
-	defaultReadIdleTimeout           = 5 * time.Minute
-	defaultMaxEventBytes             = int64(1 << 20)
-	readPumpBufferSize               = 1600
-	stateLockPollInterval            = 10 * time.Millisecond
-	abnormalClosureInitialRetryDelay = 100 * time.Millisecond
-	abnormalClosureMaxRetryDelay     = 5 * time.Second
+	openaiBeta                          = "responses_websockets=2026-02-06"
+	remoteCompactionV2BetaFeature       = "remote_compaction_v2"
+	defaultWriteTimeout                 = 30 * time.Second
+	defaultReadIdleTimeout              = 5 * time.Minute
+	defaultMaxEventBytes                = int64(1 << 20)
+	readPumpBufferSize                  = 1600
+	stateLockPollInterval               = 10 * time.Millisecond
+	connectionRecoveryInitialRetryDelay = 100 * time.Millisecond
+	connectionRecoveryMaxRetryDelay     = 5 * time.Second
 )
 
 // installationID is a stable per-process Codex installation identifier.
@@ -300,22 +300,22 @@ func retryCodexRequest(ctx context.Context, policy manifest.RetryPolicy, attempt
 	return true, nil
 }
 
-func abnormalClosureRetryDelay(attempt int) time.Duration {
-	delay := abnormalClosureInitialRetryDelay
-	for index := 1; index < attempt && delay < abnormalClosureMaxRetryDelay; index++ {
-		if delay > abnormalClosureMaxRetryDelay/2 {
-			return abnormalClosureMaxRetryDelay
+func connectionRecoveryRetryDelay(attempt int) time.Duration {
+	delay := connectionRecoveryInitialRetryDelay
+	for index := 1; index < attempt && delay < connectionRecoveryMaxRetryDelay; index++ {
+		if delay > connectionRecoveryMaxRetryDelay/2 {
+			return connectionRecoveryMaxRetryDelay
 		}
 		delay *= 2
 	}
-	if delay > abnormalClosureMaxRetryDelay {
-		return abnormalClosureMaxRetryDelay
+	if delay > connectionRecoveryMaxRetryDelay {
+		return connectionRecoveryMaxRetryDelay
 	}
 	return delay
 }
 
-func waitForAbnormalClosureReconnect(ctx context.Context, attempt int) error {
-	return providertransport.WaitForRetry(ctx, abnormalClosureRetryDelay(attempt))
+func waitForConnectionRecovery(ctx context.Context, attempt int) error {
+	return providertransport.WaitForRetry(ctx, connectionRecoveryRetryDelay(attempt))
 }
 
 func codexErrorRetryable(policy manifest.RetryPolicy, mappings []manifest.ErrorMapping, err error) bool {
@@ -327,6 +327,37 @@ func codexErrorRetryable(policy manifest.RetryPolicy, mappings []manifest.ErrorM
 		return errors.As(err, &networkError) || websocket.IsUnexpectedCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway)
 	}
 	return false
+}
+
+type codexPostEventError struct {
+	err error
+}
+
+func (e *codexPostEventError) Error() string {
+	return e.err.Error()
+}
+
+func (e *codexPostEventError) Unwrap() error {
+	return e.err
+}
+
+func (*codexPostEventError) NonRetryable() bool {
+	return true
+}
+
+func protectCodexPostEventError(err error, receivedEvent bool) error {
+	if err == nil || !receivedEvent {
+		return err
+	}
+	return &codexPostEventError{err: err}
+}
+
+func isCodexConnectionRecoveryError(err error) bool {
+	if fantasy.IsConnectionLimitError(err) || fantasy.IsServerOverloadError(err) {
+		return true
+	}
+	var providerErr *fantasy.ProviderError
+	return errors.As(err, &providerErr) && providerErr.Class == fantasy.ProviderErrorClassCapacity && providerErr.IsRetryable()
 }
 
 func codexTerminalProviderError(event *eventFrame, body []byte) *fantasy.ProviderError {
@@ -455,7 +486,7 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 
 		forceFull := false
 		messageTooBigRetryUsed := false
-		abnormalClosureReconnects := 0
+		connectionRecoveryAttempts := 0
 		attempt := 0
 		for {
 			wire, incremental, fallbackReason := state.wireRequestLocked(logical)
@@ -474,9 +505,9 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 				conn, err := c.dialWithProfile(ctx, token, accountID, compatibilityID, traceID, profile)
 				if err != nil {
 					retryable := codexErrorRetryable(policy, profile.errors, err)
-					if abnormalClosureReconnects > 0 && retryable {
-						abnormalClosureReconnects++
-						if waitErr := waitForAbnormalClosureReconnect(ctx, abnormalClosureReconnects); waitErr != nil {
+					if connectionRecoveryAttempts > 0 && retryable {
+						connectionRecoveryAttempts++
+						if waitErr := waitForConnectionRecovery(ctx, connectionRecoveryAttempts); waitErr != nil {
 							yield(nil, waitErr)
 							return
 						}
@@ -598,9 +629,9 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 					return
 				}
 				transportErr := fantasy.WrapTransportError(writeErr)
-				if abnormalClosureReconnects > 0 && policy.TransportErrors {
-					abnormalClosureReconnects++
-					if waitErr := waitForAbnormalClosureReconnect(ctx, abnormalClosureReconnects); waitErr != nil {
+				if connectionRecoveryAttempts > 0 && policy.TransportErrors {
+					connectionRecoveryAttempts++
+					if waitErr := waitForConnectionRecovery(ctx, connectionRecoveryAttempts); waitErr != nil {
 						yield(nil, waitErr)
 						return
 					}
@@ -659,7 +690,7 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 						retry = true
 						break
 					}
-					yield(nil, idleErr)
+					yield(nil, protectCodexPostEventError(idleErr, receivedEvent))
 					return
 				}
 				if retry {
@@ -678,12 +709,22 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 						return
 					}
 					if retryErr := classifyCodexCloseError(err); retryErr != nil {
-						yield(nil, retryErr)
+						if !receivedEvent && isCodexConnectionRecoveryError(retryErr) {
+							connectionRecoveryAttempts++
+							if waitErr := waitForConnectionRecovery(ctx, connectionRecoveryAttempts); waitErr != nil {
+								yield(nil, waitErr)
+								return
+							}
+							forceFull = true
+							retry = true
+							break
+						}
+						yield(nil, protectCodexPostEventError(retryErr, receivedEvent))
 						return
 					}
 					if websocket.IsCloseError(err, websocket.CloseAbnormalClosure) && !receivedEvent {
-						abnormalClosureReconnects++
-						if waitErr := waitForAbnormalClosureReconnect(ctx, abnormalClosureReconnects); waitErr != nil {
+						connectionRecoveryAttempts++
+						if waitErr := waitForConnectionRecovery(ctx, connectionRecoveryAttempts); waitErr != nil {
 							yield(nil, waitErr)
 							return
 						}
@@ -712,7 +753,7 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 								break
 							}
 						}
-						yield(nil, fmt.Errorf("codex: server rejected the request as too large after the declared retry budget; compact the session before retrying: %w", err))
+						yield(nil, protectCodexPostEventError(fmt.Errorf("codex: server rejected the request as too large after the declared retry budget; compact the session before retrying: %w", err), receivedEvent))
 						return
 					}
 					if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
@@ -725,6 +766,9 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 							forceFull = true
 							retry = true
 							break
+						}
+						if receivedEvent {
+							yield(nil, protectCodexPostEventError(fantasy.NewIncompleteStreamError(), true))
 						}
 						return
 					}
@@ -739,7 +783,7 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 						retry = true
 						break
 					}
-					yield(nil, transportErr)
+					yield(nil, protectCodexPostEventError(transportErr, receivedEvent))
 					return
 				}
 				var event eventFrame
@@ -757,6 +801,18 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 				}
 				if providerErr := codexTerminalProviderError(&event, data); providerErr != nil {
 					providertransport.MapError(profile.errors, providerErr)
+					if !receivedEvent && isCodexConnectionRecoveryError(providerErr) {
+						close(done)
+						state.closeLocked()
+						connectionRecoveryAttempts++
+						if waitErr := waitForConnectionRecovery(ctx, connectionRecoveryAttempts); waitErr != nil {
+							yield(nil, waitErr)
+							return
+						}
+						forceFull = true
+						retry = true
+						break
+					}
 					shouldRetry, waitErr := retryCodexRequest(ctx, policy, attempt, receivedEvent, providertransport.RetryOperationError(policy, profile.errors, providerErr, receivedEvent))
 					if waitErr != nil {
 						close(done)
@@ -771,7 +827,7 @@ func (c *client) streamWithProfile(ctx context.Context, logical *requestFrame, p
 						retry = true
 						break
 					}
-					event.mappedError = providerErr
+					event.mappedError = protectCodexPostEventError(providerErr, receivedEvent)
 				}
 				receivedEvent = true
 				if event.Type == "response.output_item.done" && len(event.Item) > 0 {

@@ -300,6 +300,22 @@ func (c *Client) ListSkills(ctx context.Context, id string) ([]proto.SkillInfo, 
 	return skills, nil
 }
 
+func (c *Client) SkillCatalog(ctx context.Context, id string, forceReload bool) (proto.SkillCatalogResponse, error) {
+	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/skills/catalog", id), nil, jsonBody(proto.SkillCatalogRequest{ForceReload: forceReload}), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return proto.SkillCatalogResponse{}, fmt.Errorf("failed to list skill catalog: %w", err)
+	}
+	defer rsp.Body.Close()
+	if err := checkStatus(rsp); err != nil {
+		return proto.SkillCatalogResponse{}, fmt.Errorf("failed to list skill catalog: %w", err)
+	}
+	var result proto.SkillCatalogResponse
+	if err := json.NewDecoder(rsp.Body).Decode(&result); err != nil {
+		return proto.SkillCatalogResponse{}, fmt.Errorf("failed to decode skill catalog: %w", err)
+	}
+	return result, nil
+}
+
 // ReadSkill reads a skill's content by ID from the server.
 func (c *Client) ReadSkill(ctx context.Context, id, skillID string) (*proto.ReadSkillResponse, error) {
 	rsp, err := c.post(ctx, fmt.Sprintf("/workspaces/%s/skills/read", id), nil, jsonBody(proto.ReadSkillRequest{

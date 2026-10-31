@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/oauth"
+	"github.com/example-git/crux/internal/oauth/useragent"
 )
 
 const stateVersion = 1
@@ -58,6 +61,7 @@ type InvocationMode struct {
 }
 
 type Options struct {
+	Aliases             []string
 	Executable          string
 	Shell               string
 	Profile             string
@@ -272,6 +276,37 @@ func CanonicalAliases() []string {
 	return slices.Clone(canonicalAliases)
 }
 
+func selectedAliases(names []string) ([]string, error) {
+	if names == nil {
+		return CanonicalAliases(), nil
+	}
+	if len(names) == 0 {
+		return nil, errors.New("select at least one compatibility alias")
+	}
+	for _, name := range names {
+		if !slices.Contains(canonicalAliases, name) {
+			return nil, fmt.Errorf("unsupported compatibility alias %q; expected codex, claude, agy, or copilot", name)
+		}
+	}
+	var selected []string
+	for _, name := range canonicalAliases {
+		if slices.Contains(names, name) {
+			selected = append(selected, name)
+		}
+	}
+	return selected, nil
+}
+
+func (s *state) aliasNames() []string {
+	var names []string
+	for _, name := range canonicalAliases {
+		if _, ok := s.Aliases[name]; ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 func ModeForInvocation(executable, pathValue string) (InvocationMode, error) {
 	resolved, err := resolveInvocation(executable, pathValue)
 	if err != nil {
@@ -310,6 +345,10 @@ func ModeForInvocation(executable, pathValue string) (InvocationMode, error) {
 }
 
 func (m *Manager) Install(options Options) (Status, error) {
+	names, err := selectedAliases(options.Aliases)
+	if err != nil {
+		return Status{}, err
+	}
 	target, targetInfo, targetFingerprint, err := resolveExecutable(options.Executable)
 	if err != nil {
 		return Status{}, err
@@ -360,9 +399,25 @@ func (m *Manager) Install(options Options) (Status, error) {
 		}
 	}
 
-	created := make([]string, 0, len(canonicalAliases))
 	aliases := make(map[string]fingerprint, len(canonicalAliases))
-	for _, name := range canonicalAliases {
+	if previous != nil {
+		maps.Copy(aliases, previous.Aliases)
+		for name := range previous.Aliases {
+			if slices.Contains(names, name) {
+				continue
+			}
+			path := filepath.Join(bin, name)
+			aliasState, err := previous.aliasState(name, path, targetInfo, nil)
+			if err != nil {
+				return Status{}, err
+			}
+			if aliasState != AliasLinked {
+				return Status{}, fmt.Errorf("managed compatibility link %q needs repair before adding aliases", path)
+			}
+		}
+	}
+	created := make([]string, 0, len(names))
+	for _, name := range names {
 		path := filepath.Join(bin, name)
 		aliasInfo, statErr := os.Lstat(path)
 		switch {
@@ -471,9 +526,9 @@ func (m *Manager) Status() (Status, error) {
 		}
 		result.Aliases = append(result.Aliases, AliasStatus{Name: name, Path: path, State: aliasState})
 	}
-	result.Installed = targetErr == nil && (!current.PathEnabled || result.PathSetup)
+	result.Installed = len(current.Aliases) > 0 && targetErr == nil && (!current.PathEnabled || result.PathSetup)
 	for _, alias := range result.Aliases {
-		if alias.State != AliasLinked {
+		if _, managed := current.Aliases[alias.Name]; managed && alias.State != AliasLinked {
 			result.Installed = false
 		}
 	}
@@ -514,10 +569,13 @@ func (m *Manager) Disable() (Status, error) {
 }
 
 func (m *Manager) Repair(options Options) (Status, error) {
+	if options.Aliases != nil {
+		return Status{}, errors.New("repair uses the installed alias selection; use install to add aliases")
+	}
 	current, err := m.loadState()
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return m.Install(options)
+			return Status{}, errors.New("compatibility aliases are not installed; use crux alias install --all or select a provider")
 		}
 		return Status{}, err
 	}
@@ -546,8 +604,9 @@ func (m *Manager) Repair(options Options) (Status, error) {
 		return Status{}, err
 	}
 
-	aliasStates := make(map[string]AliasState, len(canonicalAliases))
-	for _, name := range canonicalAliases {
+	names := current.aliasNames()
+	aliasStates := make(map[string]AliasState, len(names))
+	for _, name := range names {
 		path := filepath.Join(m.binDirectory(), name)
 		aliasState, stateErr := current.aliasState(name, path, targetInfo, nil)
 		if stateErr != nil {
@@ -563,7 +622,7 @@ func (m *Manager) Repair(options Options) (Status, error) {
 		Version:         stateVersion,
 		Executable:      target,
 		ExecutableFile:  targetFingerprint,
-		Aliases:         make(map[string]fingerprint, len(canonicalAliases)),
+		Aliases:         make(map[string]fingerprint, len(names)),
 		Shell:           current.Shell,
 		Profile:         current.Profile,
 		PathFile:        current.PathFile,
@@ -588,7 +647,7 @@ func (m *Manager) Repair(options Options) (Status, error) {
 	}
 
 	transaction := &filesystemTransaction{watched: make(map[string]struct{})}
-	for _, name := range canonicalAliases {
+	for _, name := range names {
 		if err := transaction.watch(filepath.Join(m.binDirectory(), name), true); err != nil {
 			return Status{}, transaction.fail(err)
 		}
@@ -606,7 +665,7 @@ func (m *Manager) Repair(options Options) (Status, error) {
 		}
 	}
 
-	for _, name := range canonicalAliases {
+	for _, name := range names {
 		path := filepath.Join(m.binDirectory(), name)
 		switch aliasStates[name] {
 		case AliasMissing:
@@ -685,7 +744,11 @@ func (m *Manager) Repair(options Options) (Status, error) {
 	return m.Status()
 }
 
-func (m *Manager) Uninstall() (Status, error) {
+func (m *Manager) Uninstall(names ...string) (Status, error) {
+	selected, err := selectedAliases(names)
+	if err != nil {
+		return Status{}, err
+	}
 	current, err := m.loadState()
 	if errors.Is(err, fs.ErrNotExist) {
 		return m.Status()
@@ -696,12 +759,20 @@ func (m *Manager) Uninstall() (Status, error) {
 	if err := m.validateLayout(); err != nil {
 		return Status{}, err
 	}
-	if err := m.preflightManagedPath(current); err != nil {
-		return Status{}, err
+	next := *current
+	next.Aliases = maps.Clone(current.Aliases)
+	for _, name := range selected {
+		delete(next.Aliases, name)
+	}
+	removeSetup := len(next.Aliases) == 0
+	if removeSetup {
+		if err := m.preflightManagedPath(current); err != nil {
+			return Status{}, err
+		}
 	}
 
-	aliases := make([]string, 0, len(canonicalAliases))
-	for _, name := range canonicalAliases {
+	aliases := make([]string, 0, len(selected))
+	for _, name := range selected {
 		path := filepath.Join(m.binDirectory(), name)
 		if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 			continue
@@ -720,7 +791,11 @@ func (m *Manager) Uninstall() (Status, error) {
 			return Status{}, transaction.fail(err)
 		}
 	}
-	for _, path := range []string{current.Profile, current.PathFile, m.statePath()} {
+	paths := []string{m.statePath()}
+	if removeSetup {
+		paths = append(paths, current.Profile, current.PathFile)
+	}
+	for _, path := range paths {
 		if err := transaction.watch(path, false); err != nil {
 			return Status{}, transaction.fail(err)
 		}
@@ -731,24 +806,30 @@ func (m *Manager) Uninstall() (Status, error) {
 			return Status{}, transaction.fail(fmt.Errorf("remove compatibility link %q: %w", path, err))
 		}
 	}
-	if current.ProfileModified && current.Profile != "" && current.ProfileLine != "" {
-		if err := m.removeProfileLine(current.Profile, current.ProfileLine); err != nil {
-			return Status{}, transaction.fail(err)
+	if removeSetup {
+		if current.ProfileModified && current.Profile != "" && current.ProfileLine != "" {
+			if err := m.removeProfileLine(current.Profile, current.ProfileLine); err != nil {
+				return Status{}, transaction.fail(err)
+			}
 		}
-	}
-	if current.PathFile != "" {
-		if err := os.Remove(current.PathFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return Status{}, transaction.fail(fmt.Errorf("remove PATH setup %q: %w", current.PathFile, err))
+		if current.PathFile != "" {
+			if err := os.Remove(current.PathFile); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return Status{}, transaction.fail(fmt.Errorf("remove PATH setup %q: %w", current.PathFile, err))
+			}
 		}
-	}
-	if err := os.Remove(m.statePath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return Status{}, transaction.fail(fmt.Errorf("remove compatibility state: %w", err))
+		if err := os.Remove(m.statePath()); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return Status{}, transaction.fail(fmt.Errorf("remove compatibility state: %w", err))
+		}
+	} else if err := m.saveState(&next); err != nil {
+		return Status{}, transaction.fail(err)
 	}
 	if err := transaction.commit(); err != nil {
 		return Status{}, err
 	}
-	_ = os.Remove(m.binDirectory())
-	_ = os.Remove(m.root)
+	if removeSetup {
+		_ = os.Remove(m.binDirectory())
+		_ = os.Remove(m.root)
+	}
 	return m.Status()
 }
 
@@ -940,6 +1021,11 @@ func (m *Manager) validateLayout() error {
 }
 
 func (m *Manager) verifyExecutable(executable string) error {
+	environment := os.Environ()
+	version, err := useragent.CodexVersionForContext(oauth.ContextWithEnvironment(context.Background(), environment))
+	if err != nil {
+		return fmt.Errorf("resolve native Codex client version: %w", err)
+	}
 	probeDirectory, err := os.MkdirTemp(m.root, ".compatibility-probe-")
 	if err != nil {
 		return fmt.Errorf("create compatibility probe directory: %w", err)
@@ -952,12 +1038,12 @@ func (m *Manager) verifyExecutable(executable string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, probe, "--version")
-	command.Env = removeEnvironment(os.Environ(), "CRUX_COMPATIBILITY_BYPASS")
+	command.Env = append(removeEnvironment(removeEnvironment(environment, "CRUX_COMPATIBILITY_BYPASS"), "CODEX_VERSION"), "CODEX_VERSION="+version)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("selected executable does not provide the compatibility layer: %w", err)
 	}
-	if string(output) != "codex-cli 0.149.1\n" {
+	if string(output) != "codex-cli "+version+"\n" {
 		return fmt.Errorf("selected executable does not provide the compatibility layer")
 	}
 	return nil
@@ -972,6 +1058,9 @@ func (s *state) aliasState(name, path string, targetInfo os.FileInfo, targetErr 
 		return "", fmt.Errorf("inspect compatibility link %q: %w", path, err)
 	}
 	if aliasInfo.Mode()&os.ModeSymlink != 0 || !aliasInfo.Mode().IsRegular() {
+		return AliasCollision, nil
+	}
+	if _, managed := s.Aliases[name]; !managed {
 		return AliasCollision, nil
 	}
 	if targetErr == nil {

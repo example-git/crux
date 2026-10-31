@@ -182,6 +182,7 @@ func TestRunProjectCommandStreamsLocalGitClone(t *testing.T) {
 	run(source, "init", "-q", "-b", "main")
 	run(source, "config", "user.email", "test@example.com")
 	run(source, "config", "user.name", "test")
+	run(source, "config", "commit.gpgsign", "false")
 	require.NoError(t, os.WriteFile(filepath.Join(source, "file.txt"), []byte("hello"), 0o644))
 	run(source, "add", "file.txt")
 	run(source, "commit", "-q", "-m", "initial")
