@@ -59,6 +59,33 @@ func TestRegisterAndList(t *testing.T) {
 	}
 }
 
+func TestRegisterOrdersEqualTimestampsByRegistration(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("CRUX_GLOBAL_DATA", filepath.Join(tmpDir, "crux"))
+	accessedAt := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for _, path := range []string{"project1", "project2", "project3", "project1"} {
+		if err := registerAt(path, filepath.Join(path, ".crux"), accessedAt); err != nil {
+			t.Fatalf("Register failed: %v", err)
+		}
+	}
+	projects, err := List()
+	if err != nil {
+		t.Fatalf("List failed: %v", err)
+	}
+	if len(projects) != 3 {
+		t.Fatalf("Expected 3 projects, got %d", len(projects))
+	}
+	for index, path := range []string{"project1", "project3", "project2"} {
+		if projects[index].Path != path {
+			t.Errorf("Expected project %s at %d, got %s", path, index, projects[index].Path)
+		}
+		if !projects[index].LastAccessed.Equal(accessedAt) {
+			t.Errorf("Expected access time %s, got %s", accessedAt, projects[index].LastAccessed)
+		}
+	}
+}
+
 func TestRegisterUpdatesExisting(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmpDir)

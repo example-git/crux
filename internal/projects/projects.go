@@ -76,12 +76,14 @@ func Save(list *ProjectList) error {
 
 // Register adds or updates a project in the list.
 func Register(workingDir, dataDir string) error {
+	return registerAt(workingDir, dataDir, time.Now().UTC())
+}
+
+func registerAt(workingDir, dataDir string, now time.Time) error {
 	list, err := Load()
 	if err != nil {
 		return err
 	}
-
-	now := time.Now().UTC()
 
 	// Check if project already exists
 	found := false
@@ -103,11 +105,17 @@ func Register(workingDir, dataDir string) error {
 	}
 
 	// Sort by last accessed (most recent first)
-	slices.SortFunc(list.Projects, func(a, b Project) int {
+	slices.SortStableFunc(list.Projects, func(a, b Project) int {
 		if a.LastAccessed.After(b.LastAccessed) {
 			return -1
 		}
 		if a.LastAccessed.Before(b.LastAccessed) {
+			return 1
+		}
+		if a.Path == workingDir && b.Path != workingDir {
+			return -1
+		}
+		if b.Path == workingDir && a.Path != workingDir {
 			return 1
 		}
 		return 0
