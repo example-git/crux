@@ -173,6 +173,7 @@ func NewIncompleteStreamError() *ProviderError {
 var http2TransportErrorFragments = []string{
 	"stream error:",     // RST_STREAM: INTERNAL_ERROR, REFUSED_STREAM, CANCEL, etc.
 	"connection error:", // connection-level protocol error
+	"http2: server sent GOAWAY and closed the connection;",
 }
 
 // IsTransportError reports whether err or any error in its chain is a
@@ -190,11 +191,9 @@ func IsTransportError(err error) bool {
 	var (
 		streamErr http2.StreamError
 		connErr   http2.ConnectionError
-		goAwayErr http2.GoAwayError
 	)
 	if errors.As(err, &streamErr) ||
-		errors.As(err, &connErr) ||
-		errors.As(err, &goAwayErr) {
+		errors.As(err, &connErr) {
 		return true
 	}
 	// Wrapped errors embed the inner message, so scanning the top-level

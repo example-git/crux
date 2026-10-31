@@ -27,7 +27,9 @@ func TestIsTransportError(t *testing.T) {
 		{"wrapped stream error", fmt.Errorf("reading body: %w", newTestError("stream error: stream ID 3; INTERNAL_ERROR")), true},
 		{"x/net StreamError", http2.StreamError{StreamID: 1, Code: http2.ErrCodeInternal}, true},
 		{"x/net ConnectionError", http2.ConnectionError(http2.ErrCodeInternal), true},
-		{"x/net GoAwayError", http2.GoAwayError{LastStreamID: 1, ErrCode: http2.ErrCodeInternal}, true},
+		{"GOAWAY connection error", newTestError("http2: server sent GOAWAY and closed the connection; LastStreamID=1, ErrCode=INTERNAL_ERROR, debug=\"\""), true},
+		{"wrapped GOAWAY connection error", fmt.Errorf("reading body: %w", newTestError("http2: server sent GOAWAY and closed the connection; LastStreamID=1, ErrCode=INTERNAL_ERROR, debug=\"\"")), true},
+		{"unrelated GOAWAY message", newTestError("application requested GOAWAY"), false},
 	}
 
 	for _, tt := range tests {
