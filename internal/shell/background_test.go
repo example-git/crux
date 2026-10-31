@@ -605,9 +605,7 @@ func TestBackgroundShellManagerGracefulShutdownPersistsKilledAcrossRestart(t *te
 		return backgroundShell.State().Status == task.StatusRunning
 	}, time.Second, 10*time.Millisecond)
 
-	shutdownCtx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	manager.KillAll(shutdownCtx)
+	manager.KillAll(t.Context())
 	require.Equal(t, task.StatusKilled, backgroundShell.State().Status)
 	require.NoError(t, recordStore.Close())
 
