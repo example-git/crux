@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -120,6 +121,7 @@ func (c *controllerV1) handleGetPeerChannel(w http.ResponseWriter, r *http.Reque
 	writerDone := make(chan error, 1)
 	go func() { writerDone <- peer.writeLoop() }()
 	if err := peer.dispatch(reads, writerDone); err != nil {
+		slog.Debug("Peer channel closed", "side", "server", "client_id", peer.clientID, "error", redact.String(err.Error()))
 		cancel(err)
 	}
 }

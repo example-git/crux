@@ -576,9 +576,11 @@ func TestRunInstructionIsolationSuppressesTurnTools(t *testing.T) {
 	tool := fantasy.NewAgentTool("fixture", "Fixture tool", func(context.Context, struct{}, fantasy.ToolCall) (fantasy.ToolResponse, error) {
 		return fantasy.NewTextResponse("fixture"), nil
 	})
+	titleModel := configuredModel
+	titleModel.Model = &finishStreamModel{text: "title"}
 	agent := NewSessionAgent(SessionAgentOptions{
 		LargeModel:   configuredModel,
-		SmallModel:   configuredModel,
+		SmallModel:   titleModel,
 		SystemPrompt: "system",
 		IsYolo:       true,
 		Sessions:     env.sessions,
