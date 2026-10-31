@@ -85,6 +85,9 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 					}
 					return workspaceChannelProxyDecision{}
 				}
+				if mode == "lost-acknowledgements" && envelope.Type == proto.PeerTypeRunCompleted {
+					return workspaceChannelProxyDecision{drop: true}
+				}
 				if envelope.Type == proto.PeerTypeAcknowledgement {
 					if _, ok := dropped.LoadAndDelete(envelope.ReplyTo); ok {
 						return workspaceChannelProxyDecision{drop: true, close: true}
@@ -185,32 +188,23 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 				err   error
 			}
 			results := make(chan outcome, 2)
+			var recovered atomic.Int32
 			for index, p := range participants {
 				events, err := p.client.SubscribeEvents(ctx, p.created.ID)
 				require.NoError(t, err)
 				owner := providerauth.PublicOwner(p.created.Runtime.Credentials[0].Owner)
 				go func() {
 					waiting := true
+					var recovery <-chan time.Time
+					if mode == "lost-acknowledgements" {
+						ticker := time.NewTicker(10 * time.Millisecond)
+						defer ticker.Stop()
+						recovery = ticker.C
+					}
 					for {
 						select {
 						case event, ok := <-events:
 							if !ok {
-								// The proxy's fault injection for a lost
-								// acknowledgement forcibly closes the whole
-								// peer-channel connection, which also drops
-								// any unrelated event (such as this
-								// participant's own RunComplete) that was
-								// published while genuinely disconnected: a
-								// fresh subscription only observes events
-								// from the moment it is created, and pending
-								// client-refresh requests are the only event
-								// kind the server explicitly replays after
-								// reattachment. Once past the refresh
-								// synchronization gate, poll the durable
-								// session state after resubscribing so a
-								// completion that happened during the gap is
-								// still observed instead of hanging until
-								// the test's deadline.
 								for {
 									next, subscribeErr := p.client.SubscribeEvents(ctx, p.created.ID)
 									if subscribeErr == nil {
@@ -221,12 +215,6 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 									case <-time.After(5 * time.Millisecond):
 									case <-ctx.Done():
 										results <- outcome{index: index, err: subscribeErr}
-										return
-									}
-								}
-								if !waiting {
-									if info, infoErr := p.client.GetAgentSessionInfo(ctx, p.created.ID, p.sessionID); infoErr == nil && !info.IsBusy {
-										results <- outcome{index: index, run: proto.RunComplete{SessionID: p.sessionID, RunID: "shared-refresh", Text: info.Title}}
 										return
 									}
 								}
@@ -250,6 +238,30 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 							}
 							if finished, ok := event.(pubsub.Event[proto.RunComplete]); ok && finished.Payload.RunID == "shared-refresh" {
 								results <- outcome{index: index, run: finished.Payload}
+								return
+							}
+						case <-recovery:
+							if waiting {
+								continue
+							}
+							info, infoErr := p.client.GetAgentSessionInfo(ctx, p.created.ID, p.sessionID)
+							if infoErr != nil || info.IsBusy {
+								continue
+							}
+							messages, messagesErr := p.client.ListMessages(ctx, p.created.ID, p.sessionID)
+							if messagesErr != nil {
+								continue
+							}
+							for _, message := range messages {
+								if message.Role != proto.Assistant || message.RunID != "shared-refresh" || !message.IsFinished() {
+									continue
+								}
+								if message.FinishReason() != proto.FinishReasonEndTurn {
+									results <- outcome{index: index, err: fmt.Errorf("refresh run finished with %s", message.FinishReason())}
+									return
+								}
+								recovered.Add(1)
+								results <- outcome{index: index, run: proto.RunComplete{SessionID: p.sessionID, RunID: message.RunID, MessageID: message.ID, Text: message.Content().Text}}
 								return
 							}
 						case <-ctx.Done():
@@ -279,6 +291,7 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 				case result := <-results:
 					require.NoError(t, result.err)
 					require.Empty(t, result.run.Error)
+					require.False(t, result.run.Cancelled)
 					require.Contains(t, result.run.Text, "verified remote refresh")
 				case <-ctx.Done():
 					t.Fatal("concurrent refresh did not complete")
@@ -287,6 +300,7 @@ func TestClientOAuthRefreshAcrossWorkspacesThroughTLS(t *testing.T) {
 			require.EqualValues(t, 1, exchanges.Load())
 			require.EqualValues(t, 2, puts.Load(), "each workspace publishes once even after acknowledgement loss")
 			if mode == "lost-acknowledgements" {
+				require.EqualValues(t, 2, recovered.Load())
 				require.Eventually(t, func() bool { return completions.Load() == 3 }, 5*time.Second, 10*time.Millisecond)
 			}
 			stored, err := accounts.Active(t.Context(), "example.responses")
