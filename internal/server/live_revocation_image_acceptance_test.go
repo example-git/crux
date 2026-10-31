@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"image"
 	"image/png"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -37,8 +38,13 @@ import (
 
 func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
 	logger := slog.Default()
-	slog.SetDefault(slog.New(liveImagePeerLogHandler{Handler: logger.Handler(), test: t}))
-	t.Cleanup(func() { slog.SetDefault(logger) })
+	logWriter, logFlags := log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(slog.NewTextHandler(liveImagePeerLogWriter{test: t}, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() {
+		slog.SetDefault(logger)
+		log.SetOutput(logWriter)
+		log.SetFlags(logFlags)
+	})
 	// A credential from another workspace can match JSON punctuation. The
 	// real task-output response must retain a decodable embedded JobResult.
 	redact.Register(":true")
@@ -331,28 +337,18 @@ func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
 	}
 }
 
-type liveImagePeerLogHandler struct {
-	slog.Handler
+type liveImagePeerLogWriter struct {
 	test *testing.T
 }
 
-func (handler liveImagePeerLogHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return level == slog.LevelDebug || handler.Handler.Enabled(ctx, level)
-}
-
-func (handler liveImagePeerLogHandler) Handle(ctx context.Context, record slog.Record) error {
-	if record.Level == slog.LevelDebug && record.Message == "Peer channel closed" {
-		var values []any
-		record.Attrs(func(attribute slog.Attr) bool {
-			values = append(values, attribute.Key, attribute.Value.String())
-			return true
-		})
-		handler.test.Log(record.Message, values)
+func (writer liveImagePeerLogWriter) Write(data []byte) (int, error) {
+	if bytes.Contains(data, []byte("level=DEBUG")) {
+		if bytes.Contains(data, []byte(`msg="Peer channel closed"`)) {
+			writer.test.Log(string(bytes.TrimSpace(data)))
+		}
+		return len(data), nil
 	}
-	if handler.Handler.Enabled(ctx, record.Level) {
-		return handler.Handler.Handle(ctx, record)
-	}
-	return nil
+	return os.Stderr.Write(data)
 }
 
 func liveImageWriteChunk(w http.ResponseWriter, delta map[string]any, finish any) {
