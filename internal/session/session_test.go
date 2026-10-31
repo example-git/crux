@@ -2,9 +2,15 @@ package session
 
 import (
 	"database/sql"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/stretchr/testify/require"
 )
@@ -111,7 +117,7 @@ func TestGoalLifecycleSurvivesServiceRestart(t *testing.T) {
 	require.NoError(t, err)
 	created, err = sessions.SetGoal(t.Context(), created.ID, "finish the work")
 	require.NoError(t, err)
-	blocked, err := sessions.SetGoalStatus(t.Context(), created.ID, created.Goal.Generation, GoalStatusBlocked, "required service is unavailable")
+	blocked, err := sessions.BlockActiveGoal(t.Context(), created.ID, created.Goal.Generation, "required service is unavailable")
 	require.NoError(t, err)
 
 	require.NoError(t, db.Release(dataDir))
@@ -484,4 +490,196 @@ func TestStopGoalPersistsPausedGenerationAndRejectsStaleWrites(t *testing.T) {
 	require.Equal(t, stopped.Goal, persisted.Goal)
 	_, err = restarted.SetGoalStatus(t.Context(), current.ID, stopped.Goal.Generation, GoalStatusActive, "")
 	require.NoError(t, err)
+}
+
+func TestBlockActiveGoalPreservesUserTransitions(t *testing.T) {
+	for _, status := range []GoalStatus{GoalStatusPaused, GoalStatusBlocked, GoalStatusComplete} {
+		t.Run(string(status), func(t *testing.T) {
+			dataDir := t.TempDir()
+			conn, err := db.Connect(t.Context(), dataDir)
+			require.NoError(t, err)
+			t.Cleanup(func() {
+				require.NoError(t, db.Release(dataDir))
+				db.ResetPool()
+			})
+			sessions := NewService(db.New(conn), conn)
+			current, err := sessions.Create(t.Context(), "goal session")
+			require.NoError(t, err)
+			current, err = sessions.SetGoal(t.Context(), current.ID, "finish the work")
+			require.NoError(t, err)
+			changed, err := sessions.SetGoalStatus(t.Context(), current.ID, current.Goal.Generation, status, "existing reason")
+			require.NoError(t, err)
+			_, err = sessions.BlockActiveGoal(t.Context(), current.ID, current.Goal.Generation, "late provider failure")
+			require.ErrorIs(t, err, ErrGoalChanged)
+			stored, err := sessions.Get(t.Context(), current.ID)
+			require.NoError(t, err)
+			require.Equal(t, changed.Goal, stored.Goal)
+		})
+	}
+}
+
+func TestBlockActiveGoalRejectsReplacedAndClearedGoals(t *testing.T) {
+	dataDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Release(dataDir))
+		db.ResetPool()
+	})
+	sessions := NewService(db.New(conn), conn)
+	current, err := sessions.Create(t.Context(), "goal session")
+	require.NoError(t, err)
+	current, err = sessions.SetGoal(t.Context(), current.ID, "finish the work")
+	require.NoError(t, err)
+	replacement, err := sessions.SetGoal(t.Context(), current.ID, "replacement objective")
+	require.NoError(t, err)
+	_, err = sessions.BlockActiveGoal(t.Context(), current.ID, current.Goal.Generation, "late provider failure")
+	require.ErrorIs(t, err, ErrGoalChanged)
+	stored, err := sessions.Get(t.Context(), current.ID)
+	require.NoError(t, err)
+	require.Equal(t, replacement.Goal, stored.Goal)
+	cleared, err := sessions.ClearGoal(t.Context(), current.ID)
+	require.NoError(t, err)
+	_, err = sessions.BlockActiveGoal(t.Context(), current.ID, cleared.Goal.Generation, "late provider failure")
+	require.ErrorIs(t, err, ErrGoalChanged)
+	stored, err = sessions.Get(t.Context(), current.ID)
+	require.NoError(t, err)
+	require.Equal(t, cleared.Goal, stored.Goal)
+}
+
+func TestGoalOwnershipIsScopedToDatabaseAndSession(t *testing.T) {
+	dataDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Release(dataDir))
+		db.ResetPool()
+	})
+	first := NewService(db.New(conn), conn)
+	otherConn, err := sql.Open("sqlite", filepath.Join(dataDir, "crux.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, otherConn.Close()) })
+	second := NewService(db.New(otherConn), otherConn)
+	release, err := first.TryAcquireGoal(t.Context(), "same-goal")
+	require.NoError(t, err)
+	release = sync.OnceFunc(release)
+	t.Cleanup(release)
+	_, err = second.TryAcquireGoal(t.Context(), "same-goal")
+	require.ErrorIs(t, err, lock.ErrContended)
+	otherRelease, err := second.TryAcquireGoal(t.Context(), "different-goal")
+	require.NoError(t, err)
+	otherRelease()
+	release()
+	release, err = second.TryAcquireGoal(t.Context(), "same-goal")
+	require.NoError(t, err)
+	release = sync.OnceFunc(release)
+	t.Cleanup(release)
+	release()
+
+	otherDir := t.TempDir()
+	otherDatabase, err := db.Connect(t.Context(), otherDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Release(otherDir)) })
+	other := NewService(db.New(otherDatabase), otherDatabase)
+	release, err = first.TryAcquireGoal(t.Context(), "same-goal")
+	require.NoError(t, err)
+	defer release()
+	otherRelease, err = other.TryAcquireGoal(t.Context(), "same-goal")
+	require.NoError(t, err)
+	otherRelease()
+}
+
+func TestGoalOwnershipAcrossProcesses(t *testing.T) {
+	if dataDir := os.Getenv("CRUX_TEST_GOAL_OWNERSHIP_DIRECTORY"); dataDir != "" {
+		conn, err := sql.Open("sqlite", filepath.Join(dataDir, "crux.db"))
+		require.NoError(t, err)
+		defer conn.Close()
+		sessions := NewService(db.New(conn), conn)
+		release, err := sessions.TryAcquireGoal(t.Context(), "shared-goal")
+		if os.Getenv("CRUX_TEST_GOAL_OWNERSHIP_CONTENDED") == "true" {
+			require.ErrorIs(t, err, lock.ErrContended)
+			return
+		}
+		require.NoError(t, err)
+		release()
+		return
+	}
+	dataDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, db.Release(dataDir))
+		db.ResetPool()
+	})
+	sessions := NewService(db.New(conn), conn)
+	release, err := sessions.TryAcquireGoal(t.Context(), "shared-goal")
+	require.NoError(t, err)
+	release = sync.OnceFunc(release)
+	t.Cleanup(release)
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	probe := func(contended string) {
+		cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestGoalOwnershipAcrossProcesses$")
+		cmd.Env = append(os.Environ(), "CRUX_TEST_GOAL_OWNERSHIP_DIRECTORY="+dataDir, "CRUX_TEST_GOAL_OWNERSHIP_CONTENDED="+contended)
+		output, runErr := cmd.CombinedOutput()
+		require.NoError(t, runErr, "%s", output)
+	}
+	probe("true")
+	release()
+	probe("false")
+}
+
+func TestSessionModelsStayWithSessionAcrossGoalLifecycle(t *testing.T) {
+	dataDir := t.TempDir()
+	conn, err := db.Connect(t.Context(), dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Release(dataDir)); db.ResetPool() })
+	selected := json.RawMessage(`{"large":{"model":{"provider":"first","model":"first-model","provider_options":{"precise":9007199254740993}}}}`)
+	captures := 0
+	sessions := NewService(db.New(conn), conn, WithModelSource(func() (json.RawMessage, error) { captures++; return selected, nil }))
+	current, err := sessions.Create(t.Context(), "session")
+	require.NoError(t, err)
+	require.Equal(t, 1, captures)
+	first := append(json.RawMessage(nil), current.Models...)
+	selected = json.RawMessage(`{"large":{"model":{"provider":"second","model":"second-model"}}}`)
+	current, err = sessions.SetGoal(t.Context(), current.ID, "finish the work")
+	require.NoError(t, err)
+	for _, status := range []GoalStatus{GoalStatusPaused, GoalStatusActive, GoalStatusBlocked, GoalStatusActive} {
+		current, err = sessions.SetGoalStatus(t.Context(), current.ID, current.Goal.Generation, status, "")
+		require.NoError(t, err)
+		require.JSONEq(t, string(first), string(current.Models))
+	}
+	require.Equal(t, 1, captures)
+	stale := current
+	current, err = sessions.SetModels(t.Context(), current.ID, current.ModelRevision, selected)
+	require.NoError(t, err)
+	require.EqualValues(t, 2, current.ModelRevision)
+	require.Equal(t, "second", current.Provider)
+	_, err = sessions.SetModels(t.Context(), current.ID, stale.ModelRevision, first)
+	require.ErrorIs(t, err, ErrModelsChanged)
+	stale.Title = "updated title"
+	current, err = sessions.Save(t.Context(), stale)
+	require.NoError(t, err)
+	require.JSONEq(t, string(selected), string(current.Models))
+	require.Equal(t, "second", current.Provider)
+	current, err = sessions.ClearGoal(t.Context(), current.ID)
+	require.NoError(t, err)
+	require.JSONEq(t, string(selected), string(current.Models))
+	restarted := NewService(db.New(conn), conn)
+	restored, err := restarted.Get(t.Context(), current.ID)
+	require.NoError(t, err)
+	require.Equal(t, current.Models, restored.Models)
+	require.Equal(t, current.ModelRevision, restored.ModelRevision)
+	_, err = sessions.SetModels(t.Context(), current.ID, current.ModelRevision, json.RawMessage(`[]`))
+	require.Error(t, err)
+	require.NoError(t, sessions.SetAnalysisEffort(t.Context(), current.ID, "high"))
+	current, err = restarted.Get(t.Context(), current.ID)
+	require.NoError(t, err)
+	require.Equal(t, "high", current.AnalysisEffort)
+	require.Contains(t, string(current.Models), `"reasoning_effort":"high"`)
+	fork, err := sessions.CreateFork(t.Context(), current.ID, "fork")
+	require.NoError(t, err)
+	require.JSONEq(t, string(current.Models), string(fork.Models))
+	require.EqualValues(t, 1, fork.ModelRevision)
+	require.Equal(t, 1, captures)
 }

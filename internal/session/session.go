@@ -2,16 +2,20 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 
 	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/lock"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/google/uuid"
 	"github.com/zeebo/xxh3"
@@ -117,6 +121,8 @@ type Session struct {
 	AnalysisEffort      string
 	Model               string
 	Provider            string
+	Models              json.RawMessage
+	ModelRevision       int64
 	CreatedAt           int64
 	UpdatedAt           int64
 }
@@ -147,6 +153,9 @@ type Service interface {
 	SetPlanState(ctx context.Context, sessionID string, mode Mode, plan string) error
 	SetGoal(ctx context.Context, sessionID, objective string) (Session, error)
 	SetGoalStatus(ctx context.Context, sessionID string, generation int64, status GoalStatus, goalError string) (Session, error)
+	SetModels(ctx context.Context, sessionID string, revision int64, models json.RawMessage) (Session, error)
+	BlockActiveGoal(ctx context.Context, sessionID string, generation int64, goalError string) (Session, error)
+	TryAcquireGoal(ctx context.Context, sessionID string) (func(), error)
 	StopGoal(ctx context.Context, sessionID string, generation int64) (Session, error)
 	ClearGoal(ctx context.Context, sessionID string) (Session, error)
 	SetAnalysisEffort(ctx context.Context, sessionID, effort string) error
@@ -170,33 +179,36 @@ type service struct {
 	q           *db.Queries
 	planStateMu sync.Mutex
 	goalStateMu sync.Mutex
+	modelSource func() (json.RawMessage, error)
+	modelMu     sync.Mutex
+}
+
+type ServiceOption func(*service)
+
+func WithModelSource(source func() (json.RawMessage, error)) ServiceOption {
+	return func(s *service) { s.modelSource = source }
 }
 
 func (s *service) Create(ctx context.Context, title string) (Session, error) {
-	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
-		ID:    uuid.New().String(),
-		Title: title,
-	})
-	if err != nil {
-		return Session{}, err
+	var models json.RawMessage
+	if s.modelSource != nil {
+		var err error
+		models, err = s.modelSource()
+		if err != nil {
+			return Session{}, err
+		}
 	}
-	session := s.fromDBItem(dbSession)
-	s.Publish(pubsub.CreatedEvent, session)
-	return session, nil
+	return s.createWithModels(ctx, db.CreateSessionParams{ID: uuid.New().String(), Title: title}, models)
 }
 
 func (s *service) CreateFork(ctx context.Context, forkedFromSessionID, title string) (Session, error) {
-	dbSession, err := s.q.CreateSession(ctx, db.CreateSessionParams{
-		ID:                  uuid.New().String(),
-		ForkedFromSessionID: sql.NullString{String: forkedFromSessionID, Valid: true},
-		Title:               title,
-	})
+	source, err := s.Get(ctx, forkedFromSessionID)
 	if err != nil {
 		return Session{}, err
 	}
-	session := s.fromDBItem(dbSession)
-	s.Publish(pubsub.CreatedEvent, session)
-	return session, nil
+	return s.createWithModels(ctx, db.CreateSessionParams{
+		ID: uuid.New().String(), ForkedFromSessionID: sql.NullString{String: forkedFromSessionID, Valid: true}, Title: title,
+	}, source.Models)
 }
 
 func (s *service) CreateTaskSession(ctx context.Context, toolCallID, parentSessionID, title string) (Session, error) {
@@ -373,6 +385,38 @@ func (s *service) SetAnalysisEffort(ctx context.Context, sessionID, effort strin
 	if err := ValidateAnalysisEffort(effort); err != nil {
 		return err
 	}
+	s.modelMu.Lock()
+	defer s.modelMu.Unlock()
+	current, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	if len(current.Models) > 0 {
+		var models map[string]json.RawMessage
+		if err := json.Unmarshal(current.Models, &models); err != nil {
+			return err
+		}
+		var large map[string]json.RawMessage
+		if err := json.Unmarshal(models["large"], &large); err != nil {
+			return err
+		}
+		var selected map[string]json.RawMessage
+		if err := json.Unmarshal(large["model"], &selected); err != nil {
+			return err
+		}
+		if selected == nil {
+			return errors.New("session main model selection is required before setting analysis effort")
+		}
+		selected["reasoning_effort"], _ = json.Marshal(effort)
+		large["model"], _ = json.Marshal(selected)
+		models["large"], _ = json.Marshal(large)
+		encoded, err := json.Marshal(models)
+		if err != nil {
+			return err
+		}
+		_, err = s.setModels(ctx, sessionID, current.ModelRevision, encoded)
+		return err
+	}
 	if err := s.q.SetSessionAnalysisEffort(ctx, db.SetSessionAnalysisEffortParams{
 		ID:             sessionID,
 		AnalysisEffort: effort,
@@ -450,6 +494,41 @@ func (s *service) SetGoalStatus(ctx context.Context, sessionID string, generatio
 UPDATE session_goals
 SET status = ?, error = ?, updated_at = strftime('%s', 'now')
 WHERE session_id = ? AND generation = ? AND objective != ''`, string(status), strings.TrimSpace(goalError), sessionID, generation)
+	if err != nil {
+		return Session{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return Session{}, err
+	}
+	if changed != 1 {
+		return Session{}, ErrGoalChanged
+	}
+	return s.publishGoalUpdate(ctx, sessionID)
+}
+
+func (s *service) TryAcquireGoal(ctx context.Context, sessionID string) (func(), error) {
+	var databasePath string
+	if err := s.db.QueryRowContext(ctx, "SELECT file FROM pragma_database_list WHERE name = 'main'").Scan(&databasePath); err != nil {
+		return nil, err
+	}
+	if databasePath == "" {
+		return nil, errors.New("goal ownership requires a persistent session database")
+	}
+	directory := filepath.Join(filepath.Dir(databasePath), "goals")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil, err
+	}
+	return lock.TryFile(filepath.Join(directory, fmt.Sprintf("%x.lock", sha256.Sum256([]byte(sessionID)))))
+}
+
+func (s *service) BlockActiveGoal(ctx context.Context, sessionID string, generation int64, goalError string) (Session, error) {
+	s.goalStateMu.Lock()
+	defer s.goalStateMu.Unlock()
+	result, err := s.db.ExecContext(ctx, `
+UPDATE session_goals
+SET status = 'blocked', error = ?, updated_at = strftime('%s', 'now')
+WHERE session_id = ? AND generation = ? AND objective != '' AND status = 'active'`, strings.TrimSpace(goalError), sessionID, generation)
 	if err != nil {
 		return Session{}, err
 	}
@@ -688,12 +767,16 @@ func (s *service) publishSessionUpdate(ctx context.Context, sessionID string) {
 }
 
 func (s *service) withGoal(ctx context.Context, current Session) (Session, error) {
+	current, err := s.withModels(ctx, current)
+	if err != nil {
+		return Session{}, err
+	}
 	row := s.db.QueryRowContext(ctx, `
 SELECT objective, status, generation, error, updated_at
 FROM session_goals
 WHERE session_id = ?`, current.ID)
 	var status string
-	err := row.Scan(
+	err = row.Scan(
 		&current.Goal.Objective,
 		&status,
 		&current.Goal.Generation,
@@ -787,13 +870,17 @@ func unmarshalTodos(data string) ([]Todo, error) {
 	return todos, nil
 }
 
-func NewService(q *db.Queries, conn *sql.DB) Service {
+func NewService(q *db.Queries, conn *sql.DB, options ...ServiceOption) Service {
 	broker := pubsub.NewBroker[Session]()
-	return &service{
+	s := &service{
 		Broker: broker,
 		db:     conn,
 		q:      q,
 	}
+	for _, option := range options {
+		option(s)
+	}
+	return s
 }
 
 // CreateAgentToolSessionID creates a session ID for agent tool sessions using the format "messageID$$toolCallID"

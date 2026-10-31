@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -692,18 +693,51 @@ func (c *controllerV1) handleGetWorkspaceSessionMessages(w http.ResponseWriter, 
 //	@Router			/workspaces/{id}/sessions/{sid} [put]
 func (c *controllerV1) handlePutWorkspaceSession(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-
-	var sess session.Session
-	if err := json.NewDecoder(r.Body).Decode(&sess); err != nil {
-		c.server.logError(r, "Failed to decode request", "error", err)
+	var payload json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		jsonError(w, http.StatusBadRequest, "failed to decode request")
 		return
 	}
-
-	saved, err := c.backend.SaveSession(r.Context(), id, sess)
-	if err != nil {
-		c.handleError(w, r, err)
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil || fields == nil {
+		jsonError(w, http.StatusBadRequest, "session update must be an object")
 		return
+	}
+	var saved session.Session
+	var err error
+	if selection, present := fields["model_selection"]; present {
+		var request proto.SessionModelsRequest
+		decoder := json.NewDecoder(bytes.NewReader(selection))
+		decoder.UseNumber()
+		decoder.DisallowUnknownFields()
+		if len(fields) != 1 || bytes.Equal(bytes.TrimSpace(selection), []byte("null")) {
+			jsonError(w, http.StatusBadRequest, "model_selection must be the only session update")
+			return
+		}
+		if err := decoder.Decode(&request); err != nil || request.Revision < 0 {
+			jsonError(w, http.StatusBadRequest, "invalid session model selection")
+			return
+		}
+		saved, err = c.backend.SetSessionModels(r.Context(), id, r.PathValue("sid"), request.Revision, request.Models)
+		if errors.Is(err, session.ErrModelsChanged) {
+			jsonError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err != nil {
+			jsonError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else {
+		var current session.Session
+		if err := json.Unmarshal(payload, &current); err != nil {
+			jsonError(w, http.StatusBadRequest, "failed to decode request")
+			return
+		}
+		saved, err = c.backend.SaveSession(r.Context(), id, current)
+		if err != nil {
+			c.handleError(w, r, err)
+			return
+		}
 	}
 	ws, _ := c.backend.GetWorkspace(id)
 	out := sessionToProto(saved)

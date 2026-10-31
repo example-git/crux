@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -108,7 +109,9 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 		}
 	}()
 	q := db.New(conn)
-	sessions := session.NewService(q, conn)
+	sessions := session.NewService(q, conn, session.WithModelSource(func() (json.RawMessage, error) {
+		return json.Marshal(store.RuntimeSnapshot().AgentModelState())
+	}))
 	messages := message.NewService(q, message.WithCompactionStore(conn, sessions))
 	homeDirectory, err := os.UserHomeDir()
 	if err != nil {
@@ -455,7 +458,13 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 		// session, provided it is still available.
 		if largeModel == "" && smallModel == "" {
 			if err := app.restoreModelFromSession(ctx, sess.ID); err != nil {
-				slog.Warn("Failed to restore model from session", "session_id", sess.ID)
+				return err
+			}
+		} else {
+			var err error
+			sess, err = app.SetSessionModels(ctx, sess.ID, sess.ModelRevision, app.config.RuntimeSnapshot().AgentModelState())
+			if err != nil {
+				return err
 			}
 		}
 	} else {
@@ -680,56 +689,32 @@ func (app *App) UpdateAgentModel(ctx context.Context, expected config.AgentModel
 // continuing a session uses the same model that produced the last
 // response.
 func (app *App) restoreModelFromSession(ctx context.Context, sessionID string) error {
-	lastMsg, err := app.Messages.GetLastAssistantMessage(ctx, sessionID)
+	current, err := app.Sessions.Get(ctx, sessionID)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		return fmt.Errorf("failed to get last assistant message: %w", err)
+		return err
+	}
+	if len(current.Models) > 0 {
+		return nil
+	}
+	lastMsg, err := app.Messages.GetLastAssistantMessage(ctx, sessionID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
 	}
 	if lastMsg.Provider == "" || lastMsg.Model == "" {
 		return nil
 	}
-
-	cfg := app.config.Config()
-	currentLarge := cfg.Models[config.SelectedModelTypeLarge]
-	if currentLarge.Provider == lastMsg.Provider && currentLarge.Model == lastMsg.Model {
-		return nil
+	snapshot := app.config.RuntimeSnapshot()
+	owner, ok := snapshot.ProviderOwner(lastMsg.Provider)
+	if !ok || !snapshot.Config().IsModelAvailable(lastMsg.Provider, lastMsg.Model) {
+		return fmt.Errorf("session model %s/%s is unavailable", lastMsg.Provider, lastMsg.Model)
 	}
-
-	if !cfg.IsModelAvailable(lastMsg.Provider, lastMsg.Model) {
-		slog.Debug("Skipping model restoration: provider/model not available",
-			"provider", lastMsg.Provider,
-			"model", lastMsg.Model)
-		return nil
-	}
-
-	if err := app.config.OverridePreferredModel(config.SelectedModelTypeLarge, config.SelectedModel{
-		Provider: lastMsg.Provider,
-		Model:    lastMsg.Model,
-	}); err != nil {
-		return fmt.Errorf("restore large model: %w", err)
-	}
-	if _, ok := cfg.Models[config.SelectedModelTypeSmall]; !ok {
-		smallModel, err := app.GetDefaultSmallModel(lastMsg.Provider)
-		if err != nil {
-			return fmt.Errorf("resolve default small model: %w", err)
-		}
-		if err := app.config.OverridePreferredModel(config.SelectedModelTypeSmall, smallModel); err != nil {
-			return fmt.Errorf("restore small model: %w", err)
-		}
-	}
-	coordinator := app.CurrentAgentCoordinator()
-	if coordinator == nil {
-		return errors.New("agent coordinator not initialized")
-	}
-	if err := coordinator.UpdateModels(ctx); err != nil {
-		return fmt.Errorf("failed to update agent models: %w", err)
-	}
-	slog.Info("Restored model from session",
-		"provider", lastMsg.Provider,
-		"model", lastMsg.Model)
-	return nil
+	models := snapshot.AgentModelState()
+	models.Large = &config.OwnedSelectedModel{Owner: owner, Model: config.SelectedModel{Provider: lastMsg.Provider, Model: lastMsg.Model, ReasoningEffort: current.AnalysisEffort}}
+	_, err = app.SetSessionModels(ctx, sessionID, current.ModelRevision, models)
+	return err
 }
 
 // overrideModelsForNonInteractive parses the model strings and temporarily

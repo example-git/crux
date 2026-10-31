@@ -1211,3 +1211,26 @@ func TestUpdate_StructuralFlushUsesMustDeliver(t *testing.T) {
 		})
 	}
 }
+
+func TestClonedSessionKeepsModelSelection(t *testing.T) {
+	conn, err := db.Connect(t.Context(), t.TempDir())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	queries := db.New(conn)
+	sessions := session.NewService(queries, conn)
+	original, err := sessions.Create(t.Context(), "original")
+	require.NoError(t, err)
+	models := []byte(`{"large":{"model":{"provider":"fixture","model":"main","provider_options":{"precise":9007199254740993}}}}`)
+	original, err = sessions.SetModels(t.Context(), original.ID, 0, models)
+	require.NoError(t, err)
+	service := NewService(queries, WithCompactionStore(conn, sessions))
+	cloned, err := service.CloneSession(t.Context(), CloneSessionParams{Source: original, RecordOrigin: true})
+	require.NoError(t, err)
+	require.Equal(t, original.Models, cloned.Models)
+	persisted, err := sessions.Get(t.Context(), cloned.ID)
+	require.NoError(t, err)
+	require.Equal(t, original.Models, persisted.Models)
+	require.EqualValues(t, 1, persisted.ModelRevision)
+	require.Equal(t, original.Provider, persisted.Provider)
+	require.Empty(t, persisted.Goal.Objective)
+}

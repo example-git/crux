@@ -225,6 +225,8 @@ func sessionToProto(s session.Session) proto.Session {
 		},
 		AnalysisEffort: s.AnalysisEffort,
 		Model:          s.Model,
+		Models:         s.Models,
+		ModelRevision:  s.ModelRevision,
 		Provider:       s.Provider,
 		CreatedAt:      s.CreatedAt,
 		UpdatedAt:      s.UpdatedAt,

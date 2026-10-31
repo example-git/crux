@@ -135,7 +135,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				Mode:        params.Mode,
 				Browser:     c.browserFetch,
 				SessionID:   validationResult.SessionID,
-				Environment: c.cfg.RuntimeSnapshot().Environment(),
+				Environment: c.modelSnapshotForContext(ctx).Environment(),
 			}
 			var fullPrompt string
 
@@ -182,7 +182,7 @@ func (c *coordinator) agenticFetchTool(_ context.Context, client *http.Client) (
 				return fantasy.ToolResponse{}, fmt.Errorf("error creating prompt: %s", err)
 			}
 
-			runtimeSnapshot := c.cfg.RuntimeSnapshot()
+			runtimeSnapshot := c.modelSnapshotForContext(ctx)
 			cfg := runtimeSnapshot.Config()
 			_, small, err := c.buildAgentModelsWithSnapshot(ctx, config.Agent{Model: config.SelectedModelTypeLarge}, true, runtimeSnapshot)
 			if err != nil {

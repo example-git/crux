@@ -1,12 +1,15 @@
 package model
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	tea "github.com/example-git/crux/foundation/bubbletea"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/ui/dialog"
 	"github.com/example-git/crux/internal/ui/util"
 	"github.com/example-git/crux/internal/workspace"
@@ -25,11 +28,13 @@ type modelSelectionOperation struct {
 	onboarding bool
 	control    string
 	notice     string
+	sessionID  string
 }
 type modelSelectionCompletedMsg struct {
 	operation                     *modelSelectionOperation
 	providerID, modelName, notice string
 	modelType                     config.SelectedModelType
+	session                       *session.Session
 	needsInitialization           bool
 	err                           error
 }
@@ -37,6 +42,9 @@ type modelSelectionCompletedMsg struct {
 func (m *UI) enqueueModelSelection(selection dialog.ActionSelectModel, control, notice string) tea.Cmd {
 	selection.Model = selection.Model.Clone()
 	operation := &modelSelectionOperation{workspace: m.com.Workspace, generation: m.modelSelectionGen, selection: selection, onboarding: m.state == uiOnboarding, control: control, notice: notice}
+	if m.session != nil {
+		operation.sessionID = m.session.ID
+	}
 	if m.modelSelectionLanes == nil {
 		m.modelSelectionLanes = make(map[workspace.Workspace]*modelSelectionLane)
 	}
@@ -64,8 +72,36 @@ func runModelSelection(operation *modelSelectionOperation) tea.Cmd {
 			result.err = err
 			return result
 		}
+		var currentSession session.Session
+		var sessionModels config.AgentModelState
+		if operation.sessionID != "" {
+			var err error
+			currentSession, err = ws.GetSession(context.Background(), operation.sessionID)
+			if err != nil {
+				result.err = err
+				return result
+			}
+			if len(currentSession.Models) > 0 {
+				decoder := json.NewDecoder(bytes.NewReader(currentSession.Models))
+				decoder.UseNumber()
+				if err := decoder.Decode(&sessionModels); err != nil {
+					result.err = err
+					return result
+				}
+			}
+		}
 		if operation.control != "" {
 			current, ok := cfg.Models[selection.ModelType]
+			if len(currentSession.Models) > 0 {
+				bound := sessionModels.Large
+				if selection.ModelType == config.SelectedModelTypeSmall {
+					bound = sessionModels.Small
+				}
+				ok = bound != nil
+				if ok {
+					current = bound.Model
+				}
+			}
 			if !ok || current.Provider != selection.Model.Provider || current.Model != selection.Model.Model {
 				result.err = errors.New("model changed before its control update; choose the control again")
 				return result
@@ -100,6 +136,21 @@ func runModelSelection(operation *modelSelectionOperation) tea.Cmd {
 			}
 			if err = ws.InitCoderAgent(context.Background()); err == nil {
 				result.needsInitialization, err = ws.ProjectNeedsInitialization()
+			}
+		} else if operation.sessionID != "" {
+			if len(currentSession.Models) == 0 {
+				sessionModels = state
+			}
+			selected := &config.OwnedSelectedModel{Model: selection.Model.Clone(), Owner: selection.ProviderOwner}
+			if selection.ModelType == config.SelectedModelTypeLarge {
+				sessionModels.Large = selected
+			} else {
+				sessionModels.Small = selected
+			}
+			var saved session.Session
+			saved, err = ws.SetSessionModels(context.Background(), currentSession.ID, currentSession.ModelRevision, sessionModels)
+			if err == nil {
+				result.session = &saved
 			}
 		} else {
 			err = ws.UpdateAgentModel(context.Background(), state)
@@ -137,6 +188,9 @@ func (m *UI) completeModelSelection(result modelSelectionCompletedMsg) tea.Cmd {
 	}
 	if result.err != nil {
 		return tea.Batch(cmds...)
+	}
+	if result.session != nil && m.session != nil && m.session.ID == result.session.ID {
+		m.session = result.session
 	}
 	if result.modelType == config.SelectedModelTypeLarge {
 		m.applyThemeForProvider(result.providerID)
@@ -176,6 +230,9 @@ func (m *UI) queueModelControl(control, effort string) tea.Cmd {
 		return util.ReportError(errors.New("agent configuration not found"))
 	}
 	selected := cfg.Models[agent.Model].Clone()
+	if current := m.selectedLargeModel(); current != nil && m.session != nil && len(m.session.Models) > 0 {
+		selected = current.ModelCfg.Clone()
+	}
 	owner, err := selectedModelOwner(cfg, selected)
 	if err != nil {
 		return util.ReportError(err)

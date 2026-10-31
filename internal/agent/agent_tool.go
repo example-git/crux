@@ -204,7 +204,11 @@ func (c *coordinator) resolveAgentToolPreset(
 	taskPreset presetSubagent,
 	requested string,
 ) (presetSubagent, error) {
-	definitions, err := c.currentAgentDefinitions()
+	var definitions []agentDefinition
+	var err error
+	if c.loadAgentDefinitions != nil {
+		definitions, err = c.loadAgentDefinitions(c.cfg.WorkingDir(), c.modelSnapshotForContext(ctx).Config())
+	}
 	if err != nil {
 		return presetSubagent{}, err
 	}
@@ -254,7 +258,7 @@ func (c *coordinator) buildCustomAgentPreset(
 	if err != nil {
 		return presetSubagent{}, err
 	}
-	customAgent, err := c.buildAgent(ctx, promptTemplate, agentCfg, true)
+	customAgent, err := c.buildAgentWithSnapshot(ctx, promptTemplate, agentCfg, true, c.modelSnapshotForContext(ctx))
 	if err != nil {
 		return presetSubagent{}, fmt.Errorf(
 			"building custom agent from %q: %w",

@@ -8679,6 +8679,15 @@ const docTemplate = `{
                 "model": {
                     "type": "string"
                 },
+                "model_revision": {
+                    "type": "integer"
+                },
+                "model_selection": {
+                    "$ref": "#/definitions/proto.SessionModelsRequest"
+                },
+                "models": {
+                    "type": "object"
+                },
                 "parent_session_id": {
                     "type": "string"
                 },
@@ -8707,6 +8716,17 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "updated_at": {
+                    "type": "integer"
+                }
+            }
+        },
+        "proto.SessionModelsRequest": {
+            "type": "object",
+            "properties": {
+                "models": {
+                    "$ref": "#/definitions/config.AgentModelState"
+                },
+                "revision": {
                     "type": "integer"
                 }
             }

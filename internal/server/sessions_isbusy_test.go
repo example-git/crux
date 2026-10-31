@@ -135,6 +135,21 @@ func (s *stubSessions) SetGoalStatus(_ context.Context, id string, generation in
 	return session.Session{}, errors.New("not found")
 }
 
+func (s *stubSessions) BlockActiveGoal(ctx context.Context, id string, generation int64, goalError string) (session.Session, error) {
+	current, err := s.Get(ctx, id)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if !current.Goal.Active() {
+		return session.Session{}, session.ErrGoalChanged
+	}
+	return s.SetGoalStatus(ctx, id, generation, session.GoalStatusBlocked, goalError)
+}
+
+func (s *stubSessions) TryAcquireGoal(context.Context, string) (func(), error) {
+	return func() {}, nil
+}
+
 func (s *stubSessions) StopGoal(ctx context.Context, id string, generation int64) (session.Session, error) {
 	current, err := s.SetGoalStatus(ctx, id, generation, session.GoalStatusPaused, "")
 	if err != nil {

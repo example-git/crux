@@ -5,12 +5,21 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/session"
 )
 
 var ErrSessionActiveWriter = errors.New("session has an active writer")
+
+func (b *Backend) SetSessionModels(ctx context.Context, workspaceID, sessionID string, revision int64, models config.AgentModelState) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	return ws.SetSessionModels(ctx, sessionID, revision, models)
+}
 
 type sessionActiveWriterError struct {
 	id string

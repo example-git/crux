@@ -63,7 +63,7 @@ func TestCommandsGoalControlsShowUsage(t *testing.T) {
 		{"goal-status", "/goal status", "/goal or /goal status", "objective and state"},
 		{"goal-stop", "/goal stop", "/goal stop", "cancels now; /goal resume continues later"},
 		{"goal-pause", "/goal pause", "/goal pause", "lets this turn finish, then pauses"},
-		{"goal-resume", "/goal resume", "/goal resume", "continues the saved goal"},
+		{"goal-resume", "/goal resume", "/goal resume", "continues the goal in this session"},
 		{"goal-complete", "/goal complete", "/goal complete", "marks the goal as finished"},
 		{"goal-clear", "/goal clear", "/goal clear", "removes the saved goal"},
 	} {

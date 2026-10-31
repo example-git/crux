@@ -980,6 +980,22 @@ func (c *Client) SetSessionAnalysisEffort(ctx context.Context, id, sessionID, ef
 	return &saved, nil
 }
 
+func (c *Client) SetSessionModels(ctx context.Context, id, sessionID string, revision int64, models config.AgentModelState) (*proto.Session, error) {
+	response, err := c.put(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s", id, sessionID), nil, jsonBody(map[string]any{"model_selection": proto.SessionModelsRequest{Revision: revision, Models: models}}), http.Header{"Content-Type": []string{"application/json"}})
+	if err != nil {
+		return nil, fmt.Errorf("failed to set session models: %w", err)
+	}
+	defer response.Body.Close()
+	if err := checkStatus(response); err != nil {
+		return nil, fmt.Errorf("failed to set session models: %w", err)
+	}
+	var saved proto.Session
+	if err := json.NewDecoder(response.Body).Decode(&saved); err != nil {
+		return nil, fmt.Errorf("failed to decode session: %w", err)
+	}
+	return &saved, nil
+}
+
 func (c *Client) UpdateSessionGoal(ctx context.Context, id, sessionID string, request proto.SessionGoalRequest) (*proto.Session, error) {
 	rsp, err := c.put(ctx, fmt.Sprintf("/workspaces/%s/sessions/%s/goal", id, sessionID), nil, jsonBody(request), http.Header{"Content-Type": []string{"application/json"}})
 	if err != nil {

@@ -28,7 +28,8 @@ func TestWorkerExtractsDurableMemoryAndSkipsUnchangedTranscript(t *testing.T) {
 	var calls atomic.Int32
 	worker, err := NewWorker(WorkerOptions{
 		Memory: memory,
-		Generate: func(_ context.Context, purpose, prompt string, maxOutputTokens int64) (string, error) {
+		Generate: func(ctx context.Context, purpose, prompt string, maxOutputTokens int64) (string, error) {
+			require.NotEmpty(t, SessionIDFromContext(ctx))
 			require.Equal(t, "memory_extraction", purpose)
 			require.Contains(t, prompt, "user: Always run focused tests")
 			require.Contains(t, prompt, "Before proposing any mutation, inspect the target project scope's existing memory manifest")

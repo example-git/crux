@@ -71,3 +71,9 @@ type SessionGoal struct {
 	Error      string `json:"error"`
 	UpdatedAt  int64  `json:"updated_at"`
 }
+
+type SessionModelSelection struct {
+	SessionID string `json:"session_id"`
+	Models    string `json:"models"`
+	Revision  int64  `json:"revision"`
+}

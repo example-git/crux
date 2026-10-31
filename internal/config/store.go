@@ -200,6 +200,37 @@ func (s RuntimeSnapshot) AgentModelState() AgentModelState {
 	return captureAgentModelState(s.config.Models, s.ProviderOwner)
 }
 
+func (s RuntimeSnapshot) WithAgentModels(models AgentModelState) (RuntimeSnapshot, error) {
+	if err := models.Validate(); err != nil {
+		return RuntimeSnapshot{}, err
+	}
+	if models.Large == nil || models.Small == nil {
+		return RuntimeSnapshot{}, errors.New("both main and small model selections are required")
+	}
+	if s.config == nil {
+		return RuntimeSnapshot{}, errors.New("runtime configuration is unavailable")
+	}
+	next := s.config.cloneForWrite()
+	if next.Models == nil {
+		next.Models = make(map[SelectedModelType]SelectedModel)
+	}
+	for modelType, selected := range map[SelectedModelType]*OwnedSelectedModel{
+		SelectedModelTypeLarge: models.Large,
+		SelectedModelTypeSmall: models.Small,
+	} {
+		owner, ok := s.ProviderOwner(selected.Model.Provider)
+		if !ok || owner != selected.Owner {
+			return RuntimeSnapshot{}, fmt.Errorf("saved %s model provider owner is unavailable", modelType)
+		}
+		if !s.config.IsModelAvailable(selected.Model.Provider, selected.Model.Model) {
+			return RuntimeSnapshot{}, fmt.Errorf("saved %s model %q for provider %q is unavailable", modelType, selected.Model.Model, selected.Model.Provider)
+		}
+		next.Models[modelType] = selected.Model.Clone()
+	}
+	s.config = next
+	return s, nil
+}
+
 func (s AgentModelState) Validate() error {
 	if s.Large == nil && s.Small == nil {
 		return fmt.Errorf("agent model state is required")

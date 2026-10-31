@@ -1,5 +1,11 @@
 package proto
 
+import (
+	"encoding/json"
+
+	"github.com/example-git/crux/internal/config"
+)
+
 // Session represents a session in the proto layer.
 //
 // IsBusy is computed on read (it is not persisted with the session) and
@@ -14,29 +20,32 @@ package proto
 // live SSE stream. Hold-only clients (streams == 0) do not contribute.
 // Like IsBusy, it is computed on read by REST handlers.
 type Session struct {
-	ID                  string  `json:"id"`
-	ParentSessionID     string  `json:"parent_session_id"`
-	ForkedFromSessionID string  `json:"forked_from_session_id"`
-	Archived            bool    `json:"archived"`
-	Title               string  `json:"title"`
-	MessageCount        int64   `json:"message_count"`
-	PromptTokens        int64   `json:"prompt_tokens"`
-	CompletionTokens    int64   `json:"completion_tokens"`
-	EstimatedUsage      bool    `json:"estimated_usage"`
-	UnseenLocalTokens   int64   `json:"unseen_local_tokens"`
-	SummaryMessageID    string  `json:"summary_message_id"`
-	Cost                float64 `json:"cost"`
-	Todos               []Todo  `json:"todos,omitempty"`
-	Mode                string  `json:"mode"`
-	Plan                string  `json:"plan,omitempty"`
-	Goal                Goal    `json:"goal"`
-	AnalysisEffort      string  `json:"analysis_effort,omitempty"`
-	Model               string  `json:"model,omitempty"`
-	Provider            string  `json:"provider,omitempty"`
-	CreatedAt           int64   `json:"created_at"`
-	UpdatedAt           int64   `json:"updated_at"`
-	IsBusy              bool    `json:"is_busy"`
-	AttachedClients     int     `json:"attached_clients"`
+	ID                  string                `json:"id"`
+	ParentSessionID     string                `json:"parent_session_id"`
+	ForkedFromSessionID string                `json:"forked_from_session_id"`
+	Archived            bool                  `json:"archived"`
+	Title               string                `json:"title"`
+	MessageCount        int64                 `json:"message_count"`
+	PromptTokens        int64                 `json:"prompt_tokens"`
+	CompletionTokens    int64                 `json:"completion_tokens"`
+	EstimatedUsage      bool                  `json:"estimated_usage"`
+	UnseenLocalTokens   int64                 `json:"unseen_local_tokens"`
+	SummaryMessageID    string                `json:"summary_message_id"`
+	Cost                float64               `json:"cost"`
+	Todos               []Todo                `json:"todos,omitempty"`
+	Mode                string                `json:"mode"`
+	Plan                string                `json:"plan,omitempty"`
+	Goal                Goal                  `json:"goal"`
+	AnalysisEffort      string                `json:"analysis_effort,omitempty"`
+	Model               string                `json:"model,omitempty"`
+	Provider            string                `json:"provider,omitempty"`
+	Models              json.RawMessage       `json:"models,omitempty" swaggertype:"object"`
+	ModelRevision       int64                 `json:"model_revision,omitempty"`
+	ModelSelection      *SessionModelsRequest `json:"model_selection,omitempty"`
+	CreatedAt           int64                 `json:"created_at"`
+	UpdatedAt           int64                 `json:"updated_at"`
+	IsBusy              bool                  `json:"is_busy"`
+	AttachedClients     int                   `json:"attached_clients"`
 }
 
 // Todo represents a single todo entry on a session in the proto layer.
@@ -52,6 +61,11 @@ type Goal struct {
 	Generation int64  `json:"generation,omitempty"`
 	Error      string `json:"error,omitempty"`
 	UpdatedAt  int64  `json:"updated_at,omitempty"`
+}
+
+type SessionModelsRequest struct {
+	Models   config.AgentModelState `json:"models"`
+	Revision int64                  `json:"revision"`
 }
 
 type SessionGoalRequest struct {

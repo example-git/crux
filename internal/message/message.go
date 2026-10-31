@@ -350,6 +350,11 @@ func (s *service) CloneSession(ctx context.Context, params CloneSessionParams) (
 	if err := qtx.SetSessionAnalysisEffort(ctx, db.SetSessionAnalysisEffortParams{ID: forkID, AnalysisEffort: params.Source.AnalysisEffort}); err != nil {
 		return session.Session{}, err
 	}
+	if len(params.Source.Models) > 0 {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO session_model_selections(session_id, models, revision) VALUES (?, ?, 1)", forkID, string(params.Source.Models)); err != nil {
+			return session.Session{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return session.Session{}, fmt.Errorf("committing fork transaction: %w", err)
 	}
@@ -363,6 +368,10 @@ func (s *service) CloneSession(ctx context.Context, params CloneSessionParams) (
 		Mode: params.Source.Mode, Plan: params.Source.Plan, AnalysisEffort: params.Source.AnalysisEffort,
 		Model: params.Source.Model, Provider: params.Source.Provider,
 		CreatedAt: dbSession.CreatedAt, UpdatedAt: dbSession.UpdatedAt,
+	}
+	if len(params.Source.Models) > 0 {
+		result.Models = append(json.RawMessage(nil), params.Source.Models...)
+		result.ModelRevision = 1
 	}
 	s.sessions.PublishCreated(result)
 	for _, created := range createdMessages {

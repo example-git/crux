@@ -447,8 +447,11 @@ type UI struct {
 	// client/server mode, and modelInfo renders them every frame). Seeded
 	// once at construction and refreshed by the same off-thread probe as
 	// agentBusyCache.
-	agentReady bool
-	agentModel workspace.AgentModel
+	agentReady            bool
+	agentModel            workspace.AgentModel
+	sessionModelWorkspace workspace.Workspace
+	sessionModelData      string
+	sessionLargeModel     *workspace.AgentModel
 	// busyFetchGen is bumped by every busy/permission state transition;
 	// like promptQueueGen it lets a stale in-flight probe result be
 	// discarded and re-fetched instead of clobbering newer state.
@@ -2945,6 +2948,9 @@ func selectedModelOwner(cfg *config.Config, model config.SelectedModel) (provide
 // available. Returns a tea.Cmd that rebuilds the agent models if a
 // switch was made, or nil if no switch was needed.
 func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
+	if m.session != nil && len(m.session.Models) > 0 {
+		return nil
+	}
 	if authority := cachedWorkspaceAuthority(m.com); authority != nil && authority.Mode == "client" {
 		return nil
 	}
@@ -2965,7 +2971,7 @@ func (m *UI) restoreModelFromSession(msgs []message.Message) tea.Cmd {
 	}
 
 	currentLarge := cfg.Models[config.SelectedModelTypeLarge]
-	if currentLarge.Provider == lastAssistant.Provider && currentLarge.Model == lastAssistant.Model {
+	if currentLarge.Provider == lastAssistant.Provider && currentLarge.Model == lastAssistant.Model && m.session == nil {
 		return nil
 	}
 

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,6 +17,18 @@ import (
 type mockSessionService struct {
 	sessions []session.Session
 	created  []session.Session
+}
+
+func (m *mockSessionService) SetModels(_ context.Context, id string, revision int64, models json.RawMessage) (session.Session, error) {
+	current, err := m.Get(context.Background(), id)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if current.ModelRevision != revision {
+		return session.Session{}, session.ErrModelsChanged
+	}
+	current.Models, current.ModelRevision = models, revision+1
+	return m.Save(context.Background(), current)
 }
 
 func (m *mockSessionService) Subscribe(context.Context) <-chan pubsub.Event[session.Session] {
@@ -129,6 +142,21 @@ func (m *mockSessionService) SetGoalStatus(_ context.Context, sessionID string, 
 		return m.sessions[index], nil
 	}
 	return session.Session{}, session.ErrGoalChanged
+}
+
+func (m *mockSessionService) BlockActiveGoal(ctx context.Context, sessionID string, generation int64, goalError string) (session.Session, error) {
+	current, err := m.Get(ctx, sessionID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if !current.Goal.Active() {
+		return session.Session{}, session.ErrGoalChanged
+	}
+	return m.SetGoalStatus(ctx, sessionID, generation, session.GoalStatusBlocked, goalError)
+}
+
+func (m *mockSessionService) TryAcquireGoal(context.Context, string) (func(), error) {
+	return func() {}, nil
 }
 
 func (m *mockSessionService) StopGoal(ctx context.Context, sessionID string, generation int64) (session.Session, error) {

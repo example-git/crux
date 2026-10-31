@@ -1485,30 +1485,23 @@ func TestUpdateParentSessionCost(t *testing.T) {
 }
 
 func TestSessionAnalysisEffortPrecedence(t *testing.T) {
-	env := testEnv(t)
-	coord := &coordinator{sessions: env.sessions}
-	created, err := env.sessions.Create(t.Context(), "test")
+	coord, env := sessionRuntimeTestCoordinator(t)
+	created, err := env.sessions.Create(t.Context(), "session")
 	require.NoError(t, err)
-	require.NoError(t, env.sessions.SetAnalysisEffort(t.Context(), created.ID, "high"))
-
-	persisted, err := coord.withSessionAnalysisEffort(t.Context(), created.ID)
+	encoded, err := json.Marshal(coord.cfg.RuntimeSnapshot().AgentModelState())
 	require.NoError(t, err)
-	require.Equal(t, "high", AnalysisEffortFromContext(persisted))
-	persistedOptions := turnRuntimeOptions(persisted, &config.Options{AnalysisEffort: "medium"})
-	require.Equal(t, "high", persistedOptions.AnalysisEffort)
-
-	explicit, err := coord.withSessionAnalysisEffort(WithAnalysisEffort(t.Context(), "low"), created.ID)
+	_, err = env.sessions.SetModels(t.Context(), created.ID, 0, encoded)
 	require.NoError(t, err)
-	require.Equal(t, "low", AnalysisEffortFromContext(explicit))
-	explicitOptions := turnRuntimeOptions(explicit, &config.Options{AnalysisEffort: "medium"})
-	require.Equal(t, "low", explicitOptions.AnalysisEffort)
-
-	require.NoError(t, env.sessions.SetAnalysisEffort(t.Context(), created.ID, ""))
-	cleared, err := coord.withSessionAnalysisEffort(t.Context(), created.ID)
-	require.NoError(t, err)
-	require.Empty(t, AnalysisEffortFromContext(cleared))
-	workspaceOptions := &config.Options{AnalysisEffort: "medium"}
-	require.Same(t, workspaceOptions, turnRuntimeOptions(cleared, workspaceOptions))
+	for _, effort := range []string{"high", ""} {
+		require.NoError(t, env.sessions.SetAnalysisEffort(t.Context(), created.ID, effort))
+		runtime, err := coord.runtimeForSession(t.Context(), created.ID)
+		require.NoError(t, err)
+		require.Equal(t, effort, runtime.LargeModel.ModelCfg.ReasoningEffort)
+		persisted := modelAnalysisContext(t.Context(), runtime.LargeModel.ModelCfg)
+		require.Equal(t, effort, AnalysisEffortFromContext(persisted))
+		explicit := modelAnalysisContext(WithAnalysisEffort(t.Context(), "low"), runtime.LargeModel.ModelCfg)
+		require.Equal(t, "low", turnRuntimeOptions(explicit, &config.Options{AnalysisEffort: "medium"}).AnalysisEffort)
+	}
 }
 
 func TestApplyCodexRuntimeOptions(t *testing.T) {

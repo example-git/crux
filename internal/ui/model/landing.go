@@ -1,7 +1,10 @@
 package model
 
 import (
+	"encoding/json"
 	"image"
+
+	"github.com/example-git/crux/internal/config"
 
 	"charm.land/lipgloss/v2"
 	"github.com/example-git/crux/foundation/ultraviolet/layout"
@@ -15,6 +18,26 @@ import (
 // called on every frame and AgentIsReady/AgentModel are synchronous HTTP
 // round-trips in client/server mode.
 func (m *UI) selectedLargeModel() *workspace.AgentModel {
+	if m.session != nil && len(m.session.Models) > 0 {
+		data := string(m.session.Models)
+		if data != m.sessionModelData || m.sessionModelWorkspace != m.com.Workspace {
+			m.sessionModelData, m.sessionLargeModel = data, nil
+			m.sessionModelWorkspace = m.com.Workspace
+			var models config.AgentModelState
+			if json.Unmarshal(m.session.Models, &models) == nil && models.Large != nil {
+				selected := models.Large.Model
+				m.sessionLargeModel = &workspace.AgentModel{ModelCfg: selected}
+				if cfg := m.com.Config(); cfg != nil {
+					if model := cfg.GetModel(selected.Provider, selected.Model); model != nil {
+						m.sessionLargeModel.CatalogModel = *model
+					} else {
+						m.sessionLargeModel.CatalogModel.Name = selected.Model
+					}
+				}
+			}
+		}
+		return m.sessionLargeModel
+	}
 	if m.agentReady {
 		model := m.agentModel
 		return &model

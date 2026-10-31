@@ -906,8 +906,8 @@ func nativeAPIFixtureWithSessionAndTaskSeedsAndFileSearch(t *testing.T, completi
 		case strings.Contains(path, "/sessions/") && r.Method == http.MethodPut:
 			parts := strings.Split(path, "/")
 			id := parts[len(parts)-1]
-			var updated map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
+			var body map[string]json.RawMessage
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -917,8 +917,34 @@ func nativeAPIFixtureWithSessionAndTaskSeedsAndFileSearch(t *testing.T, completi
 				http.NotFound(w, r)
 				return
 			}
-			updated["id"] = id
-			sessions[id] = updated
+			var updated map[string]any
+			if raw, ok := body["model_selection"]; ok {
+				var selection proto.SessionModelsRequest
+				decoder := json.NewDecoder(bytes.NewReader(raw))
+				decoder.UseNumber()
+				if err := decoder.Decode(&selection); err != nil {
+					mu.Unlock()
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				updated = sessions[id]
+				revision, _ := updated["model_revision"].(int64)
+				if selection.Revision != revision {
+					mu.Unlock()
+					http.Error(w, "session model selection changed", http.StatusConflict)
+					return
+				}
+				models, err := json.Marshal(selection.Models)
+				require.NoError(t, err)
+				updated["models"], updated["model_revision"] = json.RawMessage(models), revision+1
+				updated["model"], updated["provider"], updated["analysis_effort"] = selection.Models.Large.Model.Model, selection.Models.Large.Model.Provider, selection.Models.Large.Model.ReasoningEffort
+			} else {
+				raw, err := json.Marshal(body)
+				require.NoError(t, err)
+				require.NoError(t, json.Unmarshal(raw, &updated))
+				updated["id"] = id
+				sessions[id] = updated
+			}
 			mu.Unlock()
 			_ = json.NewEncoder(w).Encode(updated)
 		case strings.Contains(path, "/sessions/") && r.Method == http.MethodDelete:

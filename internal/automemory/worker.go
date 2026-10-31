@@ -28,6 +28,13 @@ const (
 	maxDreamInputBytes    = 100_000
 )
 
+type sessionContextKey struct{}
+
+func SessionIDFromContext(ctx context.Context) string {
+	sessionID, _ := ctx.Value(sessionContextKey{}).(string)
+	return sessionID
+}
+
 type Turn struct {
 	Role string
 	Text string
@@ -245,6 +252,7 @@ func (w *Worker) run() {
 }
 
 func (w *Worker) extract(ctx context.Context, sessionID string) error {
+	ctx = context.WithValue(ctx, sessionContextKey{}, sessionID)
 	turns, err := w.loadTranscript(ctx, sessionID)
 	if err != nil {
 		return err
@@ -292,6 +300,7 @@ func (w *Worker) extract(ctx context.Context, sessionID string) error {
 }
 
 func (w *Worker) maybeDream(ctx context.Context, currentSessionID string) error {
+	ctx = context.WithValue(ctx, sessionContextKey{}, currentSessionID)
 	topics, err := scanTopics(w.memory.Directory)
 	if err != nil {
 		return err

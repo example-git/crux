@@ -136,6 +136,7 @@ type SessionAgentCall struct {
 	OnDiscarded        func()
 	OnProviderWarning  func(fantasy.CallWarning)
 	PrepareRuntime     func(context.Context, InstalledRuntime) (fantasy.StepModelSettings, error)
+	RuntimeProvider    func(context.Context) (InstalledRuntime, error)
 	// Accepted, when non-nil, is the accept reservation taken by
 	// BeginAccepted before the call was dispatched onto a goroutine
 	// (the client/server fire-and-forget path). Run consumes it under
@@ -260,6 +261,8 @@ var errSteeringInterrupt = errors.New("interrupted by steering")
 type SystemPromptBuilder func(context.Context, session.Session, Model) (fantasy.Instructions, error)
 
 type InstalledRuntime struct {
+	SessionID               string
+	ModelRevision           int64
 	LargeModel              Model
 	SmallModel              Model
 	Instructions            fantasy.Instructions
@@ -1197,9 +1200,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			TopK:             call.TopK,
 			FrequencyPenalty: call.FrequencyPenalty,
 			PrepareStep: func(callContext context.Context, options fantasy.PrepareStepFunctionOptions) (_ context.Context, prepared fantasy.PrepareStepResult, err error) {
-				if (options.StepNumber > 0 || restarting) && call.PrepareRuntime != nil {
-					next := a.Runtime()
-					if next.LargeModel.ModelCfg.Provider != largeModel.ModelCfg.Provider || next.LargeModel.ModelCfg.Model != largeModel.ModelCfg.Model {
+				if (options.StepNumber > 0 || restarting || call.RuntimeProvider != nil) && call.PrepareRuntime != nil {
+					next := runtime
+					if call.RuntimeProvider != nil {
+						next, err = call.RuntimeProvider(callContext)
+						if err != nil {
+							return callContext, prepared, err
+						}
+					} else if call.runtime == nil {
+						next = a.Runtime()
+					}
+					if next.ModelRevision != runtime.ModelRevision || next.LargeModel.ModelCfg.Provider != largeModel.ModelCfg.Provider || next.LargeModel.ModelCfg.Model != largeModel.ModelCfg.Model {
 						settings, prepareErr := call.PrepareRuntime(callContext, next)
 						if prepareErr != nil {
 							return callContext, prepared, prepareErr
@@ -1223,11 +1234,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 						disableAutoSummarize = runtime.DisableAutoSummarize
 						call.ProviderOptions = settings.ProviderOptions
 						call.OnAuthRefresh = settings.OnAuthRefresh
-						settings.OnAuthRefresh = modelAuthRefresh(largeModel, refreshAdmittedModel(&largeModel, func() Model { return a.Runtime().LargeModel }, call.OnAuthRefresh))
+						settings.OnAuthRefresh = modelAuthRefresh(largeModel, refreshAdmittedModel(&largeModel, func() Model { return runtime.LargeModel }, call.OnAuthRefresh))
 						settings.ModelProvider = func() fantasy.LanguageModel { return largeModel.Model }
 						prepared.Settings = &settings
 					}
 				}
+				callContext = context.WithValue(callContext, sessionRuntimeKey{}, runtime.Snapshot)
 				prepared.Model = largeModel.Model
 				prepared.Messages = cloneFantasyMessages(options.Messages)
 				if largeModel.AnthropicEfficiency == nil {
@@ -1355,7 +1367,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 					slog.Error("Failed to reset message on retry", "error", updateErr)
 				}
 			},
-			OnAuthRefresh: modelAuthRefresh(largeModel, refreshAdmittedModel(&largeModel, func() Model { return a.Runtime().LargeModel }, call.OnAuthRefresh)),
+			OnAuthRefresh: modelAuthRefresh(largeModel, refreshAdmittedModel(&largeModel, func() Model { return runtime.LargeModel }, call.OnAuthRefresh)),
 			ModelProvider: func() fantasy.LanguageModel {
 				slog.Info("ModelProvider called",
 					"provider", largeModel.ModelCfg.Provider,
@@ -2066,7 +2078,7 @@ func (a *sessionAgent) summarizeWithRuntime(ctx context.Context, sessionID strin
 			Messages:        aiMsgs,
 			Headers:         sessionHeaders(sessionID, "summary"),
 			ProviderOptions: opts,
-			OnAuthRefresh:   modelAuthRefresh(largeModel, refreshAdmittedModel(&largeModel, func() Model { return a.Runtime().LargeModel }, onAuthRefresh)),
+			OnAuthRefresh:   modelAuthRefresh(largeModel, refreshAdmittedModel(&largeModel, func() Model { return runtime.LargeModel }, onAuthRefresh)),
 			MaxRetries:      modelMaxRetries(largeModel),
 			ModelProvider: func() fantasy.LanguageModel {
 				return largeModel.Model
@@ -2625,7 +2637,7 @@ func (a *sessionAgent) GenerateMemory(ctx context.Context, purpose, prompt strin
 		return "", err
 	}
 	defer finish()
-	runtime := a.Runtime()
+	runtime := a.runtimeForContext(ctx)
 	smallModel := runtime.SmallModel
 	instructions := auxiliaryInstructions("You maintain a private persistent memory index. Follow the requested JSON schema exactly and do not use tools.\n /no_think", smallModel)
 	memoryAgent := fantasy.NewAgent(
@@ -2638,7 +2650,7 @@ func (a *sessionAgent) GenerateMemory(ctx context.Context, purpose, prompt strin
 		prompt,
 		sessionHeaders("auto-memory", purpose),
 		smallModel,
-		func() Model { return a.Runtime().SmallModel },
+		func() Model { return runtime.SmallModel },
 		instructions,
 	))
 	if err != nil {
@@ -2707,7 +2719,7 @@ func (a *sessionAgent) SuggestPrompt(ctx context.Context, sessionID string) (str
 		return "", nil
 	}
 
-	runtime := a.Runtime()
+	runtime := a.runtimeForContext(ctx)
 	smallModel := runtime.SmallModel
 	instructions := auxiliaryInstructions(string(suggestPromptTemplate)+"\n /no_think", smallModel)
 
@@ -2722,7 +2734,7 @@ func (a *sessionAgent) SuggestPrompt(ctx context.Context, sessionID string) (str
 		"Conversation:\n\n"+transcript.String()+"\nPredicted next user message:",
 		sessionHeaders(sessionID, "suggestion"),
 		smallModel,
-		func() Model { return a.Runtime().SmallModel },
+		func() Model { return runtime.SmallModel },
 		instructions,
 	))
 	if err != nil {
@@ -2782,7 +2794,7 @@ func hasUserTextMessage(msgs []message.Message) bool {
 
 // GenerateTitle generates a session title based on the initial prompt.
 func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, userPrompt string) {
-	a.generateTitleWithRuntime(ctx, sessionID, userPrompt, a.Runtime())
+	a.generateTitleWithRuntime(ctx, sessionID, userPrompt, a.runtimeForContext(ctx))
 }
 
 func (a *sessionAgent) generateTitleWithRuntime(ctx context.Context, sessionID string, userPrompt string, runtime InstalledRuntime) {
@@ -2838,9 +2850,9 @@ func (a *sessionAgent) generateTitleWithRuntime(ctx context.Context, sessionID s
 			fantasy.WithMaxOutputTokens(tok),
 			fantasy.WithUserAgent(userAgent),
 		)
-		modelProvider := func() Model { return a.Runtime().LargeModel }
+		modelProvider := func() Model { return runtime.LargeModel }
 		if attempt.name == "small" {
-			modelProvider = func() Model { return a.Runtime().SmallModel }
+			modelProvider = func() Model { return runtime.SmallModel }
 		}
 		resp, err = agent.Stream(ctx, auxiliaryStreamCall(
 			prompt,

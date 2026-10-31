@@ -75,6 +75,10 @@ func (w *AppWorkspace) SaveSession(ctx context.Context, sess session.Session) (s
 	return w.app.Sessions.Save(ctx, sess)
 }
 
+func (w *AppWorkspace) SetSessionModels(ctx context.Context, sessionID string, revision int64, models config.AgentModelState) (session.Session, error) {
+	return w.app.SetSessionModels(ctx, sessionID, revision, models)
+}
+
 func (w *AppWorkspace) SetSessionMode(ctx context.Context, sessionID string, mode session.Mode) (session.Session, error) {
 	if mode == session.ModeDefault {
 		current, err := w.app.Sessions.Get(ctx, sessionID)

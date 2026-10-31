@@ -1,6 +1,7 @@
 package localaddon
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -1692,7 +1693,7 @@ func (b *codexNativeBridge) selectModel(ctx context.Context, workspace *codexNat
 	return selection, nil
 }
 
-func (b *codexNativeBridge) selectThreadModel(ctx context.Context, binding *codexThreadBinding, modelID, providerID string) (config.SelectedModel, error) {
+func (b *codexNativeBridge) selectThreadModel(ctx context.Context, binding *codexThreadBinding, modelID, providerID string) (selected config.SelectedModel, returnErr error) {
 	if modelID == "" && binding.model.Model != "" {
 		if b.models[binding.workspace] == nil {
 			if _, err := b.listModels(ctx, binding.workspace); err != nil {
@@ -1708,8 +1709,46 @@ func (b *codexNativeBridge) selectThreadModel(ctx context.Context, binding *code
 			providerID = binding.model.Provider
 		}
 	}
+	previous := b.selectedModel[binding.workspace]
 	selection, err := b.selectModel(ctx, binding.workspace, modelID, providerID)
 	if err != nil {
+		return config.SelectedModel{}, err
+	}
+	defer func() {
+		if returnErr != nil {
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), codexServerReadyTimeout)
+			defer cancel()
+			returnErr = errors.Join(returnErr, b.restoreModelSelection(rollbackCtx, binding.workspace, previous))
+		}
+	}()
+	current, err := binding.workspace.client.GetSession(ctx, binding.workspace.value.ID, binding.nativeID)
+	if err != nil {
+		return config.SelectedModel{}, err
+	}
+	var models config.AgentModelState
+	if len(current.Models) > 0 {
+		decoder := json.NewDecoder(bytes.NewReader(current.Models))
+		decoder.UseNumber()
+		if err := decoder.Decode(&models); err != nil {
+			return config.SelectedModel{}, err
+		}
+	} else {
+		workspace, err := binding.workspace.client.GetWorkspace(ctx, binding.workspace.value.ID)
+		if err != nil {
+			return config.SelectedModel{}, err
+		}
+		if workspace.Config == nil {
+			return config.SelectedModel{}, errors.New("workspace configuration is missing")
+		}
+		models = workspace.Config.AgentModelState()
+	}
+	owner, ok := b.modelOwners[binding.workspace][selection.Provider]
+	if !ok {
+		return config.SelectedModel{}, errors.New("session model provider owner is unavailable")
+	}
+	selection.ReasoningEffort = current.AnalysisEffort
+	models.Large = &config.OwnedSelectedModel{Owner: owner, Model: selection}
+	if _, err := binding.workspace.client.SetSessionModels(ctx, binding.workspace.value.ID, binding.nativeID, current.ModelRevision, models); err != nil {
 		return config.SelectedModel{}, err
 	}
 	binding.model = selection

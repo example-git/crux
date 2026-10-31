@@ -78,7 +78,24 @@ func (c *coordinator) refreshAdmittedRuntime(ctx context.Context, admitted Insta
 		if err := c.refreshTokenIfExpired(ctx, admitted.Snapshot, provider); err != nil {
 			return admitted, err
 		}
-		return c.currentAgent.Runtime(), nil
+		snapshot, err := c.cfg.RuntimeSnapshot().WithAgentModels(admitted.Snapshot.AgentModelState())
+		if err != nil {
+			return admitted, err
+		}
+		large, err := c.buildAdmittedModel(ctx, admitted.LargeModel.ModelCfg, admitted.LargeModel.isSubAgent, snapshot, admitted.LargeModel.runtimeOptions)
+		if err != nil {
+			return admitted, err
+		}
+		small := admitted.SmallModel
+		if small.ModelCfg.Provider == provider.ID {
+			small, err = c.buildAdmittedModel(ctx, small.ModelCfg, small.isSubAgent, snapshot, small.runtimeOptions)
+			if err != nil {
+				return admitted, err
+			}
+		}
+		admitted.LargeModel, admitted.SmallModel = large, small
+		admitted.Snapshot = snapshot
+		return admitted, nil
 	}
 	owner, ok := admitted.Snapshot.ProviderOwnerFor(provider.ID, provider)
 	if !ok {

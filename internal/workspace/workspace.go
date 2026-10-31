@@ -134,6 +134,7 @@ type Workspace interface {
 	GetSession(ctx context.Context, sessionID string) (session.Session, error)
 	ListSessions(ctx context.Context) ([]session.Session, error)
 	SaveSession(ctx context.Context, sess session.Session) (session.Session, error)
+	SetSessionModels(ctx context.Context, sessionID string, revision int64, models config.AgentModelState) (session.Session, error)
 	SetSessionMode(ctx context.Context, sessionID string, mode session.Mode) (session.Session, error)
 	SetSessionAnalysisEffort(ctx context.Context, sessionID, effort string) (session.Session, error)
 	SetSessionGoal(ctx context.Context, sessionID, objective string) (session.Session, error)

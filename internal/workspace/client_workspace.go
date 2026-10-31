@@ -202,6 +202,14 @@ func (w *ClientWorkspace) SetSessionMode(ctx context.Context, sessionID string, 
 	return protoToSession(*saved), nil
 }
 
+func (w *ClientWorkspace) SetSessionModels(ctx context.Context, sessionID string, revision int64, models config.AgentModelState) (session.Session, error) {
+	saved, err := w.client.SetSessionModels(ctx, w.workspaceID(), sessionID, revision, models)
+	if err != nil {
+		return session.Session{}, err
+	}
+	return protoToSession(*saved), nil
+}
+
 func (w *ClientWorkspace) SetSessionAnalysisEffort(ctx context.Context, sessionID, effort string) (session.Session, error) {
 	saved, err := w.client.SetSessionAnalysisEffort(ctx, w.workspaceID(), sessionID, effort)
 	if err != nil {
@@ -1661,6 +1669,8 @@ func protoToSession(s proto.Session) session.Session {
 		},
 		AnalysisEffort: s.AnalysisEffort,
 		Model:          s.Model,
+		Models:         s.Models,
+		ModelRevision:  s.ModelRevision,
 		Provider:       s.Provider,
 		CreatedAt:      s.CreatedAt,
 		UpdatedAt:      s.UpdatedAt,
@@ -1820,6 +1830,8 @@ func sessionToProto(s session.Session) proto.Session {
 		},
 		AnalysisEffort: s.AnalysisEffort,
 		Model:          s.Model,
+		Models:         s.Models,
+		ModelRevision:  s.ModelRevision,
 		Provider:       s.Provider,
 		CreatedAt:      s.CreatedAt,
 		UpdatedAt:      s.UpdatedAt,

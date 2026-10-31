@@ -379,3 +379,58 @@ func TestCodexAppServerRetainsThreadModels(t *testing.T) {
 	require.NoError(t, inputWriter.Close())
 	require.NoError(t, <-done)
 }
+
+func TestCodexThreadModelSelectionUpdatesSessionWithoutChangingGoal(t *testing.T) {
+	owner := providerregistry.RegistrationOwner{ProviderID: "fixture", Construction: providerregistry.ConstructionOpenAICompat}
+	first := config.SelectedModel{Provider: "fixture", Model: "first"}
+	next := config.SelectedModel{Provider: "fixture", Model: "next"}
+	small := config.SelectedModel{Provider: "fixture", Model: "small"}
+	state := config.AgentModelState{Large: &config.OwnedSelectedModel{Owner: owner, Model: first}, Small: &config.OwnedSelectedModel{Owner: owner, Model: small}}
+	raw, err := json.Marshal(state)
+	require.NoError(t, err)
+	goal := proto.Goal{Objective: "finish", Status: "paused", Generation: 2}
+	current := proto.Session{ID: "current", Models: raw, ModelRevision: 3, Goal: goal}
+	updates := 0
+	host := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/workspaces/ws/config/model-overrides":
+			var request proto.ModelOverridesRequest
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+			require.Equal(t, next, request.State.Large.Model)
+			require.NoError(t, json.NewEncoder(w).Encode(request.State))
+		case "/v1/workspaces/ws/agent/update":
+			w.WriteHeader(http.StatusOK)
+		case "/v1/workspaces/ws/sessions/current":
+			if r.Method == http.MethodPut {
+				var request struct {
+					Selection proto.SessionModelsRequest `json:"model_selection"`
+				}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+				require.EqualValues(t, 3, request.Selection.Revision)
+				require.Equal(t, next, request.Selection.Models.Large.Model)
+				require.Equal(t, small, request.Selection.Models.Small.Model)
+				current.Models, err = json.Marshal(request.Selection.Models)
+				require.NoError(t, err)
+				current.ModelRevision++
+				updates++
+			}
+			require.NoError(t, json.NewEncoder(w).Encode(current))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer host.Close()
+	address, err := url.Parse(host.URL)
+	require.NoError(t, err)
+	api, err := client.NewClient(t.TempDir(), "tcp", address.Host)
+	require.NoError(t, err)
+	ws := &codexNativeWorkspace{client: api, value: &proto.Workspace{ID: "ws"}}
+	bridge := &codexNativeBridge{models: map[*codexNativeWorkspace]map[string]config.SelectedModel{ws: {"next": next}}, modelOwners: map[*codexNativeWorkspace]map[string]providerregistry.RegistrationOwner{ws: {"fixture": owner}}, selectedModel: map[*codexNativeWorkspace]config.SelectedModel{ws: first}}
+	binding := &codexThreadBinding{workspace: ws, nativeID: "current", model: first}
+	selected, err := bridge.selectThreadModel(t.Context(), binding, "next", "")
+	require.NoError(t, err)
+	require.Equal(t, next, selected)
+	require.Equal(t, next, binding.model)
+	require.Equal(t, 1, updates)
+	require.Equal(t, goal, current.Goal)
+}

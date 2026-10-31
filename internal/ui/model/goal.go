@@ -2,10 +2,12 @@ package model
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	tea "github.com/example-git/crux/foundation/bubbletea"
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/workspace"
 )
@@ -138,5 +140,22 @@ func goalNotice(command goalCommand, current session.Session) string {
 	if current.Goal.Objective == "" {
 		return "No active goal."
 	}
-	return fmt.Sprintf("Goal %s (generation %d): %s", current.Goal.Status, current.Goal.Generation, current.Goal.Objective)
+	notice := fmt.Sprintf("Goal %s (generation %d): %s", current.Goal.Status, current.Goal.Generation, current.Goal.Objective)
+	if len(current.Models) > 0 {
+		var models config.AgentModelState
+		if err := json.Unmarshal(current.Models, &models); err != nil || models.Large == nil && models.Small == nil {
+			notice += "\nSession model selection is unavailable."
+		} else {
+			if models.Large != nil {
+				notice += fmt.Sprintf("\nMain model: %s/%s", models.Large.Model.Provider, models.Large.Model.Model)
+			}
+			if models.Small != nil {
+				notice += fmt.Sprintf("\nSmall model: %s/%s", models.Small.Model.Provider, models.Small.Model.Model)
+			}
+		}
+	}
+	if current.Goal.Status == session.GoalStatusBlocked && current.Goal.Error != "" {
+		notice += "\n" + current.Goal.Error
+	}
+	return notice
 }

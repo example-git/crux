@@ -244,6 +244,27 @@ func TestGoalCommandIsNotInterceptedInBangMode(t *testing.T) {
 	require.Equal(t, "/goal shell text", ui.pendingBangCommand)
 }
 
+func TestGoalStatusIncludesBlockedReason(t *testing.T) {
+	current := session.Session{Goal: session.Goal{
+		Objective:  "finish the work",
+		Status:     session.GoalStatusBlocked,
+		Generation: 2,
+		Error:      "The provider rate limit was reached.",
+	}}
+	notice := goalNotice(goalCommand{kind: goalCommandStatus}, current)
+	require.Contains(t, notice, "Goal blocked")
+	require.Contains(t, notice, current.Goal.Error)
+	current.Goal.Status = session.GoalStatusActive
+	require.NotContains(t, goalNotice(goalCommand{kind: goalCommandStatus}, current), current.Goal.Error)
+}
+
+func TestGoalStatusShowsSessionModelBindings(t *testing.T) {
+	current := session.Session{Models: []byte(`{"large":{"model":{"provider":"original","model":"main"}},"small":{"model":{"provider":"original","model":"small"}}}`), Goal: session.Goal{Objective: "finish the work", Status: session.GoalStatusActive, Generation: 2}}
+	notice := goalNotice(goalCommand{kind: goalCommandStatus}, current)
+	require.Contains(t, notice, "Main model: original/main")
+	require.Contains(t, notice, "Small model: original/small")
+}
+
 func TestInsertCommandUpdatesEditorAndLayout(t *testing.T) {
 	ui := newTestUI()
 	ui.dialog = dialog.NewOverlay()

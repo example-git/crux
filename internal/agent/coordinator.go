@@ -318,7 +318,11 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	c.memoryWorker, err = automemory.NewWorker(automemory.WorkerOptions{
 		Memory: memory,
 		Generate: func(workerCtx context.Context, purpose, memoryPrompt string, maxOutputTokens int64) (string, error) {
-			return c.currentAgent.GenerateMemory(workerCtx, purpose, memoryPrompt, maxOutputTokens)
+			runtime, err := c.runtimeForSession(workerCtx, automemory.SessionIDFromContext(workerCtx))
+			if err != nil {
+				return "", err
+			}
+			return c.currentAgent.GenerateMemory(context.WithValue(workerCtx, sessionInstalledRuntimeKey{}, runtime), purpose, memoryPrompt, maxOutputTokens)
 		},
 		LoadTranscript: c.loadMemoryTranscript,
 		LoadSessions:   c.loadMemorySessions,
@@ -703,17 +707,25 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, internal boo
 			return nil, fmt.Errorf("failed to wait for MCP initialization: %w", err)
 		}
 	}
-	ctx, err := c.withSessionAnalysisEffort(ctx, sessionID)
+	if !internal {
+		current, err := c.sessions.Get(ctx, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if len(current.Models) == 0 && current.MessageCount == 0 && current.Model == "" && current.Provider == "" {
+			encoded, err := json.Marshal(c.cfg.RuntimeSnapshot().AgentModelState())
+			if err != nil {
+				return nil, err
+			}
+			if _, err := c.sessions.SetModels(ctx, sessionID, current.ModelRevision, encoded); err != nil {
+				return nil, err
+			}
+		}
+	}
+	runtime, err := c.runtimeForSession(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
-
-	// refresh models before each run
-	if err := c.UpdateModels(ctx); err != nil {
-		return nil, fmt.Errorf("failed to update models: %w", err)
-	}
-
-	runtime := c.currentAgent.Runtime()
 	runtime, refreshErr := c.refreshAdmittedRuntime(ctx, runtime)
 	if refreshErr != nil {
 		if runtime.Snapshot.IsClientOwned() {
@@ -721,6 +733,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, internal boo
 		}
 		slog.Error("Failed to refresh OAuth2 token. Proceeding with existing token.", "error", refreshErr)
 	}
+	ctx = context.WithValue(ctx, sessionRuntimeKey{}, runtime.Snapshot)
 	model := runtime.LargeModel
 	maxTokens := model.CatalogModel.DefaultMaxTokens
 	if model.ModelCfg.MaxTokens != 0 {
@@ -740,7 +753,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, internal boo
 		return nil, fmt.Errorf("provider %s options: %w", model.ModelCfg.Provider, err)
 	}
 	mergedOptions = c.oauthReasoningOptionsForRegistration(model.ModelCfg.Provider, model.ModelCfg.Model, registration, registered, mergedOptions)
-	mergedOptions = applyRegisteredRuntimeOptions(model.ModelCfg.Model, turnRuntimeOptions(ctx, cfg.Options), registration, registered, mergedOptions)
+	mergedOptions = applyRegisteredRuntimeOptions(model.ModelCfg.Model, turnRuntimeOptions(modelAnalysisContext(ctx, model.ModelCfg), cfg.Options), registration, registered, mergedOptions)
 	mergedOptions, err = applyTurnProviderOperation(ctx, model.ModelCfg.Provider, mergedOptions)
 	if err != nil {
 		return nil, err
@@ -798,7 +811,7 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, internal boo
 			return fantasy.StepModelSettings{}, err
 		}
 		nextOptions = c.oauthReasoningOptionsForRegistration(nextModel.ModelCfg.Provider, nextModel.ModelCfg.Model, nextRegistration, nextRegistered, nextOptions)
-		nextOptions = applyRegisteredRuntimeOptions(nextModel.ModelCfg.Model, turnRuntimeOptions(ctx, nextConfig.Options), nextRegistration, nextRegistered, nextOptions)
+		nextOptions = applyRegisteredRuntimeOptions(nextModel.ModelCfg.Model, turnRuntimeOptions(modelAnalysisContext(ctx, nextModel.ModelCfg), nextConfig.Options), nextRegistration, nextRegistered, nextOptions)
 		nextOptions, err = applyTurnProviderOperation(ctx, nextModel.ModelCfg.Provider, nextOptions)
 		if err != nil {
 			return fantasy.StepModelSettings{}, err
@@ -825,7 +838,17 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, internal boo
 	}
 	run := func() (*fantasy.AgentResult, error) {
 		return c.currentAgent.Run(ctx, SessionAgentCall{
-			PrepareRuntime:            prepareRuntime,
+			PrepareRuntime: prepareRuntime,
+			RuntimeProvider: func(stepContext context.Context) (InstalledRuntime, error) {
+				current, err := c.sessions.Get(stepContext, sessionID)
+				if err != nil {
+					return InstalledRuntime{}, err
+				}
+				if current.ModelRevision == runtime.ModelRevision {
+					return runtime, nil
+				}
+				return c.runtimeForSession(stepContext, sessionID)
+			},
 			SessionID:                 sessionID,
 			SubmissionID:              submissionID,
 			DeliveryMode:              DeliveryModeFromContext(ctx),
@@ -885,18 +908,11 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, internal boo
 	return result, originalErr
 }
 
-func (c *coordinator) withSessionAnalysisEffort(ctx context.Context, sessionID string) (context.Context, error) {
-	if AnalysisEffortFromContext(ctx) != "" {
-		return ctx, nil
+func modelAnalysisContext(ctx context.Context, model config.SelectedModel) context.Context {
+	if AnalysisEffortFromContext(ctx) == "" && model.ReasoningEffort != "" {
+		return WithAnalysisEffort(ctx, model.ReasoningEffort)
 	}
-	currentSession, err := c.sessions.Get(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	if currentSession.AnalysisEffort == "" {
-		return ctx, nil
-	}
-	return WithAnalysisEffort(ctx, currentSession.AnalysisEffort), nil
+	return ctx
 }
 
 func turnRuntimeOptions(ctx context.Context, options *config.Options) *config.Options {
@@ -2695,7 +2711,10 @@ func (c *coordinator) QueuedPromptsList(sessionID string) []QueuedPrompt {
 
 func (c *coordinator) Summarize(ctx context.Context, sessionID string) error {
 	ctx = log.WithTrafficContext(ctx, c.trafficContext)
-	runtime := c.currentAgent.Runtime()
+	runtime, err := c.runtimeForSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
 	runtime, refreshErr := c.refreshAdmittedRuntime(ctx, runtime)
 	if refreshErr != nil {
 		if runtime.Snapshot.IsClientOwned() {
@@ -2732,7 +2751,12 @@ func (c *coordinator) GenerateTitle(ctx context.Context, sessionID, prompt strin
 	if c.currentAgent == nil {
 		return
 	}
-	c.currentAgent.GenerateTitle(ctx, sessionID, prompt)
+	runtime, err := c.runtimeForSession(ctx, sessionID)
+	if err != nil {
+		slog.Error("Failed to resolve session title model", "error", err)
+		return
+	}
+	c.currentAgent.GenerateTitle(context.WithValue(ctx, sessionInstalledRuntimeKey{}, runtime), sessionID, prompt)
 }
 
 // SuggestPrompt predicts the user's likely next message using the
@@ -2742,7 +2766,11 @@ func (c *coordinator) SuggestPrompt(ctx context.Context, sessionID string) (stri
 	if c.currentAgent == nil {
 		return "", errors.New("agent not initialized")
 	}
-	return c.currentAgent.SuggestPrompt(ctx, sessionID)
+	runtime, err := c.runtimeForSession(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	return c.currentAgent.SuggestPrompt(context.WithValue(ctx, sessionInstalledRuntimeKey{}, runtime), sessionID)
 }
 
 // refreshTokenIfExpired proactively refreshes the OAuth token if it has expired.
@@ -2971,6 +2999,25 @@ func (c *coordinator) runSubAgent(ctx context.Context, params subAgentParams) (f
 		session, err = c.sessions.Get(ctx, params.ChildSessionID)
 		if err != nil {
 			return fantasy.ToolResponse{}, fmt.Errorf("get child session: %w", err)
+		}
+	}
+
+	if session.ModelRevision == 0 && runtime.Snapshot.Config() != nil {
+		models := runtime.Snapshot.AgentModelState()
+		largeOwner, largeOK := runtime.Snapshot.ProviderOwner(runtime.LargeModel.ModelCfg.Provider)
+		smallOwner, smallOK := runtime.Snapshot.ProviderOwner(runtime.SmallModel.ModelCfg.Provider)
+		if !largeOK || !smallOK {
+			return fantasy.ToolResponse{}, errors.New("subagent model owner is unavailable")
+		}
+		models.Large = &config.OwnedSelectedModel{Owner: largeOwner, Model: runtime.LargeModel.ModelCfg.Clone()}
+		models.Small = &config.OwnedSelectedModel{Owner: smallOwner, Model: runtime.SmallModel.ModelCfg.Clone()}
+		encoded, err := json.Marshal(models)
+		if err != nil {
+			return fantasy.ToolResponse{}, err
+		}
+		session, err = c.sessions.SetModels(ctx, session.ID, 0, encoded)
+		if err != nil {
+			return fantasy.ToolResponse{}, err
 		}
 	}
 

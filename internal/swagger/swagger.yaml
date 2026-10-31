@@ -2317,6 +2317,12 @@ definitions:
         type: string
       model:
         type: string
+      model_revision:
+        type: integer
+      model_selection:
+        $ref: '#/definitions/proto.SessionModelsRequest'
+      models:
+        type: object
       parent_session_id:
         type: string
       plan:
@@ -2336,6 +2342,13 @@ definitions:
       unseen_local_tokens:
         type: integer
       updated_at:
+        type: integer
+    type: object
+  proto.SessionModelsRequest:
+    properties:
+      models:
+        $ref: '#/definitions/config.AgentModelState'
+      revision:
         type: integer
     type: object
   proto.SetRuntimeControlRequest:
