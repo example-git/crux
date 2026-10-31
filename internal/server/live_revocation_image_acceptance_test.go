@@ -9,8 +9,6 @@ import (
 	"fmt"
 	"image"
 	"image/png"
-	"log"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -30,6 +28,7 @@ import (
 	"github.com/example-git/crux/internal/providerplugin"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providerregistry"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/redact"
 	"github.com/example-git/crux/internal/server"
 	managedtask "github.com/example-git/crux/internal/task"
@@ -37,14 +36,6 @@ import (
 )
 
 func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
-	logger := slog.Default()
-	logWriter, logFlags := log.Writer(), log.Flags()
-	slog.SetDefault(slog.New(slog.NewTextHandler(liveImagePeerLogWriter{test: t}, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() {
-		slog.SetDefault(logger)
-		log.SetOutput(logWriter)
-		log.SetFlags(logFlags)
-	})
 	// A credential from another workspace can match JSON punctuation. The
 	// real task-output response must retain a decodable embedded JobResult.
 	redact.Register(":true")
@@ -186,6 +177,7 @@ func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
 	workspaces := map[string]*proto.Workspace{}
 	sessions := map[string]string{}
 	streamEnds := map[string]<-chan struct{}{}
+	retainedNotification := make(chan proto.RunComplete, 1)
 	for _, name := range []string{"revoked", "retained"} {
 		owner := providerregistry.RegistrationOwner{ProviderID: "live-image-inference"}
 		proposal := config.RemoteRuntimeProposal{
@@ -223,12 +215,17 @@ func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
 		require.NoError(t, err)
 		ended := make(chan struct{})
 		go func() {
-			for range events {
+			for event := range events {
+				if finished, ok := event.(pubsub.Event[proto.RunComplete]); ok && name == "retained" && finished.Payload.SessionID == session.ID && finished.Payload.RunID == "" {
+					select {
+					case retainedNotification <- finished.Payload:
+					default:
+					}
+				}
 			}
 			close(ended)
 		}()
 		clients[name], workspaces[name], sessions[name], streamEnds[name] = c, ws, session.ID, ended
-		t.Logf("%s event stream client: %s", name, c.ClientID())
 	}
 	// This test explicitly authorizes only its synthetic tool run. The actual
 	// imagegen permission service and queue remain in the production call path.
@@ -331,24 +328,19 @@ func TestLiveRevocationDrainsRealImageJobOnSameDaemon(t *testing.T) {
 	require.EqualValues(t, 1, retainedImageCalls.Load())
 	require.EqualValues(t, 1, revokedImageCalls.Load())
 	select {
+	case completion := <-retainedNotification:
+		require.Empty(t, completion.Error)
+		require.False(t, completion.Cancelled)
+	case <-streamEnds["retained"]:
+		t.Fatal("retained principal's stream closed before task notification completion")
+	case <-ctx.Done():
+		t.Fatal("retained task notification did not finish")
+	}
+	select {
 	case <-streamEnds["retained"]:
 		t.Fatal("retained principal's stream closed after another principal's revocation")
 	default:
 	}
-}
-
-type liveImagePeerLogWriter struct {
-	test *testing.T
-}
-
-func (writer liveImagePeerLogWriter) Write(data []byte) (int, error) {
-	if bytes.Contains(data, []byte("level=DEBUG")) {
-		if bytes.Contains(data, []byte(`msg="Peer channel closed"`)) {
-			writer.test.Log(string(bytes.TrimSpace(data)))
-		}
-		return len(data), nil
-	}
-	return os.Stderr.Write(data)
 }
 
 func liveImageWriteChunk(w http.ResponseWriter, delta map[string]any, finish any) {

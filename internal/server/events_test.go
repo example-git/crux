@@ -200,6 +200,27 @@ func TestTaskNotificationToProtoRoundTrip(t *testing.T) {
 	require.Equal(t, source.Payload, managedtask.Notification(decoded.Payload))
 }
 
+func TestPeerForwardRunCompleteWithoutCallerID(t *testing.T) {
+	t.Parallel()
+
+	peer := &serverPeerChannel{critical: make(chan peerChannelOutbound, 1)}
+	completion := notify.RunComplete{SessionID: "session-1", MessageID: "assistant-1", Text: "notification handled"}
+	err := peer.forwardEvent("workspace-1", pubsub.Event[notify.RunComplete]{Type: pubsub.UpdatedEvent, Payload: completion})
+	require.NoError(t, err)
+	outbound := <-peer.critical
+	require.Equal(t, "workspace-1", outbound.workspaceID)
+	require.Equal(t, proto.PeerTypeRunCompleted, outbound.messageType)
+	data, err := proto.EncodePeerMessage("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1, "event-1", "", outbound.workspaceID, outbound.messageType, outbound.payload)
+	require.NoError(t, err)
+	decoded, err := proto.DecodePeerMessage(data, proto.PeerDirectionServerToClient)
+	require.NoError(t, err)
+	result := decoded.Payload.(*proto.PeerResourceEvent[proto.RunComplete]).Payload
+	require.Equal(t, completion.SessionID, result.SessionID)
+	require.Empty(t, result.RunID)
+	require.Equal(t, completion.MessageID, result.MessageID)
+	require.Equal(t, completion.Text, result.Text)
+}
+
 func TestRunCompleteToProto_RoundTrip(t *testing.T) {
 	t.Parallel()
 

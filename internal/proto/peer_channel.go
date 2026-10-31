@@ -1207,7 +1207,7 @@ func validatePeerRunEvent(messageType PeerMessageType, payload any) error {
 	if err := validatePeerResourceEvent(payload); err != nil {
 		return err
 	}
-	if !validPeerID(value.Payload.RunID) || !validPeerText(value.Payload.SessionID, 512, true) {
+	if !validOptionalPeerID(value.Payload.RunID) || !validPeerText(value.Payload.SessionID, 512, true) {
 		return errors.New("invalid peer run identity")
 	}
 	switch messageType {

@@ -43,6 +43,36 @@ func TestPeerMessageRegistryComplete(t *testing.T) {
 	}
 }
 
+func TestPeerRunEventsPreserveOptionalCallerIdentity(t *testing.T) {
+	for _, messageType := range []PeerMessageType{PeerTypeRunCompleted, PeerTypeRunFailed, PeerTypeRunCancelled} {
+		for _, runID := range []string{"", "run-1"} {
+			t.Run(string(messageType)+"/"+runID, func(t *testing.T) {
+				completion := RunComplete{SessionID: "session-1", RunID: runID, MessageID: "assistant-1", Text: "finished"}
+				if messageType == PeerTypeRunFailed {
+					completion.Error = "fixture failure"
+				}
+				completion.Cancelled = messageType == PeerTypeRunCancelled
+				payload := PeerResourceEvent[RunComplete]{Type: "updated", Payload: completion}
+				data, err := EncodePeerMessage(peerTestEpoch, 1, "event-1", "", "workspace-1", messageType, payload)
+				require.NoError(t, err)
+				decoded, err := DecodePeerMessage(data, PeerDirectionServerToClient)
+				require.NoError(t, err)
+				require.Equal(t, payload, *decoded.Payload.(*PeerResourceEvent[RunComplete]))
+			})
+		}
+	}
+	for _, completion := range []RunComplete{
+		{SessionID: ""},
+		{SessionID: "session-1", RunID: "\x00"},
+		{SessionID: "session-1", RunID: "\n"},
+		{SessionID: "session-1", RunID: " "},
+		{SessionID: "session-1", RunID: strings.Repeat("a", MaxPeerChannelIDBytes+1)},
+	} {
+		_, err := EncodePeerMessage(peerTestEpoch, 1, "event-1", "", "workspace-1", PeerTypeRunCompleted, PeerResourceEvent[RunComplete]{Type: "updated", Payload: completion})
+		require.ErrorContains(t, err, "invalid peer run identity")
+	}
+}
+
 func TestPeerMessageStrictDecode(t *testing.T) {
 	valid, err := EncodePeerMessage(peerTestEpoch, 1, "message-1", "", "", PeerTypeHello, PeerHello{ClientID: "client-1"})
 	require.NoError(t, err)

@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"net/url"
 	stdpath "path"
@@ -17,7 +16,6 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
-	"github.com/example-git/crux/internal/redact"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
@@ -771,7 +769,6 @@ func (peer *peerChannel) close(err error) {
 		if err == nil {
 			err = errors.New("peer channel closed")
 		}
-		slog.Debug("Peer channel closed", "client_id", peer.client.clientID, "error", redact.String(err.Error()))
 		peer.mu.Lock()
 		peer.err = err
 		peer.mu.Unlock()
