@@ -40,6 +40,11 @@ func (c *controllerV1) handleGetWorkspaceChannel(w http.ResponseWriter, r *http.
 		jsonError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	features, err := parseWorkspaceChannelFeatures(r.URL.Query().Get("features"))
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	events, err := c.backend.SubscribeEvents(r.Context(), id)
 	if err != nil {
 		c.handleError(w, r, err)
@@ -89,6 +94,18 @@ func (c *controllerV1) handleGetWorkspaceChannel(w http.ResponseWriter, r *http.
 	}
 	pings := time.NewTicker(workspaceChannelPingInterval)
 	defer pings.Stop()
+	var deltas *messageDeltaEncoder
+	if features.messageDelta {
+		deltas = newMessageDeltaEncoder()
+	}
+	var busy *sessionBusyTracker
+	var busyTicks <-chan time.Time
+	if features.sessionBusy {
+		busy = newSessionBusyTracker()
+		ticker := time.NewTicker(workspaceChannelBusyInterval)
+		defer ticker.Stop()
+		busyTicks = ticker.C
+	}
 	seen := map[string]struct{}{}
 	for {
 		select {
@@ -142,11 +159,30 @@ func (c *controllerV1) handleGetWorkspaceChannel(w http.ResponseWriter, r *http.
 				continue
 			}
 			data, err = redact.JSON(data)
-			if err != nil || len(data) > proto.MaxWorkspaceChannelEventBytes {
+			if err != nil {
+				continue
+			}
+			if busy != nil {
+				busy.observe(sessionIDFromEvent(data))
+			}
+			if deltas != nil {
+				data = deltas.encode(data)
+			}
+			if len(data) > proto.MaxWorkspaceChannelEventBytes {
 				continue
 			}
 			if !writeWorkspaceChannelFrame(connection, proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelEventFrame, Event: data}) {
 				return
+			}
+		case <-busyTicks:
+			for _, change := range busy.changes(ws) {
+				data, err := json.Marshal(pubsub.Payload{Type: payloadTypeSessionBusy, Payload: mustJSON(pubsub.Event[sessionBusy]{Type: pubsub.UpdatedEvent, Payload: change})})
+				if err != nil {
+					continue
+				}
+				if !writeWorkspaceChannelFrame(connection, proto.WorkspaceChannelFrame{Type: proto.WorkspaceChannelEventFrame, Event: data}) {
+					return
+				}
 			}
 		case <-pings.C:
 			if err := connection.WriteControl(websocket.PingMessage, nil, time.Now().Add(workspaceChannelWriteTimeout)); err != nil {

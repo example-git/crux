@@ -54,11 +54,69 @@ func TestManagedTaskOutputFollowsRealShellPastReadWindow(t *testing.T) {
 	require.Len(t, latest.Output, managedtask.DefaultReadBytes)
 }
 
+func TestTaskLogReadsShellFromStartAndResetsAfterRestart(t *testing.T) {
+	manager := shell.NewBackgroundShellManager(t.TempDir())
+	defer manager.KillAll(context.Background())
+	command, err := manager.Start(t.Context(), t.TempDir(), nil, "printf '%070000d' 0; printf done", "chunked log")
+	require.NoError(t, err)
+	require.Eventually(t, command.IsDone, 5*time.Second, 10*time.Millisecond)
+	coord := &coordinator{backgroundShells: manager}
+	first, err := coord.TaskLog(t.Context(), command.ID, managedtask.LogRequest{})
+	require.NoError(t, err)
+	require.Len(t, first.Data, 64<<10)
+	second, err := coord.TaskLog(t.Context(), command.ID, managedtask.LogRequest{Offset: first.NextOffset, Generation: first.Generation})
+	require.NoError(t, err)
+	require.Equal(t, strings.Repeat("0", 70000)+"done", string(first.Data)+string(second.Data))
+	_, err = coord.RestartTask(t.Context(), command.ID)
+	require.NoError(t, err)
+	restarted, _ := manager.Get(command.ID)
+	require.Eventually(t, restarted.IsDone, 5*time.Second, 10*time.Millisecond)
+	reset, err := coord.TaskLog(t.Context(), command.ID, managedtask.LogRequest{Offset: second.NextOffset, Generation: first.Generation})
+	require.NoError(t, err)
+	require.NotEqual(t, first.Generation, reset.Generation)
+	require.Equal(t, first.Data, reset.Data)
+}
+
+type taskInputAgent struct {
+	SessionAgent
+	call SessionAgentCall
+}
+
+func (a *taskInputAgent) Run(_ context.Context, call SessionAgentCall) (*fantasy.AgentResult, error) {
+	a.call = call
+	call.OnAdmitted(nil)
+	return nil, nil
+}
+
+func TestSendTaskTargetsRunningChildAndChecksParent(t *testing.T) {
+	manager := NewBackgroundAgentManager(t.TempDir())
+	task, err := manager.Reserve("work", "task", "Worker", managedtask.Ownership{ParentSessionID: "parent"})
+	require.NoError(t, err)
+	defer manager.StopAll(context.Background())
+	input := &taskInputAgent{}
+	task.mu.Lock()
+	task.childSessionID = "child"
+	task.agent = input
+	task.mu.Unlock()
+	coord := &coordinator{backgroundAgents: manager}
+	_, err = coord.SendTask(t.Context(), task.ID, "different-parent", "message")
+	require.ErrorContains(t, err, "parent session")
+	_, err = coord.SendTask(t.Context(), task.ID, "parent", "message")
+	require.NoError(t, err)
+	require.Equal(t, "child", input.call.SessionID)
+	require.Equal(t, "message", input.call.Prompt)
+	require.Equal(t, DeliverySteer, input.call.DeliveryMode)
+	require.True(t, input.call.RequireActiveRun)
+}
+
 func TestDeliverTaskNotificationQueuesStructuredParentMessage(t *testing.T) {
-	env := testEnv(t)
+	coordinator, env := sessionRuntimeTestCoordinator(t)
+	parent, err := env.sessions.Create(t.Context(), "parent")
+	require.NoError(t, err)
+	saveNotificationModels(t, coordinator, parent.ID, coordinator.cfg.RuntimeSnapshot().AgentModelState())
 	parentAgent := NewSessionAgent(SessionAgentOptions{Sessions: env.sessions, Messages: env.messages}).(*sessionAgent)
-	parentAgent.activeRequests.Set("parent", &activeCancel{cancel: func() {}})
-	coordinator := &coordinator{currentAgent: parentAgent}
+	parentAgent.activeRequests.Set(parent.ID, &activeCancel{cancel: func() {}})
+	coordinator.currentAgent = parentAgent
 	persisted := false
 	discarded := false
 	exitCode := 0
@@ -67,7 +125,7 @@ func TestDeliverTaskNotificationQueuesStructuredParentMessage(t *testing.T) {
 		TaskID:          "a12345678",
 		TaskType:        managedtask.TypeAgent,
 		ToolUseID:       "tool-call",
-		ParentSessionID: "parent",
+		ParentSessionID: parent.ID,
 		Status:          managedtask.StatusCompleted,
 		Summary:         "Agent completed",
 		OutputRef:       "session:child",
@@ -77,7 +135,7 @@ func TestDeliverTaskNotificationQueuesStructuredParentMessage(t *testing.T) {
 	}
 
 	require.NoError(t, coordinator.DeliverTaskNotification(t.Context(), notification, func() { persisted = true }, func() { discarded = true }))
-	queued, ok := parentAgent.messageQueue.Get("parent")
+	queued, ok := parentAgent.messageQueue.Get(parent.ID)
 	require.True(t, ok)
 	require.Len(t, queued, 1)
 	require.Contains(t, queued[0].Prompt, "<task-notification>")

@@ -306,11 +306,12 @@ func TestCreateAgentDefinitionSendsConfigurationAndReturnsPath(t *testing.T) {
 
 	defaultFormat := "json"
 	request := proto.CreateAgentDefinitionRequest{
-		Scope:       "project",
-		Name:        "reviewer",
-		Description: "Reviews changes",
-		Model:       "provider/model",
-		Tools:       []string{"script"},
+		Scope:        "project",
+		Name:         "reviewer",
+		Description:  "Reviews changes",
+		Instructions: "Review the supplied changes and report actionable findings.\n",
+		Model:        "provider/model",
+		Tools:        []string{"script"},
 		Script: &proto.AgentDefinitionScript{
 			Path:    "./scripts/review.py",
 			Timeout: "30s",

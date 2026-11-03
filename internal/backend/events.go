@@ -20,7 +20,9 @@ func (b *Backend) SubscribeEvents(ctx context.Context, workspaceID string) (<-ch
 		return nil, err
 	}
 
-	return ws.Events(ctx), nil
+	events := ws.Events(ctx)
+	ws.startProviderUsage()
+	return events, nil
 }
 
 // GetLSPStates returns the state of all LSP clients.

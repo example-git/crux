@@ -190,6 +190,9 @@ func (layers authenticationLayers) mergedReplacements(replacements map[string][]
 	if json.Unmarshal(merged, &cfg) != nil {
 		return nil, errors.New("authentication configuration layers could not be decoded")
 	}
+	if err := applyMCPCollectionLayers(&cfg, values); err != nil {
+		return nil, errors.New("authentication MCP configuration layers could not be decoded")
+	}
 	if len(layers.pinned) > 0 && cfg.Models == nil {
 		cfg.Models = map[SelectedModelType]SelectedModel{}
 	}

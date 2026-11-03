@@ -41,7 +41,13 @@ func (s *ConfigStore) ReadConfigView(ctx context.Context, scope Scope) (ConfigRe
 	if s.clientRuntime != nil {
 		return ConfigReadView{}, ErrClientRuntimeManaged
 	}
-	cfg := s.config
+	return readConfigView(ctx, s.config, s.overrides, scope)
+}
+
+func readConfigView(ctx context.Context, cfg *Config, overrides RuntimeOverrides, scope Scope) (ConfigReadView, error) {
+	if scope != ScopeGlobal && scope != ScopeWorkspace {
+		return ConfigReadView{}, errors.New("invalid configuration read scope")
+	}
 	if cfg == nil || cfg.authenticationBasis == nil || !cfg.authenticationBasis.valid {
 		return ConfigReadView{}, errors.New("accepted configuration provenance is unavailable")
 	}
@@ -115,7 +121,7 @@ func (s *ConfigStore) ReadConfigView(ctx context.Context, scope Scope) (ConfigRe
 			}
 		}
 	}
-	if selected, pinned := s.overrides.Models[SelectedModelTypeLarge]; pinned {
+	if selected, pinned := overrides.Models[SelectedModelTypeLarge]; pinned {
 		values := map[string]string{"models.large.model": selected.Model, "models.large.provider": selected.Provider}
 		version := configReadVersion(values)
 		for field, value := range values {

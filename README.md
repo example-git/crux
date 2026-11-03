@@ -14,6 +14,8 @@ It provides an interactive coding session, repository tools, language-server int
 
 ## Provider system
 
+GitHub Copilot is Crux's main built-in mode when no provider plugins or presets are installed. Sign in with a Copilot-enabled GitHub account; no provider bundle is required. The same built-in GitHub integration also supports codebase indexing without a provider plugin. Indexing uses its own **GitHub Codebase Index** login and account, separate from Copilot inference credentials.
+
 Crux treats provider integration as a host-controlled protocol boundary. Provider bundles describe configuration and capabilities as data; they do not load executable plugin code.
 
 Two bundle types are supported:
@@ -67,7 +69,9 @@ Run `crux plugins --help` for the complete command and flag reference.
 
 ### Provider catalog
 
-Copilot is core-owned. Optional legacy provider and model metadata comes only from trusted installed provider presets; full provider plugins remain available for integrations that require protocol, OAuth, transport, or request-policy behavior.
+Copilot is core-owned. Its model catalog comes from the `github-copilot` section of [models.dev](https://models.dev/api.json), shared by the VS Code and Copilot CLI advertisement modes. Crux caches the catalog for 24 hours and refreshes it on provider loading or rescanning when the cache expires. If a refresh fails, Crux logs a warning and uses the last valid cache, or the bundled snapshot if no valid cache exists.
+
+Optional legacy provider and model metadata comes only from trusted installed provider presets; full provider plugins remain available for integrations that require protocol, OAuth, transport, or request-policy behavior.
 
 Install presets through the plugin manager. Historical `providers.json` files are not loaded, and Crux does not contact Charm's Catwalk service during startup.
 
@@ -109,6 +113,30 @@ crux logs
 ```
 
 Crux also includes durable plans, managed background tasks, project records, scoped memory, custom agents, and local traffic diagnostics. These features are exposed through the interactive UI and typed agent tools.
+
+### Web and desktop client
+
+Run `crux web --cwd /absolute/path/to/project` to serve the browser client on a local loopback address. The Electron desktop client uses the same native execution host and supports local projects and saved remote connections.
+
+See [Web and desktop client](web/README.md) for setup, packaging, and development commands.
+
+### Session privacy and instructions
+
+Session-scoped path privacy replaces selected file and folder names with stable model-facing aliases while native tools retain access to the original paths. Protected image copies can be obscured without changing source files. The web client also supports inherited, appended, or replacement session instructions and editing native instruction files.
+
+See [Path privacy](web/README.md#path-privacy) and [Instructions](web/README.md#instructions) for controls, scope, and behavior.
+
+### Subagent scripting
+
+Use `crux subagent` from Crux-launched shells and scripts, or the `subagent_script` agent tool, to start and coordinate managed subagents. Both interfaces are bound to the invoking session; the CLI receives its session ID and opaque API capability through environment variables. Commands return JSON and support listing, starting, reading output, waiting, stopping, and continuing tasks.
+
+```sh
+crux subagent start "Review the parser"
+crux subagent wait a12345678
+crux subagent script workflow.js
+```
+
+See [Subagent scripting](docs/subagent-scripting.md) for the environment contract, Python and JavaScript examples, and task ownership rules.
 
 ### Shell completions
 
@@ -171,6 +199,8 @@ Within a project directory, precedence from lowest to highest is:
 2. `.crux.json`
 3. `cruxrc`
 4. `.cruxrc`
+
+For each MCP server, an explicitly supplied `args`, `env`, `headers`, `enabled_tools`, or `disabled_tools` collection replaces that collection from lower-priority configuration layers. Omitted collections inherit; an empty array or object clears the collection.
 
 Crux uses `CRUX_*` environment variables and isolated Crux configuration, data, cache, database, log, and socket paths. It does not automatically read or modify legacy Crush state. An optional manual migration helper is available at [`scripts/migrate-crush-to-crux.sh`](scripts/migrate-crush-to-crux.sh).
 

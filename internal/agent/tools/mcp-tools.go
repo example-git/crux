@@ -144,7 +144,7 @@ func (m *Tool) Run(ctx context.Context, params fantasy.ToolCall) (fantasy.ToolRe
 			response = fantasy.NewMediaResponse(result.Data, result.MediaType)
 		}
 		response.Content = result.Content
-		return response, nil
+		return fantasy.WithResponseMetadata(response, map[string]any{"image_source_paths": result.SourcePaths}), nil
 	default:
 		return fantasy.NewTextResponse(result.Content), nil
 	}

@@ -35,6 +35,22 @@ func (app *App) TaskOutput(ctx context.Context, id string, wait bool, timeout ti
 	return coordinator.TaskOutput(ctx, id, wait, timeout)
 }
 
+func (app *App) TaskLog(ctx context.Context, id string, request managedtask.LogRequest) (managedtask.LogResult, error) {
+	coordinator, ok := app.CurrentAgentCoordinator().(agent.TaskLiveCoordinator)
+	if !ok {
+		return managedtask.LogResult{}, fmt.Errorf("live task service is unavailable")
+	}
+	return coordinator.TaskLog(ctx, id, request)
+}
+
+func (app *App) SendTask(ctx context.Context, id, parentSessionID, prompt string) (managedtask.View, error) {
+	coordinator, ok := app.CurrentAgentCoordinator().(agent.TaskLiveCoordinator)
+	if !ok {
+		return managedtask.View{}, fmt.Errorf("live task service is unavailable")
+	}
+	return coordinator.SendTask(ctx, id, parentSessionID, prompt)
+}
+
 func (app *App) RestartTask(ctx context.Context, id string) (managedtask.View, error) {
 	coordinator, err := app.taskCoordinator()
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/example-git/crux/internal/agent/notify"
 	"github.com/example-git/crux/internal/agent/tools/mcp"
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
@@ -15,6 +16,20 @@ import (
 	managedtask "github.com/example-git/crux/internal/task"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWrapProviderUsageEvent(t *testing.T) {
+	event := pubsub.Event[proto.AgentEvent]{Type: pubsub.UpdatedEvent, Payload: proto.AgentEvent{
+		Type: proto.AgentEventTypeUsage, ProviderID: "native",
+		Owner: &providerregistry.RegistrationOwner{ProviderID: "native"},
+		Usage: &config.ProviderUsageResult{Revision: 7, Digest: "runtime"},
+	}}
+	payload := wrapEvent(event)
+	require.NotNil(t, payload)
+	require.Equal(t, pubsub.PayloadTypeAgentEvent, payload.Type)
+	var decoded pubsub.Event[proto.AgentEvent]
+	require.NoError(t, json.Unmarshal(payload.Payload, &decoded))
+	require.Equal(t, event, decoded)
+}
 
 // TestMessageToProtoToolResult ensures that ToolResult metadata,
 // data, and MIME type survive the conversion to proto. Without these

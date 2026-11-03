@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -17,8 +18,10 @@ import (
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/shell"
+	"github.com/example-git/crux/internal/subagentscript"
 	"github.com/example-git/crux/internal/task"
 )
 
@@ -44,6 +47,7 @@ type BashResponseMetadata struct {
 	StartTime        int64  `json:"start_time"`
 	EndTime          int64  `json:"end_time"`
 	Output           string `json:"output"`
+	OutputRef        string `json:"output_ref,omitempty"`
 	Description      string `json:"description"`
 	WorkingDirectory string `json:"working_directory"`
 	Background       bool   `json:"background,omitempty"`
@@ -203,7 +207,27 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 	return fantasy.NewAgentTool(
 		BashToolName,
 		string(bashDescription()),
-		func(ctx context.Context, params BashParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, params BashParams, call fantasy.ToolCall) (response fantasy.ToolResponse, resultErr error) {
+			environment := subagentscript.Environment(ctx, environment)
+			ctx = protectedShellContext(ctx, permissions, call.ID)
+			if permission.IsSubagent(ctx) {
+				ctx = shell.WithRedirectCapture(ctx)
+			}
+			defer func() {
+				paths, err := shell.ReadOutputPaths(ctx)
+				if err != nil {
+					response = fantasy.ToolResponse{}
+					resultErr = errors.Join(resultErr, err)
+					return
+				}
+				if resultErr != nil {
+					response.Content = resultErr.Error()
+				}
+				response, err = withShellOutputPaths(ctx, response, paths, false)
+				if err != nil {
+					resultErr = errors.Join(resultErr, err)
+				}
+			}()
 			if params.TTY && params.RunInBackground {
 				return fantasy.NewTextErrorResponse("tty=true cannot be combined with run_in_background=true"), nil
 			}
@@ -282,7 +306,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 				})
 				execErr := commandShell.ExecTTY(execCtx, params.Command, terminal, io.MultiWriter(terminal, &output))
 				if execCtx.Err() == context.DeadlineExceeded {
-					partial := truncateOutput(output.String())
+					partial := truncateOutput(output.String(), ctx)
 					message := fmt.Sprintf("Command timed out after %d seconds and was killed.", timeoutSecs)
 					if partial != "" {
 						message += "\n\nPartial output before the kill:\n\n" + partial
@@ -293,7 +317,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 					return fantasy.ToolResponse{}, execCtx.Err()
 				}
 
-				stdout := formatOutput(output.String(), "", execErr)
+				stdout := formatOutput(output.String(), "", execErr, ctx)
 				metadata := BashResponseMetadata{
 					StartTime:        startTime.UnixMilli(),
 					EndTime:          time.Now().UnixMilli(),
@@ -314,7 +338,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 				bgManager := backgroundShells
 				bgManager.Cleanup()
 				// Use background context so it continues after tool returns
-				bgShell, err := bgManager.StartOwnedWithEnvironment(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description, shellOwnership, environment)
+				bgShell, err := bgManager.StartOwnedWithEnvironment(context.WithoutCancel(ctx), execWorkingDir, blockFuncs(), params.Command, params.Description, shellOwnership, environment)
 				if err != nil {
 					return fantasy.ToolResponse{}, fmt.Errorf("error starting background shell: %w", err)
 				}
@@ -333,7 +357,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 						return fantasy.ToolResponse{}, fmt.Errorf("[Job %s] error executing command: %w", bgShell.ID, execErr)
 					}
 
-					stdout = formatOutput(stdout, stderr, execErr)
+					stdout = formatOutput(stdout, stderr, execErr, ctx)
 
 					metadata := BashResponseMetadata{
 						StartTime:        startTime.UnixMilli(),
@@ -342,6 +366,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 						Description:      params.Description,
 						Background:       params.RunInBackground,
 						WorkingDirectory: bgShell.WorkingDir,
+						OutputRef:        bgShell.OutputRef(),
 					}
 					if stdout == "" {
 						return fantasy.WithResponseMetadata(fantasy.NewTextResponse(BashNoOutput), metadata), nil
@@ -357,6 +382,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 					EndTime:          time.Now().UnixMilli(),
 					Description:      params.Description,
 					WorkingDirectory: bgShell.WorkingDir,
+					OutputRef:        bgShell.OutputRef(),
 					Background:       true,
 					ShellID:          bgShell.ID,
 				}
@@ -371,7 +397,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 			// sends it to the background.
 			bgManager := backgroundShells
 			bgManager.Cleanup()
-			bgShell, err := bgManager.StartOwnedWithEnvironment(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description, shellOwnership, environment)
+			bgShell, err := bgManager.StartOwnedWithEnvironment(context.WithoutCancel(ctx), execWorkingDir, blockFuncs(), params.Command, params.Description, shellOwnership, environment)
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("error starting shell: %w", err)
 			}
@@ -438,7 +464,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 				// silently continuing with a hidden background job.
 				bgManager.Kill(bgShell.ID)
 				bgManager.Remove(bgShell.ID)
-				partial := formatOutput(stdout, stderr, nil)
+				partial := formatOutput(stdout, stderr, nil, ctx)
 				msg := fmt.Sprintf("Command timed out after %d seconds and was killed.\n\nIf the command legitimately needs more time, retry with a larger timeout value. If it is a long-running process (server, watcher), retry with run_in_background=true.", timeoutSecs)
 				if partial != "" {
 					msg += "\n\nPartial output before the kill:\n\n" + partial
@@ -455,6 +481,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 					EndTime:          time.Now().UnixMilli(),
 					Description:      params.Description,
 					WorkingDirectory: bgShell.WorkingDir,
+					OutputRef:        bgShell.OutputRef(),
 					Background:       true,
 					ShellID:          bgShell.ID,
 				}
@@ -473,7 +500,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 				return fantasy.ToolResponse{}, fmt.Errorf("[Job %s] error executing command: %w", bgShell.ID, execErr)
 			}
 
-			stdout = formatOutput(stdout, stderr, execErr)
+			stdout = formatOutput(stdout, stderr, execErr, ctx)
 
 			metadata := BashResponseMetadata{
 				StartTime:        startTime.UnixMilli(),
@@ -482,6 +509,7 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 				Description:      params.Description,
 				Background:       params.RunInBackground,
 				WorkingDirectory: bgShell.WorkingDir,
+				OutputRef:        bgShell.OutputRef(),
 			}
 			if stdout == "" {
 				return fantasy.WithResponseMetadata(fantasy.NewTextResponse(BashNoOutput), metadata), nil
@@ -493,12 +521,12 @@ func NewBashTool(backgroundShells *shell.BackgroundShellManager, permissions per
 }
 
 // formatOutput formats the output of a completed command with error handling
-func formatOutput(stdout, stderr string, execErr error) string {
+func formatOutput(stdout, stderr string, execErr error, contexts ...context.Context) string {
 	interrupted := shell.IsInterrupt(execErr)
 	exitCode := shell.ExitCode(execErr)
 
-	stdout = truncateOutput(stdout)
-	stderr = truncateOutput(stderr)
+	stdout = truncateOutput(stdout, contexts...)
+	stderr = truncateOutput(stderr, contexts...)
 
 	errorMessage := stderr
 	if errorMessage == "" && execErr != nil {
@@ -543,8 +571,25 @@ func TruncateOutput(content string) string {
 	return fmt.Sprintf("%s\n\n... [%d lines truncated] ...\n\n%s", start, truncatedLinesCount, end)
 }
 
-func truncateOutput(content string) string {
-	return TruncateOutput(content)
+func truncateOutput(content string, contexts ...context.Context) string {
+	if len(contexts) == 0 || pathtranslate.FromContext(contexts[0]).Fingerprint() == "" || ansi.StringWidth(content) <= MaxOutputLength {
+		return TruncateOutput(content)
+	}
+	halfLength := MaxOutputLength / 2
+	start := ansi.Truncate(content, halfLength, "")
+	end := ansi.TruncateLeft(content, ansi.StringWidth(content)-halfLength, "")
+	if boundary := strings.LastIndexByte(start, '\n'); boundary >= 0 {
+		start = start[:boundary]
+	} else {
+		start = ""
+	}
+	if boundary := strings.IndexByte(end, '\n'); boundary >= 0 {
+		end = end[boundary+1:]
+	} else {
+		end = ""
+	}
+	truncatedLines := max(strings.Count(content, "\n")-strings.Count(start, "\n")-strings.Count(end, "\n"), 0)
+	return fmt.Sprintf("%s\n\n... [%d lines truncated] ...\n\n%s", start, truncatedLines, end)
 }
 
 func normalizeWorkingDir(path string) string {

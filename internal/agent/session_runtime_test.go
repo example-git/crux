@@ -94,3 +94,53 @@ func TestSessionRuntimeRejectsMissingOrChangedOwnerWithoutFallback(t *testing.T)
 	require.NotEmpty(t, goalBlockingReason(nil, err))
 	require.Equal(t, "first", coord.cfg.Config().Models[config.SelectedModelTypeLarge].Provider)
 }
+
+func TestSessionRuntimeLoadsRetiredPathMaskingWithoutChangingSelection(t *testing.T) {
+	for _, legacy := range []string{`null`, `{"enabled":true,"targets":["/retired/private-library"],"recursive":true}`} {
+		t.Run(legacy, func(t *testing.T) {
+			coord, env := sessionRuntimeTestCoordinator(t)
+			models := coord.cfg.RuntimeSnapshot().AgentModelState()
+			models.Large.Model.ProviderOptions = map[string]any{"precise": json.Number("9007199254740993"), "path_masking": "provider-owned-value"}
+			encoded, err := json.Marshal(models)
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(encoded, &fields))
+			fields["path_masking"] = json.RawMessage(legacy)
+			encoded, err = json.Marshal(fields)
+			require.NoError(t, err)
+			current, err := env.sessions.Create(t.Context(), "legacy session")
+			require.NoError(t, err)
+			current, err = env.sessions.SetModels(t.Context(), current.ID, current.ModelRevision, encoded)
+			require.NoError(t, err)
+			runtime, err := coord.runtimeForSession(t.Context(), current.ID)
+			require.NoError(t, err)
+			require.Equal(t, current.ID, runtime.SessionID)
+			require.Equal(t, models.Large.Model, runtime.LargeModel.ModelCfg)
+			require.Equal(t, models.Small.Model, runtime.SmallModel.ModelCfg)
+			require.Equal(t, models.Large.Owner, runtime.Snapshot.AgentModelState().Large.Owner)
+			require.Equal(t, models.Small.Owner, runtime.Snapshot.AgentModelState().Small.Owner)
+			unchanged, err := env.sessions.Get(t.Context(), current.ID)
+			require.NoError(t, err)
+			require.Equal(t, current.Models, unchanged.Models)
+			require.Equal(t, current.ModelRevision, unchanged.ModelRevision)
+		})
+	}
+}
+
+func TestSessionRuntimeStillRejectsUnknownFieldsWithRetiredMasking(t *testing.T) {
+	coord, env := sessionRuntimeTestCoordinator(t)
+	encoded, err := json.Marshal(coord.cfg.RuntimeSnapshot().AgentModelState())
+	require.NoError(t, err)
+	var fields map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(encoded, &fields))
+	fields["path_masking"] = json.RawMessage(`null`)
+	fields["unexpected_setting"] = json.RawMessage(`true`)
+	encoded, err = json.Marshal(fields)
+	require.NoError(t, err)
+	current, err := env.sessions.Create(t.Context(), "invalid session")
+	require.NoError(t, err)
+	_, err = env.sessions.SetModels(t.Context(), current.ID, current.ModelRevision, encoded)
+	require.NoError(t, err)
+	_, err = coord.runtimeForSession(t.Context(), current.ID)
+	require.ErrorContains(t, err, `unknown field "unexpected_setting"`)
+}

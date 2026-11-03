@@ -13,6 +13,45 @@ const lifecycleTestTemplate = `{{if .Lifecycle}}{{.Lifecycle}}
 {{end}}{{.NativeSections}}
 {{range .ContextFiles}}{{.Content}}{{end}}`
 
+func TestBuildLifecyclePreservesIdentitySelection(t *testing.T) {
+	for _, mode := range []string{"all", "native", "project"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, disabled := range []bool{false, true} {
+				name := "enabled"
+				if disabled {
+					name = "disabled"
+				}
+				t.Run(name, func(t *testing.T) {
+					options := &config.Options{InstructionMode: mode}
+					if disabled {
+						options.DisabledInstructionSections = []string{"identity"}
+					}
+					store := config.NewTestStore(&config.Config{Options: options})
+					builder, err := NewPrompt("coder", lifecycleTestTemplate, WithWorkingDir(t.TempDir()))
+					require.NoError(t, err)
+					for _, lifecycle := range []Lifecycle{
+						{Stage: LifecycleDefault},
+						{Stage: LifecycleDraft},
+						{Stage: LifecycleRevision, Plan: "Revise the plan"},
+						{Stage: LifecycleExecution, Plan: "Execute the plan"},
+					} {
+						t.Run(string(lifecycle.Stage), func(t *testing.T) {
+							instructions, err := builder.BuildLifecycle(t.Context(), "openai", "model", store, lifecycle)
+							require.NoError(t, err)
+							if disabled || mode == "project" {
+								require.NotContains(t, instructions, "You are a token engine:")
+							} else {
+								require.Contains(t, instructions, "You are a token engine:")
+								require.Contains(t, instructions, "Your previous output is revisable work")
+							}
+						})
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestBuildLifecycleSelectsCentralInstructionProfile(t *testing.T) {
 	contextFile := filepath.Join(t.TempDir(), "PROJECT.md")
 	require.NoError(t, os.WriteFile(contextFile, []byte("project-specific guidance"), 0o600))

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/providerregistry"
 )
 
@@ -14,6 +15,7 @@ const (
 	AgentEventTypeError     AgentEventType = "error"
 	AgentEventTypeResponse  AgentEventType = "response"
 	AgentEventTypeSummarize AgentEventType = "summarize"
+	AgentEventTypeUsage     AgentEventType = "usage"
 )
 
 // MarshalText implements the [encoding.TextMarshaler] interface.
@@ -34,6 +36,7 @@ type AgentEvent struct {
 	Error      error                               `json:"error,omitempty"`
 	ProviderID string                              `json:"provider_id,omitempty"`
 	Owner      *providerregistry.RegistrationOwner `json:"owner,omitempty"`
+	Usage      *config.ProviderUsageResult         `json:"usage,omitempty"`
 
 	// RunID echoes the caller-supplied AgentMessage.RunID for the run
 	// that produced this event. It lets observers (notably

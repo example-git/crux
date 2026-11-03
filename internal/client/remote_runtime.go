@@ -56,6 +56,29 @@ func (c *Client) NegotiateRemoteRuntime(ctx context.Context) (*proto.RemoteRunti
 	return &value, nil
 }
 
+func CollectRemoteRuntime(ctx context.Context, c *Client, debug bool, revision uint64, prepare func(*config.ConfigStore) error, remotePaths ...string) (*config.RemoteRuntimeProposal, error) {
+	store, err := config.LoadRemoteClient(debug)
+	if err != nil {
+		return nil, fmt.Errorf("load selected client runtime: %w", err)
+	}
+	if c != nil && len(remotePaths) > 0 {
+		store.BindRemoteCodebaseIndexScope(c.AuthenticationJournalIdentity(), remotePaths[0])
+	}
+	if prepare != nil {
+		if err := prepare(store); err != nil {
+			return nil, fmt.Errorf("prepare selected client runtime: %w", err)
+		}
+	}
+	if c != nil {
+		c.SetLocalRuntimeStore(store)
+	}
+	proposal, err := store.CollectRemoteRuntime(ctx, revision)
+	if err != nil {
+		return nil, err
+	}
+	return &proposal, nil
+}
+
 func validateRemoteRuntimeCapabilities(value *proto.RemoteRuntimeCapabilities, proposal *config.RemoteRuntimeProposal) error {
 	if proposal == nil {
 		return errors.New("client runtime proposal is required")

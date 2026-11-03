@@ -60,12 +60,13 @@ type AgentDefinitionScript struct {
 }
 
 type CreateAgentDefinitionRequest struct {
-	Scope       string                 `json:"scope"`
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Model       string                 `json:"model"`
-	Tools       []string               `json:"tools"`
-	Script      *AgentDefinitionScript `json:"script,omitempty"`
+	Scope        string                 `json:"scope"`
+	Name         string                 `json:"name"`
+	Description  string                 `json:"description"`
+	Model        string                 `json:"model"`
+	Tools        []string               `json:"tools"`
+	Script       *AgentDefinitionScript `json:"script,omitempty"`
+	Instructions string                 `json:"instructions,omitempty"`
 }
 
 type CreateAgentDefinitionResponse struct {

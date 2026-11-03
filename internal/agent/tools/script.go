@@ -14,7 +14,9 @@ import (
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/example-git/crux/internal/permission"
+	"github.com/example-git/crux/internal/subagentscript"
 )
 
 const ScriptToolName = "script"
@@ -55,11 +57,18 @@ func (b *limitedScriptBuffer) Write(p []byte) (int, error) {
 	return originalLength, nil
 }
 
-func (b *limitedScriptBuffer) String() string {
+func (b *limitedScriptBuffer) String(completeLines ...bool) string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	result := b.buffer.String()
 	if b.truncated {
+		if len(completeLines) > 0 && completeLines[0] {
+			if boundary := strings.LastIndexByte(result, '\n'); boundary >= 0 {
+				result = result[:boundary]
+			} else {
+				result = ""
+			}
+		}
 		result += "\n... output truncated"
 	}
 	return result
@@ -73,7 +82,8 @@ func NewScriptTool(permissions permission.Service, workingDir string, script con
 	return fantasy.NewAgentTool(
 		ScriptToolName,
 		scriptToolDescription(script),
-		func(ctx context.Context, params ScriptParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, params ScriptParams, call fantasy.ToolCall) (response fantasy.ToolResponse, resultErr error) {
+			environment := subagentscript.Environment(ctx, environment)
 			args, err := scriptArguments(script, params.Variables)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
@@ -81,6 +91,24 @@ func NewScriptTool(permissions permission.Service, workingDir string, script con
 			sessionID := GetSessionFromContext(ctx)
 			if sessionID == "" {
 				return fantasy.ToolResponse{}, errors.New("session ID is required for executing configured script")
+			}
+			protectedOutput := false
+			if translator := pathtranslate.FromContext(ctx); translator != nil {
+				protectedOutput = translator.Fingerprint() != ""
+				filter := &protectedShellAccess{translator: translator, permissions: permissions, sessionID: sessionID, callID: call.ID}
+				defer func() {
+					if resultErr == nil {
+						paths, err := filter.ReadOutputPaths()
+						if err != nil {
+							response, resultErr = fantasy.ToolResponse{}, err
+							return
+						}
+						response, resultErr = withShellOutputPaths(ctx, response, paths, false)
+					}
+				}()
+				if err := filter.Command(ctx, workingDir, append([]string{script.Path}, args...)); err != nil {
+					return fantasy.NewTextErrorResponse(err.Error()), nil
+				}
 			}
 			granted, err := permissions.Request(ctx, permission.CreatePermissionRequest{
 				SessionID:   sessionID,
@@ -113,7 +141,7 @@ func NewScriptTool(permissions permission.Service, workingDir string, script con
 			command.Stderr = stderr
 			err = command.Run()
 
-			output := formatScriptOutput(stdout.String(), stderr.String())
+			output := formatScriptOutput(stdout.String(protectedOutput), stderr.String(protectedOutput))
 			if runCtx.Err() == context.DeadlineExceeded {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("configured script timed out after %s%s", script.Timeout, output)), nil
 			}

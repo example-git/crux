@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -31,6 +32,14 @@ func (p RemoteRuntimeProposal) CollectionConfig() *Config {
 		return nil
 	}
 	return p.collectionSource.runtime.Config()
+}
+
+func (p RemoteRuntimeProposal) ReadConfigView(ctx context.Context, scope Scope) (ConfigReadView, error) {
+	if p.CollectionConfig() == nil {
+		return ConfigReadView{}, errors.New("accepted client configuration provenance is unavailable")
+	}
+	snapshot := p.collectionSource.runtime
+	return readConfigView(ctx, snapshot.Config(), snapshot.readOverrides, scope)
 }
 
 // RetainCollectionSource preserves private local provenance across a JSON copy

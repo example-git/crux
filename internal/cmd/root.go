@@ -76,6 +76,7 @@ func init() {
 
 	rootCmd.AddCommand(
 		newAliasCommand(),
+		newSubagentCommand(),
 		runCmd,
 		dirsCmd,
 		projectsCmd,
@@ -658,26 +659,7 @@ func collectRemoteProviderStateForClient(ctx context.Context, c *client.Client, 
 }
 
 func collectRemoteProviderStatePrepared(ctx context.Context, c *client.Client, debug bool, revision uint64, prepare func(*config.ConfigStore) error, remotePaths ...string) (*config.RemoteRuntimeProposal, error) {
-	store, err := config.LoadRemoteClient(debug)
-	if err != nil {
-		return nil, fmt.Errorf("load selected client runtime: %w", err)
-	}
-	if c != nil && len(remotePaths) > 0 {
-		store.BindRemoteCodebaseIndexScope(c.AuthenticationJournalIdentity(), remotePaths[0])
-	}
-	if prepare != nil {
-		if err := prepare(store); err != nil {
-			return nil, fmt.Errorf("prepare selected client runtime: %w", err)
-		}
-	}
-	if c != nil {
-		c.SetLocalRuntimeStore(store)
-	}
-	proposal, err := store.CollectRemoteRuntime(ctx, revision)
-	if err != nil {
-		return nil, err
-	}
-	return &proposal, nil
+	return client.CollectRemoteRuntime(ctx, c, debug, revision, prepare, remotePaths...)
 }
 
 // connectToServer ensures the server is running, creates a client and

@@ -234,7 +234,7 @@ func readWorkspaceImage(ctx context.Context, ws *Workspace, path string) (messag
 	if !strings.HasPrefix(mediaType, "image/") {
 		return message.BinaryContent{}, fmt.Errorf("local file %q is not an image", path)
 	}
-	return message.BinaryContent{Path: path, MIMEType: mediaType, Data: data}, nil
+	return message.BinaryContent{Path: resolved, MIMEType: mediaType, Data: data}, nil
 }
 
 // runAgent executes an accepted agent run for the workspace. It owns the
@@ -412,11 +412,12 @@ func (b *Backend) CreateAgentDefinition(workspaceID string, request proto.Create
 		return "", err
 	}
 	template := agent.AgentDefinitionTemplate{
-		Scope:       agent.AgentDefinitionScope(request.Scope),
-		Name:        request.Name,
-		Description: request.Description,
-		Model:       request.Model,
-		Tools:       request.Tools,
+		Scope:        agent.AgentDefinitionScope(request.Scope),
+		Name:         request.Name,
+		Description:  request.Description,
+		Instructions: request.Instructions,
+		Model:        request.Model,
+		Tools:        request.Tools,
 	}
 	if request.Script != nil {
 		template.Script = &agent.AgentDefinitionScriptTemplate{

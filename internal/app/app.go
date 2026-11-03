@@ -36,6 +36,7 @@ import (
 	"github.com/example-git/crux/internal/log"
 	"github.com/example-git/crux/internal/lsp"
 	"github.com/example-git/crux/internal/message"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/question"
@@ -48,6 +49,7 @@ import (
 )
 
 type App struct {
+	PathTranslations *pathtranslate.Store
 	Sessions         session.Service
 	Messages         message.Service
 	History          history.Service
@@ -188,6 +190,7 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore, skillsMgr
 	}
 
 	app := &App{
+		PathTranslations: pathtranslate.NewStore(conn),
 		Sessions:         sessions,
 		Messages:         messages,
 		History:          files,
@@ -919,6 +922,7 @@ func (app *App) newCoderAgentLocked(ctx context.Context, interactive bool) (agen
 		newCoordinator = agent.NewCoordinator
 	}
 	coordinator, err := newCoordinator(ctx, agent.CoordinatorOptions{
+		PathTranslations: app.PathTranslations,
 		Config:           app.config,
 		Sessions:         app.Sessions,
 		Messages:         app.Messages,

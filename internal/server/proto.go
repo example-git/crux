@@ -22,6 +22,7 @@ import (
 
 type controllerV1 struct {
 	backend         *backend.Backend
+	settings        WorkspaceSettings
 	server          *Server
 	peerExecutionMu sync.Mutex
 	peerJournalMu   sync.Mutex
@@ -655,24 +656,42 @@ func (c *controllerV1) handleGetWorkspaceSessionHistory(w http.ResponseWriter, r
 	jsonEncode(w, history)
 }
 
-// handleGetWorkspaceSessionMessages returns all messages for a session.
+// handleGetWorkspaceSessionMessages returns messages for a session. Without
+// paging parameters it returns the whole conversation.
 //
 //	@Summary		Get session messages
 //	@Tags			sessions
 //	@Produce		json
-//	@Param			id	path		string			true	"Workspace ID"
-//	@Param			sid	path		string			true	"Session ID"
-//	@Success		200	{array}		proto.Message
-//	@Failure		404	{object}	proto.Error
-//	@Failure		500	{object}	proto.Error
+//	@Param			id		path		string			true	"Workspace ID"
+//	@Param			sid		path		string			true	"Session ID"
+//	@Param			limit	query		int				false	"Return at most this many of the newest messages"
+//	@Param			before	query		string			false	"Return only messages older than this message ID"
+//	@Success		200		{array}		proto.Message
+//	@Header			200		{boolean}	Crux-Messages-More	"Present for paged requests; true when older messages exist"
+//	@Failure		400		{object}	proto.Error
+//	@Failure		404		{object}	proto.Error
+//	@Failure		500		{object}	proto.Error
 //	@Router			/workspaces/{id}/sessions/{sid}/messages [get]
 func (c *controllerV1) handleGetWorkspaceSessionMessages(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	sid := r.PathValue("sid")
+	page, err := parseMessagePage(r.URL.Query())
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	messages, err := c.backend.ListSessionMessages(r.Context(), id, sid)
 	if err != nil {
 		c.handleError(w, r, err)
 		return
+	}
+	messages, more, err := page.apply(messages)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if page.paged() {
+		w.Header().Set("Crux-Messages-More", strconv.FormatBool(more))
 	}
 	jsonEncode(w, messagesToProto(messages))
 }
@@ -705,7 +724,32 @@ func (c *controllerV1) handlePutWorkspaceSession(w http.ResponseWriter, r *http.
 	}
 	var saved session.Session
 	var err error
-	if selection, present := fields["model_selection"]; present {
+	if update, present := fields["instruction_update"]; present {
+		var instructions session.Instructions
+		decoder := json.NewDecoder(bytes.NewReader(update))
+		decoder.DisallowUnknownFields()
+		if len(fields) != 1 || bytes.Equal(bytes.TrimSpace(update), []byte("null")) {
+			jsonError(w, http.StatusBadRequest, "instruction_update must be the only session update")
+			return
+		}
+		if err := decoder.Decode(&instructions); err != nil {
+			jsonError(w, http.StatusBadRequest, "invalid session instructions")
+			return
+		}
+		if err := instructions.Validate(); err != nil {
+			jsonError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		saved, err = c.backend.SetSessionInstructions(r.Context(), id, r.PathValue("sid"), instructions)
+		if errors.Is(err, session.ErrInstructionsChanged) {
+			jsonError(w, http.StatusConflict, err.Error())
+			return
+		}
+		if err != nil {
+			c.handleError(w, r, err)
+			return
+		}
+	} else if selection, present := fields["model_selection"]; present {
 		var request proto.SessionModelsRequest
 		decoder := json.NewDecoder(bytes.NewReader(selection))
 		decoder.UseNumber()
@@ -1611,6 +1655,15 @@ func (c *controllerV1) handlePostWorkspacePermissionsGrant(w http.ResponseWriter
 		return
 	}
 	jsonEncode(w, proto.PermissionGrantResponse{Resolved: resolved})
+}
+
+func (c *controllerV1) handleGetWorkspacePending(w http.ResponseWriter, r *http.Request) {
+	ws, err := c.backend.GetWorkspace(r.PathValue("id"))
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, map[string]any{"permission": ws.Permissions.Pending(), "question": ws.Questions.Pending()})
 }
 
 // handlePostWorkspaceQuestionsAnswer submits answers for a batch question.

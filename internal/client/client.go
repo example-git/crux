@@ -386,3 +386,7 @@ func (c *Client) buildReq(ctx context.Context, method, url string, body io.Reade
 // redacted server discovery. Set it during startup, before sharing this client.
 func (c *Client) SetLocalRuntimeStore(store *config.ConfigStore) { c.localRuntimeStore = store }
 func (c *Client) LocalRuntimeStore() *config.ConfigStore         { return c.localRuntimeStore }
+
+func (c *Client) CloseIdleConnections() {
+	c.h.CloseIdleConnections()
+}

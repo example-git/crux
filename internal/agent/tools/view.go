@@ -219,7 +219,7 @@ func NewViewTool(
 				// it identifies a supported image format.
 				mimeType = sniffImageMimeType(imageData, mimeType)
 
-				return fantasy.NewImageResponse(imageData, mimeType), nil
+				return fantasy.WithResponseMetadata(fantasy.NewImageResponse(imageData, mimeType), ViewResponseMetadata{FilePath: filePath}), nil
 			}
 
 			// Read the file content

@@ -55,6 +55,14 @@ func (m remoteCompactionAgentModel) Generate(ctx context.Context, call fantasy.C
 	if m.admitted == nil || m.admitted.Compactor == nil {
 		return nil, fmt.Errorf("remote compaction executor is unavailable")
 	}
+	if m.admitted.PathTranslation != nil {
+		translator := translatedLanguageModel{imagePolicy: m.admitted.ImagePolicy, resolve: m.admitted.PathTranslation, observe: m.admitted.PathTranslationState, owner: pathTranslationOwner{provider: m.admitted.ModelCfg.Provider, model: m.admitted.ModelCfg.Model}}
+		var err error
+		call, err = translator.call(ctx, call)
+		if err != nil {
+			return nil, err
+		}
+	}
 	result, err := m.admitted.Compactor.Compact(ctx, call)
 	if err != nil {
 		return nil, err

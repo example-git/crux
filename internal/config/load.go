@@ -1354,6 +1354,9 @@ func resolveSelectedModels(cfg *Config, knownProviders []catalog.Provider) (reso
 		modelID := cmp.Or(selected.Model, fallback.Model)
 		model := cfg.GetModel(providerID, modelID)
 		if model == nil {
+			if providerID == string(catalog.ProviderCopilot) && selected.Model != "" {
+				return SelectedModel{}, false, fmt.Errorf("selected Copilot model %q is not present in the current catalog", selected.Model)
+			}
 			if selected.Provider == "" {
 				return fallback, true, nil
 			}
@@ -1656,7 +1659,47 @@ func loadFromBytes(configs [][]byte) (*Config, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return nil, err
 	}
+	if err := applyMCPCollectionLayers(&config, configs); err != nil {
+		return nil, err
+	}
 	return &config, nil
+}
+
+func applyMCPCollectionLayers(config *Config, configs [][]byte) error {
+	for _, layer := range configs {
+		var values struct {
+			MCP map[string]map[string]json.RawMessage `json:"mcp"`
+		}
+		if err := json.Unmarshal(layer, &values); err != nil {
+			return err
+		}
+		for name, fields := range values.MCP {
+			server := config.MCP[name]
+			for field, target := range map[string]any{
+				"args":           &server.Args,
+				"env":            &server.Env,
+				"headers":        &server.Headers,
+				"enabled_tools":  &server.EnabledTools,
+				"disabled_tools": &server.DisabledTools,
+			} {
+				value, present := fields[field]
+				if !present {
+					continue
+				}
+				switch field {
+				case "env":
+					server.Env = nil
+				case "headers":
+					server.Headers = nil
+				}
+				if err := json.Unmarshal(value, target); err != nil {
+					return fmt.Errorf("MCP server %q field %q: %w", name, field, err)
+				}
+			}
+			config.MCP[name] = server
+		}
+	}
+	return nil
 }
 
 // migrateDisableNotifications migrates the deprecated disable_notifications

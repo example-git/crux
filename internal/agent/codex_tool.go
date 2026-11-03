@@ -7,6 +7,7 @@ import (
 
 	fantasy "github.com/example-git/crux/foundation"
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
+	"github.com/example-git/crux/internal/pathtranslate"
 )
 
 type codexBoundedTool struct {
@@ -28,7 +29,11 @@ func (t *codexBoundedTool) Run(ctx context.Context, call fantasy.ToolCall) (resp
 		}
 	}()
 	response, err = t.tool.Run(ctx, call)
-	response.Content = codexresponses.TruncateToolOutput(t.modelID, response.Content)
+	var metadataErr error
+	response.Content, response.Metadata, metadataErr = boundedToolContent(t.modelID, response.Content, response.Metadata)
+	if metadataErr != nil {
+		return fantasy.ToolResponse{}, metadataErr
+	}
 	if err != nil {
 		err = boundedToolError{err: err, modelID: t.modelID}
 	}
@@ -70,4 +75,13 @@ func codexBoundedTools(tools []fantasy.AgentTool, model Model) []fantasy.AgentTo
 		bounded[i] = &codexBoundedTool{tool: tool, modelID: model.ModelCfg.Model}
 	}
 	return bounded
+}
+
+func boundedToolContent(modelID, content, metadata string) (string, string, error) {
+	bounded, headEnd, tailStart := codexresponses.TruncateToolOutputWithBounds(modelID, content)
+	if bounded == content {
+		return content, metadata, nil
+	}
+	metadata, err := pathtranslate.RetainPathReferences(metadata, len(content), headEnd, tailStart, len(bounded)-(len(content)-tailStart))
+	return bounded, metadata, err
 }

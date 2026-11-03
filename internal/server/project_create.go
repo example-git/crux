@@ -3,9 +3,11 @@ package server
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -34,6 +36,9 @@ var scpLikeCloneURL = regexp.MustCompile(`^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+:[^\s]
 // best-effort output lines for long-running modes (git clone) and may be
 // nil.
 func (s *Server) createProject(ctx context.Context, request proto.PeerWorkspaceCreateRequest, progress func(string)) (string, error) {
+	if err := request.Validate(); err != nil {
+		return "", err
+	}
 	target, err := s.resolveProjectTarget(request.Root, request.RelativePath)
 	if err != nil {
 		return "", err
@@ -44,9 +49,30 @@ func (s *Server) createProject(ctx context.Context, request proto.PeerWorkspaceC
 		return "", fmt.Errorf("check path %q: %w", target, statErr)
 	}
 
+	directory, err := os.OpenRoot(request.Root)
+	if err != nil {
+		return "", err
+	}
+	defer directory.Close()
+	relative, err := filepath.Rel(request.Root, target)
+	if err != nil {
+		return "", err
+	}
+	if request.Mode == proto.PeerWorkspaceCreateClone {
+		if err := validateCloneURL(request.CloneURL); err != nil {
+			return "", err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if err := directory.MkdirAll(filepath.Dir(relative), 0o755); err != nil {
+		return "", fmt.Errorf("create parent directory: %w", err)
+	}
+
 	switch request.Mode {
 	case proto.PeerWorkspaceCreatePlain, proto.PeerWorkspaceCreateGitInit:
-		if err := os.MkdirAll(target, 0o755); err != nil {
+		if err := directory.Mkdir(relative, 0o755); err != nil {
 			return "", fmt.Errorf("create directory %q: %w", target, err)
 		}
 		if request.Mode == proto.PeerWorkspaceCreateGitInit {
@@ -55,12 +81,6 @@ func (s *Server) createProject(ctx context.Context, request proto.PeerWorkspaceC
 			}
 		}
 	case proto.PeerWorkspaceCreateClone:
-		if err := validateCloneURL(request.CloneURL); err != nil {
-			return "", err
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return "", fmt.Errorf("create parent directory: %w", err)
-		}
 		// "--" prevents a hostile clone URL from being interpreted as a
 		// git option even though validateCloneURL already rejects any
 		// value that starts with "-".
@@ -93,18 +113,48 @@ func (s *Server) resolveProjectTarget(root, relativePath string) (string, error)
 	if matchedRoot == "" {
 		return "", fmt.Errorf("root %q is not a configured workspace root", root)
 	}
-	cleaned := filepath.ToSlash(filepath.Clean("/" + relativePath))
-	segments := strings.Split(strings.TrimPrefix(cleaned, "/"), "/")
+	if filepath.IsAbs(relativePath) || filepath.VolumeName(relativePath) != "" {
+		return "", errors.New("project path must be relative to its workspace root")
+	}
+	segments := strings.Split(filepath.ToSlash(relativePath), "/")
 	for _, segment := range segments {
 		if !validProjectSegment(segment) {
 			return "", fmt.Errorf("invalid project directory name %q", segment)
 		}
 	}
 	target := filepath.Join(append([]string{matchedRoot}, segments...)...)
-	if !fsext.HasPrefix(target, matchedRoot) {
+	canonical, err := fsext.CanonicalPath(target)
+	if err != nil {
+		return "", fmt.Errorf("resolve project path: %w", err)
+	}
+	if !fsext.HasPrefix(canonical, matchedRoot) {
 		return "", errors.New("project path escapes the configured workspace root")
 	}
-	return target, nil
+	return canonical, nil
+}
+
+func (c *controllerV1) handlePostWorkspaceDirectory(w http.ResponseWriter, r *http.Request) {
+	if !c.server.authenticatedManagementRequest(r) {
+		jsonError(w, http.StatusForbidden, "workspace creation requires authenticated TLS")
+		return
+	}
+	var request proto.PeerWorkspaceCreateRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		jsonError(w, http.StatusBadRequest, "invalid workspace creation request")
+		return
+	}
+	if decoder.Decode(new(any)) != io.EOF || request.Validate() != nil {
+		jsonError(w, http.StatusBadRequest, "invalid workspace creation request")
+		return
+	}
+	path, err := c.server.createProject(r.Context(), request, nil)
+	if err != nil {
+		jsonError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	jsonEncode(w, proto.PeerWorkspaceCreateResult{Path: path})
 }
 
 func validProjectSegment(segment string) bool {

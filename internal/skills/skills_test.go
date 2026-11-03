@@ -462,6 +462,22 @@ func TestDiscoverBuiltin(t *testing.T) {
 		}
 	}
 	require.True(t, foundUIInfo, "crux-ui-info builtin skill not found")
+
+	var foundSubagentScripting bool
+	for _, s := range discovered {
+		if s.Name == "subagent-scripting" {
+			foundSubagentScripting = true
+			require.Equal(t, "crux://skills/subagent-scripting/SKILL.md", s.SkillFilePath)
+			require.Equal(t, "crux://skills/subagent-scripting", s.Path)
+			require.NotEmpty(t, s.Description)
+			require.Contains(t, s.Instructions, "subagent_script")
+			require.Contains(t, s.Instructions, "crux subagent")
+			require.Contains(t, s.Instructions, "CRUX_SESSION_ID")
+			require.Contains(t, s.Instructions, "CRUX_SUBAGENT_TOKEN")
+			require.True(t, s.Builtin)
+		}
+	}
+	require.True(t, foundSubagentScripting, "subagent-scripting builtin skill not found")
 }
 
 func TestDeduplicate(t *testing.T) {

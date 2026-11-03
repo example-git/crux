@@ -2,8 +2,10 @@ package antigravity
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	fantasy "github.com/example-git/crux/foundation"
@@ -203,5 +205,136 @@ func TestStreamPreservesFunctionCallOnlySignature(t *testing.T) {
 	}
 	if gotToolID != "call-1" {
 		t.Errorf("tool id = %q, want %q", gotToolID, "call-1")
+	}
+}
+
+func TestModelUsageNormalization(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		initial  string
+		final    string
+		expected fantasy.Usage
+	}{
+		{
+			name:    "cached cumulative usage",
+			initial: `{"promptTokenCount":90000,"cachedContentTokenCount":70000,"candidatesTokenCount":100,"thoughtsTokenCount":500,"totalTokenCount":90600}`,
+			final:   `{"promptTokenCount":100000,"cachedContentTokenCount":80000,"candidatesTokenCount":1000,"thoughtsTokenCount":2000,"totalTokenCount":103000}`,
+			expected: fantasy.Usage{
+				InputTokens: 20000, CacheReadTokens: 80000, OutputTokens: 3000, ReasoningTokens: 2000, TotalTokens: 103000,
+			},
+		},
+		{
+			name:    "uncached cumulative usage",
+			initial: `{"promptTokenCount":100000,"candidatesTokenCount":100,"totalTokenCount":100100}`,
+			final:   `{"promptTokenCount":100000,"candidatesTokenCount":1000,"totalTokenCount":101000}`,
+			expected: fantasy.Usage{
+				InputTokens: 100000, OutputTokens: 1000, TotalTokens: 101000,
+			},
+		},
+		{
+			name:    "usage without total",
+			initial: `{"promptTokenCount":100000,"cachedContentTokenCount":80000}`,
+			final:   `{"promptTokenCount":100000,"cachedContentTokenCount":80000,"candidatesTokenCount":1000,"thoughtsTokenCount":2000}`,
+			expected: fantasy.Usage{
+				InputTokens: 20000, CacheReadTokens: 80000, OutputTokens: 3000, ReasoningTokens: 2000, TotalTokens: 103000,
+			},
+		},
+		{
+			name:    "fully cached prompt",
+			initial: `{"promptTokenCount":100000,"cachedContentTokenCount":100000,"totalTokenCount":100000}`,
+			final:   `{"promptTokenCount":100000,"cachedContentTokenCount":100000,"candidatesTokenCount":1000,"totalTokenCount":101000}`,
+			expected: fantasy.Usage{
+				CacheReadTokens: 100000, OutputTokens: 1000, TotalTokens: 101000,
+			},
+		},
+		{
+			name:    "missing provider usage",
+			initial: `null`,
+			final:   `null`,
+		},
+	}
+	for _, modelID := range []string{"claude-opus-4-6-thinking", "claude-sonnet-5-5-high", "gemini-3-flash"} {
+		for _, testCase := range cases {
+			for _, operation := range []string{"generate", "stream", "generate-object", "stream-object"} {
+				t.Run(modelID+"/"+testCase.name+"/"+operation, func(t *testing.T) {
+					response := fmt.Sprintf(`{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"{\"answer\":\"ok\"}"}]},"finishReason":"STOP"}],"usageMetadata":%s}}`, testCase.final)
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
+							w.Header().Set("Content-Type", "text/event-stream")
+							fmt.Fprintf(w, "data: {\"response\":{\"usageMetadata\":%s}}\n\n", testCase.initial)
+							fmt.Fprintf(w, "data: %s\n\n", response)
+							fmt.Fprintf(w, "data: {\"response\":{\"usageMetadata\":%s}}\n\n", testCase.final)
+							return
+						}
+						w.Header().Set("Content-Type", "application/json")
+						fmt.Fprint(w, response)
+					}))
+					defer server.Close()
+					provider, err := New(WithBaseURL(server.URL), WithHTTPClient(server.Client()), WithUserAgent("test-agent"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					model, err := provider.LanguageModel(t.Context(), modelID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("Return an answer object")}}
+					objectCall := fantasy.ObjectCall{Prompt: call.Prompt, Schema: fantasy.Schema{Type: "object"}}
+					var usage fantasy.Usage
+					finished := false
+					switch operation {
+					case "generate":
+						result, err := model.Generate(t.Context(), call)
+						if err != nil {
+							t.Fatal(err)
+						}
+						usage, finished = result.Usage, true
+					case "stream":
+						stream, err := model.Stream(t.Context(), call)
+						if err != nil {
+							t.Fatal(err)
+						}
+						for part := range stream {
+							if part.Type == fantasy.StreamPartTypeError {
+								t.Fatal(part.Error)
+							}
+							if part.Type == fantasy.StreamPartTypeFinish {
+								usage, finished = part.Usage, true
+							}
+						}
+					case "generate-object":
+						result, err := model.GenerateObject(t.Context(), objectCall)
+						if err != nil {
+							t.Fatal(err)
+						}
+						usage, finished = result.Usage, true
+					case "stream-object":
+						stream, err := model.StreamObject(t.Context(), objectCall)
+						if err != nil {
+							t.Fatal(err)
+						}
+						for part := range stream {
+							if part.Type == fantasy.ObjectStreamPartTypeError {
+								t.Fatal(part.Error)
+							}
+							if part.Type == fantasy.ObjectStreamPartTypeFinish {
+								usage, finished = part.Usage, true
+							}
+						}
+					}
+					if !finished {
+						t.Fatal("response did not finish")
+					}
+					if usage != testCase.expected {
+						t.Fatalf("usage = %+v, want %+v", usage, testCase.expected)
+					}
+					if occupancy := usage.InputTokens + usage.CacheReadTokens + usage.OutputTokens; occupancy != usage.TotalTokens {
+						t.Fatalf("context tokens = %d, want %d", occupancy, usage.TotalTokens)
+					}
+				})
+			}
+		}
 	}
 }

@@ -74,9 +74,9 @@ func (c *controllerV1) handleWorkspaceProviderTooling(w http.ResponseWriter, r *
 	}
 	var state proto.ProviderToolingState
 	if remove {
-		state, err = c.backend.RemoveProviderToolingInstructions(r.Context(), r.PathValue("id"), *request.Scope, request.Owner)
+		state, err = c.workspaceSettings().RemoveProviderToolingInstructions(r.Context(), r.PathValue("id"), *request.Scope, request.Owner)
 	} else {
-		state, err = c.backend.SetProviderToolingInstructions(r.Context(), r.PathValue("id"), *request.Scope, request.Owner, request.Profile)
+		state, err = c.workspaceSettings().SetProviderToolingInstructions(r.Context(), r.PathValue("id"), *request.Scope, request.Owner, request.Profile)
 	}
 	if err != nil {
 		switch {

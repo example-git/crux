@@ -1368,6 +1368,10 @@ definitions:
         type: string
       mime_type:
         type: string
+      source_paths:
+        items:
+          type: string
+        type: array
     type: object
   proto.AuthenticationProviderSurface:
     properties:
@@ -2287,8 +2291,21 @@ definitions:
       command:
         type: string
     type: object
+  session.Instructions:
+    properties:
+      mode:
+        type: string
+      revision:
+        type: integer
+      text:
+        type: string
+    type: object
   proto.Session:
     properties:
+      instruction_update:
+        $ref: '#/definitions/session.Instructions'
+      instructions:
+        $ref: '#/definitions/session.Instructions'
       analysis_effort:
         type: string
       archived:
@@ -6482,15 +6499,32 @@ paths:
         name: sid
         required: true
         type: string
+      - description: Return at most this many of the newest messages
+        in: query
+        name: limit
+        type: integer
+      - description: Return only messages older than this message ID
+        in: query
+        name: before
+        type: string
       produces:
       - application/json
       responses:
         "200":
           description: OK
+          headers:
+            Crux-Messages-More:
+              description: Present for paged requests; true when older messages
+                exist
+              type: boolean
           schema:
             items:
               $ref: '#/definitions/proto.Message'
             type: array
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/proto.Error'
         "404":
           description: Not Found
           schema:

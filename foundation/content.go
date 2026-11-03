@@ -187,8 +187,10 @@ type MessagePart interface {
 
 // TextPart represents text content in a message.
 type TextPart struct {
-	Text            string          `json:"text"`
-	ProviderOptions ProviderOptions `json:"provider_options"`
+	Text                       string          `json:"text"`
+	ProviderOptions            ProviderOptions `json:"provider_options"`
+	OpaqueCheckpoint           bool            `json:"-"`
+	PathTranslationFingerprint string          `json:"-"`
 }
 
 // GetType returns the type of the text part.
@@ -219,10 +221,16 @@ func (r ReasoningPart) Options() ProviderOptions {
 
 // FilePart represents file content in a message.
 type FilePart struct {
-	Filename        string          `json:"filename"`
-	Data            []byte          `json:"data"`
-	MediaType       string          `json:"media_type"`
-	ProviderOptions ProviderOptions `json:"provider_options"`
+	SourcePath              string          `json:"-"`
+	SourcePaths             []string        `json:"-"`
+	PathTranslated          bool            `json:"-"`
+	PathTranslationPolicy   string          `json:"-"`
+	PathTranslationOriginal *FilePart       `json:"-"`
+	NeedsImageNormalization bool            `json:"-"`
+	Filename                string          `json:"filename"`
+	Data                    []byte          `json:"data"`
+	MediaType               string          `json:"media_type"`
+	ProviderOptions         ProviderOptions `json:"provider_options"`
 }
 
 // GetType returns the type of the file part.
@@ -312,9 +320,10 @@ func (t ToolResultOutputContentError) GetType() ToolResultContentType {
 
 // ToolResultOutputContentMedia represents media output content of a tool result.
 type ToolResultOutputContentMedia struct {
-	Data      string `json:"data"`           // for media type (base64)
-	MediaType string `json:"media_type"`     // for media type
-	Text      string `json:"text,omitempty"` // optional text content accompanying the media
+	ImageFile *FilePart `json:"-"`
+	Data      string    `json:"data"`           // for media type (base64)
+	MediaType string    `json:"media_type"`     // for media type
+	Text      string    `json:"text,omitempty"` // optional text content accompanying the media
 }
 
 // GetType returns the type of the tool result output content media.

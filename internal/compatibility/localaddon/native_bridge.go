@@ -13,6 +13,7 @@ import (
 
 	"github.com/example-git/crux/internal/compatibility"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/message"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/pubsub"
@@ -308,6 +309,11 @@ func codexAttachmentPaths(workingDir string, paths []string) ([]message.Attachme
 			path = filepath.Join(workingDir, path)
 		}
 		path = filepath.Clean(path)
+		fileName := filepath.Base(path)
+		path, err := fsext.CanonicalPath(path)
+		if err != nil {
+			return nil, fmt.Errorf("resolve attachment %q: %w", value, err)
+		}
 		info, err := os.Stat(path)
 		if err != nil {
 			return nil, fmt.Errorf("inspect attachment %q: %w", value, err)
@@ -321,7 +327,7 @@ func codexAttachmentPaths(workingDir string, paths []string) ([]message.Attachme
 		}
 		attachments = append(attachments, message.Attachment{
 			FilePath: path,
-			FileName: filepath.Base(path),
+			FileName: fileName,
 			MimeType: http.DetectContentType(content),
 			Content:  content,
 		})

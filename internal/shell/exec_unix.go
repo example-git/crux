@@ -4,6 +4,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -37,12 +38,8 @@ func isolateProcess(cmd *exec.Cmd) {
 // Without this, shells like zsh that enable job control when sourcing
 // framework files will attempt to take over the TTY, causing SIGTTIN/SIGTTOU
 // signals and corrupting the parent terminal state.
-//
-// The implementation mirrors interp.DefaultExecHandler with two additions:
-// isolateProcess(&cmd) after construction, and negative-PID signal targeting
-// in the cancellation callback so the entire child process group is killed.
 func processGroupExecHandler(killTimeout time.Duration) interp.ExecHandlerFunc {
-	return func(ctx context.Context, args []string) error {
+	return func(ctx context.Context, args []string) (resultErr error) {
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
 		if err != nil {
@@ -60,6 +57,15 @@ func processGroupExecHandler(killTimeout time.Duration) interp.ExecHandlerFunc {
 			Stderr: hc.Stderr,
 		}
 		isolateProcess(&cmd)
+		finishReporting, err := prepareNativeDirectoryReporting(ctx, &cmd)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := finishReporting(); err != nil {
+				resultErr = errors.Join(resultErr, err)
+			}
+		}()
 
 		err = cmd.Start()
 		if err == nil {

@@ -1411,6 +1411,7 @@ const maxRecentModelsPerType = 5
 func allToolNames() []string {
 	return []string{
 		"agent",
+		"subagent_script",
 		"bash",
 		"imagegen",
 		"jq",

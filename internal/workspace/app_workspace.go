@@ -353,11 +353,12 @@ func (w *AppWorkspace) CreateAgentDefinition(_ context.Context, request proto.Cr
 
 func agentDefinitionTemplate(request proto.CreateAgentDefinitionRequest) agent.AgentDefinitionTemplate {
 	template := agent.AgentDefinitionTemplate{
-		Scope:       agent.AgentDefinitionScope(request.Scope),
-		Name:        request.Name,
-		Description: request.Description,
-		Model:       request.Model,
-		Tools:       request.Tools,
+		Scope:        agent.AgentDefinitionScope(request.Scope),
+		Name:         request.Name,
+		Description:  request.Description,
+		Instructions: request.Instructions,
+		Model:        request.Model,
+		Tools:        request.Tools,
 	}
 	if request.Script != nil {
 		template.Script = &agent.AgentDefinitionScriptTemplate{
@@ -757,11 +758,19 @@ func (w *AppWorkspace) ReadMCPResource(ctx context.Context, name, uri string) ([
 	}
 	result := make([]MCPResourceContents, len(contents))
 	for i, c := range contents {
+		if c == nil {
+			continue
+		}
+		sources, err := mcptools.ImageSourceMetadata(c.Meta)
+		if err != nil {
+			return nil, err
+		}
 		result[i] = MCPResourceContents{
-			URI:      c.URI,
-			MIMEType: c.MIMEType,
-			Text:     c.Text,
-			Blob:     c.Blob,
+			SourcePaths: append(sources, c.URI),
+			URI:         c.URI,
+			MIMEType:    c.MIMEType,
+			Text:        c.Text,
+			Blob:        c.Blob,
 		}
 	}
 	return result, nil

@@ -16,12 +16,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/example-git/crux/internal/attachmenthttp"
 	"github.com/example-git/crux/internal/backend"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/connection"
 	"github.com/example-git/crux/internal/fsext"
 	cruxlog "github.com/example-git/crux/internal/log"
 	_ "github.com/example-git/crux/internal/swagger"
+	"github.com/example-git/crux/internal/terminalhttp"
 	httpswagger "github.com/swaggo/http-swagger/v2"
 )
 
@@ -272,6 +274,8 @@ func (s *Server) installHandler() {
 	route("POST /v1/control", c.handlePostControl)
 	route("DELETE /v1/clients/{client_id}", c.handleDeleteClient)
 	route("GET /v1/browser", c.handleGetBrowser)
+	route("GET /v1/project-sessions", c.handleGetProjectSessions)
+	route("POST /v1/browser/create", c.handlePostWorkspaceDirectory)
 	route("GET /v1/workspaces", c.handleGetWorkspaces)
 	route("POST /v1/workspaces", c.handlePostWorkspaces)
 	route("DELETE /v1/workspaces/{id}", c.handleDeleteWorkspaces)
@@ -306,6 +310,8 @@ func (s *Server) installHandler() {
 	route("POST /v1/workspaces/{id}/auth/oauth/complete", c.handlePostWorkspaceOAuthLoginComplete)
 	route("GET /v1/workspaces/{id}/codebase-index", c.handleGetWorkspaceCodebaseIndex)
 	route("POST /v1/workspaces/{id}/codebase-index", c.handlePostWorkspaceCodebaseIndex)
+	route("GET /v1/workspaces/{id}/path-translation", c.handleGetWorkspacePathTranslation)
+	route("POST /v1/workspaces/{id}/path-translation", c.handlePostWorkspacePathTranslation)
 	route("GET /v1/workspaces/{id}/providers", c.handleGetWorkspaceProviders)
 	route("GET /v1/workspaces/{id}/sessions", c.handleGetWorkspaceSessions)
 	route("POST /v1/workspaces/{id}/sessions", c.handlePostWorkspaceSessions)
@@ -333,6 +339,13 @@ func (s *Server) installHandler() {
 	route("GET /v1/workspaces/{id}/lsps/{lsp}/diagnostics", c.handleGetWorkspaceLSPDiagnostics)
 	route("POST /v1/workspaces/{id}/lsps/start", c.handlePostWorkspaceLSPStart)
 	route("POST /v1/workspaces/{id}/lsps/stop", c.handlePostWorkspaceLSPStopAll)
+	route("GET /v1/workspaces/{id}/pending", c.handleGetWorkspacePending)
+	instructions := s.instructionFiles()
+	route("GET /v1/workspaces/{id}/instructions", instructions)
+	route("PUT /v1/workspaces/{id}/instructions", instructions)
+	route("POST /v1/workspaces/{id}/files/attachment", attachmenthttp.Handler(s.backend))
+	route("GET /v1/workspaces/{id}/terminal", terminalhttp.Handler(s.backend))
+	route("GET /v1/workspaces/{id}/tmux-sessions", terminalhttp.Sessions())
 	route("GET /v1/workspaces/{id}/permissions/skip", c.handleGetWorkspacePermissionsSkip)
 	route("POST /v1/workspaces/{id}/permissions/skip", c.handlePostWorkspacePermissionsSkip)
 	route("POST /v1/workspaces/{id}/permissions/grant", c.handlePostWorkspacePermissionsGrant)
@@ -358,6 +371,8 @@ func (s *Server) installHandler() {
 	route("POST /v1/workspaces/{id}/providers/usage", c.handlePostWorkspaceProviderUsage)
 	route("GET /v1/workspaces/{id}/tasks", c.handleGetWorkspaceTasks)
 	route("POST /v1/workspaces/{id}/tasks/{tid}/output", c.handlePostWorkspaceTaskOutput)
+	route("POST /v1/workspaces/{id}/tasks/{tid}/log", c.handlePostWorkspaceTaskLog)
+	route("POST /v1/workspaces/{id}/tasks/{tid}/message", c.handlePostWorkspaceTaskMessage)
 	route("POST /v1/workspaces/{id}/tasks/{tid}/stop", c.handlePostWorkspaceTaskStop)
 	route("POST /v1/workspaces/{id}/tasks/{tid}/restart", c.handlePostWorkspaceTaskRestart)
 	route("POST /v1/workspaces/{id}/tasks/{tid}/continue", c.handlePostWorkspaceTaskContinue)

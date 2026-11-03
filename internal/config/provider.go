@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"slices"
 	"strings"
@@ -336,7 +337,6 @@ func scanProviders(ctx context.Context, cfg *Config, environment env.Env) (Provi
 	for _, registration := range allIntegrated {
 		protectedProviderIDs[registration.ProviderID] = true
 	}
-	coreCatalog := []catalog.Provider{copilot.CatalogProvider()}
 	policy, err := parseProviderRolloutPolicyFromEnvironment(environment)
 	if err != nil {
 		return scan, err
@@ -351,6 +351,14 @@ func scanProviders(ctx context.Context, cfg *Config, environment env.Env) (Provi
 		scan.collectMissingDelegatedProviders(cfg)
 		return scan, err
 	}
+	copilotCatalog, catalogWarning := copilot.CachedCatalogProvider(ctx, globalCacheDirFromEnvironment(environment), environment)
+	if err := ctx.Err(); err != nil {
+		return scan, err
+	}
+	if catalogWarning != nil {
+		slog.Warn("Copilot model catalog warning", "error", catalogWarning)
+	}
+	coreCatalog := []catalog.Provider{copilotCatalog}
 
 	var catalogErr error
 	registrations := slices.DeleteFunc(slices.Clone(allIntegrated), func(registration providerregistry.Registration) bool {

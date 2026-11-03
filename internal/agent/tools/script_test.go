@@ -11,6 +11,8 @@ import (
 
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/db"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/pubsub"
 	"github.com/stretchr/testify/require"
@@ -122,6 +124,37 @@ func TestLimitedScriptBufferBoundsCapture(t *testing.T) {
 	require.Equal(t, "abcd\n... output truncated", buffer.String())
 }
 
+func TestScriptToolRejectsIdentityStateBeforeLaunch(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, "state")
+	conn, err := db.Connect(t.Context(), state)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Release(state)) })
+	store := pathtranslate.NewStore(conn)
+	_, err = store.Save(t.Context(), pathtranslate.Policy{Scope: pathtranslate.Scope{Kind: "session", SessionID: "session"}})
+	require.NoError(t, err)
+	names, err := store.Names(t.Context())
+	require.NoError(t, err)
+	translator, err := pathtranslate.New(names, pathtranslate.Settings{}, root)
+	require.NoError(t, err)
+	scriptPath := filepath.Join(root, "reader.py")
+	marker := filepath.Join(root, "executed")
+	require.NoError(t, os.WriteFile(scriptPath, []byte("from pathlib import Path\nPath("+strconvQuote(marker)+").write_text('ran')\n"), 0o600))
+	permissions := &recordingPermissionService{Broker: pubsub.NewBroker[permission.PermissionRequest](), allow: true}
+	script := config.AgentScript{Path: scriptPath, Timeout: time.Second, Variables: map[string]config.AgentScriptVariable{"input": {Flag: "--input", Required: true}}}
+	tool := NewScriptTool(permissions, root, script)
+	input, err := json.Marshal(ScriptParams{Variables: map[string]string{"input": filepath.Join(state, "crux.db")}})
+	require.NoError(t, err)
+	ctx := context.WithValue(t.Context(), SessionIDContextKey, "session")
+	ctx = pathtranslate.WithTranslator(ctx, translator)
+	response, err := tool.Run(ctx, fantasy.ToolCall{ID: "script", Name: ScriptToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.True(t, response.IsError)
+	require.Equal(t, pathtranslate.ErrInternalStateAccess.Error(), response.Content)
+	require.Zero(t, permissions.requestCount)
+	require.NoFileExists(t, marker)
+}
+
 func runScriptTool(t *testing.T, tool fantasy.AgentTool, params ScriptParams) fantasy.ToolResponse {
 	t.Helper()
 	input, err := json.Marshal(params)
@@ -135,4 +168,41 @@ func runScriptTool(t *testing.T, tool fantasy.AgentTool, params ScriptParams) fa
 func strconvQuote(value string) string {
 	encoded, _ := json.Marshal(value)
 	return strings.ReplaceAll(string(encoded), "\\/", "/")
+}
+
+func TestScriptToolCarriesProtectedOutputPaths(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	protected := filepath.Join(root, "private")
+	require.NoError(t, os.Mkdir(protected, 0o700))
+	file := filepath.Join(protected, "confidential name.txt")
+	require.NoError(t, os.WriteFile(file, []byte("original"), 0o600))
+	state := t.TempDir()
+	conn, err := db.Connect(t.Context(), state)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Release(state)) })
+	store := pathtranslate.NewStore(conn)
+	policy, err := store.Save(t.Context(), pathtranslate.Policy{Scope: pathtranslate.Scope{Kind: "session", SessionID: "session"}, Settings: pathtranslate.Settings{Enabled: true, Targets: []pathtranslate.Target{{Path: protected, Recursive: true}}}})
+	require.NoError(t, err)
+	names, err := store.Names(t.Context())
+	require.NoError(t, err)
+	translator, err := pathtranslate.New(names, policy.Settings, root)
+	require.NoError(t, err)
+	scriptPath := filepath.Join(root, "listing.py")
+	require.NoError(t, os.WriteFile(scriptPath, []byte("import os, sys\nprint(os.listdir(sys.argv[2])[0])\n"), 0o600))
+	permissions := &recordingPermissionService{Broker: pubsub.NewBroker[permission.PermissionRequest](), allow: true}
+	tool := NewScriptTool(permissions, root, config.AgentScript{Path: scriptPath, Timeout: time.Second, Variables: map[string]config.AgentScriptVariable{"input": {Flag: "--input", Required: true}}})
+	input, err := json.Marshal(ScriptParams{Variables: map[string]string{"input": protected}})
+	require.NoError(t, err)
+	ctx := pathtranslate.WithTranslator(context.WithValue(t.Context(), SessionIDContextKey, "session"), translator)
+	response, err := tool.Run(ctx, fantasy.ToolCall{ID: "script", Name: ScriptToolName, Input: string(input)})
+	require.NoError(t, err)
+	require.False(t, response.IsError, response.Content)
+	require.Contains(t, response.Content, "confidential name.txt")
+	translated, err := translator.ReferencedText(ctx, response.Content, response.Metadata)
+	require.NoError(t, err)
+	require.NotContains(t, translated, "confidential")
+	resolved, err := translator.ResolvePath(ctx, strings.TrimSpace(translated))
+	require.NoError(t, err)
+	require.Equal(t, file, resolved)
 }

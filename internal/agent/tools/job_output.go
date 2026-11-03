@@ -52,7 +52,7 @@ func NewJobOutputTool(service TaskService, backgroundShells *shell.BackgroundShe
 			if result.Task.State.ExitCode != nil && *result.Task.State.ExitCode != 0 {
 				outputParts = append(outputParts, fmt.Sprintf("Exit code %d", *result.Task.State.ExitCode))
 			}
-			output := TruncateOutput(strings.Join(outputParts, "\n"))
+			output := truncateOutput(strings.Join(outputParts, "\n"), ctx)
 			if output == "" {
 				output = BashNoOutput
 			}
@@ -68,7 +68,7 @@ func NewJobOutputTool(service TaskService, backgroundShells *shell.BackgroundShe
 			}
 
 			response := fmt.Sprintf("Status: %s\n\n%s", result.Task.State.Status, output)
-			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
+			return withShellOutputPaths(ctx, fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), result.OutputPaths, false)
 		},
 	)
 }

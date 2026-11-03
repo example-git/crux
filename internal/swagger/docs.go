@@ -5051,16 +5051,40 @@ const docTemplate = `{
                         "name": "sid",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Return at most this many of the newest messages",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Return only messages older than this message ID",
+                        "name": "before",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
+                        "headers": {
+                            "Crux-Messages-More": {
+                                "type": "boolean",
+                                "description": "Present for paged requests; true when older messages exist"
+                            }
+                        },
                         "schema": {
                             "type": "array",
                             "items": {
                                 "$ref": "#/definitions/proto.Message"
                             }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/proto.Error"
                         }
                     },
                     "404": {
@@ -7247,6 +7271,12 @@ const docTemplate = `{
                 },
                 "mime_type": {
                     "type": "string"
+                },
+                "source_paths": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             }
         },
@@ -8634,9 +8664,29 @@ const docTemplate = `{
                 }
             }
         },
+        "session.Instructions": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string"
+                },
+                "revision": {
+                    "type": "integer"
+                },
+                "text": {
+                    "type": "string"
+                }
+            }
+        },
         "proto.Session": {
             "type": "object",
             "properties": {
+                "instruction_update": {
+                    "$ref": "#/definitions/session.Instructions"
+                },
+                "instructions": {
+                    "$ref": "#/definitions/session.Instructions"
+                },
                 "analysis_effort": {
                     "type": "string"
                 },

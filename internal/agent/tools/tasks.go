@@ -146,7 +146,7 @@ func NewTaskOutputTool(service TaskService) fantasy.AgentTool {
 			if err != nil {
 				return fantasy.ToolResponse{}, fmt.Errorf("encoding managed task output: %w", err)
 			}
-			return fantasy.NewTextResponse(string(data)), nil
+			return withShellOutputPaths(ctx, fantasy.NewTextResponse(string(data)), result.OutputPaths, true)
 		},
 	)
 }
@@ -182,17 +182,22 @@ func NewTaskContinueTool(service TaskService) fantasy.AgentTool {
 	)
 }
 
-func NewTaskRestartTool(service TaskService) fantasy.AgentTool {
+func NewTaskRestartTool(service TaskService, permissions ...permission.Service) fantasy.AgentTool {
+	var permissionService permission.Service
+	if len(permissions) > 0 {
+		permissionService = permissions[0]
+	}
 	return fantasy.NewAgentTool(
 		TaskRestartToolName,
 		"Stop a background shell command, wait for termination, and rerun its original command and execution settings with the same task ID and fresh output. Running and terminal commands can be restarted. Recovered commands whose original execution settings are unavailable fail explicitly.",
-		func(ctx context.Context, params TaskRestartParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
+		func(ctx context.Context, params TaskRestartParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if permission.IsSubagent(ctx) {
 				return fantasy.NewTextErrorResponse(permission.ErrSubagentBackgroundTask.Error()), nil
 			}
 			if params.TaskID == "" {
 				return fantasy.NewTextErrorResponse("missing task_id"), nil
 			}
+			ctx = protectedShellContext(ctx, permissionService, call.ID)
 			result, err := service.RestartTask(ctx, params.TaskID)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil

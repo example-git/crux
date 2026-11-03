@@ -13,6 +13,7 @@ import (
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/fsext"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/example-git/crux/internal/permission"
 )
 
@@ -43,6 +44,7 @@ type TreeNode struct {
 }
 
 type LSResponseMetadata struct {
+	pathtranslate.PathReferences
 	NumberOfFiles int  `json:"number_of_files"`
 	Truncated     bool `json:"truncated"`
 }
@@ -159,7 +161,13 @@ func ListDirectoryTree(searchPath string, params LSParams, lsConfig config.ToolL
 	if depth > 0 {
 		output = fmt.Sprintf("The directory tree is shown up to a depth of %d. Use a higher depth and a specific path to see more levels.\n", cmp.Or(params.Depth, depth))
 	}
-	return output + "\n" + printTree(tree, searchPath), metadata, nil
+	rendered, references := printTree(tree, searchPath)
+	for index := range references {
+		references[index].Start += len(output) + 1
+		references[index].End += len(output) + 1
+	}
+	metadata.Paths = references
+	return output + "\n" + rendered, metadata, nil
 }
 
 func createFileTree(sortedPaths []string, rootPath string) []*TreeNode {
@@ -226,8 +234,9 @@ func createFileTree(sortedPaths []string, rootPath string) []*TreeNode {
 	return root
 }
 
-func printTree(tree []*TreeNode, rootPath string) string {
+func printTree(tree []*TreeNode, rootPath string) (string, []pathtranslate.PathReference) {
 	var result strings.Builder
+	references := []pathtranslate.PathReference{{Start: 2, End: 2 + len(filepath.ToSlash(rootPath)), Path: rootPath}}
 
 	result.WriteString("- ")
 	result.WriteString(filepath.ToSlash(rootPath))
@@ -237,13 +246,13 @@ func printTree(tree []*TreeNode, rootPath string) string {
 	result.WriteByte('\n')
 
 	for _, node := range tree {
-		printNode(&result, node, 1)
+		printNode(&result, node, 1, rootPath, &references)
 	}
 
-	return result.String()
+	return result.String(), references
 }
 
-func printNode(builder *strings.Builder, node *TreeNode, level int) {
+func printNode(builder *strings.Builder, node *TreeNode, level int, rootPath string, references *[]pathtranslate.PathReference) {
 	indent := strings.Repeat("  ", level)
 
 	nodeName := node.Name
@@ -251,11 +260,12 @@ func printNode(builder *strings.Builder, node *TreeNode, level int) {
 		nodeName = nodeName + "/"
 	}
 
+	*references = append(*references, pathtranslate.PathReference{Start: builder.Len() + len(indent) + 2, End: builder.Len() + len(indent) + 2 + len(node.Name), Path: filepath.Join(rootPath, node.Path), Base: true})
 	fmt.Fprintf(builder, "%s- %s\n", indent, nodeName)
 
 	if node.Type == NodeTypeDirectory && len(node.Children) > 0 {
 		for _, child := range node.Children {
-			printNode(builder, child, level+1)
+			printNode(builder, child, level+1, rootPath, references)
 		}
 	}
 }

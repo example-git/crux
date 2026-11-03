@@ -21,6 +21,21 @@ func (b *Backend) SetSessionModels(ctx context.Context, workspaceID, sessionID s
 	return ws.SetSessionModels(ctx, sessionID, revision, models)
 }
 
+func (b *Backend) SetSessionInstructions(ctx context.Context, workspaceID, sessionID string, instructions session.Instructions) (session.Session, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return session.Session{}, err
+	}
+	if _, err := ws.Sessions.Get(ctx, sessionID); err != nil {
+		return session.Session{}, err
+	}
+	service, ok := ws.Sessions.(session.InstructionService)
+	if !ok {
+		return session.Session{}, errors.New("session instruction editing is unavailable")
+	}
+	return service.SetInstructions(ctx, sessionID, instructions)
+}
+
 type sessionActiveWriterError struct {
 	id string
 }

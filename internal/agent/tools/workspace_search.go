@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/example-git/crux/internal/permission"
 )
 
@@ -49,6 +50,7 @@ type SearchParams struct {
 }
 
 type SearchResponseMetadata struct {
+	pathtranslate.PathReferences
 	Mode            string `json:"mode"`
 	NumberOfFiles   int    `json:"number_of_files,omitempty"`
 	NumberOfMatches int    `json:"number_of_matches,omitempty"`
@@ -111,11 +113,17 @@ func searchFilePaths(ctx context.Context, params SearchParams, searchPath string
 	}
 
 	var output string
+	var references []pathtranslate.PathReference
 	if len(files) == 0 {
 		output = "No files found"
 	} else {
 		normalizeFilePaths(files)
 		output = strings.Join(files, "\n")
+		offset := 0
+		for _, path := range files {
+			references = append(references, pathtranslate.PathReference{Start: offset, End: offset + len(path), Path: path})
+			offset += len(path) + 1
+		}
 		if truncated {
 			output += "\n\n(Results are truncated. Consider using a more specific path or pattern.)"
 		}
@@ -124,9 +132,10 @@ func searchFilePaths(ctx context.Context, params SearchParams, searchPath string
 	return fantasy.WithResponseMetadata(
 		fantasy.NewTextResponse(output),
 		SearchResponseMetadata{
-			Mode:          SearchModeFiles,
-			NumberOfFiles: len(files),
-			Truncated:     truncated,
+			PathReferences: pathtranslate.PathReferences{Paths: references},
+			Mode:           SearchModeFiles,
+			NumberOfFiles:  len(files),
+			Truncated:      truncated,
 		},
 	), nil
 }
@@ -143,6 +152,7 @@ func searchFileContents(ctx context.Context, params SearchParams, searchPath str
 	}
 
 	var output strings.Builder
+	var references []pathtranslate.PathReference
 	if len(matches) == 0 {
 		output.WriteString("No files found")
 	} else {
@@ -155,7 +165,9 @@ func searchFileContents(ctx context.Context, params SearchParams, searchPath str
 					output.WriteString("\n")
 				}
 				currentFile = match.path
-				fmt.Fprintf(&output, "%s:\n", filepath.ToSlash(match.path))
+				path := filepath.ToSlash(match.path)
+				references = append(references, pathtranslate.PathReference{Start: output.Len(), End: output.Len() + len(path), Path: path})
+				fmt.Fprintf(&output, "%s:\n", path)
 			}
 			if match.lineNum > 0 {
 				lineText := match.lineText
@@ -168,6 +180,7 @@ func searchFileContents(ctx context.Context, params SearchParams, searchPath str
 					fmt.Fprintf(&output, "  Line %d: %s\n", match.lineNum, lineText)
 				}
 			} else {
+				references = append(references, pathtranslate.PathReference{Start: output.Len() + 2, End: output.Len() + 2 + len(match.path), Path: match.path})
 				fmt.Fprintf(&output, "  %s\n", match.path)
 			}
 		}
@@ -180,6 +193,7 @@ func searchFileContents(ctx context.Context, params SearchParams, searchPath str
 	return fantasy.WithResponseMetadata(
 		fantasy.NewTextResponse(output.String()),
 		SearchResponseMetadata{
+			PathReferences:  pathtranslate.PathReferences{Paths: references},
 			Mode:            SearchModeContent,
 			NumberOfMatches: len(matches),
 			Truncated:       truncated,

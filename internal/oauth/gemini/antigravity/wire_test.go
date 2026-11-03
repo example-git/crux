@@ -136,8 +136,8 @@ func TestThoughtSignaturePropagation(t *testing.T) {
 	if !thought.Thought || thought.ThoughtSignature != "sig-1" {
 		t.Errorf("thinking part = %+v, want thought with sig-1", thought)
 	}
-	if thought.Text != "" {
-		t.Errorf("signed thinking part echoed text %q, want signature-only", thought.Text)
+	if thought.Text != "thinking..." {
+		t.Errorf("signed thinking text = %q, want original text", thought.Text)
 	}
 	if got := assistant.Parts[1].ThoughtSignature; got != "sig-1" {
 		t.Errorf("functionCall signature = %q, want sig-1", got)

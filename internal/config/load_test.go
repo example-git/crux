@@ -2796,6 +2796,45 @@ func TestConfig_LoadFromBytes_Env(t *testing.T) {
 	require.Equal(t, "us-west-2", loadedConfig.Env["AWS_REGION"])
 }
 
+func TestConfig_LoadFromBytes_MCPCollections(t *testing.T) {
+	base := []byte(`{"mcp":{"example":{"type":"stdio","command":"server","args":["old"],"env":{"KEEP":"old","REMOVE":"old"},"headers":{"Old":"value"},"enabled_tools":["old"],"disabled_tools":["blocked"]}},"env":{"KEEP":"base"}}`)
+	for _, test := range []struct {
+		name  string
+		layer string
+		args  []string
+		env   map[string]string
+	}{
+		{"replace", `{"mcp":{"example":{"args":["new"],"env":{"KEEP":"new"},"headers":{},"enabled_tools":[],"disabled_tools":[]}}}`, []string{"new"}, map[string]string{"KEEP": "new"}},
+		{"clear", `{"mcp":{"example":{"args":[],"env":{},"headers":{},"enabled_tools":[],"disabled_tools":[]}}}`, []string{}, map[string]string{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			loaded, err := loadFromBytes([][]byte{base, []byte(test.layer)})
+			require.NoError(t, err)
+			server := loaded.MCP["example"]
+			require.Equal(t, "server", server.Command)
+			require.Equal(t, test.args, server.Args)
+			require.Equal(t, test.env, server.Env)
+			require.Empty(t, server.Headers)
+			require.Empty(t, server.EnabledTools)
+			require.Empty(t, server.DisabledTools)
+			require.Equal(t, "base", loaded.Env["KEEP"])
+			layers := authenticationLayers{
+				order:  []string{"global", "workspace"},
+				values: map[string][]byte{"global": base, "workspace": []byte(test.layer)},
+			}
+			authenticated, err := layers.mergedReplacements(nil)
+			require.NoError(t, err)
+			require.Equal(t, loaded.MCP, authenticated.MCP)
+		})
+	}
+	loaded, err := loadFromBytes([][]byte{base, []byte(`{"mcp":{"example":{"disabled":true}}}`)})
+	require.NoError(t, err)
+	require.Equal(t, []string{"old"}, loaded.MCP["example"].Args)
+	require.Equal(t, map[string]string{"KEEP": "old", "REMOVE": "old"}, loaded.MCP["example"].Env)
+	require.Equal(t, []string{"old"}, loaded.MCP["example"].EnabledTools)
+	require.Equal(t, []string{"blocked"}, loaded.MCP["example"].DisabledTools)
+}
+
 func TestConfig_LoadFromBytes_EnvMerge(t *testing.T) {
 	data1 := []byte(`{"env": {"AWS_PROFILE": "first", "AWS_REGION": "us-east-1"}}`)
 	data2 := []byte(`{"env": {"AWS_PROFILE": "second"}}`)

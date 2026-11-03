@@ -86,11 +86,11 @@ func (c *controllerV1) handleWorkspaceRuntimeControl(w http.ResponseWriter, r *h
 	var state config.RuntimeControlState
 	switch {
 	case !mutate:
-		state, err = c.backend.RuntimeControlState(r.Context(), r.PathValue("id"), *request.Scope, request.Target)
+		state, err = c.workspaceSettings().RuntimeControlState(r.Context(), r.PathValue("id"), *request.Scope, request.Target)
 	case set:
-		state, err = c.backend.SetRuntimeControl(r.Context(), r.PathValue("id"), *request.Scope, request.Target, request.Value)
+		state, err = c.workspaceSettings().SetRuntimeControl(r.Context(), r.PathValue("id"), *request.Scope, request.Target, request.Value)
 	default:
-		state, err = c.backend.RemoveRuntimeControl(r.Context(), r.PathValue("id"), *request.Scope, request.Target)
+		state, err = c.workspaceSettings().RemoveRuntimeControl(r.Context(), r.PathValue("id"), *request.Scope, request.Target)
 	}
 	if err != nil {
 		switch {

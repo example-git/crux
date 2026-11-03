@@ -45,6 +45,7 @@ import (
 	"github.com/example-git/crux/internal/oauth/codex"
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
 	"github.com/example-git/crux/internal/oauth/gemini"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/projects"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
@@ -59,6 +60,7 @@ import (
 	"github.com/example-git/crux/internal/session"
 	"github.com/example-git/crux/internal/shell"
 	"github.com/example-git/crux/internal/skills"
+	"github.com/example-git/crux/internal/subagentscript"
 	"github.com/google/uuid"
 	openaisdk "github.com/openai/openai-go/v3/option"
 	"github.com/qjebbs/go-jsons"
@@ -140,6 +142,12 @@ type Coordinator interface {
 }
 
 type coordinator struct {
+	scriptMu                 sync.Mutex
+	scriptBridges            map[string]*subagentscript.Bridge
+	scriptClosed             bool
+	pathTranslations         *pathtranslate.Store
+	pathTranslationMu        sync.Mutex
+	pathTranslationPolicies  map[pathTranslationChain]string
 	trafficContext           context.Context
 	cfg                      *config.ConfigStore
 	sessions                 session.Service
@@ -209,6 +217,7 @@ type coordinator struct {
 // struct keeps the constructor self-documenting and avoids a long
 // positional parameter list.
 type CoordinatorOptions struct {
+	PathTranslations *pathtranslate.Store
 	Config           *config.ConfigStore
 	Sessions         session.Service
 	Messages         message.Service
@@ -261,6 +270,7 @@ func NewCoordinator(ctx context.Context, opts CoordinatorOptions) (Coordinator, 
 	skillTracker := skills.NewTracker(activeSkills)
 
 	c := &coordinator{
+		pathTranslations:       opts.PathTranslations,
 		trafficContext:         ctx,
 		cfg:                    opts.Config,
 		sessions:               opts.Sessions,
@@ -722,39 +732,8 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, internal boo
 			}
 		}
 	}
-	runtime, err := c.runtimeForSession(ctx, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	runtime, refreshErr := c.refreshAdmittedRuntime(ctx, runtime)
-	if refreshErr != nil {
-		if runtime.Snapshot.IsClientOwned() {
-			return nil, refreshErr
-		}
-		slog.Error("Failed to refresh OAuth2 token. Proceeding with existing token.", "error", refreshErr)
-	}
-	ctx = context.WithValue(ctx, sessionRuntimeKey{}, runtime.Snapshot)
-	model := runtime.LargeModel
-	maxTokens := model.CatalogModel.DefaultMaxTokens
-	if model.ModelCfg.MaxTokens != 0 {
-		maxTokens = model.ModelCfg.MaxTokens
-	}
-
-	cfg := runtime.Snapshot.Config()
-	providerCfg, ok := cfg.Providers.Get(model.ModelCfg.Provider)
-	if !ok {
-		return nil, errModelProviderNotConfigured
-	}
-	providerCfg.ID = model.ModelCfg.Provider
-
-	registration, registered := runtime.Snapshot.ProviderBehaviorRegistration(model.ModelCfg.Provider, providerCfg)
-	mergedOptions, temp, topP, topK, freqPenalty, presPenalty, err := mergeCallOptions(model, providerCfg, registration)
-	if err != nil {
-		return nil, fmt.Errorf("provider %s options: %w", model.ModelCfg.Provider, err)
-	}
-	mergedOptions = c.oauthReasoningOptionsForRegistration(model.ModelCfg.Provider, model.ModelCfg.Model, registration, registered, mergedOptions)
-	mergedOptions = applyRegisteredRuntimeOptions(model.ModelCfg.Model, turnRuntimeOptions(modelAnalysisContext(ctx, model.ModelCfg), cfg.Options), registration, registered, mergedOptions)
-	mergedOptions, err = applyTurnProviderOperation(ctx, model.ModelCfg.Provider, mergedOptions)
+	call := SessionAgentCall{SessionID: sessionID}
+	ctx, err := c.bindSessionRuntime(ctx, &call)
 	if err != nil {
 		return nil, err
 	}
@@ -797,100 +776,33 @@ func (c *coordinator) run(ctx context.Context, accept *AcceptedRun, internal boo
 			memoryInstructions = ""
 		}
 	}
-	prepareRuntime := func(stepContext context.Context, next InstalledRuntime) (fantasy.StepModelSettings, error) {
-		nextModel := next.LargeModel
-		nextConfig := next.Snapshot.Config()
-		nextProvider, ok := nextConfig.Providers.Get(nextModel.ModelCfg.Provider)
-		if !ok {
-			return fantasy.StepModelSettings{}, errModelProviderNotConfigured
-		}
-		nextProvider.ID = nextModel.ModelCfg.Provider
-		nextRegistration, nextRegistered := next.Snapshot.ProviderBehaviorRegistration(nextModel.ModelCfg.Provider, nextProvider)
-		nextOptions, nextTemp, nextTopP, nextTopK, nextFreq, nextPres, err := mergeCallOptions(nextModel, nextProvider, nextRegistration)
-		if err != nil {
-			return fantasy.StepModelSettings{}, err
-		}
-		nextOptions = c.oauthReasoningOptionsForRegistration(nextModel.ModelCfg.Provider, nextModel.ModelCfg.Model, nextRegistration, nextRegistered, nextOptions)
-		nextOptions = applyRegisteredRuntimeOptions(nextModel.ModelCfg.Model, turnRuntimeOptions(modelAnalysisContext(ctx, nextModel.ModelCfg), nextConfig.Options), nextRegistration, nextRegistered, nextOptions)
-		nextOptions, err = applyTurnProviderOperation(ctx, nextModel.ModelCfg.Provider, nextOptions)
-		if err != nil {
-			return fantasy.StepModelSettings{}, err
-		}
-		runtime, model, cfg = next, nextModel, nextConfig
-		providerCfg, registration, registered = nextProvider, nextRegistration, nextRegistered
-		mergedOptions, temp, topP, topK, freqPenalty, presPenalty = nextOptions, nextTemp, nextTopP, nextTopK, nextFreq, nextPres
-		maxTokens = model.CatalogModel.DefaultMaxTokens
-		if model.ModelCfg.MaxTokens != 0 {
-			maxTokens = model.ModelCfg.MaxTokens
-		}
-		var outputLimit *int64
-		if maxTokens > 0 {
-			limit := maxTokens
-			outputLimit = &limit
-		}
-		return fantasy.StepModelSettings{
-			MaxOutputTokens: outputLimit, ProviderOptions: mergedOptions,
-			Temperature: temp, TopP: topP, TopK: topK,
-			FrequencyPenalty: freqPenalty, PresencePenalty: presPenalty,
-			MaxRetries:    modelMaxRetries(model),
-			OnAuthRefresh: c.makeAuthRefreshCallback(runtime.Snapshot, providerCfg),
-		}, nil
-	}
-	run := func() (*fantasy.AgentResult, error) {
-		return c.currentAgent.Run(ctx, SessionAgentCall{
-			PrepareRuntime: prepareRuntime,
-			RuntimeProvider: func(stepContext context.Context) (InstalledRuntime, error) {
-				current, err := c.sessions.Get(stepContext, sessionID)
-				if err != nil {
-					return InstalledRuntime{}, err
-				}
-				if current.ModelRevision == runtime.ModelRevision {
-					return runtime, nil
-				}
-				return c.runtimeForSession(stepContext, sessionID)
-			},
-			SessionID:                 sessionID,
-			SubmissionID:              submissionID,
-			DeliveryMode:              DeliveryModeFromContext(ctx),
-			RunID:                     runID,
-			MessageRunID:              MessageRunIDFromContext(ctx),
-			UserMessageID:             UserMessageIDFromContext(ctx),
-			AssistantItemID:           AssistantItemIDFromContext(ctx),
-			Prompt:                    prompt,
-			CodebaseInstructions:      codebaseInstructions,
-			MemoryInstructions:        memoryInstructions,
-			TurnInstructions:          TurnInstructionsFromContext(ctx),
-			InstructionIsolation:      instructionIsolation,
-			InstructionIsolationTools: InstructionIsolationToolsFromContext(ctx),
-			Attachments:               attachments,
-			InputParts:                InputPartsFromContext(ctx),
-			InputMaterializer:         InputMaterializerFromContext(ctx),
-			MaxOutputTokens:           maxTokens,
-			ProviderOptions:           mergedOptions,
-			Temperature:               temp,
-			TopP:                      topP,
-			TopK:                      topK,
-			FrequencyPenalty:          freqPenalty,
-			PresencePenalty:           presPenalty,
-			OnComplete:                onComplete,
-			OnAdmitted:                AdmissionCallbackFromContext(ctx),
-			OnProviderWarning: func(w fantasy.CallWarning) {
-				c.disableOAuthReasoningForRegistration(model.ModelCfg.Provider, model.ModelCfg.Model, registration, registered, w.Message)
-			},
-			Accepted:      accept,
-			Internal:      internal,
-			OnAuthRefresh: c.makeAuthRefreshCallback(runtime.Snapshot, providerCfg),
-			runtime:       &runtime,
-		})
-	}
+	call.SubmissionID = submissionID
+	call.DeliveryMode = DeliveryModeFromContext(ctx)
+	call.RunID = runID
+	call.MessageRunID = MessageRunIDFromContext(ctx)
+	call.UserMessageID = UserMessageIDFromContext(ctx)
+	call.AssistantItemID = AssistantItemIDFromContext(ctx)
+	call.Prompt = prompt
+	call.CodebaseInstructions = codebaseInstructions
+	call.MemoryInstructions = memoryInstructions
+	call.TurnInstructions = TurnInstructionsFromContext(ctx)
+	call.InstructionIsolation = instructionIsolation
+	call.InstructionIsolationTools = InstructionIsolationToolsFromContext(ctx)
+	call.Attachments = attachments
+	call.InputParts = InputPartsFromContext(ctx)
+	call.InputMaterializer = InputMaterializerFromContext(ctx)
+	call.OnComplete = onComplete
+	call.OnAdmitted = AdmissionCallbackFromContext(ctx)
+	call.Accepted = accept
+	call.Internal = internal
 	c.skillsMu.RLock()
 	turnSkills := append([]*skills.Skill(nil), c.activeSkills...)
 	turnTracker := c.skillTracker
 	c.skillsMu.RUnlock()
 	beforeLoaded := turnTracker.LoadedNames()
-	result, originalErr := run()
+	result, originalErr := c.currentAgent.Run(ctx, call)
 	if originalErr != nil {
-		c.disableOAuthReasoningForRegistration(model.ModelCfg.Provider, model.ModelCfg.Model, registration, registered, originalErr.Error())
+		call.OnProviderWarning(fantasy.CallWarning{Message: originalErr.Error()})
 	}
 	logTurnSkillUsage(sessionID, prompt, turnSkills, turnTracker, beforeLoaded)
 	if originalErr == nil && !instructionIsolation {
@@ -1432,7 +1344,7 @@ func resolveSubagentTools(agent config.Agent, disabled []string) []string {
 	}
 	return slices.DeleteFunc(allowed, func(name string) bool {
 		switch name {
-		case AgentToolName,
+		case AgentToolName, SubagentScriptToolName,
 			tools.AgenticFetchToolName,
 			tools.CodebaseSearchToolName,
 			tools.ImagegenToolName,
@@ -1486,6 +1398,9 @@ func (c *coordinator) buildToolsForSkills(ctx context.Context, agent config.Agen
 		}
 		allTools = append(allTools, agentTool)
 	}
+	if !isSubAgent && slices.Contains(agent.AllowedTools, SubagentScriptToolName) {
+		allTools = append(allTools, c.subagentScriptTool())
+	}
 
 	if !isSubAgent && slices.Contains(agent.AllowedTools, tools.AgenticFetchToolName) {
 		agenticFetchTool, err := c.agenticFetchTool(ctx, nil)
@@ -1526,7 +1441,7 @@ func (c *coordinator) buildToolsForSkills(ctx context.Context, agent config.Agen
 		tools.NewTaskListTool(c),
 		tools.NewTaskOutputTool(c),
 		tools.NewTaskStopTool(c),
-		tools.NewTaskRestartTool(c),
+		tools.NewTaskRestartTool(c, c.permissions),
 		tools.NewTaskContinueTool(c),
 		tools.NewDownloadTool(c.permissions, c.cfg.WorkingDir(), nil),
 		tools.NewEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
@@ -1612,6 +1527,9 @@ func (c *coordinator) buildToolsForSkills(ctx context.Context, agent config.Agen
 	var filteredTools []fantasy.AgentTool
 	for _, tool := range allTools {
 		if slices.Contains(agent.AllowedTools, tool.Info().Name) {
+			if tool.Info().Name == tools.BashToolName || tool.Info().Name == tools.ScriptToolName {
+				tool = sessionEnvironmentTool{AgentTool: tool, coordinator: c}
+			}
 			filteredTools = append(filteredTools, tool)
 		}
 	}
@@ -1782,7 +1700,7 @@ func (c *coordinator) buildAdmittedModel(ctx context.Context, selected config.Se
 	if registered && registration.Construction == providerregistry.ConstructionOpenAIResponses {
 		model = c.bindModelAuthentication(snapshot, model, providerCfg)
 	}
-	return model, nil
+	return c.bindPathTranslation(model), nil
 }
 
 func manifestOperationRetry(registration providerregistry.Registration, registered bool) *manifest.RetryPolicy {
@@ -2448,6 +2366,7 @@ func (c *coordinator) CancelAll() {
 }
 
 func (c *coordinator) CloseContext(ctx context.Context) {
+	c.closeScriptBridges()
 	c.stopReadiness()
 	if c.goalScheduler != nil {
 		c.goalScheduler.stop(ctx)

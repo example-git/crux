@@ -139,8 +139,6 @@ type wireError struct {
 // toWirePrompt converts a fantasy prompt into Antigravity wire contents,
 // matching the shape the endpoint accepts:
 //
-//   - assistant thinking parts with signatures are echoed back as
-//     {thought: true, thoughtSignature} (text omitted);
 //   - functionCall parts carry the signature bound to that tool call, or the
 //     last signature seen in the turn;
 //   - each tool result becomes its own model-role functionResponse turn,
@@ -198,6 +196,7 @@ func toWirePrompt(prompt fantasy.Prompt) (system *wireContent, contents []wireCo
 			}
 		case fantasy.MessageRoleAssistant:
 			var parts []wirePart
+			var thinkingParts []wirePart
 			var pendingSig string
 			for _, part := range msg.Content {
 				switch part.GetType() {
@@ -216,9 +215,8 @@ func toWirePrompt(prompt fantasy.Prompt) (system *wireContent, contents []wireCo
 						if meta.ToolID != "" {
 							toolSig[meta.ToolID] = meta.Signature
 						}
-						// Signed thinking is echoed back signature-only; the
-						// endpoint validates the signature, not the text.
-						parts = append(parts, wirePart{
+						thinkingParts = append(thinkingParts, wirePart{
+							Text:             reasoning.Text,
 							Thought:          true,
 							ThoughtSignature: meta.Signature,
 						})
@@ -267,8 +265,8 @@ func toWirePrompt(prompt fantasy.Prompt) (system *wireContent, contents []wireCo
 					})
 				}
 			}
-			if len(parts) > 0 {
-				contents = append(contents, wireContent{Role: "model", Parts: parts})
+			if len(thinkingParts) > 0 || len(parts) > 0 {
+				contents = append(contents, wireContent{Role: "model", Parts: append(thinkingParts, parts...)})
 			}
 		case fantasy.MessageRoleTool:
 			// Antigravity quirk: functionResponse goes in its own model-role

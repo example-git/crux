@@ -33,11 +33,12 @@ type RecordState struct {
 }
 
 type ShellRecord struct {
-	OutputID            string `json:"output_id,omitempty"`
-	Command             string `json:"command"`
-	WorkingDirectory    string `json:"working_directory"`
-	Backgrounded        bool   `json:"backgrounded,omitempty"`
-	NotificationEmitted bool   `json:"notification_emitted,omitempty"`
+	OutputPaths         []string `json:"output_paths,omitempty"`
+	OutputID            string   `json:"output_id,omitempty"`
+	Command             string   `json:"command"`
+	WorkingDirectory    string   `json:"working_directory"`
+	Backgrounded        bool     `json:"backgrounded,omitempty"`
+	NotificationEmitted bool     `json:"notification_emitted,omitempty"`
 }
 
 type AgentRecord struct {

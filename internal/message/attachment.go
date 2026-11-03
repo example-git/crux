@@ -6,10 +6,11 @@ import (
 )
 
 type Attachment struct {
-	FilePath string
-	FileName string
-	MimeType string
-	Content  []byte
+	SourcePaths []string `json:"source_paths,omitempty"`
+	FilePath    string
+	FileName    string
+	MimeType    string
+	Content     []byte
 }
 
 func (a Attachment) IsText() bool     { return strings.HasPrefix(a.MimeType, "text/") }

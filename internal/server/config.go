@@ -52,7 +52,7 @@ func (c *controllerV1) handlePostWorkspaceConfigSet(w http.ResponseWriter, r *ht
 			jsonError(w, http.StatusBadRequest, "provider disabled state must be boolean")
 			return
 		}
-		if err := c.backend.SetProviderDisabled(id, req.Scope, *req.Owner, disabled); err != nil {
+		if err := c.workspaceSettings().SetProviderDisabled(id, req.Scope, *req.Owner, disabled); err != nil {
 			c.handleError(w, r, err)
 			return
 		}
@@ -63,7 +63,7 @@ func (c *controllerV1) handlePostWorkspaceConfigSet(w http.ResponseWriter, r *ht
 		jsonError(w, http.StatusBadRequest, "initiating owner is not valid for this config field")
 		return
 	}
-	if err := c.backend.SetConfigField(id, req.Scope, req.Key, req.Value); err != nil {
+	if err := c.workspaceSettings().SetConfigField(id, req.Scope, req.Key, req.Value); err != nil {
 		c.handleError(w, r, err)
 		return
 	}
@@ -92,7 +92,7 @@ func (c *controllerV1) handlePostWorkspaceConfigRemove(w http.ResponseWriter, r 
 		return
 	}
 
-	if err := c.backend.RemoveConfigField(id, req.Scope, req.Key); err != nil {
+	if err := c.workspaceSettings().RemoveConfigField(id, req.Scope, req.Key); err != nil {
 		c.handleError(w, r, err)
 		return
 	}
@@ -126,7 +126,7 @@ func (c *controllerV1) handlePostWorkspaceConfigModel(w http.ResponseWriter, r *
 		return
 	}
 	var state config.AgentModelState
-	state, err := c.backend.UpdatePreferredModel(id, req.Scope, req.ModelType, req.Model, req.Owner)
+	state, err := c.workspaceSettings().UpdatePreferredModel(id, req.Scope, req.ModelType, req.Model, req.Owner)
 	if err != nil {
 		c.handleError(w, r, err)
 		return
@@ -157,7 +157,7 @@ func (c *controllerV1) handlePostWorkspaceConfigCompact(w http.ResponseWriter, r
 		return
 	}
 
-	if err := c.backend.SetCompactMode(id, req.Scope, req.Enabled); err != nil {
+	if err := c.workspaceSettings().SetCompactMode(id, req.Scope, req.Enabled); err != nil {
 		c.handleError(w, r, err)
 		return
 	}
@@ -191,7 +191,7 @@ func (c *controllerV1) handlePostWorkspaceConfigProviderKey(w http.ResponseWrite
 			jsonError(w, http.StatusBadRequest, "provider credential removal requires a matching owner")
 			return
 		}
-		if err := c.backend.RemoveProviderCredentials(id, req.Scope, *req.Owner); err != nil {
+		if err := c.workspaceSettings().RemoveProviderCredentials(id, req.Scope, *req.Owner); err != nil {
 			c.handleError(w, r, err)
 			return
 		}
@@ -206,7 +206,7 @@ func (c *controllerV1) handlePostWorkspaceConfigProviderKey(w http.ResponseWrite
 		return
 	}
 
-	if err := c.backend.SetProviderAPIKey(id, req.Scope, req.ProviderID, apiKey); err != nil {
+	if err := c.workspaceSettings().SetProviderAPIKey(id, req.Scope, req.ProviderID, apiKey); err != nil {
 		c.handleError(w, r, err)
 		return
 	}
@@ -243,7 +243,7 @@ func (c *controllerV1) handlePostWorkspaceConfigImportCopilot(w http.ResponseWri
 		jsonError(w, http.StatusBadRequest, "Copilot import requires its initiating owner")
 		return
 	}
-	found, err := c.backend.ImportCopilot(r.Context(), r.PathValue("id"), request.Owner)
+	found, err := c.workspaceSettings().ImportCopilot(r.Context(), r.PathValue("id"), request.Owner)
 	if err != nil {
 		if errors.Is(err, config.ErrClientRuntimeManaged) {
 			c.handleError(w, r, err)
@@ -281,7 +281,7 @@ func (c *controllerV1) handlePostWorkspaceConfigRefreshOAuth(w http.ResponseWrit
 		return
 	}
 
-	if err := c.backend.RefreshOAuthToken(r.Context(), id, req.Scope, req.Owner); err != nil {
+	if err := c.workspaceSettings().RefreshOAuthToken(r.Context(), id, req.Scope, req.Owner); err != nil {
 		c.handleError(w, r, err)
 		return
 	}

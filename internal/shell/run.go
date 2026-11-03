@@ -87,7 +87,7 @@ func Run(ctx context.Context, opts RunOptions) (err error) {
 		return fmt.Errorf("could not run command: %w", err)
 	}
 
-	return runner.Run(ctx, line)
+	return runner.Run(bindRedirectCapture(ctx, stdout), line)
 }
 
 // CaptureResult holds the combined output and exit code from a
@@ -183,13 +183,14 @@ func RunAndCapturePTY(ctx context.Context, opts RunOptions) (CaptureResult, erro
 // stateful [Shell] so the two surfaces cannot drift.
 func newRunner(cwd string, env []string, stdin io.Reader, stdout, stderr io.Writer, blockFuncs []BlockFunc) (*interp.Runner, error) {
 	env = withNonInteractiveEnv(env)
-	return interp.New(
+	options := []interp.RunnerOption{
 		interp.StdIO(stdin, stdout, stderr),
 		interp.Interactive(false),
 		interp.Env(expand.ListEnviron(env...)),
 		interp.Dir(cwd),
 		execHandlerOption(blockFuncs),
-	)
+	}
+	return interp.New(append(options, accessFilterOptions()...)...)
 }
 
 // execHandlerOption returns an interp.RunnerOption that installs the
@@ -330,6 +331,11 @@ func blockHandler(blockFuncs []BlockFunc) execMiddleware {
 		return func(ctx context.Context, args []string) error {
 			if len(args) == 0 {
 				return next(ctx, args)
+			}
+			if enabled, _ := ctx.Value(redirectCaptureKey{}).(bool); enabled {
+				if err := rejectNestedOutputRedirects(args); err != nil {
+					return err
+				}
 			}
 			for _, blockFunc := range blockFuncs {
 				if blockFunc(args) {

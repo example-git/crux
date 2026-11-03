@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/session"
 )
 
 // Session represents a session in the proto layer.
@@ -41,6 +42,8 @@ type Session struct {
 	Provider            string                `json:"provider,omitempty"`
 	Models              json.RawMessage       `json:"models,omitempty" swaggertype:"object"`
 	ModelRevision       int64                 `json:"model_revision,omitempty"`
+	Instructions        session.Instructions  `json:"instructions"`
+	InstructionUpdate   *session.Instructions `json:"instruction_update,omitempty"`
 	ModelSelection      *SessionModelsRequest `json:"model_selection,omitempty"`
 	CreatedAt           int64                 `json:"created_at"`
 	UpdatedAt           int64                 `json:"updated_at"`

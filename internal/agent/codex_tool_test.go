@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -13,6 +14,7 @@ import (
 	fantasy "github.com/example-git/crux/foundation"
 	"github.com/example-git/crux/internal/config"
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/stretchr/testify/require"
 )
 
@@ -152,4 +154,23 @@ func TestCodexBoundedToolsOnlyWrapsCanonicalCodex(t *testing.T) {
 		nonCodexTools := codexBoundedTools(tools, model)
 		require.Same(t, tools[0], nonCodexTools[0])
 	}
+}
+
+func TestCodexBoundedToolPreservesPartialPathReferences(t *testing.T) {
+	content := strings.Repeat("secret path 日本/", 3000)
+	response := fantasy.WithResponseMetadata(fantasy.NewTextResponse(content), pathtranslate.PathReferences{Paths: []pathtranslate.PathReference{{Start: 0, End: len(content), Path: "/private/library/secret path 日本.txt"}}})
+	bounded := &codexBoundedTool{tool: &codexTestTool{response: response}, modelID: "gpt-5.2"}
+	result, err := bounded.Run(t.Context(), fantasy.ToolCall{Name: "test"})
+	require.NoError(t, err)
+	require.Equal(t, codexresponses.TruncateToolOutput("gpt-5.2", content), result.Content)
+	var references pathtranslate.PathReferences
+	require.NoError(t, json.Unmarshal([]byte(result.Metadata), &references))
+	require.Len(t, references.Paths, 2)
+	require.Zero(t, references.Paths[0].Start)
+	require.Equal(t, len(result.Content), references.Paths[1].End)
+	require.Equal(t, references.Paths[0].Path, references.Paths[1].Path)
+	contentAgain, metadataAgain, err := boundedToolContent("gpt-5.2", result.Content, result.Metadata)
+	require.NoError(t, err)
+	require.Equal(t, result.Content, contentAgain)
+	require.Equal(t, result.Metadata, metadataAgain)
 }

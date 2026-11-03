@@ -2,6 +2,9 @@ package agent
 
 import (
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	fantasy "github.com/example-git/crux/foundation"
@@ -9,6 +12,7 @@ import (
 	"github.com/example-git/crux/internal/config"
 	"github.com/example-git/crux/internal/message"
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
+	"github.com/example-git/crux/internal/oauth/gemini/antigravity"
 	"github.com/example-git/crux/internal/session"
 	"github.com/stretchr/testify/require"
 )
@@ -416,6 +420,79 @@ func TestUpdateSessionUsageCountsCachedInputOnce(t *testing.T) {
 
 	require.Equal(t, int64(100_000), currentSession.PromptTokens)
 	require.InDelta(t, 0.36, currentSession.Cost, 0.000001)
+}
+
+func TestAntigravityStreamContextOccupancy(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name          string
+		promptTokens  int64
+		cachedTokens  int64
+		contextTokens int64
+		compact       bool
+	}{
+		{name: "below threshold", promptTokens: 100000, cachedTokens: 80000, contextTokens: 103000},
+		{name: "above threshold", promptTokens: 180000, cachedTokens: 160000, contextTokens: 183000, compact: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			metadata := fmt.Sprintf(`{"promptTokenCount":%d,"cachedContentTokenCount":%d,"candidatesTokenCount":1000,"thoughtsTokenCount":2000,"totalTokenCount":%d}`,
+				testCase.promptTokens, testCase.cachedTokens, testCase.contextTokens)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1internal:streamGenerateContent" {
+					http.NotFound(w, r)
+					return
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":%s}}\n\n", metadata)
+				fmt.Fprintf(w, "data: {\"response\":{\"usageMetadata\":%s}}\n\n", metadata)
+			}))
+			defer server.Close()
+
+			provider, err := antigravity.New(
+				antigravity.WithName("gemini-ag"),
+				antigravity.WithBaseURL(server.URL),
+				antigravity.WithHTTPClient(server.Client()),
+				antigravity.WithUserAgent("test-agent"),
+			)
+			require.NoError(t, err)
+			languageModel, err := provider.LanguageModel(t.Context(), "claude-opus-4-6-thinking")
+			require.NoError(t, err)
+			call := fantasy.Call{Prompt: fantasy.Prompt{fantasy.NewUserMessage("hello")}}
+			stream, err := languageModel.Stream(t.Context(), call)
+			require.NoError(t, err)
+			var step fantasy.StepResult
+			finishes := 0
+			for part := range stream {
+				if part.Type == fantasy.StreamPartTypeError {
+					require.NoError(t, part.Error)
+				}
+				if part.Type == fantasy.StreamPartTypeFinish {
+					step.Usage = part.Usage
+					finishes++
+				}
+			}
+			require.Equal(t, 1, finishes)
+			usage, estimated := fallbackStepUsage(call.Prompt, step)
+			require.False(t, estimated)
+
+			model := Model{
+				Model:        languageModel,
+				ModelCfg:     config.SelectedModel{Provider: "gemini-ag", Model: "claude-opus-4-6-thinking"},
+				CatalogModel: catalog.Model{ContextWindow: 200000},
+				FlatRate:     true,
+			}
+			currentSession := &session.Session{PromptTokens: 999, CompletionTokens: 888, EstimatedUsage: true}
+			(&sessionAgent{}).updateSessionUsage(model, currentSession, usage, nil, estimated)
+			require.Equal(t, testCase.promptTokens, currentSession.PromptTokens)
+			require.EqualValues(t, 3000, currentSession.CompletionTokens)
+			require.Equal(t, testCase.contextTokens, currentSession.ContextTokens())
+			require.False(t, currentSession.ContextEstimated())
+			compact, threshold := shouldAutoCompact(model.CatalogModel.ContextWindow, currentSession.ContextTokens(), 0, false)
+			require.EqualValues(t, 40000, threshold)
+			require.Equal(t, testCase.compact, compact)
+		})
+	}
 }
 
 func TestUpdateSessionUsageUsesAuthoritativeCodexTotalForMalformedCacheUsage(t *testing.T) {

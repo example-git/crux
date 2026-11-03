@@ -50,12 +50,16 @@ func TestToolingInstructionsSelectsProviderNativeProfile(t *testing.T) {
 			}
 			cfg = config.NewTestStoreWithRegistrations(cfg, registrytest.Registrations()...).RuntimeSnapshot().Config()
 
-			instructions, err := toolingInstructions(test.providerID, cfg)
-			if err != nil {
-				t.Fatalf("select native tooling instructions: %v", err)
-			}
-			if instructions != test.expected {
-				t.Fatalf("native tooling instructions for %q did not match provider profile", test.providerID)
+			for _, stage := range []LifecycleStage{LifecycleDefault, LifecycleDraft, LifecycleRevision, LifecycleExecution} {
+				t.Run(string(stage), func(t *testing.T) {
+					instructions, err := lifecycleToolingInstructions(test.providerID, cfg, stage)
+					if err != nil {
+						t.Fatalf("select native tooling instructions: %v", err)
+					}
+					if instructions != test.expected {
+						t.Fatalf("native tooling instructions for %q did not match provider profile", test.providerID)
+					}
+				})
 			}
 		})
 	}
@@ -114,7 +118,7 @@ func TestToolingInstructionsOnlyFiltersCruxSections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("select Crux tooling instructions: %v", err)
 	}
-	if strings.Contains(cruxInstructions, "You predict the next token") {
+	if strings.Contains(cruxInstructions, "You are a token engine:") {
 		t.Fatal("disabled Crux identity section remained in tooling instructions")
 	}
 

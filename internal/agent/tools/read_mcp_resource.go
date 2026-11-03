@@ -5,7 +5,6 @@ import (
 	"context"
 	_ "embed"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	fantasy "github.com/example-git/crux/foundation"
@@ -77,27 +76,16 @@ func NewReadMCPResourceTool(cfg *config.ConfigStore, permissions permission.Serv
 				return fantasy.NewTextResponse(""), nil
 			}
 
-			var textParts []string
-			for _, content := range contents {
-				if content == nil {
-					continue
-				}
-				if content.Text != "" {
-					textParts = append(textParts, content.Text)
-					continue
-				}
-				if len(content.Blob) > 0 {
-					textParts = append(textParts, string(content.Blob))
-					continue
-				}
-				slog.Debug("MCP resource content missing text/blob", "uri", content.URI)
+			result, err := mcp.ResourceResult(contents)
+			if err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}
-
-			if len(textParts) == 0 {
-				return fantasy.NewTextResponse(""), nil
+			if result.Type == "image" {
+				response := fantasy.NewImageResponse(result.Data, result.MediaType)
+				response.Content = result.Content
+				return fantasy.WithResponseMetadata(response, map[string]any{"image_source_paths": result.SourcePaths}), nil
 			}
-
-			return fantasy.NewTextResponse(strings.Join(textParts, "\n")), nil
+			return fantasy.NewTextResponse(result.Content), nil
 		},
 	)
 }

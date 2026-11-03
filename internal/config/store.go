@@ -102,6 +102,7 @@ type ForwardedAccount struct {
 }
 
 type RuntimeSnapshot struct {
+	readOverrides            RuntimeOverrides
 	remoteCodebaseIndexScope string
 	lifetimeStore            *ConfigStore
 	publicationStore         *ConfigStore
@@ -518,6 +519,7 @@ func (s *ConfigStore) runtimeSnapshotLocked(cfg *Config, resolver VariableResolv
 		}
 	}
 	snapshot := RuntimeSnapshot{
+		readOverrides:            cloneRuntimeOverrides(s.overrides),
 		remoteCodebaseIndexScope: s.remoteCodebaseIndexScope,
 		lifetimeStore:            s,
 		nativeIdentities:         capture,

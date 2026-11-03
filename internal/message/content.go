@@ -75,10 +75,11 @@ type UserTurnContext struct {
 }
 
 type TextContent struct {
-	Context          UserTurnContext  `json:"context,omitzero"`
-	Text             string           `json:"text"`
-	TextElements     []any            `json:"text_elements,omitempty"`
-	ProviderMetadata ProviderMetadata `json:"provider_metadata,omitempty"`
+	Context                    UserTurnContext  `json:"context,omitzero"`
+	Text                       string           `json:"text"`
+	TextElements               []any            `json:"text_elements,omitempty"`
+	ProviderMetadata           ProviderMetadata `json:"provider_metadata,omitempty"`
+	PathTranslationFingerprint string           `json:"path_translation_fingerprint,omitempty"`
 }
 
 func (tc TextContent) String() string {
@@ -107,9 +108,10 @@ func (iuc ImageURLContent) String() string {
 func (ImageURLContent) isPart() {}
 
 type BinaryContent struct {
-	Path     string
-	MIMEType string
-	Data     []byte
+	SourcePaths []string `json:"source_paths,omitempty"`
+	Path        string
+	MIMEType    string
+	Data        []byte
 }
 
 func (bc BinaryContent) String(p catalog.ProviderID) string {
@@ -633,6 +635,12 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 			switch content := part.(type) {
 			case TextContent:
 				textPart := fantasy.TextPart{Text: strings.TrimSpace(content.Text)}
+				for _, envelope := range content.ProviderMetadata {
+					if envelope.Scope == ProviderMetadataScopeCompaction {
+						textPart.OpaqueCheckpoint = true
+						textPart.PathTranslationFingerprint = content.PathTranslationFingerprint
+					}
+				}
 				textPart.ProviderOptions = mergeProviderOptions(content.ProviderMetadata.FantasyOptions(ProviderMetadataScopeText), content.ProviderMetadata.FantasyOptions(ProviderMetadataScopeCompaction))
 				parts = append(parts, textPart)
 			case SkillContent:
@@ -652,9 +660,11 @@ func (m *Message) ToAIMessage() []fantasy.Message {
 					continue
 				}
 				parts = append(parts, fantasy.FilePart{
-					Filename:  content.Path,
-					Data:      content.Data,
-					MediaType: content.MIMEType,
+					SourcePaths: content.SourcePaths,
+					SourcePath:  content.Path,
+					Filename:    content.Path,
+					Data:        content.Data,
+					MediaType:   content.MIMEType,
 				})
 			}
 		}

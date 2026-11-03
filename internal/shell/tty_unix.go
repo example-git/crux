@@ -4,6 +4,7 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,13 +20,14 @@ import (
 )
 
 func newTTYRunner(cwd string, env []string, terminal *os.File, output io.Writer, blockFuncs []BlockFunc) (*interp.Runner, error) {
-	return interp.New(
+	options := []interp.RunnerOption{
 		interp.StdIO(terminal, output, output),
 		interp.Interactive(false),
 		interp.Env(expand.ListEnviron(env...)),
 		interp.Dir(cwd),
 		execHandlerOptionWithBase(blockFuncs, ttyExecHandler(terminal)),
-	)
+	}
+	return interp.New(append(options, accessFilterOptions()...)...)
 }
 
 func prepareTTY(terminal *os.File) (func(), error) {
@@ -42,7 +44,7 @@ func prepareTTY(terminal *os.File) (func(), error) {
 }
 
 func ttyExecHandler(terminal *os.File) interp.ExecHandlerFunc {
-	return func(ctx context.Context, args []string) error {
+	return func(ctx context.Context, args []string) (resultErr error) {
 		hc := interp.HandlerCtx(ctx)
 		path, err := interp.LookPathDir(hc.Dir, hc.Env, args[0])
 		if err != nil {
@@ -56,6 +58,15 @@ func ttyExecHandler(terminal *os.File) interp.ExecHandlerFunc {
 			rows = uint16(height)
 		}
 		cmd := exec.Cmd{Path: path, Args: args, Env: execEnvList(hc.Env), Dir: hc.Dir}
+		finishReporting, err := prepareNativeDirectoryReporting(ctx, &cmd)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := finishReporting(); err != nil {
+				resultErr = errors.Join(resultErr, err)
+			}
+		}()
 		ptmx, err := pty.StartWithSize(&cmd, &pty.Winsize{Rows: rows, Cols: cols})
 		if err != nil {
 			return exitStatusFromError(ctx, hc.Stderr, err)

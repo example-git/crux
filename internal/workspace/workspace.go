@@ -20,6 +20,7 @@ import (
 	"github.com/example-git/crux/internal/lsp"
 	"github.com/example-git/crux/internal/message"
 	oauthusage "github.com/example-git/crux/internal/oauth/usage"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerauth"
@@ -281,6 +282,8 @@ type Workspace interface {
 	RefreshOAuthToken(ctx context.Context, scope config.Scope, owner providerregistry.RegistrationOwner) error
 	CodebaseIndexStatus(ctx context.Context) (proto.CodebaseIndexStatus, error)
 	UpdateCodebaseIndex(ctx context.Context, update proto.CodebaseIndexUpdate) (proto.CodebaseIndexStatus, error)
+	LoadPathTranslation(ctx context.Context, scope pathtranslate.Scope) (pathtranslate.Policy, error)
+	SavePathTranslation(ctx context.Context, policy pathtranslate.Policy) (pathtranslate.Policy, error)
 
 	// Project lifecycle
 	ProjectNeedsInitialization() (bool, error)
@@ -313,8 +316,9 @@ type Workspace interface {
 
 // MCPResourceContents holds the contents of an MCP resource.
 type MCPResourceContents struct {
-	URI      string `json:"uri"`
-	MIMEType string `json:"mime_type,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Blob     []byte `json:"blob,omitempty"`
+	SourcePaths []string `json:"source_paths,omitempty"`
+	URI         string   `json:"uri"`
+	MIMEType    string   `json:"mime_type,omitempty"`
+	Text        string   `json:"text,omitempty"`
+	Blob        []byte   `json:"blob,omitempty"`
 }

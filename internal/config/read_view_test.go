@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,6 +45,42 @@ func TestConfigReadViewAcceptedScopes(t *testing.T) {
 		require.Equal(t, "runtime", pinned.Origins["models.large.model"].Kind)
 		require.Empty(t, pinned.Origins["models.large.model"].Path)
 		require.NoError(t, pinned.Validate())
+	}
+}
+
+func TestCollectedConfigReadViewRetainsAcceptedProvenance(t *testing.T) {
+	store, root, _ := authenticationBasisStore(t, nil)
+	for _, pinned := range []bool{false, true} {
+		store.overrides.Models = nil
+		if pinned {
+			store.overrides.Models = map[SelectedModelType]SelectedModel{SelectedModelTypeLarge: {Provider: "fixture", Model: "main"}}
+		}
+		expected, err := store.ReadConfigView(t.Context(), ScopeWorkspace)
+		require.NoError(t, err)
+		proposal, err := store.CollectRemoteRuntime(t.Context(), 1)
+		require.NoError(t, err)
+		store.overrides.Models = map[SelectedModelType]SelectedModel{SelectedModelTypeLarge: {Provider: "fixture", Model: "small"}}
+		authenticationBasisWriteField(t, filepath.Join(root, "crux.json"), []string{"models", "large", "model"}, `"small"`)
+		view, err := proposal.ReadConfigView(t.Context(), ScopeWorkspace)
+		require.NoError(t, err)
+		require.Equal(t, expected, view)
+		require.NoError(t, view.Validate())
+		view.Values["models.large.model"] = "mutated"
+		again, err := proposal.ReadConfigView(t.Context(), ScopeWorkspace)
+		require.NoError(t, err)
+		require.Equal(t, expected, again)
+		data, err := json.Marshal(proposal)
+		require.NoError(t, err)
+		var decoded RemoteRuntimeProposal
+		require.NoError(t, json.Unmarshal(data, &decoded))
+		_, err = decoded.ReadConfigView(t.Context(), ScopeWorkspace)
+		require.ErrorContains(t, err, "provenance is unavailable")
+		require.NoError(t, decoded.RetainCollectionSource(proposal))
+		restored, err := decoded.ReadConfigView(t.Context(), ScopeWorkspace)
+		require.NoError(t, err)
+		require.Equal(t, expected, restored)
+		_, err = proposal.ReadConfigView(t.Context(), Scope(-1))
+		require.ErrorContains(t, err, "scope")
 	}
 }
 

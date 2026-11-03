@@ -9,6 +9,7 @@ import (
 )
 
 var planningSectionIDs = map[SectionID]bool{
+	"identity":              true,
 	"critical_rules":        true,
 	"code_references":       true,
 	"operating_constraints": true,
@@ -18,6 +19,7 @@ var planningSectionIDs = map[SectionID]bool{
 }
 
 var executionSectionIDs = map[SectionID]bool{
+	"identity":              true,
 	"critical_rules":        true,
 	"code_references":       true,
 	"workflow":              true,

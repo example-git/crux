@@ -107,6 +107,7 @@ type CreatePermissionRequest struct {
 	Params                  any    `json:"params"`
 	Path                    string `json:"path"`
 	RequireExplicitApproval bool   `json:"-"`
+	IgnoreSkipRequests      bool   `json:"-"`
 	AllowDetachedPrompt     bool   `json:"-"`
 }
 
@@ -246,7 +247,7 @@ func (s *permissionService) Deny(permission PermissionRequest) bool {
 }
 
 func (s *permissionService) Request(ctx context.Context, opts CreatePermissionRequest) (bool, error) {
-	if s.skip.Load() || (!opts.RequireExplicitApproval && (planExecutionApproved(ctx) || runApproved(ctx))) {
+	if (s.skip.Load() && !opts.IgnoreSkipRequests) || (!opts.RequireExplicitApproval && (planExecutionApproved(ctx) || runApproved(ctx))) {
 		return true, nil
 	}
 

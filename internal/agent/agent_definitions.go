@@ -41,6 +41,7 @@ var (
 
 var forbiddenCustomAgentTools = map[string]struct{}{
 	AgentToolName:                  {},
+	SubagentScriptToolName:         {},
 	tools.AgenticFetchToolName:     {},
 	tools.CompletePlanToolName:     {},
 	tools.EnterPlanToolName:        {},
@@ -100,12 +101,13 @@ type AgentDefinitionScriptTemplate struct {
 }
 
 type AgentDefinitionTemplate struct {
-	Scope       AgentDefinitionScope
-	Name        string
-	Description string
-	Model       string
-	Tools       []string
-	Script      *AgentDefinitionScriptTemplate
+	Scope        AgentDefinitionScope
+	Name         string
+	Description  string
+	Model        string
+	Tools        []string
+	Script       *AgentDefinitionScriptTemplate
+	Instructions string
 }
 
 func discoverAgentDefinitions(workingDir string, cfg *config.Config) ([]agentDefinition, error) {
@@ -462,7 +464,11 @@ func createAgentDefinitionInDirs(userDir, projectDir string, cfg *config.Config,
 	if err != nil {
 		return "", fmt.Errorf("encoding agent definition: %w", err)
 	}
-	content := "---\n" + string(frontmatter) + "---\n\n# Instructions\n"
+	body := template.Instructions
+	if body == "" {
+		body = "# Instructions\n"
+	}
+	content := "---\n" + string(frontmatter) + "---\n\n" + body
 	path := filepath.Join(dir, metadata.Name+".md")
 	definition, err := parseAgentDefinitionContent(path, source, cfg, content)
 	if err != nil {

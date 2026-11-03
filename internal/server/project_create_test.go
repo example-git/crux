@@ -1,14 +1,18 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/example-git/crux/internal/fsext"
 	"github.com/example-git/crux/internal/proto"
 	"github.com/stretchr/testify/require"
 )
@@ -63,13 +67,10 @@ func TestResolveProjectTargetRejectsTraversal(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, filepath.Join(root, "nested", "dir"), target)
 
-	// A leading ".." is neutralized by resolveProjectTarget's synthetic-root
-	// cleaning rather than producing an escaping path: the result must stay
-	// confined under root, never outside it.
-	target, err = server.resolveProjectTarget(root, "../escape")
-	require.NoError(t, err)
-	require.Equal(t, filepath.Join(root, "escape"), target)
-	require.True(t, fsext.HasPrefix(target, root))
+	for _, path := range []string{"../escape", "nested/../escape", "/absolute", "nested//empty", "./project", "project/"} {
+		_, err = server.resolveProjectTarget(root, path)
+		require.Error(t, err, path)
+	}
 
 	_, err = server.resolveProjectTarget(root, "..")
 	require.Error(t, err)
@@ -79,6 +80,120 @@ func TestResolveProjectTargetRejectsTraversal(t *testing.T) {
 
 	_, err = server.resolveProjectTarget(root, "")
 	require.Error(t, err)
+}
+
+func TestCreateProjectRejectsOutsideParentBeforeWriting(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	outside := t.TempDir()
+	require.NoError(t, os.Symlink(outside, filepath.Join(root, "linked")))
+	server := NewServer(nil, "unix", "test")
+	require.NoError(t, server.SetWorkspaceRoots([]string{root}))
+	_, err = server.createProject(t.Context(), proto.PeerWorkspaceCreateRequest{
+		Root: root, RelativePath: "linked/new-project", Mode: proto.PeerWorkspaceCreatePlain,
+	}, nil)
+	require.ErrorContains(t, err, "escapes")
+	require.NoDirExists(t, filepath.Join(outside, "new-project"))
+}
+
+func TestWorkspaceDirectoryHTTP(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	server := NewServer(nil, "tcp", "127.0.0.1:9090")
+	require.NoError(t, server.SetWorkspaceRoots([]string{root}))
+	call := func(body []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/browser/create", bytes.NewReader(body)))
+		return response
+	}
+	for _, mode := range []proto.PeerWorkspaceCreateMode{proto.PeerWorkspaceCreatePlain, proto.PeerWorkspaceCreateGitInit} {
+		t.Run(string(mode), func(t *testing.T) {
+			if mode == proto.PeerWorkspaceCreateGitInit {
+				requireGit(t)
+			}
+			body, err := json.Marshal(proto.PeerWorkspaceCreateRequest{Root: root, RelativePath: "nested/" + string(mode), Mode: mode})
+			require.NoError(t, err)
+			response := call(body)
+			require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+			var result proto.PeerWorkspaceCreateResult
+			require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
+			require.Equal(t, filepath.Join(root, "nested", string(mode)), result.Path)
+			require.DirExists(t, result.Path)
+			if mode == proto.PeerWorkspaceCreateGitInit {
+				require.DirExists(t, filepath.Join(result.Path, ".git"))
+			}
+			require.Equal(t, http.StatusBadRequest, call(body).Code)
+		})
+	}
+	for _, request := range []proto.PeerWorkspaceCreateRequest{
+		{Root: root, RelativePath: "rejected", Mode: "unknown"},
+		{Root: root, RelativePath: "rejected", Mode: proto.PeerWorkspaceCreatePlain, CloneURL: "https://example.com/repo.git"},
+		{Root: root, RelativePath: "rejected", Mode: proto.PeerWorkspaceCreateClone, CloneURL: "file:///tmp/repo"},
+		{Root: root, RelativePath: "../rejected", Mode: proto.PeerWorkspaceCreatePlain},
+	} {
+		body, err := json.Marshal(request)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusBadRequest, call(body).Code)
+	}
+	body, err := json.Marshal(proto.PeerWorkspaceCreateRequest{Root: root, RelativePath: "rejected", Mode: proto.PeerWorkspaceCreatePlain})
+	require.NoError(t, err)
+	for _, invalid := range []string{
+		`{`, `{} {}`, `{"mode":"unknown"}`, `{"extra":true}`,
+		string(body) + ` {}`,
+		`{"root":"` + strings.Repeat("a", 32<<10) + `"}`,
+	} {
+		require.Equal(t, http.StatusBadRequest, call([]byte(invalid)).Code)
+	}
+	require.NoDirExists(t, filepath.Join(root, "rejected"))
+	require.Empty(t, server.Backend().ListWorkspaces())
+}
+
+func TestWorkspaceDirectoryHTTPClone(t *testing.T) {
+	requireGit(t)
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	source := t.TempDir()
+	run := func(args ...string) {
+		cmd := exec.CommandContext(t.Context(), "git", args...)
+		cmd.Dir = source
+		output, err := cmd.CombinedOutput()
+		require.NoError(t, err, string(output))
+	}
+	run("init", "-q", "-b", "main")
+	require.NoError(t, os.WriteFile(filepath.Join(source, "README.md"), []byte("Cloned workspace\n"), 0o644))
+	run("add", "README.md")
+	run("-c", "user.name=Web Fixture", "-c", "user.email=fixture@example.com", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "Initial workspace")
+	run("update-server-info")
+	remote := httptest.NewServer(http.FileServer(http.Dir(filepath.Join(source, ".git"))))
+	t.Cleanup(remote.Close)
+	server := NewServer(nil, "tcp", "127.0.0.1:9090")
+	require.NoError(t, server.SetWorkspaceRoots([]string{root}))
+	body, err := json.Marshal(proto.PeerWorkspaceCreateRequest{Root: root, RelativePath: "cloned", Mode: proto.PeerWorkspaceCreateClone, CloneURL: remote.URL})
+	require.NoError(t, err)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/browser/create", bytes.NewReader(body)))
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	var result proto.PeerWorkspaceCreateResult
+	require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
+	require.Equal(t, filepath.Join(root, "cloned"), result.Path)
+	content, err := os.ReadFile(filepath.Join(result.Path, "README.md"))
+	require.NoError(t, err)
+	require.Equal(t, "Cloned workspace\n", string(content))
+	require.DirExists(t, filepath.Join(result.Path, ".git"))
+	require.Empty(t, server.Backend().ListWorkspaces())
+}
+
+func TestWorkspaceDirectoryHTTPRequiresManagementAuthorization(t *testing.T) {
+	root := t.TempDir()
+	server := NewServer(nil, "tcp", "0.0.0.0:9090")
+	require.NoError(t, server.SetWorkspaceRoots([]string{root}))
+	body, err := json.Marshal(proto.PeerWorkspaceCreateRequest{Root: root, RelativePath: "unauthorized", Mode: proto.PeerWorkspaceCreatePlain})
+	require.NoError(t, err)
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/browser/create", bytes.NewReader(body)))
+	require.Equal(t, http.StatusForbidden, response.Code)
+	require.NoDirExists(t, filepath.Join(root, "unauthorized"))
 }
 
 func TestCreateProjectPlainMode(t *testing.T) {

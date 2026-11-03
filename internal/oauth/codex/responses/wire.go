@@ -555,9 +555,14 @@ func utf8Prefix(value string, maxBytes int) string {
 }
 
 func TruncateToolOutput(modelID, output string) string {
+	result, _, _ := TruncateToolOutputWithBounds(modelID, output)
+	return result
+}
+
+func TruncateToolOutputWithBounds(modelID, output string) (string, int, int) {
 	maxBytes := toolOutputLimitBytes(modelID)
 	if len(output) <= maxBytes {
-		return output
+		return output, len(output), len(output)
 	}
 	available := maxBytes - len(toolOutputTruncationTag)
 	headBytes := available / 2
@@ -570,5 +575,5 @@ func TruncateToolOutput(modelID, output string) string {
 	for tailStart < len(output) && !utf8.RuneStart(output[tailStart]) {
 		tailStart++
 	}
-	return output[:headEnd] + toolOutputTruncationTag + output[tailStart:]
+	return output[:headEnd] + toolOutputTruncationTag + output[tailStart:], headEnd, tailStart
 }

@@ -23,6 +23,27 @@ func (b *Backend) TaskOutput(ctx context.Context, workspaceID, taskID string, wa
 	return ws.TaskOutput(ctx, taskID, wait, timeout)
 }
 
+func (b *Backend) TaskLog(ctx context.Context, workspaceID, taskID string, request managedtask.LogRequest) (managedtask.LogResult, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return managedtask.LogResult{}, err
+	}
+	return ws.TaskLog(ctx, taskID, request)
+}
+
+func (b *Backend) SendTask(ctx context.Context, workspaceID, taskID, parentSessionID, prompt string) (managedtask.View, error) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	ctx, complete, err := ws.beginCredentialOperation(ctx)
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	defer complete()
+	return ws.SendTask(ctx, taskID, parentSessionID, prompt)
+}
+
 func (b *Backend) RestartTask(ctx context.Context, workspaceID, taskID string) (managedtask.View, error) {
 	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {

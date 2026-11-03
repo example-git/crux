@@ -1149,6 +1149,10 @@ func validateBrowserListRequest(payload any) error {
 	return nil
 }
 
+func (r PeerWorkspaceCreateRequest) Validate() error {
+	return validateWorkspaceCreateRequest(r)
+}
+
 func validateWorkspaceCreateRequest(payload any) error {
 	value, ok := peerPayload[PeerWorkspaceCreateRequest](payload)
 	if !ok || !validPeerText(value.Root, 4096, true) || !validPeerText(value.RelativePath, 4096, true) {

@@ -353,7 +353,8 @@ func (c *coordinator) buildContinuationAgent(
 	ctx context.Context,
 	agentType string,
 ) (presetSubagent, error) {
-	cfg := c.cfg.Config()
+	snapshot := c.modelSnapshotForContext(ctx)
+	cfg := snapshot.Config()
 	if agentType == config.AgentTask {
 		taskCfg, ok := cfg.Agents[config.AgentTask]
 		if !ok {
@@ -363,7 +364,7 @@ func (c *coordinator) buildContinuationAgent(
 		if err != nil {
 			return presetSubagent{}, err
 		}
-		built, err := c.buildAgent(ctx, template, taskCfg, true)
+		built, err := c.buildAgentWithSnapshot(ctx, template, taskCfg, true, snapshot)
 		if err != nil {
 			return presetSubagent{}, err
 		}
@@ -372,7 +373,11 @@ func (c *coordinator) buildContinuationAgent(
 			title: "New Agent Session",
 		}, nil
 	}
-	definitions, err := c.currentAgentDefinitions()
+	var definitions []agentDefinition
+	var err error
+	if c.loadAgentDefinitions != nil {
+		definitions, err = c.loadAgentDefinitions(c.cfg.WorkingDir(), cfg)
+	}
 	if err != nil {
 		return presetSubagent{}, err
 	}
@@ -473,6 +478,7 @@ func (c *coordinator) startBackgroundAgentContinuation(ctx context.Context, cont
 		start = c.backgroundAgents.StartApproved
 	}
 	if err := start(backgroundTask, info.ChildSessionID, func(runCtx context.Context) backgroundAgentResult {
+		defer backgroundTask.bindAgent(runParams.Agent)()
 		response, runErr := c.runSubAgent(runCtx, runParams)
 		result := backgroundAgentResult{Err: runErr}
 		if runErr == nil {
@@ -509,34 +515,63 @@ func (c *coordinator) continueBackgroundSubAgent(ctx context.Context, params Age
 	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
 }
 
+type backgroundAgentStartError struct {
+	cause error
+}
+
+func (e *backgroundAgentStartError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *backgroundAgentStartError) Unwrap() error {
+	return e.cause
+}
+
 func (c *coordinator) startBackgroundSubAgent(ctx context.Context, params AgentParams, call fantasy.ToolCall, selected presetSubagent, runParams subAgentParams) (fantasy.ToolResponse, error) {
-	approved, err := c.approveBackgroundSubagent(ctx, selected, runParams.SessionID, call.ID)
+	backgroundTask, err := c.startManagedSubAgent(ctx, params.SubagentType, selected, runParams)
 	if err != nil {
+		var startErr *backgroundAgentStartError
+		if errors.As(err, &startErr) {
+			return fantasy.ToolResponse{}, startErr.cause
+		}
 		return fantasy.NewTextErrorResponse(err.Error()), nil
+	}
+	metadata := AgentResponseMetadata{
+		Background:     true,
+		TaskID:         backgroundTask.ID,
+		ChildSessionID: backgroundTask.Info().ChildSessionID,
+	}
+	response := fmt.Sprintf("Background agent started with ID: %s\n\nChild session ID: %s", backgroundTask.ID, metadata.ChildSessionID)
+	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
+}
+
+func (c *coordinator) startManagedSubAgent(ctx context.Context, agentType string, selected presetSubagent, runParams subAgentParams) (*BackgroundAgentTask, error) {
+	approved, err := c.approveBackgroundSubagent(ctx, selected, runParams.SessionID, runParams.ToolCallID)
+	if err != nil {
+		return nil, err
 	}
 	runParams.RunApproved = approved
 	if c.backgroundAgents == nil {
 		c.backgroundAgents, err = NewBackgroundAgentManagerWithStore(c.cfg.WorkingDir(), c.backgroundShells, nil)
 		if err != nil {
-			return fantasy.NewTextErrorResponse(fmt.Sprintf("initialize global background agent admission: %v", err)), nil
+			return nil, fmt.Errorf("initialize global background agent admission: %w", err)
 		}
 	}
-	agentType := params.SubagentType
 	if agentType == "" {
 		agentType = config.AgentTask
 	}
-	backgroundTask, err := c.backgroundAgents.ReserveContext(ctx, params.Prompt, agentType, selected.title, managedtask.Ownership{
+	backgroundTask, err := c.backgroundAgents.ReserveContext(ctx, runParams.Prompt, agentType, selected.title, managedtask.Ownership{
 		ParentSessionID:  runParams.SessionID,
-		OriginToolCallID: call.ID,
+		OriginToolCallID: runParams.ToolCallID,
 	})
 	if err != nil {
-		return fantasy.NewTextErrorResponse(err.Error()), nil
+		return nil, err
 	}
 	childSessionID := c.sessions.CreateAgentToolSessionID(runParams.AgentMessageID, runParams.ToolCallID)
 	childSession, err := c.sessions.CreateTaskSession(ctx, childSessionID, runParams.SessionID, runParams.SessionTitle)
 	if err != nil {
 		c.backgroundAgents.FailReservation(backgroundTask, fmt.Errorf("create session: %w", err))
-		return fantasy.ToolResponse{}, fmt.Errorf("create session: %w", err)
+		return nil, &backgroundAgentStartError{cause: fmt.Errorf("create session: %w", err)}
 	}
 	runParams.ChildSessionID = childSession.ID
 	start := c.backgroundAgents.Start
@@ -544,6 +579,7 @@ func (c *coordinator) startBackgroundSubAgent(ctx context.Context, params AgentP
 		start = c.backgroundAgents.StartApproved
 	}
 	if err := start(backgroundTask, childSession.ID, func(runCtx context.Context) backgroundAgentResult {
+		defer backgroundTask.bindAgent(runParams.Agent)()
 		response, runErr := c.runSubAgent(runCtx, runParams)
 		result := backgroundAgentResult{Err: runErr}
 		if runErr == nil {
@@ -556,15 +592,9 @@ func (c *coordinator) startBackgroundSubAgent(ctx context.Context, params AgentP
 		result.Usage = c.backgroundAgentUsage(childSession.ID)
 		return result
 	}); err != nil {
-		return fantasy.ToolResponse{}, fmt.Errorf("starting background agent: %w", err)
+		return nil, &backgroundAgentStartError{cause: fmt.Errorf("starting background agent: %w", err)}
 	}
-	metadata := AgentResponseMetadata{
-		Background:     true,
-		TaskID:         backgroundTask.ID,
-		ChildSessionID: childSession.ID,
-	}
-	response := fmt.Sprintf("Background agent started with ID: %s\n\nChild session ID: %s", backgroundTask.ID, metadata.ChildSessionID)
-	return fantasy.WithResponseMetadata(fantasy.NewTextResponse(response), metadata), nil
+	return backgroundTask, nil
 }
 
 func (c *coordinator) backgroundAgentUsage(childSessionID string) managedtask.AgentUsage {

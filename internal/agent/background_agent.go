@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +41,11 @@ type ManagedTaskInfo = managedtask.View
 
 type ManagedTaskOutput = managedtask.OutputResult
 
+type TaskLiveCoordinator interface {
+	TaskLog(context.Context, string, managedtask.LogRequest) (managedtask.LogResult, error)
+	SendTask(context.Context, string, string, string) (managedtask.View, error)
+}
+
 type TaskCoordinator interface {
 	ListTasks() []managedtask.View
 	TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error)
@@ -62,6 +69,7 @@ type BackgroundAgentTask struct {
 	Ownership   managedtask.Ownership
 
 	mu               sync.Mutex
+	agent            SessionAgent
 	state            managedtask.State
 	childSessionID   string
 	continuationOf   string
@@ -87,6 +95,17 @@ type BackgroundAgentTask struct {
 	// executionClaimed is guarded by mu. Launch, reservation failure, or
 	// stopping a pending task claims sole responsibility for executionDone.
 	executionClaimed bool
+}
+
+func (t *BackgroundAgentTask) bindAgent(agent SessionAgent) func() {
+	t.mu.Lock()
+	t.agent = agent
+	t.mu.Unlock()
+	return func() {
+		t.mu.Lock()
+		t.agent = nil
+		t.mu.Unlock()
+	}
 }
 
 type BackgroundAgentManager struct {
@@ -662,7 +681,17 @@ func (c *coordinator) ListTasks() []managedtask.View {
 	return c.listManagedTasks()
 }
 
-func (c *coordinator) TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (managedtask.OutputResult, error) {
+func (c *coordinator) TaskOutput(ctx context.Context, id string, wait bool, timeout time.Duration) (output managedtask.OutputResult, resultErr error) {
+	defer func() {
+		if resultErr == nil && c.backgroundShells != nil {
+			if current, ok := c.backgroundShells.Get(id); ok {
+				output.OutputPaths, resultErr = current.ReadOutputPaths()
+				if resultErr != nil {
+					output = managedtask.OutputResult{}
+				}
+			}
+		}
+	}()
 	if !wait || timeout <= 0 || c.backgroundShells == nil || tools.GetSessionFromContext(ctx) == "" {
 		return c.managedTaskOutput(ctx, id, wait, timeout)
 	}
@@ -693,6 +722,171 @@ func (c *coordinator) TaskOutput(ctx context.Context, id string, wait bool, time
 	case <-ctx.Done():
 		return ManagedTaskOutput{}, ctx.Err()
 	}
+}
+
+func (c *coordinator) SendTask(ctx context.Context, id, parentSessionID, prompt string) (managedtask.View, error) {
+	if permission.IsSubagent(ctx) {
+		return managedtask.View{}, permission.ErrSubagentBackgroundTask
+	}
+	if strings.TrimSpace(prompt) == "" || parentSessionID == "" {
+		return managedtask.View{}, fmt.Errorf("parent session and prompt are required")
+	}
+	if c.backgroundAgents == nil {
+		return managedtask.View{}, fmt.Errorf("background agents are unavailable")
+	}
+	task, err := c.backgroundAgents.task(id)
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	info := task.Info()
+	if info.Ownership.ParentSessionID != parentSessionID {
+		return managedtask.View{}, fmt.Errorf("task does not belong to the parent session")
+	}
+	if info.State.Status.Terminal() {
+		return c.ContinueTask(ctx, id, parentSessionID, prompt, "")
+	}
+	task.mu.Lock()
+	agent := task.agent
+	task.mu.Unlock()
+	if agent == nil {
+		return managedtask.View{}, fmt.Errorf("background agent is not ready for input")
+	}
+	admitted := make(chan error, 1)
+	_, err = agent.Run(ctx, SessionAgentCall{
+		SessionID:        info.ChildSessionID,
+		Prompt:           prompt,
+		DeliveryMode:     DeliverySteer,
+		RequireActiveRun: true,
+		NonInteractive:   true,
+		OnAdmitted:       func(err error) { admitted <- err },
+	})
+	if err != nil {
+		return managedtask.View{}, err
+	}
+	select {
+	case err := <-admitted:
+		return managedAgentInfo(task.Info()), err
+	case <-ctx.Done():
+		return managedtask.View{}, ctx.Err()
+	}
+}
+
+func (c *coordinator) TaskLog(ctx context.Context, id string, request managedtask.LogRequest) (managedtask.LogResult, error) {
+	if request.Offset < 0 {
+		return managedtask.LogResult{}, fmt.Errorf("log offset must be nonnegative")
+	}
+	taskType, err := managedtask.ParseID(id)
+	if err != nil {
+		return managedtask.LogResult{}, err
+	}
+	if taskType == managedtask.TypeShell {
+		if c.backgroundShells == nil {
+			return managedtask.LogResult{}, fmt.Errorf("background shells are unavailable")
+		}
+		command, ok := c.backgroundShells.Get(id)
+		if !ok {
+			return managedtask.LogResult{}, fmt.Errorf("background shell not found: %s", id)
+		}
+		view := managedtask.View{ID: id, Type: taskType, Description: command.Description, Command: command.Command, WorkingDirectory: command.WorkingDir, Ownership: command.Ownership, State: command.State(), OutputRef: command.OutputRef()}
+		result := managedtask.LogResult{Task: view, Generation: view.State.StartedAt.Format(time.RFC3339Nano)}
+		offset := request.Offset
+		if request.Generation != result.Generation {
+			offset = 0
+		}
+		read, _, err := command.ReadOutput(ctx, managedtask.ReadOptions{Stream: managedtask.OutputStreamMerged, Offset: &offset, MaxBytes: 64 << 10}, false, 0)
+		if err != nil {
+			return managedtask.LogResult{}, err
+		}
+		result.Data = read.Output
+		result.NextOffset = read.NextOffset
+		result.Truncated = read.Metadata.OutputTruncated
+		return result, nil
+	}
+	output, err := c.TaskOutput(ctx, id, false, 0)
+	if err != nil {
+		return managedtask.LogResult{}, err
+	}
+	result := managedtask.LogResult{Task: output.Task, Generation: output.Task.State.StartedAt.Format(time.RFC3339Nano), Snapshot: true}
+	if output.Task.Type != managedtask.TypeAgent || output.Task.ChildSessionID == "" {
+		result.Data = []byte(output.Output)
+		return result, nil
+	}
+	messages, err := c.messages.List(ctx, output.Task.ChildSessionID)
+	if err != nil {
+		return managedtask.LogResult{}, err
+	}
+	captured := make(map[string]bool)
+	var text strings.Builder
+	for _, msg := range messages {
+		if text.Len() > 0 {
+			text.WriteString("\n\n")
+		}
+		if thinking := msg.ReasoningContent().Thinking; thinking != "" {
+			fmt.Fprintf(&text, "thinking> %s\n", thinking)
+		}
+		if content := msg.Content().Text; content != "" {
+			fmt.Fprintf(&text, "%s> %s\n", msg.Role, content)
+		}
+		for _, call := range msg.ToolCalls() {
+			fmt.Fprintf(&text, "$ %s %s\n", call.Name, call.Input)
+			if c.backgroundShells == nil {
+				continue
+			}
+			for _, shellID := range c.backgroundShells.List() {
+				command, ok := c.backgroundShells.Get(shellID)
+				if !ok || command.Ownership.OwnerAgentTaskID != output.Task.ID || command.Ownership.OriginToolCallID != call.ID {
+					continue
+				}
+				captured[call.ID] = true
+				offset := int64(0)
+				limit := int64(-1)
+				for {
+					read, _, err := command.ReadOutput(ctx, managedtask.ReadOptions{Stream: managedtask.OutputStreamMerged, Offset: &offset, MaxBytes: 64 << 10}, false, 0)
+					if err != nil {
+						return managedtask.LogResult{}, err
+					}
+					text.Write(read.Output)
+					result.Truncated = result.Truncated || read.Metadata.OutputTruncated
+					if limit < 0 {
+						limit = read.Metadata.MergedBytes
+					}
+					if read.NextOffset >= limit || read.NextOffset <= offset || len(read.Output) == 0 {
+						break
+					}
+					offset = read.NextOffset
+				}
+			}
+		}
+		for _, item := range msg.ToolResults() {
+			if captured[item.ToolCallID] {
+				continue
+			}
+			var metadata tools.BashResponseMetadata
+			if item.Name == tools.BashToolName && c.backgroundShells != nil && json.Unmarshal([]byte(item.Metadata), &metadata) == nil && metadata.OutputRef != "" {
+				offset := int64(0)
+				for {
+					if err := ctx.Err(); err != nil {
+						return managedtask.LogResult{}, err
+					}
+					read, err := c.backgroundShells.ReadRetainedOutput(metadata.OutputRef, managedtask.ReadOptions{Stream: managedtask.OutputStreamMerged, Offset: &offset, MaxBytes: 64 << 10})
+					if err != nil {
+						return managedtask.LogResult{}, fmt.Errorf("read retained command output: %w", err)
+					}
+					text.Write(read.Output)
+					result.Truncated = result.Truncated || read.Metadata.OutputTruncated
+					if read.NextOffset >= read.Metadata.MergedBytes || read.NextOffset <= offset {
+						break
+					}
+					offset = read.NextOffset
+				}
+				text.WriteByte('\n')
+			} else {
+				fmt.Fprintln(&text, item.Content)
+			}
+		}
+	}
+	result.Data = []byte(text.String())
+	return result, nil
 }
 
 func (c *coordinator) RestartTask(ctx context.Context, id string) (managedtask.View, error) {
@@ -731,7 +925,7 @@ func (c *coordinator) DeliverTaskNotification(ctx context.Context, notification 
 	if err != nil {
 		return fmt.Errorf("encoding task notification: %w", err)
 	}
-	_, err = c.currentAgent.Run(ctx, SessionAgentCall{
+	call := SessionAgentCall{
 		SessionID:          notification.ParentSessionID,
 		SubmissionID:       notification.ID,
 		taskNotification:   true,
@@ -739,7 +933,15 @@ func (c *coordinator) DeliverTaskNotification(ctx context.Context, notification 
 		NonInteractive:     true,
 		OnMessagePersisted: onPersisted,
 		OnDiscarded:        onDiscarded,
-	})
+	}
+	ctx, err = c.bindSessionRuntime(ctx, &call)
+	if err != nil {
+		if onDiscarded != nil {
+			onDiscarded()
+		}
+		return err
+	}
+	_, err = c.currentAgent.Run(ctx, call)
 	return err
 }
 

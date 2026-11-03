@@ -123,6 +123,13 @@ type openEditorMsg struct {
 	Text string
 }
 
+type pathTranslationSessionMsg struct {
+	source     workspace.Workspace
+	generation uint64
+	session    session.Session
+	err        error
+}
+
 type initialSessionUnavailableMsg struct {
 	source      workspace.Workspace
 	workspaceID string
@@ -232,6 +239,7 @@ type UI struct {
 	sessionFiles              []SessionFile
 	sessionFilesFetchGen      uint64
 	sessionLoadGeneration     uint64
+	pathTranslationOpening    bool
 	sessionPresenceGeneration *atomic.Uint64
 
 	// keeps track of read files while we don't have a session id
@@ -1004,6 +1012,19 @@ func (m *UI) Update(msg tea.Msg) (updatedModel tea.Model, updateCommand tea.Cmd)
 			status = "enabled"
 		}
 		cmds = append(cmds, util.ReportInfo("Plan mode "+status))
+	case pathTranslationSessionMsg:
+		m.pathTranslationOpening = false
+		if msg.source != m.com.Workspace || msg.generation != m.sessionLoadGeneration || m.hasSession() {
+			break
+		}
+		if msg.err != nil {
+			cmds = append(cmds, util.ReportError(msg.err))
+			break
+		}
+		m.session = &msg.session
+		m.forceCompactMode, m.forceSidebar = false, false
+		m.setState(uiChat, m.focus)
+		cmds = append(cmds, m.loadSession(msg.session.ID), m.openPathTranslationDialog())
 	case goalCommandResultMsg:
 		if msg.err != nil {
 			cmds = append(cmds, util.ReportError(msg.err))
@@ -4864,7 +4885,10 @@ func (m *UI) insertFileCompletion(path string) tea.Cmd {
 	heightCmd := m.handleTextareaHeightChange(prevHeight)
 
 	fileCmd := func() tea.Msg {
-		absPath, _ := filepath.Abs(path)
+		absPath, err := fsext.CanonicalPath(path)
+		if err != nil {
+			return util.ReportError(err)
+		}
 
 		if m.hasSession() {
 			// Skip attachment if file was already read and hasn't been modified.
@@ -4881,14 +4905,14 @@ func (m *UI) insertFileCompletion(path string) tea.Cmd {
 		m.sessionFileReads = append(m.sessionFileReads, absPath)
 
 		// Add file as attachment.
-		content, err := os.ReadFile(path)
+		content, err := os.ReadFile(absPath)
 		if err != nil {
 			// If it fails, let the LLM handle it later.
 			return nil
 		}
 
 		return message.Attachment{
-			FilePath: path,
+			FilePath: absPath,
 			FileName: filepath.Base(path),
 			MimeType: mimeOf(content),
 			Content:  content,
@@ -4933,19 +4957,20 @@ func (m *UI) insertMCPResourceCompletion(item completions.ResourceCompletionValu
 			return nil
 		}
 
-		mimeType := item.MIMEType
-		if mimeType == "" && content.MIMEType != "" {
-			mimeType = content.MIMEType
+		mimeType := cmp.Or(content.MIMEType, item.MIMEType)
+		if detected := http.DetectContentType(data); strings.HasPrefix(detected, "image/") {
+			mimeType = detected
 		}
 		if mimeType == "" {
 			mimeType = "text/plain"
 		}
 
 		return message.Attachment{
-			FilePath: item.URI,
-			FileName: displayText,
-			MimeType: mimeType,
-			Content:  data,
+			FilePath:    cmp.Or(content.URI, item.URI),
+			SourcePaths: content.SourcePaths,
+			FileName:    displayText,
+			MimeType:    mimeType,
+			Content:     data,
 		}
 	}
 	return tea.Batch(heightCmd, resourceCmd)
@@ -5599,6 +5624,10 @@ func (m *UI) openDialog(id string) tea.Cmd {
 		if cmd := m.openCodebaseIndexDialog(); cmd != nil {
 			cmds = append(cmds, cmd)
 		}
+	case dialog.PathTranslationID:
+		if cmd := m.openPathTranslationDialog(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
 	case dialog.SummarizationID:
 		if m.dialog.ContainsDialog(dialog.SummarizationID) {
 			m.dialog.BringToFront(dialog.SummarizationID)
@@ -5885,6 +5914,30 @@ func (m *UI) openCodebaseIndexDialog() tea.Cmd {
 
 	indexDialog, cmd := dialog.NewCodebaseIndex(m.com)
 	m.dialog.OpenDialog(indexDialog)
+	return cmd
+}
+
+func (m *UI) openPathTranslationDialog() tea.Cmd {
+	if current, ok := m.dialog.Dialog(dialog.PathTranslationID).(*dialog.PathTranslation); ok {
+		if m.hasSession() && current.SessionID() == m.session.ID {
+			m.dialog.BringToFront(dialog.PathTranslationID)
+			return nil
+		}
+		m.dialog.CloseDialog(dialog.PathTranslationID)
+	}
+	if !m.hasSession() {
+		if m.pathTranslationOpening {
+			return nil
+		}
+		m.pathTranslationOpening = true
+		ws, generation := m.com.Workspace, m.sessionLoadGeneration
+		return func() tea.Msg {
+			created, err := ws.CreateSession(context.Background(), "New Session")
+			return pathTranslationSessionMsg{source: ws, generation: generation, session: created, err: err}
+		}
+	}
+	settings, cmd := dialog.NewPathTranslation(m.com, m.session.ID)
+	m.dialog.OpenDialog(settings)
 	return cmd
 }
 
@@ -6253,6 +6306,11 @@ func hasPasteExceededThreshold(msg tea.PasteMsg) bool {
 // handleFilePathPaste handles a pasted file path.
 func (m *UI) handleFilePathPaste(path string) tea.Cmd {
 	return func() tea.Msg {
+		fileName := filepath.Base(path)
+		path, err := fsext.CanonicalPath(path)
+		if err != nil {
+			return util.ReportError(err)
+		}
 		fileInfo, err := os.Stat(path)
 		if err != nil {
 			return util.ReportError(err)
@@ -6275,7 +6333,6 @@ func (m *UI) handleFilePathPaste(path string) tea.Cmd {
 
 		mimeBufferSize := min(512, len(content))
 		mimeType := http.DetectContentType(content[:mimeBufferSize])
-		fileName := filepath.Base(path)
 		return message.Attachment{
 			FilePath: path,
 			FileName: fileName,
@@ -6313,6 +6370,11 @@ func (m *UI) pasteImageFromClipboard() tea.Msg {
 
 	path := strings.TrimSpace(string(textData))
 	path = strings.ReplaceAll(path, "\\ ", " ")
+	fileName := filepath.Base(path)
+	path, err = fsext.CanonicalPath(path)
+	if err != nil {
+		return util.ReportError(err)
+	}
 	if _, statErr := os.Stat(path); statErr != nil {
 		return nil // Clipboard does not contain an image or valid file path
 	}
@@ -6345,7 +6407,7 @@ func (m *UI) pasteImageFromClipboard() tea.Msg {
 
 	return message.Attachment{
 		FilePath: path,
-		FileName: filepath.Base(path),
+		FileName: fileName,
 		MimeType: mimeOf(content),
 		Content:  content,
 	}

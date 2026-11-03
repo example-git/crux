@@ -77,6 +77,9 @@ func NewRenameTool(
 			if err := canonicalizeWorkspaceEdit(edit, workingDir); err != nil {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("resolve rename targets: %s", err)), nil
 			}
+			if err := checkProtectedWorkspaceMoves(ctx, edit); err != nil {
+				return fantasy.NewTextErrorResponse(err.Error()), nil
+			}
 			affectedFiles := collectAffectedFiles(edit)
 			for _, path := range affectedFiles {
 				granted, err := permissions.Request(ctx, permission.CreatePermissionRequest{

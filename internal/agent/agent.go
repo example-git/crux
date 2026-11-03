@@ -38,6 +38,7 @@ import (
 	"github.com/example-git/crux/internal/imageattachment"
 	"github.com/example-git/crux/internal/message"
 	codexresponses "github.com/example-git/crux/internal/oauth/codex/responses"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/example-git/crux/internal/permission"
 	"github.com/example-git/crux/internal/providerplugin/manifest"
 	"github.com/example-git/crux/internal/providertransport"
@@ -218,24 +219,26 @@ type SessionAgent interface {
 }
 
 type Model struct {
-	isSubAgent          bool
-	runtimeOptions      *config.Options // Immutable options captured when this model was admitted.
-	authRefreshConsumed bool            // A proactive rotation already served this operation.
-	Model               fantasy.LanguageModel
-	CatalogModel        catalog.Model
-	ModelCfg            config.SelectedModel
-	FlatRate            bool
-	ProviderOptions     fantasy.ProviderOptions
-	SystemPromptPrefix  string
-	InstructionPolicy   fantasy.InstructionPolicy
-	ImagePolicy         *imageattachment.Policy
-	AnthropicEfficiency *anthropic.EfficiencyPolicy
-	Compaction          *manifest.CompactionPolicy
-	Compactor           RemoteCompactor
-	CompactionRetry     *manifest.RetryPolicy
-	Retry               *manifest.RetryPolicy
-	Metadata            []manifest.MetadataContract
-	OnAuthRefresh       func(context.Context, *fantasy.ProviderError) error
+	PathTranslation      pathTranslationResolver
+	PathTranslationState func(context.Context, *pathtranslate.Translator)
+	isSubAgent           bool
+	runtimeOptions       *config.Options // Immutable options captured when this model was admitted.
+	authRefreshConsumed  bool            // A proactive rotation already served this operation.
+	Model                fantasy.LanguageModel
+	CatalogModel         catalog.Model
+	ModelCfg             config.SelectedModel
+	FlatRate             bool
+	ProviderOptions      fantasy.ProviderOptions
+	SystemPromptPrefix   string
+	InstructionPolicy    fantasy.InstructionPolicy
+	ImagePolicy          *imageattachment.Policy
+	AnthropicEfficiency  *anthropic.EfficiencyPolicy
+	Compaction           *manifest.CompactionPolicy
+	Compactor            RemoteCompactor
+	CompactionRetry      *manifest.RetryPolicy
+	Retry                *manifest.RetryPolicy
+	Metadata             []manifest.MetadataContract
+	OnAuthRefresh        func(context.Context, *fantasy.ProviderError) error
 }
 
 func cloneModelEfficiency(model Model) Model {
@@ -807,6 +810,18 @@ func appendRuntimeInstructions(base fantasy.Instructions, prefix, mcpInstruction
 	)
 }
 
+func applySessionInstructions(instructions fantasy.Instructions, override session.Instructions) fantasy.Instructions {
+	section := fantasy.DynamicInstruction(fantasy.InstructionKindAuxiliary, override.Text)
+	switch override.Mode {
+	case "replace":
+		return fantasy.NewInstructions(section)
+	case "append":
+		return instructions.Append(section)
+	default:
+		return instructions
+	}
+}
+
 func (a *sessionAgent) runtimeMCPInstructions() string {
 	if a.isSubAgent {
 		return ""
@@ -978,6 +993,29 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		a.publishCanceledQueueDrops(discarded)
 	}()
 
+	if call.RuntimeProvider != nil && call.PrepareRuntime != nil {
+		next, err := call.RuntimeProvider(genCtx)
+		if err == nil && (next.ModelRevision != runtime.ModelRevision || next.LargeModel.ModelCfg.Provider != runtime.LargeModel.ModelCfg.Provider || next.LargeModel.ModelCfg.Model != runtime.LargeModel.ModelCfg.Model) {
+			var settings fantasy.StepModelSettings
+			settings, err = call.PrepareRuntime(genCtx, next)
+			if err == nil {
+				runtime = next
+				call.applyModelSettings(settings)
+				ctx = context.WithValue(ctx, sessionRuntimeKey{}, runtime.Snapshot)
+				genCtx = context.WithValue(genCtx, sessionRuntimeKey{}, runtime.Snapshot)
+			}
+		}
+		if err != nil {
+			if call.OnAdmitted != nil {
+				call.OnAdmitted(err)
+			}
+			if call.OnDiscarded != nil {
+				call.OnDiscarded()
+			}
+			return nil, err
+		}
+	}
+
 	// Capture one runtime generation so prompt and callable tools always agree
 	// for the full turn, even when configuration reloads concurrently.
 	agentTools := runtime.Tools
@@ -1143,6 +1181,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	var stepMessages []fantasy.Message
 	var shouldSummarize bool
 	sanitizedToolCalls := make(map[string]bool)
+	var activePathTranslator *pathtranslate.Translator
 	// Don't send MaxOutputTokens if 0 — some providers (e.g. LM Studio) reject it
 	var maxOutputTokens *int64
 	if call.MaxOutputTokens > 0 {
@@ -1253,7 +1292,12 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 					return callContext, prepared, fmt.Errorf("failed to refresh session mode: %w", getSessionErr)
 				}
 				stepTools := toolsForSessionMode(currentSession.Mode, agentTools, planModeTools)
-				prepared.Tools = codexBoundedTools(stepTools, largeModel)
+				prepared.Tools = translateTools(codexBoundedTools(stepTools, largeModel))
+				callContext, err = preparePathTranslation(callContext, largeModel)
+				if err != nil {
+					return callContext, prepared, err
+				}
+				activePathTranslator = pathtranslate.FromContext(callContext)
 
 				fold, canceledRunIDs := a.drainQueueForStep(call.SessionID)
 				a.publishCanceledQueueDrops(canceledRunIDs)
@@ -1274,7 +1318,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				}
 
 				stepInstructions := baseInstructions
-				if runtime.SystemPromptBuilder != nil {
+				if runtime.SystemPromptBuilder != nil && currentSession.Instructions.Mode != "replace" {
 					var buildErr error
 					stepInstructions, buildErr = runtime.SystemPromptBuilder(callContext, currentSession, largeModel)
 					if buildErr != nil {
@@ -1289,6 +1333,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 					call.MemoryInstructions,
 					call.TurnInstructions,
 				)
+				stepInstructions = applySessionInstructions(stepInstructions, currentSession.Instructions)
 				systemInstructions = stepInstructions
 				prepared.Messages = replaceSystemInstructions(prepared.Messages, stepInstructions, largeModel.InstructionPolicy)
 
@@ -1383,6 +1428,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 						sanitizedToolCalls[tc.ToolCallID] = true
 					}
 				}
+				if activePathTranslator != nil && !tc.ProviderExecuted {
+					var translationErr error
+					input, translationErr = activePathTranslator.JSON(genCtx, input, true)
+					if translationErr != nil {
+						return translationErr
+					}
+				}
 				opaqueMetadata, metadataErr := message.MetadataFromFantasyMetadata(message.ProviderMetadataScopeToolCall, tc.ProviderMetadata)
 				if metadataErr != nil {
 					return metadataErr
@@ -1403,7 +1455,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			},
 			OnToolResult: func(result fantasy.ToolResultContent) error {
 				toolResult := a.convertToToolResult(result)
-				toolResult.Content = toolResultContentForModel(largeModel, toolResult.Content)
+				if modelUsesCodexRuntime(largeModel) {
+					var err error
+					toolResult.Content, toolResult.Metadata, err = boundedToolContent(largeModel.ModelCfg.Model, toolResult.Content, toolResult.Metadata)
+					if err != nil {
+						return err
+					}
+				}
 				if !result.ProviderExecuted && sanitizedToolCalls[result.ToolCallID] {
 					toolResult.Content = "Tool call failed: arguments were not valid JSON. Please check your tool call format and try again."
 					toolResult.IsError = true
@@ -1538,6 +1596,19 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			err = context.Canceled
 		}
 		interrupt(nil)
+		if errors.Is(err, pathtranslate.ErrStaleCheckpoint) {
+			if currentAssistant != nil {
+				if deleteErr := a.messages.Delete(turnCtx, currentAssistant.ID); deleteErr != nil {
+					return nil, deleteErr
+				}
+				currentAssistant = nil
+			}
+			if summarizeErr := a.summarizeWithRuntime(turnCtx, call.SessionID, call.ProviderOptions, call.OnAuthRefresh, fantasy.Instructions{}, ac, runtime); summarizeErr != nil {
+				return nil, summarizeErr
+			}
+			restarting = true
+			continue
+		}
 		if err != nil {
 			isCancelErr := errors.Is(err, context.Canceled)
 			slog.Info("Agent stream returned error",
@@ -1641,7 +1712,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				if len(toolCalls) > 0 {
 					finishReason = message.FinishReasonToolUse
 				}
-				currentAssistant.AddFinish(finishReason, "Interrupted by steering", "")
+				currentAssistant.AddFinish(finishReason, "", "")
 			} else if isCancelErr {
 				currentAssistant.AddFinish(message.FinishReasonCanceled, "User canceled request", "")
 			} else if errors.As(err, &providerErr) {
@@ -1878,6 +1949,8 @@ func (a *sessionAgent) summarize(ctx context.Context, sessionID string, opts fan
 }
 
 func (a *sessionAgent) summarizeWithRuntime(ctx context.Context, sessionID string, opts fantasy.ProviderOptions, onAuthRefresh func(context.Context, *fantasy.ProviderError) error, instructions fantasy.Instructions, replace *activeCancel, runtime InstalledRuntime) error {
+	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
+	ctx = pathtranslate.WithTranslator(ctx, nil)
 	genCtx, cancel := context.WithCancel(ctx)
 	ac := &activeCancel{cancel: cancel}
 	dispatchLock := a.sessionMu(sessionID)
@@ -1984,7 +2057,12 @@ func (a *sessionAgent) summarizeWithRuntime(ctx context.Context, sessionID strin
 	if err := a.messages.FlushAll(ctx); err != nil {
 		return fmt.Errorf("flush messages before summarize: %w", err)
 	}
-	msgs, err := a.getSessionMessages(ctx, currentSession)
+	genCtx, err = preparePathTranslation(genCtx, largeModel)
+	if err != nil {
+		return err
+	}
+	translator := pathtranslate.FromContext(genCtx)
+	msgs, err := a.pathTranslationSummaryMessages(genCtx, currentSession, translator)
 	if err != nil {
 		return err
 	}
@@ -2048,6 +2126,7 @@ func (a *sessionAgent) summarizeWithRuntime(ctx context.Context, sessionID strin
 		}
 		remoteResult = result
 		summaryContent.ProviderMetadata = metadata
+		summaryContent.PathTranslationFingerprint = translator.Fingerprint()
 		summaryContent.Text = result.Summary
 		if result.UsageAvailable {
 			a.updateSessionUsage(largeModel, &currentSession, result.Usage, nil, false)
@@ -2291,7 +2370,7 @@ func fantasyParts(parts []message.ContentPart) []fantasy.MessagePart {
 			attachment := []message.Attachment{{FilePath: value.Name, FileName: value.Name, MimeType: "text/markdown", Content: value.Content}}
 			result = append(result, fantasy.TextPart{Text: message.PromptWithTextAttachments("", attachment)})
 		case message.BinaryContent:
-			result = append(result, fantasy.FilePart{Filename: value.Path, Data: value.Data, MediaType: value.MIMEType})
+			result = append(result, fantasy.FilePart{SourcePath: value.Path, SourcePaths: value.SourcePaths, Filename: value.Path, Data: value.Data, MediaType: value.MIMEType})
 		}
 	}
 	return result
@@ -2328,7 +2407,7 @@ func (a *sessionAgent) createUserMessage(ctx context.Context, call SessionAgentC
 	} else {
 		parts = []message.ContentPart{message.TextContent{Text: call.Prompt, Context: call.turnContext}}
 		for _, attachment := range call.Attachments {
-			parts = append(parts, message.BinaryContent{Path: attachment.FilePath, MIMEType: attachment.MimeType, Data: attachment.Content})
+			parts = append(parts, message.BinaryContent{Path: attachment.FilePath, SourcePaths: attachment.SourcePaths, MIMEType: attachment.MimeType, Data: attachment.Content})
 		}
 	}
 	msg, err := a.messages.Create(ctx, call.SessionID, message.CreateMessageParams{
@@ -2511,9 +2590,11 @@ func (a *sessionAgent) preparePrompt(msgs []message.Message, options prepareProm
 			continue
 		}
 		files = append(files, fantasy.FilePart{
-			Filename:  attachment.FileName,
-			Data:      attachment.Content,
-			MediaType: attachment.MimeType,
+			SourcePaths: attachment.SourcePaths,
+			SourcePath:  attachment.FilePath,
+			Filename:    attachment.FileName,
+			Data:        attachment.Content,
+			MediaType:   attachment.MimeType,
 		})
 	}
 
@@ -2666,6 +2747,8 @@ func (a *sessionAgent) GenerateMemory(ctx context.Context, purpose, prompt strin
 // small model with a minimal call. It returns an empty string (no
 // error) when there is no meaningful suggestion.
 func (a *sessionAgent) SuggestPrompt(ctx context.Context, sessionID string) (string, error) {
+	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
+	ctx = pathtranslate.WithTranslator(ctx, nil)
 	ctx, finish, err := a.beginAuxiliaryWork(ctx)
 	if err != nil {
 		return "", err
@@ -2776,6 +2859,34 @@ func (a *sessionAgent) getSessionMessages(ctx context.Context, session session.S
 	return msgs, nil
 }
 
+func (a *sessionAgent) pathTranslationSummaryMessages(ctx context.Context, currentSession session.Session, translator *pathtranslate.Translator) ([]message.Message, error) {
+	msgs, err := a.getSessionMessages(ctx, currentSession)
+	if err != nil || translator == nil {
+		return msgs, err
+	}
+	stale := false
+	for _, msg := range msgs {
+		if translator.CheckCheckpoints(msg.ToAIMessage()) != nil {
+			stale = true
+			break
+		}
+	}
+	if !stale {
+		return msgs, nil
+	}
+	originals, err := a.messages.List(ctx, currentSession.ID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]message.Message, 0, len(originals))
+	for _, msg := range originals {
+		if !msg.IsSummaryMessage {
+			result = append(result, msg)
+		}
+	}
+	return result, nil
+}
+
 // hasUserTextMessage reports whether any user message in msgs contains
 // text content (as opposed to only shell commands or other non-text parts).
 func hasUserTextMessage(msgs []message.Message) bool {
@@ -2798,6 +2909,8 @@ func (a *sessionAgent) GenerateTitle(ctx context.Context, sessionID string, user
 }
 
 func (a *sessionAgent) generateTitleWithRuntime(ctx context.Context, sessionID string, userPrompt string, runtime InstalledRuntime) {
+	ctx = context.WithValue(ctx, tools.SessionIDContextKey, sessionID)
+	ctx = pathtranslate.WithTranslator(ctx, nil)
 	if userPrompt == "" {
 		return
 	}
@@ -3302,6 +3415,16 @@ func (a *sessionAgent) convertToToolResult(result fantasy.ToolResultContent) mes
 //	AFTER:  [tool result: "Image loaded - see attached"], [user: image attachment]
 func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Message, largeModel Model) ([]fantasy.Message, error) {
 	supportsImages := largeModel.CatalogModel.SupportsImages
+	toolInputs := make(map[string]string)
+	for _, msg := range messages {
+		for _, part := range msg.Content {
+			call, ok := fantasy.AsMessagePart[fantasy.ToolCallPart](part)
+			if !ok {
+				continue
+			}
+			toolInputs[call.ToolCallID] = call.Input
+		}
+	}
 
 	convertedMessages := make([]fantasy.Message, 0, len(messages))
 	syntheticUserMessages := make(map[int]struct{})
@@ -3335,7 +3458,13 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 				continue
 			}
 
-			if media, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](toolResult.Output); ok {
+			if _, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](toolResult.Output); ok {
+				var err error
+				toolResult, err = pathtranslate.RestoreToolResult(toolResult)
+				if err != nil {
+					return nil, fmt.Errorf("restore tool image: %w", err)
+				}
+				media, _ := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](toolResult.Output)
 				if !supportsImages {
 					// Model cannot process images. Replace with a text
 					// placeholder and skip creating a synthetic user
@@ -3360,15 +3489,23 @@ func (a *sessionAgent) workaroundProviderMediaLimitations(messages []fantasy.Mes
 
 				decoded, err := base64.StdEncoding.DecodeString(media.Data)
 				if err != nil {
-					slog.Warn("Failed to decode media data", "error", err)
-					textParts = append(textParts, part)
-					continue
+					return nil, fmt.Errorf("decode tool media: %w", err)
 				}
 
+				sources, err := pathtranslate.ToolImageSources(toolResult.ClientMetadata, toolInputs[toolResult.ToolCallID])
+				if err != nil {
+					return nil, fmt.Errorf("decode tool image provenance: %w", err)
+				}
+				var sourcePath string
+				if len(sources) > 0 {
+					sourcePath = sources[0]
+				}
 				mediaFiles = append(mediaFiles, fantasy.FilePart{
-					Data:      decoded,
-					MediaType: media.MediaType,
-					Filename:  fmt.Sprintf("tool-result-%s", toolResult.ToolCallID),
+					SourcePath:  sourcePath,
+					SourcePaths: sources,
+					Data:        decoded,
+					MediaType:   media.MediaType,
+					Filename:    fmt.Sprintf("tool-result-%s", toolResult.ToolCallID),
 				})
 
 				text := media.Text
@@ -3411,8 +3548,49 @@ func normalizeProviderPromptImages(messages []fantasy.Message, declared *imageat
 	policy := imageattachment.ChatPolicy(declared)
 	result := make([]fantasy.Message, len(messages))
 	type imagePosition struct {
-		message int
-		part    int
+		message     int
+		part        int
+		file        fantasy.FilePart
+		tool        *fantasy.ToolResultPart
+		sourceBytes int64
+	}
+	store := func(position imagePosition) {
+		var part fantasy.MessagePart = position.file
+		if position.tool != nil {
+			tool := *position.tool
+			media, _ := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](tool.Output)
+			media.Data, media.MediaType = base64.StdEncoding.EncodeToString(position.file.Data), position.file.MediaType
+			if media.ImageFile != nil {
+				file := position.file
+				media.ImageFile = &file
+			}
+			tool.Output = media
+			part = tool
+		}
+		result[position.message].Content[position.part] = part
+	}
+	normalize := func(position imagePosition, policy imageattachment.Policy) (fantasy.FilePart, error) {
+		file := position.file
+		if file.NeedsImageNormalization {
+			if position.sourceBytes > policy.MaxSourceBytes {
+				return fantasy.FilePart{}, fmt.Errorf("image exceeds the declared source limit of %d bytes", policy.MaxSourceBytes)
+			}
+			policy.MaxSourceBytes = max(policy.MaxSourceBytes, int64(len(file.Data)))
+			accepted := make(map[string]bool, len(policy.MIMETypes)+1)
+			for mediaType, enabled := range policy.MIMETypes {
+				accepted[mediaType] = enabled
+			}
+			accepted["image/png"] = true
+			policy.MIMETypes = accepted
+		}
+		normalized, err := imageattachment.Normalize(policy, message.Attachment{
+			FileName: file.Filename, MimeType: strings.ToLower(file.MediaType), Content: file.Data,
+		})
+		if err != nil {
+			return fantasy.FilePart{}, err
+		}
+		file.Filename, file.MediaType, file.Data = normalized.FileName, normalized.MimeType, normalized.Content
+		return file, nil
 	}
 	var images []imagePosition
 	imageBytes := 0
@@ -3420,23 +3598,45 @@ func normalizeProviderPromptImages(messages []fantasy.Message, declared *imageat
 		result[messageIndex] = promptMessage
 		result[messageIndex].Content = append([]fantasy.MessagePart(nil), promptMessage.Content...)
 		for partIndex, part := range result[messageIndex].Content {
-			file, ok := fantasy.AsMessagePart[fantasy.FilePart](part)
-			if !ok || !strings.HasPrefix(strings.ToLower(file.MediaType), "image/") {
+			position := imagePosition{message: messageIndex, part: partIndex}
+			if file, ok := fantasy.AsMessagePart[fantasy.FilePart](part); ok {
+				position.file = file
+				if file.PathTranslationOriginal != nil {
+					position.sourceBytes = int64(len(file.PathTranslationOriginal.Data))
+				}
+			} else if tool, ok := fantasy.AsMessagePart[fantasy.ToolResultPart](part); ok {
+				media, ok := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](tool.Output)
+				if !ok || !strings.HasPrefix(strings.ToLower(media.MediaType), "image/") {
+					continue
+				}
+				data, err := base64.StdEncoding.DecodeString(media.Data)
+				if err != nil {
+					return nil, fmt.Errorf("decode tool image: %w", err)
+				}
+				position.tool = &tool
+				position.file = fantasy.FilePart{
+					Filename: "tool-result-" + tool.ToolCallID, Data: data, MediaType: media.MediaType,
+				}
+				if media.ImageFile != nil {
+					position.file = *media.ImageFile
+					position.file.Data, position.file.MediaType = data, media.MediaType
+					if original := position.file.PathTranslationOriginal; original != nil {
+						position.sourceBytes = int64(len(original.Data))
+					}
+				}
+			} else {
 				continue
 			}
-			normalized, err := imageattachment.Normalize(policy, message.Attachment{
-				FileName: file.Filename,
-				MimeType: strings.ToLower(file.MediaType),
-				Content:  file.Data,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("prepare provider image %q: %w", file.Filename, err)
+			if !strings.HasPrefix(strings.ToLower(position.file.MediaType), "image/") {
+				continue
 			}
-			file.Filename = normalized.FileName
-			file.MediaType = normalized.MimeType
-			file.Data = normalized.Content
-			result[messageIndex].Content[partIndex] = file
-			images = append(images, imagePosition{messageIndex, partIndex})
+			file, err := normalize(position, policy)
+			if err != nil {
+				return nil, fmt.Errorf("prepare provider image %q: %w", position.file.Filename, err)
+			}
+			position.file = file
+			store(position)
+			images = append(images, position)
 			imageBytes += base64.StdEncoding.EncodedLen(len(file.Data))
 		}
 	}
@@ -3446,21 +3646,19 @@ func normalizeProviderPromptImages(messages []fantasy.Message, declared *imageat
 			break
 		}
 		policy.MaxRawBytes = min(policy.MaxRawBytes, target)
-		for _, position := range images {
-			file, _ := fantasy.AsMessagePart[fantasy.FilePart](result[position.message].Content[position.part])
-			if len(file.Data) <= policy.MaxRawBytes {
+		for index, position := range images {
+			if len(position.file.Data) <= policy.MaxRawBytes {
 				continue
 			}
-			normalized, err := imageattachment.Normalize(policy, message.Attachment{
-				FileName: file.Filename, MimeType: file.MediaType, Content: file.Data,
-			})
+			file, err := normalize(position, policy)
 			if err != nil {
-				return nil, fmt.Errorf("compress provider image %q: %w", file.Filename, err)
+				return nil, fmt.Errorf("compress provider image %q: %w", position.file.Filename, err)
 			}
-			imageBytes -= base64.StdEncoding.EncodedLen(len(file.Data))
-			file.Filename, file.MediaType, file.Data = normalized.FileName, normalized.MimeType, normalized.Content
+			imageBytes -= base64.StdEncoding.EncodedLen(len(position.file.Data))
 			imageBytes += base64.StdEncoding.EncodedLen(len(file.Data))
-			result[position.message].Content[position.part] = file
+			position.file = file
+			images[index] = position
+			store(position)
 			if imageBytes <= maximumImageBytes {
 				break
 			}
@@ -3470,9 +3668,15 @@ func normalizeProviderPromptImages(messages []fantasy.Message, declared *imageat
 		if imageBytes <= maximumImageBytes || index == len(images)-1 {
 			break
 		}
-		file, _ := fantasy.AsMessagePart[fantasy.FilePart](result[position.message].Content[position.part])
-		imageBytes -= base64.StdEncoding.EncodedLen(len(file.Data))
-		result[position.message].Content[position.part] = fantasy.TextPart{Text: omittedImageHistoryMessage}
+		imageBytes -= base64.StdEncoding.EncodedLen(len(position.file.Data))
+		if position.tool != nil {
+			tool := *position.tool
+			media, _ := fantasy.AsToolResultOutputType[fantasy.ToolResultOutputContentMedia](tool.Output)
+			tool.Output = fantasy.ToolResultOutputContentText{Text: strings.TrimSpace(media.Text + "\n\n" + omittedImageHistoryMessage)}
+			result[position.message].Content[position.part] = tool
+		} else {
+			result[position.message].Content[position.part] = fantasy.TextPart{Text: omittedImageHistoryMessage}
+		}
 	}
 	return result, nil
 }

@@ -337,10 +337,11 @@ func (c *Client) ReadSkill(ctx context.Context, id, skillID string) (*proto.Read
 
 // MCPResourceContents holds the contents of an MCP resource.
 type MCPResourceContents struct {
-	URI      string `json:"uri"`
-	MIMEType string `json:"mime_type,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Blob     []byte `json:"blob,omitempty"`
+	SourcePaths []string `json:"source_paths,omitempty"`
+	URI         string   `json:"uri"`
+	MIMEType    string   `json:"mime_type,omitempty"`
+	Text        string   `json:"text,omitempty"`
+	Blob        []byte   `json:"blob,omitempty"`
 }
 
 // EnableDockerMCP enables the Docker MCP server on the workspace.

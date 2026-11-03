@@ -34,6 +34,28 @@ type Message struct {
 	ItemID           string         `json:"item_id"`
 }
 
+type PathTranslationIdentity struct {
+	ID     int64  `json:"id"`
+	Secret []byte `json:"secret"`
+}
+
+type PathTranslationMetadatum struct {
+	Digest string `json:"digest"`
+	Policy string `json:"policy"`
+}
+
+type PathTranslationName struct {
+	Identity string `json:"identity"`
+	Alias    string `json:"alias"`
+	Path     string `json:"path"`
+}
+
+type PathTranslationScope struct {
+	ScopeKey string `json:"scope_key"`
+	Settings string `json:"settings"`
+	Revision int64  `json:"revision"`
+}
+
 type ReadFile struct {
 	SessionID string `json:"session_id"`
 	Path      string `json:"path"`

@@ -59,6 +59,7 @@ func (c *coordinator) runDetachableSubAgent(ctx context.Context, params AgentPar
 	childSessionID := c.sessions.CreateAgentToolSessionID(runParams.AgentMessageID, runParams.ToolCallID)
 	markDetached()
 	err = c.backgroundAgents.Start(task, childSessionID, func(taskCtx context.Context) backgroundAgentResult {
+		defer task.bindAgent(runParams.Agent)()
 		defer cancel()
 		var output agentResult
 		select {

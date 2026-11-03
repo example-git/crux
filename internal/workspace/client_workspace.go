@@ -89,11 +89,25 @@ var (
 // process represents exactly one workspace and the TUI reads
 // skills.GetLatestStates directly at construction time.
 func NewClientWorkspace(c *client.Client, ws proto.Workspace) *ClientWorkspace {
+	return newClientWorkspace(c, ws, true)
+}
+
+func NewProtocolClientWorkspace(c *client.Client, ws proto.Workspace) *ClientWorkspace {
+	return newClientWorkspace(c, ws, false)
+}
+
+func newClientWorkspace(c *client.Client, ws proto.Workspace, terminal bool) *ClientWorkspace {
 	if ws.Config != nil {
 		ws.Config.SetupAgents()
 	}
 	states := protoToSkillStates(ws.Skills)
-	mgr := skills.NewManager(nil, nil, states, skills.WithGlobalMirror())
+	var options []skills.ManagerOption
+	var reporter *herdr.Client
+	if terminal {
+		options = append(options, skills.WithGlobalMirror())
+		reporter = herdr.Init()
+	}
+	mgr := skills.NewManager(nil, nil, states, options...)
 	subCtx, subCancel := context.WithCancel(context.Background())
 	return &ClientWorkspace{
 		authority:   newClientAuthority(c, ws),
@@ -103,7 +117,7 @@ func NewClientWorkspace(c *client.Client, ws proto.Workspace) *ClientWorkspace {
 		subCtx:      subCtx,
 		subCancel:   subCancel,
 		subDone:     make(chan struct{}),
-		herdrClient: herdr.Init(),
+		herdrClient: reporter,
 	}
 }
 
@@ -763,6 +777,27 @@ func (w *ClientWorkspace) ProviderSurfaces() []providerregistry.Surface {
 	return surfaces
 }
 
+func (w *ClientWorkspace) Snapshot() proto.Workspace {
+	if w.authority != nil {
+		w.authority.mu.Lock()
+		defer w.authority.mu.Unlock()
+	}
+	snapshot := w.cached()
+	if snapshot.Authority != nil {
+		authority := *snapshot.Authority
+		snapshot.Authority = &authority
+	}
+	snapshot.Config = w.Config().RedactedForTransport()
+	snapshot.ProviderSurfaces = w.ProviderSurfaces()
+	snapshot.ProviderLoadIssues = w.ProviderLoadIssues()
+	snapshot.Env = nil
+	snapshot.ForwardedProviders = nil
+	snapshot.ForwardedAccounts = nil
+	snapshot.Runtime = nil
+	snapshot.Creation = nil
+	return snapshot
+}
+
 func (w *ClientWorkspace) WorkingDir() string {
 	return w.cached().Path
 }
@@ -1012,10 +1047,11 @@ func (w *ClientWorkspace) ReadMCPResource(ctx context.Context, name, uri string)
 	result := make([]MCPResourceContents, len(contents))
 	for i, c := range contents {
 		result[i] = MCPResourceContents{
-			URI:      c.URI,
-			MIMEType: c.MIMEType,
-			Text:     c.Text,
-			Blob:     c.Blob,
+			SourcePaths: c.SourcePaths,
+			URI:         c.URI,
+			MIMEType:    c.MIMEType,
+			Text:        c.Text,
+			Blob:        c.Blob,
 		}
 	}
 	return result, nil
@@ -1130,7 +1166,19 @@ func (w *ClientWorkspace) Subscribe(program *tea.Program) {
 		program.Quit()
 	})
 
-	w.runSubscription(program.Send)
+	w.SubscribeEvents(program.Send)
+}
+
+func (w *ClientWorkspace) SubscribeEvents(send func(tea.Msg)) {
+	w.runSubscription(send)
+}
+
+func (w *ClientWorkspace) SubscribeProtocolEvents(send func(any), connection func(ConnectionEvent)) {
+	w.runProtocolSubscription(func(event tea.Msg) {
+		if state, ok := event.(ConnectionEvent); ok && connection != nil {
+			connection(state)
+		}
+	}, send)
 }
 
 // maxRecoveryEscalate is the number of consecutive failed workspace
@@ -1160,6 +1208,10 @@ var recoveryCreateTimeout = 30 * time.Second
 // re-established channel — even one that reconnects on the first try —
 // re-asserts the client's session and asks the UI to resync.
 func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
+	w.runProtocolSubscription(send, nil)
+}
+
+func (w *ClientWorkspace) runProtocolSubscription(send func(tea.Msg), protocolEvents func(any)) {
 	w.subStarted.Store(true)
 	defer close(w.subDone)
 
@@ -1228,7 +1280,7 @@ func (w *ClientWorkspace) runSubscription(send func(tea.Msg)) {
 			recreatedFrom = ""
 		}
 		backoff = channelReconnectInitialBackoff
-		w.consumeEvents(evc, send)
+		w.consumeProtocolEvents(evc, send, protocolEvents)
 		cancelAttempt()
 
 		// The workspace channel closed: the server restarted, the connection
@@ -1395,6 +1447,10 @@ func (w *ClientWorkspace) sleepOrDone(d time.Duration) bool {
 // ConfigChanged events trigger a workspace refresh; all other events
 // are translated into domain types and forwarded to send.
 func (w *ClientWorkspace) consumeEvents(evc <-chan any, send func(tea.Msg)) {
+	w.consumeProtocolEvents(evc, send, nil)
+}
+
+func (w *ClientWorkspace) consumeProtocolEvents(evc <-chan any, send func(tea.Msg), protocolEvents func(any)) {
 	for ev := range evc {
 		if w.HandleClientRefreshEvent(w.subCtx, ev) {
 			continue
@@ -1408,9 +1464,19 @@ func (w *ClientWorkspace) consumeEvents(evc <-chan any, send func(tea.Msg)) {
 			if !w.clientOwned() {
 				w.refreshWorkspace()
 			}
+			if protocolEvents != nil {
+				protocolEvents(ev)
+			}
+			continue
+		}
+		switch ev.(type) {
+		case proto.PeerProviderAuthentication, proto.PeerModelSelectionChanged, proto.PeerRuntimePatchApplied:
 			continue
 		}
 		translated := w.translateEvent(ev)
+		if translated != nil && protocolEvents != nil {
+			protocolEvents(ev)
+		}
 		if translated != nil && send != nil {
 			send(translated)
 		}
@@ -1671,6 +1737,7 @@ func protoToSession(s proto.Session) session.Session {
 		Model:          s.Model,
 		Models:         s.Models,
 		ModelRevision:  s.ModelRevision,
+		Instructions:   s.Instructions,
 		Provider:       s.Provider,
 		CreatedAt:      s.CreatedAt,
 		UpdatedAt:      s.UpdatedAt,
@@ -1769,7 +1836,7 @@ func protoToMessage(m proto.Message) message.Message {
 		case proto.ImageURLContent:
 			msg.Parts = append(msg.Parts, message.ImageURLContent{URL: v.URL, Detail: v.Detail})
 		case proto.BinaryContent:
-			msg.Parts = append(msg.Parts, message.BinaryContent{Path: v.Path, MIMEType: v.MIMEType, Data: v.Data})
+			msg.Parts = append(msg.Parts, message.BinaryContent{Path: v.Path, SourcePaths: v.SourcePaths, MIMEType: v.MIMEType, Data: v.Data})
 		case proto.ShellCommand:
 			msg.Parts = append(msg.Parts, message.ShellCommand{
 				Command:  v.Command,
@@ -1832,6 +1899,7 @@ func sessionToProto(s session.Session) proto.Session {
 		Model:          s.Model,
 		Models:         s.Models,
 		ModelRevision:  s.ModelRevision,
+		Instructions:   s.Instructions,
 		Provider:       s.Provider,
 		CreatedAt:      s.CreatedAt,
 		UpdatedAt:      s.UpdatedAt,

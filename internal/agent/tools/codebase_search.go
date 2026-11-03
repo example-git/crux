@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/example-git/crux/internal/codebaseindex"
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/example-git/crux/internal/permission"
 )
 
@@ -99,7 +101,8 @@ func NewCodebaseSearchTool(workingDir string, toolConfig config.ToolCodebaseSear
 				}
 			}
 			results = codebaseindex.RerankSearchResults(projectRoot, params.Query, results, params.Count)
-			return fantasy.NewTextResponse(formatCodebaseSearchResults(results)), nil
+			output, references := formatCodebaseSearchResultPaths(results, projectRoot)
+			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(output), references), nil
 		},
 	)
 }
@@ -124,8 +127,14 @@ func formatCodebaseIndexUnavailable(err *codebaseindex.StoreUnavailableError) st
 }
 
 func formatCodebaseSearchResults(results []codebaseindex.SearchResult) string {
+	output, _ := formatCodebaseSearchResultPaths(results, "")
+	return output
+}
+
+func formatCodebaseSearchResultPaths(results []codebaseindex.SearchResult, projectRoot string) (string, pathtranslate.PathReferences) {
+	var references pathtranslate.PathReferences
 	if len(results) == 0 {
-		return "No semantic matches found."
+		return "No semantic matches found.", references
 	}
 
 	var output strings.Builder
@@ -159,7 +168,13 @@ func formatCodebaseSearchResults(results []codebaseindex.SearchResult) string {
 				wroteRole = true
 			}
 			resultIndex++
-			fmt.Fprintf(&output, "%d. %s:%d-%d (score %.4f", resultIndex, result.Chunk.Path, result.Chunk.StartLine, result.Chunk.EndLine, result.Score)
+			fmt.Fprintf(&output, "%d. ", resultIndex)
+			path := result.Chunk.Path
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(projectRoot, path)
+			}
+			references.Paths = append(references.Paths, pathtranslate.PathReference{Start: output.Len(), End: output.Len() + len(result.Chunk.Path), Path: path})
+			fmt.Fprintf(&output, "%s:%d-%d (score %.4f", result.Chunk.Path, result.Chunk.StartLine, result.Chunk.EndLine, result.Score)
 			if result.Symbol != "" {
 				fmt.Fprintf(&output, ", symbol %s", result.Symbol)
 			}
@@ -180,5 +195,5 @@ func formatCodebaseSearchResults(results []codebaseindex.SearchResult) string {
 			output.WriteString("\n")
 		}
 	}
-	return strings.TrimSpace(output.String())
+	return strings.TrimSpace(output.String()), references
 }

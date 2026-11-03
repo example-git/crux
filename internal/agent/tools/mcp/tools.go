@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"iter"
 	"log/slog"
+	"net/http"
 	"slices"
 	"strings"
 
 	"github.com/example-git/crux/internal/config"
+	"github.com/example-git/crux/internal/pathtranslate"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -18,10 +20,11 @@ type Tool = mcp.Tool
 
 // ToolResult represents the result of running an MCP tool.
 type ToolResult struct {
-	Type      string
-	Content   string
-	Data      []byte
-	MediaType string
+	Type        string
+	Content     string
+	Data        []byte
+	MediaType   string
+	SourcePaths []string
 }
 
 // Tools returns all available MCP tools.
@@ -66,6 +69,7 @@ func (runtime *Manager) RunTool(ctx context.Context, cfg *config.ConfigStore, na
 	var textParts []string
 	var imageData []byte
 	var imageMimeType string
+	var imageSources []string
 	var audioData []byte
 	var audioMimeType string
 
@@ -75,6 +79,11 @@ func (runtime *Manager) RunTool(ctx context.Context, cfg *config.ConfigStore, na
 			textParts = append(textParts, content.Text)
 		case *mcp.ImageContent:
 			if imageData == nil {
+				var err error
+				imageSources, err = ImageSourceMetadata(content.Meta)
+				if err != nil {
+					return ToolResult{}, err
+				}
 				imageData = content.Data
 				imageMimeType = content.MIMEType
 			}
@@ -82,6 +91,22 @@ func (runtime *Manager) RunTool(ctx context.Context, cfg *config.ConfigStore, na
 			if audioData == nil {
 				audioData = content.Data
 				audioMimeType = content.MIMEType
+			}
+		case *mcp.EmbeddedResource:
+			resource, err := ResourceResult([]*ResourceContents{content.Resource})
+			if err != nil {
+				return ToolResult{}, err
+			}
+			if resource.Content != "" {
+				textParts = append(textParts, resource.Content)
+			}
+			if resource.Type == "image" && imageData == nil {
+				sources, err := ImageSourceMetadata(content.Meta)
+				if err != nil {
+					return ToolResult{}, err
+				}
+				imageData, imageMimeType, imageSources = resource.Data, resource.MediaType, resource.SourcePaths
+				imageSources = append(imageSources, sources...)
 			}
 		default:
 			textParts = append(textParts, fmt.Sprintf("%v", v))
@@ -93,11 +118,17 @@ func (runtime *Manager) RunTool(ctx context.Context, cfg *config.ConfigStore, na
 	// We need to make sure the data is base64
 	// when using something like docker + playwright the data was not returned correctly.
 	if imageData != nil {
+		sources, err := ImageSourceMetadata(result.Meta)
+		if err != nil {
+			return ToolResult{}, err
+		}
+		imageSources = append(imageSources, sources...)
 		return ToolResult{
-			Type:      "image",
-			Content:   textContent,
-			Data:      ensureRawBytes(imageData),
-			MediaType: imageMimeType,
+			Type:        "image",
+			Content:     textContent,
+			Data:        ensureRawBytes(imageData),
+			MediaType:   imageMimeType,
+			SourcePaths: imageSources,
 		}, nil
 	}
 
@@ -114,6 +145,55 @@ func (runtime *Manager) RunTool(ctx context.Context, cfg *config.ConfigStore, na
 		Type:    "text",
 		Content: textContent,
 	}, nil
+}
+
+func ImageSourceMetadata(metadata mcp.Meta) ([]string, error) {
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, err
+	}
+	return pathtranslate.ToolImageSources(string(encoded), "")
+}
+
+func ResourceResult(contents []*ResourceContents) (ToolResult, error) {
+	result := ToolResult{Type: "text"}
+	var textParts []string
+	for _, content := range contents {
+		if content == nil {
+			continue
+		}
+		data := content.Blob
+		mediaType := content.MIMEType
+		if len(data) == 0 && strings.HasPrefix(strings.ToLower(mediaType), "image/") {
+			data = []byte(content.Text)
+		}
+		if len(data) > 0 {
+			data = ensureRawBytes(data)
+			detected := http.DetectContentType(data)
+			if strings.HasPrefix(strings.ToLower(mediaType), "image/") || strings.HasPrefix(detected, "image/") {
+				if result.Type == "image" {
+					return ToolResult{}, fmt.Errorf("MCP resource responses with multiple images are not supported")
+				}
+				if !strings.HasPrefix(strings.ToLower(mediaType), "image/") {
+					mediaType = detected
+				}
+				result.Type, result.Data, result.MediaType = "image", data, mediaType
+				sources, err := ImageSourceMetadata(content.Meta)
+				if err != nil {
+					return ToolResult{}, err
+				}
+				result.SourcePaths = append(sources, content.URI)
+				continue
+			}
+		}
+		if content.Text != "" {
+			textParts = append(textParts, content.Text)
+		} else if len(content.Blob) > 0 {
+			textParts = append(textParts, string(content.Blob))
+		}
+	}
+	result.Content = strings.Join(textParts, "\n")
+	return result, nil
 }
 
 // RefreshTools gets the updated list of tools from the MCP and updates the

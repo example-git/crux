@@ -156,7 +156,7 @@ func (s *Shell) ExecTTY(ctx context.Context, command string, terminal *os.File, 
 	if err != nil {
 		return fmt.Errorf("could not run command in TTY: %w", err)
 	}
-	return runner.Run(ctx, line)
+	return runner.Run(bindRedirectCapture(ctx, output), line)
 }
 
 // GetWorkingDir returns the current working directory
@@ -306,7 +306,7 @@ func (s *Shell) execCommon(ctx context.Context, command string, stdout, stderr i
 		return fmt.Errorf("could not run command: %w", err)
 	}
 
-	err = runner.Run(ctx, line)
+	err = runner.Run(bindRedirectCapture(ctx, stdout), line)
 	return err
 }
 

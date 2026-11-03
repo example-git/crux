@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/example-git/crux/internal/proto"
+	managedtask "github.com/example-git/crux/internal/task"
 )
 
 func (c *controllerV1) handleGetWorkspaceTasks(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +30,34 @@ func (c *controllerV1) handlePostWorkspaceTaskOutput(w http.ResponseWriter, r *h
 		return
 	}
 	result, err := c.backend.TaskOutput(r.Context(), r.PathValue("id"), r.PathValue("tid"), request.Wait, request.Timeout)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, result)
+}
+
+func (c *controllerV1) handlePostWorkspaceTaskLog(w http.ResponseWriter, r *http.Request) {
+	var request managedtask.LogRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.Offset < 0 {
+		jsonError(w, http.StatusBadRequest, "a nonnegative log offset is required")
+		return
+	}
+	result, err := c.backend.TaskLog(r.Context(), r.PathValue("id"), r.PathValue("tid"), request)
+	if err != nil {
+		c.handleError(w, r, err)
+		return
+	}
+	jsonEncode(w, result)
+}
+
+func (c *controllerV1) handlePostWorkspaceTaskMessage(w http.ResponseWriter, r *http.Request) {
+	var request proto.TaskContinueRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.ParentSessionID == "" || request.Prompt == "" {
+		jsonError(w, http.StatusBadRequest, "parent_session_id and prompt are required")
+		return
+	}
+	result, err := c.backend.SendTask(r.Context(), r.PathValue("id"), r.PathValue("tid"), request.ParentSessionID, request.Prompt)
 	if err != nil {
 		c.handleError(w, r, err)
 		return

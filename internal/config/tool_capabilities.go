@@ -67,6 +67,7 @@ var builtinToolPolicies = map[string]builtinToolPolicy{
 	"skill_list":         {capabilities: []string{capabilityApplicationRead}, planSafe: true},
 	"skill_load":         {capabilities: []string{capabilityApplicationRead}, planSafe: true},
 	"sourcegraph":        {capabilities: []string{capabilityExternalRead}, planSafe: true},
+	"subagent_script":    {capabilities: []string{capabilityOrchestration}},
 	"task_continue":      {capabilities: []string{capabilityOrchestration}},
 	"task_list":          {capabilities: []string{capabilityProcessRead}, planSafe: true},
 	"task_output":        {capabilities: []string{capabilityProcessRead}, planSafe: true},

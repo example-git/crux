@@ -759,7 +759,7 @@ func TestClientWorkspaceReconnectRefreshesMissedConfiguration(t *testing.T) {
 	messages := make(chan ConnectionEvent, 10)
 	done := make(chan struct{})
 	go func() {
-		workspace.runSubscription(func(message tea.Msg) {
+		workspace.SubscribeEvents(func(message tea.Msg) {
 			if event, ok := message.(ConnectionEvent); ok {
 				messages <- event
 			}

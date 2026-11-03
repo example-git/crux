@@ -44,10 +44,11 @@ func (b *Backend) ConfigRequirements() proto.ConfigRequirements {
 // MCPResourceContents holds the contents of an MCP resource returned
 // by the backend.
 type MCPResourceContents struct {
-	URI      string `json:"uri"`
-	MIMEType string `json:"mime_type,omitempty"`
-	Text     string `json:"text,omitempty"`
-	Blob     []byte `json:"blob,omitempty"`
+	SourcePaths []string `json:"source_paths,omitempty"`
+	URI         string   `json:"uri"`
+	MIMEType    string   `json:"mime_type,omitempty"`
+	Text        string   `json:"text,omitempty"`
+	Blob        []byte   `json:"blob,omitempty"`
 }
 
 // SetConfigField sets a key/value pair in the config file for the
@@ -366,11 +367,19 @@ func (b *Backend) ReadMCPResource(ctx context.Context, workspaceID, name, uri st
 	}
 	result := make([]MCPResourceContents, len(contents))
 	for i, c := range contents {
+		if c == nil {
+			continue
+		}
+		sources, err := mcptools.ImageSourceMetadata(c.Meta)
+		if err != nil {
+			return nil, err
+		}
 		result[i] = MCPResourceContents{
-			URI:      c.URI,
-			MIMEType: c.MIMEType,
-			Text:     c.Text,
-			Blob:     c.Blob,
+			SourcePaths: append(sources, c.URI),
+			URI:         c.URI,
+			MIMEType:    c.MIMEType,
+			Text:        c.Text,
+			Blob:        c.Blob,
 		}
 	}
 	return result, nil

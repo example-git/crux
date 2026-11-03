@@ -37,6 +37,7 @@ type BackgroundShell struct {
 	restarting          atomic.Bool
 	retired             atomic.Bool
 	WorkingDir          string
+	outputPaths         []string
 	Ownership           managedtask.Ownership
 	ctx                 context.Context
 	cancel              context.CancelFunc
@@ -185,6 +186,7 @@ func (m *BackgroundShellManager) recover() error {
 			Command:             record.Shell.Command,
 			Description:         record.Description,
 			WorkingDir:          record.Shell.WorkingDirectory,
+			outputPaths:         record.Shell.OutputPaths,
 			Ownership:           record.Ownership,
 			outputStore:         m.outputStore,
 			outputRef:           record.OutputRef,
@@ -210,10 +212,18 @@ func (m *BackgroundShellManager) persistShell(backgroundShell *BackgroundShell) 
 	if m.recordStore == nil {
 		return nil
 	}
-	return m.recordStore.Put(backgroundShell.record())
+	record, err := backgroundShell.record()
+	if err != nil {
+		return err
+	}
+	return m.recordStore.Put(record)
 }
 
-func (b *BackgroundShell) record() managedtask.Record {
+func (b *BackgroundShell) record() (managedtask.Record, error) {
+	paths, err := b.ReadOutputPaths()
+	if err != nil {
+		return managedtask.Record{}, err
+	}
 	return managedtask.Record{
 		ID:           b.ID,
 		Type:         managedtask.TypeShell,
@@ -224,13 +234,14 @@ func (b *BackgroundShell) record() managedtask.Record {
 		OutputRef:    b.outputRef,
 		Notification: b.notification,
 		Shell: &managedtask.ShellRecord{
+			OutputPaths:         paths,
 			Command:             b.Command,
 			OutputID:            strings.TrimPrefix(b.outputRef, "task-output:"),
 			WorkingDirectory:    b.WorkingDir,
 			Backgrounded:        b.backgrounded,
 			NotificationEmitted: b.notificationEmitted,
 		},
-	}
+	}, nil
 }
 
 func (b *BackgroundShell) persistLocked() error {
@@ -630,6 +641,10 @@ type BackgroundShellInfo struct {
 	Description string
 }
 
+func (m *BackgroundShellManager) ReadRetainedOutput(ref string, options managedtask.ReadOptions) (managedtask.ReadResult, error) {
+	return m.outputStore.Read(ref, options)
+}
+
 func (m *BackgroundShellManager) List() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -820,4 +835,17 @@ func (bs *BackgroundShell) WaitContext(ctx context.Context) bool {
 	case <-ctx.Done():
 		return false
 	}
+}
+
+func (b *BackgroundShell) OutputPaths() []string {
+	paths, _ := b.ReadOutputPaths()
+	return paths
+}
+
+func (b *BackgroundShell) ReadOutputPaths() ([]string, error) {
+	paths, err := ReadOutputPaths(b.ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append(append([]string(nil), b.outputPaths...), paths...), nil
 }

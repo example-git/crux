@@ -177,7 +177,7 @@ func isBinary(probe []byte) bool {
 // interpreter via os/exec, inheriting the parent runner's cwd, env, and
 // stdio. Returns interp.ExitStatus on non-zero interpreter exit so the
 // parent interpreter sees it as a normal non-zero status.
-func dispatchShebang(ctx context.Context, scriptPath string, probe []byte, args []string) error {
+func dispatchShebang(ctx context.Context, scriptPath string, probe []byte, args []string) (resultErr error) {
 	sb, err := parseShebang(probe)
 	if err != nil {
 		hc := interp.HandlerCtx(ctx)
@@ -204,6 +204,15 @@ func dispatchShebang(ctx context.Context, scriptPath string, probe []byte, args 
 	cmd.Stdout = hc.Stdout
 	cmd.Stderr = hc.Stderr
 	isolateProcess(cmd)
+	finishReporting, err := prepareNativeDirectoryReporting(ctx, cmd)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := finishReporting(); err != nil {
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
 
 	if err := cmd.Run(); err != nil {
 		var exitErr *exec.ExitError
@@ -409,7 +418,7 @@ func runShellSource(ctx context.Context, path string, args []string, blockFuncs 
 		opts = append(opts, interp.Params(params...))
 	}
 
-	runner, err := interp.New(opts...)
+	runner, err := interp.New(append(opts, accessFilterOptions()...)...)
 	if err != nil {
 		return fmt.Errorf("could not build runner for %s: %w", path, err)
 	}

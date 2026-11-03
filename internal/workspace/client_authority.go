@@ -166,6 +166,22 @@ func (w *ClientWorkspace) adoptRuntimeResponse(updated proto.Workspace) {
 	}
 }
 
+func (w *ClientWorkspace) ReadConfigView(ctx context.Context) (config.ConfigReadView, error) {
+	if !w.clientOwned() {
+		return w.client.ReadConfigView(ctx, w.workspaceID())
+	}
+	a := w.authority
+	if a == nil {
+		return config.ConfigReadView{}, errors.New("owning client configuration provenance is unavailable")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !matchesAuthority(w.cached().Authority, a.principal, a.accepted) {
+		return config.ConfigReadView{}, errors.New("accepted client configuration authority is unavailable")
+	}
+	return a.accepted.ReadConfigView(ctx, config.ScopeWorkspace)
+}
+
 func (w *ClientWorkspace) mutateClientAuthority(ctx context.Context, mutate func(*config.ConfigStore) error) error {
 	a := w.authority
 	if a == nil {

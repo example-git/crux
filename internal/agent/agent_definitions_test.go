@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -247,6 +248,41 @@ func TestCreateAgentDefinition(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "reviewer", definition.Name)
 	require.Equal(t, []string{"view", "search"}, definition.Tools)
+}
+
+func TestCreateAgentDefinitionWithInstructions(t *testing.T) {
+	workingDir := t.TempDir()
+	instructions := "# Review scope\n\nInspect {{literal}} and $INPUT without expansion.\n\n- Report concrete findings.\n"
+	path, err := CreateAgentDefinition(workingDir, testAgentDefinitionConfig(), AgentDefinitionTemplate{
+		Scope:        AgentDefinitionScopeProject,
+		Name:         "reviewer",
+		Description:  "Review code",
+		Model:        "provider/model",
+		Tools:        []string{"view"},
+		Instructions: instructions,
+	})
+	require.NoError(t, err)
+	content, err := os.ReadFile(path)
+	require.NoError(t, err)
+	parts := strings.SplitN(string(content), "---\n", 3)
+	require.Len(t, parts, 3)
+	require.Equal(t, "\n"+instructions, parts[2])
+	_, err = parseAgentDefinition(path, agentDefinitionSourceProject, testAgentDefinitionConfig())
+	require.NoError(t, err)
+}
+
+func TestCreateAgentDefinitionRejectsBlankExplicitInstructions(t *testing.T) {
+	workingDir := t.TempDir()
+	_, err := CreateAgentDefinition(workingDir, testAgentDefinitionConfig(), AgentDefinitionTemplate{
+		Scope:        AgentDefinitionScopeProject,
+		Name:         "reviewer",
+		Description:  "Review code",
+		Model:        "provider/model",
+		Tools:        []string{"view"},
+		Instructions: " \n\t",
+	})
+	require.ErrorIs(t, err, ErrInvalidAgentDefinition)
+	require.NoFileExists(t, filepath.Join(workingDir, ".ai-cli", "agents", "reviewer.md"))
 }
 
 func TestCreateAgentDefinitionWithScript(t *testing.T) {

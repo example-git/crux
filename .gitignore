@@ -102,8 +102,9 @@ VISUALS-MAP.md
 scratch/**
 !docs/CRUX_VS_UPSTREAM.md
 AGENTS.md
-/web/
-/internal/webclient/
-/internal/cmd/web.go
-/internal/server/web_local.go
+/web/dist/
+/web/release/
+/web/coverage/
+/web/.env.*
 /Crux Desktop.command
+!docs/subagent-scripting.md

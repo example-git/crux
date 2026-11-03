@@ -145,9 +145,10 @@ func (ImageURLContent) isPart() {}
 
 // BinaryContent represents binary data in a message.
 type BinaryContent struct {
-	Path     string
-	MIMEType string
-	Data     []byte
+	SourcePaths []string `json:"source_paths,omitempty"`
+	Path        string
+	MIMEType    string
+	Data        []byte
 }
 
 // String returns a base64-encoded string of the binary data.
@@ -659,19 +660,21 @@ func UnmarshalParts(data []byte) ([]ContentPart, error) {
 
 // Attachment represents a file attachment.
 type Attachment struct {
-	FilePath string `json:"file_path"`
-	FileName string `json:"file_name"`
-	MimeType string `json:"mime_type"`
-	Content  []byte `json:"content"`
+	SourcePaths []string `json:"source_paths,omitempty"`
+	FilePath    string   `json:"file_path"`
+	FileName    string   `json:"file_name"`
+	MimeType    string   `json:"mime_type"`
+	Content     []byte   `json:"content"`
 }
 
 // ToMessage converts a proto Attachment to a [message.Attachment].
 func (a Attachment) ToMessage() message.Attachment {
 	return message.Attachment{
-		FilePath: a.FilePath,
-		FileName: a.FileName,
-		MimeType: a.MimeType,
-		Content:  a.Content,
+		SourcePaths: a.SourcePaths,
+		FilePath:    a.FilePath,
+		FileName:    a.FileName,
+		MimeType:    a.MimeType,
+		Content:     a.Content,
 	}
 }
 
@@ -679,10 +682,11 @@ func (a Attachment) ToMessage() message.Attachment {
 // Attachment.
 func AttachmentFromMessage(a message.Attachment) Attachment {
 	return Attachment{
-		FilePath: a.FilePath,
-		FileName: a.FileName,
-		MimeType: a.MimeType,
-		Content:  a.Content,
+		SourcePaths: a.SourcePaths,
+		FilePath:    a.FilePath,
+		FileName:    a.FileName,
+		MimeType:    a.MimeType,
+		Content:     a.Content,
 	}
 }
 

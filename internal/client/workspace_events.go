@@ -10,6 +10,47 @@ import (
 	"github.com/example-git/crux/internal/pubsub"
 )
 
+func EncodeWorkspaceEvent(event any) (pubsub.Payload, error) {
+	var kind pubsub.PayloadType
+	switch event.(type) {
+	case pubsub.Event[proto.LSPEvent]:
+		kind = pubsub.PayloadTypeLSPEvent
+	case pubsub.Event[proto.MCPEvent]:
+		kind = pubsub.PayloadTypeMCPEvent
+	case pubsub.Event[proto.PermissionRequest]:
+		kind = pubsub.PayloadTypePermissionRequest
+	case pubsub.Event[proto.PermissionNotification]:
+		kind = pubsub.PayloadTypePermissionNotification
+	case pubsub.Event[proto.QuestionRequest]:
+		kind = pubsub.PayloadTypeQuestionRequest
+	case pubsub.Event[proto.QuestionNotification]:
+		kind = pubsub.PayloadTypeQuestionNotification
+	case pubsub.Event[proto.Message]:
+		kind = pubsub.PayloadTypeMessage
+	case pubsub.Event[proto.Session]:
+		kind = pubsub.PayloadTypeSession
+	case pubsub.Event[proto.File]:
+		kind = pubsub.PayloadTypeFile
+	case pubsub.Event[proto.AgentEvent]:
+		kind = pubsub.PayloadTypeAgentEvent
+	case pubsub.Event[proto.ConfigChanged]:
+		kind = pubsub.PayloadTypeConfigChanged
+	case pubsub.Event[proto.SkillsEvent]:
+		kind = pubsub.PayloadTypeSkillsEvent
+	case pubsub.Event[proto.TaskNotification]:
+		kind = pubsub.PayloadTypeTaskNotification
+	case pubsub.Event[proto.RunComplete]:
+		kind = pubsub.PayloadTypeRunComplete
+	default:
+		return pubsub.Payload{}, errors.New("unsupported public workspace event")
+	}
+	data, err := json.Marshal(event)
+	if err != nil {
+		return pubsub.Payload{}, err
+	}
+	return pubsub.Payload{Type: kind, Payload: data}, nil
+}
+
 func decodeWorkspaceEvent(data []byte) (any, error) {
 	var payload pubsub.Payload
 	if err := json.Unmarshal(data, &payload); err != nil {

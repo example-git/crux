@@ -206,16 +206,18 @@ type clientState struct {
 // associated resources and state.
 type Workspace struct {
 	*app.App
-	ID               string
-	Path             string
-	Cfg              *config.ConfigStore
-	Env              []string
-	Skills           *skills.Manager
-	principal        string
-	authorityMode    string
-	requestedDataDir string
-	providerAuthOnce sync.Once
-	providerAuth     *providerauth.Service
+	ID                string
+	Path              string
+	Cfg               *config.ConfigStore
+	Env               []string
+	Skills            *skills.Manager
+	principal         string
+	authorityMode     string
+	requestedDataDir  string
+	providerAuthOnce  sync.Once
+	providerAuth      *providerauth.Service
+	providerUsageWake chan struct{}
+	providerUsageWG   sync.WaitGroup
 
 	// resolvedPath is the path used as the dedup key in
 	// Backend.pathIndex. It is filepath.EvalSymlinks(filepath.Abs(Path))
@@ -310,6 +312,7 @@ func (w *Workspace) shutdown() {
 		}
 	}
 	w.runWG.Wait()
+	w.providerUsageWG.Wait()
 	if w.shutdownFn != nil {
 		w.shutdownFn()
 	} else if w.App != nil {

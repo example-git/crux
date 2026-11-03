@@ -23,6 +23,7 @@ import (
 	"github.com/example-git/crux/internal/proto"
 	"github.com/example-git/crux/internal/providerregistry"
 	"github.com/example-git/crux/internal/providerregistry/registrytest"
+	"github.com/example-git/crux/internal/pubsub"
 	"github.com/example-git/crux/internal/server"
 	"github.com/example-git/crux/internal/workspace"
 	"github.com/stretchr/testify/assert"
@@ -247,7 +248,30 @@ func TestProviderUsageThroughTLS(t *testing.T) {
 			}
 			wireMu.Unlock()
 			if mode != "plugin" {
-				return
+				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				defer cancel()
+				events, err := c.SubscribeEvents(ctx, created.ID, *discovery.Authority)
+				require.NoError(t, err)
+				for {
+					select {
+					case <-ctx.Done():
+						t.Fatal("native usage event was not delivered")
+					case value, ok := <-events:
+						require.True(t, ok, "native usage event stream closed")
+						event, ok := value.(pubsub.Event[proto.AgentEvent])
+						if !ok || event.Payload.Type != proto.AgentEventTypeUsage || event.Payload.ProviderID != id {
+							continue
+						}
+						require.Equal(t, &owner, event.Payload.Owner)
+						require.NotNil(t, event.Payload.Usage)
+						require.NotNil(t, event.Payload.Usage.Usage)
+						require.Equal(t, request.Revision, event.Payload.Usage.Revision)
+						require.Equal(t, request.Digest, event.Payload.Usage.Digest)
+						require.Len(t, event.Payload.Usage.Usage.Windows, 1)
+						require.Equal(t, 75, event.Payload.Usage.Usage.Windows[0].Percent)
+						return
+					}
+				}
 			}
 
 			startBlocked := func(fetch oauthusage.Request) (*quotaBarrier, <-chan error) {

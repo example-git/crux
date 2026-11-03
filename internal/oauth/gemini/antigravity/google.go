@@ -571,15 +571,9 @@ func (g *languageModel) Stream(ctx context.Context, call fantasy.Call) (fantasy.
 				}
 			}
 
-			if chunk.UsageMetadata != nil && chunk.UsageMetadata.TotalTokenCount != 0 {
+			if chunk.UsageMetadata != nil {
 				currentUsage := mapUsage(chunk.UsageMetadata)
-				if usage == nil {
-					usage = &currentUsage
-				} else {
-					usage.OutputTokens += currentUsage.OutputTokens
-					usage.ReasoningTokens += currentUsage.ReasoningTokens
-					usage.CacheReadTokens += currentUsage.CacheReadTokens
-				}
+				usage = &currentUsage
 			}
 
 			if len(chunk.Candidates) > 0 && chunk.Candidates[0].FinishReason != "" {
@@ -799,15 +793,9 @@ func (g *languageModel) streamObjectWithJSONMode(ctx context.Context, call fanta
 				}
 			}
 
-			if chunk.UsageMetadata != nil && chunk.UsageMetadata.TotalTokenCount != 0 {
+			if chunk.UsageMetadata != nil {
 				currentUsage := mapUsage(chunk.UsageMetadata)
-				if usage == nil {
-					usage = &currentUsage
-				} else {
-					usage.OutputTokens += currentUsage.OutputTokens
-					usage.ReasoningTokens += currentUsage.ReasoningTokens
-					usage.CacheReadTokens += currentUsage.CacheReadTokens
-				}
+				usage = &currentUsage
 			}
 
 			if len(chunk.Candidates) > 0 && chunk.Candidates[0].FinishReason != "" {
@@ -951,10 +939,15 @@ func mapUsage(usage *wireUsage) fantasy.Usage {
 	if usage == nil {
 		return fantasy.Usage{}
 	}
+	outputTokens := usage.CandidatesTokenCount + usage.ThoughtsTokenCount
+	totalTokens := usage.TotalTokenCount
+	if totalTokens == 0 {
+		totalTokens = usage.PromptTokenCount + outputTokens
+	}
 	return fantasy.Usage{
-		InputTokens:     usage.PromptTokenCount,
-		OutputTokens:    usage.CandidatesTokenCount,
-		TotalTokens:     usage.TotalTokenCount,
+		InputTokens:     max(usage.PromptTokenCount-usage.CachedContentTokenCount, 0),
+		OutputTokens:    outputTokens,
+		TotalTokens:     totalTokens,
 		ReasoningTokens: usage.ThoughtsTokenCount,
 		CacheReadTokens: usage.CachedContentTokenCount,
 	}

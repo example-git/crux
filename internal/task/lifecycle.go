@@ -60,12 +60,27 @@ type View struct {
 }
 
 type OutputResult struct {
+	OutputPaths     []string        `json:"-"`
 	Task            View            `json:"task"`
 	Output          string          `json:"output"`
 	RetrievalStatus RetrievalStatus `json:"retrieval_status"`
 	Status          RetrievalStatus `json:"-"`
 	NextOffset      int64           `json:"next_offset"`
 	OutputTruncated bool            `json:"output_truncated"`
+}
+
+type LogRequest struct {
+	Offset     int64  `json:"offset"`
+	Generation string `json:"generation"`
+}
+
+type LogResult struct {
+	Task       View   `json:"task"`
+	Data       []byte `json:"data"`
+	NextOffset int64  `json:"next_offset"`
+	Generation string `json:"generation"`
+	Snapshot   bool   `json:"snapshot"`
+	Truncated  bool   `json:"truncated"`
 }
 
 type Notification struct {

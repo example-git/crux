@@ -123,6 +123,7 @@ type Session struct {
 	Provider            string
 	Models              json.RawMessage
 	ModelRevision       int64
+	Instructions        Instructions
 	CreatedAt           int64
 	UpdatedAt           int64
 }
@@ -771,6 +772,10 @@ func (s *service) withGoal(ctx context.Context, current Session) (Session, error
 	if err != nil {
 		return Session{}, err
 	}
+	current, err = s.withInstructions(ctx, current)
+	if err != nil {
+		return Session{}, err
+	}
 	row := s.db.QueryRowContext(ctx, `
 SELECT objective, status, generation, error, updated_at
 FROM session_goals
@@ -836,6 +841,7 @@ func (s *service) fromDBItem(item db.Session) Session {
 		AnalysisEffort:      item.AnalysisEffort,
 		Model:               item.Model,
 		Provider:            item.Provider,
+		Instructions:        Instructions{Mode: "inherit"},
 		CreatedAt:           item.CreatedAt,
 		UpdatedAt:           item.UpdatedAt,
 	}
